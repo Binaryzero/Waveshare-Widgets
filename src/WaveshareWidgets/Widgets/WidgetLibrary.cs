@@ -59,12 +59,39 @@ public sealed partial class WidgetLibrary : IDisposable
         foreach (var sourceDir in Directory.GetDirectories(AppPaths.StockWidgetsDir))
         {
             var targetDir = Path.Combine(AppPaths.WidgetsDir, Path.GetFileName(sourceDir));
-            if (Directory.Exists(targetDir))
-                continue; // never overwrite a widget the user may have modified
+            if (Directory.Exists(targetDir) && !StockIsNewer(sourceDir, targetDir))
+                continue;
 
+            if (Directory.Exists(targetDir))
+                Directory.Delete(targetDir, recursive: true);
             CopyDirectory(sourceDir, targetDir);
             Log.Info($"Seeded stock widget: {Path.GetFileName(sourceDir)}");
         }
+    }
+
+    /// <summary>Stock widgets upgrade in place when the app ships a newer manifest version.
+    /// To customize a stock widget without it being overwritten, copy the folder and give
+    /// it a new id.</summary>
+    private static bool StockIsNewer(string stockDir, string installedDir)
+    {
+        try
+        {
+            var stock = ReadVersion(Path.Combine(stockDir, "manifest.json"));
+            var installed = ReadVersion(Path.Combine(installedDir, "manifest.json"));
+            return stock is not null && (installed is null || stock > installed);
+        }
+        catch
+        {
+            return false; // unreadable manifests: leave the installed copy alone
+        }
+    }
+
+    private static Version? ReadVersion(string manifestPath)
+    {
+        if (!File.Exists(manifestPath))
+            return null;
+        var manifest = JsonSerializer.Deserialize<WidgetManifest>(File.ReadAllText(manifestPath));
+        return Version.TryParse(manifest?.Version, out var version) ? version : null;
     }
 
     public void Rescan()

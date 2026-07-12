@@ -26,11 +26,12 @@
   }
   .ring .center .big { font-size: clamp(20px, 9vh, 44px); font-weight: 600; line-height: 1; }
   .ring .center .cap { font-size: clamp(9px, 3vh, 13px); color: #7d8697; letter-spacing: 0.14em; margin-top: 4px; }
-  .stats { display: flex; flex-direction: column; gap: 8%; }
+  #stats { display: flex; flex-direction: column; gap: 8%; }
   .stat .label { font-size: clamp(9px, 3vh, 13px); color: #7d8697; letter-spacing: 0.1em; text-transform: uppercase; }
   .stat .val { font-size: clamp(16px, 7vh, 34px); font-weight: 600; }
   .stat .val small { font-size: 55%; color: #7d8697; font-weight: 400; }
-  .hint { font-size: clamp(8px, 2.4vh, 11px); color: #545d6e; max-width: 180px; }
+  #hint { position: fixed; left: 12px; bottom: 8px; font-size: clamp(8px, 2.4vh, 11px); color: #545d6e; max-width: 92%; }
+  #hint[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -44,21 +45,8 @@
       <div class="cap">CPU LOAD</div>
     </div>
   </div>
-  <div class="stats">
-    <div class="stat">
-      <div class="label">Temp</div>
-      <div class="val" id="temp">--<small> °C</small></div>
-      <div class="hint" id="tempHint" hidden>No temperature source found. For accurate CPU temps, install PawnIO and run as administrator.</div>
-    </div>
-    <div class="stat">
-      <div class="label">Clock</div>
-      <div class="val" id="clock">--<small> MHz</small></div>
-    </div>
-    <div class="stat">
-      <div class="label">Power</div>
-      <div class="val" id="power">--<small> W</small></div>
-    </div>
-  </div>
+  <div id="stats"></div>
+  <div id="hint" hidden>For per-core CPU temps install PawnIO and run as administrator.</div>
 
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
@@ -81,37 +69,54 @@
     const load = pick(s.loadSensorId, {
       type: 'Load', deviceTypeIncludes: ['cpu'], preferredNames: ['CPU Total'],
     }) || WW.sensorById('sys:cpu:load');
-    // Preference order: a real CPU sensor (needs elevation + PawnIO), then an ACPI
-    // thermal zone that looks CPU-related, then any thermal zone (driver-free but
-    // firmware-dependent).
+
+    // Preference order for temperature: a real CPU sensor (needs elevation + PawnIO),
+    // then any ACPI thermal zone (driver-free but firmware-dependent).
     const temp = pick(s.tempSensorId, {
       type: 'Temperature', deviceTypeIncludes: ['cpu'],
       preferredNames: ['Core (Tctl/Tdie)', 'CPU Package', 'Core Average', 'Core Max'],
     })
       || WW.findSensor({ type: 'Temperature', deviceTypeIncludes: ['system'], nameIncludes: ['cpu'] })
-      || WW.findSensor({ type: 'Temperature', deviceTypeIncludes: ['system'], nameIncludes: ['thermal'] });
-    const clock = WW.findSensor({
-      type: 'Clock', deviceTypeIncludes: ['cpu'], nameIncludes: ['core #1', 'core'],
-    });
-    const power = WW.findSensor({
-      type: 'Power', deviceTypeIncludes: ['cpu'], preferredNames: ['CPU Package', 'Package'],
-    });
+      || WW.findSensor({ type: 'Temperature', deviceTypeIncludes: ['system'], nameIncludes: ['thermal', 'acpi'] });
 
     const loadValue = load && load.value != null ? Math.min(100, load.value) : null;
     document.getElementById('load').textContent = loadValue == null ? '--' : Math.round(loadValue) + '%';
     ring.style.strokeDashoffset = String(CIRCUMFERENCE * (1 - (loadValue || 0) / 100));
 
-    setStat('temp', temp, 0, ' °C');
-    setStat('clock', clock, 0, ' MHz');
-    setStat('power', power, 1, ' W');
-    document.getElementById('tempHint').hidden = !!temp || (WW.status && WW.status.elevated);
-  });
+    // Fill the three stat rows with whatever this machine can actually provide, so the
+    // widget never shows dead "--" rows on systems without the kernel-driver sensors.
+    const candidates = [
+      { label: 'Temp', unit: ' °C', decimals: 0, sensor: temp },
+      { label: 'Clock', unit: ' MHz', decimals: 0,
+        sensor: WW.findSensor({ type: 'Clock', deviceTypeIncludes: ['cpu'], nameIncludes: ['core #1', 'core'] }) },
+      { label: 'Power', unit: ' W', decimals: 1,
+        sensor: WW.findSensor({ type: 'Power', deviceTypeIncludes: ['cpu'], preferredNames: ['CPU Package', 'Package'] }) },
+      { label: 'Memory', unit: ' %', decimals: 0, sensor: WW.sensorById('sys:mem:load') },
+      { label: 'Mem Used', unit: ' GB', decimals: 1, sensor: WW.sensorById('sys:mem:used') },
+      { label: 'Net Down', unit: ' MB/s', decimals: 1, scale: 1 / 1048576, sensor: WW.sensorById('sys:net:down') },
+    ];
+    const rows = candidates.filter((c) => c.sensor && c.sensor.value != null).slice(0, 3);
 
-  function setStat(id, sensor, decimals, unit) {
-    const el = document.getElementById(id);
-    const value = sensor && sensor.value != null ? sensor.value.toFixed(decimals) : '--';
-    el.innerHTML = value + '<small>' + unit + '</small>';
-  }
+    const stats = document.getElementById('stats');
+    stats.textContent = '';
+    for (const row of rows) {
+      const stat = document.createElement('div');
+      stat.className = 'stat';
+      const label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = row.label;
+      const val = document.createElement('div');
+      val.className = 'val';
+      const value = (row.sensor.value * (row.scale || 1)).toFixed(row.decimals);
+      const small = document.createElement('small');
+      small.textContent = row.unit;
+      val.append(value, small);
+      stat.append(label, val);
+      stats.appendChild(stat);
+    }
+
+    document.getElementById('hint').hidden = !!temp;
+  });
 </script>
 </body>
 </html>

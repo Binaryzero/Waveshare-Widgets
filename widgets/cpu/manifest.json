@@ -2,8 +2,8 @@
   "id": "ws.stock.cpu",
   "name": "CPU Monitor",
   "author": "Waveshare Widgets",
-  "version": "1.0.0",
-  "description": "CPU load ring with temperature, clock and power readouts.",
+  "version": "1.1.0",
+  "description": "CPU load ring with the best available stats for this machine (temp, clock, power, memory).",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half"],
   "properties": [

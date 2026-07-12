@@ -118,7 +118,7 @@ Example `layout.json`:
       "slots": [
         { "widgetId": "ws.stock.clock", "size": "half", "settings": { "hour12": "on" } },
         { "widgetId": "ws.stock.weather", "size": "half",
-          "settings": { "latitude": 47.61, "longitude": -122.33, "place": "Seattle", "units": "fahrenheit" } }
+          "settings": { "location": "Seattle", "units": "fahrenheit" } }
       ]
     }
   ]

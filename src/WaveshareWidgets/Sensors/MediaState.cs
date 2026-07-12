@@ -7,7 +7,9 @@ public sealed record MediaState(
     string? Artist,
     string? Album,
     string? Status,
-    string? Thumbnail)
+    string? Thumbnail,
+    double? PositionSeconds,
+    double? DurationSeconds)
 {
-    public static MediaState None { get; } = new(false, null, null, null, null, null);
+    public static MediaState None { get; } = new(false, null, null, null, null, null, null, null);
 }

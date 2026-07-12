@@ -27,6 +27,7 @@ public sealed class DashboardWindow : Form
     private readonly WidgetLibrary _library;
     private readonly WebView2 _webView = new();
     private readonly HashSet<string> _mappedHosts = [];
+    private Rectangle _targetBounds;
     private bool _shellReady;
 
     public DashboardWindow(AppConfig config, SensorHub hub, WidgetLibrary library)
@@ -47,6 +48,10 @@ public sealed class DashboardWindow : Form
 
         _hub.SensorsUpdated += OnSensorsUpdated;
         _hub.MediaUpdated += OnMediaUpdated;
+
+        // Crossing into a monitor with different DPI makes Windows rescale the window
+        // mid-move, leaving it the wrong size on the panel; re-assert our exact bounds.
+        DpiChanged += (_, _) => BeginInvoke(ApplyTargetBounds);
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -65,7 +70,7 @@ public sealed class DashboardWindow : Form
 
     public async Task InitializeAsync(Screen screen)
     {
-        Bounds = screen.Bounds;
+        MoveToScreen(screen);
 
         var environment = await WebViewEnvironment.GetAsync();
         await _webView.EnsureCoreWebView2Async(environment);
@@ -80,12 +85,27 @@ public sealed class DashboardWindow : Form
 
         MapVirtualHosts();
         core.Navigate($"https://{ShellHost}/index.html");
+        ApplyTargetBounds(); // WebView2 startup can race the DPI-change rescale
     }
 
     /// <summary>Re-place the window when the panel (re)appears or moves.</summary>
     public void MoveToScreen(Screen screen)
     {
-        Bounds = screen.Bounds;
+        _targetBounds = screen.Bounds;
+        ApplyTargetBounds();
+    }
+
+    /// <summary>True when the window matches where it is supposed to be.</summary>
+    public bool IsPlacedCorrectly => !_targetBounds.IsEmpty && Bounds == _targetBounds;
+
+    private void ApplyTargetBounds()
+    {
+        if (_targetBounds.IsEmpty || IsDisposed)
+            return;
+        // Each assignment can trigger a WM_DPICHANGED rescale that alters the result;
+        // apply until it sticks (bounded, in case of a pathological DPI ping-pong).
+        for (var i = 0; i < 4 && Bounds != _targetBounds; i++)
+            Bounds = _targetBounds;
     }
 
     private void MapVirtualHosts()

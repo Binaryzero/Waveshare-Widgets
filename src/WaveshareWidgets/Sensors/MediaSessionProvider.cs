@@ -37,6 +37,14 @@ public sealed class MediaSessionProvider : IDisposable
             var props = await session.TryGetMediaPropertiesAsync();
             var status = session.GetPlaybackInfo()?.PlaybackStatus.ToString();
 
+            double? position = null, duration = null;
+            var timeline = session.GetTimelineProperties();
+            if (timeline is not null && timeline.EndTime > timeline.StartTime)
+            {
+                duration = (timeline.EndTime - timeline.StartTime).TotalSeconds;
+                position = Math.Clamp((timeline.Position - timeline.StartTime).TotalSeconds, 0, duration.Value);
+            }
+
             // Album art decodes are comparatively expensive; only refetch when the track changes.
             var key = $"{props.Title}|{props.Artist}";
             if (key != _thumbnailKey)
@@ -45,7 +53,8 @@ public sealed class MediaSessionProvider : IDisposable
                 _thumbnailDataUri = await ReadThumbnailAsync(props.Thumbnail);
             }
 
-            return new MediaState(true, props.Title, props.Artist, props.AlbumTitle, status, _thumbnailDataUri);
+            return new MediaState(true, props.Title, props.Artist, props.AlbumTitle, status, _thumbnailDataUri,
+                position, duration);
         }
         catch (Exception ex)
         {

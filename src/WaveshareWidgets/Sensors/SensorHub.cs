@@ -30,6 +30,7 @@ public sealed class SensorHub : IDisposable
     public void Start(int pollIntervalMs)
     {
         _providers.Add(new SystemCountersProvider());
+        _providers.Add(new WmiThermalProvider());
         _providers.Add(new LibreHardwareProvider());
         _media.InitializeAsync().GetAwaiter().GetResult();
 

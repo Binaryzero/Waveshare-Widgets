@@ -17,6 +17,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly SensorHub _hub = new();
     private readonly WidgetLibrary _library = new();
     private readonly NotifyIcon _trayIcon;
+    private System.Windows.Forms.Timer? _placementTimer;
     private DashboardWindow? _dashboard;
     private SettingsWindow? _settings;
     private string? _currentScreenDevice;
@@ -42,6 +43,22 @@ public sealed class TrayApplicationContext : ApplicationContext
         // The panel powers up ~10 s after HDMI connect and may be absent at logon;
         // re-evaluate placement whenever the display topology changes.
         SystemEvents.DisplaySettingsChanged += (_, _) => PlaceDashboard();
+
+        // Belt and suspenders: DisplaySettingsChanged does not fire for every case
+        // (late monitor arrival at logon, DPI-rescale drift), so self-heal placement
+        // on a slow tick as well.
+        _placementTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        _placementTimer.Tick += (_, _) =>
+        {
+            var screen = PanelLocator.Find(_config.DisplayDeviceName);
+            var misplaced = screen is not null &&
+                (_dashboard is null || _dashboard.IsDisposed || !_dashboard.Visible || !_dashboard.IsPlacedCorrectly
+                 || _dashboard.Bounds != screen.Bounds);
+            var vanished = screen is null && _dashboard is { IsDisposed: false, Visible: true };
+            if (misplaced || vanished)
+                PlaceDashboard();
+        };
+        _placementTimer.Start();
 
         PlaceDashboard();
     }
@@ -244,6 +261,8 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     protected override void ExitThreadCore()
     {
+        _placementTimer?.Stop();
+        _placementTimer?.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         _settings?.Dispose();

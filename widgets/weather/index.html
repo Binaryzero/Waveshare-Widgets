@@ -57,25 +57,52 @@
 
   WW.onInit((state) => {
     document.body.style.setProperty('--accent', state.settings.accentColor || '#ffd166');
-    document.getElementById('place').textContent = state.settings.place || '';
     refresh();
     clearInterval(refreshTimer);
     refreshTimer = setInterval(refresh, 10 * 60 * 1000);
   });
 
+  // Resolve a typed city name to coordinates via Open-Meteo's free geocoder,
+  // caching per query so we geocode each location exactly once.
+  async function geocode(query) {
+    const cacheKey = 'ww.geo.' + query.trim().toLowerCase();
+    try {
+      const cached = JSON.parse(localStorage.getItem(cacheKey));
+      if (cached && cached.lat != null) return cached;
+    } catch (e) { /* bad cache entry; refetch */ }
+
+    const url = 'https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name=' +
+      encodeURIComponent(query.trim());
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('geocoder HTTP ' + response.status);
+    const data = await response.json();
+    const hit = data.results && data.results[0];
+    if (!hit) throw new Error('no match for "' + query + '"');
+
+    const place = {
+      lat: hit.latitude,
+      lon: hit.longitude,
+      label: hit.name + (hit.admin1 && hit.admin1 !== hit.name ? ', ' + hit.admin1 : ''),
+    };
+    localStorage.setItem(cacheKey, JSON.stringify(place));
+    return place;
+  }
+
   async function refresh() {
     const s = WW.settings;
-    const url = 'https://api.open-meteo.com/v1/forecast' +
-      `?latitude=${encodeURIComponent(s.latitude)}` +
-      `&longitude=${encodeURIComponent(s.longitude)}` +
-      '&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m' +
-      '&daily=temperature_2m_max,temperature_2m_min' +
-      `&temperature_unit=${s.units === 'celsius' ? 'celsius' : 'fahrenheit'}` +
-      '&wind_speed_unit=kmh&timezone=auto&forecast_days=1';
-
     try {
+      const query = (s.location || '').trim() || 'New York';
+      const place = await geocode(query);
+      document.getElementById('place').textContent = place.label;
+
+      const url = 'https://api.open-meteo.com/v1/forecast' +
+        `?latitude=${place.lat}&longitude=${place.lon}` +
+        '&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m' +
+        '&daily=temperature_2m_max,temperature_2m_min' +
+        `&temperature_unit=${s.units === 'celsius' ? 'celsius' : 'fahrenheit'}` +
+        '&wind_speed_unit=kmh&timezone=auto&forecast_days=1';
       const response = await fetch(url);
-      if (!response.ok) throw new Error('HTTP ' + response.status);
+      if (!response.ok) throw new Error('forecast HTTP ' + response.status);
       const data = await response.json();
 
       const [label, emoji] = WMO[data.current.weather_code] || ['—', '🌡️'];
@@ -88,9 +115,9 @@
         '  ·  ' + data.current.relative_humidity_2m + '% RH';
       document.getElementById('error').style.display = 'none';
     } catch (e) {
-      WW.log('weather fetch failed: ' + e.message);
+      WW.log('weather failed: ' + e.message);
       const errorEl = document.getElementById('error');
-      errorEl.textContent = 'Weather unavailable (' + e.message + '). Check network and lat/lon settings.';
+      errorEl.textContent = 'Weather unavailable: ' + e.message + '. Check the location name in Settings.';
       errorEl.style.display = 'flex';
     }
   }
