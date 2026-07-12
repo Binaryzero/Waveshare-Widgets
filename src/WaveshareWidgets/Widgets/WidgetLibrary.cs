@@ -120,6 +120,10 @@ public sealed partial class WidgetLibrary : IDisposable
                     continue;
                 }
 
+                // iCUE-style widgets declare settings in index.html meta tags, not the manifest.
+                if (manifest.Properties.Count == 0)
+                    manifest.Properties = IcueManifestReader.ParseProperties(indexPath);
+
                 var host = $"{Slug(manifest.Id)}.widgets.wsw";
                 if (!usedHosts.Add(host))
                 {

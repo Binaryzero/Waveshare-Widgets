@@ -197,7 +197,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         using var dialog = new OpenFileDialog
         {
             Title = "Install widget package",
-            Filter = "Widget packages (*.wswidget;*.zip)|*.wswidget;*.zip",
+            Filter = "Widget packages (*.wswidget;*.icuewidget;*.zip)|*.wswidget;*.icuewidget;*.zip",
         };
         if (dialog.ShowDialog() != DialogResult.OK)
             return;

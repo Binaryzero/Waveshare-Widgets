@@ -152,7 +152,7 @@ public sealed class SettingsWindow : Form
         using var dialog = new OpenFileDialog
         {
             Title = "Install widget package",
-            Filter = "Widget packages (*.wswidget;*.zip)|*.wswidget;*.zip",
+            Filter = "Widget packages (*.wswidget;*.icuewidget;*.zip)|*.wswidget;*.icuewidget;*.zip",
         };
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;

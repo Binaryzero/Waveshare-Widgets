@@ -95,6 +95,25 @@ Precise CPU core temperature and fan/motherboard sensors only exist when the hos
 elevated with PawnIO installed (`WW.status.elevated` tells you; degrade gracefully like
 the stock CPU widget, which falls back to a thermal zone).
 
+## iCUE widget compatibility
+
+Packages built for iCUE (`.icuewidget`) can usually be installed directly. The host
+provides a compatibility layer inside every widget iframe:
+
+- `window.plugins.Sensorsdataprovider` with the Qt-style async contract
+  (`method(requestId, …)` answered via the `asyncResponse` signal), plus
+  `sensorValueChanged` / `sensorUnitsChanged` / `sensorAdded` / `sensorRemoved` signals.
+- Lifecycle callbacks: `pluginSensorsdataproviderEvents.onInitialized()` and
+  `icueEvents.onICUEInitialized()` after DOM-ready, `icueEvents.onDataUpdated()` when
+  settings are re-delivered.
+- `<meta name="x-icue-property">` declarations are parsed into the Settings UI
+  (`switch`, `slider`, `color`, `textfield`, and `sensors-factory` — the add-sensors
+  list). Values are injected as global variables before the lifecycle events fire.
+
+Not emulated: `media-selector` properties (background media), Corsair-device-specific
+sensors, and the Virtual Stream Deck integration. Sensor ids differ from iCUE's, so
+sensor selections must be (re)made in our Settings UI.
+
 ## Rules of the sandbox
 
 - Each widget runs on its own origin (`https://<id-slug>.widgets.wsw`) in an iframe with

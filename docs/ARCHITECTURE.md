@@ -110,6 +110,7 @@ docs/                        this file + the widget spec
 
 Touch-driven layout editor on the panel itself, software night-dimming overlay, widget
 marketplace/gallery, a `wswidget` scaffold/pack CLI, an AI "skill file" for LLM-generated
-widgets, .icuewidget import shim, manifest-declared capability permissions, WebView2
-nightly recycle for multi-week uptime. (A desktop settings UI for pages/slots/properties
-shipped shortly after v1 — see `SettingsWindow` + `Shell/settings.*`.)
+widgets, manifest-declared capability permissions, WebView2 nightly recycle for
+multi-week uptime. (Shipped shortly after v1: the desktop settings UI — `SettingsWindow`
++ `Shell/settings.*` — and the iCUE compatibility layer — `Shell/icue-compat.js` +
+`IcueManifestReader`.)

@@ -205,11 +205,74 @@
 
   // ---- property editors -------------------------------------------------------------
 
+  function makeSensorSelect(currentId, sensorType, onChange) {
+    const select = document.createElement('select');
+    select.add(new Option('Auto / none', '', false, !currentId));
+    const sensors = (state.sensors || []).filter((s) => !sensorType || s.type === sensorType);
+    for (const s of sensors) {
+      const text = s.device + ' — ' + s.name + (s.value != null ? '  (' + s.value + ' ' + s.units + ')' : '');
+      select.add(new Option(text, s.id, false, s.id === currentId));
+    }
+    if (currentId && !sensors.some((s) => s.id === currentId)) {
+      select.add(new Option(currentId + '  (missing)', currentId, false, true));
+    }
+    select.onchange = () => onChange(select.value);
+    return select;
+  }
+
   function propEditor(prop, slot) {
     const current = slot.settings[prop.name] !== undefined ? slot.settings[prop.name] : prop.default;
     const set = (value) => { slot.settings[prop.name] = value; };
 
     switch (prop.type) {
+      case 'switch': { // iCUE boolean toggle
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = current === true || current === 'true';
+        input.onchange = () => set(input.checked);
+        return input;
+      }
+      case 'sensors-factory': { // iCUE "add sensors" list: [{sensorId, color}]
+        const wrap = document.createElement('div');
+        wrap.className = 'factory';
+        const items = Array.isArray(current)
+          ? current.filter((x) => x && typeof x === 'object')
+              .map((x) => ({ sensorId: x.sensorId || '', color: x.color || '#76b900' }))
+          : [];
+        const commit = () => set(items.map((x) => ({ sensorId: x.sensorId, color: x.color })));
+        const renderList = () => {
+          wrap.textContent = '';
+          items.forEach((item, i) => {
+            const row = document.createElement('div');
+            row.className = 'factory-row';
+            const sensor = makeSensorSelect(item.sensorId, prop.sensor_type, (v) => { item.sensorId = v; commit(); });
+            const color = document.createElement('input');
+            color.type = 'color';
+            color.value = /^#[0-9a-f]{6}$/i.test(item.color) ? item.color : '#76b900';
+            color.oninput = () => { item.color = color.value; commit(); };
+            row.append(sensor, color,
+              iconButton('✕', 'Remove sensor', () => { items.splice(i, 1); commit(); renderList(); }, true));
+            wrap.appendChild(row);
+          });
+          const add = document.createElement('button');
+          add.className = 'ghost';
+          add.textContent = '+ Add sensor';
+          add.addEventListener('click', () => {
+            items.push({ sensorId: (state.sensors[0] || {}).id || '', color: '#76b900' });
+            commit();
+            renderList();
+          });
+          wrap.appendChild(add);
+        };
+        renderList();
+        return wrap;
+      }
+      case 'media-selector': { // iCUE background image/video picker — not supported yet
+        const note = document.createElement('span');
+        note.className = 'muted';
+        note.textContent = 'Background media is not supported yet.';
+        return note;
+      }
       case 'color': {
         const input = document.createElement('input');
         input.type = 'color';

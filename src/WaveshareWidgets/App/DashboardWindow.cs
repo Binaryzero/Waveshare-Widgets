@@ -83,6 +83,12 @@ public sealed class DashboardWindow : Form
 
         core.WebMessageReceived += OnWebMessageReceived;
 
+        // Inject the widget API + iCUE compatibility shim into every widget iframe, so
+        // packages (including .icuewidget imports) work without including any script tag.
+        var shim = File.ReadAllText(Path.Combine(AppPaths.ShellDir, "widget-api.js")) + "\n" +
+                   File.ReadAllText(Path.Combine(AppPaths.ShellDir, "icue-compat.js"));
+        await core.AddScriptToExecuteOnDocumentCreatedAsync(shim);
+
         MapVirtualHosts();
         core.Navigate($"https://{ShellHost}/index.html");
         ApplyTargetBounds(); // WebView2 startup can race the DPI-change rescale

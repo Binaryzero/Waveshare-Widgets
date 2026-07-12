@@ -40,6 +40,12 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   every widget's declared properties (colors, sliders, sensor pickers) — no JSON
   editing required.
 - **Five stock widgets**: CPU, GPU, Clock, Now Playing, Weather.
+- **iCUE widget compatibility**: many `.icuewidget` packages from the
+  [Elgato Marketplace](https://marketplace.elgato.com/icue/widgets) install and run
+  as-is — the runtime emulates the `Sensorsdataprovider` plugin API and reads
+  `x-icue-property` settings (including sensor lists) into the Settings UI. Widgets
+  wired to our sensor engine expose whatever your machine provides; iCUE-only data
+  sources (Corsair device internals, background media) are not available.
 
 ## Hardware setup (do this first)
 

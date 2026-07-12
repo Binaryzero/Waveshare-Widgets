@@ -1,9 +1,11 @@
 // Waveshare Widgets — widget API (v1).
-// Include from your widget's index.html:
+// The dashboard injects this into every widget iframe automatically; the explicit
 //   <script src="https://app.wsw/widget-api.js"></script>
+// include is optional (kept for standalone-browser widget development).
 // Everything lives on the global `WW` object. See docs/WIDGET-SPEC.md.
 (function () {
   'use strict';
+  if (window.WW) return; // already installed (injected + script tag)
 
   const listeners = { init: [], sensors: [], media: [] };
   const state = { settings: {}, sensors: [], media: null, status: null, ready: false };
