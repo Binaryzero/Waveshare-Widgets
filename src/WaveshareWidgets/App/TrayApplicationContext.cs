@@ -205,10 +205,11 @@ public sealed class TrayApplicationContext : ApplicationContext
         try
         {
             var installed = _library.InstallPackage(dialog.FileName);
-            _trayIcon.ShowBalloonTip(5_000, "Waveshare Widgets",
-                $"Installed '{installed.Manifest.Name}' v{installed.Manifest.Version}. Add it to a page via Edit layout.",
-                ToolTipIcon.Info);
             _dashboard?.ReloadDashboard();
+            // A message box, not a balloon tip: Windows 11 quietly drops balloon
+            // notifications for many users, which made installs look like silent failures.
+            MessageBox.Show($"Installed '{installed.Manifest.Name}' v{installed.Manifest.Version}.\n\nOpen Settings to add it to a page.",
+                "Waveshare Widgets", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {

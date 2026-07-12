@@ -9,7 +9,10 @@ html, body {
   font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   user-select: none;
   -webkit-user-select: none;
-  touch-action: pan-x;
+  /* No pan restriction here: the embedding document's touch-action also constrains
+     gestures inside widget iframes, so pan-x would kill vertical scrolling and
+     drawing inside widgets. Page switching uses the edge zones + dots instead. */
+  touch-action: manipulation;
 }
 
 /* Horizontally swipeable pages (iCUE Nexus model) */
@@ -59,26 +62,54 @@ html, body {
   padding: 12px;
 }
 
-/* Page indicator dots */
+/* Page indicator dots (tappable) */
 #dots {
   position: fixed;
   left: 50%;
-  bottom: 6px;
+  bottom: 2px;
   transform: translateX(-50%);
   display: flex;
-  gap: 8px;
+  gap: 4px;
   opacity: 0.85;
   transition: opacity 0.6s;
-  pointer-events: none;
+  pointer-events: auto;
+  z-index: 6;
 }
 #dots.idle { opacity: 0; }
 #dots span {
+  /* generous touch target around a small visual dot */
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.28);
+  border: 6px solid transparent;
+  background-clip: padding-box;
+  box-sizing: content-box;
+  cursor: pointer;
 }
-#dots span.active { background: rgba(255, 255, 255, 0.9); }
+#dots span.active { background-color: rgba(255, 255, 255, 0.9); background-clip: padding-box; }
+
+/* Edge swipe/tap zones for page switching (widgets consume touches everywhere else) */
+.edge {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: 36px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 30px;
+  font-weight: 200;
+  touch-action: none;
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity 0.6s;
+}
+.edge.idle { opacity: 0; }
+.edge.left  { left: 0;  background: linear-gradient(to right, rgba(0,0,0,0.45), transparent); }
+.edge.right { right: 0; background: linear-gradient(to left,  rgba(0,0,0,0.45), transparent); }
 
 #empty {
   position: fixed;

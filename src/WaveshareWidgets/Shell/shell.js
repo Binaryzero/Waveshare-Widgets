@@ -7,12 +7,14 @@
   const dotsEl = document.getElementById('dots');
   const emptyEl = document.getElementById('empty');
 
-  /** @type {{frame: HTMLIFrameElement, settings: object, initialized: boolean}[]} */
+  /** @type {{frame: HTMLIFrameElement, el: HTMLElement, settings: object, initialized: boolean, retries: number}[]} */
   let slots = [];
   let latestSensors = [];
   let latestMedia = null;
   let status = { elevated: false, apiVersion: 1 };
   let dotsIdleTimer = null;
+  let generation = 0;          // invalidates watchdogs from a previous layout
+  const fetchRoutes = new Map(); // proxy-fetch id -> widget iframe window
 
   // ---- host bridge -----------------------------------------------------------
 
@@ -21,6 +23,13 @@
     if (msg.type === 'init') onInit(msg.data);
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
+    else if (msg.type === 'fetch-result') {
+      const target = fetchRoutes.get(msg.data && msg.data.id);
+      if (target) {
+        fetchRoutes.delete(msg.data.id);
+        try { target.postMessage({ type: 'ww-fetch-result', ...msg.data }, '*'); } catch (e) { /* frame gone */ }
+      }
+    }
   });
 
   function postToHost(message) {
@@ -41,6 +50,12 @@
         slot.initialized = true;
         sendToSlot(slot, initMessage(slot));
       }
+    } else if (msg.type === 'ww-open-url' && typeof msg.url === 'string') {
+      postToHost({ type: 'open-url', url: msg.url });
+    } else if (msg.type === 'ww-fetch' && msg.id) {
+      fetchRoutes.set(msg.id, ev.source);
+      setTimeout(() => fetchRoutes.delete(msg.id), 30000);
+      postToHost({ type: 'fetch', id: msg.id, url: msg.url, method: msg.method, body: msg.body, contentType: msg.contentType });
     }
   });
 
@@ -102,7 +117,7 @@
           frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
           frame.src = widget.url;
           slotEl.appendChild(frame);
-          slots.push({ frame, settings: mergedSettings(widget, slotDef), initialized: false });
+          slots.push({ frame, el: slotEl, settings: mergedSettings(widget, slotDef), initialized: false, retries: 0 });
           slotCount++;
         }
         pageEl.appendChild(slotEl);
@@ -110,11 +125,40 @@
       pagesEl.appendChild(pageEl);
 
       const dot = document.createElement('span');
+      const pageIndex = dotsEl.children.length;
+      dot.addEventListener('click', () => goToPage(pageIndex));
       dotsEl.appendChild(dot);
     }
 
     emptyEl.hidden = slotCount > 0 || pages.length > 0;
     updateDots();
+
+    generation++;
+    armWatchdog(generation);
+  }
+
+  // Widget loads can flake (virtual-host races, heavy first paints); retry stragglers
+  // a couple of times before declaring them failed.
+  function armWatchdog(gen) {
+    setTimeout(() => {
+      if (gen !== generation) return;
+      let retrying = false;
+      for (const slot of slots) {
+        if (slot.initialized) continue;
+        if (slot.retries < 2) {
+          slot.retries++;
+          retrying = true;
+          try { slot.frame.src = slot.frame.src; } catch (e) { /* frame gone */ }
+          postToHost({ type: 'log', message: 'watchdog: reloading slow widget (attempt ' + slot.retries + ')' });
+        } else if (!slot.el.querySelector('.error')) {
+          const err = document.createElement('div');
+          err.className = 'error';
+          err.textContent = 'Widget failed to load';
+          slot.el.appendChild(err);
+        }
+      }
+      if (retrying) armWatchdog(gen);
+    }, 7000);
   }
 
   function mergedSettings(widget, slotDef) {
@@ -126,16 +170,52 @@
     return settings;
   }
 
-  // ---- page dots ----------------------------------------------------------------
+  // ---- page navigation (dots + edge zones) ----------------------------------------
+
+  const edgeLeft = document.getElementById('edgeLeft');
+  const edgeRight = document.getElementById('edgeRight');
+
+  function currentPage() {
+    return Math.round(pagesEl.scrollLeft / Math.max(1, pagesEl.clientWidth));
+  }
+
+  function goToPage(index) {
+    const count = dotsEl.children.length;
+    const clamped = Math.max(0, Math.min(count - 1, index));
+    pagesEl.scrollTo({ left: clamped * pagesEl.clientWidth, behavior: 'smooth' });
+    wakeChrome();
+  }
+
+  function wakeChrome() {
+    for (const el of [dotsEl, edgeLeft, edgeRight]) el.classList.remove('idle');
+    clearTimeout(dotsIdleTimer);
+    dotsIdleTimer = setTimeout(() => {
+      for (const el of [dotsEl, edgeLeft, edgeRight]) el.classList.add('idle');
+    }, 2500);
+  }
 
   function updateDots() {
-    const index = Math.round(pagesEl.scrollLeft / Math.max(1, pagesEl.clientWidth));
+    const index = currentPage();
     [...dotsEl.children].forEach((dot, i) => dot.classList.toggle('active', i === index));
-
-    dotsEl.classList.remove('idle');
-    clearTimeout(dotsIdleTimer);
-    dotsIdleTimer = setTimeout(() => dotsEl.classList.add('idle'), 2500);
+    wakeChrome();
   }
+
+  // Edge zones: tap or horizontal swipe switches pages. Needed because widget iframes
+  // consume touches over their whole area, leaving no reliable swipe surface.
+  function bindEdge(el, direction) {
+    let startX = null;
+    el.addEventListener('pointerdown', (ev) => { startX = ev.clientX; el.setPointerCapture(ev.pointerId); wakeChrome(); });
+    el.addEventListener('pointerup', (ev) => {
+      if (startX === null) return;
+      const dx = ev.clientX - startX;
+      startX = null;
+      if (Math.abs(dx) < 12) goToPage(currentPage() + direction);      // tap
+      else goToPage(currentPage() + (dx < 0 ? 1 : -1));                // swipe
+    });
+    el.addEventListener('pointercancel', () => { startX = null; });
+  }
+  bindEdge(edgeLeft, -1);
+  bindEdge(edgeRight, 1);
 
   pagesEl.addEventListener('scroll', updateDots, { passive: true });
 

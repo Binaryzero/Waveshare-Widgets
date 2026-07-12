@@ -103,12 +103,18 @@ provides a compatibility layer inside every widget iframe:
 - `window.plugins.Sensorsdataprovider` with the Qt-style async contract
   (`method(requestId, …)` answered via the `asyncResponse` signal), plus
   `sensorValueChanged` / `sensorUnitsChanged` / `sensorAdded` / `sensorRemoved` signals.
-- Lifecycle callbacks: `pluginSensorsdataproviderEvents.onInitialized()` and
-  `icueEvents.onICUEInitialized()` after DOM-ready, `icueEvents.onDataUpdated()` when
-  settings are re-delivered.
+- Lifecycle callbacks: `pluginSensorsdataproviderEvents.onInitialized()`,
+  `pluginLinkproviderEvents.onInitialized()` and `icueEvents.onICUEInitialized()` after
+  DOM-ready, `icueEvents.onDataUpdated()` when settings are re-delivered.
 - `<meta name="x-icue-property">` declarations are parsed into the Settings UI
   (`switch`, `slider`, `color`, `textfield`, and `sensors-factory` — the add-sensors
   list). Values are injected as global variables before the lifecycle events fire.
+- `tr()` backed by the package's `translation.json` (flat or per-language maps).
+- `window.plugins.Linkprovider.open(url)` opens the URL in the default desktop browser.
+- CORS relief: iCUE's embedded browser is CORS-relaxed, ours is not — so when a
+  widget's `fetch()` fails at the network/CORS layer, the shim transparently retries it
+  through the host process (GET/POST/HEAD, 5 MB cap, 15 s timeout). Reddit readers and
+  similar API widgets work unmodified.
 
 Not emulated: `media-selector` properties (background media), Corsair-device-specific
 sensors, and the Virtual Stream Deck integration. Sensor ids differ from iCUE's, so

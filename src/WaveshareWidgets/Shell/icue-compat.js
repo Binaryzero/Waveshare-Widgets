@@ -31,7 +31,28 @@
   const injected = new Set();   // property globals owned by the shim
   let initialized = false;
   let domReady = document.readyState !== 'loading';
-  let initPending = false;
+  let gotInit = false;
+  let trReady = false;
+
+  // --- tr(): iCUE's translation function, backed by the package's translation.json ---
+
+  let translations = null;
+  if (!('tr' in window)) {
+    window.tr = function (key) {
+      return (translations && translations[key] != null) ? String(translations[key]) : String(key);
+    };
+  }
+  fetch('translation.json')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((json) => {
+      if (json && typeof json === 'object') {
+        // Either a flat {key: text} map or nested per-language tables.
+        translations = (json.en && typeof json.en === 'object') ? json.en : json;
+      }
+    })
+    .catch(() => { /* no translation file */ })
+    .finally(() => { trReady = true; maybeInit(); });
+  setTimeout(() => { if (!trReady) { trReady = true; maybeInit(); } }, 1500);
 
   // --- sensor type/kind translation (our LHM-style types -> iCUE's lowercase model) ---
 
@@ -83,6 +104,82 @@
 
   window.plugins = window.plugins || {};
   window.plugins.Sensorsdataprovider = provider;
+  window.pluginSensorsdataprovider_initialized = true;
+
+  // Link provider: iCUE opens URLs on the desktop; we ask the host to do the same.
+  window.plugins.Linkprovider = {
+    open(url) { parent.postMessage({ type: 'ww-open-url', url: String(url) }, '*'); },
+  };
+  window.pluginLinkprovider_initialized = true;
+
+  // --- fetch fallback: iCUE's runtime is CORS-relaxed, standards WebView2 is not.
+  // Try the normal fetch first; when it fails at the network/CORS layer, retry the
+  // request through the host process, which is not subject to browser CORS.
+  const nativeFetch = window.fetch.bind(window);
+  const pendingFetches = new Map();
+  let fetchSeq = 0;
+
+  window.fetch = function (input, init) {
+    return nativeFetch(input, init).catch((error) => {
+      let url;
+      try {
+        url = new URL(typeof input === 'string' ? input : (input && input.url) || '', location.href);
+      } catch (e) { throw error; }
+      if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.hostname.endsWith('.wsw'))
+        throw error;
+      return proxyFetch(url.href, init || {});
+    });
+  };
+
+  function proxyFetch(url, init) {
+    return new Promise((resolve, reject) => {
+      const id = 'f' + (++fetchSeq) + '-' + Math.floor(performance.now());
+      pendingFetches.set(id, { resolve, reject });
+      setTimeout(() => {
+        if (pendingFetches.delete(id)) reject(new TypeError('proxy fetch timed out'));
+      }, 25000);
+      parent.postMessage({
+        type: 'ww-fetch',
+        id,
+        url,
+        method: (init.method || 'GET').toUpperCase(),
+        body: typeof init.body === 'string' ? init.body : null,
+        contentType: contentTypeOf(init.headers),
+      }, '*');
+    });
+  }
+
+  function contentTypeOf(headers) {
+    if (!headers) return null;
+    try {
+      if (typeof headers.get === 'function') return headers.get('content-type');
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase() === 'content-type') return headers[key];
+      }
+    } catch (e) { /* opaque headers */ }
+    return null;
+  }
+
+  function onFetchResult(msg) {
+    const pending = pendingFetches.get(msg.id);
+    if (!pending) return;
+    pendingFetches.delete(msg.id);
+    if (msg.error) {
+      pending.reject(new TypeError('proxy fetch failed: ' + msg.error));
+      return;
+    }
+    let bytes = new Uint8Array(0);
+    if (msg.bodyBase64) {
+      const raw = atob(msg.bodyBase64);
+      bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    }
+    pending.resolve(new Response(bytes, {
+      status: msg.status || 200,
+      statusText: msg.statusText || '',
+      headers: msg.contentType ? { 'Content-Type': msg.contentType } : {},
+    }));
+  }
 
   // --- settings -> globals (like iCUE's property injection) ---
 
@@ -119,10 +216,14 @@
 
   // --- lifecycle ---
 
-  function fireInit() {
-    if (initialized) return;
+  // Fire the iCUE init events only after: the first settings/sensor delivery arrived,
+  // the DOM is parsed (widgets assign icueEvents in body scripts), and translations
+  // finished loading (or timed out) so tr() is meaningful during first render.
+  function maybeInit() {
+    if (initialized || !gotInit || !domReady || !trReady) return;
     initialized = true;
     try { window.pluginSensorsdataproviderEvents?.onInitialized?.(); } catch (e) { console.error('[icue-shim]', e); }
+    try { window.pluginLinkproviderEvents?.onInitialized?.(); } catch (e) { console.error('[icue-shim]', e); }
     try { window.icueEvents?.onICUEInitialized?.(); } catch (e) { console.error('[icue-shim]', e); }
   }
 
@@ -131,18 +232,23 @@
     if (msg.type === 'ww-init') {
       setPropertyGlobals(msg.settings);
       applySensors(msg.sensors, !initialized);
-      if (!domReady) { initPending = true; return; }
-      if (!initialized) fireInit();
-      else { try { window.icueEvents?.onDataUpdated?.(); } catch (e) { console.error('[icue-shim]', e); } }
+      if (initialized) {
+        try { window.icueEvents?.onDataUpdated?.(); } catch (e) { console.error('[icue-shim]', e); }
+      } else {
+        gotInit = true;
+        maybeInit();
+      }
     } else if (msg.type === 'ww-sensors' && initialized) {
       applySensors(msg.sensors, false);
+    } else if (msg.type === 'ww-fetch-result') {
+      onFetchResult(msg);
     }
   });
 
   if (!domReady) {
     document.addEventListener('DOMContentLoaded', () => {
       domReady = true;
-      if (initPending) fireInit();
+      maybeInit();
     });
   }
 })();

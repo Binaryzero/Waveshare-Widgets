@@ -172,12 +172,107 @@ public sealed class DashboardWindow : Form
                 case "log":
                     Log.Info($"[shell] {message["message"]?.GetValue<string>()}");
                     break;
+
+                case "open-url":
+                    OpenExternalUrl(message["url"]?.GetValue<string>());
+                    break;
+
+                case "fetch":
+                    _ = HandleProxyFetchAsync(message);
+                    break;
             }
         }
         catch (Exception ex)
         {
             Log.Warn($"Bad web message: {ex.Message}");
         }
+    }
+
+    private static void OpenExternalUrl(string? url)
+    {
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+            (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri.ToString()) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"Failed to open URL: {ex.Message}");
+            }
+        }
+    }
+
+    private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private const int ProxyMaxBodyBytes = 5 * 1024 * 1024;
+
+    /// <summary>
+    /// CORS-relief proxy for widget fetches (iCUE's runtime is CORS-relaxed; ours is not).
+    /// The widget shim only calls this after a normal fetch failed at the network layer.
+    /// </summary>
+    private async Task HandleProxyFetchAsync(JsonNode message)
+    {
+        var id = message["id"]?.GetValue<string>() ?? "";
+        var result = new JsonObject { ["id"] = id };
+        try
+        {
+            var url = message["url"]?.GetValue<string>();
+            var method = message["method"]?.GetValue<string>()?.ToUpperInvariant() ?? "GET";
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                throw new InvalidOperationException("only absolute http(s) URLs are allowed");
+            if (method is not ("GET" or "POST" or "HEAD"))
+                throw new InvalidOperationException($"method {method} not allowed");
+
+            using var request = new HttpRequestMessage(new HttpMethod(method), uri);
+            var body = message["body"]?.GetValue<string>();
+            if (body is not null && method == "POST")
+            {
+                var contentType = message["contentType"]?.GetValue<string>() ?? "text/plain";
+                request.Content = new StringContent(body, System.Text.Encoding.UTF8, contentType);
+            }
+            request.Headers.UserAgent.ParseAdd("WaveshareWidgets/1.0");
+
+            using var response = await ProxyClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            var bytes = await ReadCappedAsync(response, ProxyMaxBodyBytes);
+
+            result["status"] = (int)response.StatusCode;
+            result["statusText"] = response.ReasonPhrase ?? "";
+            result["contentType"] = response.Content.Headers.ContentType?.ToString();
+            result["bodyBase64"] = Convert.ToBase64String(bytes);
+        }
+        catch (Exception ex)
+        {
+            result["error"] = ex.Message;
+        }
+
+        try
+        {
+            BeginInvoke(() => PostToShell("fetch-result", result));
+        }
+        catch (ObjectDisposedException)
+        {
+            // window closed mid-request
+        }
+    }
+
+    private static async Task<byte[]> ReadCappedAsync(HttpResponseMessage response, int maxBytes)
+    {
+        if (response.Content.Headers.ContentLength is > 0 and var length && length > maxBytes)
+            throw new InvalidOperationException("response too large");
+
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        int read;
+        while ((read = await stream.ReadAsync(chunk)) > 0)
+        {
+            if (buffer.Length + read > maxBytes)
+                throw new InvalidOperationException("response too large");
+            buffer.Write(chunk, 0, read);
+        }
+        return buffer.ToArray();
     }
 
     private JsonObject BuildInitPayload()
