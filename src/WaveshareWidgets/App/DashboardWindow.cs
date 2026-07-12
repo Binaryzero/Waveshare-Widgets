@@ -28,6 +28,7 @@ public sealed class DashboardWindow : Form
     private readonly WebView2 _webView = new();
     private readonly HashSet<string> _mappedHosts = [];
     private Rectangle _targetBounds;
+    private BrowserFetcher? _browserFetcher;
     private bool _shellReady;
 
     public DashboardWindow(AppConfig config, SensorHub hub, WidgetLibrary library)
@@ -270,6 +271,22 @@ public sealed class DashboardWindow : Form
             result["contentType"] = response.Content.Headers.ContentType?.ToString();
             result["bodyBase64"] = Convert.ToBase64String(bytes);
             Log.Info($"proxy fetch {uri.Host} -> {(int)response.StatusCode} ({bytes.Length} bytes)");
+
+            // TLS-fingerprinting bot walls (Reddit) 403 every .NET client; retry those
+            // through a real Chromium navigation, which they do trust.
+            if ((int)response.StatusCode is 403 or 429 && method == "GET")
+            {
+                _browserFetcher ??= new BrowserFetcher();
+                var alt = await _browserFetcher.FetchAsync(uri.ToString());
+                if (alt is { } browser && browser.Status < 400)
+                {
+                    result["status"] = browser.Status;
+                    result["statusText"] = "";
+                    result["contentType"] = browser.ContentType;
+                    result["bodyBase64"] = Convert.ToBase64String(browser.Body);
+                    Log.Info($"browser fetch {uri.Host} -> {browser.Status} ({browser.Body.Length} bytes)");
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -361,6 +378,7 @@ public sealed class DashboardWindow : Form
         {
             _hub.SensorsUpdated -= OnSensorsUpdated;
             _hub.MediaUpdated -= OnMediaUpdated;
+            _browserFetcher?.Dispose();
             _webView.Dispose();
         }
         base.Dispose(disposing);
