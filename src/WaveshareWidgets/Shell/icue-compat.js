@@ -14,6 +14,17 @@
   if (window.top === window || window.__wwIcue) return;
   window.__wwIcue = true;
 
+  // iCUE injects per-instance globals that widgets read at script-parse time —
+  // Doodle Pad does `const widgetId = uniqueId;` unguarded, so these must exist
+  // before any widget script runs. The shell tags each iframe URL with a stable
+  // slot fragment so storage keyed on uniqueId survives reloads.
+  if (!('uniqueId' in window)) {
+    const slotTag = (location.hash.match(/ww-slot=([\w-]+)/) || [])[1] || 'slot';
+    window.uniqueId = 'ww-' + location.hostname + '-' + slotTag;
+  }
+  if (!('iCUE_initialized' in window))
+    window.iCUE_initialized = false; // flipped to true when the init events fire
+
   function makeSignal() {
     const callbacks = new Set();
     return {
@@ -222,6 +233,7 @@
   function maybeInit() {
     if (initialized || !gotInit || !domReady || !trReady) return;
     initialized = true;
+    window.iCUE_initialized = true;
     try { window.pluginSensorsdataproviderEvents?.onInitialized?.(); } catch (e) { console.error('[icue-shim]', e); }
     try { window.pluginLinkproviderEvents?.onInitialized?.(); } catch (e) { console.error('[icue-shim]', e); }
     try { window.icueEvents?.onICUEInitialized?.(); } catch (e) { console.error('[icue-shim]', e); }

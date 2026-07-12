@@ -204,7 +204,16 @@ public sealed class DashboardWindow : Form
         }
     }
 
-    private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private static readonly HttpClient ProxyClient = new(new SocketsHttpHandler
+    {
+        AutomaticDecompression = System.Net.DecompressionMethods.All,
+    })
+    { Timeout = TimeSpan.FromSeconds(15) };
+
+    // Several services widgets rely on (Reddit in particular) refuse non-browser
+    // user agents, and iCUE's embedded browser sends a Chrome UA; match that behavior.
+    private const string ProxyUserAgent =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
     private const int ProxyMaxBodyBytes = 5 * 1024 * 1024;
 
     /// <summary>
@@ -232,7 +241,8 @@ public sealed class DashboardWindow : Form
                 var contentType = message["contentType"]?.GetValue<string>() ?? "text/plain";
                 request.Content = new StringContent(body, System.Text.Encoding.UTF8, contentType);
             }
-            request.Headers.UserAgent.ParseAdd("WaveshareWidgets/1.0");
+            request.Headers.TryAddWithoutValidation("User-Agent", ProxyUserAgent);
+            request.Headers.TryAddWithoutValidation("Accept", "*/*");
 
             using var response = await ProxyClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
             var bytes = await ReadCappedAsync(response, ProxyMaxBodyBytes);

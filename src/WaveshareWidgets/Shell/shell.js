@@ -96,9 +96,12 @@
     slots = [];
 
     let slotCount = 0;
+    let pageIndexCounter = 0;
     for (const page of pages) {
       const pageEl = document.createElement('section');
       pageEl.className = 'page';
+      const pageIdx = pageIndexCounter++;
+      let slotIdx = 0;
 
       for (const slotDef of page.slots || []) {
         const slotEl = document.createElement('div');
@@ -115,7 +118,8 @@
           // allow-same-origin is safe here: each widget is served from its own
           // virtual host, so widgets cannot reach the shell's or each other's origin.
           frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-          frame.src = widget.url;
+          // stable per-slot tag: backs the iCUE `uniqueId` global (per-instance storage)
+          frame.src = widget.url + '#ww-slot=p' + pageIdx + 's' + (slotIdx++);
           slotEl.appendChild(frame);
           slots.push({ frame, el: slotEl, settings: mergedSettings(widget, slotDef), initialized: false, retries: 0 });
           slotCount++;

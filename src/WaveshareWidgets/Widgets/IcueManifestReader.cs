@@ -43,18 +43,39 @@ public static partial class IcueManifestReader
             if (!attrs.TryGetValue("content", out var name) || string.IsNullOrWhiteSpace(name))
                 continue;
 
+            var type = attrs.GetValueOrDefault("data-type", "textfield");
+            var options = ParseValueKeys(attrs.GetValueOrDefault("data-values"));
+
+            // tab-buttons and combobox are enumerations; render them as selects.
+            if (options is { Count: > 0 } && type is "tab-buttons" or "combobox")
+                type = "select";
+
             properties.Add(new WidgetProperty
             {
                 Name = name,
                 Label = CleanLabel(attrs.GetValueOrDefault("data-label"), name),
-                Type = attrs.GetValueOrDefault("data-type", "textfield"),
+                Type = type,
                 Default = ParseDefault(attrs.GetValueOrDefault("data-default")),
                 Min = ParseDouble(attrs.GetValueOrDefault("data-min")),
                 Max = ParseDouble(attrs.GetValueOrDefault("data-max")),
                 Step = ParseDouble(attrs.GetValueOrDefault("data-step")),
+                Options = options,
             });
         }
         return properties;
+    }
+
+    [GeneratedRegex(@"'key'\s*:\s*'([^']*)'", RegexOptions.Singleline)]
+    private static partial Regex ValueKeyPattern();
+
+    /// <summary>data-values is a JS-ish array like [{'key':'hot','value':tr('Hot')}, …];
+    /// the keys are what the widget expects in its settings.</summary>
+    private static List<string>? ParseValueKeys(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+        var keys = ValueKeyPattern().Matches(raw).Select(m => m.Groups[1].Value).ToList();
+        return keys.Count > 0 ? keys : null;
     }
 
     /// <summary>Labels usually look like tr('Text Color'); unwrap the translation call.</summary>
