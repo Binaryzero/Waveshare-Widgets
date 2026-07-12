@@ -25,6 +25,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     public TrayApplicationContext()
     {
         AppPaths.EnsureCreated();
+        // Stamp every log with the running build so bug reports are unambiguous.
+        Log.Info($"WaveshareWidgets {typeof(TrayApplicationContext).Assembly.GetName().Version} starting");
         _config = AppConfig.Load();
 
         _library.Initialize();

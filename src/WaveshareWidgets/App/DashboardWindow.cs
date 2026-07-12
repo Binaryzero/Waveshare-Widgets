@@ -242,7 +242,12 @@ public sealed class DashboardWindow : Form
             if (method is not ("GET" or "POST" or "HEAD"))
                 throw new InvalidOperationException($"method {method} not allowed");
 
-            using var request = new HttpRequestMessage(new HttpMethod(method), uri);
+            using var request = new HttpRequestMessage(new HttpMethod(method), uri)
+            {
+                // Browsers speak HTTP/2 to these services; sticking to 1.1 is a bot tell.
+                Version = System.Net.HttpVersion.Version20,
+                VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+            };
             var body = message["body"]?.GetValue<string>();
             if (body is not null && method == "POST")
             {
@@ -250,7 +255,12 @@ public sealed class DashboardWindow : Form
                 request.Content = new StringContent(body, System.Text.Encoding.UTF8, contentType);
             }
             request.Headers.TryAddWithoutValidation("User-Agent", ProxyUserAgent);
-            request.Headers.TryAddWithoutValidation("Accept", "*/*");
+            request.Headers.TryAddWithoutValidation("Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,*/*;q=0.8");
+            request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
 
             using var response = await ProxyClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
             var bytes = await ReadCappedAsync(response, ProxyMaxBodyBytes);
@@ -259,10 +269,12 @@ public sealed class DashboardWindow : Form
             result["statusText"] = response.ReasonPhrase ?? "";
             result["contentType"] = response.Content.Headers.ContentType?.ToString();
             result["bodyBase64"] = Convert.ToBase64String(bytes);
+            Log.Info($"proxy fetch {uri.Host} -> {(int)response.StatusCode} ({bytes.Length} bytes)");
         }
         catch (Exception ex)
         {
             result["error"] = ex.Message;
+            Log.Warn($"proxy fetch failed ({message["url"]?.GetValue<string>()}): {ex.Message}");
         }
 
         try

@@ -130,15 +130,26 @@
   const pendingFetches = new Map();
   let fetchSeq = 0;
 
+  function proxyableUrl(input) {
+    try {
+      const url = new URL(typeof input === 'string' ? input : (input && input.url) || '', location.href);
+      if ((url.protocol === 'http:' || url.protocol === 'https:') &&
+          !url.hostname.endsWith('.wsw') && url.origin !== location.origin)
+        return url.href;
+    } catch (e) { /* unparseable */ }
+    return null;
+  }
+
   window.fetch = function (input, init) {
-    return nativeFetch(input, init).catch((error) => {
-      let url;
-      try {
-        url = new URL(typeof input === 'string' ? input : (input && input.url) || '', location.href);
-      } catch (e) { throw error; }
-      if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.hostname.endsWith('.wsw'))
-        throw error;
-      return proxyFetch(url.href, init || {});
+    return nativeFetch(input, init).then((response) => {
+      // Bot walls (Reddit's in particular) sometimes serve their block page WITH
+      // CORS headers, so the request "succeeds" as a 403/429; retry via the host.
+      const url = (response.status === 403 || response.status === 429) && proxyableUrl(input);
+      return url ? proxyFetch(url, init || {}).catch(() => response) : response;
+    }, (error) => {
+      const url = proxyableUrl(input);
+      if (!url) throw error;
+      return proxyFetch(url, init || {});
     });
   };
 
