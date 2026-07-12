@@ -10,29 +10,51 @@
     background: #0b0e14;
     color: #e8ecf2;
     font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5%;
     user-select: none;
   }
-  #icon { font-size: clamp(40px, 26vh, 110px); line-height: 1; }
+  #wrap {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    align-items: center;
+    justify-content: space-evenly;
+    padding: 0 3%;
+    gap: 3%;
+  }
+  #now { display: flex; align-items: center; gap: 5%; flex: none; }
+  #icon { font-size: clamp(40px, 24vh, 100px); line-height: 1; }
   #main { display: flex; flex-direction: column; gap: 0.8vh; }
-  #temp { font-size: clamp(30px, 18vh, 76px); font-weight: 200; line-height: 1; }
+  #temp { font-size: clamp(30px, 17vh, 70px); font-weight: 200; line-height: 1; }
   #temp small { font-size: 45%; color: var(--accent, #ffd166); font-weight: 400; }
-  #desc { font-size: clamp(12px, 5vh, 22px); color: #aeb7c4; }
-  #meta { font-size: clamp(10px, 4vh, 16px); color: #7d8697; }
-  #place { font-size: clamp(10px, 4vh, 16px); color: var(--accent, #ffd166); letter-spacing: 0.08em; text-transform: uppercase; }
+  #desc { font-size: clamp(12px, 4.6vh, 20px); color: #aeb7c4; }
+  #meta { font-size: clamp(10px, 3.8vh, 15px); color: #7d8697; }
+  #place { font-size: clamp(10px, 3.8vh, 15px); color: var(--accent, #ffd166); letter-spacing: 0.08em; text-transform: uppercase; }
+
+  #forecast { display: flex; flex: 1; max-width: 58%; justify-content: space-evenly; gap: 4px; }
+  .fc { display: flex; flex-direction: column; align-items: center; gap: 1vh; min-width: 0; }
+  .fc .t { color: #7d8697; font-size: clamp(9px, 3.4vh, 14px); white-space: nowrap; }
+  .fc .e { font-size: clamp(16px, 8vh, 34px); line-height: 1; }
+  .fc .v { font-size: clamp(11px, 4.6vh, 19px); font-weight: 600; white-space: nowrap; }
+  .fc .s { font-size: clamp(9px, 3.2vh, 13px); color: #7d8697; white-space: nowrap; }
+
+  /* Quarter slots are too narrow for the strip; keep just current conditions */
+  @media (max-width: 470px) { #forecast { display: none; } }
+
   #error { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; color: #545d6e; font-size: 14px; text-align: center; padding: 12px; background: #0b0e14; }
 </style>
 </head>
 <body>
-  <div id="icon">…</div>
-  <div id="main">
-    <div id="place"></div>
-    <div id="temp">--<small>°</small></div>
-    <div id="desc"></div>
-    <div id="meta"></div>
+  <div id="wrap">
+    <div id="now">
+      <div id="icon">…</div>
+      <div id="main">
+        <div id="place"></div>
+        <div id="temp">--<small>°</small></div>
+        <div id="desc"></div>
+        <div id="meta"></div>
+      </div>
+    </div>
+    <div id="forecast"></div>
   </div>
   <div id="error"></div>
 
@@ -52,6 +74,7 @@
     85: ['Snow showers', '🌨️'], 86: ['Snow showers', '🌨️'],
     95: ['Thunderstorm', '⛈️'], 96: ['Thunderstorm + hail', '⛈️'], 99: ['Thunderstorm + hail', '⛈️'],
   };
+  const wmo = (code) => WMO[code] || ['—', '🌡️'];
 
   let refreshTimer = null;
 
@@ -109,14 +132,15 @@
       const url = 'https://api.open-meteo.com/v1/forecast' +
         `?latitude=${place.lat}&longitude=${place.lon}` +
         '&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m' +
-        '&daily=temperature_2m_max,temperature_2m_min' +
+        '&hourly=temperature_2m,weather_code,precipitation_probability' +
+        '&daily=temperature_2m_max,temperature_2m_min,weather_code' +
         `&temperature_unit=${s.units === 'celsius' ? 'celsius' : 'fahrenheit'}` +
-        '&wind_speed_unit=kmh&timezone=auto&forecast_days=1';
+        '&wind_speed_unit=kmh&timezone=auto&forecast_days=7';
       const response = await fetch(url);
       if (!response.ok) throw new Error('forecast HTTP ' + response.status);
       const data = await response.json();
 
-      const [label, emoji] = WMO[data.current.weather_code] || ['—', '🌡️'];
+      const [label, emoji] = wmo(data.current.weather_code);
       document.getElementById('icon').textContent = emoji;
       document.getElementById('temp').innerHTML =
         Math.round(data.current.temperature_2m) + '<small>°' + (s.units === 'celsius' ? 'C' : 'F') + '</small>';
@@ -124,6 +148,8 @@
       document.getElementById('meta').textContent =
         'H ' + Math.round(data.daily.temperature_2m_max[0]) + '°  L ' + Math.round(data.daily.temperature_2m_min[0]) + '°' +
         '  ·  ' + data.current.relative_humidity_2m + '% RH';
+
+      renderForecast(data, s.forecast || 'hourly');
       document.getElementById('error').style.display = 'none';
     } catch (e) {
       WW.log('weather failed: ' + e.message);
@@ -131,6 +157,60 @@
       errorEl.textContent = 'Weather unavailable: ' + e.message + '. Check the location name in Settings.';
       errorEl.style.display = 'flex';
     }
+  }
+
+  function renderForecast(data, mode) {
+    const items = mode === 'daily' ? dailyItems(data) : mode === 'hourly' ? hourlyItems(data) : [];
+    const host = document.getElementById('forecast');
+    host.textContent = '';
+    for (const item of items) {
+      const col = document.createElement('div');
+      col.className = 'fc';
+      for (const [cls, text] of [['t', item.label], ['e', item.emoji], ['v', item.value], ['s', item.sub]]) {
+        const div = document.createElement('div');
+        div.className = cls;
+        div.textContent = text;
+        col.appendChild(div);
+      }
+      host.appendChild(col);
+    }
+  }
+
+  // Next ~12 hours in 2-hour steps (6 columns).
+  function hourlyItems(data) {
+    const times = data.hourly.time;
+    const now = Date.now();
+    let start = times.findIndex((t) => new Date(t).getTime() >= now);
+    if (start < 0) start = 0;
+
+    const items = [];
+    for (let k = 0; k < 6; k++) {
+      const i = start + k * 2;
+      if (i >= times.length) break;
+      const probability = data.hourly.precipitation_probability;
+      items.push({
+        label: new Date(times[i]).toLocaleTimeString([], { hour: 'numeric' }),
+        emoji: wmo(data.hourly.weather_code[i])[1],
+        value: Math.round(data.hourly.temperature_2m[i]) + '°',
+        sub: probability && probability[i] != null ? '💧' + probability[i] + '%' : '',
+      });
+    }
+    return items;
+  }
+
+  // Today + the next 5 days (6 columns).
+  function dailyItems(data) {
+    const items = [];
+    for (let i = 0; i < Math.min(6, data.daily.time.length); i++) {
+      const day = new Date(data.daily.time[i] + 'T12:00');
+      items.push({
+        label: i === 0 ? 'Today' : day.toLocaleDateString([], { weekday: 'short' }),
+        emoji: wmo(data.daily.weather_code[i])[1],
+        value: Math.round(data.daily.temperature_2m_max[i]) + '°',
+        sub: Math.round(data.daily.temperature_2m_min[i]) + '°',
+      });
+    }
+    return items;
   }
 </script>
 </body>
