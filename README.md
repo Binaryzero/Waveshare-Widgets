@@ -36,6 +36,9 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
 - **Widget packages**: a `.wswidget` file is a zip of `manifest.json` + `index.html`.
   Install via the tray menu, or drop a folder into the widgets directory —
   changes hot-reload. Each widget runs in a sandboxed iframe on its own origin.
+- **Settings UI**: tray → **Settings…** opens a visual editor for pages, slots, and
+  every widget's declared properties (colors, sliders, sensor pickers) — no JSON
+  editing required.
 - **Five stock widgets**: CPU, GPU, Clock, Now Playing, Weather.
 
 ## Hardware setup (do this first)
@@ -62,19 +65,30 @@ and run `WaveshareWidgets.exe`. Requirements:
 - [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)
 - WebView2 Runtime (preinstalled on Windows 11 and current Windows 10)
 
-The app lives in the system tray. Right-click it for: reload, open widgets folder,
-edit layout, install widget packages, pick the display, and start-with-Windows.
+The app lives in the system tray. Right-click it for: **Settings…** (the layout and
+widget-property editor), reload, open widgets folder, install widget packages, pick
+the display, and start-with-Windows.
 
-### CPU temperature needs elevation
+### About CPU temperature
 
-Reading CPU core temperatures requires ring-0 access. Run the app **as administrator**
-(or via a highest-privileges scheduled task) to unlock CPU temps, fans, and motherboard
-sensors. Everything else — GPU stats, memory, network, media, clock, weather — works
-unelevated, and the dashboard degrades gracefully.
+Windows has **no driver-free API for CPU core temperature** — every monitoring tool
+(HWiNFO, AIDA64, Afterburner, Fan Control) ships a kernel driver for it. This app
+handles that in tiers:
 
-> Note: recent LibreHardwareMonitor builds use the [PawnIO](https://pawnio.eu/) driver
-> instead of the vulnerable WinRing0 driver that Defender flags. If CPU sensors are
-> missing when elevated, install PawnIO.
+1. **Zero-install (default):** it reads Windows' built-in ACPI **thermal zone**
+   counters. On many boards this tracks the CPU package well; on some desktops the
+   zone is missing or coarse. No admin, no drivers.
+2. **Accurate CPU cores/fans/voltages:** install [PawnIO](https://pawnio.eu/) (the
+   Microsoft-attested, sandboxed driver also used by Fan Control, LibreHardwareMonitor
+   and OpenRGB) and run the app **as administrator**.
+
+Everything else — GPU stats, memory, network, media, clock, weather — works unelevated
+with nothing extra installed.
+
+> **Defender note:** if an older build ever triggered a "Threats found" warning, that
+> was the WinRing0 driver embedded in LibreHardwareMonitorLib ≤ 0.9.4. This app now
+> uses 0.9.6+, which has no WinRing0; let Defender remove the quarantined file and
+> delete any leftover `WinRing0x64.sys` next to the exe.
 
 ## Configuration
 
@@ -111,8 +125,9 @@ Example `layout.json`:
 }
 ```
 
-The dashboard hot-reloads when widget files change; use the tray's **Reload dashboard**
-after editing `layout.json`.
+The Settings window edits this file for you (and reloads the dashboard on save); the
+JSON stays hand-editable for scripting or syncing between machines. The dashboard also
+hot-reloads whenever widget files change on disk.
 
 ## Building widgets
 

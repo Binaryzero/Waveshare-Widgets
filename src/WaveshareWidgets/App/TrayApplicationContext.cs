@@ -18,6 +18,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly WidgetLibrary _library = new();
     private readonly NotifyIcon _trayIcon;
     private DashboardWindow? _dashboard;
+    private SettingsWindow? _settings;
     private string? _currentScreenDevice;
 
     public TrayApplicationContext()
@@ -104,6 +105,11 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         var menu = new ContextMenuStrip();
 
+        var settingsItem = new ToolStripMenuItem("Settings…") { Font = new Font(menu.Font, FontStyle.Bold) };
+        settingsItem.Click += (_, _) => OpenSettings();
+        menu.Items.Add(settingsItem);
+        menu.Items.Add(new ToolStripSeparator());
+
         menu.Items.Add("Reload dashboard", null, (_, _) => _dashboard?.ReloadDashboard());
         menu.Items.Add("Open widgets folder", null, (_, _) => OpenInExplorer(AppPaths.WidgetsDir));
         menu.Items.Add("Edit layout (JSON)", null, (_, _) =>
@@ -125,6 +131,19 @@ public sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => ExitThread());
         return menu;
+    }
+
+    private void OpenSettings()
+    {
+        if (_settings is { IsDisposed: false })
+        {
+            _settings.Activate();
+            _settings.BringToFront();
+            return;
+        }
+        _settings = new SettingsWindow(_hub, _library);
+        _settings.LayoutSaved += () => _dashboard?.ReloadDashboard();
+        _settings.Show();
     }
 
     private void PopulateDisplayMenu(ToolStripMenuItem parent)
@@ -227,6 +246,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
+        _settings?.Dispose();
         _dashboard?.Dispose();
         _hub.Dispose();
         _library.Dispose();

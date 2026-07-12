@@ -30,6 +30,7 @@ html, body {
   scroll-snap-align: start;
   scroll-snap-stop: always;
   display: flex;
+  overflow: hidden; /* clip over-full pages instead of bleeding into the next one */
 }
 
 /* Slot sizes for the 1280x400 canvas */
@@ -89,5 +90,7 @@ html, body {
   gap: 10px;
   text-align: center;
 }
+/* display:flex above beats the UA's [hidden]{display:none}; restore it explicitly */
+#empty[hidden] { display: none; }
 #empty h1 { font-size: 28px; font-weight: 600; color: #00d4ff; }
 #empty p  { font-size: 15px; color: #7d8697; max-width: 70%; }

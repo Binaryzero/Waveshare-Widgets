@@ -48,7 +48,7 @@
     <div class="stat">
       <div class="label">Temp</div>
       <div class="val" id="temp">--<small> °C</small></div>
-      <div class="hint" id="tempHint" hidden>Run the app as administrator to unlock CPU temperature.</div>
+      <div class="hint" id="tempHint" hidden>No temperature source found. For accurate CPU temps, install PawnIO and run as administrator.</div>
     </div>
     <div class="stat">
       <div class="label">Clock</div>
@@ -81,10 +81,15 @@
     const load = pick(s.loadSensorId, {
       type: 'Load', deviceTypeIncludes: ['cpu'], preferredNames: ['CPU Total'],
     }) || WW.sensorById('sys:cpu:load');
+    // Preference order: a real CPU sensor (needs elevation + PawnIO), then an ACPI
+    // thermal zone that looks CPU-related, then any thermal zone (driver-free but
+    // firmware-dependent).
     const temp = pick(s.tempSensorId, {
       type: 'Temperature', deviceTypeIncludes: ['cpu'],
       preferredNames: ['Core (Tctl/Tdie)', 'CPU Package', 'Core Average', 'Core Max'],
-    });
+    })
+      || WW.findSensor({ type: 'Temperature', deviceTypeIncludes: ['system'], nameIncludes: ['cpu'] })
+      || WW.findSensor({ type: 'Temperature', deviceTypeIncludes: ['system'], nameIncludes: ['thermal'] });
     const clock = WW.findSensor({
       type: 'Clock', deviceTypeIncludes: ['cpu'], nameIncludes: ['core #1', 'core'],
     });

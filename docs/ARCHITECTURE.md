@@ -71,9 +71,16 @@ process tree is unacceptable — at the cost of arbitrary HTML widgets).
 
 | Tier | Source | Needs |
 |---|---|---|
-| Always | Clock (JS), performance counters (`sys:*`), memory, media, weather | nothing |
+| Always | Clock (JS), performance counters (`sys:*`), ACPI thermal zones (`sys:thermal:*`), memory, media, weather | nothing |
 | Unelevated LHM | GPU temps/load/VRAM (vendor user-mode DLLs), storage, memory | nothing |
-| Elevated LHM | CPU core temps, fans, voltages, motherboard/SuperIO | admin + (new LHM builds) PawnIO driver |
+| Elevated LHM | CPU core temps, fans, voltages, motherboard/SuperIO | admin + PawnIO driver |
+
+The ACPI thermal-zone tier exists because Windows offers no driver-free CPU-core
+temperature API: the zones are firmware-defined and vary in accuracy, but they are the
+best "no extra software" approximation, and the stock CPU widget falls back to them
+automatically. LibreHardwareMonitorLib must be ≥ 0.9.6 — earlier packages embed the
+WinRing0 driver, which Defender quarantines and the Windows 11 vulnerable-driver
+blocklist refuses to load (symptom: no CPU temps even when elevated).
 
 Widgets can check `WW.status.elevated` and degrade (the stock CPU widget shows a hint
 instead of a blank temperature).
@@ -101,7 +108,8 @@ docs/                        this file + the widget spec
 
 ## v2 candidates (explicitly out of v1 scope)
 
-Touch-driven layout editor, settings UI for widget properties (the schema is already in
-the manifest), software night-dimming overlay, widget marketplace/gallery, a `wswidget`
-scaffold/pack CLI, an AI "skill file" for LLM-generated widgets, .icuewidget import shim,
-manifest-declared capability permissions, WebView2 nightly recycle for multi-week uptime.
+Touch-driven layout editor on the panel itself, software night-dimming overlay, widget
+marketplace/gallery, a `wswidget` scaffold/pack CLI, an AI "skill file" for LLM-generated
+widgets, .icuewidget import shim, manifest-declared capability permissions, WebView2
+nightly recycle for multi-week uptime. (A desktop settings UI for pages/slots/properties
+shipped shortly after v1 — see `SettingsWindow` + `Shell/settings.*`.)

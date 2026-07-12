@@ -89,9 +89,11 @@ Sensor `type` values follow LibreHardwareMonitor: `Temperature` (°C), `Load` (%
 and more. Values can be `null` when a source is unavailable — always render a placeholder.
 
 Zero-elevation sensors are always present: `sys:cpu:load`, `sys:mem:load`,
-`sys:mem:used`, `sys:mem:total`, `sys:net:down`, `sys:net:up`. CPU temperature and
-fan/motherboard sensors only exist when the host runs elevated (`WW.status.elevated`
-tells you; show a hint like the stock CPU widget does).
+`sys:mem:used`, `sys:mem:total`, `sys:net:down`, `sys:net:up`, plus firmware-dependent
+ACPI thermal zones as `sys:thermal:<zone>` (deviceType `System`, type `Temperature`).
+Precise CPU core temperature and fan/motherboard sensors only exist when the host runs
+elevated with PawnIO installed (`WW.status.elevated` tells you; degrade gracefully like
+the stock CPU widget, which falls back to a thermal zone).
 
 ## Rules of the sandbox
 

@@ -67,16 +67,7 @@ public sealed class DashboardWindow : Form
     {
         Bounds = screen.Bounds;
 
-        var options = new CoreWebView2EnvironmentOptions
-        {
-            // The dashboard is always visible but almost never focused; Chromium must not
-            // throttle its timers or renderer for being "in the background".
-            AdditionalBrowserArguments =
-                "--disable-background-timer-throttling " +
-                "--disable-renderer-backgrounding " +
-                "--disable-features=CalculateNativeWinOcclusion",
-        };
-        var environment = await CoreWebView2Environment.CreateAsync(null, AppPaths.WebViewUserDataDir, options);
+        var environment = await WebViewEnvironment.GetAsync();
         await _webView.EnsureCoreWebView2Async(environment);
 
         var core = _webView.CoreWebView2;

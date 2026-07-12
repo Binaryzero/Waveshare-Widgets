@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Waveshare Widgets — Settings</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <header>
+    <h1>Dashboard layout</h1>
+    <div class="actions">
+      <button id="installWidget" class="ghost">Install widget…</button>
+      <button id="openFolder" class="ghost">Open widgets folder</button>
+      <button id="save" class="primary">Save &amp; apply</button>
+    </div>
+  </header>
+
+  <main>
+    <aside id="pagesPanel">
+      <div class="panel-title">Pages</div>
+      <ul id="pageList"></ul>
+      <button id="addPage" class="ghost wide">+ Add page</button>
+    </aside>
+
+    <section id="editor">
+      <div id="pageHeader">
+        <input id="pageName" type="text" placeholder="Page name" />
+        <div id="capacity"></div>
+        <span class="spacer"></span>
+        <button id="movePageLeft" class="ghost" title="Move page earlier">◀</button>
+        <button id="movePageRight" class="ghost" title="Move page later">▶</button>
+        <button id="deletePage" class="danger ghost">Delete page</button>
+      </div>
+      <div id="slotList"></div>
+      <button id="addSlot" class="ghost wide">+ Add widget to this page</button>
+      <div id="editorEmpty" hidden>
+        <p>No pages yet. Add one to get started.</p>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" hidden></div>
+  <script src="settings.js"></script>
+</body>
+</html>

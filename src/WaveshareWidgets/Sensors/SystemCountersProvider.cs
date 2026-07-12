@@ -14,6 +14,7 @@ public sealed class SystemCountersProvider : ISensorProvider
 {
     private PerformanceCounter? _cpuLoad;
     private readonly List<(string Nic, PerformanceCounter Received, PerformanceCounter Sent)> _nics = [];
+    private readonly List<(string Zone, PerformanceCounter Counter)> _thermalZones = [];
 
     public string Name => "SystemCounters";
 
@@ -27,6 +28,24 @@ public sealed class SystemCountersProvider : ISensorProvider
         catch (Exception ex)
         {
             Log.Warn($"CPU load counter unavailable: {ex.Message}");
+        }
+
+        // ACPI thermal zones: the only CPU-adjacent temperature Windows exposes without a
+        // kernel driver or elevation. Which zones exist (and how honest they are) depends
+        // on the motherboard firmware; values are reported in Kelvin.
+        try
+        {
+            var category = new PerformanceCounterCategory("Thermal Zone Information");
+            foreach (var zone in category.GetInstanceNames())
+            {
+                var counter = new PerformanceCounter("Thermal Zone Information", "Temperature", zone, readOnly: true);
+                counter.NextValue();
+                _thermalZones.Add((CleanZoneName(zone), counter));
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Thermal zone counters unavailable: {ex.Message}");
         }
 
         try
@@ -87,6 +106,26 @@ public sealed class SystemCountersProvider : ISensorProvider
             readings.Add(new SensorReading("sys:net:up", "Network Up", "System", "System", "Throughput", "B/s", Math.Round(upTotal)));
         }
 
+        foreach (var (zone, counter) in _thermalZones)
+        {
+            try
+            {
+                var kelvin = (double)counter.NextValue();
+                if (kelvin > 1000) // some firmware reports tenths of Kelvin
+                    kelvin /= 10;
+                var celsius = kelvin - 273.15;
+                if (celsius is > -20 and < 150)
+                {
+                    readings.Add(new SensorReading($"sys:thermal:{zone}", $"Thermal Zone {zone}",
+                        "System", "System", "Temperature", "°C", Math.Round(celsius, 1)));
+                }
+            }
+            catch
+            {
+                // Zones can disappear on ACPI events; skip this tick.
+            }
+        }
+
         var memory = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
         if (GlobalMemoryStatusEx(ref memory))
         {
@@ -100,6 +139,16 @@ public sealed class SystemCountersProvider : ISensorProvider
         return readings;
     }
 
+    /// <summary>"\_TZ.CPUZ" → "CPUZ".</summary>
+    private static string CleanZoneName(string instance)
+    {
+        var name = instance.Trim();
+        var dot = name.LastIndexOf('.');
+        if (dot >= 0 && dot < name.Length - 1)
+            name = name[(dot + 1)..];
+        return name.TrimStart('\\', '_');
+    }
+
     public void Dispose()
     {
         _cpuLoad?.Dispose();
@@ -109,6 +158,9 @@ public sealed class SystemCountersProvider : ISensorProvider
             sent.Dispose();
         }
         _nics.Clear();
+        foreach (var (_, counter) in _thermalZones)
+            counter.Dispose();
+        _thermalZones.Clear();
     }
 
     [StructLayout(LayoutKind.Sequential)]
