@@ -82,9 +82,14 @@ public sealed partial class WidgetLibrary : IDisposable
             try
             {
                 var manifest = JsonSerializer.Deserialize<WidgetManifest>(File.ReadAllText(manifestPath));
-                if (manifest is null || !manifest.IsValid(out var error))
+                if (manifest is null)
                 {
-                    Log.Warn($"Skipping widget in '{folder}': {(manifest is null ? "unparseable manifest" : error)}");
+                    Log.Warn($"Skipping widget in '{folder}': unparseable manifest");
+                    continue;
+                }
+                if (!manifest.IsValid(out var error))
+                {
+                    Log.Warn($"Skipping widget in '{folder}': {error}");
                     continue;
                 }
 
