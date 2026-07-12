@@ -64,12 +64,16 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
 
 ## Install & run
 
-Grab `WaveshareWidgets-win-x64` from the latest [Actions build](../../actions), unzip,
-and run `WaveshareWidgets.exe`. Requirements:
+Download the latest zip from the [Releases page](../../releases):
 
-- Windows 10 1809+ or Windows 11
-- [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)
-- WebView2 Runtime (preinstalled on Windows 11 and current Windows 10)
+- `WaveshareWidgets-vX.Y.Z-win-x64.zip` — small; needs the
+  [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)
+- `WaveshareWidgets-vX.Y.Z-win-x64-self-contained.zip` — bigger; runs with nothing
+  preinstalled
+
+Unzip and run `WaveshareWidgets.exe`. Requirements: Windows 10 1809+ or Windows 11, and
+the WebView2 Runtime (preinstalled on Windows 11 and current Windows 10). Development
+builds of every commit are available as [Actions artifacts](../../actions).
 
 The app lives in the system tray. Right-click it for: **Settings…** (the layout and
 widget-property editor), reload, open widgets folder, install widget packages, pick
@@ -150,6 +154,18 @@ dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x6
 
 Requires the .NET 8 SDK on Windows (CI does exactly this; non-Windows SDKs can compile
 with `EnableWindowsTargeting` but the app only runs on Windows).
+
+## Releasing
+
+Push a version tag and CI publishes the GitHub Release with both zips and generated
+notes:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+Running the `release` workflow manually (workflow_dispatch) is a dry run: it builds the
+same zips and uploads them as workflow artifacts without creating a release.
 
 ## Architecture
 

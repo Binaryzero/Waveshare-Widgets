@@ -1,0 +1,55 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # Dry run: builds and uploads the zips as workflow artifacts without creating a release.
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '0.0.0-dev' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Publish (framework-dependent)
+        run: dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained false -p:Version=${{ steps.version.outputs.version }} -o publish/fdd
+
+      - name: Publish (self-contained)
+        run: dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained true -p:Version=${{ steps.version.outputs.version }} -o publish/scd
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive -Path publish/fdd/* -DestinationPath "dist/WaveshareWidgets-v${{ steps.version.outputs.version }}-win-x64.zip"
+          Compress-Archive -Path publish/scd/* -DestinationPath "dist/WaveshareWidgets-v${{ steps.version.outputs.version }}-win-x64-self-contained.zip"
+
+      - name: Upload artifacts (dry run)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run
+          path: dist/
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
