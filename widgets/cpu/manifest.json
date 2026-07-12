@@ -1,0 +1,14 @@
+{
+  "id": "ws.stock.cpu",
+  "name": "CPU Monitor",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "CPU load ring with temperature, clock and power readouts.",
+  "min_api_version": 1,
+  "supported_slots": ["quarter", "half"],
+  "properties": [
+    { "name": "accentColor", "label": "Accent Color", "type": "color", "default": "#00d4ff" },
+    { "name": "loadSensorId", "label": "Load Sensor", "type": "sensor", "sensor_type": "Load", "default": "" },
+    { "name": "tempSensorId", "label": "Temperature Sensor", "type": "sensor", "sensor_type": "Temperature", "default": "" }
+  ]
+}

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Clock</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #0b0e14;
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2vh;
+    user-select: none;
+  }
+  #time {
+    color: var(--accent, #e8ecf2);
+    font-size: clamp(40px, 34vh, 160px);
+    font-weight: 200;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+  }
+  #time small { font-size: 40%; color: #7d8697; font-weight: 200; }
+  #date { color: #7d8697; font-size: clamp(12px, 6vh, 26px); font-weight: 400; letter-spacing: 0.08em; }
+</style>
+</head>
+<body>
+  <div id="time">--:--</div>
+  <div id="date"></div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  let hour12 = false;
+  let showSeconds = true;
+
+  WW.onInit((state) => {
+    document.body.style.setProperty('--accent', state.settings.accentColor || '#e8ecf2');
+    hour12 = state.settings.hour12 === 'on';
+    showSeconds = state.settings.showSeconds !== 'off';
+    render();
+  });
+
+  function render() {
+    const now = new Date();
+    let hours = now.getHours();
+    let suffix = '';
+    if (hour12) {
+      suffix = '<small>' + (hours >= 12 ? ' PM' : ' AM') + '</small>';
+      hours = hours % 12 || 12;
+    }
+    const pad = (n) => String(n).padStart(2, '0');
+    const time = (hour12 ? hours : pad(hours)) + ':' + pad(now.getMinutes()) +
+      (showSeconds ? ':' + pad(now.getSeconds()) : '');
+    document.getElementById('time').innerHTML = time + suffix;
+    document.getElementById('date').textContent = now.toLocaleDateString(undefined, {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    });
+  }
+
+  render();
+  setInterval(render, 250);
+</script>
+</body>
+</html>

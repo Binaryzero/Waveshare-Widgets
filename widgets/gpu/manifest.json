@@ -1,0 +1,14 @@
+{
+  "id": "ws.stock.gpu",
+  "name": "GPU Monitor",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "GPU load ring with temperature, clock and VRAM readouts.",
+  "min_api_version": 1,
+  "supported_slots": ["quarter", "half"],
+  "properties": [
+    { "name": "accentColor", "label": "Accent Color", "type": "color", "default": "#76ff7a" },
+    { "name": "loadSensorId", "label": "Load Sensor", "type": "sensor", "sensor_type": "Load", "default": "" },
+    { "name": "tempSensorId", "label": "Temperature Sensor", "type": "sensor", "sensor_type": "Temperature", "default": "" }
+  ]
+}

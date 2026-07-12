@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CPU Monitor</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #0b0e14;
+    color: #e8ecf2;
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6%;
+    user-select: none;
+  }
+  .ring { position: relative; height: 72%; aspect-ratio: 1; }
+  .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .ring .track { fill: none; stroke: #1c2331; stroke-width: 9; }
+  .ring .value { fill: none; stroke: var(--accent, #00d4ff); stroke-width: 9; stroke-linecap: round; transition: stroke-dashoffset 0.6s ease; }
+  .ring .center {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .ring .center .big { font-size: clamp(20px, 9vh, 44px); font-weight: 600; line-height: 1; }
+  .ring .center .cap { font-size: clamp(9px, 3vh, 13px); color: #7d8697; letter-spacing: 0.14em; margin-top: 4px; }
+  .stats { display: flex; flex-direction: column; gap: 8%; }
+  .stat .label { font-size: clamp(9px, 3vh, 13px); color: #7d8697; letter-spacing: 0.1em; text-transform: uppercase; }
+  .stat .val { font-size: clamp(16px, 7vh, 34px); font-weight: 600; }
+  .stat .val small { font-size: 55%; color: #7d8697; font-weight: 400; }
+  .hint { font-size: clamp(8px, 2.4vh, 11px); color: #545d6e; max-width: 180px; }
+</style>
+</head>
+<body>
+  <div class="ring">
+    <svg viewBox="0 0 100 100">
+      <circle class="track" cx="50" cy="50" r="44"></circle>
+      <circle class="value" id="ringValue" cx="50" cy="50" r="44"></circle>
+    </svg>
+    <div class="center">
+      <div class="big" id="load">--</div>
+      <div class="cap">CPU LOAD</div>
+    </div>
+  </div>
+  <div class="stats">
+    <div class="stat">
+      <div class="label">Temp</div>
+      <div class="val" id="temp">--<small> °C</small></div>
+      <div class="hint" id="tempHint" hidden>Run the app as administrator to unlock CPU temperature.</div>
+    </div>
+    <div class="stat">
+      <div class="label">Clock</div>
+      <div class="val" id="clock">--<small> MHz</small></div>
+    </div>
+    <div class="stat">
+      <div class="label">Power</div>
+      <div class="val" id="power">--<small> W</small></div>
+    </div>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const CIRCUMFERENCE = 2 * Math.PI * 44;
+  const ring = document.getElementById('ringValue');
+  ring.style.strokeDasharray = String(CIRCUMFERENCE);
+  ring.style.strokeDashoffset = String(CIRCUMFERENCE);
+
+  WW.onInit((state) => {
+    document.body.style.setProperty('--accent', state.settings.accentColor || '#00d4ff');
+  });
+
+  function pick(settingId, opts) {
+    return (settingId && WW.sensorById(settingId)) || WW.findSensor(opts);
+  }
+
+  WW.onSensors(() => {
+    const s = WW.settings;
+    const load = pick(s.loadSensorId, {
+      type: 'Load', deviceTypeIncludes: ['cpu'], preferredNames: ['CPU Total'],
+    }) || WW.sensorById('sys:cpu:load');
+    const temp = pick(s.tempSensorId, {
+      type: 'Temperature', deviceTypeIncludes: ['cpu'],
+      preferredNames: ['Core (Tctl/Tdie)', 'CPU Package', 'Core Average', 'Core Max'],
+    });
+    const clock = WW.findSensor({
+      type: 'Clock', deviceTypeIncludes: ['cpu'], nameIncludes: ['core #1', 'core'],
+    });
+    const power = WW.findSensor({
+      type: 'Power', deviceTypeIncludes: ['cpu'], preferredNames: ['CPU Package', 'Package'],
+    });
+
+    const loadValue = load && load.value != null ? Math.min(100, load.value) : null;
+    document.getElementById('load').textContent = loadValue == null ? '--' : Math.round(loadValue) + '%';
+    ring.style.strokeDashoffset = String(CIRCUMFERENCE * (1 - (loadValue || 0) / 100));
+
+    setStat('temp', temp, 0, ' °C');
+    setStat('clock', clock, 0, ' MHz');
+    setStat('power', power, 1, ' W');
+    document.getElementById('tempHint').hidden = !!temp || (WW.status && WW.status.elevated);
+  });
+
+  function setStat(id, sensor, decimals, unit) {
+    const el = document.getElementById(id);
+    const value = sensor && sensor.value != null ? sensor.value.toFixed(decimals) : '--';
+    el.innerHTML = value + '<small>' + unit + '</small>';
+  }
+</script>
+</body>
+</html>

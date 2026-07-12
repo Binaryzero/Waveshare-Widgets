@@ -1,0 +1,93 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  color: #e8ecf2;
+  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: pan-x;
+}
+
+/* Horizontally swipeable pages (iCUE Nexus model) */
+#pages {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+#pages::-webkit-scrollbar { display: none; }
+
+.page {
+  flex: 0 0 100%;
+  height: 100%;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  display: flex;
+}
+
+/* Slot sizes for the 1280x400 canvas */
+.slot          { height: 100%; position: relative; }
+.slot.quarter  { flex: 0 0 25%; }
+.slot.half     { flex: 0 0 50%; }
+.slot.full     { flex: 0 0 100%; }
+
+.slot > iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: transparent;
+}
+
+.slot .error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #7d8697;
+  font-size: 14px;
+  text-align: center;
+  padding: 12px;
+}
+
+/* Page indicator dots */
+#dots {
+  position: fixed;
+  left: 50%;
+  bottom: 6px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  opacity: 0.85;
+  transition: opacity 0.6s;
+  pointer-events: none;
+}
+#dots.idle { opacity: 0; }
+#dots span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.28);
+}
+#dots span.active { background: rgba(255, 255, 255, 0.9); }
+
+#empty {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+}
+#empty h1 { font-size: 28px; font-weight: 600; color: #00d4ff; }
+#empty p  { font-size: 15px; color: #7d8697; max-width: 70%; }

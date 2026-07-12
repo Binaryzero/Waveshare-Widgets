@@ -1,0 +1,12 @@
+{
+  "id": "ws.stock.media",
+  "name": "Now Playing",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Now-playing media with album art and touch transport controls.",
+  "min_api_version": 1,
+  "supported_slots": ["half", "full"],
+  "properties": [
+    { "name": "accentColor", "label": "Accent Color", "type": "color", "default": "#00d4ff" }
+  ]
+}

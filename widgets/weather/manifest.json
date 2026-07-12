@@ -1,0 +1,16 @@
+{
+  "id": "ws.stock.weather",
+  "name": "Weather",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Current conditions and daily range from Open-Meteo (no API key required).",
+  "min_api_version": 1,
+  "supported_slots": ["quarter", "half"],
+  "properties": [
+    { "name": "latitude", "label": "Latitude", "type": "number", "default": 40.71 },
+    { "name": "longitude", "label": "Longitude", "type": "number", "default": -74.01 },
+    { "name": "place", "label": "Location Label", "type": "text", "default": "New York" },
+    { "name": "units", "label": "Units", "type": "select", "options": ["celsius", "fahrenheit"], "default": "fahrenheit" },
+    { "name": "accentColor", "label": "Accent Color", "type": "color", "default": "#ffd166" }
+  ]
+}

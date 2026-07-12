@@ -1,0 +1,27 @@
+name: build
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish
+        run: dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained false -o publish
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WaveshareWidgets-win-x64
+          path: publish/
+          if-no-files-found: error
