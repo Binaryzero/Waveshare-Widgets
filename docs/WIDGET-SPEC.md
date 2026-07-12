@@ -52,7 +52,10 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   the widget looks good in. Design fluidly; the iframe fills the slot.
 - `properties` — user-configurable settings. The host merges `default`s with the
   per-instance `settings` from `layout.json` and injects the result. Types: `text`,
-  `number`, `slider`, `color`, `select`, `sensor` (a sensor id string).
+  `number`, `slider`, `color`, `select`, `sensor` (a sensor id string), and `location`
+  (rendered as a city-search picker; the value is either a raw string the widget should
+  best-match itself, or a picked `{label, latitude, longitude}` object — handle both,
+  like the stock weather widget).
 
 ## The widget API (`window.WW`)
 

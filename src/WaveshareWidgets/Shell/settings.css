@@ -129,6 +129,9 @@ main { flex: 1; display: flex; min-height: 0; }
 .props .muted { color: var(--muted); font-size: 12px; }
 .props input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); justify-self: start; }
 
+.location-picker { display: flex; flex-direction: column; gap: 6px; max-width: 420px; }
+.location-picker input, .location-picker select { width: 100%; }
+
 .factory { display: flex; flex-direction: column; gap: 6px; max-width: 480px; }
 .factory-row { display: flex; align-items: center; gap: 8px; }
 .factory-row select { flex: 1; min-width: 0; }

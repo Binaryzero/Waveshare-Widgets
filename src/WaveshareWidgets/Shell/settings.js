@@ -273,6 +273,72 @@
         note.textContent = 'Background media is not supported yet.';
         return note;
       }
+      case 'location': { // city search: disambiguates duplicate place names (Lewisville TX vs NC…)
+        const wrap = document.createElement('div');
+        wrap.className = 'location-picker';
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Search city…';
+        const results = document.createElement('select');
+        results.hidden = true;
+        const chosen = document.createElement('span');
+        chosen.className = 'muted';
+
+        let value = current;
+        let found = [];
+        let searchTimer = null;
+
+        const describe = () => {
+          if (value && typeof value === 'object' && value.label) chosen.textContent = 'Selected: ' + value.label;
+          else if (typeof value === 'string' && value.trim()) chosen.textContent = 'Will use the best match for "' + value.trim() + '" — pick from the list to be exact.';
+          else chosen.textContent = 'Type a city name and pick a match.';
+        };
+        input.value = value && typeof value === 'object' ? (value.label || '') : (typeof value === 'string' ? value : '');
+        describe();
+
+        input.addEventListener('input', () => {
+          clearTimeout(searchTimer);
+          const query = input.value.trim();
+          value = query;         // fallback: raw string, widget resolves best match
+          set(value);
+          describe();
+          if (query.length < 2) { results.hidden = true; return; }
+          searchTimer = setTimeout(async () => {
+            try {
+              const response = await fetch(
+                'https://geocoding-api.open-meteo.com/v1/search?count=8&language=en&format=json&name=' +
+                encodeURIComponent(query));
+              const data = await response.json();
+              found = data.results || [];
+              results.textContent = '';
+              results.add(new Option(found.length ? 'Pick a match…' : 'No matches found', ''));
+              found.forEach((hit, i) => {
+                const label = [hit.name, hit.admin1, hit.country].filter(Boolean).join(', ');
+                const pop = hit.population ? '  ·  pop ' + hit.population.toLocaleString() : '';
+                results.add(new Option(label + pop, String(i)));
+              });
+              results.hidden = false;
+            } catch (e) {
+              chosen.textContent = 'Search unavailable (offline?) — the typed name will be matched at runtime.';
+            }
+          }, 400);
+        });
+
+        results.addEventListener('change', () => {
+          const hit = found[Number(results.value)];
+          if (!hit) return;
+          const label = [hit.name, hit.admin1, hit.country].filter(Boolean).join(', ');
+          value = { label, latitude: hit.latitude, longitude: hit.longitude };
+          set(value);
+          input.value = label;
+          results.hidden = true;
+          describe();
+        });
+
+        wrap.append(input, results, chosen);
+        return wrap;
+      }
       case 'color': {
         const input = document.createElement('input');
         input.type = 'color';

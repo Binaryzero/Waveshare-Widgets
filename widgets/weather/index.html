@@ -88,11 +88,22 @@
     return place;
   }
 
+  // The location setting is either a picked place object {label, latitude, longitude}
+  // (chosen from the Settings search dropdown — unambiguous) or a plain string, in
+  // which case the geocoder's best match (largest/most relevant) is used.
+  async function resolvePlace(settings) {
+    const loc = settings.location;
+    if (loc && typeof loc === 'object' && loc.latitude != null && loc.longitude != null) {
+      return { lat: loc.latitude, lon: loc.longitude, label: loc.label || '' };
+    }
+    const query = (typeof loc === 'string' ? loc : '').trim() || 'New York';
+    return geocode(query);
+  }
+
   async function refresh() {
     const s = WW.settings;
     try {
-      const query = (s.location || '').trim() || 'New York';
-      const place = await geocode(query);
+      const place = await resolvePlace(s);
       document.getElementById('place').textContent = place.label;
 
       const url = 'https://api.open-meteo.com/v1/forecast' +

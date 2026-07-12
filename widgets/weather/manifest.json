@@ -2,12 +2,12 @@
   "id": "ws.stock.weather",
   "name": "Weather",
   "author": "Waveshare Widgets",
-  "version": "1.1.0",
-  "description": "Current conditions from Open-Meteo. Just type a city name — no coordinates, no API key.",
+  "version": "1.2.0",
+  "description": "Current conditions from Open-Meteo. Search your city by name — no coordinates, no API key.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half"],
   "properties": [
-    { "name": "location", "label": "Location (city name)", "type": "text", "default": "New York" },
+    { "name": "location", "label": "Location", "type": "location", "default": "New York" },
     { "name": "units", "label": "Units", "type": "select", "options": ["celsius", "fahrenheit"], "default": "fahrenheit" },
     { "name": "accentColor", "label": "Accent Color", "type": "color", "default": "#ffd166" }
   ]
