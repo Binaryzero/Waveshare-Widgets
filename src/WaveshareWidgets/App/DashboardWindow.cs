@@ -83,6 +83,14 @@ public sealed class DashboardWindow : Form
 
         core.WebMessageReceived += OnWebMessageReceived;
 
+        // Renderer/browser process failures (most likely under cold-start pressure)
+        // would otherwise leave a dead or half-initialized dashboard behind.
+        core.ProcessFailed += (_, e) =>
+        {
+            Log.Warn($"WebView2 process failed ({e.ProcessFailedKind}); reloading dashboard");
+            try { BeginInvoke(ReloadDashboard); } catch (ObjectDisposedException) { }
+        };
+
         // Inject the widget API + iCUE compatibility shim into every widget iframe, so
         // packages (including .icuewidget imports) work without including any script tag.
         var shim = File.ReadAllText(Path.Combine(AppPaths.ShellDir, "widget-api.js")) + "\n" +

@@ -46,8 +46,13 @@
       postToHost({ type: 'log', message: String(msg.message).slice(0, 2000) });
     } else if (msg.type === 'ww-ready') {
       const slot = slots.find((s) => s.frame.contentWindow === ev.source);
-      if (slot && !slot.initialized) {
+      if (slot) {
+        // Always answer, even for an already-initialized slot: the iframe may have
+        // crashed and reloaded (common under cold-start resource pressure), and the
+        // fresh document would otherwise run on its built-in defaults forever.
         slot.initialized = true;
+        const stale = slot.el.querySelector('.error');
+        if (stale) stale.remove();
         sendToSlot(slot, initMessage(slot));
       }
     } else if (msg.type === 'ww-open-url' && typeof msg.url === 'string') {
@@ -119,9 +124,13 @@
           // virtual host, so widgets cannot reach the shell's or each other's origin.
           frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
           // stable per-slot tag: backs the iCUE `uniqueId` global (per-instance storage)
-          frame.src = widget.url + '#ww-slot=p' + pageIdx + 's' + (slotIdx++);
+          const slotHash = '#ww-slot=p' + pageIdx + 's' + (slotIdx++);
+          frame.src = widget.url + slotHash;
           slotEl.appendChild(frame);
-          slots.push({ frame, el: slotEl, settings: mergedSettings(widget, slotDef), initialized: false, retries: 0 });
+          slots.push({
+            frame, el: slotEl, url: widget.url, hash: slotHash,
+            settings: mergedSettings(widget, slotDef), initialized: false, retries: 0,
+          });
           slotCount++;
         }
         pageEl.appendChild(slotEl);
@@ -152,7 +161,9 @@
         if (slot.retries < 2) {
           slot.retries++;
           retrying = true;
-          try { slot.frame.src = slot.frame.src; } catch (e) { /* frame gone */ }
+          // A changed query forces a real navigation (re-assigning a same-URL-with-
+          // fragment src is treated as a fragment jump and does not reload).
+          try { slot.frame.src = slot.url + '?wwr=' + slot.retries + slot.hash; } catch (e) { /* frame gone */ }
           postToHost({ type: 'log', message: 'watchdog: reloading slow widget (attempt ' + slot.retries + ')' });
         } else if (!slot.el.querySelector('.error')) {
           const err = document.createElement('div');
