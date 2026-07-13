@@ -1,0 +1,13 @@
+{
+  "id": "ws.stock.iframe",
+  "name": "Embed URL",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Embeds a web page — dashboards, localhost bridges like StreamDeckEmbeded's Virtual Stream Deck UI (http://localhost:28199), or anything else that allows framing.",
+  "min_api_version": 1,
+  "supported_slots": ["quarter", "half", "full"],
+  "properties": [
+    { "name": "url", "label": "URL", "type": "text", "default": "" },
+    { "name": "zoom", "label": "Zoom", "type": "slider", "min": 0.5, "max": 2, "step": 0.05, "default": 1 }
+  ]
+}

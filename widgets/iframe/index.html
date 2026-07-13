@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Embed URL</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0e14; }
+  #frame {
+    border: 0;
+    display: block;
+    transform-origin: top left;
+    background: transparent;
+  }
+  #empty {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1.5vh;
+    color: #545d6e;
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    font-size: clamp(13px, 5vh, 20px);
+    text-align: center;
+    padding: 16px;
+  }
+  #empty small { font-size: 70%; color: #3c4454; }
+  #empty[hidden] { display: none; }
+</style>
+</head>
+<body>
+  <iframe id="frame" allow="autoplay; fullscreen"></iframe>
+  <div id="empty">
+    <span>No URL configured</span>
+    <small>Set one in Settings — e.g. http://localhost:28199 for StreamDeckEmbeded's Virtual Stream Deck.
+    Sites that forbid framing (X-Frame-Options) will show blank.</small>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  WW.onInit((state) => {
+    const url = String(state.settings.url || '').trim();
+    const zoom = Number(state.settings.zoom) || 1;
+    const frame = document.getElementById('frame');
+    const empty = document.getElementById('empty');
+
+    if (!/^https?:\/\//i.test(url)) {
+      empty.hidden = false;
+      frame.style.display = 'none';
+      return;
+    }
+
+    empty.hidden = true;
+    frame.style.display = 'block';
+    // Zoom by inverse-scaling: render larger, scale down (or vice versa).
+    frame.style.width = (100 / zoom) + 'vw';
+    frame.style.height = (100 / zoom) + 'vh';
+    frame.style.transform = 'scale(' + zoom + ')';
+    if (frame.src !== url) frame.src = url;
+  });
+</script>
+</body>
+</html>
