@@ -29,6 +29,8 @@
         fetchRoutes.delete(msg.data.id);
         try { target.postMessage({ type: 'ww-fetch-result', ...msg.data }, '*'); } catch (e) { /* frame gone */ }
       }
+    } else if (msg.type === 'sd-profile-result') {
+      broadcast({ type: 'ww-sd-profile', profile: msg.data });
     }
   });
 
@@ -59,6 +61,10 @@
       postToHost({ type: 'open-url', url: msg.url });
     } else if (msg.type === 'ww-action' && typeof msg.kind === 'string') {
       postToHost({ type: 'action', kind: msg.kind, target: String(msg.target || '') });
+    } else if (msg.type === 'ww-sd-profile') {
+      postToHost({ type: 'sd-profile' });
+    } else if (msg.type === 'ww-sd-click') {
+      postToHost({ type: 'sd-click', row: msg.row | 0, col: msg.col | 0, rows: msg.rows | 0, cols: msg.cols | 0 });
     } else if (msg.type === 'ww-fetch' && msg.id) {
       fetchRoutes.set(msg.id, ev.source);
       setTimeout(() => fetchRoutes.delete(msg.id), 30000);

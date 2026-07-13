@@ -7,7 +7,7 @@
   'use strict';
   if (window.WW) return; // already installed (injected + script tag)
 
-  const listeners = { init: [], sensors: [], media: [] };
+  const listeners = { init: [], sensors: [], media: [], streamdeck: [] };
   const state = { settings: {}, sensors: [], media: null, status: null, ready: false };
 
   function emit(kind, payload) {
@@ -33,6 +33,8 @@
     } else if (msg.type === 'ww-media') {
       state.media = msg.media || null;
       emit('media', state.media);
+    } else if (msg.type === 'ww-sd-profile') {
+      emit('streamdeck', msg.profile || { available: false });
     }
   });
 
@@ -94,6 +96,15 @@
 
     /** Run a host action: kind 'launch'|'url'|'hotkey'|'media', target the argument. */
     action(kind, target) { parent.postMessage({ type: 'ww-action', kind, target: String(target == null ? '' : target) }, '*'); },
+
+    /** Request the Virtual Stream Deck profile; delivered via onStreamDeck(cb). */
+    requestStreamDeck() { parent.postMessage({ type: 'ww-sd-profile' }, '*'); },
+    /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}]}. */
+    onStreamDeck(cb) { listeners.streamdeck.push(cb); },
+    /** Trigger a Stream Deck button by its grid cell. */
+    streamDeckClick(row, col, rows, cols) {
+      parent.postMessage({ type: 'ww-sd-click', row, col, rows, cols }, '*');
+    },
 
     /** Writes to the host's app.log — useful for debugging on the panel. */
     log(message) { parent.postMessage({ type: 'ww-log', message: String(message) }, '*'); },

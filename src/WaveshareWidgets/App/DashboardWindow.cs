@@ -29,6 +29,7 @@ public sealed class DashboardWindow : Form
     private readonly HashSet<string> _mappedHosts = [];
     private Rectangle _targetBounds;
     private BrowserFetcher? _browserFetcher;
+    private StreamDeckBridge? _streamDeck;
     private bool _shellReady;
 
     public DashboardWindow(AppConfig config, SensorHub hub, WidgetLibrary library)
@@ -193,6 +194,19 @@ public sealed class DashboardWindow : Form
                         a => _ = _hub.ControlMediaAsync(a));
                     break;
 
+                case "sd-profile":
+                    PostToShell("sd-profile-result", BuildStreamDeckProfile());
+                    break;
+
+                case "sd-click":
+                    _streamDeck ??= new StreamDeckBridge();
+                    _streamDeck.ClickCell(
+                        message["row"]?.GetValue<int>() ?? 0,
+                        message["col"]?.GetValue<int>() ?? 0,
+                        message["rows"]?.GetValue<int>() ?? 3,
+                        message["cols"]?.GetValue<int>() ?? 5);
+                    break;
+
                 case "fetch":
                     _ = HandleProxyFetchAsync(message);
                     break;
@@ -353,6 +367,34 @@ public sealed class DashboardWindow : Form
             ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
             ["media"] = JsonSerializer.SerializeToNode(_hub.LatestMedia, BridgeJson),
             ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated, ["apiVersion"] = 1 },
+        };
+    }
+
+    private JsonObject BuildStreamDeckProfile()
+    {
+        _streamDeck ??= new StreamDeckBridge();
+        var profile = _streamDeck.ReadProfile();
+        if (profile is null)
+            return new JsonObject { ["available"] = false };
+
+        var buttons = new JsonArray();
+        foreach (var b in profile.Buttons)
+        {
+            buttons.Add(new JsonObject
+            {
+                ["row"] = b.Row,
+                ["col"] = b.Col,
+                ["title"] = b.Title,
+                ["image"] = b.Image,
+            });
+        }
+        return new JsonObject
+        {
+            ["available"] = true,
+            ["name"] = profile.Name,
+            ["rows"] = profile.Rows,
+            ["cols"] = profile.Cols,
+            ["buttons"] = buttons,
         };
     }
 

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Stream Deck</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #0b0e14;
+    color: #e8ecf2;
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #grid {
+    display: grid;
+    gap: 6px;
+    padding: 6px;
+    width: 100%;
+    height: 100%;
+  }
+  .key {
+    position: relative;
+    border-radius: 8px;
+    background: #05070b;
+    border: 1px solid #1c2331;
+    overflow: hidden;
+    cursor: pointer;
+    touch-action: manipulation;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    transition: transform 0.06s ease, box-shadow 0.12s ease;
+  }
+  .key:active { transform: scale(0.93); box-shadow: 0 0 0 2px #00d4ff inset; }
+  .key.empty { background: #0b0e14; border-color: #12161f; cursor: default; }
+  .key img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .key .title {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    font-size: clamp(8px, 2.6vh, 12px);
+    text-align: center;
+    padding: 2px 3px;
+    background: linear-gradient(transparent, rgba(0,0,0,0.75));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .key .fallback {
+    font-size: clamp(9px, 3.2vh, 14px);
+    color: #aeb7c4;
+    text-align: center;
+    padding: 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 92%;
+  }
+  #message {
+    position: fixed; inset: 0;
+    display: none; flex-direction: column; gap: 1.4vh;
+    align-items: center; justify-content: center;
+    text-align: center; padding: 18px;
+    color: #7d8697; font-size: clamp(12px, 4.5vh, 18px);
+    background: #0b0e14;
+  }
+  #message small { color: #545d6e; font-size: 80%; max-width: 90%; }
+</style>
+</head>
+<body>
+  <div id="grid"></div>
+  <div id="message"></div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  let overrides = { rows: 0, cols: 0 };
+
+  WW.onInit((state) => {
+    overrides.rows = Number(state.settings.rowsOverride) || 0;
+    overrides.cols = Number(state.settings.colsOverride) || 0;
+    WW.requestStreamDeck();
+  });
+
+  WW.onStreamDeck(render);
+
+  // Poll the profile periodically so button icon/title changes and page switches
+  // in Stream Deck appear on the panel.
+  setInterval(() => WW.requestStreamDeck(), 4000);
+
+  function showMessage(title, detail) {
+    const grid = document.getElementById('grid');
+    const msg = document.getElementById('message');
+    grid.textContent = '';
+    msg.style.display = 'flex';
+    msg.innerHTML = '';
+    const h = document.createElement('div');
+    h.textContent = title;
+    msg.appendChild(h);
+    if (detail) {
+      const s = document.createElement('small');
+      s.textContent = detail;
+      msg.appendChild(s);
+    }
+  }
+
+  function render(profile) {
+    if (!profile || !profile.available) {
+      showMessage('No Virtual Stream Deck found',
+        'Open Elgato Stream Deck and create a Virtual Stream Deck. Its buttons — and their real plugin actions — appear here.');
+      return;
+    }
+    const buttons = profile.buttons || [];
+    if (buttons.length === 0) {
+      showMessage('Virtual Stream Deck is empty', 'Add some buttons to it in Stream Deck.');
+      return;
+    }
+
+    document.getElementById('message').style.display = 'none';
+    const rows = overrides.rows || profile.rows || 3;
+    const cols = overrides.cols || profile.cols || 5;
+
+    const grid = document.getElementById('grid');
+    grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+    grid.style.gridTemplateRows = 'repeat(' + rows + ', 1fr)';
+    grid.textContent = '';
+
+    // Index buttons by cell for O(1) placement.
+    const byCell = new Map();
+    for (const b of buttons) byCell.set(b.row + ',' + b.col, b);
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const btn = byCell.get(r + ',' + c);
+        const cell = document.createElement('div');
+        if (!btn) {
+          cell.className = 'key empty';
+          grid.appendChild(cell);
+          continue;
+        }
+        cell.className = 'key';
+        if (btn.image) {
+          const img = document.createElement('img');
+          img.src = btn.image;
+          cell.appendChild(img);
+          if (btn.title) {
+            const t = document.createElement('div');
+            t.className = 'title';
+            t.textContent = btn.title;
+            cell.appendChild(t);
+          }
+        } else {
+          const f = document.createElement('div');
+          f.className = 'fallback';
+          f.textContent = btn.title || '●';
+          cell.appendChild(f);
+        }
+        cell.addEventListener('click', () => {
+          WW.streamDeckClick(btn.row, btn.col, rows, cols);
+          WW.log('streamdeck: click ' + btn.row + ',' + btn.col + ' (' + (btn.title || '') + ')');
+        });
+        grid.appendChild(cell);
+      }
+    }
+  }
+</script>
+</body>
+</html>
