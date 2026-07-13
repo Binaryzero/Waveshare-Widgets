@@ -36,6 +36,21 @@
   }
   .key:active { transform: scale(0.93); box-shadow: 0 0 0 2px #00d4ff inset; }
   .key.empty { background: #0b0e14; border-color: #12161f; cursor: default; }
+  /* When empty keys are hidden they still occupy the grid (so used-key positions and
+     click coordinates stay correct) but render invisibly. */
+  .key.empty.hidden { background: transparent; border-color: transparent; }
+  #picker {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    display: flex; gap: 6px; padding: 6px; justify-content: center;
+    background: rgba(5,7,11,0.85); flex-wrap: wrap;
+  }
+  #picker button {
+    font: inherit; font-size: clamp(9px, 3vh, 13px);
+    color: #e8ecf2; background: #171c28; border: 1px solid #232a3a;
+    border-radius: 6px; padding: 4px 10px; cursor: pointer;
+  }
+  #picker button.active { border-color: #00d4ff; color: #00d4ff; }
+  #picker[hidden] { display: none; }
   .key img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .key .title {
     position: absolute; left: 0; right: 0; bottom: 0;
@@ -66,24 +81,33 @@
 </head>
 <body>
   <div id="grid"></div>
+  <div id="picker" hidden></div>
   <div id="message"></div>
 
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
   'use strict';
-  let overrides = { rows: 0, cols: 0 };
+  const cfg = { rows: 0, cols: 0, showEmpty: true, hideWindow: true, profileName: '' };
 
   WW.onInit((state) => {
-    overrides.rows = Number(state.settings.rowsOverride) || 0;
-    overrides.cols = Number(state.settings.colsOverride) || 0;
-    WW.requestStreamDeck();
+    const s = state.settings;
+    cfg.rows = Number(s.rowsOverride) || 0;
+    cfg.cols = Number(s.colsOverride) || 0;
+    cfg.showEmpty = s.showEmpty !== 'off';
+    cfg.hideWindow = s.hideWindow !== 'off';
+    cfg.profileName = s.profileName || '';
+    poll();
   });
 
   WW.onStreamDeck(render);
 
-  // Poll the profile periodically so button icon/title changes and page switches
-  // in Stream Deck appear on the panel.
-  setInterval(() => WW.requestStreamDeck(), 4000);
+  function poll() {
+    WW.requestStreamDeck({ profileName: cfg.profileName, hideWindow: cfg.hideWindow });
+  }
+
+  // Poll periodically so button icon/title changes and page switches in Stream Deck
+  // appear on the panel.
+  setInterval(poll, 4000);
 
   function showMessage(title, detail) {
     const grid = document.getElementById('grid');
@@ -101,12 +125,31 @@
     }
   }
 
-  function render(profile) {
-    if (!profile || !profile.available) {
-      showMessage('No Virtual Stream Deck found',
-        'Open Elgato Stream Deck and create a Virtual Stream Deck. Its buttons — and their real plugin actions — appear here.');
+  function renderPicker(profiles) {
+    const picker = document.getElementById('picker');
+    if (!profiles || profiles.length <= 1) {
+      picker.hidden = true;
       return;
     }
+    picker.hidden = false;
+    picker.textContent = '';
+    for (const name of profiles) {
+      const b = document.createElement('button');
+      b.textContent = name;
+      if (name === cfg.profileName || (!cfg.profileName && name === profiles[0])) b.className = 'active';
+      b.addEventListener('click', () => { cfg.profileName = name; poll(); });
+      picker.appendChild(b);
+    }
+  }
+
+  function render(profile) {
+    if (!profile || !profile.available) {
+      renderPicker(null);
+      showMessage('No Virtual Stream Deck found',
+        'Open Elgato Stream Deck and create a Virtual Stream Deck (turn OFF "Hide unused keys"). Its buttons — and their real plugin actions — appear here.');
+      return;
+    }
+    renderPicker(profile.profiles);
     const buttons = profile.buttons || [];
     if (buttons.length === 0) {
       showMessage('Virtual Stream Deck is empty', 'Add some buttons to it in Stream Deck.');
@@ -114,8 +157,8 @@
     }
 
     document.getElementById('message').style.display = 'none';
-    const rows = overrides.rows || profile.rows || 3;
-    const cols = overrides.cols || profile.cols || 5;
+    const rows = cfg.rows || profile.rows || 3;
+    const cols = cfg.cols || profile.cols || 5;
 
     const grid = document.getElementById('grid');
     grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
@@ -131,7 +174,9 @@
         const btn = byCell.get(r + ',' + c);
         const cell = document.createElement('div');
         if (!btn) {
-          cell.className = 'key empty';
+          // Empty cells always occupy the grid (keeps positions and click coords right);
+          // the showEmpty toggle only controls whether they're visible.
+          cell.className = 'key empty' + (cfg.showEmpty ? '' : ' hidden');
           grid.appendChild(cell);
           continue;
         }

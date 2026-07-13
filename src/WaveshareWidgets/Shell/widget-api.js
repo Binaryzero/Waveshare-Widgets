@@ -97,8 +97,12 @@
     /** Run a host action: kind 'launch'|'url'|'hotkey'|'media', target the argument. */
     action(kind, target) { parent.postMessage({ type: 'ww-action', kind, target: String(target == null ? '' : target) }, '*'); },
 
-    /** Request the Virtual Stream Deck profile; delivered via onStreamDeck(cb). */
-    requestStreamDeck() { parent.postMessage({ type: 'ww-sd-profile' }, '*'); },
+    /** Request the Virtual Stream Deck profile; delivered via onStreamDeck(cb).
+     * opts: { profileName, hideWindow }. */
+    requestStreamDeck(opts) {
+      opts = opts || {};
+      parent.postMessage({ type: 'ww-sd-profile', profileName: opts.profileName || '', hideWindow: opts.hideWindow !== false }, '*');
+    },
     /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}]}. */
     onStreamDeck(cb) { listeners.streamdeck.push(cb); },
     /** Trigger a Stream Deck button by its grid cell. */

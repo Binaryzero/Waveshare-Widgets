@@ -15,36 +15,64 @@ namespace WaveshareWidgets.App;
 public sealed class StreamDeckBridge
 {
     public sealed record DeckButton(int Row, int Col, string Title, string Image);
-    public sealed record DeckProfile(string Name, int Rows, int Cols, IReadOnlyList<DeckButton> Buttons);
+    public sealed record DeckProfile(string Name, int Rows, int Cols, IReadOnlyList<DeckButton> Buttons,
+        IReadOnlyList<string> AvailableProfiles);
 
     private static string ProfilesDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), // Roaming
         "Elgato", "StreamDeck", "ProfilesV3");
 
-    /// <summary>Reads the Virtual Stream Deck profile, or null if none is found.</summary>
-    public DeckProfile? ReadProfile()
+    /// <summary>All Virtual Stream Deck profiles: (display name, profile directory).</summary>
+    private List<(string Name, string Dir)> ListVsdProfiles()
+    {
+        var result = new List<(string, string)>();
+        if (!Directory.Exists(ProfilesDir))
+            return result;
+
+        foreach (var profileDir in Directory.GetDirectories(ProfilesDir, "*.sdProfile"))
+        {
+            var manifestPath = Path.Combine(profileDir, "manifest.json");
+            if (!File.Exists(manifestPath))
+                continue;
+            try
+            {
+                using var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
+                var root = manifest.RootElement;
+                if (root.TryGetProperty("Device", out var device) &&
+                    device.TryGetProperty("Model", out var model) &&
+                    model.GetString() == "UI Stream Deck")
+                {
+                    var name = root.TryGetProperty("Name", out var n) ? n.GetString() ?? "" : "";
+                    if (string.IsNullOrWhiteSpace(name))
+                        name = Path.GetFileNameWithoutExtension(profileDir);
+                    result.Add((name, profileDir));
+                }
+            }
+            catch { /* skip unreadable */ }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Reads a Virtual Stream Deck profile. When <paramref name="preferredName"/> is set,
+    /// picks the profile with that name; otherwise the first one. Returns null if none exist.
+    /// </summary>
+    public DeckProfile? ReadProfile(string? preferredName = null)
     {
         try
         {
-            if (!Directory.Exists(ProfilesDir))
+            var profiles = ListVsdProfiles();
+            if (profiles.Count == 0)
                 return null;
 
-            foreach (var profileDir in Directory.GetDirectories(ProfilesDir, "*.sdProfile"))
-            {
-                var manifestPath = Path.Combine(profileDir, "manifest.json");
-                if (!File.Exists(manifestPath))
-                    continue;
+            var chosen = profiles.FirstOrDefault(p =>
+                string.Equals(p.Name, preferredName, StringComparison.OrdinalIgnoreCase));
+            if (chosen.Dir is null)
+                chosen = profiles[0];
 
-                using var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
-                var root = manifest.RootElement;
-                // The Virtual Stream Deck identifies itself with this device model.
-                if (!(root.TryGetProperty("Device", out var device) &&
-                      device.TryGetProperty("Model", out var model) &&
-                      model.GetString() == "UI Stream Deck"))
-                    continue;
-
-                return ParseProfile(profileDir, root);
-            }
+            using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(chosen.Dir, "manifest.json")));
+            var available = profiles.Select(p => p.Name).ToList();
+            return ParseProfile(chosen.Dir, manifest.RootElement, available);
         }
         catch (Exception ex)
         {
@@ -53,7 +81,7 @@ public sealed class StreamDeckBridge
         return null;
     }
 
-    private static DeckProfile ParseProfile(string profileDir, JsonElement manifest)
+    private static DeckProfile ParseProfile(string profileDir, JsonElement manifest, IReadOnlyList<string> available)
     {
         var name = manifest.TryGetProperty("Name", out var n) ? n.GetString() ?? "Stream Deck" : "Stream Deck";
         var buttons = new List<DeckButton>();
@@ -93,7 +121,7 @@ public sealed class StreamDeckBridge
         // Infer the grid from the highest visual coordinates present (overridable in the widget).
         var rows = buttons.Count > 0 ? buttons.Max(b => b.Row) + 1 : 3;
         var cols = buttons.Count > 0 ? buttons.Max(b => b.Col) + 1 : 5;
-        return new DeckProfile(name, rows, cols, buttons);
+        return new DeckProfile(name, rows, cols, buttons, available);
     }
 
     private static void ParsePage(string pageDir, JsonElement pageManifest, List<DeckButton> buttons)
@@ -191,6 +219,30 @@ public sealed class StreamDeckBridge
         return true;
     }
 
+    /// <summary>
+    /// Moves the VSD overlay off-screen and drops its always-on-top flag so it stops
+    /// floating over the desktop while our widget drives it. The window stays "visible"
+    /// (so it's still found and clickable) but sits at -32000,-32000. Reversible: turning
+    /// this off restores it near the top-left of the primary monitor.
+    /// </summary>
+    public void HideVsdWindow(bool hide)
+    {
+        var vsd = FindVsdWindow();
+        if (vsd == IntPtr.Zero)
+            return;
+        try
+        {
+            if (hide)
+                SetWindowPos(vsd, HWND_NOTOPMOST, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+            else
+                SetWindowPos(vsd, HWND_TOP, 60, 60, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Stream Deck: failed to reposition VSD window: {ex.Message}");
+        }
+    }
+
     private static IntPtr FindVsdWindow()
     {
         var streamDeckPids = new HashSet<uint>();
@@ -227,6 +279,13 @@ public sealed class StreamDeckBridge
 
     private const uint WM_LBUTTONDOWN = 0x0201;
     private const uint WM_LBUTTONUP = 0x0202;
+    private static readonly IntPtr HWND_TOP = IntPtr.Zero;
+    private static readonly IntPtr HWND_NOTOPMOST = new(-2);
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOACTIVATE = 0x0010;
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left, Top, Right, Bottom; }

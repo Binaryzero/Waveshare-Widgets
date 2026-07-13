@@ -195,7 +195,9 @@ public sealed class DashboardWindow : Form
                     break;
 
                 case "sd-profile":
-                    PostToShell("sd-profile-result", BuildStreamDeckProfile());
+                    _streamDeck ??= new StreamDeckBridge();
+                    _streamDeck.HideVsdWindow(message["hideWindow"]?.GetValue<bool>() ?? true);
+                    PostToShell("sd-profile-result", BuildStreamDeckProfile(message["profileName"]?.GetValue<string>()));
                     break;
 
                 case "sd-click":
@@ -370,10 +372,10 @@ public sealed class DashboardWindow : Form
         };
     }
 
-    private JsonObject BuildStreamDeckProfile()
+    private JsonObject BuildStreamDeckProfile(string? preferredName)
     {
         _streamDeck ??= new StreamDeckBridge();
-        var profile = _streamDeck.ReadProfile();
+        var profile = _streamDeck.ReadProfile(preferredName);
         if (profile is null)
             return new JsonObject { ["available"] = false };
 
@@ -388,6 +390,10 @@ public sealed class DashboardWindow : Form
                 ["image"] = b.Image,
             });
         }
+        var available = new JsonArray();
+        foreach (var name in profile.AvailableProfiles)
+            available.Add(name);
+
         return new JsonObject
         {
             ["available"] = true,
@@ -395,6 +401,7 @@ public sealed class DashboardWindow : Form
             ["rows"] = profile.Rows,
             ["cols"] = profile.Cols,
             ["buttons"] = buttons,
+            ["profiles"] = available,
         };
     }
 
