@@ -46,9 +46,16 @@ public static partial class IcueManifestReader
             var type = attrs.GetValueOrDefault("data-type", "textfield");
             var options = ParseValueKeys(attrs.GetValueOrDefault("data-values"));
 
-            // tab-buttons and combobox are enumerations; render them as selects.
+            // Map iCUE control types onto our editors: enumerations become selects,
+            // the sensor picker maps to our native one, and search-combobox (whose
+            // options come from widget-shipped ES modules we don't execute) degrades
+            // to a plain text field.
             if (options is { Count: > 0 } && type is "tab-buttons" or "combobox")
                 type = "select";
+            else if (type == "sensors-combobox")
+                type = "sensor";
+            else if (type == "search-combobox")
+                type = "textfield";
 
             properties.Add(new WidgetProperty
             {
@@ -114,23 +121,35 @@ public static partial class IcueManifestReader
     [GeneratedRegex(@"'key'\s*:\s*'([^']*)'", RegexOptions.Singleline)]
     private static partial Regex ValueKeyPattern();
 
-    /// <summary>data-values is a JS-ish array like [{'key':'hot','value':tr('Hot')}, …];
-    /// the keys are what the widget expects in its settings.</summary>
+    [GeneratedRegex(@"'([^']*)'", RegexOptions.Singleline)]
+    private static partial Regex QuotedStringPattern();
+
+    /// <summary>data-values is a JS-ish array: either [{'key':'hot','value':tr('Hot')}, …]
+    /// (the keys are what the widget expects) or a simple ['a', 'b', 'c'] list.</summary>
     private static List<string>? ParseValueKeys(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
             return null;
         var keys = ValueKeyPattern().Matches(raw).Select(m => m.Groups[1].Value).ToList();
+        if (keys.Count == 0 && !raw.Contains('{'))
+            keys = QuotedStringPattern().Matches(raw).Select(m => m.Groups[1].Value)
+                .Where(v => v.Length > 0).ToList();
         return keys.Count > 0 ? keys : null;
     }
 
-    /// <summary>Labels usually look like tr('Text Color'); unwrap the translation call.</summary>
+    /// <summary>Labels are JS expressions: tr('Text Color'), a 'quoted literal', or
+    /// occasionally a bare string. Unwrap to the display text.</summary>
     private static string CleanLabel(string? label, string fallback)
     {
         if (string.IsNullOrWhiteSpace(label))
             return fallback;
-        var tr = TrLabelPattern().Match(label.Trim());
-        return tr.Success ? tr.Groups[1].Value : label.Trim();
+        var text = label.Trim();
+        var tr = TrLabelPattern().Match(text);
+        if (tr.Success)
+            return tr.Groups[1].Value;
+        if (text.Length >= 2 && text.StartsWith('\'') && text.EndsWith('\''))
+            return text[1..^1];
+        return text;
     }
 
     /// <summary>data-default holds a JS expression: 'string', true/false, a number, or an

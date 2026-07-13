@@ -1,42 +1,58 @@
-// iCUE widget compatibility shim. Injected (with widget-api.js) into every widget
-// iframe, it emulates the runtime surface iCUE widgets are written against:
+// iCUE widget compatibility shim (Widget API 1.4.0 surface). Injected (with
+// widget-api.js) into every widget iframe, it emulates the runtime surface iCUE
+// widgets are written against, per the official plugin references:
 //
-//   - window.plugins.Sensorsdataprovider: Qt-WebChannel-style async API. Request
-//     methods are called as method(requestId, ...args) and answer through the
-//     asyncResponse signal; sensorValueChanged/sensorUnitsChanged push live updates.
-//   - Settings are injected as global variables (matching the x-icue-property meta
-//     tags that IcueManifestReader parses into the Settings UI).
-//   - Lifecycle: pluginSensorsdataproviderEvents.onInitialized() then
-//     icueEvents.onICUEInitialized() once the DOM is ready and the first data arrived;
-//     icueEvents.onDataUpdated() when settings are re-delivered.
+//   - Injected globals BEFORE widget scripts run: property values (via the
+//     #ww-settings URL fragment), uniqueId (per-instance storage key), device
+//     ({deviceId}), the iCUE utility object, plugin objects on window.plugins,
+//     and plugin<Name>_initialized flags. iCUE_initialized flips true when the
+//     lifecycle events fire (the documented late-load path).
+//   - Plugins: Sensorsdataprovider (full contract: requestId/asyncResponse,
+//     change signals, default-sensor lookup, documented type/kind vocabulary),
+//     Mediadataprovider (song/artist + transport triggers), Linkprovider,
+//     plus Fpsdataprovider/Deviceactionprovider stubs that report no data so
+//     dependent widgets degrade instead of hanging.
+//   - Lifecycle: plugin<Name>Events.onInitialized() then icueEvents.onICUEInitialized()
+//     once DOM + first data + translations are ready; icueEvents.onDataUpdated() on
+//     settings re-delivery.
+//   - CORS relief: fetch falls back to a host-proxied request when the network
+//     layer (or a bot wall serving 403/429 with CORS headers) blocks it.
 (function () {
   'use strict';
   if (window.top === window || window.__wwIcue) return;
   window.__wwIcue = true;
 
-  // iCUE injects per-instance globals that widgets read at script-parse time —
-  // Doodle Pad does `const widgetId = uniqueId;` unguarded, so these must exist
-  // before any widget script runs. The shell tags each iframe URL with a stable
-  // slot fragment so storage keyed on uniqueId survives reloads.
-  if (!('uniqueId' in window)) {
-    const slotTag = (location.hash.match(/ww-slot=([\w-]+)/) || [])[1] || 'slot';
+  // --- instance identity + early globals (must exist before widget scripts) ---
+
+  const slotTag = (location.hash.match(/ww-slot=([\w-]+)/) || [])[1] || 'slot';
+
+  if (!('uniqueId' in window))
     window.uniqueId = 'ww-' + location.hostname + '-' + slotTag;
-  }
   if (!('iCUE_initialized' in window))
     window.iCUE_initialized = false; // flipped to true when the init events fire
 
-  function makeSignal() {
-    const callbacks = new Set();
-    return {
-      connect(cb) { if (typeof cb === 'function') callbacks.add(cb); },
-      disconnect(cb) { callbacks.delete(cb); },
-      __emit(...args) {
-        for (const cb of callbacks) {
-          try { cb(...args); } catch (e) { console.error('[icue-shim]', e); }
-        }
-      },
-    };
+  function pseudoUuid(seed) {
+    let h1 = 0x811c9dc5, h2 = 0x01000193;
+    for (let i = 0; i < seed.length; i++) {
+      h1 = Math.imul(h1 ^ seed.charCodeAt(i), 0x01000193) >>> 0;
+      h2 = Math.imul(h2 + seed.charCodeAt(i), 0x85ebca6b) >>> 0;
+    }
+    const hex = (h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0')).repeat(2);
+    return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' +
+           hex.slice(16, 20) + '-' + hex.slice(20, 32);
   }
+
+  window.device = window.device || { deviceId: pseudoUuid(location.hostname + slotTag) };
+
+  window.iCUE = window.iCUE || {
+    iCUELanguage: (navigator.language || 'en').split('-')[0],
+    fpsLimit: 30,
+    isPreview: false,
+    widgetId: window.uniqueId,
+    defaultTemperatureUnit() {
+      return /^en-(us|bs|bz|ky|pw|pr)/i.test(navigator.language || '') ? '°F' : '°C';
+    },
+  };
 
   const readings = new Map();   // sensorId -> {id, name, device, deviceType, type, units, value}
   const injected = new Set();   // property globals owned by the shim
@@ -44,6 +60,27 @@
   let domReady = document.readyState !== 'loading';
   let gotInit = false;
   let trReady = false;
+
+  // --- settings -> globals (like iCUE's property injection) ---
+
+  function setPropertyGlobals(settings) {
+    for (const [name, value] of Object.entries(settings || {})) {
+      if (value === undefined || value === null) continue;
+      // Never clobber real window members (location, name, ...) we did not create.
+      if (name in window && !injected.has(name)) continue;
+      try {
+        window[name] = value;
+        injected.add(name);
+      } catch (e) { /* non-writable */ }
+    }
+  }
+
+  // Spec parity: iCUE injects property values before widget scripts execute. The
+  // shell passes this slot's merged settings in the URL fragment for that reason.
+  try {
+    const encoded = (location.hash.match(/ww-settings=([^&]+)/) || [])[1];
+    if (encoded) setPropertyGlobals(JSON.parse(decodeURIComponent(encoded)));
+  } catch (e) { /* fall back to ww-init delivery */ }
 
   // --- tr(): iCUE's translation function, backed by the package's translation.json ---
 
@@ -65,67 +102,156 @@
     .finally(() => { trReady = true; maybeInit(); });
   setTimeout(() => { if (!trReady) { trReady = true; maybeInit(); } }, 1500);
 
-  // --- sensor type/kind translation (our LHM-style types -> iCUE's lowercase model) ---
+  // --- Qt-style signals ---
+
+  function makeSignal() {
+    const callbacks = new Set();
+    return {
+      connect(cb) { if (typeof cb === 'function') callbacks.add(cb); },
+      disconnect(cb) { callbacks.delete(cb); },
+      __emit(...args) {
+        for (const cb of callbacks) {
+          try { cb(...args); } catch (e) { console.error('[icue-shim]', e); }
+        }
+      },
+    };
+  }
+
+  // --- sensor type/kind translation (our LHM-style types -> iCUE's documented model) ---
 
   function typeFor(reading) {
     if (!reading) return '';
+    if (reading.type === 'Level' && reading.id.startsWith('corsair:')) return 'battery-charge';
     const type = String(reading.type || '').toLowerCase();
-    return type === 'control' ? 'load' : type;
+    return type === 'control' || type === 'level' ? 'load' : type;
   }
 
   function kindFor(reading) {
     if (!reading) return '';
     const name = String(reading.name || '').toLowerCase();
-    const isGpu = String(reading.deviceType || '').toLowerCase().includes('gpu');
+    const deviceType = String(reading.deviceType || '').toLowerCase();
+    const isGpu = deviceType.includes('gpu');
+    const isCpu = deviceType.includes('cpu');
+    if (reading.type === 'Temperature') {
+      if (isCpu) return /core #/.test(name) ? 'core' : name.includes('package') ? 'package' : 'cpu-temp';
+      if (isGpu) return 'gpu-temp';
+      return 'default';
+    }
     if (reading.type === 'Load') {
       if (isGpu && name.includes('memory')) return 'memory-load';
       if (name.includes('frame buffer')) return 'frame-buffer-load';
       if (name.includes('video')) return 'video-engine-load';
       if (name.includes('bus')) return 'bus-interface-load';
       if (isGpu) return 'gpu-load';
+      return 'default';
     }
-    if (reading.type === 'Fan' && name.includes('pump')) return 'pump';
-    return '';
+    if (reading.type === 'Fan' && name.includes('pump')) return 'cpu-pump';
+    return 'default';
   }
 
-  // --- the provider object ---
+  function defaultSensorId(sensorType, preferredKind) {
+    const all = [...readings.values()];
+    if (preferredKind) {
+      const both = all.find((r) => typeFor(r) === sensorType && kindFor(r) === preferredKind);
+      if (both) return both.id;
+    }
+    const typeOnly = all.find((r) => typeFor(r) === sensorType);
+    if (typeOnly) return typeOnly.id;
+    return all.length ? all[0].id : '';
+  }
 
-  const provider = {
+  // --- Sensorsdataprovider ---
+
+  const sensors = {
     asyncResponse: makeSignal(),
     sensorValueChanged: makeSignal(),
     sensorUnitsChanged: makeSignal(),
+    sensorDataChanged: makeSignal(),
     sensorAdded: makeSignal(),
     sensorRemoved: makeSignal(),
-    // Called synchronously inside x-icue-property default expressions.
-    getDefaultSensorIdBlock() { return []; },
+    // Documented blocking call: returns the best-match sensor id synchronously.
+    getDefaultSensorIdBlock(sensorType, preferredKind) {
+      return defaultSensorId(String(sensorType || ''), String(preferredKind || ''));
+    },
   };
 
-  function respond(requestId, value) {
-    setTimeout(() => provider.asyncResponse.__emit(requestId, value), 0);
+  function respond(signal, requestId, value) {
+    setTimeout(() => signal.__emit(requestId, value), 0);
   }
 
-  provider.getAllSensorIds = (rid) => respond(rid, [...readings.keys()]);
-  provider.getSensorValue = (rid, id) => respond(rid, readings.get(id)?.value ?? null);
-  provider.getSensorUnits = (rid, id) => respond(rid, readings.get(id)?.units ?? '');
-  provider.getSensorName = (rid, id) => respond(rid, readings.get(id)?.name ?? '');
-  provider.getSensorDeviceName = (rid, id) => respond(rid, readings.get(id)?.device ?? '');
-  provider.getSensorType = (rid, id) => respond(rid, typeFor(readings.get(id)));
-  provider.getSensorKind = (rid, id) => respond(rid, kindFor(readings.get(id)));
-  provider.sensorIsConnected = (rid, id) => respond(rid, readings.has(id));
+  // Per spec, sensor values transport as strings.
+  sensors.getAllSensorIds = (rid) => respond(sensors.asyncResponse, rid, [...readings.keys()]);
+  sensors.getSensorValue = (rid, id) => {
+    const v = readings.get(id)?.value;
+    respond(sensors.asyncResponse, rid, v == null ? '' : String(v));
+  };
+  sensors.getSensorUnits = (rid, id) => respond(sensors.asyncResponse, rid, readings.get(id)?.units ?? '');
+  sensors.getSensorName = (rid, id) => respond(sensors.asyncResponse, rid, readings.get(id)?.name ?? '');
+  sensors.getSensorDeviceName = (rid, id) => respond(sensors.asyncResponse, rid, readings.get(id)?.device ?? '');
+  sensors.getSensorType = (rid, id) => respond(sensors.asyncResponse, rid, typeFor(readings.get(id)));
+  sensors.getSensorKind = (rid, id) => respond(sensors.asyncResponse, rid, kindFor(readings.get(id)));
+  sensors.sensorIsConnected = (rid, id) => respond(sensors.asyncResponse, rid, readings.has(id));
+  sensors.getDefaultSensorId = (rid, sensorType, preferredKind) =>
+    respond(sensors.asyncResponse, rid, defaultSensorId(String(sensorType || ''), String(preferredKind || '')));
 
-  window.plugins = window.plugins || {};
-  window.plugins.Sensorsdataprovider = provider;
-  window.pluginSensorsdataprovider_initialized = true;
+  // --- Mediadataprovider (backed by the host's media session pipeline) ---
 
-  // Link provider: iCUE opens URLs on the desktop; we ask the host to do the same.
-  window.plugins.Linkprovider = {
+  const media = {
+    asyncResponse: makeSignal(),
+    songName: '',
+    artist: '',
+    getSongName(rid) { respond(media.asyncResponse, rid, media.songName); },
+    getArtist(rid) { respond(media.asyncResponse, rid, media.artist); },
+    triggerPlayPause() { parent.postMessage({ type: 'ww-media-control', action: 'toggle' }, '*'); },
+    triggerNextTrack() { parent.postMessage({ type: 'ww-media-control', action: 'next' }, '*'); },
+    triggerPreviousTrack() { parent.postMessage({ type: 'ww-media-control', action: 'prev' }, '*'); },
+  };
+
+  function applyMedia(state) {
+    media.songName = (state && state.title) || '';
+    media.artist = (state && state.artist) || '';
+  }
+
+  // --- Fpsdataprovider / Deviceactionprovider: honest no-data stubs ---
+
+  const fps = {
+    asyncResponse: makeSignal(),
+    fpsUpdated: makeSignal(),
+    fpsAvailabilityChanged: makeSignal(),
+    processChanged: makeSignal(),
+    currentFps: 0,
+    fpsAvailable: false,
+    currentProcess: '',
+    getCurrentFps(rid) { respond(fps.asyncResponse, rid, 0); },
+    getFpsAvailable(rid) { respond(fps.asyncResponse, rid, false); },
+    getCurrentProcess(rid) { respond(fps.asyncResponse, rid, ''); },
+  };
+
+  const deviceAction = {
+    dialTriggered: makeSignal(), // never emitted (matches documented preview-mode behavior)
+    initDevice() { /* no dials on this panel */ },
+  };
+
+  // --- Linkprovider ---
+
+  const link = {
     open(url) { parent.postMessage({ type: 'ww-open-url', url: String(url) }, '*'); },
   };
+
+  window.plugins = window.plugins || {};
+  window.plugins.Sensorsdataprovider = sensors;
+  window.plugins.Mediadataprovider = media;
+  window.plugins.Fpsdataprovider = fps;
+  window.plugins.Deviceactionprovider = deviceAction;
+  window.plugins.Linkprovider = link;
+  window.pluginSensorsdataprovider_initialized = true;
+  window.pluginMediadataprovider_initialized = true;
+  window.pluginFpsdataprovider_initialized = true;
+  window.pluginDeviceactionprovider_initialized = true;
   window.pluginLinkprovider_initialized = true;
 
-  // --- fetch fallback: iCUE's runtime is CORS-relaxed, standards WebView2 is not.
-  // Try the normal fetch first; when it fails at the network/CORS layer, retry the
-  // request through the host process, which is not subject to browser CORS.
+  // --- fetch fallback: iCUE's runtime is CORS-relaxed, standards WebView2 is not ---
+
   const nativeFetch = window.fetch.bind(window);
   const pendingFetches = new Map();
   let fetchSeq = 0;
@@ -203,20 +329,6 @@
     }));
   }
 
-  // --- settings -> globals (like iCUE's property injection) ---
-
-  function setPropertyGlobals(settings) {
-    for (const [name, value] of Object.entries(settings || {})) {
-      if (value === undefined || value === null) continue;
-      // Never clobber real window members (location, name, ...) we did not create.
-      if (name in window && !injected.has(name)) continue;
-      try {
-        window[name] = value;
-        injected.add(name);
-      } catch (e) { /* non-writable */ }
-    }
-  }
-
   // --- sensor snapshot handling ---
 
   function applySensors(list, quiet) {
@@ -227,12 +339,15 @@
 
     for (const [id, reading] of readings) {
       const old = previous.get(id);
-      if (!old) provider.sensorAdded.__emit(id);
-      if (!old || old.value !== reading.value) provider.sensorValueChanged.__emit(id, reading.value);
-      if (old && old.units !== reading.units) provider.sensorUnitsChanged.__emit(id, reading.units);
+      if (!old) sensors.sensorAdded.__emit(id);
+      if (!old || old.value !== reading.value) {
+        sensors.sensorValueChanged.__emit(id, reading.value == null ? '' : String(reading.value));
+        sensors.sensorDataChanged.__emit(id);
+      }
+      if (old && old.units !== reading.units) sensors.sensorUnitsChanged.__emit(id, reading.units);
     }
     for (const id of previous.keys()) {
-      if (!readings.has(id)) provider.sensorRemoved.__emit(id);
+      if (!readings.has(id)) sensors.sensorRemoved.__emit(id);
     }
   }
 
@@ -245,9 +360,13 @@
     if (initialized || !gotInit || !domReady || !trReady) return;
     initialized = true;
     window.iCUE_initialized = true;
-    try { window.pluginSensorsdataproviderEvents?.onInitialized?.(); } catch (e) { console.error('[icue-shim]', e); }
-    try { window.pluginLinkproviderEvents?.onInitialized?.(); } catch (e) { console.error('[icue-shim]', e); }
-    try { window.icueEvents?.onICUEInitialized?.(); } catch (e) { console.error('[icue-shim]', e); }
+    const fire = (fn) => { try { fn && fn(); } catch (e) { console.error('[icue-shim]', e); } };
+    fire(window.pluginSensorsdataproviderEvents?.onInitialized);
+    fire(window.pluginMediadataproviderEvents?.onInitialized);
+    fire(window.pluginFpsdataproviderEvents?.onInitialized);
+    fire(window.pluginDeviceactionproviderEvents?.onInitialized);
+    fire(window.pluginLinkproviderEvents?.onInitialized);
+    fire(window.icueEvents?.onICUEInitialized);
   }
 
   window.addEventListener('message', (ev) => {
@@ -255,6 +374,7 @@
     if (msg.type === 'ww-init') {
       setPropertyGlobals(msg.settings);
       applySensors(msg.sensors, !initialized);
+      applyMedia(msg.media);
       if (initialized) {
         try { window.icueEvents?.onDataUpdated?.(); } catch (e) { console.error('[icue-shim]', e); }
       } else {
@@ -263,6 +383,8 @@
       }
     } else if (msg.type === 'ww-sensors' && initialized) {
       applySensors(msg.sensors, false);
+    } else if (msg.type === 'ww-media') {
+      applyMedia(msg.media);
     } else if (msg.type === 'ww-fetch-result') {
       onFetchResult(msg);
     }

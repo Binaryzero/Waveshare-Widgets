@@ -123,13 +123,19 @@
           // allow-same-origin is safe here: each widget is served from its own
           // virtual host, so widgets cannot reach the shell's or each other's origin.
           frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-          // stable per-slot tag: backs the iCUE `uniqueId` global (per-instance storage)
-          const slotHash = '#ww-slot=p' + pageIdx + 's' + (slotIdx++);
+          // Fragment carries a stable per-slot tag (backs the iCUE `uniqueId` global)
+          // plus this slot's merged settings, so the shim can inject property globals
+          // BEFORE widget scripts run — matching iCUE's documented injection timing.
+          const settings = mergedSettings(widget, slotDef);
+          let slotHash = '#ww-slot=p' + pageIdx + 's' + (slotIdx++);
+          try {
+            slotHash += '&ww-settings=' + encodeURIComponent(JSON.stringify(settings));
+          } catch (e) { /* unserializable settings: init delivery still applies them */ }
           frame.src = widget.url + slotHash;
           slotEl.appendChild(frame);
           slots.push({
             frame, el: slotEl, url: widget.url, hash: slotHash,
-            settings: mergedSettings(widget, slotDef), initialized: false, retries: 0,
+            settings, initialized: false, retries: 0,
           });
           slotCount++;
         }

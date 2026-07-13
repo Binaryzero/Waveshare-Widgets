@@ -29,6 +29,8 @@ public sealed partial class CorsairSdkProvider : ISensorProvider
     private SessionStateChangedHandler? _stateHandler; // rooted so the native callback stays valid
     private volatile bool _connected;
     private bool _connectRequested;
+    private bool _loggedDevices;
+    private readonly HashSet<string> _loggedBatteries = [];
     private int _failures;
 
     public CorsairSdkProvider()
@@ -67,7 +69,8 @@ public sealed partial class CorsairSdkProvider : ISensorProvider
             {
                 _connectRequested = true;
                 _stateHandler = OnSessionStateChanged;
-                _connect(_stateHandler, IntPtr.Zero); // async; the callback flips _connected
+                var error = _connect(_stateHandler, IntPtr.Zero); // async; the callback flips _connected
+                Log.Info($"iCUE SDK CorsairConnect -> {error} (0 = success; session handshake continues async)");
             }
             if (!_connected)
                 return [];
@@ -78,8 +81,21 @@ public sealed partial class CorsairSdkProvider : ISensorProvider
             var buffer = Marshal.AllocHGlobal(infoSize * MaxDevices);
             try
             {
-                if (_getDevices(ref filter, MaxDevices, buffer, out var count) != 0)
+                var devicesError = _getDevices(ref filter, MaxDevices, buffer, out var count);
+                if (devicesError != 0)
+                {
+                    if (!_loggedDevices)
+                    {
+                        _loggedDevices = true;
+                        Log.Warn($"iCUE SDK CorsairGetDevices -> error {devicesError}");
+                    }
                     return [];
+                }
+                if (!_loggedDevices)
+                {
+                    _loggedDevices = true;
+                    Log.Info($"iCUE SDK connected: {count} device(s) enumerated");
+                }
 
                 for (var i = 0; i < Math.Min(count, MaxDevices); i++)
                 {
@@ -88,12 +104,18 @@ public sealed partial class CorsairSdkProvider : ISensorProvider
                         continue;
 
                     // Most devices don't support the property; errors just mean "not wireless".
-                    if (_readProperty(info.Id, PropertyBatteryLevel, 0, out var property) == 0 &&
-                        property.DataType == DataTypeInt32)
+                    var propError = _readProperty(info.Id, PropertyBatteryLevel, 0, out var property);
+                    if (propError == 0 && property.DataType == DataTypeInt32)
                     {
+                        if (_loggedBatteries.Add(info.Id))
+                            Log.Info($"iCUE SDK battery sensor: {info.Model} = {property.Int32}%");
                         readings.Add(new SensorReading(
                             $"corsair:{info.Id}:battery", $"{info.Model} Battery",
                             "Corsair", "Corsair", "Level", "%", property.Int32));
+                    }
+                    else if (_loggedBatteries.Add(info.Id))
+                    {
+                        Log.Info($"iCUE SDK device '{info.Model}' (type {info.Type}): no battery (error {propError}, dataType {property.DataType})");
                     }
                 }
             }
@@ -120,7 +142,9 @@ public sealed partial class CorsairSdkProvider : ISensorProvider
         try
         {
             // CorsairSessionStateChanged begins with the CorsairSessionState enum.
-            _connected = eventData != IntPtr.Zero && Marshal.ReadInt32(eventData) == SessionStateConnected;
+            var state = eventData != IntPtr.Zero ? Marshal.ReadInt32(eventData) : -1;
+            _connected = state == SessionStateConnected;
+            Log.Info($"iCUE SDK session state -> {state} (6 = connected; 4 = refused, check iCUE's 'Enable SDK' setting)");
         }
         catch
         {
