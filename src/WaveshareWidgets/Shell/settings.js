@@ -167,12 +167,20 @@
       iconButton('✕', 'Remove', () => { page.slots.splice(index, 1); renderEditor(); }, true));
     card.appendChild(row);
 
-    // property editors
+    // property editors, sectioned by group where the widget declares them
     if (widget && widget.properties && widget.properties.length) {
       const grid = document.createElement('div');
       grid.className = 'props';
       slot.settings = slot.settings || {};
+      let lastGroup = null;
       for (const prop of widget.properties) {
+        if (prop.group && prop.group !== lastGroup) {
+          lastGroup = prop.group;
+          const heading = document.createElement('div');
+          heading.className = 'group-title';
+          heading.textContent = prop.group;
+          grid.appendChild(heading);
+        }
         const label = document.createElement('label');
         label.textContent = prop.label || prop.name;
         grid.append(label, propEditor(prop, slot));

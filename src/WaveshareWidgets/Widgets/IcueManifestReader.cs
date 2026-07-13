@@ -62,7 +62,53 @@ public static partial class IcueManifestReader
                 Options = options,
             });
         }
+
+        ApplyGroups(html, ref properties);
         return properties;
+    }
+
+    [GeneratedRegex(@"<script(?=[^>]*?id=""x-icue-groups"")[^>]*?>(.*?)</script>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex GroupsScriptPattern();
+
+    /// <summary>x-icue-groups organizes properties into titled settings sections:
+    /// [{"title": "tr('Widget Setup')", "properties": ["a", "b"]}, …]. Grouped
+    /// properties are labeled and reordered to group order; ungrouped ones keep
+    /// their original order at the end.</summary>
+    private static void ApplyGroups(string html, ref List<WidgetProperty> properties)
+    {
+        var match = GroupsScriptPattern().Match(html);
+        if (!match.Success)
+            return;
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(match.Groups[1].Value.Trim());
+            var byName = properties.ToDictionary(p => p.Name);
+            var ordered = new List<WidgetProperty>();
+
+            foreach (var group in doc.RootElement.EnumerateArray())
+            {
+                var title = CleanLabel(group.TryGetProperty("title", out var t) ? t.GetString() : null, "");
+                if (!group.TryGetProperty("properties", out var names))
+                    continue;
+                foreach (var nameElement in names.EnumerateArray())
+                {
+                    var name = nameElement.GetString();
+                    if (name is not null && byName.Remove(name, out var prop))
+                    {
+                        prop.Group = string.IsNullOrWhiteSpace(title) ? null : title;
+                        ordered.Add(prop);
+                    }
+                }
+            }
+            ordered.AddRange(properties.Where(p => byName.ContainsKey(p.Name)));
+            properties = ordered;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Ignoring malformed x-icue-groups: {ex.Message}");
+        }
     }
 
     [GeneratedRegex(@"'key'\s*:\s*'([^']*)'", RegexOptions.Singleline)]

@@ -38,4 +38,7 @@ public sealed class WidgetProperty
     [JsonPropertyName("step")] public double? Step { get; set; }
     [JsonPropertyName("options")] public List<string>? Options { get; set; }
     [JsonPropertyName("sensor_type")] public string? SensorType { get; set; }
+
+    /// <summary>Settings-UI section this property belongs to (iCUE x-icue-groups).</summary>
+    [JsonPropertyName("group")] public string? Group { get; set; }
 }

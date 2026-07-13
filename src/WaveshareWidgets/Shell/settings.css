@@ -122,6 +122,16 @@ main { flex: 1; display: flex; min-height: 0; }
   border-top: 1px solid var(--line);
 }
 .props label { color: var(--muted); }
+.props .group-title {
+  grid-column: 1 / -1;
+  color: var(--accent);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-top: 8px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 4px;
+}
 .props .slider-wrap { display: flex; align-items: center; gap: 10px; }
 .props .slider-wrap output { color: var(--muted); min-width: 40px; text-align: right; }
 .props select, .props input[type="text"], .props input[type="number"] { width: 100%; max-width: 380px; }
