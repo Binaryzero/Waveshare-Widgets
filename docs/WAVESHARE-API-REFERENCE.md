@@ -124,10 +124,19 @@ WW.findSensor({                   // heuristic lookup -> SensorReading | null
 // Actions
 WW.mediaControl('toggle' | 'next' | 'prev')   // transport control
 WW.log(message)                                // writes to the host app.log
+
+// Network
+WW.fetch(url, init)  // -> Promise<Response>; fetch with bot-wall/CORS relief
 ```
 
 `WW.onInit(cb)` fires immediately if data already arrived. All getters are live snapshots
 (safe to read any time after init).
+
+`WW.fetch` tries the browser's `fetch` first and, on a network/CORS failure or a
+403/429 (bot walls often serve their block page *with* CORS headers), retries through
+the host proxy — browser-grade headers, `Referer` for `*.redd.it`, and a hidden-browser
+fetch for TLS-fingerprinting sites like Reddit. Only GET/POST with string bodies ride
+the proxy path; the stock Reddit Photos widget is the reference consumer.
 
 ---
 

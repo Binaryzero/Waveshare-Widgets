@@ -85,6 +85,7 @@ WW.findSensor({      // heuristic lookup
 
 WW.mediaControl('toggle' | 'next' | 'prev')   // transport control
 WW.log('debug message')                        // writes to the host's app.log
+WW.fetch(url, init)                            // fetch() with host-proxied CORS/bot-wall fallback
 ```
 
 Sensor `type` values follow LibreHardwareMonitor: `Temperature` (°C), `Load` (%),

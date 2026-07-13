@@ -9,6 +9,8 @@
 
   const listeners = { init: [], sensors: [], media: [], streamdeck: [] };
   const state = { settings: {}, sensors: [], media: null, status: null, ready: false };
+  const pendingFetches = new Map();
+  let fetchSeq = 0;
 
   function emit(kind, payload) {
     for (const cb of listeners[kind]) {
@@ -35,8 +37,46 @@
       emit('media', state.media);
     } else if (msg.type === 'ww-sd-profile') {
       emit('streamdeck', msg.profile || { available: false });
+    } else if (msg.type === 'ww-fetch-result') {
+      const pending = pendingFetches.get(msg.id);
+      if (!pending) return;
+      pendingFetches.delete(msg.id);
+      if (msg.error) {
+        pending.reject(new TypeError('proxy fetch failed: ' + msg.error));
+        return;
+      }
+      let bytes = new Uint8Array(0);
+      if (msg.bodyBase64) {
+        const raw = atob(msg.bodyBase64);
+        bytes = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      }
+      pending.resolve(new Response(bytes, {
+        status: msg.status || 200,
+        statusText: msg.statusText || '',
+        headers: msg.contentType ? { 'Content-Type': msg.contentType } : {},
+      }));
     }
   });
+
+  function proxyFetch(url, init) {
+    init = init || {};
+    return new Promise((resolve, reject) => {
+      const id = 'w' + (++fetchSeq) + '-' + Math.floor(performance.now());
+      pendingFetches.set(id, { resolve, reject });
+      setTimeout(() => {
+        if (pendingFetches.delete(id)) reject(new TypeError('proxy fetch timed out'));
+      }, 25000);
+      parent.postMessage({
+        type: 'ww-fetch',
+        id,
+        url: String(url),
+        method: (init.method || 'GET').toUpperCase(),
+        body: typeof init.body === 'string' ? init.body : null,
+        contentType: null,
+      }, '*');
+    });
+  }
 
   const WW = {
     /** Injected values of the properties declared in manifest.json. */
@@ -96,6 +136,23 @@
 
     /** Run a host action: kind 'launch'|'url'|'hotkey'|'media', target the argument. */
     action(kind, target) { parent.postMessage({ type: 'ww-action', kind, target: String(target == null ? '' : target) }, '*'); },
+
+    /**
+     * fetch() that survives CORS and bot walls: tries the browser's fetch first and
+     * falls back to a host-proxied request (browser-grade headers, and a full hidden-
+     * browser fetch for hosts that fingerprint TLS, like Reddit). Returns a Response.
+     * Only GET/POST with string bodies are supported on the proxy path.
+     */
+    fetch(url, init) {
+      return fetch(url, init).then((response) => {
+        // Bot walls sometimes serve their block page WITH CORS headers, so the
+        // request "succeeds" as a 403/429; retry those via the host.
+        if (response.status === 403 || response.status === 429) {
+          return proxyFetch(url, init).catch(() => response);
+        }
+        return response;
+      }, () => proxyFetch(url, init));
+    },
 
     /** Request the Virtual Stream Deck profile; delivered via onStreamDeck(cb).
      * opts: { profileName, hideWindow }. */

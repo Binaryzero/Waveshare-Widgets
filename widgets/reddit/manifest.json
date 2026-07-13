@@ -1,0 +1,16 @@
+{
+  "id": "ws.stock.reddit",
+  "name": "Reddit Photos",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Slideshow of image posts from any subreddit, built for the panel: images preload fully before a slow crossfade, so nothing flashes. Tap left/right edges to step, center to pause.",
+  "min_api_version": 1,
+  "supported_slots": ["quarter", "half", "full"],
+  "properties": [
+    { "name": "subreddit", "label": "Subreddit (without r/)", "type": "text", "default": "landscapephotography" },
+    { "name": "sort", "label": "Sort", "type": "select", "options": ["hot", "top", "new"], "default": "hot" },
+    { "name": "dwell", "label": "Seconds per image", "type": "number", "min": 4, "max": 120, "step": 1, "default": 12 },
+    { "name": "showTitle", "label": "Show post title", "type": "select", "options": ["on", "off"], "default": "on" },
+    { "name": "fit", "label": "Image fit", "type": "select", "options": ["cover", "contain"], "default": "cover" }
+  ]
+}
