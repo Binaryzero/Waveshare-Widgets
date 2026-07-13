@@ -57,6 +57,8 @@
       }
     } else if (msg.type === 'ww-open-url' && typeof msg.url === 'string') {
       postToHost({ type: 'open-url', url: msg.url });
+    } else if (msg.type === 'ww-action' && typeof msg.kind === 'string') {
+      postToHost({ type: 'action', kind: msg.kind, target: String(msg.target || '') });
     } else if (msg.type === 'ww-fetch' && msg.id) {
       fetchRoutes.set(msg.id, ev.source);
       setTimeout(() => fetchRoutes.delete(msg.id), 30000);

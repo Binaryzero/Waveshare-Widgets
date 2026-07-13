@@ -89,6 +89,12 @@
     /** Media transport: 'toggle' | 'next' | 'prev'. */
     mediaControl(action) { parent.postMessage({ type: 'ww-media-control', action }, '*'); },
 
+    /** Open a URL in the desktop browser. */
+    openUrl(url) { parent.postMessage({ type: 'ww-open-url', url: String(url) }, '*'); },
+
+    /** Run a host action: kind 'launch'|'url'|'hotkey'|'media', target the argument. */
+    action(kind, target) { parent.postMessage({ type: 'ww-action', kind, target: String(target == null ? '' : target) }, '*'); },
+
     /** Writes to the host's app.log — useful for debugging on the panel. */
     log(message) { parent.postMessage({ type: 'ww-log', message: String(message) }, '*'); },
   };

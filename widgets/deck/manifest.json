@@ -1,0 +1,19 @@
+{
+  "id": "ws.stock.deck",
+  "name": "Control Deck",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "A touch button grid — launch apps, open URLs, send hotkeys, control media. Self-contained; no Stream Deck or iCUE required.",
+  "min_api_version": 1,
+  "supported_slots": ["quarter", "half", "full"],
+  "properties": [
+    { "name": "columns", "label": "Columns", "type": "slider", "min": 1, "max": 8, "step": 1, "default": 4 },
+    { "name": "accentColor", "label": "Accent Color", "type": "color", "default": "#00d4ff" },
+    {
+      "name": "buttons",
+      "label": "Buttons (JSON)",
+      "type": "text",
+      "default": "[{\"label\":\"Calc\",\"icon\":\"🧮\",\"kind\":\"launch\",\"target\":\"calc.exe\"},{\"label\":\"Reddit\",\"icon\":\"🌐\",\"kind\":\"url\",\"target\":\"https://reddit.com\"},{\"label\":\"Play\",\"icon\":\"⏯️\",\"kind\":\"media\",\"target\":\"toggle\"},{\"label\":\"Mute\",\"icon\":\"🔇\",\"kind\":\"hotkey\",\"target\":\"volumemute\"}]"
+    }
+  ]
+}

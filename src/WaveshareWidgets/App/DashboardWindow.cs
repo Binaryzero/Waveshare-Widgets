@@ -186,6 +186,13 @@ public sealed class DashboardWindow : Form
                     OpenExternalUrl(message["url"]?.GetValue<string>());
                     break;
 
+                case "action":
+                    DeckAction.Execute(
+                        message["kind"]?.GetValue<string>(),
+                        message["target"]?.GetValue<string>(),
+                        a => _ = _hub.ControlMediaAsync(a));
+                    break;
+
                 case "fetch":
                     _ = HandleProxyFetchAsync(message);
                     break;
@@ -257,11 +264,16 @@ public sealed class DashboardWindow : Form
             }
             request.Headers.TryAddWithoutValidation("User-Agent", ProxyUserAgent);
             request.Headers.TryAddWithoutValidation("Accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,*/*;q=0.8");
+                "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,image/avif,image/webp,*/*;q=0.8");
             request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
             request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
             request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
             request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
+            // Reddit's image CDNs (preview.redd.it, i.redd.it, external-preview.redd.it)
+            // serve a fixed ~8 KB anti-hotlink placeholder unless the referer is Reddit.
+            if (uri.Host.EndsWith(".redd.it", StringComparison.OrdinalIgnoreCase) ||
+                uri.Host.EndsWith("redditmedia.com", StringComparison.OrdinalIgnoreCase))
+                request.Headers.TryAddWithoutValidation("Referer", "https://www.reddit.com/");
 
             using var response = await ProxyClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
             var bytes = await ReadCappedAsync(response, ProxyMaxBodyBytes);
