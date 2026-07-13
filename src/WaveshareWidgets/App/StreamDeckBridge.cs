@@ -118,10 +118,55 @@ public sealed class StreamDeckBridge
             }
         }
 
-        // Infer the grid from the highest visual coordinates present (overridable in the widget).
-        var rows = buttons.Count > 0 ? buttons.Max(b => b.Row) + 1 : 3;
-        var cols = buttons.Count > 0 ? buttons.Max(b => b.Col) + 1 : 5;
+        // Bounding box of occupied keys — a lower bound on the grid, never the grid itself.
+        var minRows = buttons.Count > 0 ? buttons.Max(b => b.Row) + 1 : 3;
+        var minCols = buttons.Count > 0 ? buttons.Max(b => b.Col) + 1 : 5;
+
+        // The real grid must come from the device size: with "Hide unused keys" OFF the
+        // VSD window shows the FULL grid, so dividing it by the bounding box lands clicks
+        // on the wrong keys whenever the layout doesn't reach the last row/column.
+        var (rows, cols) = (minRows, minCols);
+        var (sizeA, sizeB) = ReadDeviceSize(manifest);
+        if (sizeA is int a && sizeB is int b2)
+        {
+            // Profile coordinates render transposed, so the manifest's axis labels can't
+            // be trusted either way. Pick the orientation that contains the occupied keys,
+            // preferring landscape (every VSD is wider than tall) when both fit.
+            var candidates = new[] { (r: b2, c: a), (r: a, c: b2) }
+                .Where(o => o.r >= minRows && o.c >= minCols)
+                .OrderByDescending(o => o.c >= o.r)
+                .ToList();
+            if (candidates.Count > 0)
+                (rows, cols) = (candidates[0].r, candidates[0].c);
+        }
+        else if (!_loggedMissingSize)
+        {
+            _loggedMissingSize = true;
+            var deviceJson = manifest.TryGetProperty("Device", out var dev) ? dev.GetRawText() : "(none)";
+            Log.Warn($"Stream Deck: profile has no Device.Size; grid inferred from occupied keys " +
+                     $"({minRows}x{minCols}). Device element: {deviceJson}");
+        }
+
         return new DeckProfile(name, rows, cols, buttons, available);
+    }
+
+    private static bool _loggedMissingSize;
+
+    /// <summary>Reads Device.Size from the profile manifest (axis meaning resolved by caller).</summary>
+    private static (int?, int?) ReadDeviceSize(JsonElement manifest)
+    {
+        if (!manifest.TryGetProperty("Device", out var device) ||
+            !device.TryGetProperty("Size", out var size))
+            return (null, null);
+
+        int? Read(params string[] names)
+        {
+            foreach (var key in names)
+                if (size.TryGetProperty(key, out var v) && v.TryGetInt32(out var i) && i > 0 && i <= 32)
+                    return i;
+            return null;
+        }
+        return (Read("Columns", "Cols", "Width"), Read("Rows", "Height"));
     }
 
     private static void ParsePage(string pageDir, JsonElement pageManifest, List<DeckButton> buttons)
@@ -215,7 +260,8 @@ public sealed class StreamDeckBridge
         PostMessage(vsd, WM_LBUTTONDOWN, (IntPtr)1, lParam);
         Thread.Sleep(40);
         PostMessage(vsd, WM_LBUTTONUP, IntPtr.Zero, lParam);
-        Log.Info($"Stream Deck: clicked cell row={row} col={col} at ({x},{y})");
+        Log.Info($"Stream Deck: clicked cell row={row} col={col} of {rows}x{cols} at ({x},{y}) " +
+                 $"in {rect.Right}x{rect.Bottom} window (cell {cellW:F0}x{cellH:F0})");
         return true;
     }
 
