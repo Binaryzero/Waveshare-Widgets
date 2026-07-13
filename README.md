@@ -95,6 +95,15 @@ handles that in tiers:
 Everything else — GPU stats, memory, network, media, clock, weather — works unelevated
 with nothing extra installed.
 
+### Corsair wireless battery levels (optional)
+
+If you run iCUE, battery percentages for Corsair wireless keyboards/mice/headsets can
+appear as sensors (`corsair:*:battery`): download the client DLL
+(`iCUESDK.x64_2019.dll`) from the [cue-sdk releases](https://github.com/CorsairOfficial/cue-sdk/releases),
+drop it next to `WaveshareWidgets.exe`, and enable the SDK toggle in iCUE's settings.
+Note that Corsair's public SDK exposes no system temperatures or fan speeds — those
+remain iCUE-internal, which is why the app reads hardware itself.
+
 > **Defender note:** if an older build ever triggered a "Threats found" warning, that
 > was the WinRing0 driver embedded in LibreHardwareMonitorLib ≤ 0.9.4. This app now
 > uses 0.9.6+, which has no WinRing0; let Defender remove the quarantined file and
