@@ -29,7 +29,7 @@ public sealed partial class CorsairSdkProvider : ISensorProvider
     private SessionStateChangedHandler? _stateHandler; // rooted so the native callback stays valid
     private volatile bool _connected;
     private bool _connectRequested;
-    private bool _loggedDevices;
+    private int _lastDeviceCount = -1;
     private readonly HashSet<string> _loggedBatteries = [];
     private int _failures;
 
@@ -115,7 +115,10 @@ public sealed partial class CorsairSdkProvider : ISensorProvider
                 return [];
 
             var readings = new List<SensorReading>();
-            var filter = new CorsairDeviceFilter { DeviceTypeMask = unchecked((int)0xFFFFFFFF) };
+            // OR of all documented CorsairDeviceType bits. Some SDK builds reject the
+            // CDT_All (0xFFFFFFFF) sentinel's unknown high bits and match nothing, so
+            // pass the explicit known-type mask instead.
+            var filter = new CorsairDeviceFilter { DeviceTypeMask = 0x1FFF };
             var infoSize = Marshal.SizeOf<CorsairDeviceInfo>();
             var buffer = Marshal.AllocHGlobal(infoSize * MaxDevices);
             try
@@ -123,17 +126,20 @@ public sealed partial class CorsairSdkProvider : ISensorProvider
                 var devicesError = _getDevices(ref filter, MaxDevices, buffer, out var count);
                 if (devicesError != 0)
                 {
-                    if (!_loggedDevices)
+                    if (_lastDeviceCount != -2)
                     {
-                        _loggedDevices = true;
+                        _lastDeviceCount = -2;
                         Log.Warn($"iCUE SDK CorsairGetDevices -> error {devicesError}");
                     }
                     return [];
                 }
-                if (!_loggedDevices)
+                // Log whenever the count changes, so a later poll reveals if iCUE's own
+                // device discovery populated after our connection (0 forever => iCUE
+                // isn't exposing SDK devices; check iCUE's SDK access settings).
+                if (count != _lastDeviceCount)
                 {
-                    _loggedDevices = true;
-                    Log.Info($"iCUE SDK connected: {count} device(s) enumerated");
+                    _lastDeviceCount = count;
+                    Log.Info($"iCUE SDK enumerated {count} device(s)");
                 }
 
                 for (var i = 0; i < Math.Min(count, MaxDevices); i++)
