@@ -37,25 +37,64 @@ public sealed partial class CorsairSdkProvider : ISensorProvider
     {
         try
         {
-            foreach (var dir in new[] { AppContext.BaseDirectory, AppPaths.DataDir })
-            {
-                var path = Path.Combine(dir, DllName);
-                if (File.Exists(path) && NativeLibrary.TryLoad(path, out _lib))
-                    break;
-            }
+            var loadedFrom = TryLoadLibrary();
             if (_lib == IntPtr.Zero)
-                return; // SDK not installed — provider stays inert
+            {
+                Log.Info("iCUE SDK DLL not found (drop iCUESDK.x64_2019.dll next to the exe, " +
+                         "or install iCUE); battery sensors disabled");
+                return;
+            }
 
             _connect = Marshal.GetDelegateForFunctionPointer<CorsairConnectFn>(NativeLibrary.GetExport(_lib, "CorsairConnect"));
             _getDevices = Marshal.GetDelegateForFunctionPointer<CorsairGetDevicesFn>(NativeLibrary.GetExport(_lib, "CorsairGetDevices"));
             _readProperty = Marshal.GetDelegateForFunctionPointer<CorsairReadDevicePropertyFn>(NativeLibrary.GetExport(_lib, "CorsairReadDeviceProperty"));
-            Log.Info("iCUE SDK client loaded; connecting to iCUE");
+            Log.Info($"iCUE SDK client loaded from '{loadedFrom}'; connecting to iCUE");
         }
         catch (Exception ex)
         {
-            Log.Warn($"iCUE SDK unavailable: {ex.Message}");
+            // Most likely a missing export -> wrong/old DLL for this iCUE version.
+            Log.Warn($"iCUE SDK load failed (wrong DLL version?): {ex.Message}");
             _lib = IntPtr.Zero;
         }
+    }
+
+    /// <summary>Searches the exe dir, the data dir, and common iCUE install locations for
+    /// a loadable SDK DLL. Returns the resolved path, or null.</summary>
+    private string? TryLoadLibrary()
+    {
+        var names = new[] { DllName, "iCUESDK.x64_2019.dll", "iCUESDK_2019.dll", "iCUESDK.dll" };
+        var dirs = new List<string> { AppContext.BaseDirectory, AppPaths.DataDir };
+
+        foreach (var root in new[]
+                 {
+                     Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                     Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+                 })
+        {
+            if (string.IsNullOrEmpty(root))
+                continue;
+            var corsair = Path.Combine(root, "Corsair");
+            if (!Directory.Exists(corsair))
+                continue;
+            // e.g. "CORSAIR iCUE5 Software" — enumerate to survive naming/version changes.
+            try
+            {
+                foreach (var sub in Directory.GetDirectories(corsair, "*iCUE*"))
+                    dirs.Add(sub);
+            }
+            catch { /* permissions */ }
+        }
+
+        foreach (var dir in dirs)
+        {
+            foreach (var name in names)
+            {
+                var path = Path.Combine(dir, name);
+                if (File.Exists(path) && NativeLibrary.TryLoad(path, out _lib))
+                    return path;
+            }
+        }
+        return null;
     }
 
     public IEnumerable<SensorReading> Poll()

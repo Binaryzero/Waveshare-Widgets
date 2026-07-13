@@ -14,19 +14,6 @@ namespace WaveshareWidgets.App;
 /// </summary>
 public sealed class BrowserFetcher : IDisposable
 {
-    private const string ExtractScript = """
-        (() => {
-          const ct = document.contentType || '';
-          let body;
-          if (ct.includes('json') || ct.includes('text/plain'))
-            body = document.body ? document.body.innerText : '';
-          else if (ct.includes('xml') && !ct.includes('html'))
-            body = new XMLSerializer().serializeToString(document);
-          else
-            body = document.documentElement ? document.documentElement.outerHTML : '';
-          return JSON.stringify({ ct, body });
-        })()
-        """;
 
     private readonly Form _host;
     private readonly WebView2 _webView;
@@ -61,7 +48,13 @@ public sealed class BrowserFetcher : IDisposable
         _ready = true;
     }
 
-    /// <summary>Fetches a URL through a real browser navigation. Returns null on failure.</summary>
+    /// <summary>
+    /// Fetches a URL through a real browser. First navigates to the target's origin root
+    /// (this executes any JS bot-challenge and sets its cookies), then runs a same-origin
+    /// fetch from inside that page — no CORS, cookies attached, raw text returned (so a
+    /// JSON endpoint comes back as parseable JSON, not the browser's JSON viewer). Returns
+    /// null on failure.
+    /// </summary>
     public async Task<(int Status, string? ContentType, byte[] Body)?> FetchAsync(string url)
     {
         await _gate.WaitAsync();
@@ -70,38 +63,56 @@ public sealed class BrowserFetcher : IDisposable
             await EnsureReadyAsync();
             var core = _webView.CoreWebView2;
 
+            var origin = new Uri(url).GetLeftPart(UriPartial.Authority) + "/";
             var navDone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var status = 0;
-
-            void OnResponse(object? sender, CoreWebView2WebResourceResponseReceivedEventArgs e)
-            {
-                if (status == 0 && string.Equals(e.Request.Uri, url, StringComparison.OrdinalIgnoreCase))
-                    status = e.Response.StatusCode;
-            }
             void OnCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e) =>
                 navDone.TrySetResult(e.IsSuccess);
-
-            core.WebResourceResponseReceived += OnResponse;
             core.NavigationCompleted += OnCompleted;
             try
             {
-                core.Navigate(url);
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-                await using var registration = timeout.Token.Register(() => navDone.TrySetCanceled());
-                await navDone.Task;
-                await Task.Delay(600); // let JS challenges / late redirects settle
+                core.Navigate(origin);
+                using (var navTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+                await using (navTimeout.Token.Register(() => navDone.TrySetCanceled()))
+                    await navDone.Task;
+                await Task.Delay(700); // let a JS challenge finish and set cookies
 
-                var extracted = await core.ExecuteScriptAsync(ExtractScript);
-                var inner = JsonSerializer.Deserialize<string>(extracted) ?? "{}";
-                using var payload = JsonDocument.Parse(inner);
-                var body = payload.RootElement.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "";
-                var contentType = payload.RootElement.TryGetProperty("ct", out var c) ? c.GetString() : null;
+                // Kick off a same-origin fetch and stash its result on window; then poll.
+                var jsUrl = JsonSerializer.Serialize(url); // safely quoted JS string literal
+                await core.ExecuteScriptAsync($$"""
+                    (() => {
+                      window.__wwResult = null;
+                      fetch({{jsUrl}}, { credentials: 'include', headers: { 'Accept': 'application/json,text/plain,*/*' } })
+                        .then(r => r.text().then(t => {
+                          window.__wwResult = { status: r.status, ct: r.headers.get('content-type') || '', body: t };
+                        }))
+                        .catch(e => { window.__wwResult = { status: 0, ct: '', body: '', error: String(e) }; });
+                    })();
+                    """);
 
-                return (status == 0 ? 200 : status, contentType, System.Text.Encoding.UTF8.GetBytes(body));
+                for (var i = 0; i < 60; i++) // up to ~15 s
+                {
+                    await Task.Delay(250);
+                    var raw = await core.ExecuteScriptAsync("window.__wwResult");
+                    if (raw is null or "null" or "undefined")
+                        continue;
+
+                    using var payload = JsonDocument.Parse(raw);
+                    var root = payload.RootElement;
+                    if (root.TryGetProperty("error", out var err))
+                    {
+                        Log.Warn($"browser fetch script error ({url}): {err.GetString()}");
+                        return null;
+                    }
+                    var status = root.TryGetProperty("status", out var s) ? s.GetInt32() : 0;
+                    var contentType = root.TryGetProperty("ct", out var c) ? c.GetString() : null;
+                    var body = root.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "";
+                    return (status == 0 ? 200 : status, contentType, System.Text.Encoding.UTF8.GetBytes(body));
+                }
+                Log.Warn($"browser fetch timed out ({url})");
+                return null;
             }
             finally
             {
-                core.WebResourceResponseReceived -= OnResponse;
                 core.NavigationCompleted -= OnCompleted;
                 core.Navigate("about:blank");
             }
