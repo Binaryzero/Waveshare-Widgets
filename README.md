@@ -152,8 +152,15 @@ hot-reloads whenever widget files change on disk.
 
 A widget is a folder with a `manifest.json` and an `index.html`, zipped into a
 `.wswidget`. Sensor data, settings, and media transport arrive through a tiny JS API
-(`window.WW`). See **[docs/WIDGET-SPEC.md](docs/WIDGET-SPEC.md)** — the stock widgets in
-[`widgets/`](widgets/) are working examples you can copy.
+(`window.WW`). Start with **[docs/WIDGET-SPEC.md](docs/WIDGET-SPEC.md)** for the quick
+start; the stock widgets in [`widgets/`](widgets/) are working examples you can copy.
+
+Full references:
+- **[docs/WAVESHARE-API-REFERENCE.md](docs/WAVESHARE-API-REFERENCE.md)** — the complete
+  `window.WW` API, sensor/media models, property types, and the host bridge protocol.
+- **[docs/ICUE-API-REFERENCE.md](docs/ICUE-API-REFERENCE.md)** — the iCUE Widget API
+  (v1.4.0) this runtime emulates, with per-feature notes on what's supported. Most
+  Elgato Marketplace `.icuewidget` files run as-is.
 
 ## Building from source
 
