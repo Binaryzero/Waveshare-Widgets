@@ -13,6 +13,7 @@
   let latestMedia = null;
   let status = { elevated: false, apiVersion: 1 };
   let dotsIdleTimer = null;
+  let bgSettleTimer = null;    // debounces the wallpaper swap during multi-page scrolls
   let generation = 0;          // invalidates watchdogs from a previous layout
   const fetchRoutes = new Map(); // proxy-fetch id -> widget iframe window
 
@@ -168,7 +169,8 @@
     }
 
     emptyEl.hidden = slotCount > 0 || pages.length > 0;
-    updateDots(); // also applies the current page's background
+    updateDots();
+    bg.applyForPage(currentPage()); // paint the initial page's background at once (updateDots only debounces)
 
     generation++;
     armWatchdog(generation);
@@ -236,7 +238,12 @@
   function updateDots() {
     const index = currentPage();
     [...dotsEl.children].forEach((dot, i) => dot.classList.toggle('active', i === index));
-    bg.applyForPage(index);
+    // Dot highlighting tracks the scroll live, but applying a background is expensive
+    // (for video it creates + network-loads + plays an element), so a single tap that
+    // jumps several pages must not paint every page scrolled past. Defer the swap until
+    // scrolling settles and paint only the page we actually land on.
+    clearTimeout(bgSettleTimer);
+    bgSettleTimer = setTimeout(() => bg.applyForPage(currentPage()), 140);
     wakeChrome();
   }
 
@@ -249,7 +256,9 @@
     let currentKey = null; // spec key currently shown, to skip redundant swaps
 
     const validColor = (c, fallback) =>
-      (typeof c === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(c.trim())) ? c.trim() : fallback;
+      // Only 3/4/6/8-digit hex are valid CSS; 5- and 7-digit would be applied then
+      // silently dropped by the browser, so reject them and use the fallback.
+      (typeof c === 'string' && /^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(c.trim())) ? c.trim() : fallback;
 
     function resolveUrl(source) {
       return 'https://' + backgroundHost + '/' + encodeURIComponent(source);
@@ -323,15 +332,16 @@
       layers[front].classList.remove('show');
       front = back;
 
-      dim.style.opacity = String((spec ? Math.max(0, Math.min(100, Number(spec.dim) || 0)) : 0) / 100);
+      // Only image/video wallpapers can be dimmed (the editor exposes Dim for those
+      // only); never darken a solid color or gradient the user picked at full strength.
+      const dimmable = spec && (spec.type === 'image' || spec.type === 'video');
+      dim.style.opacity = String((dimmable ? Math.max(0, Math.min(100, Number(spec.dim) || 0)) : 0) / 100);
 
-      // After the fade, pause any video left in the now-hidden layer to save CPU.
+      // After the fade, fully release any video in the now-hidden layer — pausing alone
+      // keeps its decoded frame + buffers resident, which matters on the small device.
       setTimeout(() => {
         for (const l of layers) {
-          if (!l.classList.contains('show')) {
-            const v = l.querySelector('video');
-            if (v) { try { v.pause(); } catch (e) { /* ignore */ } }
-          }
+          if (!l.classList.contains('show')) clearVideo(l);
         }
       }, 650);
     }

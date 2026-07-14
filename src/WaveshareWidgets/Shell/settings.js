@@ -463,7 +463,13 @@
       const v = typeSel.value;
       if (v === 'inherit') setSpec(null);
       else if (v === 'none') setSpec({ type: 'none' });
-      else setSpec(Object.assign({ type: 'none', fit: 'cover', angle: 135, dim: 0, blur: 0 }, spec || {}, { type: v }));
+      else {
+        // Merge from the LIVE spec (getSpec), not the render-time snapshot, so a color/
+        // slider edit made just before switching type isn't discarded.
+        const next = Object.assign({ type: 'none', fit: 'cover', angle: 135, dim: 0, blur: 0 }, getSpec() || {}, { type: v });
+        if (v === 'color' || v === 'gradient') { next.dim = 0; next.blur = 0; } // flat fills aren't dimmed/blurred
+        setSpec(next);
+      }
       renderBackgroundEditor(container, getSpec, setSpec, opts);
     };
     container.appendChild(bgRow('Type', typeSel));
@@ -496,10 +502,23 @@
     return row;
   }
 
+  // <input type=color> only accepts #rrggbb; normalize any valid CSS hex to it so a
+  // hand-authored #fff or #112233ff shows the real color instead of the theme default.
+  function toHex6(value) {
+    if (typeof value !== 'string') return '#101418';
+    const m = value.trim().match(/^#([0-9a-fA-F]{3,8})$/);
+    if (!m) return '#101418';
+    let h = m[1];
+    if (h.length === 3 || h.length === 4) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2]; // expand, drop alpha
+    else if (h.length === 6 || h.length === 8) h = h.slice(0, 6);                      // drop alpha
+    else return '#101418';                                                             // 5/7 digits: invalid
+    return '#' + h.toLowerCase();
+  }
+
   function bgColor(labelText, value, onChange) {
     const input = document.createElement('input');
     input.type = 'color';
-    input.value = /^#[0-9a-f]{6}$/i.test(value) ? value : '#101418';
+    input.value = toHex6(value);
     input.oninput = () => onChange(input.value);
     return bgRow(labelText, input);
   }
