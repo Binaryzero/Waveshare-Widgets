@@ -7,6 +7,13 @@
   <link rel="stylesheet" href="shell.css" />
 </head>
 <body>
+  <!-- Wallpaper: two stacked layers crossfade between pages; the dim overlay sits
+       above the wallpaper but below the widgets, so it never dims the widgets. -->
+  <div id="bgRoot" aria-hidden="true">
+    <div class="bg-layer" id="bgLayer0"></div>
+    <div class="bg-layer" id="bgLayer1"></div>
+    <div id="bgDim"></div>
+  </div>
   <main id="pages"></main>
   <div id="edgeLeft" class="edge left" aria-hidden="true">&#8249;</div>
   <div id="edgeRight" class="edge right" aria-hidden="true">&#8250;</div>

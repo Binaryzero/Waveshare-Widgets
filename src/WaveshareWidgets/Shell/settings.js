@@ -9,6 +9,8 @@
   let widgetsById = new Map();
   let selectedPage = 0;
   let toastTimer = null;
+  let backgroundHost = 'backgrounds.wsw';
+  let pendingBgPick = null;    // callback(source, kind) for the in-flight file dialog
 
   const el = (id) => document.getElementById(id);
 
@@ -19,6 +21,7 @@
     if (msg.type === 'settings-init') {
       state = msg.data || state;
       if (!state.layout || !Array.isArray(state.layout.pages)) state.layout = { pages: [] };
+      backgroundHost = state.backgroundHost || backgroundHost;
       widgetsById = new Map((state.widgets || []).map((w) => [w.id, w]));
       selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
       renderAll();
@@ -28,6 +31,13 @@
       toast('Save failed: ' + msg.message, true);
     } else if (msg.type === 'widget-installed') {
       toast('Installed "' + msg.name + '"');
+    } else if (msg.type === 'background-picked') {
+      const cb = pendingBgPick;
+      pendingBgPick = null;
+      if (cb) cb(msg.source, msg.kind);
+    } else if (msg.type === 'background-failed') {
+      pendingBgPick = null;
+      toast('Could not load background: ' + msg.message, true);
     }
   });
 
@@ -50,7 +60,16 @@
 
   function renderAll() {
     renderPageList();
+    renderGlobalBackground();
     renderEditor();
+  }
+
+  function renderGlobalBackground() {
+    renderBackgroundEditor(
+      el('globalBg'),
+      () => state.layout.background || null,
+      (spec) => { if (spec) state.layout.background = spec; else delete state.layout.background; },
+      { allowInherit: false });
   }
 
   function renderPageList() {
@@ -78,8 +97,15 @@
     el('editorEmpty').hidden = hasPage;
     el('pageHeader').style.display = hasPage ? 'flex' : 'none';
     el('addSlot').style.display = hasPage ? 'block' : 'none';
+    el('pageBgWrap').style.display = hasPage ? 'block' : 'none';
     el('slotList').textContent = '';
     if (!hasPage) return;
+
+    renderBackgroundEditor(
+      el('pageBg'),
+      () => page.background || null,
+      (spec) => { if (spec) page.background = spec; else delete page.background; },
+      { allowInherit: true });
 
     const nameInput = el('pageName');
     nameInput.value = page.name || '';
@@ -413,6 +439,130 @@
         return input;
       }
     }
+  }
+
+  // ---- background editor ---------------------------------------------------------------
+
+  // Renders a compact wallpaper editor into `container`. getSpec()/setSpec(spec|null)
+  // read and write the target background (a page's or the dashboard's). setSpec(null)
+  // clears it; for a page that means "inherit the dashboard background".
+  function renderBackgroundEditor(container, getSpec, setSpec, opts) {
+    opts = opts || {};
+    container.textContent = '';
+    const spec = getSpec();
+    const type = spec ? (spec.type || 'none') : (opts.allowInherit ? 'inherit' : 'none');
+
+    const choices = [];
+    if (opts.allowInherit) choices.push(['inherit', 'Use dashboard default']);
+    choices.push(['none', 'None'], ['color', 'Solid color'], ['gradient', 'Gradient'],
+      ['image', 'Image'], ['video', 'Video (animated)']);
+
+    const typeSel = document.createElement('select');
+    for (const [value, label] of choices) typeSel.add(new Option(label, value, false, value === type));
+    typeSel.onchange = () => {
+      const v = typeSel.value;
+      if (v === 'inherit') setSpec(null);
+      else if (v === 'none') setSpec({ type: 'none' });
+      else setSpec(Object.assign({ type: 'none', fit: 'cover', angle: 135, dim: 0, blur: 0 }, spec || {}, { type: v }));
+      renderBackgroundEditor(container, getSpec, setSpec, opts);
+    };
+    container.appendChild(bgRow('Type', typeSel));
+
+    if (type === 'inherit' || type === 'none') return;
+
+    const patch = (p) => setSpec(Object.assign({}, getSpec(), p));
+    const cur = getSpec() || {};
+
+    if (type === 'color') {
+      container.appendChild(bgColor('Color', cur.color || '#101418', (v) => patch({ color: v })));
+    } else if (type === 'gradient') {
+      container.appendChild(bgColor('Color 1', cur.color || '#101418', (v) => patch({ color: v })));
+      container.appendChild(bgColor('Color 2', cur.color2 || '#0b0e14', (v) => patch({ color2: v })));
+      container.appendChild(bgSlider('Angle', cur.angle != null ? cur.angle : 135, 0, 360, 5, '°', (v) => patch({ angle: v })));
+    } else if (type === 'image' || type === 'video') {
+      container.appendChild(bgFile(container, getSpec, setSpec, opts, type));
+      container.appendChild(bgFitField(cur.fit || 'cover', (v) => patch({ fit: v })));
+      container.appendChild(bgSlider('Dim', cur.dim || 0, 0, 100, 5, '%', (v) => patch({ dim: v })));
+      container.appendChild(bgSlider('Blur', cur.blur || 0, 0, 40, 1, 'px', (v) => patch({ blur: v })));
+    }
+  }
+
+  function bgRow(labelText, control) {
+    const row = document.createElement('div');
+    row.className = 'bg-row';
+    const label = document.createElement('label');
+    label.textContent = labelText;
+    row.append(label, control);
+    return row;
+  }
+
+  function bgColor(labelText, value, onChange) {
+    const input = document.createElement('input');
+    input.type = 'color';
+    input.value = /^#[0-9a-f]{6}$/i.test(value) ? value : '#101418';
+    input.oninput = () => onChange(input.value);
+    return bgRow(labelText, input);
+  }
+
+  function bgSlider(labelText, value, min, max, step, unit, onChange) {
+    const wrap = document.createElement('div');
+    wrap.className = 'slider-wrap';
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = min; input.max = max; input.step = step;
+    input.value = value;
+    const out = document.createElement('output');
+    out.value = value + (unit || '');
+    input.oninput = () => { out.value = input.value + (unit || ''); onChange(parseFloat(input.value)); };
+    wrap.append(input, out);
+    return bgRow(labelText, wrap);
+  }
+
+  function bgFitField(value, onChange) {
+    const select = document.createElement('select');
+    for (const [v, label] of [['cover', 'Cover'], ['contain', 'Contain'], ['stretch', 'Stretch'],
+      ['tile', 'Tile'], ['center', 'Center']]) {
+      select.add(new Option(label, v, false, v === value));
+    }
+    select.onchange = () => onChange(select.value);
+    return bgRow('Fit', select);
+  }
+
+  function bgFile(container, getSpec, setSpec, opts, type) {
+    const wrap = document.createElement('div');
+    wrap.className = 'bg-file';
+
+    const spec = getSpec() || {};
+    if (spec.source) {
+      const url = 'https://' + backgroundHost + '/' + encodeURIComponent(spec.source);
+      const preview = type === 'video' ? document.createElement('video') : document.createElement('img');
+      preview.className = 'bg-preview';
+      preview.src = url;
+      if (type === 'video') { preview.muted = true; preview.loop = true; preview.autoplay = true; preview.setAttribute('playsinline', ''); }
+      preview.onerror = () => { preview.classList.add('broken'); };
+      wrap.appendChild(preview);
+    }
+
+    const btn = document.createElement('button');
+    btn.className = 'ghost';
+    btn.textContent = spec.source ? 'Change file…' : 'Choose file…';
+    btn.onclick = () => {
+      pendingBgPick = (source, kind) => {
+        // If the chosen file's kind differs from the control (image vs video), follow it.
+        const nextType = kind === 'video' ? 'video' : 'image';
+        setSpec(Object.assign({ fit: 'cover', angle: 135, dim: 0, blur: 0 }, getSpec() || {}, { type: nextType, source }));
+        renderBackgroundEditor(container, getSpec, setSpec, opts);
+      };
+      post({ type: 'pick-background', target: opts.allowInherit ? ('page:' + selectedPage) : 'global' });
+    };
+    wrap.appendChild(btn);
+
+    const name = document.createElement('span');
+    name.className = 'bg-filename muted';
+    name.textContent = spec.source || 'No file chosen';
+    wrap.appendChild(name);
+
+    return bgRow(type === 'video' ? 'Video' : 'Image', wrap);
   }
 
   // ---- toast ---------------------------------------------------------------------------

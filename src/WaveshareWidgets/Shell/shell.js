@@ -16,6 +16,11 @@
   let generation = 0;          // invalidates watchdogs from a previous layout
   const fetchRoutes = new Map(); // proxy-fetch id -> widget iframe window
 
+  let backgroundHost = 'backgrounds.wsw';
+  let bgGlobal = null;         // dashboard-wide background spec
+  let bgPages = [];            // per-page background specs (null = inherit global)
+  const bg = createBackgroundController();
+
   // ---- host bridge -----------------------------------------------------------
 
   window.chrome.webview.addEventListener('message', (ev) => {
@@ -104,6 +109,11 @@
     const widgetsById = new Map((data.widgets || []).map((w) => [w.id, w]));
     const pages = (data.layout && data.layout.pages) || [];
 
+    backgroundHost = data.backgroundHost || backgroundHost;
+    bgGlobal = (data.layout && data.layout.background) || null;
+    bgPages = pages.map((p) => p.background || null);
+    bg.reset();
+
     pagesEl.textContent = '';
     dotsEl.textContent = '';
     slots = [];
@@ -158,7 +168,7 @@
     }
 
     emptyEl.hidden = slotCount > 0 || pages.length > 0;
-    updateDots();
+    updateDots(); // also applies the current page's background
 
     generation++;
     armWatchdog(generation);
@@ -226,7 +236,112 @@
   function updateDots() {
     const index = currentPage();
     [...dotsEl.children].forEach((dot, i) => dot.classList.toggle('active', i === index));
+    bg.applyForPage(index);
     wakeChrome();
+  }
+
+  // ---- wallpaper (dashboard/page background) ---------------------------------------
+
+  function createBackgroundController() {
+    const layers = [document.getElementById('bgLayer0'), document.getElementById('bgLayer1')];
+    const dim = document.getElementById('bgDim');
+    let front = 0;         // index of the layer currently shown
+    let currentKey = null; // spec key currently shown, to skip redundant swaps
+
+    const validColor = (c, fallback) =>
+      (typeof c === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(c.trim())) ? c.trim() : fallback;
+
+    function resolveUrl(source) {
+      return 'https://' + backgroundHost + '/' + encodeURIComponent(source);
+    }
+
+    function applyImageFit(layer, fit) {
+      switch (fit) {
+        case 'contain': layer.style.backgroundSize = 'contain'; layer.style.backgroundRepeat = 'no-repeat'; break;
+        case 'stretch': layer.style.backgroundSize = '100% 100%'; layer.style.backgroundRepeat = 'no-repeat'; break;
+        case 'tile':    layer.style.backgroundSize = 'auto';      layer.style.backgroundRepeat = 'repeat'; break;
+        case 'center':  layer.style.backgroundSize = 'auto';      layer.style.backgroundRepeat = 'no-repeat'; break;
+        default:        layer.style.backgroundSize = 'cover';     layer.style.backgroundRepeat = 'no-repeat'; break;
+      }
+    }
+
+    function videoObjectFit(fit) {
+      if (fit === 'contain') return 'contain';
+      if (fit === 'stretch') return 'fill';
+      if (fit === 'center' || fit === 'tile') return 'none';
+      return 'cover';
+    }
+
+    function clearVideo(layer) {
+      const v = layer.querySelector('video');
+      if (v) {
+        try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) { /* ignore */ }
+        v.remove();
+      }
+    }
+
+    function paint(layer, spec) {
+      clearVideo(layer);
+      layer.style.background = '';
+      layer.style.backgroundColor = '';
+      layer.style.backgroundImage = '';
+      layer.style.filter = '';
+      if (!spec || !spec.type || spec.type === 'none') return;
+
+      const blur = Math.max(0, Math.min(40, Number(spec.blur) || 0));
+      layer.classList.toggle('blurred', blur > 0);
+      if (blur) layer.style.filter = 'blur(' + blur + 'px)';
+
+      if (spec.type === 'color') {
+        layer.style.backgroundColor = validColor(spec.color, '#101418');
+      } else if (spec.type === 'gradient') {
+        const angle = Number.isFinite(Number(spec.angle)) ? Number(spec.angle) : 135;
+        layer.style.background = 'linear-gradient(' + angle + 'deg, ' +
+          validColor(spec.color, '#101418') + ', ' + validColor(spec.color2, '#0b0e14') + ')';
+      } else if (spec.type === 'image' && spec.source) {
+        applyImageFit(layer, spec.fit);
+        layer.style.backgroundImage = 'url("' + resolveUrl(spec.source) + '")';
+      } else if (spec.type === 'video' && spec.source) {
+        const v = document.createElement('video');
+        v.autoplay = true; v.loop = true; v.muted = true; v.defaultMuted = true;
+        v.setAttribute('muted', ''); v.setAttribute('playsinline', '');
+        v.style.objectFit = videoObjectFit(spec.fit);
+        v.src = resolveUrl(spec.source);
+        layer.appendChild(v);
+        v.play().catch(() => { /* autoplay policies: muted loop is allowed, ignore */ });
+      }
+    }
+
+    function show(spec) {
+      const key = spec ? JSON.stringify(spec) : 'none';
+      if (key === currentKey) return;
+      currentKey = key;
+
+      const back = 1 - front;
+      paint(layers[back], spec);
+      layers[back].classList.add('show');
+      layers[front].classList.remove('show');
+      front = back;
+
+      dim.style.opacity = String((spec ? Math.max(0, Math.min(100, Number(spec.dim) || 0)) : 0) / 100);
+
+      // After the fade, pause any video left in the now-hidden layer to save CPU.
+      setTimeout(() => {
+        for (const l of layers) {
+          if (!l.classList.contains('show')) {
+            const v = l.querySelector('video');
+            if (v) { try { v.pause(); } catch (e) { /* ignore */ } }
+          }
+        }
+      }, 650);
+    }
+
+    return {
+      applyForPage(index) {
+        show((bgPages[index] || bgGlobal) || null);
+      },
+      reset() { currentKey = null; },
+    };
   }
 
   // Edge zones: tap or horizontal swipe switches pages. Needed because widget iframes

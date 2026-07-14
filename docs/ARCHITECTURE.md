@@ -89,7 +89,8 @@ instead of a blank temperature).
 
 - One virtual host per widget (`SetVirtualHostNameToFolderMapping`), so each widget is a
   distinct browser origin: no shell DOM access, no cross-widget access, per-widget
-  `localStorage`.
+  `localStorage`. The shell itself is `https://app.wsw/`; user wallpaper files are served
+  read-only from `https://backgrounds.wsw/` (mapped to `%LocalAppData%\…\backgrounds\`).
 - `sandbox="allow-scripts allow-same-origin"` — safe *because* of the per-origin split;
   the sandbox attribute prevents popups/top-navigation/downloads.
 - The bridge is JSON-only `postMessage`. Widget-originated message types are `ww-ready`,
@@ -112,5 +113,6 @@ Touch-driven layout editor on the panel itself, software night-dimming overlay, 
 marketplace/gallery, a `wswidget` scaffold/pack CLI, an AI "skill file" for LLM-generated
 widgets, manifest-declared capability permissions, WebView2 nightly recycle for
 multi-week uptime. (Shipped shortly after v1: the desktop settings UI — `SettingsWindow`
-+ `Shell/settings.*` — and the iCUE compatibility layer — `Shell/icue-compat.js` +
-`IcueManifestReader`.)
++ `Shell/settings.*` — the iCUE compatibility layer — `Shell/icue-compat.js` +
+`IcueManifestReader` — and dashboard/per-page wallpaper backgrounds, static or animated,
+crossfading between pages — `BackgroundSpec` + the `#bgRoot` layers in `Shell/shell.*`.)

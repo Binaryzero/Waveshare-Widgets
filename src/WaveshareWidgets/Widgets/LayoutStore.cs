@@ -7,12 +7,50 @@ namespace WaveshareWidgets.Widgets;
 public sealed class DashboardLayout
 {
     [JsonPropertyName("pages")] public List<LayoutPage> Pages { get; set; } = [];
+
+    /// <summary>Dashboard-wide default background, shown on pages that don't override it.</summary>
+    [JsonPropertyName("background")] public BackgroundSpec? Background { get; set; }
 }
 
 public sealed class LayoutPage
 {
     [JsonPropertyName("name")] public string Name { get; set; } = "";
     [JsonPropertyName("slots")] public List<LayoutSlot> Slots { get; set; } = [];
+
+    /// <summary>Optional per-page background; when null the dashboard default applies.</summary>
+    [JsonPropertyName("background")] public BackgroundSpec? Background { get; set; }
+}
+
+/// <summary>
+/// A dashboard/page background layer (iCUE-style wallpaper). Static (color, gradient,
+/// image) or animated (video, or an animated GIF/WebP via the image type). Image/video
+/// files live in <see cref="AppPaths.BackgroundsDir"/> and are referenced by file name.
+/// </summary>
+public sealed class BackgroundSpec
+{
+    /// <summary>"none" | "color" | "gradient" | "image" | "video".</summary>
+    [JsonPropertyName("type")] public string Type { get; set; } = "none";
+
+    /// <summary>Solid fill, or the first stop of a gradient. Hex like "#101418".</summary>
+    [JsonPropertyName("color")] public string? Color { get; set; }
+
+    /// <summary>Second gradient stop (gradient type only).</summary>
+    [JsonPropertyName("color2")] public string? Color2 { get; set; }
+
+    /// <summary>Gradient angle in degrees (gradient type only).</summary>
+    [JsonPropertyName("angle")] public int Angle { get; set; } = 135;
+
+    /// <summary>File name (in BackgroundsDir) for image/video types.</summary>
+    [JsonPropertyName("source")] public string? Source { get; set; }
+
+    /// <summary>"cover" | "contain" | "stretch" | "tile" | "center" (image/video types).</summary>
+    [JsonPropertyName("fit")] public string Fit { get; set; } = "cover";
+
+    /// <summary>Darkening overlay over the wallpaper, 0–100 %, for widget readability.</summary>
+    [JsonPropertyName("dim")] public int Dim { get; set; }
+
+    /// <summary>Gaussian blur applied to the wallpaper, 0–40 px.</summary>
+    [JsonPropertyName("blur")] public int Blur { get; set; }
 }
 
 public sealed class LayoutSlot

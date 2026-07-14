@@ -16,6 +16,7 @@ namespace WaveshareWidgets.App;
 public sealed class DashboardWindow : Form
 {
     private const string ShellHost = "app.wsw";
+    private const string BackgroundHost = "backgrounds.wsw";
 
     private static readonly JsonSerializerOptions BridgeJson = new()
     {
@@ -131,8 +132,12 @@ public sealed class DashboardWindow : Form
         if (_mappedHosts.Add(ShellHost))
             core.SetVirtualHostNameToFolderMapping(ShellHost, AppPaths.ShellDir, CoreWebView2HostResourceAccessKind.Allow);
 
+        // User background images/videos, referenced by file name as https://backgrounds.wsw/<file>.
+        if (_mappedHosts.Add(BackgroundHost))
+            core.SetVirtualHostNameToFolderMapping(BackgroundHost, AppPaths.BackgroundsDir, CoreWebView2HostResourceAccessKind.Allow);
+
         var wanted = _library.Widgets.ToDictionary(w => w.VirtualHost, w => w.Folder);
-        foreach (var stale in _mappedHosts.Where(h => h != ShellHost && !wanted.ContainsKey(h)).ToList())
+        foreach (var stale in _mappedHosts.Where(h => h != ShellHost && h != BackgroundHost && !wanted.ContainsKey(h)).ToList())
         {
             core.ClearVirtualHostNameToFolderMapping(stale);
             _mappedHosts.Remove(stale);
@@ -368,6 +373,7 @@ public sealed class DashboardWindow : Form
             ["widgets"] = JsonSerializer.SerializeToNode(widgets, BridgeJson),
             ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
             ["media"] = JsonSerializer.SerializeToNode(_hub.LatestMedia, BridgeJson),
+            ["backgroundHost"] = BackgroundHost,
             ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated, ["apiVersion"] = 1 },
         };
     }

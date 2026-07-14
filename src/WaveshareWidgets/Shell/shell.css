@@ -15,8 +15,48 @@ html, body {
   touch-action: manipulation;
 }
 
+/* Wallpaper layers, behind everything. Two layers so page-to-page background
+   changes can crossfade; #bgDim darkens only the wallpaper (widgets sit above it). */
+#bgRoot {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background: #000;
+}
+.bg-layer {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.55s ease;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  will-change: opacity;
+}
+/* A hair of scale hides blur bleed at the edges; only applied when blurred. */
+.bg-layer.blurred { transform: scale(1.06); }
+.bg-layer.show { opacity: 1; }
+.bg-layer video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+#bgDim {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.55s ease;
+}
+
 /* Horizontally swipeable pages (iCUE Nexus model) */
 #pages {
+  position: relative;
+  z-index: 2;
   display: flex;
   width: 100%;
   height: 100%;
@@ -114,6 +154,7 @@ html, body {
 #empty {
   position: fixed;
   inset: 0;
+  z-index: 3;
   display: flex;
   flex-direction: column;
   align-items: center;

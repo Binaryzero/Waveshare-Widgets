@@ -239,6 +239,49 @@ fluid across their `supported_slots`.
 
 ---
 
+## Backgrounds (wallpaper)
+
+The dashboard renders a wallpaper layer behind the pages, iCUE-style. It's set in the
+Settings window (a dashboard-wide default, plus an optional per-page override) and stored
+in `layout.json` as a `background` object on the layout root and/or on any page:
+
+```jsonc
+{
+  "background": { "type": "gradient", "color": "#101418", "color2": "#0b0e14", "angle": 135 },
+  "pages": [
+    { "name": "Home", "background": { "type": "image", "source": "a1b2….png",
+        "fit": "cover", "dim": 30, "blur": 8 }, "slots": [ /* … */ ] },
+    { "name": "Media", "slots": [ /* inherits the dashboard background */ ] }
+  ]
+}
+```
+
+| Field | Applies to | Value |
+|---|---|---|
+| `type` | all | `none` \| `color` \| `gradient` \| `image` \| `video` |
+| `color` | color, gradient | hex; solid fill or first gradient stop |
+| `color2` | gradient | hex; second gradient stop |
+| `angle` | gradient | degrees (0–360) |
+| `source` | image, video | file name in the backgrounds folder (below) |
+| `fit` | image, video | `cover` \| `contain` \| `stretch` \| `tile` \| `center` |
+| `dim` | image, video | 0–100 % dark overlay over the wallpaper (not the widgets) |
+| `blur` | image, video | 0–40 px gaussian blur |
+
+- **Static** = `image` (PNG/JPG/WebP/BMP, plus animated GIF/WebP which animate on their own).
+  **Animated** = `video` (MP4/WebM/MOV, played muted + looped).
+- A page with no `background` inherits the dashboard default; per-page backgrounds
+  **crossfade** as you swipe between pages.
+- The dim overlay sits above the wallpaper but below the widgets, so widgets stay at full
+  brightness while the wallpaper is darkened for legibility.
+- Image/video files chosen in Settings are copied into
+  `%LocalAppData%\WaveshareWidgets\backgrounds\` under a content-hashed name and served to
+  the shell from the `https://backgrounds.wsw/<file>` virtual host. `source` is just the
+  file name.
+- Widgets paint on top of the wallpaper; it shows through page margins and any widget that
+  is itself transparent. A page with zero slots becomes a pure wallpaper screen.
+
+---
+
 ## Design constraints
 
 - The panel is ~170 PPI; keep touch targets ≥ 64 px and body text ≥ 12 px.

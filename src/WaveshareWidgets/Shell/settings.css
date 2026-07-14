@@ -149,6 +149,46 @@ main { flex: 1; display: flex; min-height: 0; }
 
 #editorEmpty { color: var(--muted); text-align: center; margin-top: 60px; }
 
+/* ---- background editor ---- */
+.bg-panel-title { margin-top: 22px; }
+.panel-hint { color: var(--muted); font-size: 11px; line-height: 1.4; margin-bottom: 10px; }
+.bg-editor { display: flex; flex-direction: column; gap: 8px; }
+.bg-row { display: flex; align-items: center; gap: 10px; }
+.bg-row > label { color: var(--muted); width: 58px; flex: none; font-size: 12px; }
+.bg-row > select, .bg-row > .slider-wrap, .bg-row > .bg-file { flex: 1; min-width: 0; }
+.bg-row .slider-wrap { display: flex; align-items: center; gap: 8px; }
+.bg-row .slider-wrap input[type="range"] { flex: 1; min-width: 0; }
+.bg-row .slider-wrap output { color: var(--muted); min-width: 42px; text-align: right; font-size: 12px; }
+
+.bg-file { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bg-file .bg-preview {
+  width: 100%;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: #05070b;
+}
+.bg-file .bg-preview.broken { display: none; }
+.bg-file .bg-filename { font-size: 11px; word-break: break-all; }
+
+.bg-details {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.bg-details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  margin-bottom: 8px;
+  user-select: none;
+}
+.bg-details > summary:hover { color: var(--text); }
+.bg-details .bg-editor { max-width: 480px; }
+
 #toast {
   position: fixed;
   left: 50%;

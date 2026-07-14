@@ -11,6 +11,9 @@ internal static class AppPaths
     public static string ConfigFile { get; } = Path.Combine(DataDir, "config.json");
     public static string WebViewUserDataDir { get; } = Path.Combine(DataDir, "webview2");
 
+    /// <summary>User-chosen dashboard background images/videos, served from a virtual host.</summary>
+    public static string BackgroundsDir { get; } = Path.Combine(DataDir, "backgrounds");
+
     /// <summary>Web assets for the dashboard shell page, shipped next to the exe.</summary>
     public static string ShellDir { get; } = Path.Combine(AppContext.BaseDirectory, "Shell");
 
@@ -22,5 +25,6 @@ internal static class AppPaths
         Directory.CreateDirectory(DataDir);
         Directory.CreateDirectory(WidgetsDir);
         Directory.CreateDirectory(WebViewUserDataDir);
+        Directory.CreateDirectory(BackgroundsDir);
     }
 }

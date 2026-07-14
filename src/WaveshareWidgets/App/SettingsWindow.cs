@@ -16,6 +16,11 @@ namespace WaveshareWidgets.App;
 public sealed class SettingsWindow : Form
 {
     private const string ShellHost = "app.wsw";
+    private const string BackgroundHost = "backgrounds.wsw";
+
+    // Extensions accepted for background wallpapers (static + animated).
+    private static readonly string[] ImageExtensions = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"];
+    private static readonly string[] VideoExtensions = [".mp4", ".webm", ".mov", ".m4v"];
 
     private static readonly JsonSerializerOptions BridgeJson = new()
     {
@@ -59,6 +64,8 @@ public sealed class SettingsWindow : Form
             core.Settings.IsZoomControlEnabled = false;
             core.WebMessageReceived += OnWebMessageReceived;
             core.SetVirtualHostNameToFolderMapping(ShellHost, AppPaths.ShellDir, CoreWebView2HostResourceAccessKind.Allow);
+            // So the editor can preview chosen background images/videos.
+            core.SetVirtualHostNameToFolderMapping(BackgroundHost, AppPaths.BackgroundsDir, CoreWebView2HostResourceAccessKind.Allow);
             core.Navigate($"https://{ShellHost}/settings.html");
         }
         catch (Exception ex)
@@ -92,6 +99,10 @@ public sealed class SettingsWindow : Form
                 case "open-widgets-folder":
                     Process.Start(new ProcessStartInfo(AppPaths.WidgetsDir) { UseShellExecute = true });
                     break;
+
+                case "pick-background":
+                    HandlePickBackground(message["target"]?.GetValue<string>() ?? "");
+                    break;
             }
         }
         catch (Exception ex)
@@ -120,6 +131,7 @@ public sealed class SettingsWindow : Form
                 ["layout"] = JsonSerializer.SerializeToNode(LayoutStore.Load()),
                 ["widgets"] = JsonSerializer.SerializeToNode(widgets, BridgeJson),
                 ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
+                ["backgroundHost"] = BackgroundHost,
                 ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated },
             },
         });
@@ -167,6 +179,67 @@ public sealed class SettingsWindow : Form
         {
             MessageBox.Show(this, $"Could not install widget:\n{ex.Message}", "Waveshare Widgets",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private const long MaxBackgroundBytes = 256L * 1024 * 1024;
+
+    /// <summary>
+    /// Lets the user pick a background image or video; copies it into BackgroundsDir under
+    /// a content-hashed name (so re-picking the same file reuses one copy) and returns the
+    /// stored file name to the editor, tagged with <paramref name="target"/> (which spec to
+    /// update: "global" or "page:&lt;index&gt;").
+    /// </summary>
+    private void HandlePickBackground(string target)
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Choose a background image or video",
+            Filter = "Images & video (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.mp4;*.webm;*.mov;*.m4v)" +
+                     "|*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.mp4;*.webm;*.mov;*.m4v" +
+                     "|Images (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp)|*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp" +
+                     "|Video (*.mp4;*.webm;*.mov;*.m4v)|*.mp4;*.webm;*.mov;*.m4v",
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        try
+        {
+            var sourcePath = dialog.FileName;
+            var ext = Path.GetExtension(sourcePath).ToLowerInvariant();
+            var isImage = ImageExtensions.Contains(ext);
+            var isVideo = VideoExtensions.Contains(ext);
+            if (!isImage && !isVideo)
+                throw new InvalidOperationException("Unsupported file type.");
+
+            var info = new FileInfo(sourcePath);
+            if (info.Length > MaxBackgroundBytes)
+                throw new InvalidOperationException($"File is too large ({info.Length / (1024 * 1024)} MB; max 256 MB).");
+
+            Directory.CreateDirectory(AppPaths.BackgroundsDir);
+
+            // Content hash keeps the folder from filling with duplicate copies on re-pick.
+            string hash;
+            using (var stream = File.OpenRead(sourcePath))
+                hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream))[..16].ToLowerInvariant();
+
+            var storedName = hash + ext;
+            var destPath = Path.Combine(AppPaths.BackgroundsDir, storedName);
+            if (!File.Exists(destPath))
+                File.Copy(sourcePath, destPath, overwrite: false);
+
+            Post(new JsonObject
+            {
+                ["type"] = "background-picked",
+                ["target"] = target,
+                ["source"] = storedName,
+                ["kind"] = isVideo ? "video" : "image",
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Background pick failed: {ex.Message}");
+            Post(new JsonObject { ["type"] = "background-failed", ["message"] = ex.Message });
         }
     }
 

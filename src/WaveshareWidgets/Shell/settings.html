@@ -21,6 +21,10 @@
       <div class="panel-title">Pages</div>
       <ul id="pageList"></ul>
       <button id="addPage" class="ghost wide">+ Add page</button>
+
+      <div class="panel-title bg-panel-title">Dashboard background</div>
+      <p class="panel-hint">Wallpaper shown behind widgets on every page (unless a page sets its own).</p>
+      <div id="globalBg" class="bg-editor"></div>
     </aside>
 
     <section id="editor">
@@ -34,6 +38,13 @@
       </div>
       <div id="slotList"></div>
       <button id="addSlot" class="ghost wide">+ Add widget to this page</button>
+
+      <details id="pageBgWrap" class="bg-details">
+        <summary>Page background</summary>
+        <p class="panel-hint">Overrides the dashboard background just for this page.</p>
+        <div id="pageBg" class="bg-editor"></div>
+      </details>
+
       <div id="editorEmpty" hidden>
         <p>No pages yet. Add one to get started.</p>
       </div>
