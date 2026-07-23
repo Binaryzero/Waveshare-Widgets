@@ -37,6 +37,8 @@
       }
     } else if (msg.type === 'sd-profile-result') {
       broadcast({ type: 'ww-sd-profile', profile: msg.data });
+    } else if (msg.type === 'sd-capture-result') {
+      broadcast({ type: 'ww-sd-capture-result', data: msg.data });
     }
   });
 
@@ -69,6 +71,8 @@
       postToHost({ type: 'action', kind: msg.kind, target: String(msg.target || '') });
     } else if (msg.type === 'ww-sd-profile') {
       postToHost({ type: 'sd-profile', profileName: msg.profileName || '', hideWindow: msg.hideWindow !== false, live: msg.live === true });
+    } else if (msg.type === 'ww-sd-capture') {
+      postToHost({ type: 'sd-capture' });
     } else if (msg.type === 'ww-sd-click') {
       postToHost({ type: 'sd-click', row: msg.row | 0, col: msg.col | 0, rows: msg.rows | 0, cols: msg.cols | 0 });
     } else if (msg.type === 'ww-fetch' && msg.id) {

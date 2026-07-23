@@ -14,6 +14,9 @@
     align-items: center;
     user-select: none;
   }
+  /* Background setting: let the dashboard wallpaper show through. */
+  body.bg-transparent { background: transparent; }
+  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
   #backdrop {
     position: fixed; inset: -30px;
     background-size: cover; background-position: center;
@@ -111,6 +114,8 @@
   let base = { position: null, duration: null, at: 0, playing: false };
 
   WW.onInit((state) => {
+    document.body.classList.toggle('bg-transparent', state.settings.bgStyle === 'transparent');
+    document.body.classList.toggle('bg-glass', state.settings.bgStyle === 'glass');
     document.body.style.setProperty('--accent', state.settings.accentColor || '#00d4ff');
     render(state.media);
   });

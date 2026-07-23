@@ -2,14 +2,58 @@
   "id": "ws.stock.weather",
   "name": "Weather",
   "author": "Waveshare Widgets",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Current conditions plus hourly or 6-day forecast from Open-Meteo. Search your city by name — no coordinates, no API key.",
   "min_api_version": 1,
-  "supported_slots": ["quarter", "half", "full"],
+  "supported_slots": [
+    "quarter",
+    "half",
+    "full"
+  ],
   "properties": [
-    { "name": "location", "label": "Location", "type": "location", "default": "New York" },
-    { "name": "units", "label": "Units", "type": "select", "options": ["celsius", "fahrenheit"], "default": "fahrenheit" },
-    { "name": "forecast", "label": "Forecast Strip", "type": "select", "options": ["hourly", "daily", "off"], "default": "hourly" },
-    { "name": "accentColor", "label": "Accent Color", "type": "color", "default": "#ffd166" }
+    {
+      "name": "location",
+      "label": "Location",
+      "type": "location",
+      "default": "New York"
+    },
+    {
+      "name": "units",
+      "label": "Units",
+      "type": "select",
+      "options": [
+        "celsius",
+        "fahrenheit"
+      ],
+      "default": "fahrenheit"
+    },
+    {
+      "name": "forecast",
+      "label": "Forecast Strip",
+      "type": "select",
+      "options": [
+        "hourly",
+        "daily",
+        "off"
+      ],
+      "default": "hourly"
+    },
+    {
+      "name": "accentColor",
+      "label": "Accent Color",
+      "type": "color",
+      "default": "#ffd166"
+    },
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": [
+        "solid",
+        "glass",
+        "transparent"
+      ],
+      "default": "solid"
+    }
   ]
 }

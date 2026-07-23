@@ -12,6 +12,9 @@
     font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
     user-select: none;
   }
+  /* Background setting: let the dashboard wallpaper show through. */
+  body.bg-transparent { background: transparent; }
+  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
   #wrap {
     display: flex;
     width: 100%;
@@ -79,6 +82,8 @@
   let refreshTimer = null;
 
   WW.onInit((state) => {
+    document.body.classList.toggle('bg-transparent', state.settings.bgStyle === 'transparent');
+    document.body.classList.toggle('bg-glass', state.settings.bgStyle === 'glass');
     document.body.style.setProperty('--accent', state.settings.accentColor || '#ffd166');
     refresh();
     clearInterval(refreshTimer);

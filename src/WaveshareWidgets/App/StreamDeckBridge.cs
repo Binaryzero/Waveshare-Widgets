@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -535,7 +536,7 @@ public sealed class StreamDeckBridge
     /// null when the window is missing or the capture comes back blank (some GPU pipelines
     /// refuse PrintWindow) so the caller can fall back to profile parsing.
     /// </summary>
-    public (string DataUri, int W, int H)? CaptureVsdWindow()
+    public (string DataUri, int W, int H, string Hash)? CaptureVsdWindow()
     {
         var vsd = FindVsdWindow();
         if (vsd == IntPtr.Zero)
@@ -578,9 +579,18 @@ public sealed class StreamDeckBridge
                 return null;
             }
 
+            // Content hash lets the caller skip shipping frames that didn't change —
+            // that's what makes a fast poll cheap when the deck is idle.
+            var hash = HashBitmap(bmp);
+
+            // JPEG (opaque window, photographic key faces): ~5-10x smaller than PNG,
+            // which is what makes a sub-second refresh viable over the bridge.
             using var ms = new MemoryStream();
-            bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
-            return ("data:image/png;base64," + Convert.ToBase64String(ms.ToArray()), rect.Right, rect.Bottom);
+            var codec = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
+            using var prms = new EncoderParameters(1);
+            prms.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 82L);
+            bmp.Save(ms, codec, prms);
+            return ("data:image/jpeg;base64," + Convert.ToBase64String(ms.ToArray()), rect.Right, rect.Bottom, hash);
         }
         catch (Exception ex)
         {
@@ -590,6 +600,30 @@ public sealed class StreamDeckBridge
     }
 
     private static bool _loggedBlankCapture;
+
+    /// <summary>Fast sampled FNV-1a over the raw pixel buffer (change detection, not crypto).</summary>
+    private static string HashBitmap(Bitmap bmp)
+    {
+        var data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height),
+            ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            var length = Math.Abs(data.Stride) * bmp.Height;
+            unchecked
+            {
+                var hash = 1469598103934665603UL;
+                for (var offset = 0; offset + 4 <= length; offset += 128)
+                {
+                    hash = (hash ^ (uint)Marshal.ReadInt32(data.Scan0, offset)) * 1099511628211UL;
+                }
+                return hash.ToString("x16");
+            }
+        }
+        finally
+        {
+            bmp.UnlockBits(data);
+        }
+    }
 
     /// <summary>
     /// Moves the VSD overlay off-screen and drops its always-on-top flag so it stops

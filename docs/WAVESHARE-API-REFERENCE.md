@@ -207,6 +207,7 @@ Widget → shell:
 | `ww-open-url` | `url` | open in system browser |
 | `ww-fetch` | `id, url, method, body, contentType` | host-proxied fetch (CORS/bot-wall relief) |
 | `ww-sd-profile` | `profileName, hideWindow, live` | request the Virtual Stream Deck mirror; `live` adds a window screenshot |
+| `ww-sd-capture` | – | capture-only fast path (no profile re-parse; host dedups unchanged frames) |
 | `ww-sd-click` | `row, col, rows, cols` | trigger the VSD key at that grid cell |
 
 Shell → widget:
@@ -218,6 +219,7 @@ Shell → widget:
 | `ww-media` | `media` | now-playing changed |
 | `ww-fetch-result` | `id, status, contentType, bodyBase64, error` | proxied fetch reply |
 | `ww-sd-profile` | `profile: {available, name, rows, cols, buttons, profiles, capture?}` | VSD mirror; `capture` = `{image, w, h}` live window screenshot (only when requested with `live` and capturable) |
+| `ww-sd-capture-result` | `data: {image,w,h} \| {unchanged:true} \| {available:false}` | fast-path capture reply (JPEG data URI) |
 
 **Fetch fallback:** `window.fetch` is wrapped so that a cross-origin request blocked by
 CORS — or answered with a 403/429 bot wall — is transparently retried through the host
@@ -282,6 +284,10 @@ in `layout.json` as a `background` object on the layout root and/or on any page:
   file name.
 - Widgets paint on top of the wallpaper; it shows through page margins and any widget that
   is itself transparent. A page with zero slots becomes a pure wallpaper screen.
+- Stock widgets (clock, CPU, GPU, weather, media, Stream Deck) have a **Background**
+  setting — `solid` (default), `glass` (translucent tint), or `transparent` — so they can
+  float directly on the wallpaper. Widget authors: paint your base background on `body`
+  and honor a `bgStyle` property the same way to fit in.
 
 ---
 

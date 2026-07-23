@@ -2,13 +2,44 @@
   "id": "ws.stock.cpu",
   "name": "CPU Monitor",
   "author": "Waveshare Widgets",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "CPU load ring with the best available stats for this machine (temp, clock, power, memory).",
   "min_api_version": 1,
-  "supported_slots": ["quarter", "half"],
+  "supported_slots": [
+    "quarter",
+    "half"
+  ],
   "properties": [
-    { "name": "accentColor", "label": "Accent Color", "type": "color", "default": "#00d4ff" },
-    { "name": "loadSensorId", "label": "Load Sensor", "type": "sensor", "sensor_type": "Load", "default": "" },
-    { "name": "tempSensorId", "label": "Temperature Sensor", "type": "sensor", "sensor_type": "Temperature", "default": "" }
+    {
+      "name": "accentColor",
+      "label": "Accent Color",
+      "type": "color",
+      "default": "#00d4ff"
+    },
+    {
+      "name": "loadSensorId",
+      "label": "Load Sensor",
+      "type": "sensor",
+      "sensor_type": "Load",
+      "default": ""
+    },
+    {
+      "name": "tempSensorId",
+      "label": "Temperature Sensor",
+      "type": "sensor",
+      "sensor_type": "Temperature",
+      "default": ""
+    },
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": [
+        "solid",
+        "glass",
+        "transparent"
+      ],
+      "default": "solid"
+    }
   ]
 }

@@ -16,6 +16,9 @@
     gap: 2vh;
     user-select: none;
   }
+  /* Background setting: let the dashboard wallpaper show through. */
+  body.bg-transparent { background: transparent; }
+  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
   #time {
     color: var(--accent, #e8ecf2);
     font-size: clamp(40px, 34vh, 160px);
@@ -39,6 +42,8 @@
   let showSeconds = true;
 
   WW.onInit((state) => {
+    document.body.classList.toggle('bg-transparent', state.settings.bgStyle === 'transparent');
+    document.body.classList.toggle('bg-glass', state.settings.bgStyle === 'glass');
     document.body.style.setProperty('--accent', state.settings.accentColor || '#e8ecf2');
     hour12 = state.settings.hour12 === 'on';
     showSeconds = state.settings.showSeconds !== 'off';

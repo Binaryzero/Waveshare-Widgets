@@ -219,6 +219,11 @@ public sealed class DashboardWindow : Form
                     PostToShell("sd-profile-result", sdResult);
                     break;
 
+                case "sd-capture":
+                    _streamDeck ??= new StreamDeckBridge();
+                    HandleSdCapture();
+                    break;
+
                 case "sd-click":
                     _streamDeck ??= new StreamDeckBridge();
                     _streamDeck.ClickCell(
@@ -390,6 +395,51 @@ public sealed class DashboardWindow : Form
             ["backgroundHost"] = BackgroundHost,
             ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated, ["apiVersion"] = 1 },
         };
+    }
+
+    private string? _lastCaptureHash;
+    private long _lastCaptureTicks;
+    private JsonObject? _lastCaptureResult;
+
+    /// <summary>
+    /// Capture-only fast path for the live Stream Deck mirror: no profile re-parse, JPEG
+    /// frame only when the pixels actually changed ({unchanged:true} otherwise), and a
+    /// short throttle so several polling widgets share one PrintWindow per interval.
+    /// </summary>
+    private void HandleSdCapture()
+    {
+        var now = Environment.TickCount64;
+        if (now - _lastCaptureTicks < 100 && _lastCaptureResult is { } recent)
+        {
+            PostToShell("sd-capture-result", recent.DeepClone());
+            return;
+        }
+        _lastCaptureTicks = now;
+
+        JsonObject result;
+        if (_streamDeck!.CaptureVsdWindow() is { } capture)
+        {
+            if (capture.Hash == _lastCaptureHash)
+            {
+                result = new JsonObject { ["unchanged"] = true };
+            }
+            else
+            {
+                _lastCaptureHash = capture.Hash;
+                result = new JsonObject
+                {
+                    ["image"] = capture.DataUri,
+                    ["w"] = capture.W,
+                    ["h"] = capture.H,
+                };
+            }
+        }
+        else
+        {
+            result = new JsonObject { ["available"] = false };
+        }
+        _lastCaptureResult = (JsonObject)result.DeepClone();
+        PostToShell("sd-capture-result", result);
     }
 
     private JsonObject BuildStreamDeckProfile(string? preferredName)

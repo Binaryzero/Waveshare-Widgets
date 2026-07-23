@@ -16,6 +16,9 @@
     gap: 6%;
     user-select: none;
   }
+  /* Background setting: let the dashboard wallpaper show through. */
+  body.bg-transparent { background: transparent; }
+  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
   .ring { position: relative; height: 72%; aspect-ratio: 1; }
   .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
   .ring .track { fill: none; stroke: #1c2331; stroke-width: 9; }
@@ -57,6 +60,8 @@
   ring.style.strokeDashoffset = String(CIRCUMFERENCE);
 
   WW.onInit((state) => {
+    document.body.classList.toggle('bg-transparent', state.settings.bgStyle === 'transparent');
+    document.body.classList.toggle('bg-glass', state.settings.bgStyle === 'glass');
     document.body.style.setProperty('--accent', state.settings.accentColor || '#00d4ff');
   });
 

@@ -7,7 +7,7 @@
   'use strict';
   if (window.WW) return; // already installed (injected + script tag)
 
-  const listeners = { init: [], sensors: [], media: [], streamdeck: [] };
+  const listeners = { init: [], sensors: [], media: [], streamdeck: [], sdcapture: [] };
   const state = { settings: {}, sensors: [], media: null, status: null, ready: false };
   const pendingFetches = new Map();
   let fetchSeq = 0;
@@ -37,6 +37,8 @@
       emit('media', state.media);
     } else if (msg.type === 'ww-sd-profile') {
       emit('streamdeck', msg.profile || { available: false });
+    } else if (msg.type === 'ww-sd-capture-result') {
+      emit('sdcapture', msg.data || { available: false });
     } else if (msg.type === 'ww-fetch-result') {
       const pending = pendingFetches.get(msg.id);
       if (!pending) return;
@@ -164,6 +166,11 @@
     },
     /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}], capture?}. */
     onStreamDeck(cb) { listeners.streamdeck.push(cb); },
+    /** Capture-only fast path for live mirroring: cheaper than requestStreamDeck (no
+     * profile re-parse; the host skips the frame entirely when pixels are unchanged). */
+    requestStreamDeckCapture() { parent.postMessage({ type: 'ww-sd-capture' }, '*'); },
+    /** cb(data) — {image,w,h} on a new frame, {unchanged:true}, or {available:false}. */
+    onStreamDeckCapture(cb) { listeners.sdcapture.push(cb); },
     /** Trigger a Stream Deck button by its grid cell. */
     streamDeckClick(row, col, rows, cols) {
       parent.postMessage({ type: 'ww-sd-click', row, col, rows, cols }, '*');

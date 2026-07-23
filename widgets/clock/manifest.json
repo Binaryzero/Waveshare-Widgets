@@ -2,13 +2,51 @@
   "id": "ws.stock.clock",
   "name": "Clock",
   "author": "Waveshare Widgets",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Large digital clock with date.",
   "min_api_version": 1,
-  "supported_slots": ["quarter", "half", "full"],
+  "supported_slots": [
+    "quarter",
+    "half",
+    "full"
+  ],
   "properties": [
-    { "name": "accentColor", "label": "Accent Color", "type": "color", "default": "#e8ecf2" },
-    { "name": "hour12", "label": "12-hour Format", "type": "select", "options": ["off", "on"], "default": "off" },
-    { "name": "showSeconds", "label": "Show Seconds", "type": "select", "options": ["on", "off"], "default": "on" }
+    {
+      "name": "accentColor",
+      "label": "Accent Color",
+      "type": "color",
+      "default": "#e8ecf2"
+    },
+    {
+      "name": "hour12",
+      "label": "12-hour Format",
+      "type": "select",
+      "options": [
+        "off",
+        "on"
+      ],
+      "default": "off"
+    },
+    {
+      "name": "showSeconds",
+      "label": "Show Seconds",
+      "type": "select",
+      "options": [
+        "on",
+        "off"
+      ],
+      "default": "on"
+    },
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": [
+        "solid",
+        "glass",
+        "transparent"
+      ],
+      "default": "solid"
+    }
   ]
 }

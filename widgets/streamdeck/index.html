@@ -13,6 +13,10 @@
     user-select: none;
     -webkit-user-select: none;
   }
+  /* Background setting: let the dashboard wallpaper show through. */
+  body.bg-transparent { background: transparent; }
+  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  body.bg-transparent #live, body.bg-glass #live { background: transparent; }
   #grid {
     display: grid;
     gap: 8px;
@@ -121,9 +125,10 @@
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
   'use strict';
-  const cfg = { rows: 0, cols: 0, showEmpty: true, hideWindow: true, profileName: '', keyShape: 'fill', live: true };
+  const cfg = { rows: 0, cols: 0, showEmpty: true, hideWindow: true, profileName: '', keyShape: 'fill', live: true, liveRefresh: 400 };
   let lastProfile = null;
   let pollTimer = null;
+  let captureTimer = null;
 
   // The on-panel picker remembers its choice across reloads (per-widget localStorage);
   // an explicit profileName in the widget settings always wins.
@@ -140,8 +145,26 @@
     cfg.profileName = s.profileName || rememberedProfile();
     cfg.keyShape = s.keyShape === 'square' ? 'square' : 'fill';
     cfg.live = s.liveMode !== 'off';
+    cfg.liveRefresh = Math.min(5000, Math.max(150, Number(s.liveRefresh) || 400));
+    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
+    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
     schedulePolling();
     poll();
+  });
+
+  // Fast capture-only loop: the host answers {unchanged:true} for identical frames, so
+  // polling quickly is cheap while the deck is idle.
+  WW.onStreamDeckCapture((data) => {
+    if (!cfg.live) return;
+    if (data.image) {
+      if (lastProfile && lastProfile.available) {
+        if (!lastProfile.capture) lastProfile.capture = {};
+        lastProfile.capture.image = data.image;
+        renderLive(lastProfile);
+      }
+    } else if (data.available === false) {
+      poll(); // window went away: refresh the profile so the fallback/message shows
+    }
   });
 
   WW.onStreamDeck(render);
@@ -151,11 +174,13 @@
     WW.requestStreamDeck({ profileName: cfg.profileName, hideWindow: cfg.hideWindow, live: cfg.live });
   }
 
-  // Poll so Stream Deck changes appear on the panel: fast when live-mirroring (dynamic
-  // key faces update continuously), relaxed when only parsing profile icons.
+  // The profile poll (buttons, picker, page switches) stays relaxed; in live mode a
+  // separate capture-only loop carries the actual pixels at the configured rate.
   function schedulePolling() {
     clearInterval(pollTimer);
-    pollTimer = setInterval(poll, cfg.live ? 1500 : 4000);
+    pollTimer = setInterval(poll, 4000);
+    clearInterval(captureTimer);
+    if (cfg.live) captureTimer = setInterval(() => WW.requestStreamDeckCapture(), cfg.liveRefresh);
   }
 
   function showMessage(title, detail) {
