@@ -2,7 +2,7 @@
   "id": "ws.stock.streamdeck",
   "name": "Stream Deck",
   "author": "Waveshare Widgets",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Mirrors your Elgato Virtual Stream Deck onto the panel — real buttons, real plugin actions (Discord, OBS, Hue), live dynamic key faces (weather, statuses). Requires Elgato Stream Deck software with a Virtual Stream Deck open, with 'Hide unused keys' turned OFF.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
@@ -15,6 +15,12 @@
     { "name": "keyShape", "label": "Key shape", "type": "select", "options": ["fill", "square"], "default": "fill" },
     { "name": "showEmpty", "label": "Show empty keys", "type": "select", "options": ["on", "off"], "default": "on" },
     { "name": "rowsOverride", "label": "Rows (0 = auto)", "type": "number", "min": 0, "max": 8, "step": 1, "default": 0 },
-    { "name": "colsOverride", "label": "Columns (0 = auto)", "type": "number", "min": 0, "max": 16, "step": 1, "default": 0 }
+    { "name": "colsOverride", "label": "Columns (0 = auto)", "type": "number", "min": 0, "max": 16, "step": 1, "default": 0 },
+    { "name": "titleColor", "label": "Title color", "type": "color", "default": "#e8ecf2", "group": "Text" },
+    { "name": "titleSize", "label": "Title size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" },
+    { "name": "fallbackColor", "label": "Fallback color", "type": "color", "default": "#aeb7c4", "group": "Text" },
+    { "name": "fallbackSize", "label": "Fallback size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" },
+    { "name": "messageColor", "label": "Message color", "type": "color", "default": "#7d8697", "group": "Text" },
+    { "name": "messageSize", "label": "Message size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" }
   ]
 }

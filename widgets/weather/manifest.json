@@ -2,7 +2,7 @@
   "id": "ws.stock.weather",
   "name": "Weather",
   "author": "Waveshare Widgets",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Current conditions plus hourly or 6-day forecast from Open-Meteo. Search your city by name — no coordinates, no API key.",
   "min_api_version": 1,
   "supported_slots": [
@@ -54,6 +54,91 @@
         "transparent"
       ],
       "default": "solid"
+    },
+    {
+      "name": "tempColor",
+      "label": "Temperature color",
+      "type": "color",
+      "default": "#e8ecf2",
+      "group": "Text"
+    },
+    {
+      "name": "tempSize",
+      "label": "Temperature size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
+    },
+    {
+      "name": "conditionColor",
+      "label": "Condition color",
+      "type": "color",
+      "default": "#aeb7c4",
+      "group": "Text"
+    },
+    {
+      "name": "conditionSize",
+      "label": "Condition size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
+    },
+    {
+      "name": "metaColor",
+      "label": "Details color",
+      "type": "color",
+      "default": "#7d8697",
+      "group": "Text"
+    },
+    {
+      "name": "metaSize",
+      "label": "Details size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
+    },
+    {
+      "name": "locationColor",
+      "label": "Location color",
+      "type": "color",
+      "default": "#ffd166",
+      "group": "Text"
+    },
+    {
+      "name": "locationSize",
+      "label": "Location size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
+    },
+    {
+      "name": "forecastColor",
+      "label": "Forecast color",
+      "type": "color",
+      "default": "#7d8697",
+      "group": "Text"
+    },
+    {
+      "name": "forecastSize",
+      "label": "Forecast size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
     }
   ]
 }

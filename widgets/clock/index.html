@@ -20,15 +20,15 @@
   body.bg-transparent { background: transparent; }
   body.bg-glass { background: rgba(11, 14, 20, 0.55); }
   #time {
-    color: var(--accent, #e8ecf2);
-    font-size: clamp(40px, 34vh, 160px);
+    color: var(--time-color, var(--accent, #e8ecf2));
+    font-size: calc(clamp(40px, 34vh, 160px) * var(--time-scale, 1));
     font-weight: 200;
     line-height: 1;
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.02em;
   }
   #time small { font-size: 40%; color: #7d8697; font-weight: 200; }
-  #date { color: #7d8697; font-size: clamp(12px, 6vh, 26px); font-weight: 400; letter-spacing: 0.08em; }
+  #date { color: var(--date-color, #7d8697); font-size: calc(clamp(12px, 6vh, 26px) * var(--date-scale, 1)); font-weight: 400; letter-spacing: 0.08em; }
 </style>
 </head>
 <body>
@@ -45,6 +45,17 @@
     document.body.classList.toggle('bg-transparent', state.settings.bgStyle === 'transparent');
     document.body.classList.toggle('bg-glass', state.settings.bgStyle === 'glass');
     document.body.style.setProperty('--accent', state.settings.accentColor || '#e8ecf2');
+    const s = state.settings;
+    // Time is accent-driven today: the host merges manifest defaults into settings,
+    // so a timeColor still at its default falls through to the accent chain and
+    // accentColor users see no change.
+    const timeColor = (s.timeColor && String(s.timeColor).toLowerCase() !== '#e8ecf2')
+      ? s.timeColor
+      : (s.accentColor || '#e8ecf2');
+    document.body.style.setProperty('--time-color', timeColor);
+    document.body.style.setProperty('--time-scale', (Number(s.timeSize) || 100) / 100);
+    document.body.style.setProperty('--date-color', s.dateColor || '#7d8697');
+    document.body.style.setProperty('--date-scale', (Number(s.dateSize) || 100) / 100);
     hour12 = state.settings.hour12 === 'on';
     showSeconds = state.settings.showSeconds !== 'off';
     render();
