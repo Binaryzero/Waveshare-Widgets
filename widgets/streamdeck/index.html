@@ -70,15 +70,16 @@
   .key img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 13px; }
   .key .title {
     position: absolute; left: 0; right: 0; bottom: 0;
-    font-size: clamp(8px, 2.6vh, 12px);
+    color: var(--title-color, #e8ecf2);
+    font-size: calc(clamp(8px, 2.6vh, 12px) * var(--title-scale, 1));
     text-align: center;
     padding: 2px 3px;
     background: linear-gradient(transparent, rgba(0,0,0,0.75));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .key .fallback {
-    font-size: clamp(9px, 3.2vh, 14px);
-    color: #aeb7c4;
+    font-size: calc(clamp(9px, 3.2vh, 14px) * var(--fallback-scale, 1));
+    color: var(--fallback-color, #aeb7c4);
     text-align: center;
     padding: 4px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -109,7 +110,7 @@
     display: none; flex-direction: column; gap: 1.4vh;
     align-items: center; justify-content: center;
     text-align: center; padding: 18px;
-    color: #7d8697; font-size: clamp(12px, 4.5vh, 18px);
+    color: var(--message-color, #7d8697); font-size: calc(clamp(12px, 4.5vh, 18px) * var(--message-scale, 1));
     background: #0b0e14;
   }
   #message small { color: #545d6e; font-size: 80%; max-width: 90%; }
@@ -148,6 +149,12 @@
     cfg.liveRefresh = Math.min(5000, Math.max(150, Number(s.liveRefresh) || 400));
     document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
     document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
+    document.body.style.setProperty('--title-color', s.titleColor || '#e8ecf2');
+    document.body.style.setProperty('--title-scale', (Number(s.titleSize) || 100) / 100);
+    document.body.style.setProperty('--fallback-color', s.fallbackColor || '#aeb7c4');
+    document.body.style.setProperty('--fallback-scale', (Number(s.fallbackSize) || 100) / 100);
+    document.body.style.setProperty('--message-color', s.messageColor || '#7d8697');
+    document.body.style.setProperty('--message-scale', (Number(s.messageSize) || 100) / 100);
     schedulePolling();
     poll();
   });

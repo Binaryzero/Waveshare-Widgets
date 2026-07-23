@@ -2,7 +2,7 @@
   "id": "ws.stock.media",
   "name": "Now Playing",
   "author": "Waveshare Widgets",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Now-playing media with album art, progress bar, and touch transport controls.",
   "min_api_version": 1,
   "supported_slots": [
@@ -26,6 +26,74 @@
         "transparent"
       ],
       "default": "solid"
+    },
+    {
+      "name": "titleColor",
+      "label": "Title color",
+      "type": "color",
+      "default": "#e8ecf2",
+      "group": "Text"
+    },
+    {
+      "name": "titleSize",
+      "label": "Title size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
+    },
+    {
+      "name": "artistColor",
+      "label": "Artist color",
+      "type": "color",
+      "default": "#aeb7c4",
+      "group": "Text"
+    },
+    {
+      "name": "artistSize",
+      "label": "Artist size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
+    },
+    {
+      "name": "albumColor",
+      "label": "Album color",
+      "type": "color",
+      "default": "#7d8697",
+      "group": "Text"
+    },
+    {
+      "name": "albumSize",
+      "label": "Album size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
+    },
+    {
+      "name": "timeColor",
+      "label": "Time color",
+      "type": "color",
+      "default": "#7d8697",
+      "group": "Text"
+    },
+    {
+      "name": "timeSize",
+      "label": "Time size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
     }
   ]
 }

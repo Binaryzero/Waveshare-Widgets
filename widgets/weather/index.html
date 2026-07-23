@@ -27,18 +27,18 @@
   #now { display: flex; align-items: center; gap: 5%; flex: none; }
   #icon { font-size: clamp(40px, 24vh, 100px); line-height: 1; }
   #main { display: flex; flex-direction: column; gap: 0.8vh; }
-  #temp { font-size: clamp(30px, 17vh, 70px); font-weight: 200; line-height: 1; }
+  #temp { font-size: calc(clamp(30px, 17vh, 70px) * var(--temp-scale, 1)); color: var(--temp-color, #e8ecf2); font-weight: 200; line-height: 1; }
   #temp small { font-size: 45%; color: var(--accent, #ffd166); font-weight: 400; }
-  #desc { font-size: clamp(12px, 4.6vh, 20px); color: #aeb7c4; }
-  #meta { font-size: clamp(10px, 3.8vh, 15px); color: #7d8697; }
-  #place { font-size: clamp(10px, 3.8vh, 15px); color: var(--accent, #ffd166); letter-spacing: 0.08em; text-transform: uppercase; }
+  #desc { font-size: calc(clamp(12px, 4.6vh, 20px) * var(--condition-scale, 1)); color: var(--condition-color, #aeb7c4); }
+  #meta { font-size: calc(clamp(10px, 3.8vh, 15px) * var(--meta-scale, 1)); color: var(--meta-color, #7d8697); }
+  #place { font-size: calc(clamp(10px, 3.8vh, 15px) * var(--location-scale, 1)); color: var(--location-color, var(--accent, #ffd166)); letter-spacing: 0.08em; text-transform: uppercase; }
 
   #forecast { display: flex; flex: 1; max-width: 58%; justify-content: space-evenly; gap: 4px; }
   .fc { display: flex; flex-direction: column; align-items: center; gap: 1vh; min-width: 0; }
-  .fc .t { color: #7d8697; font-size: clamp(9px, 3.4vh, 14px); white-space: nowrap; }
+  .fc .t { color: var(--forecast-color, #7d8697); font-size: calc(clamp(9px, 3.4vh, 14px) * var(--forecast-scale, 1)); white-space: nowrap; }
   .fc .e { font-size: clamp(16px, 8vh, 34px); line-height: 1; }
-  .fc .v { font-size: clamp(11px, 4.6vh, 19px); font-weight: 600; white-space: nowrap; }
-  .fc .s { font-size: clamp(9px, 3.2vh, 13px); color: #7d8697; white-space: nowrap; }
+  .fc .v { color: var(--forecast-value-color, #e8ecf2); font-size: calc(clamp(11px, 4.6vh, 19px) * var(--forecast-scale, 1)); font-weight: 600; white-space: nowrap; }
+  .fc .s { color: var(--forecast-color, #7d8697); font-size: calc(clamp(9px, 3.2vh, 13px) * var(--forecast-scale, 1)); white-space: nowrap; }
 
   /* Quarter slots are too narrow for the strip; keep just current conditions */
   @media (max-width: 470px) { #forecast { display: none; } }
@@ -85,6 +85,31 @@
     document.body.classList.toggle('bg-transparent', state.settings.bgStyle === 'transparent');
     document.body.classList.toggle('bg-glass', state.settings.bgStyle === 'glass');
     document.body.style.setProperty('--accent', state.settings.accentColor || '#ffd166');
+
+    // Per-text-type customization (color + percent size scale). Scales are bare
+    // numbers so the CSS calc() multiplication stays valid.
+    const s = state.settings;
+    document.body.style.setProperty('--temp-color', s.tempColor || '#e8ecf2');
+    document.body.style.setProperty('--temp-scale', String((Number(s.tempSize) || 100) / 100));
+    document.body.style.setProperty('--condition-color', s.conditionColor || '#aeb7c4');
+    document.body.style.setProperty('--condition-scale', String((Number(s.conditionSize) || 100) / 100));
+    document.body.style.setProperty('--meta-color', s.metaColor || '#7d8697');
+    document.body.style.setProperty('--meta-scale', String((Number(s.metaSize) || 100) / 100));
+    // Location is accent-driven today: a locationColor still at its manifest
+    // default falls through to the accent chain, so accentColor users see no change.
+    const locationColor = (s.locationColor && String(s.locationColor).toLowerCase() !== '#ffd166')
+      ? s.locationColor
+      : (s.accentColor || '#ffd166');
+    document.body.style.setProperty('--location-color', locationColor);
+    document.body.style.setProperty('--location-scale', String((Number(s.locationSize) || 100) / 100));
+    // The forecast row mixes label gray (#7d8697) and value white (#e8ecf2) today;
+    // values only follow forecastColor once it moves off its default.
+    const forecastColor = s.forecastColor || '#7d8697';
+    document.body.style.setProperty('--forecast-color', forecastColor);
+    document.body.style.setProperty('--forecast-value-color',
+      String(forecastColor).toLowerCase() === '#7d8697' ? '#e8ecf2' : forecastColor);
+    document.body.style.setProperty('--forecast-scale', String((Number(s.forecastSize) || 100) / 100));
+
     refresh();
     clearInterval(refreshTimer);
     refreshTimer = setInterval(refresh, 10 * 60 * 1000);

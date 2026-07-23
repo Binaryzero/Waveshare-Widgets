@@ -32,12 +32,12 @@
     flex: none;
   }
   #info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1vh; }
-  #title  { font-size: clamp(17px, 8.5vh, 38px); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #artist { font-size: clamp(13px, 5.5vh, 24px); color: #aeb7c4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #album  { font-size: clamp(11px, 4vh, 17px); color: #7d8697; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #title  { font-size: calc(clamp(17px, 8.5vh, 38px) * var(--title-scale, 1)); color: var(--title-color, #e8ecf2); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #artist { font-size: calc(clamp(13px, 5.5vh, 24px) * var(--artist-scale, 1)); color: var(--artist-color, #aeb7c4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #album  { font-size: calc(clamp(11px, 4vh, 17px) * var(--album-scale, 1)); color: var(--album-color, #7d8697); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   #timeline { display: flex; align-items: center; gap: 10px; margin-top: 1.2vh; }
-  #timeline time { font-size: clamp(10px, 3.6vh, 14px); color: #7d8697; font-variant-numeric: tabular-nums; flex: none; }
+  #timeline time { font-size: calc(clamp(10px, 3.6vh, 14px) * var(--time-scale, 1)); color: var(--time-color, #7d8697); font-variant-numeric: tabular-nums; flex: none; }
   #bar {
     flex: 1; height: 6px; border-radius: 3px;
     background: rgba(255, 255, 255, 0.12);
@@ -117,6 +117,15 @@
     document.body.classList.toggle('bg-transparent', state.settings.bgStyle === 'transparent');
     document.body.classList.toggle('bg-glass', state.settings.bgStyle === 'glass');
     document.body.style.setProperty('--accent', state.settings.accentColor || '#00d4ff');
+    const s = state.settings;
+    document.body.style.setProperty('--title-color', s.titleColor || '#e8ecf2');
+    document.body.style.setProperty('--title-scale', (Number(s.titleSize) || 100) / 100);
+    document.body.style.setProperty('--artist-color', s.artistColor || '#aeb7c4');
+    document.body.style.setProperty('--artist-scale', (Number(s.artistSize) || 100) / 100);
+    document.body.style.setProperty('--album-color', s.albumColor || '#7d8697');
+    document.body.style.setProperty('--album-scale', (Number(s.albumSize) || 100) / 100);
+    document.body.style.setProperty('--time-color', s.timeColor || '#7d8697');
+    document.body.style.setProperty('--time-scale', (Number(s.timeSize) || 100) / 100);
     render(state.media);
   });
   WW.onMedia(render);

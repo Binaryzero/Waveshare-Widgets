@@ -2,7 +2,7 @@
   "id": "ws.stock.gpu",
   "name": "GPU Monitor",
   "author": "Waveshare Widgets",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "GPU load ring with temperature, clock and VRAM readouts.",
   "min_api_version": 1,
   "supported_slots": [
@@ -40,6 +40,74 @@
         "transparent"
       ],
       "default": "solid"
+    },
+    {
+      "name": "titleColor",
+      "label": "Title color",
+      "type": "color",
+      "default": "#7d8697",
+      "group": "Text"
+    },
+    {
+      "name": "titleSize",
+      "label": "Title size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
+    },
+    {
+      "name": "valueColor",
+      "label": "Value color",
+      "type": "color",
+      "default": "#e8ecf2",
+      "group": "Text"
+    },
+    {
+      "name": "valueSize",
+      "label": "Value size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
+    },
+    {
+      "name": "labelColor",
+      "label": "Label color",
+      "type": "color",
+      "default": "#7d8697",
+      "group": "Text"
+    },
+    {
+      "name": "labelSize",
+      "label": "Label size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
+    },
+    {
+      "name": "hintColor",
+      "label": "Hint color",
+      "type": "color",
+      "default": "#545d6e",
+      "group": "Text"
+    },
+    {
+      "name": "hintSize",
+      "label": "Hint size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
     }
   ]
 }

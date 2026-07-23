@@ -27,13 +27,13 @@
     position: absolute; inset: 0;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
   }
-  .ring .center .big { font-size: clamp(20px, 9vh, 44px); font-weight: 600; line-height: 1; }
-  .ring .center .cap { font-size: clamp(9px, 3vh, 13px); color: #7d8697; letter-spacing: 0.14em; margin-top: 4px; }
+  .ring .center .big { font-size: calc(clamp(20px, 9vh, 44px) * var(--value-scale, 1)); color: var(--value-color, #e8ecf2); font-weight: 600; line-height: 1; }
+  .ring .center .cap { font-size: calc(clamp(9px, 3vh, 13px) * var(--title-scale, 1)); color: var(--title-color, #7d8697); letter-spacing: 0.14em; margin-top: 4px; }
   #stats { display: flex; flex-direction: column; gap: 8%; }
-  .stat .label { font-size: clamp(9px, 3vh, 13px); color: #7d8697; letter-spacing: 0.1em; text-transform: uppercase; }
-  .stat .val { font-size: clamp(16px, 7vh, 34px); font-weight: 600; }
+  .stat .label { font-size: calc(clamp(9px, 3vh, 13px) * var(--label-scale, 1)); color: var(--label-color, #7d8697); letter-spacing: 0.1em; text-transform: uppercase; }
+  .stat .val { font-size: calc(clamp(16px, 7vh, 34px) * var(--value-scale, 1)); color: var(--value-color, #e8ecf2); font-weight: 600; }
   .stat .val small { font-size: 55%; color: #7d8697; font-weight: 400; }
-  #hint { position: fixed; left: 12px; bottom: 8px; font-size: clamp(8px, 2.4vh, 11px); color: #545d6e; max-width: 92%; }
+  #hint { position: fixed; left: 12px; bottom: 8px; font-size: calc(clamp(8px, 2.4vh, 11px) * var(--hint-scale, 1)); color: var(--hint-color, #545d6e); max-width: 92%; }
   #hint[hidden] { display: none; }
 </style>
 </head>
@@ -63,6 +63,17 @@
     document.body.classList.toggle('bg-transparent', state.settings.bgStyle === 'transparent');
     document.body.classList.toggle('bg-glass', state.settings.bgStyle === 'glass');
     document.body.style.setProperty('--accent', state.settings.accentColor || '#00d4ff');
+
+    // Per-text-type customization (color + percent size scale).
+    const s = state.settings;
+    document.body.style.setProperty('--title-color', s.titleColor || '#7d8697');
+    document.body.style.setProperty('--title-scale', String((Number(s.titleSize) || 100) / 100));
+    document.body.style.setProperty('--value-color', s.valueColor || '#e8ecf2');
+    document.body.style.setProperty('--value-scale', String((Number(s.valueSize) || 100) / 100));
+    document.body.style.setProperty('--label-color', s.labelColor || '#7d8697');
+    document.body.style.setProperty('--label-scale', String((Number(s.labelSize) || 100) / 100));
+    document.body.style.setProperty('--hint-color', s.hintColor || '#545d6e');
+    document.body.style.setProperty('--hint-scale', String((Number(s.hintSize) || 100) / 100));
   });
 
   function pick(settingId, opts) {

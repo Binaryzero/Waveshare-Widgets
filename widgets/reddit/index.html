@@ -32,13 +32,14 @@
   }
   #caption.visible { opacity: 1; }
   #caption .title {
-    font-size: clamp(11px, 4.2vh, 16px);
+    color: var(--title-color, #e8ecf2);
+    font-size: calc(clamp(11px, 4.2vh, 16px) * var(--title-scale, 1));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     text-shadow: 0 1px 3px rgba(0,0,0,0.9);
   }
   #caption .meta {
-    font-size: clamp(9px, 3.2vh, 12px);
-    color: #aeb7c4;
+    font-size: calc(clamp(9px, 3.2vh, 12px) * var(--meta-scale, 1));
+    color: var(--meta-color, #aeb7c4);
     text-shadow: 0 1px 3px rgba(0,0,0,0.9);
   }
   #paused {
@@ -89,6 +90,10 @@
     cfg.dwell = Math.min(120, Math.max(4, Number(s.dwell) || 12));
     cfg.showTitle = s.showTitle !== 'off';
     cfg.fit = s.fit === 'contain' ? 'contain' : 'cover';
+    document.body.style.setProperty('--title-color', s.titleColor || '#e8ecf2');
+    document.body.style.setProperty('--title-scale', (Number(s.titleSize) || 100) / 100);
+    document.body.style.setProperty('--meta-color', s.metaColor || '#aeb7c4');
+    document.body.style.setProperty('--meta-scale', (Number(s.metaSize) || 100) / 100);
     for (const l of layers) l.style.backgroundSize = cfg.fit;
     start();
   });
