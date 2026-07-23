@@ -172,22 +172,12 @@ main { flex: 1; display: flex; min-height: 0; }
 .bg-file .bg-preview.broken { display: none; }
 .bg-file .bg-filename { font-size: 11px; word-break: break-all; }
 
-.bg-details {
-  margin-top: 16px;
+.bg-section {
+  margin-top: 18px;
   border-top: 1px solid var(--line);
-  padding-top: 12px;
+  padding-top: 14px;
 }
-.bg-details > summary {
-  cursor: pointer;
-  color: var(--muted);
-  text-transform: uppercase;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  margin-bottom: 8px;
-  user-select: none;
-}
-.bg-details > summary:hover { color: var(--text); }
-.bg-details .bg-editor { max-width: 480px; }
+.bg-section .bg-editor { max-width: 480px; }
 
 #toast {
   position: fixed;
