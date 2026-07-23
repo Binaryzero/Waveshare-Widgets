@@ -2,7 +2,7 @@
   "id": "ws.stock.streamdeck",
   "name": "Stream Deck",
   "author": "Waveshare Widgets",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Mirrors your Elgato Virtual Stream Deck onto the panel — real buttons, real plugin actions (Discord, OBS, Hue). Requires Elgato Stream Deck software with a Virtual Stream Deck open, with 'Hide unused keys' turned OFF.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],

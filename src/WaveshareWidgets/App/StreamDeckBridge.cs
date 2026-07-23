@@ -55,7 +55,9 @@ public sealed class StreamDeckBridge
 
     /// <summary>
     /// Reads a Virtual Stream Deck profile. When <paramref name="preferredName"/> is set,
-    /// picks the profile with that name; otherwise the first one. Returns null if none exist.
+    /// picks the profile with that name; otherwise the most recently edited one (the deck
+    /// the user is actually using — directory enumeration order is not stable, and "first
+    /// found" made the mirrored deck flip between runs). Returns null if none exist.
     /// </summary>
     public DeckProfile? ReadProfile(string? preferredName = null)
     {
@@ -68,10 +70,12 @@ public sealed class StreamDeckBridge
             var chosen = profiles.FirstOrDefault(p =>
                 string.Equals(p.Name, preferredName, StringComparison.OrdinalIgnoreCase));
             if (chosen.Dir is null)
-                chosen = profiles[0];
+                chosen = profiles
+                    .OrderByDescending(p => SafeLastWrite(Path.Combine(p.Dir, "manifest.json")))
+                    .First();
 
             using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(chosen.Dir, "manifest.json")));
-            var available = profiles.Select(p => p.Name).ToList();
+            var available = profiles.Select(p => p.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
             return ParseProfile(chosen.Dir, manifest.RootElement, available);
         }
         catch (Exception ex)
@@ -80,6 +84,16 @@ public sealed class StreamDeckBridge
         }
         return null;
     }
+
+    private static DateTime SafeLastWrite(string path)
+    {
+        try { return File.GetLastWriteTimeUtc(path); }
+        catch { return DateTime.MinValue; }
+    }
+
+    /// <summary>Normalizes a page id/dir name for matching (Pages.Current vs directory names).</summary>
+    private static string PageKey(string idOrPath) =>
+        Path.GetFileNameWithoutExtension(idOrPath.TrimEnd(Path.DirectorySeparatorChar)).Trim().ToLowerInvariant();
 
     private static DeckProfile ParseProfile(string profileDir, JsonElement manifest, IReadOnlyList<string> available)
     {
@@ -92,12 +106,18 @@ public sealed class StreamDeckBridge
         if (manifest.TryGetProperty("Pages", out var pages) && pages.TryGetProperty("Current", out var cur))
             currentPage = cur.GetString();
 
+        var chosenPage = "(none)";
+        var matchedCurrent = false;
         if (Directory.Exists(pagesDir))
         {
             var pageDirs = Directory.GetDirectories(pagesDir);
-            // Prefer the current page; fall back to the first page that parses.
-            var ordered = pageDirs.OrderByDescending(d =>
-                string.Equals(Path.GetFileName(d), currentPage, StringComparison.OrdinalIgnoreCase));
+            matchedCurrent = currentPage is not null && pageDirs.Any(d => PageKey(d) == PageKey(currentPage));
+            // Prefer the current page (extension/case-insensitive match); fall back to the
+            // first page that parses with buttons. Stable secondary order so the fallback
+            // doesn't flip between polls.
+            var ordered = pageDirs
+                .OrderByDescending(d => currentPage is not null && PageKey(d) == PageKey(currentPage))
+                .ThenBy(d => d, StringComparer.OrdinalIgnoreCase);
 
             foreach (var pageDir in ordered)
             {
@@ -106,10 +126,17 @@ public sealed class StreamDeckBridge
                     continue;
                 try
                 {
+                    // Parse into a scratch list so a page that throws mid-parse can never
+                    // leave partial buttons behind to merge with the next page's.
+                    var pageButtons = new List<DeckButton>();
                     using var doc = JsonDocument.Parse(File.ReadAllText(pageManifest));
-                    ParsePage(pageDir, doc.RootElement, buttons);
-                    if (buttons.Count > 0)
+                    ParsePage(pageDir, doc.RootElement, pageButtons);
+                    if (pageButtons.Count > 0)
+                    {
+                        buttons = pageButtons;
+                        chosenPage = Path.GetFileName(pageDir);
                         break;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -127,17 +154,38 @@ public sealed class StreamDeckBridge
         // on the wrong keys whenever the layout doesn't reach the last row/column.
         var (rows, cols) = (minRows, minCols);
         var (sizeA, sizeB) = ReadDeviceSize(manifest);
+        var parsedTotal = buttons.Count;
         if (sizeA is int a && sizeB is int b2)
         {
             // Profile coordinates render transposed, so the manifest's axis labels can't
-            // be trusted either way. Pick the orientation that contains the occupied keys,
-            // preferring landscape (every VSD is wider than tall) when both fit.
-            var candidates = new[] { (r: b2, c: a), (r: a, c: b2) }
-                .Where(o => o.r >= minRows && o.c >= minCols)
-                .OrderByDescending(o => o.c >= o.r)
-                .ToList();
-            if (candidates.Count > 0)
-                (rows, cols) = (candidates[0].r, candidates[0].c);
+            // be trusted either way. Prefer the orientation that contains the occupied
+            // keys; multi-page profiles stack pages vertically (see below), so rows may
+            // legitimately overflow — then require only the columns to fit. Landscape
+            // wins ties (every VSD is wider than tall).
+            var candidates = new[] { (r: b2, c: a), (r: a, c: b2) };
+            var pick =
+                candidates.Where(o => o.r >= minRows && o.c >= minCols)
+                    .OrderByDescending(o => o.c >= o.r)
+                    .Select(o => ((int r, int c)?)o).FirstOrDefault()
+                ?? candidates.Where(o => o.c >= minCols)
+                    .OrderByDescending(o => o.c >= o.r)
+                    .Select(o => ((int r, int c)?)o).FirstOrDefault();
+            if (pick is { } size)
+                (rows, cols) = (size.r, size.c);
+
+            // Multi-page decks keep every page in ONE actions table, page N occupying
+            // rows [N*deviceRows, (N+1)*deviceRows). Rendering the whole stack shows
+            // phantom repeats of other pages; keep only the current page's band.
+            if (buttons.Count > 0 && buttons.Max(bt => bt.Row) >= rows)
+            {
+                var band = ExtractBand(buttons, PageIndexOf(manifest, currentPage), rows);
+                if (band.Count == 0)
+                    band = ExtractBand(buttons, 0, rows);
+                if (band.Count > 0)
+                    buttons = band;
+            }
+            // Safety: never render (or click) outside the device grid.
+            buttons = buttons.Where(bt => bt.Row < rows && bt.Col < cols).ToList();
         }
         else if (!_loggedMissingSize)
         {
@@ -147,10 +195,53 @@ public sealed class StreamDeckBridge
                      $"({minRows}x{minCols}). Device element: {deviceJson}");
         }
 
+        // One line per distinct parse outcome (not per poll) so app.log shows exactly which
+        // profile/page/grid the panel is mirroring — the fastest way to diagnose mismatches.
+        var withIcons = buttons.Count(b => b.Image != "");
+        var summary = $"Stream Deck: mirroring '{name}' page {chosenPage} " +
+                      $"(current='{currentPage ?? "?"}', matched={matchedCurrent}) — " +
+                      $"showing {buttons.Count}/{parsedTotal} buttons, {withIcons} with icons, grid {rows}x{cols} " +
+                      $"(device {sizeB?.ToString() ?? "?"}x{sizeA?.ToString() ?? "?"}, occupied {minRows}x{minCols})";
+        if (summary != _lastParseSummary)
+        {
+            _lastParseSummary = summary;
+            Log.Info(summary);
+        }
+
         return new DeckProfile(name, rows, cols, buttons, available);
     }
 
     private static bool _loggedMissingSize;
+    private static string? _lastParseSummary;
+
+    /// <summary>Index of the current page in the profile's Pages.Pages order (0 if unknown).</summary>
+    private static int PageIndexOf(JsonElement manifest, string? currentPage)
+    {
+        if (currentPage is null)
+            return 0;
+        if (manifest.TryGetProperty("Pages", out var pages) &&
+            pages.TryGetProperty("Pages", out var list) && list.ValueKind == JsonValueKind.Array)
+        {
+            var index = 0;
+            foreach (var el in list.EnumerateArray())
+            {
+                if (el.ValueKind == JsonValueKind.String && PageKey(el.GetString() ?? "") == PageKey(currentPage))
+                    return index;
+                index++;
+            }
+        }
+        return 0;
+    }
+
+    /// <summary>Buttons of vertically-stacked page <paramref name="pageIndex"/>, rebased to row 0.</summary>
+    private static List<DeckButton> ExtractBand(List<DeckButton> buttons, int pageIndex, int rows)
+    {
+        var offset = pageIndex * rows;
+        return buttons
+            .Where(b => b.Row >= offset && b.Row < offset + rows)
+            .Select(b => b with { Row = b.Row - offset })
+            .ToList();
+    }
 
     /// <summary>Reads Device.Size from the profile manifest (axis meaning resolved by caller).</summary>
     private static (int?, int?) ReadDeviceSize(JsonElement manifest)
@@ -191,6 +282,11 @@ public sealed class StreamDeckBridge
             var data = action.Value;
             var state = data.TryGetProperty("State", out var st) && st.TryGetInt32(out var s) ? s : 0;
 
+            var pluginUuid = data.TryGetProperty("Plugin", out var plugin) &&
+                             plugin.TryGetProperty("UUID", out var pu) ? pu.GetString() ?? "" : "";
+            var actionUuid = data.TryGetProperty("UUID", out var au) ? au.GetString() ?? "" : "";
+            var actionName = data.TryGetProperty("Name", out var nm) ? nm.GetString() ?? "" : "";
+
             string title = "";
             string image = "";
             if (data.TryGetProperty("States", out var states) && states.ValueKind == JsonValueKind.Array && states.GetArrayLength() > 0)
@@ -204,6 +300,15 @@ public sealed class StreamDeckBridge
                     image = LoadImageDataUri(Path.Combine(pageDir, imageRel));
             }
 
+            // Buttons that use a plugin's DEFAULT icon store no image in the profile at
+            // all; resolve it from the installed plugin's own files, like the VSD does.
+            if (image == "")
+                image = ResolvePluginIcon(pluginUuid, actionUuid, state);
+
+            // Last resort: show the action's name rather than an anonymous dot.
+            if (image == "" && title == "")
+                title = actionName;
+
             buttons.Add(new DeckButton(visualRow, visualCol, title, image));
         }
     }
@@ -212,6 +317,147 @@ public sealed class StreamDeckBridge
         stateEl.TryGetProperty("Image", out var img) && img.ValueKind == JsonValueKind.String
             ? img.GetString()
             : null;
+
+    // ---- default plugin icons -------------------------------------------------------
+
+    // Resolved (pluginUuid|actionUuid|state) -> data URI ("" = not found). Plugin files
+    // don't change while Stream Deck runs, and this avoids re-scanning every poll.
+    private static readonly Dictionary<string, string> IconCache = [];
+
+    /// <summary>
+    /// Finds the default icon for a plugin action by searching the installed plugin's
+    /// files (user plugins under %APPDATA%, system plugins under Program Files), covering
+    /// the icon layout conventions used by Elgato and popular plugins (Discord, Hue, the
+    /// openapp/website/hotkey system actions, …). Same approach as StreamDeckEmbeded.
+    /// </summary>
+    private static string ResolvePluginIcon(string pluginUuid, string actionUuid, int state)
+    {
+        if (pluginUuid == "" && actionUuid == "")
+            return "";
+        var key = $"{pluginUuid}|{actionUuid}|{state}";
+        lock (IconCache)
+        {
+            if (IconCache.TryGetValue(key, out var cached))
+                return cached;
+        }
+        var resolved = "";
+        try
+        {
+            resolved = ResolvePluginIconCore(pluginUuid, actionUuid, state);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Stream Deck: icon lookup failed for {actionUuid}: {ex.Message}");
+        }
+        lock (IconCache)
+        {
+            IconCache[key] = resolved;
+        }
+        return resolved;
+    }
+
+    private static string ResolvePluginIconCore(string pluginUuid, string actionUuid, int state)
+    {
+        var userPlugins = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "Elgato", "StreamDeck", "Plugins");
+        var systemPlugins = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "Elgato", "StreamDeck", "Plugins");
+
+        var pluginDirs = new List<string>();
+        void AddIfExists(string dir) { if (Directory.Exists(dir)) pluginDirs.Add(dir); }
+        if (pluginUuid != "")
+            AddIfExists(Path.Combine(userPlugins, pluginUuid + ".sdPlugin"));
+        if (actionUuid != "")
+            AddIfExists(Path.Combine(systemPlugins, actionUuid + ".sdPlugin")); // per-action system plugins (openapp, website, …)
+        if (pluginUuid != "")
+            AddIfExists(Path.Combine(systemPlugins, pluginUuid + ".sdPlugin"));
+        if (pluginDirs.Count == 0)
+            return "";
+
+        // "com.elgato.discord.mute" -> "mute"; multi-part suffixes get joined variants.
+        var suffix = pluginUuid != "" && actionUuid.StartsWith(pluginUuid + ".", StringComparison.Ordinal)
+            ? actionUuid[(pluginUuid.Length + 1)..]
+            : actionUuid.Split('.').LastOrDefault() ?? "";
+        var variants = new List<string> { suffix };
+        if (suffix.Contains('.'))
+        {
+            var parts = suffix.Split('.');
+            variants.Add(string.Concat(parts));
+            variants.Add(string.Concat(parts.Reverse()));
+            variants.Add(parts[^1]);
+        }
+
+        // Known action-name -> icon-directory mappings (Philips Hue's layout).
+        var mapped = suffix switch
+        {
+            "power" => "onoff",
+            "brightness" or "brightness.set" => "brightness-set",
+            "brightness.adjust" => "brightness-adjust",
+            "color.set" => "color-set",
+            "color.cycle" => "color-cycle",
+            "temperature.set" => "temperature-set",
+            "temperature.adjust" => "temperature-adjust",
+            "scene" => "scene",
+            _ => null,
+        };
+
+        var lastPart = actionUuid.Split('.').LastOrDefault() ?? "";
+        var candidates = new List<string>();
+        foreach (var dir in pluginDirs)
+        {
+            foreach (var name in variants)
+            {
+                if (name == "")
+                    continue;
+                foreach (var ext in new[] { "svg", "png" })
+                {
+                    candidates.Add(Path.Combine(dir, "images", "actions", $"{name}_{state}.{ext}")); // Discord convention
+                    candidates.Add(Path.Combine(dir, "images", "actions", $"{name}_0.{ext}"));
+                    candidates.Add(Path.Combine(dir, "images", "actions", $"{name}.{ext}"));
+                    candidates.Add(Path.Combine(dir, "actions", name, $"actionimage.{ext}"));        // Hue convention
+                    candidates.Add(Path.Combine(dir, "actions", name, $"keyimage.{ext}"));
+                }
+                candidates.Add(Path.Combine(dir, "imgs", "actions", name, "key@2x.png"));            // legacy Elgato convention
+                candidates.Add(Path.Combine(dir, "imgs", "actions", name, "key.png"));
+                candidates.Add(Path.Combine(dir, "imgs", "actions", name, "icon@2x.png"));
+                candidates.Add(Path.Combine(dir, "imgs", "actions", name, "icon.png"));
+            }
+            if (mapped is not null)
+            {
+                candidates.Add(Path.Combine(dir, "actions", mapped, "actionimage.svg"));
+                candidates.Add(Path.Combine(dir, "actions", mapped, "keyimage.svg"));
+                candidates.Add(Path.Combine(dir, "actions", mapped, "actionimage.png"));
+            }
+            if (lastPart != "")
+            {
+                candidates.Add(Path.Combine(dir, "Images", $"btn_{lastPart}.svg"));                  // system plugins
+                candidates.Add(Path.Combine(dir, "Images", $"{lastPart}.svg"));
+                candidates.Add(Path.Combine(dir, "Images", $"btn_{lastPart}.png"));
+                candidates.Add(Path.Combine(dir, "Images", $"{lastPart}.png"));
+            }
+            // Fallbacks: the plugin's category/plugin icon beats an anonymous blank key.
+            candidates.Add(Path.Combine(dir, "images", "category.svg"));
+            candidates.Add(Path.Combine(dir, "images", "category@2x.png"));
+            candidates.Add(Path.Combine(dir, "images", "category.png"));
+            candidates.Add(Path.Combine(dir, "images", "plugin.svg"));
+            candidates.Add(Path.Combine(dir, "images", "plugin@2x.png"));
+            candidates.Add(Path.Combine(dir, "images", "plugin.png"));
+            candidates.Add(Path.Combine(dir, "pluginIcon@2x.png"));
+            candidates.Add(Path.Combine(dir, "pluginIcon.png"));
+        }
+
+        foreach (var candidate in candidates)
+        {
+            if (!File.Exists(candidate))
+                continue;
+            var uri = LoadImageDataUri(candidate);
+            if (uri != "")
+                return uri;
+        }
+        return "";
+    }
 
     private static string LoadImageDataUri(string path)
     {

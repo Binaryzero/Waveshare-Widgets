@@ -40,10 +40,12 @@
     transition: transform 0.06s ease, box-shadow 0.12s ease;
   }
   .key:active { transform: scale(0.94); box-shadow: 0 0 0 2px #00d4ff inset, 0 1px 4px rgba(0,0,0,0.6); }
+  /* Empty keys are unoccupied SOCKETS, not buttons: a barely-there outline that keeps
+     the layout readable without inflating the apparent button count. */
   .key.empty {
-    background: linear-gradient(165deg, #181c26 0%, #10131b 60%, #0a0d13 100%);
-    border-color: #202636;
-    box-shadow: inset 0 2px 8px rgba(0,0,0,0.55);
+    background: rgba(255,255,255,0.02);
+    border: 1px dashed #1a202c;
+    box-shadow: none;
     cursor: default;
   }
   /* When empty keys are hidden they still occupy the grid (so used-key positions and
@@ -100,13 +102,19 @@
   const cfg = { rows: 0, cols: 0, showEmpty: true, hideWindow: true, profileName: '', keyShape: 'fill' };
   let lastProfile = null;
 
+  // The on-panel picker remembers its choice across reloads (per-widget localStorage);
+  // an explicit profileName in the widget settings always wins.
+  function rememberedProfile() {
+    try { return localStorage.getItem('ww-sd-profile') || ''; } catch (e) { return ''; }
+  }
+
   WW.onInit((state) => {
     const s = state.settings;
     cfg.rows = Number(s.rowsOverride) || 0;
     cfg.cols = Number(s.colsOverride) || 0;
     cfg.showEmpty = s.showEmpty !== 'off';
     cfg.hideWindow = s.hideWindow !== 'off';
-    cfg.profileName = s.profileName || '';
+    cfg.profileName = s.profileName || rememberedProfile();
     cfg.keyShape = s.keyShape === 'square' ? 'square' : 'fill';
     poll();
   });
@@ -150,7 +158,11 @@
       const b = document.createElement('button');
       b.textContent = name;
       if (name === cfg.profileName || (!cfg.profileName && name === profiles[0])) b.className = 'active';
-      b.addEventListener('click', () => { cfg.profileName = name; poll(); });
+      b.addEventListener('click', () => {
+        cfg.profileName = name;
+        try { localStorage.setItem('ww-sd-profile', name); } catch (e) { /* private mode */ }
+        poll();
+      });
       picker.appendChild(b);
     }
   }
