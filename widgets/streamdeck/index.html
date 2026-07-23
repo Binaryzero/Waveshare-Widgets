@@ -80,6 +80,26 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     max-width: 92%;
   }
+  /* Live mirror: the VSD window's own pixels, letterboxed; taps map to key cells. */
+  #live {
+    position: fixed; inset: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    background: #0b0e14;
+  }
+  #live img {
+    max-width: 100%; max-height: 100%;
+    width: auto; height: auto;
+    display: block;
+  }
+  #liveFlash {
+    position: fixed;
+    border: 2px solid #00d4ff;
+    border-radius: 10px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+  }
   #message {
     position: fixed; inset: 0;
     display: none; flex-direction: column; gap: 1.4vh;
@@ -93,14 +113,17 @@
 </head>
 <body>
   <div id="grid"></div>
+  <div id="live"><img id="liveImg" alt="" draggable="false" /></div>
+  <div id="liveFlash"></div>
   <div id="picker" hidden></div>
   <div id="message"></div>
 
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
   'use strict';
-  const cfg = { rows: 0, cols: 0, showEmpty: true, hideWindow: true, profileName: '', keyShape: 'fill' };
+  const cfg = { rows: 0, cols: 0, showEmpty: true, hideWindow: true, profileName: '', keyShape: 'fill', live: true };
   let lastProfile = null;
+  let pollTimer = null;
 
   // The on-panel picker remembers its choice across reloads (per-widget localStorage);
   // an explicit profileName in the widget settings always wins.
@@ -116,6 +139,8 @@
     cfg.hideWindow = s.hideWindow !== 'off';
     cfg.profileName = s.profileName || rememberedProfile();
     cfg.keyShape = s.keyShape === 'square' ? 'square' : 'fill';
+    cfg.live = s.liveMode !== 'off';
+    schedulePolling();
     poll();
   });
 
@@ -123,12 +148,15 @@
   window.addEventListener('resize', () => { if (lastProfile) render(lastProfile); });
 
   function poll() {
-    WW.requestStreamDeck({ profileName: cfg.profileName, hideWindow: cfg.hideWindow });
+    WW.requestStreamDeck({ profileName: cfg.profileName, hideWindow: cfg.hideWindow, live: cfg.live });
   }
 
-  // Poll periodically so button icon/title changes and page switches in Stream Deck
-  // appear on the panel.
-  setInterval(poll, 4000);
+  // Poll so Stream Deck changes appear on the panel: fast when live-mirroring (dynamic
+  // key faces update continuously), relaxed when only parsing profile icons.
+  function schedulePolling() {
+    clearInterval(pollTimer);
+    pollTimer = setInterval(poll, cfg.live ? 1500 : 4000);
+  }
 
   function showMessage(title, detail) {
     const grid = document.getElementById('grid');
@@ -145,6 +173,47 @@
       msg.appendChild(s);
     }
   }
+
+  // ---- live mirror -------------------------------------------------------------
+
+  function setLiveVisible(on) {
+    document.getElementById('live').style.display = on ? 'flex' : 'none';
+    document.getElementById('grid').style.display = on ? 'none' : 'grid';
+  }
+
+  function renderLive(profile) {
+    document.getElementById('message').style.display = 'none';
+    setLiveVisible(true);
+    const img = document.getElementById('liveImg');
+    img.src = profile.capture.image;
+    img.dataset.rows = cfg.rows || profile.rows || 3;
+    img.dataset.cols = cfg.cols || profile.cols || 5;
+  }
+
+  // Map a tap on the letterboxed capture back to a key cell and trigger it.
+  document.getElementById('live').addEventListener('click', (ev) => {
+    const img = document.getElementById('liveImg');
+    if (!img.naturalWidth || !img.naturalHeight) return;
+    const rows = Number(img.dataset.rows) || 3;
+    const cols = Number(img.dataset.cols) || 5;
+    const r = img.getBoundingClientRect();
+    const x = ev.clientX - r.left;
+    const y = ev.clientY - r.top;
+    if (x < 0 || y < 0 || x >= r.width || y >= r.height) return;
+    const col = Math.min(cols - 1, Math.floor(x / (r.width / cols)));
+    const row = Math.min(rows - 1, Math.floor(y / (r.height / rows)));
+    WW.streamDeckClick(row, col, rows, cols);
+    WW.log('streamdeck: live click ' + row + ',' + col);
+
+    // brief highlight over the tapped cell
+    const flash = document.getElementById('liveFlash');
+    flash.style.left = (r.left + col * (r.width / cols)) + 'px';
+    flash.style.top = (r.top + row * (r.height / rows)) + 'px';
+    flash.style.width = (r.width / cols) + 'px';
+    flash.style.height = (r.height / rows) + 'px';
+    flash.style.opacity = '1';
+    setTimeout(() => { flash.style.opacity = '0'; }, 220);
+  });
 
   function renderPicker(profiles) {
     const picker = document.getElementById('picker');
@@ -171,11 +240,21 @@
     lastProfile = profile;
     if (!profile || !profile.available) {
       renderPicker(null);
+      setLiveVisible(false);
       showMessage('No Virtual Stream Deck found',
         'Open Elgato Stream Deck and create a Virtual Stream Deck (turn OFF "Hide unused keys"). Its buttons — and their real plugin actions — appear here.');
       return;
     }
     renderPicker(profile.profiles);
+
+    // Live mirror: render the VSD window's actual pixels (dynamic key faces included);
+    // the icon grid below remains the fallback when no capture is available.
+    if (cfg.live && profile.capture && profile.capture.image) {
+      renderLive(profile);
+      return;
+    }
+    setLiveVisible(false);
+
     const buttons = profile.buttons || [];
     if (buttons.length === 0) {
       showMessage('Virtual Stream Deck is empty', 'Add some buttons to it in Stream Deck.');

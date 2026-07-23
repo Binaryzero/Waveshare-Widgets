@@ -1,3 +1,4 @@
+using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -300,6 +301,18 @@ public sealed class StreamDeckBridge
                     image = LoadImageDataUri(Path.Combine(pageDir, imageRel));
             }
 
+            // Dynamic plugins (weather, statuses) rewrite their key images continuously;
+            // a poll can catch the file mid-rewrite or momentarily deleted. Keep the last
+            // good image rather than letting the key flicker blank.
+            var imageCacheKey = pageDir + "|" + action.Name;
+            lock (LastGoodStateImage)
+            {
+                if (image != "")
+                    LastGoodStateImage[imageCacheKey] = image;
+                else if (LastGoodStateImage.TryGetValue(imageCacheKey, out var previous))
+                    image = previous;
+            }
+
             // Buttons that use a plugin's DEFAULT icon store no image in the profile at
             // all; resolve it from the installed plugin's own files, like the VSD does.
             if (image == "")
@@ -323,6 +336,9 @@ public sealed class StreamDeckBridge
     // Resolved (pluginUuid|actionUuid|state) -> data URI ("" = not found). Plugin files
     // don't change while Stream Deck runs, and this avoids re-scanning every poll.
     private static readonly Dictionary<string, string> IconCache = [];
+
+    // (pageDir|cell) -> last successfully-read custom key image; see ParsePage.
+    private static readonly Dictionary<string, string> LastGoodStateImage = [];
 
     /// <summary>
     /// Finds the default icon for a plugin action by searching the installed plugin's
@@ -512,6 +528,70 @@ public sealed class StreamDeckBridge
     }
 
     /// <summary>
+    /// Captures the VSD overlay window's live pixels — the only way to mirror DYNAMIC key
+    /// faces (weather readouts, status colors), which plugins render at runtime and which
+    /// the on-disk profile can't represent. PrintWindow with PW_RENDERFULLCONTENT works
+    /// even while the window is parked off-screen by <see cref="HideVsdWindow"/>. Returns
+    /// null when the window is missing or the capture comes back blank (some GPU pipelines
+    /// refuse PrintWindow) so the caller can fall back to profile parsing.
+    /// </summary>
+    public (string DataUri, int W, int H)? CaptureVsdWindow()
+    {
+        var vsd = FindVsdWindow();
+        if (vsd == IntPtr.Zero)
+            return null;
+        if (!GetClientRect(vsd, out var rect) || rect.Right <= 0 || rect.Bottom <= 0)
+            return null;
+
+        try
+        {
+            using var bmp = new Bitmap(rect.Right, rect.Bottom);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                var hdc = g.GetHdc();
+                try
+                {
+                    if (!PrintWindow(vsd, hdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT))
+                        return null;
+                }
+                finally
+                {
+                    g.ReleaseHdc(hdc);
+                }
+            }
+
+            // A refused capture yields a uniform (usually black) bitmap; sample a small
+            // grid and require at least two distinct colors before trusting it.
+            var first = bmp.GetPixel(1, 1).ToArgb();
+            var uniform = true;
+            for (var sy = 0; sy < 4 && uniform; sy++)
+                for (var sx = 0; sx < 4 && uniform; sx++)
+                    if (bmp.GetPixel(sx * (rect.Right - 2) / 3 + 1, sy * (rect.Bottom - 2) / 3 + 1).ToArgb() != first)
+                        uniform = false;
+            if (uniform)
+            {
+                if (!_loggedBlankCapture)
+                {
+                    _loggedBlankCapture = true;
+                    Log.Warn("Stream Deck: window capture came back uniform; live mirroring unavailable, using profile icons");
+                }
+                return null;
+            }
+
+            using var ms = new MemoryStream();
+            bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+            return ("data:image/png;base64," + Convert.ToBase64String(ms.ToArray()), rect.Right, rect.Bottom);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Stream Deck: window capture failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static bool _loggedBlankCapture;
+
+    /// <summary>
     /// Moves the VSD overlay off-screen and drops its always-on-top flag so it stops
     /// floating over the desktop while our widget drives it. The window stays "visible"
     /// (so it's still found and clickable) but sits at -32000,-32000. Reversible: turning
@@ -571,6 +651,11 @@ public sealed class StreamDeckBridge
 
     private const uint WM_LBUTTONDOWN = 0x0201;
     private const uint WM_LBUTTONUP = 0x0202;
+    private const uint PW_CLIENTONLY = 0x1;
+    private const uint PW_RENDERFULLCONTENT = 0x2;
+
+    [DllImport("user32.dll")]
+    private static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
     private static readonly IntPtr HWND_TOP = IntPtr.Zero;
     private static readonly IntPtr HWND_NOTOPMOST = new(-2);
     private const uint SWP_NOSIZE = 0x0001;

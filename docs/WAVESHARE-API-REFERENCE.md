@@ -206,6 +206,8 @@ Widget → shell:
 | `ww-log` | `message` | write to app.log |
 | `ww-open-url` | `url` | open in system browser |
 | `ww-fetch` | `id, url, method, body, contentType` | host-proxied fetch (CORS/bot-wall relief) |
+| `ww-sd-profile` | `profileName, hideWindow, live` | request the Virtual Stream Deck mirror; `live` adds a window screenshot |
+| `ww-sd-click` | `row, col, rows, cols` | trigger the VSD key at that grid cell |
 
 Shell → widget:
 
@@ -215,6 +217,7 @@ Shell → widget:
 | `ww-sensors` | `sensors` | per-tick sensor snapshot |
 | `ww-media` | `media` | now-playing changed |
 | `ww-fetch-result` | `id, status, contentType, bodyBase64, error` | proxied fetch reply |
+| `ww-sd-profile` | `profile: {available, name, rows, cols, buttons, profiles, capture?}` | VSD mirror; `capture` = `{image, w, h}` live window screenshot (only when requested with `live` and capturable) |
 
 **Fetch fallback:** `window.fetch` is wrapped so that a cross-origin request blocked by
 CORS — or answered with a 403/429 bot wall — is transparently retried through the host

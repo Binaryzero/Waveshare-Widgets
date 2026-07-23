@@ -202,7 +202,21 @@ public sealed class DashboardWindow : Form
                 case "sd-profile":
                     _streamDeck ??= new StreamDeckBridge();
                     _streamDeck.HideVsdWindow(message["hideWindow"]?.GetValue<bool>() ?? true);
-                    PostToShell("sd-profile-result", BuildStreamDeckProfile(message["profileName"]?.GetValue<string>()));
+                    var sdResult = BuildStreamDeckProfile(message["profileName"]?.GetValue<string>());
+                    // Live mode: also ship the VSD window's current pixels so dynamic key
+                    // faces (weather, statuses) mirror in real time; null capture (window
+                    // missing / GPU refused PrintWindow) leaves the icon grid as fallback.
+                    if (message["live"]?.GetValue<bool>() ?? false)
+                    {
+                        if (_streamDeck.CaptureVsdWindow() is { } capture)
+                            sdResult["capture"] = new JsonObject
+                            {
+                                ["image"] = capture.DataUri,
+                                ["w"] = capture.W,
+                                ["h"] = capture.H,
+                            };
+                    }
+                    PostToShell("sd-profile-result", sdResult);
                     break;
 
                 case "sd-click":

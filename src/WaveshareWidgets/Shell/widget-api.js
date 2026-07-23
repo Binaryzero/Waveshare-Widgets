@@ -155,12 +155,14 @@
     },
 
     /** Request the Virtual Stream Deck profile; delivered via onStreamDeck(cb).
-     * opts: { profileName, hideWindow }. */
+     * opts: { profileName, hideWindow, live }. With live:true the reply also carries
+     * `capture` — a screenshot of the VSD window ({image,w,h}) for real-time mirroring
+     * of dynamic key faces — when the host can capture it. */
     requestStreamDeck(opts) {
       opts = opts || {};
-      parent.postMessage({ type: 'ww-sd-profile', profileName: opts.profileName || '', hideWindow: opts.hideWindow !== false }, '*');
+      parent.postMessage({ type: 'ww-sd-profile', profileName: opts.profileName || '', hideWindow: opts.hideWindow !== false, live: opts.live === true }, '*');
     },
-    /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}]}. */
+    /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}], capture?}. */
     onStreamDeck(cb) { listeners.streamdeck.push(cb); },
     /** Trigger a Stream Deck button by its grid cell. */
     streamDeckClick(row, col, rows, cols) {
