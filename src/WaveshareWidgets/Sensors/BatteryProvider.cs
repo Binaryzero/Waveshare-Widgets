@@ -148,9 +148,10 @@ public sealed class BatteryProvider : ISensorProvider, IDisposable
                 var percent = Convert.ToInt32(b["EstimatedChargeRemaining"]);
                 if (percent is < 0 or > 100)
                     continue;
-                // BatteryStatus 6-9 = charging states; 2 = on AC power.
+                // BatteryStatus 6-9 = charging states. 2 only means "on AC, not
+                // necessarily charging" (e.g. held at full), so it doesn't count.
                 var status = Convert.ToInt32(b["BatteryStatus"]);
-                var charging = status is 2 or 6 or 7 or 8 or 9;
+                var charging = status is 6 or 7 or 8 or 9;
                 if (!seen.Add(name))
                     continue;
                 readings.Add(new SensorReading($"battery:{Slug(name)}",

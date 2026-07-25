@@ -50,7 +50,13 @@ public sealed class DashboardWindow : Form
                 var kind = MediaImageExts.Contains(ext) ? "image" : MediaVideoExts.Contains(ext) ? "video" : null;
                 if (kind is null)
                     continue;
-                files.Add(new JsonObject { ["name"] = Path.GetFileName(path), ["kind"] = kind });
+                var name = Path.GetFileName(path);
+                files.Add(new JsonObject
+                {
+                    ["name"] = name,
+                    ["url"] = $"https://{MediaHost}/{Uri.EscapeDataString(name)}",
+                    ["kind"] = kind,
+                });
             }
         }
         catch (Exception ex)
