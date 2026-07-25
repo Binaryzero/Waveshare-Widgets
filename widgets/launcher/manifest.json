@@ -1,5 +1,5 @@
 {
-  "id": "ws.stock.launch",
+  "id": "ws.stock.launcher",
   "name": "Launch App",
   "author": "Waveshare Widgets",
   "version": "1.0.0",
@@ -7,7 +7,7 @@
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
   "properties": [
-    { "name": "items", "label": "Shortcuts (Label=path or URL, one per line)", "type": "text", "default": "" },
+    { "name": "items", "label": "Shortcuts (Label=path or URL, comma separated)", "type": "text", "default": "" },
     { "name": "columns", "label": "Columns (0 = auto)", "type": "slider", "min": 0, "max": 8, "step": 1, "default": 0 },
     { "name": "bgStyle", "label": "Background", "type": "select", "options": ["solid", "glass", "transparent"], "default": "solid" },
     { "name": "labelColor", "label": "Label color", "type": "color", "default": "#e8ecf2", "group": "Text" },
