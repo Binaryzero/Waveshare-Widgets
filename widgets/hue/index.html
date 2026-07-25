@@ -245,6 +245,17 @@
       v2fetch('/resource/zone'),
       v2fetch('/resource/grouped_light'),
     ]);
+    // Surface bridge errors (revoked app key, bridge restarting) instead of
+    // rendering the misleading "No rooms" empty state from an error body.
+    const bad = !rr.ok ? rr : !zr.ok ? zr : !gr.ok ? gr : null;
+    if (bad) {
+      let detail = '';
+      try {
+        const errs = (await bad.json()).errors;
+        detail = (errs && errs[0] && errs[0].description) || '';
+      } catch (e) { /* non-JSON error body */ }
+      throw new Error(detail || ('CLIP v2 HTTP ' + bad.status));
+    }
     const groups = ((await rr.json()).data || []).concat((await zr.json()).data || []);
     const states = new Map();
     for (const gl of (await gr.json()).data || []) states.set(gl.id, gl);
@@ -290,7 +301,11 @@
       showMessage('No rooms on this bridge', 'Create rooms in the Hue app and they\'ll appear here.');
       return;
     }
-    const cols = rooms.length <= 2 ? rooms.length : rooms.length <= 6 ? 3 : 4;
+    let cols = rooms.length <= 2 ? rooms.length : rooms.length <= 6 ? 3 : 4;
+    // Cap columns by available width (quarter slots are ~320 px): below ~150 px
+    // per card the name ellipsizes to one letter and the −/+ buttons squeeze the
+    // brightness bar to zero width.
+    cols = Math.max(1, Math.min(cols, Math.floor(document.body.clientWidth / 150) || 1));
     wrap.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
 
     for (const r of rooms) {
