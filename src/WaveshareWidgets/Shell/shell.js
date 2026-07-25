@@ -17,6 +17,8 @@
   let generation = 0;          // invalidates watchdogs from a previous layout
   const fetchRoutes = new Map(); // proxy-fetch id -> widget iframe window
   const pingRoutes = new Map();  // ping id -> widget iframe window
+  const mediaRoutes = new Map(); // media-list id -> widget iframe window
+  const audioRoutes = new Map(); // audio-get id -> widget iframe window
 
   let backgroundHost = 'backgrounds.wsw';
   let bgGlobal = null;         // dashboard-wide background spec
@@ -45,6 +47,18 @@
       if (target) {
         pingRoutes.delete(msg.data.id);
         try { target.postMessage({ type: 'ww-ping-result', ...msg.data }, '*'); } catch (e) { /* frame gone */ }
+      }
+    } else if (msg.type === 'media-list-result') {
+      const target = mediaRoutes.get(msg.data && msg.data.id);
+      if (target) {
+        mediaRoutes.delete(msg.data.id);
+        try { target.postMessage({ type: 'ww-media-list-result', ...msg.data }, '*'); } catch (e) { /* frame gone */ }
+      }
+    } else if (msg.type === 'audio-result') {
+      const target = audioRoutes.get(msg.data && msg.data.id);
+      if (target) {
+        audioRoutes.delete(msg.data.id);
+        try { target.postMessage({ type: 'ww-audio-result', ...msg.data }, '*'); } catch (e) { /* frame gone */ }
       }
     }
   });
@@ -85,11 +99,21 @@
     } else if (msg.type === 'ww-fetch' && msg.id) {
       fetchRoutes.set(msg.id, ev.source);
       setTimeout(() => fetchRoutes.delete(msg.id), 30000);
-      postToHost({ type: 'fetch', id: msg.id, url: msg.url, method: msg.method, body: msg.body, contentType: msg.contentType });
+      postToHost({ type: 'fetch', id: msg.id, url: msg.url, method: msg.method, body: msg.body, contentType: msg.contentType, headers: msg.headers, insecure: msg.insecure === true });
     } else if (msg.type === 'ww-ping' && msg.id) {
       pingRoutes.set(msg.id, ev.source);
       setTimeout(() => pingRoutes.delete(msg.id), 15000);
       postToHost({ type: 'ping', id: msg.id, hosts: Array.isArray(msg.hosts) ? msg.hosts.slice(0, 16) : [] });
+    } else if (msg.type === 'ww-media-list' && msg.id) {
+      mediaRoutes.set(msg.id, ev.source);
+      setTimeout(() => mediaRoutes.delete(msg.id), 15000);
+      postToHost({ type: 'media-list', id: msg.id });
+    } else if (msg.type === 'ww-audio-get' && msg.id) {
+      audioRoutes.set(msg.id, ev.source);
+      setTimeout(() => audioRoutes.delete(msg.id), 15000);
+      postToHost({ type: 'audio-get', id: msg.id });
+    } else if (msg.type === 'ww-audio-set') {
+      postToHost({ type: 'audio-set', target: String(msg.target || 'master'), level: msg.level, muted: msg.muted });
     }
   });
 

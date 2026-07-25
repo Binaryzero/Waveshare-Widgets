@@ -17,6 +17,10 @@ public sealed class DashboardWindow : Form
 {
     private const string ShellHost = "app.wsw";
     private const string BackgroundHost = "backgrounds.wsw";
+    private const string MediaHost = "media.wsw";
+
+    private static readonly string[] MediaImageExts = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif", ".ico"];
+    private static readonly string[] MediaVideoExts = [".mp4", ".webm", ".mov", ".m4v", ".avi", ".mpeg"];
 
     private static readonly JsonSerializerOptions BridgeJson = new()
     {
@@ -31,7 +35,30 @@ public sealed class DashboardWindow : Form
     private Rectangle _targetBounds;
     private BrowserFetcher? _browserFetcher;
     private StreamDeckBridge? _streamDeck;
+    private readonly AudioMixer _audio = new();
     private bool _shellReady;
+
+    /// <summary>Lists the user's media library folder for the Gallery widget.</summary>
+    private static JsonObject BuildMediaList(string id)
+    {
+        var files = new JsonArray();
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(AppPaths.MediaDir).OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+            {
+                var ext = Path.GetExtension(path).ToLowerInvariant();
+                var kind = MediaImageExts.Contains(ext) ? "image" : MediaVideoExts.Contains(ext) ? "video" : null;
+                if (kind is null)
+                    continue;
+                files.Add(new JsonObject { ["name"] = Path.GetFileName(path), ["kind"] = kind });
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Media list failed: {ex.Message}");
+        }
+        return new JsonObject { ["id"] = id, ["files"] = files };
+    }
 
     public DashboardWindow(AppConfig config, SensorHub hub, WidgetLibrary library)
     {
@@ -136,8 +163,12 @@ public sealed class DashboardWindow : Form
         if (_mappedHosts.Add(BackgroundHost))
             core.SetVirtualHostNameToFolderMapping(BackgroundHost, AppPaths.BackgroundsDir, CoreWebView2HostResourceAccessKind.Allow);
 
+        // User media library (Gallery widget): drop files in, they serve as https://media.wsw/<file>.
+        if (_mappedHosts.Add(MediaHost))
+            core.SetVirtualHostNameToFolderMapping(MediaHost, AppPaths.MediaDir, CoreWebView2HostResourceAccessKind.Allow);
+
         var wanted = _library.Widgets.ToDictionary(w => w.VirtualHost, w => w.Folder);
-        foreach (var stale in _mappedHosts.Where(h => h != ShellHost && h != BackgroundHost && !wanted.ContainsKey(h)).ToList())
+        foreach (var stale in _mappedHosts.Where(h => h != ShellHost && h != BackgroundHost && h != MediaHost && !wanted.ContainsKey(h)).ToList())
         {
             core.ClearVirtualHostNameToFolderMapping(stale);
             _mappedHosts.Remove(stale);
@@ -240,6 +271,42 @@ public sealed class DashboardWindow : Form
                 case "ping":
                     _ = HandlePingAsync(message);
                     break;
+
+                case "media-list":
+                    PostToShell("media-list-result", BuildMediaList(message["id"]?.GetValue<string>() ?? ""));
+                    break;
+
+                case "audio-get":
+                    _ = Task.Run(() =>
+                    {
+                        var snapshot = _audio.Read();
+                        var data = new JsonObject { ["id"] = message["id"]?.GetValue<string>() ?? "" };
+                        if (snapshot is null)
+                        {
+                            data["available"] = false;
+                        }
+                        else
+                        {
+                            data["available"] = true;
+                            data["master"] = new JsonObject { ["level"] = snapshot.MasterLevel, ["muted"] = snapshot.MasterMuted };
+                            var sessions = new JsonArray();
+                            foreach (var s in snapshot.Sessions)
+                                sessions.Add(new JsonObject { ["pid"] = s.Pid, ["name"] = s.Name, ["level"] = s.Level, ["muted"] = s.Muted });
+                            data["sessions"] = sessions;
+                        }
+                        try { BeginInvoke(() => PostToShell("audio-result", data)); }
+                        catch (ObjectDisposedException) { }
+                    });
+                    break;
+
+                case "audio-set":
+                    {
+                        var target = message["target"]?.GetValue<string>() ?? "master";
+                        float? level = message["level"] is JsonValue lv && lv.TryGetValue<double>(out var ld) ? (float)ld : null;
+                        bool? muted = message["muted"] is JsonValue mv && mv.TryGetValue<bool>(out var mb) ? mb : null;
+                        _ = Task.Run(() => _audio.Apply(target, level, muted));
+                    }
+                    break;
             }
         }
         catch (Exception ex)
@@ -269,6 +336,36 @@ public sealed class DashboardWindow : Form
         AutomaticDecompression = System.Net.DecompressionMethods.All,
     })
     { Timeout = TimeSpan.FromSeconds(15) };
+
+    // LAN IoT devices (Hue Bridge CLIP v2, Nanoleaf, ...) speak HTTPS with self-signed
+    // certificates. This client skips certificate validation and is ONLY ever used for
+    // hosts that IsPrivateHost approves — never for internet targets.
+    private static readonly HttpClient ProxyClientInsecure = new(new SocketsHttpHandler
+    {
+        AutomaticDecompression = System.Net.DecompressionMethods.All,
+        SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+        {
+            RemoteCertificateValidationCallback = (_, _, _, _) => true,
+        },
+    })
+    { Timeout = TimeSpan.FromSeconds(15) };
+
+    /// <summary>Loopback or RFC1918/link-local private addresses only (no DNS lookups —
+    /// a hostname that isn't a literal private IP or localhost doesn't qualify).</summary>
+    private static bool IsPrivateHost(Uri uri)
+    {
+        if (uri.IsLoopback)
+            return true;
+        if (!System.Net.IPAddress.TryParse(uri.Host, out var ip))
+            return false;
+        var b = ip.GetAddressBytes();
+        if (b.Length != 4)
+            return false;
+        return b[0] == 10
+            || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
+            || (b[0] == 192 && b[1] == 168)
+            || (b[0] == 169 && b[1] == 254);
+    }
 
     // Several services widgets rely on (Reddit in particular) refuse non-browser
     // user agents, and iCUE's embedded browser sends a Chrome UA; match that behavior.
@@ -306,6 +403,23 @@ public sealed class DashboardWindow : Form
                 var contentType = message["contentType"]?.GetValue<string>() ?? "text/plain";
                 request.Content = new StringContent(body, System.Text.Encoding.UTF8, contentType);
             }
+            // Widget-supplied extra headers (e.g. Hue CLIP v2's hue-application-key).
+            // Hop-by-hop and body-framing headers stay under HttpClient's control.
+            if (message["headers"] is JsonObject extraHeaders)
+            {
+                foreach (var (headerName, headerValue) in extraHeaders)
+                {
+                    if (string.IsNullOrWhiteSpace(headerName) || headerValue is null)
+                        continue;
+                    var lower = headerName.ToLowerInvariant();
+                    if (lower is "host" or "content-length" or "transfer-encoding" or "connection" or "cookie")
+                        continue;
+                    var value = headerValue.GetValue<string>();
+                    if (!request.Headers.TryAddWithoutValidation(headerName, value))
+                        request.Content?.Headers.TryAddWithoutValidation(headerName, value);
+                }
+            }
+
             request.Headers.TryAddWithoutValidation("User-Agent", ProxyUserAgent);
             request.Headers.TryAddWithoutValidation("Accept",
                 "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,image/avif,image/webp,*/*;q=0.8");
@@ -319,7 +433,9 @@ public sealed class DashboardWindow : Form
                 uri.Host.EndsWith("redditmedia.com", StringComparison.OrdinalIgnoreCase))
                 request.Headers.TryAddWithoutValidation("Referer", "https://www.reddit.com/");
 
-            using var response = await ProxyClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            var insecureRequested = message["insecure"]?.GetValue<bool>() ?? false;
+            var client = insecureRequested && IsPrivateHost(uri) ? ProxyClientInsecure : ProxyClient;
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
             var bytes = await ReadCappedAsync(response, ProxyMaxBodyBytes);
 
             result["status"] = (int)response.StatusCode;

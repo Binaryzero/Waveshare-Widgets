@@ -128,6 +128,14 @@ WW.log(message)                                // writes to the host app.log
 // Network
 WW.fetch(url, init)  // -> Promise<Response>; fetch with bot-wall/CORS relief
 WW.ping(hosts)       // -> Promise<[{host, ok, rttMs?, error?}]>; real ICMP via the host
+
+// Local media library (the user's media folder; "Open media folder" in Settings)
+WW.listMedia()       // -> Promise<[{name, url, kind: 'image'|'video'}]>; served from https://media.wsw/
+
+// System audio (Windows volume mixer)
+WW.getAudio()        // -> Promise<{available, master: {level, muted}, sessions: [{pid, name, level, muted}]}>
+WW.setAudio(target, { level?, muted? })  // target: 'master' | pid (string); level 0..1.
+                                         // A pid fans out to all same-name sessions of that app.
 ```
 
 `WW.onInit(cb)` fires immediately if data already arrived. All getters are live snapshots
@@ -138,6 +146,11 @@ WW.ping(hosts)       // -> Promise<[{host, ok, rttMs?, error?}]>; real ICMP via 
 the host proxy — browser-grade headers, `Referer` for `*.redd.it`, and a hidden-browser
 fetch for TLS-fingerprinting sites like Reddit. Only GET/POST with string bodies ride
 the proxy path; the stock Reddit Photos widget is the reference consumer.
+
+`WW.fetch` init extras beyond standard fetch: `init.headers` (plain object) is forwarded
+on the proxy path too, and `init.insecure: true` skips TLS certificate validation — but
+only for private/loopback literal IPs (RFC 1918, link-local, 127.x), for devices with
+self-signed certs like the Philips Hue bridge. Public hostnames always validate.
 
 ---
 
@@ -165,6 +178,7 @@ Sensor tiers (what exists depends on the machine and elevation):
 | `sys:thermal:<zone>` | ACPI thermal zones (firmware-dependent CPU-ish temp) |
 | GPU temp/load/VRAM, storage | LibreHardwareMonitor (vendor user-mode DLLs) |
 | `corsair:<id>:battery` | iCUE SDK, if `iCUESDK.x64_2019.dll` present + iCUE SDK enabled |
+| `battery:<slug>` (type `Battery`, units `%`) | Bluetooth device battery via Windows PnP (`DEVPKEY_Bluetooth_Battery`) + laptop batteries via `Win32_Battery`; charging shown as `Name (charging)`. 2.4 GHz-dongle devices (Slipstream/Unifying) expose nothing here. |
 
 | Needs elevation + PawnIO | Source |
 |---|---|
@@ -206,8 +220,11 @@ Widget → shell:
 | `ww-media-control` | `action` | transport command |
 | `ww-log` | `message` | write to app.log |
 | `ww-open-url` | `url` | open in system browser |
-| `ww-fetch` | `id, url, method, body, contentType` | host-proxied fetch (CORS/bot-wall relief; GET/POST/PUT/HEAD) |
+| `ww-fetch` | `id, url, method, body, contentType, headers?, insecure?` | host-proxied fetch (CORS/bot-wall relief; GET/POST/PUT/HEAD; `insecure` honored only for private-IP hosts) |
 | `ww-ping` | `id, hosts` | real ICMP pings via the host (≤16 hosts) |
+| `ww-media-list` | `id` | list the user's media folder (images + videos) |
+| `ww-audio-get` | `id` | snapshot the Windows volume mixer (master + per-app sessions) |
+| `ww-audio-set` | `target, level?, muted?` | set master or per-session volume/mute |
 | `ww-sd-profile` | `profileName, hideWindow, live` | request the Virtual Stream Deck mirror; `live` adds a window screenshot |
 | `ww-sd-capture` | – | capture-only fast path (no profile re-parse; host dedups unchanged frames) |
 | `ww-sd-click` | `row, col, rows, cols` | trigger the VSD key at that grid cell |
@@ -221,6 +238,8 @@ Shell → widget:
 | `ww-media` | `media` | now-playing changed |
 | `ww-fetch-result` | `id, status, contentType, bodyBase64, error` | proxied fetch reply |
 | `ww-ping-result` | `id, results: [{host, ok, rttMs?, error?}]` | ping reply (routed to the requesting widget) |
+| `ww-media-list-result` | `id, files: [{name, url, kind}]` | media folder listing; `url` is on `https://media.wsw/` |
+| `ww-audio-result` | `id, available, master, sessions` | volume mixer snapshot reply |
 | `ww-sd-profile` | `profile: {available, name, rows, cols, buttons, profiles, capture?}` | VSD mirror; `capture` = `{image, w, h}` live window screenshot (only when requested with `live` and capturable) |
 | `ww-sd-capture-result` | `data: {image,w,h} \| {unchanged:true} \| {available:false}` | fast-path capture reply (JPEG data URI) |
 

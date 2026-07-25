@@ -33,6 +33,7 @@ public sealed class SensorHub : IDisposable
         _providers.Add(new WmiThermalProvider());
         _providers.Add(new CorsairSdkProvider());
         _providers.Add(new LibreHardwareProvider());
+        _providers.Add(new BatteryProvider());
         _media.InitializeAsync().GetAwaiter().GetResult();
 
         _timer = new System.Threading.Timer(_ => PollOnce(), null, dueTime: 0, period: pollIntervalMs);

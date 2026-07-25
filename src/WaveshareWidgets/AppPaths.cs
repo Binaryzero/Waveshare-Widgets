@@ -14,6 +14,9 @@ internal static class AppPaths
     /// <summary>User-chosen dashboard background images/videos, served from a virtual host.</summary>
     public static string BackgroundsDir { get; } = Path.Combine(DataDir, "backgrounds");
 
+    /// <summary>User media library (Gallery widget etc.), served as https://media.wsw/.</summary>
+    public static string MediaDir { get; } = Path.Combine(DataDir, "media");
+
     /// <summary>Web assets for the dashboard shell page, shipped next to the exe.</summary>
     public static string ShellDir { get; } = Path.Combine(AppContext.BaseDirectory, "Shell");
 
@@ -26,5 +29,6 @@ internal static class AppPaths
         Directory.CreateDirectory(WidgetsDir);
         Directory.CreateDirectory(WebViewUserDataDir);
         Directory.CreateDirectory(BackgroundsDir);
+        Directory.CreateDirectory(MediaDir);
     }
 }
