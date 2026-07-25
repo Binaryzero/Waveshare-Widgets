@@ -1,0 +1,16 @@
+{
+  "id": "ws.stock.launch",
+  "name": "Launch App",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "A grid of tappable shortcuts that start programs or open websites on the PC. One item per line: \"Label=C:\\path\\app.exe\" or \"Label=https://site\" — an optional leading emoji becomes the tile icon.",
+  "min_api_version": 1,
+  "supported_slots": ["quarter", "half", "full"],
+  "properties": [
+    { "name": "items", "label": "Shortcuts (Label=path or URL, one per line)", "type": "text", "default": "" },
+    { "name": "columns", "label": "Columns (0 = auto)", "type": "slider", "min": 0, "max": 8, "step": 1, "default": 0 },
+    { "name": "bgStyle", "label": "Background", "type": "select", "options": ["solid", "glass", "transparent"], "default": "solid" },
+    { "name": "labelColor", "label": "Label color", "type": "color", "default": "#e8ecf2", "group": "Text" },
+    { "name": "labelSize", "label": "Label size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" }
+  ]
+}

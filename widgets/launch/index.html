@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Launch App</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #0b0e14;
+    color: #e8ecf2;
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  /* Background setting: let the dashboard wallpaper show through. */
+  body.bg-transparent { background: transparent; }
+  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  #grid {
+    display: grid;
+    gap: 8px;
+    padding: 8px;
+    width: 100%;
+    height: 100%;
+  }
+  /* Stream-deck-style key face: raised, rounded, soft top light, presses in. */
+  .tile {
+    border-radius: 12px;
+    background: linear-gradient(165deg, #2a3040 0%, #171b24 55%, #0d1017 100%);
+    border: 1px solid #343d50;
+    box-shadow: 0 3px 10px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    min-width: 44px;
+    min-height: 44px;
+    overflow: hidden;
+    cursor: pointer;
+    touch-action: manipulation;
+    transition: transform 0.06s ease, box-shadow 0.12s ease;
+  }
+  /* Press feedback: scale down + accent ring (like streamdeck keys). The .pressed
+     class mirrors :active from pointer events so touch presses always flash too. */
+  .tile:active, .tile.pressed {
+    transform: scale(0.94);
+    box-shadow: 0 0 0 2px #00d4ff inset, 0 1px 4px rgba(0,0,0,0.6);
+  }
+  .tile .icon {
+    font-family: "Segoe UI Emoji", "Noto Color Emoji", "Segoe UI Variable", system-ui, sans-serif;
+    font-size: var(--icon-size, clamp(18px, 14vh, 64px));
+    line-height: 1.15;
+  }
+  .tile .label {
+    color: var(--label-color, #e8ecf2);
+    font-size: calc(clamp(9px, 3.2vh, 14px) * var(--label-scale, 1));
+    max-width: 94%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #message {
+    position: fixed; inset: 0;
+    display: none; flex-direction: column; gap: 1.4vh;
+    align-items: center; justify-content: center;
+    text-align: center; padding: 18px;
+    color: #7d8697; font-size: clamp(12px, 4.5vh, 17px);
+  }
+  #message code {
+    display: block;
+    font-family: Consolas, monospace;
+    font-size: clamp(9px, 3vh, 13px);
+    color: #aeb7c4;
+    background: rgba(23, 28, 40, 0.6);
+    border: 1px solid #232a3a;
+    border-radius: 10px;
+    padding: 3px 10px;
+    max-width: 96%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #message small { color: #545d6e; font-size: 72%; }
+</style>
+</head>
+<body>
+  <div id="grid"></div>
+  <div id="message"></div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const cfg = { columns: 0 };
+  let items = [];
+
+  // Leading emoji (incl. variation selectors, skin tones, and ZWJ sequences).
+  const EMOJI_RE = /^(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier})*)/u;
+
+  // "Label=target" per line (or comma separated); target is an .exe path or an
+  // http(s) URL. Split on the FIRST '=' only, so "C:\a=b\x.exe" stays intact.
+  function parseItems(text) {
+    const out = [];
+    for (const raw of String(text || '').split(/[\n,]/)) {
+      let part = raw.trim();
+      if (!part) continue;
+      let icon = '';
+      const em = part.match(EMOJI_RE);
+      if (em) { icon = em[1]; part = part.slice(em[1].length).trim(); }
+      let label = '', target = '';
+      const eq = part.indexOf('=');
+      if (/^https?:\/\//i.test(part) || eq < 0) {
+        target = part;               // bare target, no label given
+      } else {
+        label = part.slice(0, eq).trim();
+        target = part.slice(eq + 1).trim();
+      }
+      if (!target) continue;
+      const kind = /^https?:\/\//i.test(target) ? 'url' : 'launch';
+      if (!label) label = deriveLabel(target, kind);
+      if (!icon) icon = kind === 'url' ? '🌐' : '🚀';
+      out.push({ icon, label, target, kind });
+      if (out.length >= 24) break;
+    }
+    return out;
+  }
+
+  function deriveLabel(target, kind) {
+    if (kind === 'url') {
+      try { return new URL(target).hostname.replace(/^www\./i, '') || target; } catch (e) { return target; }
+    }
+    const seg = target.split(/[\\/]/).filter(Boolean).pop() || target;
+    return seg.replace(/\.[^.]+$/, '') || target;
+  }
+
+  WW.onInit((state) => {
+    const s = state.settings;
+    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
+    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
+    document.body.style.setProperty('--label-color', s.labelColor || '#e8ecf2');
+    document.body.style.setProperty('--label-scale', (Number(s.labelSize) || 100) / 100);
+    cfg.columns = Math.max(0, Math.min(8, Math.round(Number(s.columns) || 0)));
+    items = parseItems(s.items);
+    build();
+  });
+
+  function build() {
+    const grid = document.getElementById('grid');
+    const msg = document.getElementById('message');
+    grid.textContent = '';
+    if (!items.length) {
+      msg.style.display = 'flex';
+      msg.innerHTML = '';
+      const h = document.createElement('div');
+      h.textContent = 'Add shortcuts in the widget settings — one "Label=target" per line:';
+      const ex1 = document.createElement('code');
+      ex1.textContent = '🎮 Steam=C:\\Program Files (x86)\\Steam\\steam.exe';
+      const ex2 = document.createElement('code');
+      ex2.textContent = 'YouTube=https://youtube.com';
+      const hint = document.createElement('small');
+      hint.textContent = 'The leading emoji is optional — programs get 🚀 and links get 🌐.';
+      msg.append(h, ex1, ex2, hint);
+      return;
+    }
+    msg.style.display = 'none';
+
+    for (const it of items) {
+      const tile = document.createElement('div');
+      tile.className = 'tile';
+      tile.title = it.target;
+      const icon = document.createElement('div');
+      icon.className = 'icon';
+      icon.textContent = it.icon;
+      const label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = it.label;
+      tile.append(icon, label);
+      tile.addEventListener('pointerdown', () => tile.classList.add('pressed'));
+      const release = () => tile.classList.remove('pressed');
+      tile.addEventListener('pointerup', release);
+      tile.addEventListener('pointercancel', release);
+      tile.addEventListener('pointerleave', release);
+      tile.addEventListener('click', () => {
+        WW.action(it.kind, it.target);
+        WW.log('launch: ' + it.kind + ' ' + it.target);
+      });
+      grid.appendChild(tile);
+    }
+    layout();
+  }
+
+  // Auto columns: pick the column count (1..8) whose tiles come out closest to
+  // square for the current slot aspect; a non-zero "columns" setting wins.
+  function autoCols(n) {
+    let best = 1, bestScore = -Infinity;
+    for (let c = 1; c <= Math.min(n, 8); c++) {
+      const r = Math.ceil(n / c);
+      const tileAspect = (window.innerWidth / c) / (window.innerHeight / r);
+      const score = -Math.abs(Math.log(tileAspect));
+      if (score > bestScore) { bestScore = score; best = c; }
+    }
+    return best;
+  }
+
+  function layout() {
+    const n = items.length;
+    if (!n) return;
+    const cols = Math.max(1, Math.min(cfg.columns > 0 ? cfg.columns : autoCols(n), n));
+    const rows = Math.ceil(n / cols);
+    const grid = document.getElementById('grid');
+    grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+    grid.style.gridTemplateRows = 'repeat(' + rows + ', 1fr)';
+    // Emoji sized off the actual cell, so it stays big but never overflows.
+    const pad = 8, gap = 8;
+    const cellW = (window.innerWidth - pad * 2 - gap * (cols - 1)) / cols;
+    const cellH = (window.innerHeight - pad * 2 - gap * (rows - 1)) / rows;
+    const icon = Math.max(14, Math.min(cellH * 0.44, cellW * 0.6, 96));
+    document.body.style.setProperty('--icon-size', Math.round(icon) + 'px');
+  }
+
+  window.addEventListener('resize', layout);
+</script>
+</body>
+</html>
