@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Battery Levels</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #0b0e14;
+    color: #e8ecf2;
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  body.bg-transparent { background: transparent; }
+  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  #grid {
+    display: grid;
+    gap: 8px;
+    padding: 8px;
+    width: 100%;
+    height: 100%;
+  }
+  .cell {
+    border-radius: 10px;
+    background: rgba(23, 28, 40, 0.6);
+    border: 1px solid #232a3a;
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: clamp(2px, 1vh, 6px);
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .cell .name {
+    color: var(--name-color, #7d8697);
+    font-size: calc(clamp(9px, 3vh, 13px) * var(--name-scale, 1));
+    letter-spacing: 0.06em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .cell .pct {
+    font-size: calc(clamp(16px, 7.5vh, 34px) * var(--value-scale, 1));
+    font-weight: 600;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .cell .pct small { font-size: 55%; font-weight: 400; color: var(--name-color, #7d8697); }
+  .cell.good .pct { color: var(--value-color, #3ddc84); }
+  .cell.warn .pct { color: var(--value-color, #ffc24b); }
+  .cell.bad  .pct { color: var(--value-color, #ff5577); }
+  .cell .bolt { display: none; font-size: 60%; vertical-align: 15%; margin-left: 0.3em; }
+  .cell.charging .bolt { display: inline; }
+  .cell .bar {
+    height: clamp(5px, 1.8vh, 9px);
+    border-radius: 99px;
+    background: #1c2331;
+    overflow: hidden;
+  }
+  .cell .fill {
+    height: 100%;
+    border-radius: 99px;
+    width: 0%;
+    transition: width 0.6s ease;
+  }
+  .cell.good .fill { background: var(--value-color, #3ddc84); }
+  .cell.warn .fill { background: var(--value-color, #ffc24b); }
+  .cell.bad  .fill { background: var(--value-color, #ff5577); }
+  #message {
+    position: fixed; inset: 0;
+    display: none; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px;
+    text-align: center; padding: 16px 8%;
+  }
+  #message .head { color: #7d8697; font-size: clamp(12px, 4.5vh, 17px); }
+  #message .sub { color: #545d6e; font-size: clamp(9px, 3vh, 12px); max-width: 640px; line-height: 1.45; }
+</style>
+</head>
+<body>
+  <div id="grid"></div>
+  <div id="message">
+    <div class="head">No battery-reporting devices found</div>
+    <div class="sub">Laptop packs, UPS units, and Bluetooth devices (headsets, mice, keyboards,
+      controllers) report battery to Windows and show up here automatically. Devices on a
+      proprietary 2.4&nbsp;GHz dongle — Corsair Slipstream, Logitech Unifying — don't expose
+      battery levels to Windows.</div>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const cfg = { lowAt: 15, warnAt: 40 };
+  let cards = new Map();   // sensor id -> {cell, name, num, bolt, fill}
+  let layoutKey = null;    // joined ids of the last build; rebuild only when the set changes
+
+  const CHARGING = /\s*\(charging\)\s*/i;
+
+  WW.onInit((state) => {
+    const s = state.settings;
+    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
+    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
+    document.body.style.setProperty('--name-color', s.nameColor || '#7d8697');
+    document.body.style.setProperty('--name-scale', String((Number(s.nameSize) || 100) / 100));
+    // Level colors (green/amber/red) are the default; a user-picked value color wins.
+    if (s.valueColor && s.valueColor !== '#e8ecf2')
+      document.body.style.setProperty('--value-color', s.valueColor);
+    document.body.style.setProperty('--value-scale', String((Number(s.valueSize) || 100) / 100));
+
+    cfg.lowAt = Math.min(50, Math.max(5, Number(s.lowAt) || 15));
+    cfg.warnAt = Math.min(70, Math.max(10, Number(s.warnAt) || 40));
+
+    layoutKey = null; // re-render with (possibly) new thresholds
+    render(WW.sensors);
+  });
+
+  WW.onSensors(render);
+
+  function classify(v) {
+    return v < cfg.lowAt ? 'bad' : v < cfg.warnAt ? 'warn' : 'good';
+  }
+
+  function render(sensors) {
+    const packs = (sensors || []).filter((s) => s.deviceType === 'Battery' && s.value != null);
+    const key = packs.map((p) => p.id).join('|');
+    if (key !== layoutKey) {
+      build(packs);
+      layoutKey = key;
+    }
+    for (const p of packs) {
+      const ui = cards.get(p.id);
+      if (!ui) continue;
+      const v = Math.max(0, Math.min(100, Number(p.value)));
+      const cls = classify(v);
+      const charging = CHARGING.test(p.name);
+      ui.cell.className = 'cell ' + cls + (charging ? ' charging' : '');
+      ui.name.textContent = String(p.name).replace(CHARGING, ' ').trim() || p.device || 'Battery';
+      ui.num.textContent = String(Math.round(v));
+      ui.fill.style.width = v + '%';
+    }
+  }
+
+  function build(packs) {
+    const grid = document.getElementById('grid');
+    const msg = document.getElementById('message');
+    grid.textContent = '';
+    cards = new Map();
+    if (!packs.length) {
+      msg.style.display = 'flex';
+      return;
+    }
+    msg.style.display = 'none';
+    grid.style.gridTemplateColumns = 'repeat(' + columns(packs.length) + ', 1fr)';
+
+    for (const p of packs) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      const name = document.createElement('div');
+      name.className = 'name';
+      const pct = document.createElement('div');
+      pct.className = 'pct';
+      const num = document.createElement('span');
+      num.className = 'num';
+      const unit = document.createElement('small');
+      unit.textContent = '%';
+      const bolt = document.createElement('span');
+      bolt.className = 'bolt';
+      bolt.textContent = '⚡';
+      pct.append(num, unit, bolt);
+      const bar = document.createElement('div');
+      bar.className = 'bar';
+      const fill = document.createElement('div');
+      fill.className = 'fill';
+      bar.appendChild(fill);
+      cell.append(name, pct, bar);
+      grid.appendChild(cell);
+      cards.set(p.id, { cell, name, num, bolt, fill });
+    }
+  }
+
+  // Column count that keeps cards usable at any slot size/aspect: very wide slots
+  // (half/full row) lay batteries out side by side, squarer slots stack them.
+  function columns(n) {
+    if (window.innerWidth > window.innerHeight * 2.2) return Math.min(n, 4);
+    return n <= 2 ? n : n <= 4 ? 2 : n <= 9 ? 3 : 4;
+  }
+
+  window.addEventListener('resize', () => {
+    const grid = document.getElementById('grid');
+    if (cards.size)
+      grid.style.gridTemplateColumns = 'repeat(' + columns(cards.size) + ', 1fr)';
+  });
+</script>
+</body>
+</html>

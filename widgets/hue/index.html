@@ -98,11 +98,20 @@
   'use strict';
   const cfg = { ip: '', showScenes: true };
   let username = null;
-  let scenesByGroup = new Map();
+  let mode = null;   // 'v2' (CLIP v2) or 'v1' (legacy /api) — probed once per session
   let pollTimer = null;
   let holdoff = 0;   // suppress poll rendering briefly after a local action
+  const BRI_STEP = 15; // brightness step, percent
 
-  const api = (path) => 'http://' + cfg.ip + '/api/' + username + path;
+  const v1api = (path) => 'http://' + cfg.ip + '/api/' + username + path;
+  // CLIP v2: https with the bridge's self-signed cert; the v1 username doubles
+  // as the application key.
+  const v2fetch = (path, init) => {
+    init = init || {};
+    init.headers = { 'hue-application-key': username };
+    init.insecure = true;
+    return WW.fetch('https://' + cfg.ip + '/clip/v2' + path, init);
+  };
 
   WW.onInit(async (state) => {
     const s = state.settings;
@@ -128,7 +137,7 @@
     }
 
     try { username = localStorage.getItem('hue-user-' + cfg.ip); } catch (e) { /* private mode */ }
-    if (username) startPolling();
+    if (username) begin();
     else showPairing();
   });
 
@@ -151,7 +160,7 @@
         username = entry.success.username;
         try { localStorage.setItem('hue-user-' + cfg.ip, username); } catch (e) { /* private mode */ }
         document.getElementById('pair').style.display = 'none';
-        startPolling();
+        begin();
       } else if (entry && entry.error && entry.error.type === 101) {
         document.getElementById('pairHint').textContent = 'Link button not pressed — press it on the bridge, then tap again. (' + cfg.ip + ')';
       } else {
@@ -162,7 +171,27 @@
     }
   });
 
-  // --- rooms -------------------------------------------------------------------
+  // --- API mode probe ----------------------------------------------------------
+
+  // Probe CLIP v2 once per session: newer bridges answer 200 on /resource/room;
+  // anything else (404 on v1-only bridges, TLS/connection failure) locks in v1.
+  async function begin() {
+    if (mode === null) {
+      try {
+        const res = await v2fetch('/resource/room');
+        mode = res.status === 200 ? 'v2' : 'v1';
+      } catch (e) {
+        mode = 'v1';
+      }
+      WW.log('hue: bridge API mode ' + mode);
+    }
+    startPolling();
+  }
+
+  // --- polling → normalized room model ----------------------------------------
+  // Both API generations are normalized into one room shape so render() and the
+  // action handlers stay single-path:
+  //   { key, name, on, pct (0-100), scenes: [{id, name}], v1Group? , v2Light? }
 
   function startPolling() {
     poll();
@@ -172,49 +201,101 @@
 
   async function poll() {
     if (Date.now() < holdoff) return;
-    let groups, scenes = {};
+    let rooms;
     try {
-      const res = await WW.fetch(api('/groups'));
-      groups = await res.json();
-      if (groups && groups[0] && groups[0].error) throw new Error(groups[0].error.description);
-      if (cfg.showScenes) {
-        const sr = await WW.fetch(api('/scenes'));
-        scenes = await sr.json();
-      }
+      rooms = mode === 'v2' ? await pollV2() : await pollV1();
     } catch (e) {
       showMessage('Hue Bridge unreachable', cfg.ip + ' — ' + (e.message || e));
       return;
     }
     document.getElementById('message').style.display = 'none';
+    render(rooms);
+  }
 
-    scenesByGroup = new Map();
+  async function pollV1() {
+    const res = await WW.fetch(v1api('/groups'));
+    const groups = await res.json();
+    if (groups && groups[0] && groups[0].error) throw new Error(groups[0].error.description);
+    let scenes = {};
+    if (cfg.showScenes) {
+      const sr = await WW.fetch(v1api('/scenes'));
+      scenes = await sr.json();
+    }
+    const scenesByGroup = new Map();
     for (const [id, sc] of Object.entries(scenes || {})) {
       if (!sc.group) continue;
       if (!scenesByGroup.has(sc.group)) scenesByGroup.set(sc.group, []);
       if (scenesByGroup.get(sc.group).length < 6) scenesByGroup.get(sc.group).push({ id, name: sc.name });
     }
-    render(groups);
+    return Object.entries(groups)
+      .filter(([, g]) => g.type === 'Room' || g.type === 'Zone')
+      .map(([id, g]) => ({
+        key: 'v1-' + id,
+        name: g.name,
+        on: !!(g.state && g.state.any_on),
+        pct: Math.round((((g.action && g.action.bri) != null ? g.action.bri : 254) / 254) * 100),
+        scenes: scenesByGroup.get(id) || [],
+        v1Group: id,
+      }));
   }
 
-  function render(groups) {
+  async function pollV2() {
+    const [rr, zr, gr] = await Promise.all([
+      v2fetch('/resource/room'),
+      v2fetch('/resource/zone'),
+      v2fetch('/resource/grouped_light'),
+    ]);
+    const groups = ((await rr.json()).data || []).concat((await zr.json()).data || []);
+    const states = new Map();
+    for (const gl of (await gr.json()).data || []) states.set(gl.id, gl);
+
+    const scenesByGroup = new Map();
+    if (cfg.showScenes) {
+      const sr = await v2fetch('/resource/scene');
+      for (const sc of (await sr.json()).data || []) {
+        const gid = sc.group && sc.group.rid;   // matches the room/zone id
+        if (!gid) continue;
+        if (!scenesByGroup.has(gid)) scenesByGroup.set(gid, []);
+        if (scenesByGroup.get(gid).length < 6) {
+          scenesByGroup.get(gid).push({ id: sc.id, name: (sc.metadata && sc.metadata.name) || 'Scene' });
+        }
+      }
+    }
+
+    const rooms = [];
+    for (const g of groups) {
+      // The grouped_light service rid is the control handle for the room/zone.
+      const svc = (g.services || []).find((s) => s.rtype === 'grouped_light');
+      if (!svc) continue;
+      const st = states.get(svc.rid) || {};
+      rooms.push({
+        key: 'v2-' + g.id,
+        name: (g.metadata && g.metadata.name) || 'Room',
+        on: !!(st.on && st.on.on),
+        pct: (st.dimming && st.dimming.brightness != null) ? Math.round(st.dimming.brightness) : 100,
+        scenes: scenesByGroup.get(g.id) || [],
+        v2Light: svc.rid,
+      });
+    }
+    return rooms;
+  }
+
+  // --- render (single path over the normalized model) --------------------------
+
+  function render(rooms) {
     const wrap = document.getElementById('rooms');
     wrap.textContent = '';
-    const entries = Object.entries(groups)
-      .filter(([, g]) => g.type === 'Room' || g.type === 'Zone')
-      .sort((a, b) => a[1].name.localeCompare(b[1].name));
-    if (!entries.length) {
+    rooms = rooms.slice().sort((a, b) => a.name.localeCompare(b.name));
+    if (!rooms.length) {
       showMessage('No rooms on this bridge', 'Create rooms in the Hue app and they\'ll appear here.');
       return;
     }
-    const cols = entries.length <= 2 ? entries.length : entries.length <= 6 ? 3 : 4;
+    const cols = rooms.length <= 2 ? rooms.length : rooms.length <= 6 ? 3 : 4;
     wrap.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
 
-    for (const [id, g] of entries) {
-      const on = !!(g.state && g.state.any_on);
-      const bri = (g.action && g.action.bri) != null ? g.action.bri : 254;
-
+    for (const r of rooms) {
       const card = document.createElement('div');
-      card.className = 'room' + (on ? ' on' : '');
+      card.className = 'room' + (r.on ? ' on' : '');
 
       const head = document.createElement('div');
       head.className = 'head';
@@ -223,39 +304,38 @@
       bulb.textContent = '💡';
       const name = document.createElement('span');
       name.className = 'name';
-      name.textContent = g.name;
+      name.textContent = r.name;
       const stateEl = document.createElement('span');
       stateEl.className = 'state';
-      stateEl.textContent = on ? Math.round(bri / 254 * 100) + '%' : 'off';
+      stateEl.textContent = r.on ? r.pct + '%' : 'off';
       head.append(bulb, name, stateEl);
-      head.addEventListener('click', () => act(id, { on: !on }));
+      head.addEventListener('click', () => toggleRoom(r));
       card.appendChild(head);
 
       const briRow = document.createElement('div');
       briRow.className = 'bri';
       const minus = document.createElement('button');
       minus.textContent = '−';
-      minus.addEventListener('click', () => act(id, { on: true, bri: Math.max(1, bri - 40) }));
+      minus.addEventListener('click', () => stepBrightness(r, -1));
       const bar = document.createElement('div');
       bar.className = 'bar';
       const fill = document.createElement('div');
       fill.className = 'fill';
-      fill.style.width = (on ? Math.round(bri / 254 * 100) : 0) + '%';
+      fill.style.width = (r.on ? r.pct : 0) + '%';
       bar.appendChild(fill);
       const plus = document.createElement('button');
       plus.textContent = '+';
-      plus.addEventListener('click', () => act(id, { on: true, bri: Math.min(254, bri + 40) }));
+      plus.addEventListener('click', () => stepBrightness(r, +1));
       briRow.append(minus, bar, plus);
       card.appendChild(briRow);
 
-      const groupScenes = scenesByGroup.get(id);
-      if (cfg.showScenes && groupScenes && groupScenes.length) {
+      if (cfg.showScenes && r.scenes.length) {
         const row = document.createElement('div');
         row.className = 'scenes';
-        for (const sc of groupScenes) {
+        for (const sc of r.scenes) {
           const b = document.createElement('button');
           b.textContent = sc.name;
-          b.addEventListener('click', (ev) => { ev.stopPropagation(); act(id, { scene: sc.id }); });
+          b.addEventListener('click', (ev) => { ev.stopPropagation(); recallScene(r, sc.id); });
           row.appendChild(b);
         }
         card.appendChild(row);
@@ -264,13 +344,42 @@
     }
   }
 
-  async function act(groupId, body) {
+  // --- actions (dispatch per API mode) -----------------------------------------
+
+  function toggleRoom(r) {
+    if (mode === 'v2') actV2('/resource/grouped_light/' + r.v2Light, { on: { on: !r.on } });
+    else actV1(r.v1Group, { on: !r.on });
+  }
+
+  function stepBrightness(r, dir) {
+    const pct = Math.max(1, Math.min(100, r.pct + dir * BRI_STEP));
+    if (mode === 'v2') actV2('/resource/grouped_light/' + r.v2Light, { on: { on: true }, dimming: { brightness: pct } });
+    else actV1(r.v1Group, { on: true, bri: Math.max(1, Math.min(254, Math.round(pct / 100 * 254))) });
+  }
+
+  function recallScene(r, sceneId) {
+    if (mode === 'v2') actV2('/resource/scene/' + sceneId, { recall: { action: 'active' } });
+    else actV1(r.v1Group, { scene: sceneId });
+  }
+
+  async function actV1(groupId, body) {
     holdoff = Date.now() + 1200;   // let the bridge settle before the next poll repaints
     try {
-      await WW.fetch('http://' + cfg.ip + '/api/' + username + '/groups/' + groupId + '/action', {
+      await WW.fetch(v1api('/groups/' + groupId + '/action'), {
         method: 'PUT',
         body: JSON.stringify(body),
       });
+    } catch (e) {
+      WW.log('hue: action failed: ' + e.message);
+    }
+    holdoff = 0;
+    poll();
+  }
+
+  async function actV2(path, body) {
+    holdoff = Date.now() + 1200;
+    try {
+      await v2fetch(path, { method: 'PUT', body: JSON.stringify(body) });
     } catch (e) {
       WW.log('hue: action failed: ' + e.message);
     }
