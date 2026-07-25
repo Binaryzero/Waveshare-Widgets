@@ -116,7 +116,15 @@
   }
 
   function update(sensors) {
-    if (!sensors || !sensors.length) return; // keep whatever we had until data arrives
+    if (!sensors || !sensors.length) {
+      // Mid-run hiccups keep the last chart; but before we've ever resolved a
+      // sensor, say so instead of sitting completely blank.
+      if (!trackedId) {
+        el.message.style.display = 'flex';
+        el.message.textContent = 'Waiting for sensors…';
+      }
+      return;
+    }
     const sensor = resolveSensor();
     if (!sensor) {
       el.message.style.display = 'flex';
