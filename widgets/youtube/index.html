@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>YouTube</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #0b0e14;
+    color: #e8ecf2;
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  body.bg-transparent { background: transparent; }
+  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  #player {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    display: block;
+    background: #000;
+  }
+  #player[hidden] { display: none; }
+  #message {
+    position: fixed; inset: 0;
+    display: none; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1.4vh;
+    text-align: center; padding: 16px;
+    color: var(--msg-color, #7d8697);
+    font-size: calc(clamp(12px, 4.5vh, 18px) * var(--msg-scale, 1));
+  }
+  #message .ex {
+    font-size: 72%;
+    opacity: 0.75;
+    word-break: break-all;
+    max-width: 90%;
+  }
+</style>
+</head>
+<body>
+  <iframe id="player" hidden
+          allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+          allowfullscreen></iframe>
+  <div id="message">
+    <span class="head">Add a YouTube link in Settings</span>
+    <span class="ex">e.g. https://www.youtube.com/watch?v=dQw4w9WgXcQ — youtu.be, Shorts, and playlist links work too</span>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+
+  const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
+  const LIST_ID = /^[A-Za-z0-9_-]+$/;
+
+  // Accepts watch URLs, youtu.be short links, Shorts, embed/live paths,
+  // playlist URLs (list=...), and bare 11-char video IDs.
+  // Returns { videoId, listId } (either may be null) or null if unusable.
+  function parseTarget(raw) {
+    const text = String(raw || '').trim();
+    if (!text) return null;
+    if (VIDEO_ID.test(text)) return { videoId: text, listId: null };
+
+    let u = null;
+    try { u = new URL(text); } catch (e) {
+      try { u = new URL('https://' + text); } catch (e2) { return null; }
+    }
+    const host = u.hostname.replace(/^(www|m|music)\./i, '').toLowerCase();
+
+    let id = null;
+    const seg = u.pathname.split('/').filter(Boolean);
+    if (host === 'youtu.be') {
+      id = seg[0] || null;
+    } else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+      if (seg[0] === 'shorts' || seg[0] === 'embed' || seg[0] === 'live' || seg[0] === 'v') id = seg[1] || null;
+      else id = u.searchParams.get('v');
+    } else {
+      return null;
+    }
+
+    if (!VIDEO_ID.test(id || '')) id = null;
+    let list = u.searchParams.get('list');
+    if (!LIST_ID.test(list || '')) list = null;
+
+    if (id) return { videoId: id, listId: list };
+    if (list) return { videoId: null, listId: list };
+    return null;
+  }
+
+  // Single video:  /embed/<id>?autoplay=&mute=&loop=[&playlist=<id>]&controls=
+  //   (looping one video requires playlist=<same id> per the embed API)
+  // Playlist:      /embed/videoseries?list=<listId>&autoplay=&mute=&loop=&controls=
+  function buildSrc(target, opts) {
+    const flags = ['autoplay=' + opts.autoplay, 'mute=' + opts.muted, 'loop=' + opts.loop];
+    if (target.videoId) {
+      if (opts.loop === '1') flags.push('playlist=' + target.videoId);
+      flags.push('controls=' + opts.controls);
+      return 'https://www.youtube-nocookie.com/embed/' + target.videoId + '?' + flags.join('&');
+    }
+    flags.push('controls=' + opts.controls);
+    return 'https://www.youtube-nocookie.com/embed/videoseries?list=' + target.listId + '&' + flags.join('&');
+  }
+
+  WW.onInit((state) => {
+    const s = state.settings;
+    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
+    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
+    document.body.style.setProperty('--msg-color', s.msgColor || '#7d8697');
+    document.body.style.setProperty('--msg-scale', (Number(s.msgSize) || 100) / 100);
+
+    const flag = (v, dflt) => ((v == null || v === '' ? dflt : String(v)) === 'on' ? '1' : '0');
+    const player = document.getElementById('player');
+    const msg = document.getElementById('message');
+    const target = parseTarget(s.videoUrl);
+
+    if (!target) {
+      player.hidden = true;
+      player.removeAttribute('src');
+      msg.querySelector('.head').textContent = String(s.videoUrl || '').trim()
+        ? 'Couldn’t read that YouTube link'
+        : 'Add a YouTube link in Settings';
+      msg.style.display = 'flex';
+      return;
+    }
+
+    msg.style.display = 'none';
+    player.hidden = false;
+    const src = buildSrc(target, {
+      autoplay: flag(s.autoplay, 'on'),
+      muted: flag(s.muted, 'on'),
+      loop: flag(s.loop, 'on'),
+      controls: flag(s.controls, 'on'),
+    });
+    if (player.getAttribute('src') !== src) player.src = src;
+  });
+</script>
+</body>
+</html>
