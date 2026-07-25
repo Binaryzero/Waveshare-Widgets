@@ -106,6 +106,36 @@
 
   // ---- layout rendering --------------------------------------------------------
 
+  // Size tokens: a width (quarter | half | three-quarter | full) with an optional
+  // "-upper" / "-lower" suffix selecting the top or bottom half of the page.
+  function parseSize(token) {
+    let t = String(token || 'quarter').toLowerCase();
+    let band = 'full';
+    if (t.endsWith('-upper')) { band = 'upper'; t = t.slice(0, -6); }
+    else if (t.endsWith('-lower')) { band = 'lower'; t = t.slice(0, -6); }
+    const widths = { quarter: 1, half: 2, 'three-quarter': 3, threequarter: 3, full: 4 };
+    return { w: widths[t] || 1, band };
+  }
+
+  // First-fit placement on the page's 4x2 cell grid, in slot order (left to right,
+  // full-height and upper slots in the top row first, lower slots in the bottom).
+  // Returns per-slot {col, w, band} or null when the page is already full.
+  function placeSlots(slotDefs) {
+    const occupied = [new Array(4).fill(false), new Array(4).fill(false)]; // [row][col]
+    return slotDefs.map((def) => {
+      const { w, band } = parseSize(def.size);
+      const rows = band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1];
+      for (let col = 0; col + w <= 4; col++) {
+        let fits = true;
+        for (const r of rows) for (let i = 0; i < w && fits; i++) if (occupied[r][col + i]) fits = false;
+        if (!fits) continue;
+        for (const r of rows) for (let i = 0; i < w; i++) occupied[r][col + i] = true;
+        return { col, w, band };
+      }
+      return null;
+    });
+  }
+
   function onInit(data) {
     latestSensors = data.sensors || [];
     latestMedia = data.media;
@@ -131,9 +161,18 @@
       const pageIdx = pageIndexCounter++;
       let slotIdx = 0;
 
-      for (const slotDef of page.slots || []) {
+      const placements = placeSlots(page.slots || []);
+      for (const [slotIndex, slotDef] of (page.slots || []).entries()) {
         const slotEl = document.createElement('div');
-        slotEl.className = `slot ${['quarter', 'half', 'full'].includes(slotDef.size) ? slotDef.size : 'quarter'}`;
+        slotEl.className = 'slot';
+        const place = placements[slotIndex];
+        if (!place) {
+          // Page is already full; skip rather than overlap (the editor warns about this).
+          postToHost({ type: 'log', message: 'layout: page "' + (page.name || pageIdx) + '" is full, skipping slot ' + slotIndex });
+          continue;
+        }
+        slotEl.style.gridColumn = (place.col + 1) + ' / span ' + place.w;
+        slotEl.style.gridRow = place.band === 'full' ? '1 / span 2' : place.band === 'upper' ? '1' : '2';
 
         const widget = widgetsById.get(slotDef.widgetId);
         if (!widget) {

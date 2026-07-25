@@ -57,7 +57,9 @@ public sealed class LayoutSlot
 {
     [JsonPropertyName("widgetId")] public string WidgetId { get; set; } = "";
 
-    /// <summary>quarter (320x400), half (640x400) or full (1280x400).</summary>
+    /// <summary>Width: quarter (320px), half (640px), three-quarter (960px) or full
+    /// (1280px) — optionally suffixed "-upper"/"-lower" for the top or bottom 200px
+    /// band instead of the full 400px height (e.g. "half-upper").</summary>
     [JsonPropertyName("size")] public string Size { get; set; } = "quarter";
 
     /// <summary>Per-instance overrides of the widget's declared property defaults.</summary>

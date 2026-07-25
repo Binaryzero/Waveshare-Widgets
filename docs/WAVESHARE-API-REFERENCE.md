@@ -230,13 +230,19 @@ navigation for TLS-fingerprinting sites like Reddit). Widgets just call `fetch()
 
 ## Layout & slots
 
-Slots have three widths on the 1280×400 canvas:
+Each page is a 4-column × 2-row grid on the 1280×400 canvas. A slot's `size` is a
+width — optionally suffixed `-upper` or `-lower` to take only the top or bottom half:
 
-| Slot | Pixels |
-|---|---|
-| `quarter` | 320×400 |
-| `half` | 640×400 |
-| `full` | 1280×400 |
+| Width | Full height | `-upper` / `-lower` band |
+|---|---|---|
+| `quarter` | 320×400 | 320×200 |
+| `half` | 640×400 | 640×200 |
+| `three-quarter` | 960×400 | 960×200 |
+| `full` | 1280×400 | 1280×200 |
+
+Slots are placed first-fit in declaration order (e.g. `quarter-upper` then
+`quarter-lower` stack in the same column; a full-height slot occupies both rows).
+A page holds 8 half-height cells; anything beyond that is dropped with a log line.
 
 Layout lives in `%LocalAppData%\WaveshareWidgets\layout.json` (pages → slots → widget id,
 size, per-instance settings) and is edited by the Settings window. Widgets should be

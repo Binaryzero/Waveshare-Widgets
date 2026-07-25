@@ -48,8 +48,11 @@ Install via tray → **Install widget…**, or unzip the folder directly into
 
 - `id` — globally unique, reverse-DNS style. Also determines the install folder and the
   widget's browser origin.
-- `supported_slots` — which of `quarter` (320×400), `half` (640×400), `full` (1280×400)
-  the widget looks good in. Design fluidly; the iframe fills the slot.
+- `supported_slots` — which widths the widget looks good in: `quarter` (320px), `half`
+  (640px), `full` (1280px). Widgets declaring `half` or `full` are also offered at
+  `three-quarter` (960px), and every width can be placed full-height (400px) or in the
+  top/bottom 200px band (`-upper`/`-lower`). Design fluidly (vh units); the iframe
+  fills the slot.
 - `properties` — user-configurable settings. The host merges `default`s with the
   per-instance `settings` from `layout.json` and injects the result. Types: `text`,
   `number`, `slider`, `color`, `select`, `sensor` (a sensor id string), and `location`

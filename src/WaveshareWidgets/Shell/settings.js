@@ -3,7 +3,26 @@
 (function () {
   'use strict';
 
-  const SIZE_UNITS = { quarter: 1, half: 2, full: 4 };
+  // Page capacity model: a 4-column x 2-row grid = 8 half-height cells.
+  // A size token is a width (quarter=1, half=2, three-quarter=3, full=4 columns)
+  // plus an optional -upper/-lower suffix (one row instead of both).
+  const WIDTHS = ['quarter', 'half', 'three-quarter', 'full'];
+  const WIDTH_COLS = { quarter: 1, half: 2, 'three-quarter': 3, full: 4 };
+  const WIDTH_PX = { quarter: 320, half: 640, 'three-quarter': 960, full: 1280 };
+
+  function parseSize(token) {
+    let t = String(token || 'quarter').toLowerCase();
+    let band = 'full';
+    if (t.endsWith('-upper')) { band = 'upper'; t = t.slice(0, -6); }
+    else if (t.endsWith('-lower')) { band = 'lower'; t = t.slice(0, -6); }
+    if (!WIDTH_COLS[t]) t = 'quarter';
+    return { width: t, band };
+  }
+
+  function sizeCells(token) {
+    const { width, band } = parseSize(token);
+    return WIDTH_COLS[width] * (band === 'full' ? 2 : 1);
+  }
 
   let state = { layout: { pages: [] }, widgets: [], sensors: [] };
   let widgetsById = new Map();
@@ -144,11 +163,11 @@
   }
 
   function renderCapacity(page) {
-    const used = (page.slots || []).reduce((sum, s) => sum + (SIZE_UNITS[s.size] || 1), 0);
+    const used = (page.slots || []).reduce((sum, s) => sum + sizeCells(s.size), 0);
     const cap = el('capacity');
-    cap.textContent = 'Width used: ' + used + ' / 4';
-    cap.classList.toggle('warn', used > 4);
-    if (used > 4) cap.textContent += ' — extra widgets will be cut off';
+    cap.textContent = 'Space used: ' + used + ' / 8';
+    cap.classList.toggle('warn', used > 8);
+    if (used > 8) cap.textContent += ' — widgets that don\'t fit are dropped';
   }
 
   function renderSlot(page, slot, index) {
@@ -172,19 +191,25 @@
       slot.widgetId = widgetSelect.value;
       slot.settings = {};
       const w = widgetsById.get(slot.widgetId);
-      if (w && w.supportedSlots && !w.supportedSlots.includes(slot.size)) slot.size = w.supportedSlots[0];
+      const widths = offeredWidths(w);
+      const current = parseSize(slot.size);
+      if (!widths.includes(current.width))
+        slot.size = widths[0] + (current.band === 'full' ? '' : '-' + current.band);
       renderEditor();
     };
 
-    // size picker
+    // size picker: every offered width, each at full height or just the top/bottom band
     const sizeSelect = document.createElement('select');
     sizeSelect.className = 'size';
     const widget = widgetsById.get(slot.widgetId);
-    const sizes = widget && widget.supportedSlots && widget.supportedSlots.length
-      ? widget.supportedSlots : ['quarter', 'half', 'full'];
-    for (const size of sizes) {
-      sizeSelect.add(new Option(sizeLabel(size), size, false, size === slot.size));
+    for (const width of offeredWidths(widget)) {
+      for (const band of ['', '-upper', '-lower']) {
+        const value = width + band;
+        sizeSelect.add(new Option(sizeLabel(value), value, false, value === slot.size));
+      }
     }
+    if (![...sizeSelect.options].some((o) => o.selected))
+      sizeSelect.add(new Option(sizeLabel(slot.size), slot.size, false, true));
     sizeSelect.onchange = () => { slot.size = sizeSelect.value; renderCapacity(page); };
 
     row.append(widgetSelect, sizeSelect,
@@ -233,8 +258,22 @@
     return btn;
   }
 
+  // Widths a widget can take: its declared supported widths, plus three-quarter for
+  // anything fluid enough to declare half or full (all stock widgets are vh-fluid).
+  function offeredWidths(widget) {
+    const declared = (widget && widget.supportedSlots && widget.supportedSlots.length)
+      ? widget.supportedSlots.map((s) => parseSize(s).width) : WIDTHS.slice();
+    const set = new Set(declared);
+    if (set.has('half') || set.has('full')) set.add('three-quarter');
+    return WIDTHS.filter((w) => set.has(w));
+  }
+
   function sizeLabel(size) {
-    return { quarter: 'Quarter (320px)', half: 'Half (640px)', full: 'Full (1280px)' }[size] || size;
+    const { width, band } = parseSize(size);
+    const name = { quarter: 'Quarter', half: 'Half', 'three-quarter': 'Three-quarter', full: 'Full' }[width];
+    const px = WIDTH_PX[width];
+    if (band === 'full') return name + ' (' + px + '×400)';
+    return name + ' · ' + (band === 'upper' ? 'top' : 'bottom') + ' (' + px + '×200)';
   }
 
   // ---- property editors -------------------------------------------------------------
