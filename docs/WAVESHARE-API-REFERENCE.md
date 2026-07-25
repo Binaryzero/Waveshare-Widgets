@@ -127,6 +127,7 @@ WW.log(message)                                // writes to the host app.log
 
 // Network
 WW.fetch(url, init)  // -> Promise<Response>; fetch with bot-wall/CORS relief
+WW.ping(hosts)       // -> Promise<[{host, ok, rttMs?, error?}]>; real ICMP via the host
 ```
 
 `WW.onInit(cb)` fires immediately if data already arrived. All getters are live snapshots
@@ -205,7 +206,8 @@ Widget → shell:
 | `ww-media-control` | `action` | transport command |
 | `ww-log` | `message` | write to app.log |
 | `ww-open-url` | `url` | open in system browser |
-| `ww-fetch` | `id, url, method, body, contentType` | host-proxied fetch (CORS/bot-wall relief) |
+| `ww-fetch` | `id, url, method, body, contentType` | host-proxied fetch (CORS/bot-wall relief; GET/POST/PUT/HEAD) |
+| `ww-ping` | `id, hosts` | real ICMP pings via the host (≤16 hosts) |
 | `ww-sd-profile` | `profileName, hideWindow, live` | request the Virtual Stream Deck mirror; `live` adds a window screenshot |
 | `ww-sd-capture` | – | capture-only fast path (no profile re-parse; host dedups unchanged frames) |
 | `ww-sd-click` | `row, col, rows, cols` | trigger the VSD key at that grid cell |
@@ -218,6 +220,7 @@ Shell → widget:
 | `ww-sensors` | `sensors` | per-tick sensor snapshot |
 | `ww-media` | `media` | now-playing changed |
 | `ww-fetch-result` | `id, status, contentType, bodyBase64, error` | proxied fetch reply |
+| `ww-ping-result` | `id, results: [{host, ok, rttMs?, error?}]` | ping reply (routed to the requesting widget) |
 | `ww-sd-profile` | `profile: {available, name, rows, cols, buttons, profiles, capture?}` | VSD mirror; `capture` = `{image, w, h}` live window screenshot (only when requested with `live` and capturable) |
 | `ww-sd-capture-result` | `data: {image,w,h} \| {unchanged:true} \| {available:false}` | fast-path capture reply (JPEG data URI) |
 

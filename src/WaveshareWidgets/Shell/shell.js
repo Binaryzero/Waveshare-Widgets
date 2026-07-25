@@ -16,6 +16,7 @@
   let bgSettleTimer = null;    // debounces the wallpaper swap during multi-page scrolls
   let generation = 0;          // invalidates watchdogs from a previous layout
   const fetchRoutes = new Map(); // proxy-fetch id -> widget iframe window
+  const pingRoutes = new Map();  // ping id -> widget iframe window
 
   let backgroundHost = 'backgrounds.wsw';
   let bgGlobal = null;         // dashboard-wide background spec
@@ -39,6 +40,12 @@
       broadcast({ type: 'ww-sd-profile', profile: msg.data });
     } else if (msg.type === 'sd-capture-result') {
       broadcast({ type: 'ww-sd-capture-result', data: msg.data });
+    } else if (msg.type === 'ping-result') {
+      const target = pingRoutes.get(msg.data && msg.data.id);
+      if (target) {
+        pingRoutes.delete(msg.data.id);
+        try { target.postMessage({ type: 'ww-ping-result', ...msg.data }, '*'); } catch (e) { /* frame gone */ }
+      }
     }
   });
 
@@ -79,6 +86,10 @@
       fetchRoutes.set(msg.id, ev.source);
       setTimeout(() => fetchRoutes.delete(msg.id), 30000);
       postToHost({ type: 'fetch', id: msg.id, url: msg.url, method: msg.method, body: msg.body, contentType: msg.contentType });
+    } else if (msg.type === 'ww-ping' && msg.id) {
+      pingRoutes.set(msg.id, ev.source);
+      setTimeout(() => pingRoutes.delete(msg.id), 15000);
+      postToHost({ type: 'ping', id: msg.id, hosts: Array.isArray(msg.hosts) ? msg.hosts.slice(0, 16) : [] });
     }
   });
 

@@ -10,6 +10,7 @@
   const listeners = { init: [], sensors: [], media: [], streamdeck: [], sdcapture: [] };
   const state = { settings: {}, sensors: [], media: null, status: null, ready: false };
   const pendingFetches = new Map();
+  const pendingPings = new Map();
   let fetchSeq = 0;
 
   function emit(kind, payload) {
@@ -39,6 +40,12 @@
       emit('streamdeck', msg.profile || { available: false });
     } else if (msg.type === 'ww-sd-capture-result') {
       emit('sdcapture', msg.data || { available: false });
+    } else if (msg.type === 'ww-ping-result') {
+      const pending = pendingPings.get(msg.id);
+      if (pending) {
+        pendingPings.delete(msg.id);
+        pending.resolve(msg.results || []);
+      }
     } else if (msg.type === 'ww-fetch-result') {
       const pending = pendingFetches.get(msg.id);
       if (!pending) return;
@@ -174,6 +181,22 @@
     /** Trigger a Stream Deck button by its grid cell. */
     streamDeckClick(row, col, rows, cols) {
       parent.postMessage({ type: 'ww-sd-click', row, col, rows, cols }, '*');
+    },
+
+    /**
+     * Real ICMP pings, performed by the host process (browsers can't ICMP — HTTP
+     * timing only works against web servers and measures the wrong thing).
+     * hosts: up to 16 hostnames/IPs. Resolves to [{host, ok, rttMs?, error?}].
+     */
+    ping(hosts) {
+      return new Promise((resolve, reject) => {
+        const id = 'p' + (++fetchSeq) + '-' + Math.floor(performance.now());
+        pendingPings.set(id, { resolve, reject });
+        setTimeout(() => {
+          if (pendingPings.delete(id)) reject(new TypeError('ping timed out'));
+        }, 12000);
+        parent.postMessage({ type: 'ww-ping', id, hosts: (hosts || []).map(String).slice(0, 16) }, '*');
+      });
     },
 
     /** Writes to the host's app.log — useful for debugging on the panel. */

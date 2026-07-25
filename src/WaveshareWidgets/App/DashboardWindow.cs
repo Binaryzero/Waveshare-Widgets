@@ -236,6 +236,10 @@ public sealed class DashboardWindow : Form
                 case "fetch":
                     _ = HandleProxyFetchAsync(message);
                     break;
+
+                case "ping":
+                    _ = HandlePingAsync(message);
+                    break;
             }
         }
         catch (Exception ex)
@@ -287,7 +291,7 @@ public sealed class DashboardWindow : Form
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
                 (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
                 throw new InvalidOperationException("only absolute http(s) URLs are allowed");
-            if (method is not ("GET" or "POST" or "HEAD"))
+            if (method is not ("GET" or "POST" or "PUT" or "HEAD"))
                 throw new InvalidOperationException($"method {method} not allowed");
 
             using var request = new HttpRequestMessage(new HttpMethod(method), uri)
@@ -297,7 +301,7 @@ public sealed class DashboardWindow : Form
                 VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
             };
             var body = message["body"]?.GetValue<string>();
-            if (body is not null && method == "POST")
+            if (body is not null && method is "POST" or "PUT")
             {
                 var contentType = message["contentType"]?.GetValue<string>() ?? "text/plain";
                 request.Content = new StringContent(body, System.Text.Encoding.UTF8, contentType);
@@ -353,6 +357,64 @@ public sealed class DashboardWindow : Form
         catch (ObjectDisposedException)
         {
             // window closed mid-request
+        }
+    }
+
+    /// <summary>
+    /// Real ICMP pings for the Ping Monitor widget (a browser can only fake latency with
+    /// HTTP requests, which fails for routers/NAS boxes and measures the wrong thing).
+    /// message: { id, hosts: ["1.1.1.1", "router.local", ...] } — capped, pinged in
+    /// parallel, one reply: ping-result { id, results: [{host, ok, rttMs}] }.
+    /// </summary>
+    private async Task HandlePingAsync(JsonNode message)
+    {
+        var id = message["id"]?.GetValue<string>() ?? "";
+        var hosts = new List<string>();
+        if (message["hosts"] is JsonArray arr)
+            foreach (var h in arr)
+            {
+                var host = h?.GetValue<string>()?.Trim();
+                if (!string.IsNullOrEmpty(host) && hosts.Count < 16)
+                    hosts.Add(host);
+            }
+
+        var results = new JsonArray();
+        var tasks = hosts.Select(async host =>
+        {
+            var entry = new JsonObject { ["host"] = host };
+            try
+            {
+                using var ping = new System.Net.NetworkInformation.Ping();
+                var reply = await ping.SendPingAsync(host, 2000);
+                if (reply.Status == System.Net.NetworkInformation.IPStatus.Success)
+                {
+                    entry["ok"] = true;
+                    entry["rttMs"] = reply.RoundtripTime;
+                }
+                else
+                {
+                    entry["ok"] = false;
+                    entry["error"] = reply.Status.ToString();
+                }
+            }
+            catch (Exception ex)
+            {
+                entry["ok"] = false;
+                entry["error"] = ex.InnerException?.Message ?? ex.Message;
+            }
+            return entry;
+        }).ToList();
+
+        foreach (var entry in await Task.WhenAll(tasks))
+            results.Add(entry);
+
+        try
+        {
+            BeginInvoke(() => PostToShell("ping-result", new JsonObject { ["id"] = id, ["results"] = results }));
+        }
+        catch (ObjectDisposedException)
+        {
+            // window closed mid-ping
         }
     }
 

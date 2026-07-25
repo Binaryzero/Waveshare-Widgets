@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Hue Lights</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #0b0e14;
+    color: #e8ecf2;
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  body.bg-transparent { background: transparent; }
+  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  #rooms {
+    display: grid;
+    gap: 8px;
+    padding: 8px;
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+  .room {
+    border-radius: 12px;
+    background: rgba(23, 28, 40, 0.65);
+    border: 1px solid #232a3a;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0; min-height: 0;
+    transition: border-color 0.2s ease, background 0.2s ease;
+  }
+  .room.on { border-color: #ffc24b; background: rgba(60, 48, 22, 0.5); }
+  .room .head { display: flex; align-items: center; gap: 8px; cursor: pointer; touch-action: manipulation; }
+  .room .bulb { font-size: clamp(14px, 5.5vh, 24px); filter: grayscale(1) brightness(0.6); transition: filter 0.2s ease; }
+  .room.on .bulb { filter: none; }
+  .room .name {
+    flex: 1;
+    color: var(--name-color, #e8ecf2);
+    font-size: calc(clamp(12px, 4.6vh, 18px) * var(--name-scale, 1));
+    font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .room .state {
+    color: var(--detail-color, #7d8697);
+    font-size: calc(clamp(9px, 3vh, 12px) * var(--detail-scale, 1));
+  }
+  .room .bri { display: flex; align-items: center; gap: 8px; }
+  .room .bri button {
+    font: inherit; font-size: clamp(13px, 5vh, 20px);
+    color: #e8ecf2; background: #171c28; border: 1px solid #232a3a;
+    border-radius: 8px; width: 15%; min-width: 34px; padding: 2px 0;
+    cursor: pointer; touch-action: manipulation; flex: none;
+  }
+  .room .bri button:active { border-color: #ffc24b; }
+  .room .bri .bar { flex: 1; height: 10px; border-radius: 5px; background: rgba(255,255,255,0.1); overflow: hidden; }
+  .room .bri .fill { height: 100%; background: linear-gradient(90deg, #a86e00, #ffc24b); width: 0%; transition: width 0.25s ease; border-radius: 5px; }
+  .scenes { display: flex; flex-wrap: wrap; gap: 5px; }
+  .scenes button {
+    font: inherit; font-size: calc(clamp(9px, 3vh, 12px) * var(--detail-scale, 1));
+    color: var(--detail-color, #aeb7c4); background: rgba(23,28,40,0.9);
+    border: 1px solid #232a3a; border-radius: 999px; padding: 2px 10px;
+    cursor: pointer; touch-action: manipulation;
+    max-width: 46%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .scenes button:active { border-color: #ffc24b; color: #ffc24b; }
+  #pair, #message {
+    position: fixed; inset: 0;
+    display: none; flex-direction: column; gap: 2vh;
+    align-items: center; justify-content: center;
+    text-align: center; padding: 20px;
+    color: #aeb7c4; font-size: clamp(13px, 5vh, 19px);
+  }
+  #pair small, #message small { color: #545d6e; font-size: 72%; max-width: 88%; }
+  #pairBtn {
+    font: inherit; font-size: clamp(14px, 5.5vh, 22px);
+    color: #062028; background: #ffc24b; border: 0; border-radius: 10px;
+    padding: 10px 30px; cursor: pointer; touch-action: manipulation; font-weight: 600;
+  }
+</style>
+</head>
+<body>
+  <div id="rooms"></div>
+  <div id="pair">
+    <div>Press the round <b>link button</b> on your Hue Bridge…</div>
+    <button id="pairBtn">…then tap here to pair</button>
+    <small id="pairHint"></small>
+  </div>
+  <div id="message"></div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const cfg = { ip: '', showScenes: true };
+  let username = null;
+  let scenesByGroup = new Map();
+  let pollTimer = null;
+  let holdoff = 0;   // suppress poll rendering briefly after a local action
+
+  const api = (path) => 'http://' + cfg.ip + '/api/' + username + path;
+
+  WW.onInit(async (state) => {
+    const s = state.settings;
+    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
+    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
+    document.body.style.setProperty('--name-color', s.nameColor || '#e8ecf2');
+    document.body.style.setProperty('--name-scale', (Number(s.nameSize) || 100) / 100);
+    document.body.style.setProperty('--detail-color', s.detailColor || '#7d8697');
+    document.body.style.setProperty('--detail-scale', (Number(s.detailSize) || 100) / 100);
+    cfg.showScenes = s.showScenes !== 'off';
+
+    cfg.ip = String(s.bridgeIp || '').trim();
+    if (!cfg.ip) {
+      try {
+        const res = await WW.fetch('https://discovery.meethue.com/');
+        const list = await res.json();
+        if (list && list[0] && list[0].internalipaddress) cfg.ip = list[0].internalipaddress;
+      } catch (e) { /* fall through to message */ }
+    }
+    if (!cfg.ip) {
+      showMessage('No Hue Bridge found', 'Set the bridge IP in the widget settings (it\'s shown in the Hue app under Settings → My Hue system).');
+      return;
+    }
+
+    try { username = localStorage.getItem('hue-user-' + cfg.ip); } catch (e) { /* private mode */ }
+    if (username) startPolling();
+    else showPairing();
+  });
+
+  // --- pairing -----------------------------------------------------------------
+
+  function showPairing() {
+    document.getElementById('pair').style.display = 'flex';
+    document.getElementById('pairHint').textContent = 'Bridge: ' + cfg.ip;
+  }
+
+  document.getElementById('pairBtn').addEventListener('click', async () => {
+    try {
+      const res = await WW.fetch('http://' + cfg.ip + '/api', {
+        method: 'POST',
+        body: JSON.stringify({ devicetype: 'waveshare_widgets#panel' }),
+      });
+      const json = await res.json();
+      const entry = Array.isArray(json) ? json[0] : null;
+      if (entry && entry.success && entry.success.username) {
+        username = entry.success.username;
+        try { localStorage.setItem('hue-user-' + cfg.ip, username); } catch (e) { /* private mode */ }
+        document.getElementById('pair').style.display = 'none';
+        startPolling();
+      } else if (entry && entry.error && entry.error.type === 101) {
+        document.getElementById('pairHint').textContent = 'Link button not pressed — press it on the bridge, then tap again. (' + cfg.ip + ')';
+      } else {
+        document.getElementById('pairHint').textContent = 'Unexpected reply from ' + cfg.ip + ' — is this a Hue Bridge?';
+      }
+    } catch (e) {
+      document.getElementById('pairHint').textContent = 'Could not reach ' + cfg.ip + ' — ' + e.message;
+    }
+  });
+
+  // --- rooms -------------------------------------------------------------------
+
+  function startPolling() {
+    poll();
+    clearInterval(pollTimer);
+    pollTimer = setInterval(poll, 4000);
+  }
+
+  async function poll() {
+    if (Date.now() < holdoff) return;
+    let groups, scenes = {};
+    try {
+      const res = await WW.fetch(api('/groups'));
+      groups = await res.json();
+      if (groups && groups[0] && groups[0].error) throw new Error(groups[0].error.description);
+      if (cfg.showScenes) {
+        const sr = await WW.fetch(api('/scenes'));
+        scenes = await sr.json();
+      }
+    } catch (e) {
+      showMessage('Hue Bridge unreachable', cfg.ip + ' — ' + (e.message || e));
+      return;
+    }
+    document.getElementById('message').style.display = 'none';
+
+    scenesByGroup = new Map();
+    for (const [id, sc] of Object.entries(scenes || {})) {
+      if (!sc.group) continue;
+      if (!scenesByGroup.has(sc.group)) scenesByGroup.set(sc.group, []);
+      if (scenesByGroup.get(sc.group).length < 6) scenesByGroup.get(sc.group).push({ id, name: sc.name });
+    }
+    render(groups);
+  }
+
+  function render(groups) {
+    const wrap = document.getElementById('rooms');
+    wrap.textContent = '';
+    const entries = Object.entries(groups)
+      .filter(([, g]) => g.type === 'Room' || g.type === 'Zone')
+      .sort((a, b) => a[1].name.localeCompare(b[1].name));
+    if (!entries.length) {
+      showMessage('No rooms on this bridge', 'Create rooms in the Hue app and they\'ll appear here.');
+      return;
+    }
+    const cols = entries.length <= 2 ? entries.length : entries.length <= 6 ? 3 : 4;
+    wrap.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+
+    for (const [id, g] of entries) {
+      const on = !!(g.state && g.state.any_on);
+      const bri = (g.action && g.action.bri) != null ? g.action.bri : 254;
+
+      const card = document.createElement('div');
+      card.className = 'room' + (on ? ' on' : '');
+
+      const head = document.createElement('div');
+      head.className = 'head';
+      const bulb = document.createElement('span');
+      bulb.className = 'bulb';
+      bulb.textContent = '💡';
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = g.name;
+      const stateEl = document.createElement('span');
+      stateEl.className = 'state';
+      stateEl.textContent = on ? Math.round(bri / 254 * 100) + '%' : 'off';
+      head.append(bulb, name, stateEl);
+      head.addEventListener('click', () => act(id, { on: !on }));
+      card.appendChild(head);
+
+      const briRow = document.createElement('div');
+      briRow.className = 'bri';
+      const minus = document.createElement('button');
+      minus.textContent = '−';
+      minus.addEventListener('click', () => act(id, { on: true, bri: Math.max(1, bri - 40) }));
+      const bar = document.createElement('div');
+      bar.className = 'bar';
+      const fill = document.createElement('div');
+      fill.className = 'fill';
+      fill.style.width = (on ? Math.round(bri / 254 * 100) : 0) + '%';
+      bar.appendChild(fill);
+      const plus = document.createElement('button');
+      plus.textContent = '+';
+      plus.addEventListener('click', () => act(id, { on: true, bri: Math.min(254, bri + 40) }));
+      briRow.append(minus, bar, plus);
+      card.appendChild(briRow);
+
+      const groupScenes = scenesByGroup.get(id);
+      if (cfg.showScenes && groupScenes && groupScenes.length) {
+        const row = document.createElement('div');
+        row.className = 'scenes';
+        for (const sc of groupScenes) {
+          const b = document.createElement('button');
+          b.textContent = sc.name;
+          b.addEventListener('click', (ev) => { ev.stopPropagation(); act(id, { scene: sc.id }); });
+          row.appendChild(b);
+        }
+        card.appendChild(row);
+      }
+      wrap.appendChild(card);
+    }
+  }
+
+  async function act(groupId, body) {
+    holdoff = Date.now() + 1200;   // let the bridge settle before the next poll repaints
+    try {
+      await WW.fetch('http://' + cfg.ip + '/api/' + username + '/groups/' + groupId + '/action', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      WW.log('hue: action failed: ' + e.message);
+    }
+    holdoff = 0;
+    poll();
+  }
+
+  function showMessage(title, detail) {
+    const msg = document.getElementById('message');
+    msg.style.display = 'flex';
+    msg.innerHTML = '';
+    const h = document.createElement('div');
+    h.textContent = title;
+    msg.appendChild(h);
+    if (detail) {
+      const sm = document.createElement('small');
+      sm.textContent = detail;
+      msg.appendChild(sm);
+    }
+  }
+</script>
+</body>
+</html>
