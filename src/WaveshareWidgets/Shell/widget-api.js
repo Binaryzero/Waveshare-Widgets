@@ -180,6 +180,28 @@
     log(message) { parent.postMessage({ type: 'ww-log', message: String(message) }, '*'); },
   };
 
+  // --- runtime diagnostics -------------------------------------------------------
+  // Widgets are third-party code; when one dies (an uncaught error kills a timer
+  // chain and the widget silently freezes) the panel gives no clue. Forward every
+  // uncaught error / rejection — and visibility changes, which explain throttled
+  // timers — to the host's app.log. Budgeted so a crash-looping widget can't spam.
+  let diagBudget = 15;
+  function diag(kind, message) {
+    if (diagBudget-- <= 0) return;
+    try {
+      parent.postMessage({ type: 'ww-log', message: '[widget ' + location.hostname + '] ' + kind + ': ' + String(message).slice(0, 500) }, '*');
+    } catch (e) { /* parent gone */ }
+  }
+  window.addEventListener('error', (ev) => {
+    diag('uncaught', (ev.message || ev.error) + ' @ ' + String(ev.filename || '?').split('/').pop() + ':' + ev.lineno);
+  });
+  window.addEventListener('unhandledrejection', (ev) => {
+    diag('unhandled-rejection', (ev.reason && (ev.reason.stack || ev.reason.message)) || ev.reason);
+  });
+  if (document.visibilityState === 'hidden')
+    diag('visibility', 'document loaded hidden — timers will be throttled');
+  document.addEventListener('visibilitychange', () => diag('visibility', 'now ' + document.visibilityState));
+
   window.WW = WW;
   parent.postMessage({ type: 'ww-ready' }, '*');
 })();
