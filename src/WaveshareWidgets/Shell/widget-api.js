@@ -10,6 +10,7 @@
   const listeners = { init: [], sensors: [], media: [], streamdeck: [], sdcapture: [] };
   const state = { settings: {}, sensors: [], media: null, status: null, ready: false };
   const pendingFetches = new Map();
+  const pendingPings = new Map();
   let fetchSeq = 0;
 
   function emit(kind, payload) {
@@ -39,6 +40,12 @@
       emit('streamdeck', msg.profile || { available: false });
     } else if (msg.type === 'ww-sd-capture-result') {
       emit('sdcapture', msg.data || { available: false });
+    } else if (msg.type === 'ww-ping-result') {
+      const pending = pendingPings.get(msg.id);
+      if (pending) {
+        pendingPings.delete(msg.id);
+        pending.resolve(msg.results || []);
+      }
     } else if (msg.type === 'ww-fetch-result') {
       const pending = pendingFetches.get(msg.id);
       if (!pending) return;
@@ -176,9 +183,47 @@
       parent.postMessage({ type: 'ww-sd-click', row, col, rows, cols }, '*');
     },
 
+    /**
+     * Real ICMP pings, performed by the host process (browsers can't ICMP — HTTP
+     * timing only works against web servers and measures the wrong thing).
+     * hosts: up to 16 hostnames/IPs. Resolves to [{host, ok, rttMs?, error?}].
+     */
+    ping(hosts) {
+      return new Promise((resolve, reject) => {
+        const id = 'p' + (++fetchSeq) + '-' + Math.floor(performance.now());
+        pendingPings.set(id, { resolve, reject });
+        setTimeout(() => {
+          if (pendingPings.delete(id)) reject(new TypeError('ping timed out'));
+        }, 12000);
+        parent.postMessage({ type: 'ww-ping', id, hosts: (hosts || []).map(String).slice(0, 16) }, '*');
+      });
+    },
+
     /** Writes to the host's app.log — useful for debugging on the panel. */
     log(message) { parent.postMessage({ type: 'ww-log', message: String(message) }, '*'); },
   };
+
+  // --- runtime diagnostics -------------------------------------------------------
+  // Widgets are third-party code; when one dies (an uncaught error kills a timer
+  // chain and the widget silently freezes) the panel gives no clue. Forward every
+  // uncaught error / rejection — and visibility changes, which explain throttled
+  // timers — to the host's app.log. Budgeted so a crash-looping widget can't spam.
+  let diagBudget = 15;
+  function diag(kind, message) {
+    if (diagBudget-- <= 0) return;
+    try {
+      parent.postMessage({ type: 'ww-log', message: '[widget ' + location.hostname + '] ' + kind + ': ' + String(message).slice(0, 500) }, '*');
+    } catch (e) { /* parent gone */ }
+  }
+  window.addEventListener('error', (ev) => {
+    diag('uncaught', (ev.message || ev.error) + ' @ ' + String(ev.filename || '?').split('/').pop() + ':' + ev.lineno);
+  });
+  window.addEventListener('unhandledrejection', (ev) => {
+    diag('unhandled-rejection', (ev.reason && (ev.reason.stack || ev.reason.message)) || ev.reason);
+  });
+  if (document.visibilityState === 'hidden')
+    diag('visibility', 'document loaded hidden — timers will be throttled');
+  document.addEventListener('visibilitychange', () => diag('visibility', 'now ' + document.visibilityState));
 
   window.WW = WW;
   parent.postMessage({ type: 'ww-ready' }, '*');

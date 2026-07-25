@@ -1,0 +1,20 @@
+{
+  "id": "ws.stock.ping",
+  "name": "Ping Monitor",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Real ICMP latency for multiple hosts at once — routers, NAS boxes, game servers, the internet. Per-host status, loss %, and a scrolling latency sparkline.",
+  "min_api_version": 1,
+  "supported_slots": ["quarter", "half", "full"],
+  "properties": [
+    { "name": "hosts", "label": "Hosts (Label=host, comma separated)", "type": "text", "default": "Cloudflare=1.1.1.1, Google=8.8.8.8, Router=192.168.1.1" },
+    { "name": "interval", "label": "Ping every (seconds)", "type": "slider", "min": 1, "max": 30, "step": 1, "default": 3 },
+    { "name": "goodMs", "label": "Good latency below (ms)", "type": "slider", "min": 5, "max": 200, "step": 5, "default": 50 },
+    { "name": "badMs", "label": "Bad latency above (ms)", "type": "slider", "min": 20, "max": 500, "step": 10, "default": 120 },
+    { "name": "bgStyle", "label": "Background", "type": "select", "options": ["solid", "glass", "transparent"], "default": "solid" },
+    { "name": "labelColor", "label": "Label color", "type": "color", "default": "#7d8697", "group": "Text" },
+    { "name": "labelSize", "label": "Label size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" },
+    { "name": "valueColor", "label": "Value color (overrides status colors)", "type": "color", "default": "#e8ecf2", "group": "Text" },
+    { "name": "valueSize", "label": "Value size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" }
+  ]
+}

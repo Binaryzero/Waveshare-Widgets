@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Weather Radar</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0e14; }
+  body { font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; color: #e8ecf2; user-select: none; }
+  #map { position: absolute; inset: 0; overflow: hidden; }
+  #map .tile { position: absolute; width: 256px; height: 256px; }
+  #mapDim { position: absolute; inset: 0; background: #000; pointer-events: none; }
+  .frame { position: absolute; inset: 0; opacity: 0; }
+  .frame.show { opacity: 0.9; }
+  #marker {
+    position: absolute; width: 12px; height: 12px;
+    border-radius: 50%; background: #00d4ff;
+    border: 2px solid #fff; box-shadow: 0 0 8px rgba(0,212,255,0.9);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+  #stamp {
+    position: absolute; top: 6px; right: 8px;
+    color: var(--text-color, #e8ecf2);
+    font-size: calc(clamp(10px, 3.6vh, 14px) * var(--text-scale, 1));
+    background: rgba(5, 7, 11, 0.6);
+    border-radius: 6px; padding: 2px 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  #attrib {
+    position: absolute; bottom: 3px; right: 6px;
+    color: rgba(232, 236, 242, 0.65);
+    font-size: 9px;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  }
+  #message {
+    position: fixed; inset: 0;
+    display: none; align-items: center; justify-content: center;
+    text-align: center; padding: 16px;
+    color: #7d8697; font-size: clamp(12px, 4.5vh, 17px);
+    background: #0b0e14;
+  }
+</style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="mapDim"></div>
+  <div id="marker" hidden></div>
+  <div id="stamp" hidden></div>
+  <div id="attrib">&copy; OpenStreetMap &middot; RainViewer</div>
+  <div id="message"></div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const TILE = 256;
+  const cfg = { lat: null, lon: null, zoom: 7, animate: true };
+  let frames = [];          // [{time, urlTemplate}] oldest -> newest
+  let frameEls = [];
+  let frameIndex = 0;
+  let animTimer = null;
+
+  WW.onInit(async (state) => {
+    const s = state.settings;
+    cfg.zoom = Math.min(10, Math.max(4, Number(s.zoom) || 7));
+    cfg.animate = s.animate !== 'off';
+    document.getElementById('mapDim').style.opacity = String(Math.min(80, Math.max(0, Number(s.mapDim) || 0)) / 100);
+    document.body.style.setProperty('--text-color', s.textColor || '#e8ecf2');
+    document.body.style.setProperty('--text-scale', (Number(s.textSize) || 100) / 100);
+
+    try {
+      await resolveLocation(s.location);
+    } catch (e) {
+      showMessage('Set a location in the widget settings', String(e.message || e));
+      return;
+    }
+    buildBaseMap();
+    await refreshRadar();
+    setInterval(refreshRadar, 5 * 60 * 1000);  // RainViewer updates every ~10 min
+  });
+
+  async function resolveLocation(loc) {
+    if (loc && typeof loc === 'object' && isFinite(loc.latitude) && isFinite(loc.longitude)) {
+      cfg.lat = Number(loc.latitude); cfg.lon = Number(loc.longitude);
+      return;
+    }
+    const name = String(loc || 'Dallas').trim() || 'Dallas';
+    const res = await WW.fetch('https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name=' + encodeURIComponent(name));
+    if (!res.ok) throw new Error('geocoding failed (HTTP ' + res.status + ')');
+    const data = await res.json();
+    const hit = data.results && data.results[0];
+    if (!hit) throw new Error('no match for "' + name + '"');
+    cfg.lat = hit.latitude; cfg.lon = hit.longitude;
+  }
+
+  // --- slippy-map tile math -----------------------------------------------------
+
+  function centerTile() {
+    const n = Math.pow(2, cfg.zoom);
+    const x = (cfg.lon + 180) / 360 * n;
+    const latRad = cfg.lat * Math.PI / 180;
+    const y = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n;
+    return { x, y, n };
+  }
+
+  // Tiles needed to cover the viewport, with the location at the exact center.
+  function layoutTiles(container, urlFor) {
+    const w = window.innerWidth, h = window.innerHeight;
+    const { x, y, n } = centerTile();
+    const cols = Math.ceil(w / TILE) + 2;
+    const rows = Math.ceil(h / TILE) + 2;
+    const firstX = Math.floor(x - cols / 2);
+    const firstY = Math.floor(y - rows / 2);
+    const offsetX = w / 2 - (x - firstX) * TILE;
+    const offsetY = h / 2 - (y - firstY) * TILE;
+
+    for (let ty = 0; ty < rows; ty++) {
+      for (let tx = 0; tx < cols; tx++) {
+        const tileX = ((firstX + tx) % n + n) % n;       // wrap around the antimeridian
+        const tileY = firstY + ty;
+        if (tileY < 0 || tileY >= n) continue;
+        const img = document.createElement('img');
+        img.className = 'tile';
+        img.draggable = false;
+        img.style.left = (offsetX + tx * TILE) + 'px';
+        img.style.top = (offsetY + ty * TILE) + 'px';
+        img.src = urlFor(cfg.zoom, tileX, tileY);
+        img.onerror = () => { img.style.visibility = 'hidden'; };
+        container.appendChild(img);
+      }
+    }
+  }
+
+  function buildBaseMap() {
+    const map = document.getElementById('map');
+    map.textContent = '';
+    layoutTiles(map, (z, x, y) => 'https://tile.openstreetmap.org/' + z + '/' + x + '/' + y + '.png');
+    const marker = document.getElementById('marker');
+    marker.hidden = false;
+    marker.style.left = (window.innerWidth / 2) + 'px';
+    marker.style.top = (window.innerHeight / 2) + 'px';
+  }
+
+  // --- radar frames -------------------------------------------------------------
+
+  async function refreshRadar() {
+    let json;
+    try {
+      const res = await WW.fetch('https://api.rainviewer.com/public/weather-maps.json');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      json = await res.json();
+    } catch (e) {
+      WW.log('radar: frame list failed: ' + e.message);
+      return;
+    }
+    const host = json.host || 'https://tilecache.rainviewer.com';
+    const past = (json.radar && json.radar.past) || [];
+    const wanted = cfg.animate ? past.slice(-7) : past.slice(-1);
+    if (!wanted.length) return;
+
+    // Rebuild frame layers (each = one absolutely-positioned tile set).
+    clearTimeout(animTimer);
+    for (const el of frameEls) el.remove();
+    frameEls = [];
+    frames = wanted.map((f) => ({
+      time: f.time,
+      urlFor: (z, x, y) => host + f.path + '/' + TILE + '/' + z + '/' + x + '/' + y + '/2/1_1.png',
+    }));
+    const map = document.getElementById('map');
+    for (const f of frames) {
+      const layer = document.createElement('div');
+      layer.className = 'frame';
+      layoutTiles(layer, f.urlFor);
+      map.appendChild(layer);
+      frameEls.push(layer);
+    }
+    frameIndex = frames.length - 1;
+    showFrame(frameIndex);
+    if (cfg.animate && frames.length > 1) {
+      // Cycle oldest -> newest, lingering on the newest frame before looping.
+      const tick = () => {
+        frameIndex = (frameIndex + 1) % frames.length;
+        showFrame(frameIndex);
+        animTimer = setTimeout(tick, frameIndex === frames.length - 1 ? 1800 : 650);
+      };
+      animTimer = setTimeout(tick, 1800);
+    }
+  }
+
+  function showFrame(i) {
+    frameEls.forEach((el, idx) => el.classList.toggle('show', idx === i));
+    const stamp = document.getElementById('stamp');
+    stamp.hidden = false;
+    const d = new Date(frames[i].time * 1000);
+    stamp.textContent = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+
+  function showMessage(title, detail) {
+    const msg = document.getElementById('message');
+    msg.style.display = 'flex';
+    msg.textContent = title + (detail ? ' — ' + detail : '');
+  }
+</script>
+</body>
+</html>
