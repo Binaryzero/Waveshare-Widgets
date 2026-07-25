@@ -18,8 +18,9 @@ public sealed class SettingsWindow : Form
     private const string ShellHost = "app.wsw";
     private const string BackgroundHost = "backgrounds.wsw";
 
-    // Extensions accepted for background wallpapers (static + animated).
-    private static readonly string[] ImageExtensions = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"];
+    // Extensions accepted for background wallpapers (static + animated). WebView2 is
+    // Chromium, so AVIF (including animated AVIF) decodes natively.
+    private static readonly string[] ImageExtensions = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif"];
     private static readonly string[] VideoExtensions = [".mp4", ".webm", ".mov", ".m4v"];
 
     private static readonly JsonSerializerOptions BridgeJson = new()
@@ -195,9 +196,9 @@ public sealed class SettingsWindow : Form
         using var dialog = new OpenFileDialog
         {
             Title = "Choose a background image or video",
-            Filter = "Images & video (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.mp4;*.webm;*.mov;*.m4v)" +
-                     "|*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.mp4;*.webm;*.mov;*.m4v" +
-                     "|Images (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp)|*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp" +
+            Filter = "Images & video (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.avif;*.mp4;*.webm;*.mov;*.m4v)" +
+                     "|*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.avif;*.mp4;*.webm;*.mov;*.m4v" +
+                     "|Images (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.avif)|*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.avif" +
                      "|Video (*.mp4;*.webm;*.mov;*.m4v)|*.mp4;*.webm;*.mov;*.m4v",
         };
         if (dialog.ShowDialog(this) != DialogResult.OK)

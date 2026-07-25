@@ -36,6 +36,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.ghost { background: transparent; }
 button.danger { color: var(--danger); }
 button.danger:hover { border-color: var(--danger); }
+/* Armed state of the two-tap delete confirm */
+button.danger[data-armed] { background: var(--danger); border-color: var(--danger); color: #fff; }
 button.wide { width: 100%; margin-top: 10px; }
 button.icon { padding: 5px 9px; }
 

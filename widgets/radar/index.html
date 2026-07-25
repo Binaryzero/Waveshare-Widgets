@@ -160,22 +160,12 @@
 
     // Rebuild frame layers (each = one absolutely-positioned tile set).
     clearTimeout(animTimer);
-    for (const el of frameEls) el.remove();
-    frameEls = [];
     frames = wanted.map((f) => ({
       time: f.time,
       urlFor: (z, x, y) => host + f.path + '/' + TILE + '/' + z + '/' + x + '/' + y + '/2/1_1.png',
     }));
-    const map = document.getElementById('map');
-    for (const f of frames) {
-      const layer = document.createElement('div');
-      layer.className = 'frame';
-      layoutTiles(layer, f.urlFor);
-      map.appendChild(layer);
-      frameEls.push(layer);
-    }
     frameIndex = frames.length - 1;
-    showFrame(frameIndex);
+    rebuildFrameLayers();
     if (cfg.animate && frames.length > 1) {
       // Cycle oldest -> newest, lingering on the newest frame before looping.
       const tick = () => {
@@ -186,6 +176,33 @@
       animTimer = setTimeout(tick, 1800);
     }
   }
+
+  // (Re)creates the per-frame tile layers for the current viewport size.
+  function rebuildFrameLayers() {
+    for (const el of frameEls) el.remove();
+    frameEls = [];
+    const map = document.getElementById('map');
+    for (const f of frames) {
+      const layer = document.createElement('div');
+      layer.className = 'frame';
+      layoutTiles(layer, f.urlFor);
+      map.appendChild(layer);
+      frameEls.push(layer);
+    }
+    if (frames.length) showFrame(Math.min(frameIndex, frames.length - 1));
+  }
+
+  // Slot/display size changes (layout edits, different panels, DPI changes) need a
+  // full tile re-layout — positions and tile counts are computed from the viewport.
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    if (cfg.lat == null) return;
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      buildBaseMap();
+      rebuildFrameLayers();
+    }, 300);
+  });
 
   function showFrame(i) {
     frameEls.forEach((el, idx) => el.classList.toggle('show', idx === i));

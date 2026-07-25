@@ -281,8 +281,8 @@ in `layout.json` as a `background` object on the layout root and/or on any page:
 | `dim` | image, video | 0–100 % dark overlay over the wallpaper (not the widgets) |
 | `blur` | image, video | 0–40 px gaussian blur |
 
-- **Static** = `image` (PNG/JPG/WebP/BMP, plus animated GIF/WebP which animate on their own).
-  **Animated** = `video` (MP4/WebM/MOV, played muted + looped).
+- **Static** = `image` (PNG/JPG/WebP/AVIF/BMP, plus animated GIF/WebP/AVIF which animate
+  on their own). **Animated** = `video` (MP4/WebM/MOV, played muted + looped).
 - A page with no `background` inherits the dashboard default; per-page backgrounds
   **crossfade** as you swipe between pages.
 - The dim overlay sits above the wallpaper but below the widgets, so widgets stay at full
