@@ -32,6 +32,7 @@
     gap: 7px;
     overflow-y: auto;
   }
+  #sessions:empty { display: none; }   /* let the empty message center in the full space */
   #sessions::-webkit-scrollbar { width: 4px; }
   #sessions::-webkit-scrollbar-thumb { background: #232a3a; border-radius: 2px; }
 
@@ -245,7 +246,7 @@
       const name = document.createElement('span');
       name.className = 'name';
       name.textContent = displayName(s.name);
-      name.title = s.name;
+      name.title = String(s.name || '');
       const mute = document.createElement('button');
       mute.className = 'mute';
       mute.title = 'Mute ' + displayName(s.name);
