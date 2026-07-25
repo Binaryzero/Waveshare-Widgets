@@ -162,12 +162,38 @@
     renderAll();
   }
 
+  // Mirror of the shell's first-fit placement. Total cells alone can't tell whether
+  // everything fits (five quarter-uppers are only 5/8 cells, but the top row holds 4),
+  // so simulate the real 4x2 placement and count the slots that get dropped.
+  function countUnplaced(slots) {
+    const occupied = [new Array(4).fill(false), new Array(4).fill(false)]; // [row][col]
+    let dropped = 0;
+    for (const s of slots) {
+      const { width, band } = parseSize(s.size);
+      const w = WIDTH_COLS[width];
+      const rows = band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1];
+      let placed = false;
+      for (let col = 0; col + w <= 4 && !placed; col++) {
+        let fits = true;
+        for (const r of rows) for (let i = 0; i < w && fits; i++) if (occupied[r][col + i]) fits = false;
+        if (!fits) continue;
+        for (const r of rows) for (let i = 0; i < w; i++) occupied[r][col + i] = true;
+        placed = true;
+      }
+      if (!placed) dropped++;
+    }
+    return dropped;
+  }
+
   function renderCapacity(page) {
-    const used = (page.slots || []).reduce((sum, s) => sum + sizeCells(s.size), 0);
+    const slots = page.slots || [];
+    const used = slots.reduce((sum, s) => sum + sizeCells(s.size), 0);
+    const dropped = countUnplaced(slots);
     const cap = el('capacity');
     cap.textContent = 'Space used: ' + used + ' / 8';
-    cap.classList.toggle('warn', used > 8);
-    if (used > 8) cap.textContent += ' — widgets that don\'t fit are dropped';
+    cap.classList.toggle('warn', dropped > 0);
+    if (dropped > 0)
+      cap.textContent += ' — ' + dropped + ' widget' + (dropped > 1 ? 's' : '') + ' won\'t fit and will be dropped';
   }
 
   function renderSlot(page, slot, index) {
