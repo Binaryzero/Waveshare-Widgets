@@ -130,7 +130,24 @@
     nameInput.value = page.name || '';
     nameInput.oninput = () => { page.name = nameInput.value; renderPageList(); };
 
-    el('deletePage').onclick = () => {
+    // Two-tap confirm: the first tap arms the button (and auto-disarms), only a
+    // second tap actually deletes — a page full of tuned widgets is easy to fat-finger.
+    const delBtn = el('deletePage');
+    delBtn.textContent = 'Delete page';
+    delete delBtn.dataset.armed;
+    delBtn.onclick = () => {
+      if (!delBtn.dataset.armed) {
+        delBtn.dataset.armed = '1';
+        delBtn.textContent = 'Tap again to delete';
+        setTimeout(() => {
+          if (delBtn.dataset.armed) {
+            delete delBtn.dataset.armed;
+            delBtn.textContent = 'Delete page';
+          }
+        }, 3500);
+        return;
+      }
+      delete delBtn.dataset.armed;
       state.layout.pages.splice(selectedPage, 1);
       selectedPage = Math.max(0, selectedPage - 1);
       renderAll();
