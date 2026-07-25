@@ -26,11 +26,15 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   hotplug via display-change events.
 - **Never steals focus** — the window uses `WS_EX_NOACTIVATE`, so touch taps don't
   interrupt your game.
-- **Swipeable pages** of widgets in three slot sizes: `quarter` (320×400), `half`
-  (640×400), `full` (1280×400).
+- **Swipeable pages** of widgets on a 4×2 slot grid: widths `quarter` (320px),
+  `half` (640px), `three-quarter` (960px), `full` (1280px), each at full height
+  or subdivided into an upper/lower band (200px). Per-page and global wallpaper
+  (image/video/gradient, AVIF included) shows through widgets' transparent
+  background style.
 - **Sensors** from [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
   (CPU/GPU/memory/storage/motherboard) plus zero-elevation fallbacks (performance
-  counters, memory status), media now-playing + transport control via Windows
+  counters, memory status), Bluetooth/laptop battery levels via Windows PnP,
+  media now-playing + transport control via Windows
   (`GlobalSystemMediaTransportControls`), and anything a widget fetches itself
   (e.g. the weather widget calls Open-Meteo).
 - **Widget packages**: a `.wswidget` file is a zip of `manifest.json` + `index.html`.
@@ -39,7 +43,10 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
 - **Settings UI**: tray → **Settings…** opens a visual editor for pages, slots, and
   every widget's declared properties (colors, sliders, sensor pickers) — no JSON
   editing required.
-- **Five stock widgets**: CPU, GPU, Clock, Now Playing, Weather.
+- **Eighteen stock widgets**: CPU, GPU, Clock, Now Playing, Weather, Weather
+  Radar, Reddit Photos, Ping Monitor, iFrame, Stream Deck mirror (live Virtual
+  Stream Deck with clickable keys), Philips Hue (CLIP v2 + v1), Battery,
+  Gallery, YouTube, Twitch Chat, Launch App, Sensor Chart, Volume mixer.
 - **iCUE widget compatibility**: many `.icuewidget` packages from the
   [Elgato Marketplace](https://marketplace.elgato.com/icue/widgets) install and run
   as-is — the runtime emulates the `Sensorsdataprovider` plugin API and reads
