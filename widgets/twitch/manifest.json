@@ -1,0 +1,16 @@
+{
+  "id": "ws.stock.twitch",
+  "name": "Twitch Chat",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Live Twitch chat for any channel, via Twitch's official chat embed. Accepts a channel name or any twitch.tv link; dark or light chat theme.",
+  "min_api_version": 1,
+  "supported_slots": ["quarter", "half", "full"],
+  "properties": [
+    { "name": "channel", "label": "Channel (name or twitch.tv URL)", "type": "text", "default": "" },
+    { "name": "theme", "label": "Chat theme", "type": "select", "options": ["dark", "light"], "default": "dark" },
+    { "name": "bgStyle", "label": "Background", "type": "select", "options": ["solid", "glass", "transparent"], "default": "solid" },
+    { "name": "msgColor", "label": "Message color", "type": "color", "default": "#7d8697", "group": "Text" },
+    { "name": "msgSize", "label": "Message size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" }
+  ]
+}
