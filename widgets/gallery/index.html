@@ -169,13 +169,10 @@
       index = (index + (direction || 1) + items.length) % items.length;
       const item = items[index];
       try {
-        if (item.kind === 'video') {
-          const v = await preloadVideo(fileUrl(item.name));
-          showVideo(item, v);
-        } else {
-          await preloadImage(fileUrl(item.name));
-          showImage(item);
-        }
+        const video = item.kind === 'video' ? await preloadVideo(fileUrl(item.name)) : null;
+        if (!video) await preloadImage(fileUrl(item.name));
+        if (items.length === 0) break; // folder emptied while loading; empty state is up
+        if (video) showVideo(item, video); else showImage(item);
         advancing = false;
         return;
       } catch (e) {
@@ -183,8 +180,9 @@
       }
     }
     advancing = false;
+    if (items.length === 0) return; // refreshList's empty-folder message stands
     showMessage('Media files are not loading', 'Check the app log for details.');
-    advanceTimer = setTimeout(() => advance(), 30 * 1000); // keep retrying quietly
+    advanceTimer = setTimeout(tick, 30 * 1000); // keep retrying quietly (respects pause)
   }
 
   // Resolves once the image is fully decoded (and cached), so the crossfade only
@@ -280,6 +278,10 @@
   }
 
   function showMessage(title, detail) {
+    // A message replaces the slideshow: stop any video and clear both layers so the
+    // text never fights a stale slide (and files deleted mid-play stop playing).
+    currentVideo = null;
+    for (const l of layers) { resetLayer(l); l.classList.remove('visible'); }
     const msg = document.getElementById('message');
     msg.style.display = 'flex';
     msg.innerHTML = '';
