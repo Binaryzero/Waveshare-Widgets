@@ -31,10 +31,19 @@
       // Design tokens land on :root before init callbacks so first paint is themed.
       if (msg.theme && typeof msg.theme === 'object') {
         state.theme = msg.theme;
-        for (const name of Object.keys(msg.theme)) {
-          if (name.indexOf('--') === 0) document.documentElement.style.setProperty(name, String(msg.theme[name]));
-        }
-        document.documentElement.dataset.appearance = String(msg.theme['--appearance'] || 'dark');
+        const applyTheme = function () {
+          const root = document.documentElement;
+          if (!root) return;
+          for (const name of Object.keys(state.theme)) {
+            if (name.indexOf('--') === 0) root.style.setProperty(name, String(state.theme[name]));
+          }
+          root.dataset.appearance = String(state.theme['--appearance'] || 'dark');
+        };
+        // An init delivered at document-start (injection-time races) can precede the
+        // root element; applying then would throw and swallow the whole init. Defer
+        // until the parser has created <html>.
+        if (document.documentElement) applyTheme();
+        else document.addEventListener('DOMContentLoaded', applyTheme, { once: true });
       }
       state.ready = true;
       emit('init', state);

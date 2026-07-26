@@ -70,6 +70,12 @@ html, body {
 }
 
 body {
+  /* The bgStyle classes land on <body>, so the values derived from
+   * --panel-alpha-eff must be recomputed here — left on :root they would stay
+   * locked to the :root panel alpha and ignore the class overrides. */
+  --panel-border-alpha: calc(0.06 + var(--panel-alpha-eff) * 0.10);
+  --panel-shadow-alpha: calc(0.05 + var(--panel-alpha-eff) * 0.18);
+  --card-surface: rgba(var(--surface-alt-rgb), max(0, calc(var(--panel-alpha-eff) - 0.02)));
   background: rgba(var(--surface-rgb), var(--panel-alpha-eff));
   color: var(--text);
   font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;

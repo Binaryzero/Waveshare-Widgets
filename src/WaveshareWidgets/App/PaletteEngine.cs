@@ -40,10 +40,11 @@ public static class PaletteEngine
         var dim = Mix(text, surface, 0.60);
         var line = Mix(text, surface, 0.78);
 
-        // Contrast guard: repair each role against the surfaces it renders on.
+        // Contrast guard: repair each role against the surfaces it renders on. Muted is
+        // repaired against both of its surfaces in one pass — sequential repairs can
+        // flip direction between mid-tone surfaces and undo the first guarantee.
         text = EnsureContrast(text, surface, TextContrast);
-        muted = EnsureContrast(muted, surface, MutedContrast);
-        muted = EnsureContrast(muted, surfaceAlt, MutedContrast);
+        muted = EnsureContrast(muted, [surface, surfaceAlt], MutedContrast);
         dim = EnsureContrast(dim, surface, DimContrast);
 
         // State colors: fixed hues repaired for the theme's surfaces.
@@ -135,21 +136,48 @@ public static class PaletteEngine
     /// or white (whichever direction helps). Colors that already pass are untouched.
     /// </summary>
     private static (byte r, byte g, byte b) EnsureContrast(
-        (byte r, byte g, byte b) color, (byte r, byte g, byte b) surface, double target)
+        (byte r, byte g, byte b) color, (byte r, byte g, byte b) surface, double target) =>
+        EnsureContrast(color, [surface], target);
+
+    /// <summary>
+    /// Multi-surface repair: the returned color meets <paramref name="target"/> on every
+    /// surface at once. (Repairing for one surface and then re-repairing for another can
+    /// flip the repair direction on mid-tone themes and undo the first guarantee, so
+    /// roles that render on several surfaces must be repaired in a single pass.)
+    /// </summary>
+    private static (byte r, byte g, byte b) EnsureContrast(
+        (byte r, byte g, byte b) color, (byte r, byte g, byte b)[] surfaces, double target)
     {
-        if (Contrast(color, surface) >= target)
+        double MinContrast((byte r, byte g, byte b) c)
+        {
+            var min = double.MaxValue;
+            foreach (var s in surfaces)
+                min = Math.Min(min, Contrast(c, s));
+            return min;
+        }
+
+        if (MinContrast(color) >= target)
             return color;
 
-        var towardWhite = Luminance(surface) < 0.5;
+        // Prefer the tone-appropriate pole, but switch to the opposite one when it can't
+        // reach the ratio and the opposite pole does better — a mid-tone surface like
+        // #999 caps white at ~2.7:1 while black exceeds 7:1.
+        var towardWhite = Luminance(surfaces[0]) < 0.5;
         var pole = towardWhite ? ((byte)0xff, (byte)0xff, (byte)0xff) : ((byte)0x00, (byte)0x00, (byte)0x00);
-        if (Contrast(pole, surface) < target)
-            return pole; // theme is extreme; the pole is the best available
+        if (MinContrast(pole) < target)
+        {
+            var opposite = towardWhite ? ((byte)0x00, (byte)0x00, (byte)0x00) : ((byte)0xff, (byte)0xff, (byte)0xff);
+            if (MinContrast(opposite) > MinContrast(pole))
+                pole = opposite;
+            if (MinContrast(pole) < target)
+                return pole; // theme is extreme; this pole is the best available
+        }
 
         double lo = 0, hi = 1;
         for (var i = 0; i < 18; i++)
         {
             var mid = (lo + hi) / 2;
-            if (Contrast(Mix(color, pole, mid), surface) >= target)
+            if (MinContrast(Mix(color, pole, mid)) >= target)
                 hi = mid;
             else
                 lo = mid;
