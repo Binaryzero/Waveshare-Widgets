@@ -3,18 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <title>Hue Lights</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; }
-  body {
-    background: #0b0e14;
-    color: #e8ecf2;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-    user-select: none;
-    -webkit-user-select: none;
-  }
-  body.bg-transparent { background: transparent; }
-  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  /* Widget-specific layout only — tokens, background/bgStyle handling and the
+   * .card/.state-card/.btn/.meter anatomy come from widget-base.css. */
   #rooms {
     display: grid;
     gap: 8px;
@@ -25,73 +17,70 @@
     scrollbar-width: none;
   }
   .room {
-    border-radius: 12px;
-    background: rgba(23, 28, 40, 0.65);
-    border: 1px solid #232a3a;
-    padding: 8px 10px;
+    padding: 8px 10px;   /* denser than the .card default — the panel is 400px tall */
     display: flex;
     flex-direction: column;
     gap: 6px;
     min-width: 0; min-height: 0;
-    transition: border-color 0.2s ease, background 0.2s ease;
+    transition: border-color var(--dur-mid) var(--ease), background var(--dur-mid) var(--ease);
   }
-  .room.on { border-color: #ffc24b; background: rgba(60, 48, 22, 0.5); }
+  .room.on {
+    border-color: rgba(var(--accent-rgb), 0.55);
+    background: rgba(var(--accent-rgb), 0.12);
+  }
   .room .head { display: flex; align-items: center; gap: 8px; cursor: pointer; touch-action: manipulation; }
-  .room .bulb { font-size: clamp(14px, 5.5vh, 24px); filter: grayscale(1) brightness(0.6); transition: filter 0.2s ease; }
+  .room .bulb { font-size: clamp(14px, 5.5vh, 24px); filter: grayscale(1) brightness(0.6); transition: filter var(--dur-mid) var(--ease); }
   .room.on .bulb { filter: none; }
+  /* Per-role custom properties (set from settings only when they differ from the
+   * manifest defaults) fall through to the theme tokens. */
   .room .name {
     flex: 1;
-    color: var(--name-color, #e8ecf2);
+    color: var(--name-color, var(--text));
     font-size: calc(clamp(12px, 4.6vh, 18px) * var(--name-scale, 1));
     font-weight: 600;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .room .state {
-    color: var(--detail-color, #7d8697);
+    color: var(--detail-color, var(--text-muted));
     font-size: calc(clamp(9px, 3vh, 12px) * var(--detail-scale, 1));
+    font-variant-numeric: tabular-nums;
   }
   .room .bri { display: flex; align-items: center; gap: 8px; }
   .room .bri button {
     font: inherit; font-size: clamp(13px, 5vh, 20px);
-    color: #e8ecf2; background: #171c28; border: 1px solid #232a3a;
-    border-radius: 8px; width: 15%; min-width: 34px; padding: 2px 0;
+    color: var(--text); background: var(--control-bg); border: 1px solid var(--line);
+    border-radius: var(--radius-control); width: 15%; min-width: 34px; padding: 2px 0;
     cursor: pointer; touch-action: manipulation; flex: none;
   }
-  .room .bri button:active { border-color: #ffc24b; }
-  .room .bri .bar { flex: 1; height: 10px; border-radius: 5px; background: rgba(255,255,255,0.1); overflow: hidden; }
-  .room .bri .fill { height: 100%; background: linear-gradient(90deg, #a86e00, #ffc24b); width: 0%; transition: width 0.25s ease; border-radius: 5px; }
+  .room .bri button:active { border-color: var(--accent); }
+  .room .bri .meter { flex: 1; height: 10px; border-radius: 5px; }
+  .room .bri .meter > i { border-radius: 5px; }
   .scenes { display: flex; flex-wrap: wrap; gap: 5px; }
-  .scenes button {
-    font: inherit; font-size: calc(clamp(9px, 3vh, 12px) * var(--detail-scale, 1));
-    color: var(--detail-color, #aeb7c4); background: rgba(23,28,40,0.9);
-    border: 1px solid #232a3a; border-radius: 999px; padding: 2px 10px;
-    cursor: pointer; touch-action: manipulation;
+  /* Scene chips ride on .btn for token colors/behavior; sized down to keep the
+   * original chip layout. */
+  .scenes .btn {
+    min-width: 0; min-height: 0;
+    font-size: calc(clamp(9px, 3vh, 12px) * var(--detail-scale, 1));
+    color: var(--detail-color, var(--text-muted));
+    border-radius: var(--radius-pill); padding: 2px 10px;
+    touch-action: manipulation;
     max-width: 46%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .scenes button:active { border-color: #ffc24b; color: #ffc24b; }
-  #pair, #message {
-    position: fixed; inset: 0;
-    display: none; flex-direction: column; gap: 2vh;
-    align-items: center; justify-content: center;
-    text-align: center; padding: 20px;
-    color: #aeb7c4; font-size: clamp(13px, 5vh, 19px);
-  }
-  #pair small, #message small { color: #545d6e; font-size: 72%; max-width: 88%; }
-  #pairBtn {
-    font: inherit; font-size: clamp(14px, 5.5vh, 22px);
-    color: #062028; background: #ffc24b; border: 0; border-radius: 10px;
-    padding: 10px 30px; cursor: pointer; touch-action: manipulation; font-weight: 600;
-  }
+  .scenes .btn:active { border-color: var(--accent); color: var(--accent); }
+  /* Pairing / message overlays: .state-card anatomy, shown via inline display. */
+  #pair, #message { position: fixed; inset: 0; display: none; }
+  #pair .state-title, #message .state-title { font-size: clamp(13px, 5vh, 19px); }
+  #pairBtn { font-size: clamp(14px, 5.5vh, 22px); padding: 10px 30px; touch-action: manipulation; }
 </style>
 </head>
 <body>
   <div id="rooms"></div>
-  <div id="pair">
-    <div>Press the round <b>link button</b> on your Hue Bridge…</div>
-    <button id="pairBtn">…then tap here to pair</button>
-    <small id="pairHint"></small>
+  <div id="pair" class="state-card">
+    <div class="state-title">Press the round <b>link button</b> on your Hue Bridge…</div>
+    <button id="pairBtn" class="btn primary">…then tap here to pair</button>
+    <small id="pairHint" class="state-body"></small>
   </div>
-  <div id="message"></div>
+  <div id="message" class="state-card"></div>
 
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
@@ -115,12 +104,21 @@
 
   WW.onInit(async (state) => {
     const s = state.settings;
-    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
+    // bgStyle drives the widget-base panel-opacity classes (default = solid).
+    document.body.classList.toggle('bg-solid', s.bgStyle !== 'transparent' && s.bgStyle !== 'glass');
     document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
-    document.body.style.setProperty('--name-color', s.nameColor || '#e8ecf2');
-    document.body.style.setProperty('--name-scale', (Number(s.nameSize) || 100) / 100);
-    document.body.style.setProperty('--detail-color', s.detailColor || '#7d8697');
-    document.body.style.setProperty('--detail-scale', (Number(s.detailSize) || 100) / 100);
+    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
+    // The host merges manifest defaults into settings, so "user changed it" means
+    // "differs from the default"; only then does the property override the theme
+    // tokens — at default the token chain shows through.
+    const override = (prop, value, def) => {
+      if (value && String(value).trim().toLowerCase() !== def) document.body.style.setProperty(prop, value);
+      else document.body.style.removeProperty(prop);
+    };
+    override('--name-color', s.nameColor, '#e8ecf2');
+    override('--detail-color', s.detailColor, '#7d8697');
+    document.body.style.setProperty('--name-scale', String((Number(s.nameSize) || 100) / 100));
+    document.body.style.setProperty('--detail-scale', String((Number(s.detailSize) || 100) / 100));
     cfg.showScenes = s.showScenes !== 'off';
 
     cfg.ip = String(s.bridgeIp || '').trim();
@@ -362,7 +360,7 @@
 
     for (const r of rooms) {
       const card = document.createElement('div');
-      card.className = 'room' + (r.on ? ' on' : '');
+      card.className = 'room card' + (r.on ? ' on' : '');
 
       const head = document.createElement('div');
       head.className = 'head';
@@ -385,8 +383,8 @@
       minus.textContent = '−';
       minus.addEventListener('click', () => stepBrightness(r, -1));
       const bar = document.createElement('div');
-      bar.className = 'bar';
-      const fill = document.createElement('div');
+      bar.className = 'bar meter';
+      const fill = document.createElement('i');
       fill.className = 'fill';
       fill.style.width = (r.on ? r.pct : 0) + '%';
       bar.appendChild(fill);
@@ -401,6 +399,7 @@
         row.className = 'scenes';
         for (const sc of r.scenes) {
           const b = document.createElement('button');
+          b.className = 'btn';
           b.textContent = sc.name;
           b.addEventListener('click', (ev) => { ev.stopPropagation(); recallScene(r, sc.id); });
           row.appendChild(b);
@@ -459,10 +458,12 @@
     msg.style.display = 'flex';
     msg.innerHTML = '';
     const h = document.createElement('div');
+    h.className = 'state-title';
     h.textContent = title;
     msg.appendChild(h);
     if (detail) {
       const sm = document.createElement('small');
+      sm.className = 'state-body';
       sm.textContent = detail;
       msg.appendChild(sm);
     }

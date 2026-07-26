@@ -30,6 +30,7 @@
   let toastTimer = null;
   let backgroundHost = 'backgrounds.wsw';
   let pendingBgPick = null;    // callback(source, kind) for the in-flight file dialog
+  let sdProfileWaiters = [];   // callbacks awaiting an sd-profiles-result
 
   const el = (id) => document.getElementById(id);
 
@@ -57,6 +58,10 @@
     } else if (msg.type === 'background-failed') {
       pendingBgPick = null;
       toast('Could not load background: ' + msg.message, true);
+    } else if (msg.type === 'sd-profiles-result') {
+      const waiters = sdProfileWaiters.splice(0);
+      const profiles = Array.isArray(msg.profiles) ? msg.profiles.filter((p) => typeof p === 'string') : [];
+      waiters.forEach((cb) => cb(profiles));
     }
   });
 
@@ -80,6 +85,7 @@
 
   function renderAll() {
     renderPageList();
+    renderThemeEditor();
     renderGlobalBackground();
     renderEditor();
   }
@@ -90,6 +96,153 @@
       () => state.layout.background || null,
       (spec) => { if (spec) state.layout.background = spec; else delete state.layout.background; },
       { allowInherit: false });
+  }
+
+  // Stock seeds mirrored from PaletteEngine's defaults; shown when no theme is set.
+  const THEME_DEFAULTS = { accent: '#4cc2ff', background: '#05070b', text: '#e8ecf2', panelAlpha: 0.92 };
+
+  // ---- palette derivation (JS port of App/PaletteEngine.cs) ----------------------------
+  // Drives the live theme preview. Kept in lockstep with the C# engine — the harness
+  // property-tests both implementations token-for-token over 208 seed themes.
+
+  function derivePalette(spec) {
+    const mixc = (a, b, t) => [0, 1, 2].map((i) => Math.round(a[i] + (b[i] - a[i]) * t));
+    const lum = (c) => {
+      const ch = (v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4); };
+      return 0.2126 * ch(c[0]) + 0.7152 * ch(c[1]) + 0.0722 * ch(c[2]);
+    };
+    const contrastc = (a, b) => {
+      const la = lum(a), lb = lum(b);
+      return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+    };
+    const parse = (hex, def) => {
+      if (typeof hex !== 'string' || hex.trim() === '') return def;
+      let h = hex.trim().replace(/^#*/, '');
+      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+      if (!/^[0-9a-fA-F]{6}$/.test(h)) return def;
+      const v = parseInt(h, 16);
+      return [(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff];
+    };
+    const WHITE = [0xff, 0xff, 0xff], BLACK = [0, 0, 0];
+    const ensure = (color, surfaces, target) => {
+      const minC = (c) => Math.min.apply(null, surfaces.map((s) => contrastc(c, s)));
+      if (minC(color) >= target) return color;
+      let pole = lum(surfaces[0]) < 0.5 ? WHITE : BLACK;
+      if (minC(pole) < target) {
+        const opp = pole === WHITE ? BLACK : WHITE;
+        if (minC(opp) > minC(pole)) pole = opp;
+        if (minC(pole) < target) return pole;
+      }
+      let lo = 0, hi = 1;
+      for (let i = 0; i < 18; i++) {
+        const mid = (lo + hi) / 2;
+        if (minC(mixc(color, pole, mid)) >= target) hi = mid; else lo = mid;
+      }
+      return mixc(color, pole, hi);
+    };
+    const ensureState = (seed, surface, surfaceAlt) => {
+      const ownMin = (c) => Math.min(
+        contrastc(c, surface), contrastc(c, surfaceAlt),
+        contrastc(c, mixc(surface, c, 0.14)), contrastc(c, mixc(surfaceAlt, c, 0.14)));
+      let c = ensure(seed, [surface, surfaceAlt], 4.5);
+      for (let i = 0; i < 6; i++) {
+        const next = ensure(c, [surface, surfaceAlt, mixc(surface, c, 0.14), mixc(surfaceAlt, c, 0.14)], 4.5);
+        if (next[0] === c[0] && next[1] === c[1] && next[2] === c[2]) break;
+        c = next;
+      }
+      if (ownMin(c) < 4.5) {
+        const pole = ownMin(WHITE) >= ownMin(BLACK) ? WHITE : BLACK;
+        if (ownMin(pole) > ownMin(c)) c = pole;
+      }
+      return c;
+    };
+    const hexOf = (c) => '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('');
+    const rgbOf = (c) => c[0] + ', ' + c[1] + ', ' + c[2];
+    const tintOf = (c) => 'rgba(' + c[0] + ', ' + c[1] + ', ' + c[2] + ', 0.14)';
+
+    const accent = parse(spec.accent, [0x4c, 0xc2, 0xff]);
+    const background = parse(spec.background, [0x05, 0x07, 0x0b]);
+    let text = parse(spec.text, [0xe8, 0xec, 0xf2]);
+    const panelAlpha = Math.min(1.0, Math.max(0.15, spec.panelAlpha == null ? 0.92 : spec.panelAlpha));
+    const dark = lum(background) < 0.35;
+    const surface = mixc(background, text, dark ? 0.055 : 0.035);
+    const surfaceAlt = mixc(background, text, dark ? 0.10 : 0.07);
+    const control = mixc(background, text, dark ? 0.15 : 0.11);
+    let muted = mixc(text, surface, 0.42);
+    let dim = mixc(text, surface, 0.60);
+    const line = mixc(text, surface, 0.78);
+    text = ensure(text, [surface], 7.0);
+    muted = ensure(muted, [surface, surfaceAlt], 4.5);
+    dim = ensure(dim, [surface], 3.0);
+    const ok = ensureState([0x45, 0xd4, 0x83], surface, surfaceAlt);
+    const warn = ensureState([0xf0, 0xb8, 0x4f], surface, surfaceAlt);
+    const err = ensureState([0xff, 0x62, 0x68], surface, surfaceAlt);
+    const info = ensureState([0x62, 0xcb, 0xea], surface, surfaceAlt);
+    const NEAR_BLACK = [0x0a, 0x0a, 0x0a];
+    const onAccent = contrastc(accent, NEAR_BLACK) >= contrastc(accent, WHITE) ? NEAR_BLACK : WHITE;
+    const hover = mixc(surface, text, 0.08);
+    return {
+      '--bg': hexOf(background), '--surface': hexOf(surface), '--surface-rgb': rgbOf(surface),
+      '--surface-alt': hexOf(surfaceAlt), '--surface-alt-rgb': rgbOf(surfaceAlt),
+      '--control-bg': hexOf(control), '--text': hexOf(text), '--text-muted': hexOf(muted),
+      '--text-dim': hexOf(dim), '--line': hexOf(line), '--accent': hexOf(accent),
+      '--accent-rgb': rgbOf(accent), '--on-accent': hexOf(onAccent),
+      '--ok': hexOf(ok), '--warn': hexOf(warn), '--err': hexOf(err), '--info': hexOf(info),
+      '--ok-bg': tintOf(ok), '--warn-bg': tintOf(warn), '--err-bg': tintOf(err), '--info-bg': tintOf(info),
+      '--hover-bg': hexOf(hover), '--panel-alpha': String(panelAlpha),
+    };
+  }
+
+  function renderThemeEditor() {
+    const container = el('themeEditor');
+    container.textContent = '';
+
+    // Live preview: a miniature widget tile over a wallpaper strip, restyled on every
+    // input so each control's effect is visible immediately.
+    const preview = document.createElement('div');
+    preview.className = 'theme-preview';
+    preview.innerHTML =
+      '<div class="tp-tile">' +
+        '<div class="tp-head"><span class="tp-kicker">CPU Load</span><span class="tp-pill">OK</span></div>' +
+        '<div class="tp-reading"><span class="tp-value">57</span><span class="tp-unit">%</span></div>' +
+        '<div class="tp-meter"><i></i></div>' +
+        '<div class="tp-btns"><button type="button" class="tp-btn" tabindex="-1">Button</button>' +
+        '<button type="button" class="tp-btn tp-primary" tabindex="-1">Accent</button></div>' +
+      '</div>';
+
+    const refreshPreview = () => {
+      const t = Object.assign({}, THEME_DEFAULTS, state.layout.theme || {});
+      const tokens = derivePalette(t);
+      for (const name of Object.keys(tokens)) preview.style.setProperty(name, tokens[name]);
+    };
+
+    const setKey = (key, value) => {
+      const t = state.layout.theme || (state.layout.theme = {});
+      if (value == null) delete t[key]; else t[key] = value;
+      if (!Object.keys(t).length) delete state.layout.theme;
+      refreshPreview();
+    };
+    const cur = state.layout.theme || {};
+
+    container.appendChild(preview);
+    const note = document.createElement('p');
+    note.className = 'panel-hint';
+    note.textContent = 'Live preview — the panel itself updates when you hit Save & apply.';
+    container.appendChild(note);
+
+    container.appendChild(bgColor('Accent', cur.accent || THEME_DEFAULTS.accent, (v) => setKey('accent', v)));
+    container.appendChild(bgColor('Background', cur.background || THEME_DEFAULTS.background, (v) => setKey('background', v)));
+    container.appendChild(bgColor('Text', cur.text || THEME_DEFAULTS.text, (v) => setKey('text', v)));
+    const alphaPct = Math.round((cur.panelAlpha != null ? cur.panelAlpha : THEME_DEFAULTS.panelAlpha) * 100);
+    container.appendChild(bgSlider('Panel opacity', alphaPct, 15, 100, 1, '%', (v) => setKey('panelAlpha', v / 100)));
+
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'ghost';
+    reset.textContent = 'Reset to stock theme';
+    reset.onclick = () => { delete state.layout.theme; renderThemeEditor(); };
+    container.appendChild(bgRow('', reset));
+    refreshPreview();
   }
 
   function renderPageList() {
@@ -496,8 +649,95 @@
         for (const option of prop.options || []) {
           select.add(new Option(option, option, false, option === current));
         }
+        if (prop.optionsSource === 'sd-profiles') {
+          // Options come from the host (discovered Virtual Stream Deck profiles) —
+          // the user picks from a list instead of typing a profile name.
+          select.add(new Option('First available (default)', '', false, !current));
+          if (current) select.add(new Option(current, current, false, true));
+          sdProfileWaiters.push((profiles) => {
+            if (!select.isConnected) return;
+            const chosen = select.value;
+            select.textContent = '';
+            select.add(new Option('First available (default)', '', false, !chosen));
+            for (const name of profiles) {
+              select.add(new Option(name, name, false, name === chosen));
+            }
+            if (chosen && !profiles.includes(chosen)) {
+              select.add(new Option(chosen + '  (not found right now)', chosen, false, true));
+            }
+          });
+          post({ type: 'sd-profiles' });
+        }
         select.onchange = () => set(select.value);
         return select;
+      }
+      case 'list': { // structured rows — the user never types a delimited string
+        const wrap = document.createElement('div');
+        wrap.className = 'factory list-editor';
+        const fields = Array.isArray(prop.fields) && prop.fields.length
+          ? prop.fields
+          : [{ key: 'value', label: 'Value', type: 'text' }];
+
+        // Accept the stored array, or convert a legacy "A=B, C=D" delimited string from
+        // an old layout into rows mapped onto the first two fields.
+        let items;
+        if (Array.isArray(current)) {
+          items = current.filter((x) => x && typeof x === 'object').map((x) => Object.assign({}, x));
+        } else if (typeof current === 'string' && current.trim()) {
+          items = current.split(',').map((pair) => {
+            const eq = pair.indexOf('=');
+            const item = {};
+            item[fields[0].key] = (eq < 0 ? pair : pair.slice(0, eq)).trim();
+            if (fields[1]) item[fields[1].key] = eq < 0 ? '' : pair.slice(eq + 1).trim();
+            return item;
+          }).filter((x) => Object.values(x).some((v) => v));
+        } else {
+          items = [];
+        }
+
+        const commit = () => set(items.map((x) => Object.assign({}, x)));
+        // A legacy string value renders as rows immediately, but only writes back as an
+        // array once the user touches the editor — untouched layouts stay byte-identical.
+        const renderList = () => {
+          wrap.textContent = '';
+          items.forEach((item, i) => {
+            const row = document.createElement('div');
+            row.className = 'factory-row';
+            for (const field of fields) {
+              const input = document.createElement('input');
+              if (field.type === 'color') {
+                input.type = 'color';
+                input.value = /^#[0-9a-f]{6}$/i.test(item[field.key]) ? item[field.key] : '#4cc2ff';
+              } else {
+                input.type = 'text';
+                input.placeholder = field.placeholder || field.label || '';
+                input.value = item[field.key] != null ? String(item[field.key]) : '';
+              }
+              input.setAttribute('aria-label', field.label || field.key);
+              input.oninput = () => { item[field.key] = input.value; commit(); };
+              row.appendChild(input);
+            }
+            row.appendChild(iconButton('✕', 'Remove ' + (prop.itemLabel || 'item'), () => {
+              items.splice(i, 1); commit(); renderList();
+            }, true));
+            wrap.appendChild(row);
+          });
+          const add = document.createElement('button');
+          add.className = 'ghost';
+          add.textContent = '+ Add ' + (prop.itemLabel || 'item');
+          add.addEventListener('click', () => {
+            const item = {};
+            for (const field of fields) item[field.key] = field.type === 'color' ? '#4cc2ff' : '';
+            items.push(item);
+            commit();
+            renderList();
+            const first = wrap.querySelector('.factory-row:last-of-type input');
+            if (first) first.focus();
+          });
+          wrap.appendChild(add);
+        };
+        renderList();
+        return wrap;
       }
       case 'sensor': {
         const select = document.createElement('select');

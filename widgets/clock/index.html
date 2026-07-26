@@ -3,32 +3,33 @@
 <head>
 <meta charset="utf-8" />
 <title>Clock</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; }
+  /* Widget-specific layout; tokens, background/bgStyle and typography base come
+   * from widget-base.css. */
   body {
-    background: #0b0e14;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 2vh;
-    user-select: none;
   }
-  /* Background setting: let the dashboard wallpaper show through. */
-  body.bg-transparent { background: transparent; }
-  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
   #time {
-    color: var(--time-color, var(--accent, #e8ecf2));
+    color: var(--time-color, var(--text));
     font-size: calc(clamp(40px, 34vh, 160px) * var(--time-scale, 1));
     font-weight: 200;
     line-height: 1;
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.02em;
   }
-  #time small { font-size: 40%; color: #7d8697; font-weight: 200; }
-  #date { color: var(--date-color, #7d8697); font-size: calc(clamp(12px, 6vh, 26px) * var(--date-scale, 1)); font-weight: 400; letter-spacing: 0.08em; }
+  #time small { font-size: 40%; color: var(--text-muted); font-weight: 200; }
+  #date {
+    color: var(--date-color, var(--text-muted));
+    font-size: calc(clamp(12px, 6vh, 26px) * var(--date-scale, 1));
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    font-variant-numeric: tabular-nums;
+  }
 </style>
 </head>
 <body>
@@ -41,23 +42,37 @@
   let hour12 = false;
   let showSeconds = true;
 
+  // Manifest defaults — the host merges these into settings, so "user changed it"
+  // means "differs from the default". Only then does the property override the
+  // theme tokens (inline CSS variable); at default the token chain shows through.
+  const DEF = { accentColor: '#e8ecf2', timeColor: '#e8ecf2', dateColor: '#7d8697' };
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
+  function setVar(name, value) {
+    if (value) document.body.style.setProperty(name, value);
+    else document.body.style.removeProperty(name);
+  }
+
   WW.onInit((state) => {
-    document.body.classList.toggle('bg-transparent', state.settings.bgStyle === 'transparent');
-    document.body.classList.toggle('bg-glass', state.settings.bgStyle === 'glass');
-    document.body.style.setProperty('--accent', state.settings.accentColor || '#e8ecf2');
     const s = state.settings;
-    // Time is accent-driven today: the host merges manifest defaults into settings,
-    // so a timeColor still at its default falls through to the accent chain and
-    // accentColor users see no change.
-    const timeColor = (s.timeColor && String(s.timeColor).toLowerCase() !== '#e8ecf2')
-      ? s.timeColor
-      : (s.accentColor || '#e8ecf2');
-    document.body.style.setProperty('--time-color', timeColor);
+    // Anything that isn't explicitly glass/transparent renders solid, matching the
+    // pre-token behavior for unset AND out-of-spec values (no class = glass in base).
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+    // Time color chain (legacy-compatible): an explicit timeColor wins; otherwise
+    // an accentColor moved off ITS default still drives the time, so existing
+    // accentColor users see no change; otherwise the theme's --text token.
+    setVar('--time-color',
+      changed(s.timeColor, DEF.timeColor) ? s.timeColor
+      : changed(s.accentColor, DEF.accentColor) ? s.accentColor
+      : '');
+    setVar('--date-color', changed(s.dateColor, DEF.dateColor) ? s.dateColor : '');
     document.body.style.setProperty('--time-scale', (Number(s.timeSize) || 100) / 100);
-    document.body.style.setProperty('--date-color', s.dateColor || '#7d8697');
     document.body.style.setProperty('--date-scale', (Number(s.dateSize) || 100) / 100);
-    hour12 = state.settings.hour12 === 'on';
-    showSeconds = state.settings.showSeconds !== 'off';
+    hour12 = s.hour12 === 'on';
+    showSeconds = s.showSeconds !== 'off';
     render();
   });
 

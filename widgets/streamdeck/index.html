@@ -3,20 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <title>Stream Deck</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; }
-  body {
-    background: #0b0e14;
-    color: #e8ecf2;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-    user-select: none;
-    -webkit-user-select: none;
-  }
-  /* Background setting: let the dashboard wallpaper show through. */
-  body.bg-transparent { background: transparent; }
-  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
-  body.bg-transparent #live, body.bg-glass #live { background: transparent; }
+  /* Layout only — tokens, background/bgStyle handling and the typography base
+   * come from widget-base.css. */
   #grid {
     display: grid;
     gap: 8px;
@@ -24,15 +14,19 @@
     width: 100%;
     height: 100%;
     place-content: center;
-    box-sizing: border-box;
   }
-  /* Physical Stream Deck key look: raised rounded face with a soft top light. */
+  /* Physical Stream Deck key look: raised rounded face with a soft top light.
+   * A key is an interactive control (like .btn), so its face uses the opaque
+   * control/surface tokens; shadow + top-light strength derive from the panel
+   * alpha formulas so keys soften on glass/transparent backgrounds. */
   .key {
     position: relative;
     border-radius: 14px;
-    background: linear-gradient(165deg, #2a3040 0%, #171b24 55%, #0d1017 100%);
-    border: 1px solid #343d50;
-    box-shadow: 0 3px 10px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08);
+    background: linear-gradient(165deg, var(--control-bg) 0%, var(--surface-alt) 55%, var(--surface) 100%);
+    border: 1px solid var(--line);
+    box-shadow:
+      0 3px 10px rgba(0, 0, 0, calc(var(--panel-shadow-alpha) * 2.4)),
+      inset 0 1px 0 rgba(255, 255, 255, calc(var(--panel-border-alpha) * 0.5));
     overflow: hidden;
     cursor: pointer;
     touch-action: manipulation;
@@ -41,16 +35,22 @@
     justify-content: center;
     min-width: 0;
     min-height: 0;
-    transition: transform 0.06s ease, box-shadow 0.12s ease;
+    transition: transform 0.06s var(--ease), box-shadow 0.12s var(--ease);
   }
-  .key:active { transform: scale(0.94); box-shadow: 0 0 0 2px #00d4ff inset, 0 1px 4px rgba(0,0,0,0.6); }
+  .key:active {
+    transform: scale(0.94);
+    box-shadow:
+      0 0 0 2px var(--accent) inset,
+      0 1px 4px rgba(0, 0, 0, calc(var(--panel-shadow-alpha) * 2.6));
+  }
   /* Empty keys are unoccupied SOCKETS, not buttons: a barely-there outline that keeps
      the layout readable without inflating the apparent button count. */
   .key.empty {
-    background: rgba(255,255,255,0.02);
-    border: 1px dashed #1a202c;
+    background: transparent;
+    border: 1px dashed var(--line);
     box-shadow: none;
     cursor: default;
+    opacity: 0.5;
   }
   /* When empty keys are hidden they still occupy the grid (so used-key positions and
      click coordinates stay correct) but render invisibly. */
@@ -58,39 +58,43 @@
   #picker {
     position: fixed; left: 0; right: 0; bottom: 0;
     display: flex; gap: 6px; padding: 6px; justify-content: center;
-    background: rgba(5,7,11,0.85); flex-wrap: wrap;
+    background: rgba(var(--surface-rgb), 0.85); flex-wrap: wrap;
   }
   #picker button {
     font: inherit; font-size: clamp(9px, 3vh, 13px);
-    color: #e8ecf2; background: #171c28; border: 1px solid #232a3a;
+    color: var(--text); background: var(--control-bg); border: 1px solid var(--line);
     border-radius: 6px; padding: 4px 10px; cursor: pointer;
   }
-  #picker button.active { border-color: #00d4ff; color: #00d4ff; }
-  #picker[hidden] { display: none; }
+  #picker button.active { border-color: var(--accent); color: var(--accent); }
   .key img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 13px; }
   .key .title {
     position: absolute; left: 0; right: 0; bottom: 0;
-    color: var(--title-color, #e8ecf2);
+    /* Set from settings only when moved off the manifest default; falls through
+     * to the theme's --text token otherwise. */
+    color: var(--title-color, var(--text));
     font-size: calc(clamp(8px, 2.6vh, 12px) * var(--title-scale, 1));
     text-align: center;
     padding: 2px 3px;
-    background: linear-gradient(transparent, rgba(0,0,0,0.75));
+    /* Legibility scrim over the key image, in the theme's surface tone so the
+     * default --text title stays readable on light themes too. */
+    background: linear-gradient(transparent, rgba(var(--surface-rgb), 0.75));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .key .fallback {
     font-size: calc(clamp(9px, 3.2vh, 14px) * var(--fallback-scale, 1));
-    color: var(--fallback-color, #aeb7c4);
+    color: var(--fallback-color, var(--text-muted));
     text-align: center;
     padding: 4px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     max-width: 92%;
   }
-  /* Live mirror: the VSD window's own pixels, letterboxed; taps map to key cells. */
+  /* Live mirror: the VSD window's own pixels, letterboxed; taps map to key cells.
+   * No background of its own — the body's panel paint shows through the letterbox,
+   * so bgStyle behaves exactly as on the icon grid. */
   #live {
     position: fixed; inset: 0;
     display: none;
     align-items: center; justify-content: center;
-    background: #0b0e14;
   }
   #live img {
     max-width: 100%; max-height: 100%;
@@ -99,21 +103,21 @@
   }
   #liveFlash {
     position: fixed;
-    border: 2px solid #00d4ff;
+    border: 2px solid var(--accent);
     border-radius: 10px;
     pointer-events: none;
     opacity: 0;
-    transition: opacity 0.25s ease;
+    transition: opacity var(--dur-mid) var(--ease);
   }
   #message {
     position: fixed; inset: 0;
     display: none; flex-direction: column; gap: 1.4vh;
     align-items: center; justify-content: center;
     text-align: center; padding: 18px;
-    color: var(--message-color, #7d8697); font-size: calc(clamp(12px, 4.5vh, 18px) * var(--message-scale, 1));
-    background: #0b0e14;
+    color: var(--message-color, var(--text-muted));
+    font-size: calc(clamp(12px, 4.5vh, 18px) * var(--message-scale, 1));
   }
-  #message small { color: #545d6e; font-size: 80%; max-width: 90%; }
+  #message small { color: var(--text-dim); font-size: 80%; max-width: 90%; }
 </style>
 </head>
 <body>
@@ -137,6 +141,17 @@
     try { return localStorage.getItem('ww-sd-profile') || ''; } catch (e) { return ''; }
   }
 
+  // Manifest defaults — the host merges these into settings, so "user changed it"
+  // means "differs from the default". Only then does the property override the
+  // theme tokens (inline CSS variable); at default the token chain shows through.
+  const DEF = { titleColor: '#e8ecf2', fallbackColor: '#aeb7c4', messageColor: '#7d8697' };
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
+  function setVar(name, value) {
+    if (value) document.body.style.setProperty(name, value);
+    else document.body.style.removeProperty(name);
+  }
+
   WW.onInit((state) => {
     const s = state.settings;
     cfg.rows = Number(s.rowsOverride) || 0;
@@ -147,13 +162,17 @@
     cfg.keyShape = s.keyShape === 'square' ? 'square' : 'fill';
     cfg.live = s.liveMode !== 'off';
     cfg.liveRefresh = Math.min(5000, Math.max(150, Number(s.liveRefresh) || 400));
-    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
-    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
-    document.body.style.setProperty('--title-color', s.titleColor || '#e8ecf2');
+    // Anything that isn't explicitly glass/transparent renders solid, matching the
+    // pre-token behavior for unset AND out-of-spec values (no class = glass in base).
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+    setVar('--title-color', changed(s.titleColor, DEF.titleColor) ? s.titleColor : '');
     document.body.style.setProperty('--title-scale', (Number(s.titleSize) || 100) / 100);
-    document.body.style.setProperty('--fallback-color', s.fallbackColor || '#aeb7c4');
+    setVar('--fallback-color', changed(s.fallbackColor, DEF.fallbackColor) ? s.fallbackColor : '');
     document.body.style.setProperty('--fallback-scale', (Number(s.fallbackSize) || 100) / 100);
-    document.body.style.setProperty('--message-color', s.messageColor || '#7d8697');
+    setVar('--message-color', changed(s.messageColor, DEF.messageColor) ? s.messageColor : '');
     document.body.style.setProperty('--message-scale', (Number(s.messageSize) || 100) / 100);
     schedulePolling();
     poll();

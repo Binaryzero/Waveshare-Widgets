@@ -8,7 +8,7 @@
   if (window.WW) return; // already installed (injected + script tag)
 
   const listeners = { init: [], sensors: [], media: [], streamdeck: [], sdcapture: [] };
-  const state = { settings: {}, sensors: [], media: null, status: null, ready: false };
+  const state = { settings: {}, sensors: [], media: null, status: null, theme: null, ready: false };
   const pendingFetches = new Map();
   const pendingPings = new Map();
   const pendingMediaLists = new Map();
@@ -28,6 +28,23 @@
       state.sensors = msg.sensors || [];
       state.media = msg.media || null;
       state.status = msg.status || null;
+      // Design tokens land on :root before init callbacks so first paint is themed.
+      if (msg.theme && typeof msg.theme === 'object') {
+        state.theme = msg.theme;
+        const applyTheme = function () {
+          const root = document.documentElement;
+          if (!root) return;
+          for (const name of Object.keys(state.theme)) {
+            if (name.indexOf('--') === 0) root.style.setProperty(name, String(state.theme[name]));
+          }
+          root.dataset.appearance = String(state.theme['--appearance'] || 'dark');
+        };
+        // An init delivered at document-start (injection-time races) can precede the
+        // root element; applying then would throw and swallow the whole init. Defer
+        // until the parser has created <html>.
+        if (document.documentElement) applyTheme();
+        else document.addEventListener('DOMContentLoaded', applyTheme, { once: true });
+      }
       state.ready = true;
       emit('init', state);
       emit('sensors', state.sensors);
@@ -119,6 +136,8 @@
     get media() { return state.media; },
     /** Host status: {elevated, apiVersion}. */
     get status() { return state.status; },
+    /** Design-token map ({'--surface': '#111314', ...}); applied to :root automatically. */
+    get theme() { return state.theme; },
 
     /** cb(state) — fires once settings/sensors are first delivered. */
     onInit(cb) { listeners.init.push(cb); if (state.ready) cb(state); },

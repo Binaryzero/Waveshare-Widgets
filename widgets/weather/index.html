@@ -3,18 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <title>Weather</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; }
-  body {
-    background: #0b0e14;
-    color: #e8ecf2;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-    user-select: none;
-  }
-  /* Background setting: let the dashboard wallpaper show through. */
-  body.bg-transparent { background: transparent; }
-  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  /* Widget-specific layout; tokens, background/bgStyle and typography base come
+   * from widget-base.css. */
   #wrap {
     display: flex;
     width: 100%;
@@ -27,23 +19,36 @@
   #now { display: flex; align-items: center; gap: 5%; flex: none; }
   #icon { font-size: clamp(40px, 24vh, 100px); line-height: 1; }
   #main { display: flex; flex-direction: column; gap: 0.8vh; }
-  #temp { font-size: calc(clamp(30px, 17vh, 70px) * var(--temp-scale, 1)); color: var(--temp-color, #e8ecf2); font-weight: 200; line-height: 1; }
-  #temp small { font-size: 45%; color: var(--accent, #ffd166); font-weight: 400; }
-  #desc { font-size: calc(clamp(12px, 4.6vh, 20px) * var(--condition-scale, 1)); color: var(--condition-color, #aeb7c4); }
-  #meta { font-size: calc(clamp(10px, 3.8vh, 15px) * var(--meta-scale, 1)); color: var(--meta-color, #7d8697); }
-  #place { font-size: calc(clamp(10px, 3.8vh, 15px) * var(--location-scale, 1)); color: var(--location-color, var(--accent, #ffd166)); letter-spacing: 0.08em; text-transform: uppercase; }
+  /* Per-role custom properties (set from settings only when they differ from the
+   * manifest defaults) fall through to the theme tokens. */
+  #temp {
+    font-size: calc(clamp(30px, 17vh, 70px) * var(--temp-scale, 1));
+    color: var(--temp-color, var(--text));
+    font-weight: 200;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  #temp small { font-size: 45%; color: var(--accent); font-weight: 400; }
+  #desc { font-size: calc(clamp(12px, 4.6vh, 20px) * var(--condition-scale, 1)); color: var(--condition-color, var(--text-muted)); }
+  #meta { font-size: calc(clamp(10px, 3.8vh, 15px) * var(--meta-scale, 1)); color: var(--meta-color, var(--text-muted)); font-variant-numeric: tabular-nums; }
+  #place { font-size: calc(clamp(10px, 3.8vh, 15px) * var(--location-scale, 1)); color: var(--location-color, var(--accent)); letter-spacing: 0.08em; text-transform: uppercase; }
 
   #forecast { display: flex; flex: 1; max-width: 58%; justify-content: space-evenly; gap: 4px; }
   .fc { display: flex; flex-direction: column; align-items: center; gap: 1vh; min-width: 0; }
-  .fc .t { color: var(--forecast-color, #7d8697); font-size: calc(clamp(9px, 3.4vh, 14px) * var(--forecast-scale, 1)); white-space: nowrap; }
+  .fc .t { color: var(--forecast-color, var(--text-muted)); font-size: calc(clamp(9px, 3.4vh, 14px) * var(--forecast-scale, 1)); white-space: nowrap; }
   .fc .e { font-size: clamp(16px, 8vh, 34px); line-height: 1; }
-  .fc .v { color: var(--forecast-value-color, #e8ecf2); font-size: calc(clamp(11px, 4.6vh, 19px) * var(--forecast-scale, 1)); font-weight: 600; white-space: nowrap; }
-  .fc .s { color: var(--forecast-color, #7d8697); font-size: calc(clamp(9px, 3.2vh, 13px) * var(--forecast-scale, 1)); white-space: nowrap; }
+  .fc .v { color: var(--forecast-value-color, var(--text)); font-size: calc(clamp(11px, 4.6vh, 19px) * var(--forecast-scale, 1)); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .fc .s { color: var(--forecast-color, var(--text-muted)); font-size: calc(clamp(9px, 3.2vh, 13px) * var(--forecast-scale, 1)); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
   /* Quarter slots are too narrow for the strip; keep just current conditions */
   @media (max-width: 470px) { #forecast { display: none; } }
 
-  #error { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; color: #545d6e; font-size: 14px; text-align: center; padding: 12px; background: #0b0e14; }
+  /* Error state: standard state-card covering the layout. It paints the surface
+   * at the effective panel opacity so it matches the tile's bgStyle. */
+  #error {
+    position: fixed; inset: 0;
+    background: rgba(var(--surface-rgb), var(--panel-alpha-eff));
+  }
 </style>
 </head>
 <body>
@@ -59,7 +64,11 @@
     </div>
     <div id="forecast"></div>
   </div>
-  <div id="error"></div>
+  <div id="error" class="state-card err" hidden>
+    <div class="state-icon">!</div>
+    <div class="state-title">Weather unavailable</div>
+    <div class="state-body" id="errorBody"></div>
+  </div>
 
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
@@ -81,33 +90,50 @@
 
   let refreshTimer = null;
 
-  WW.onInit((state) => {
-    document.body.classList.toggle('bg-transparent', state.settings.bgStyle === 'transparent');
-    document.body.classList.toggle('bg-glass', state.settings.bgStyle === 'glass');
-    document.body.style.setProperty('--accent', state.settings.accentColor || '#ffd166');
+  // Manifest defaults — the host merges these into settings, so "user changed it"
+  // means "differs from the default". Only then does the property override the
+  // theme tokens (inline CSS variable); at default the token chain shows through.
+  const DEF = {
+    accentColor: '#ffd166', tempColor: '#e8ecf2', conditionColor: '#aeb7c4',
+    metaColor: '#7d8697', locationColor: '#ffd166', forecastColor: '#7d8697',
+  };
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
+  function setVar(name, value) {
+    if (value) document.body.style.setProperty(name, value);
+    else document.body.style.removeProperty(name);
+  }
 
-    // Per-text-type customization (color + percent size scale). Scales are bare
-    // numbers so the CSS calc() multiplication stays valid.
+  WW.onInit((state) => {
     const s = state.settings;
-    document.body.style.setProperty('--temp-color', s.tempColor || '#e8ecf2');
+    // Anything that isn't explicitly glass/transparent renders solid, matching the
+    // pre-token behavior for unset AND out-of-spec values.
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+
+    // Per-text-type customization (color + percent size scale). A color still at
+    // its manifest default stays unset so the CSS falls through to the theme
+    // tokens; an explicit user choice wins over the theme. Scales are bare
+    // numbers so the CSS calc() multiplication stays valid.
+    setVar('--accent', changed(s.accentColor, DEF.accentColor) ? s.accentColor : '');
+    setVar('--temp-color', changed(s.tempColor, DEF.tempColor) ? s.tempColor : '');
+    setVar('--condition-color', changed(s.conditionColor, DEF.conditionColor) ? s.conditionColor : '');
+    setVar('--meta-color', changed(s.metaColor, DEF.metaColor) ? s.metaColor : '');
+    // Location is accent-driven (legacy chain): an explicit locationColor wins;
+    // otherwise the CSS falls through to --accent — the user's accentColor when
+    // moved off ITS default (set above), the theme's accent token when not.
+    setVar('--location-color', changed(s.locationColor, DEF.locationColor) ? s.locationColor : '');
+    // The forecast row mixes muted labels and full-strength values at default;
+    // both follow forecastColor once it moves off its default.
+    const forecastChanged = changed(s.forecastColor, DEF.forecastColor);
+    setVar('--forecast-color', forecastChanged ? s.forecastColor : '');
+    setVar('--forecast-value-color', forecastChanged ? s.forecastColor : '');
     document.body.style.setProperty('--temp-scale', String((Number(s.tempSize) || 100) / 100));
-    document.body.style.setProperty('--condition-color', s.conditionColor || '#aeb7c4');
     document.body.style.setProperty('--condition-scale', String((Number(s.conditionSize) || 100) / 100));
-    document.body.style.setProperty('--meta-color', s.metaColor || '#7d8697');
     document.body.style.setProperty('--meta-scale', String((Number(s.metaSize) || 100) / 100));
-    // Location is accent-driven today: a locationColor still at its manifest
-    // default falls through to the accent chain, so accentColor users see no change.
-    const locationColor = (s.locationColor && String(s.locationColor).toLowerCase() !== '#ffd166')
-      ? s.locationColor
-      : (s.accentColor || '#ffd166');
-    document.body.style.setProperty('--location-color', locationColor);
     document.body.style.setProperty('--location-scale', String((Number(s.locationSize) || 100) / 100));
-    // The forecast row mixes label gray (#7d8697) and value white (#e8ecf2) today;
-    // values only follow forecastColor once it moves off its default.
-    const forecastColor = s.forecastColor || '#7d8697';
-    document.body.style.setProperty('--forecast-color', forecastColor);
-    document.body.style.setProperty('--forecast-value-color',
-      String(forecastColor).toLowerCase() === '#7d8697' ? '#e8ecf2' : forecastColor);
     document.body.style.setProperty('--forecast-scale', String((Number(s.forecastSize) || 100) / 100));
 
     refresh();
@@ -180,12 +206,12 @@
         '  ·  ' + data.current.relative_humidity_2m + '% RH';
 
       renderForecast(data, s.forecast || 'hourly');
-      document.getElementById('error').style.display = 'none';
+      document.getElementById('error').hidden = true;
     } catch (e) {
       WW.log('weather failed: ' + e.message);
-      const errorEl = document.getElementById('error');
-      errorEl.textContent = 'Weather unavailable: ' + e.message + '. Check the location name in Settings.';
-      errorEl.style.display = 'flex';
+      document.getElementById('errorBody').textContent =
+        e.message + '. Check the location name in Settings.';
+      document.getElementById('error').hidden = false;
     }
   }
 

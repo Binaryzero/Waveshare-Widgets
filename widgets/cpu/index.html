@@ -3,49 +3,43 @@
 <head>
 <meta charset="utf-8" />
 <title>CPU Monitor</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; }
+  /* Layout only — colors, background, typography basics come from widget-base.css. */
   body {
-    background: #0b0e14;
-    color: #e8ecf2;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 6%;
-    user-select: none;
   }
-  /* Background setting: let the dashboard wallpaper show through. */
-  body.bg-transparent { background: transparent; }
-  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
   .ring { position: relative; height: 72%; aspect-ratio: 1; }
   .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
-  .ring .track { fill: none; stroke: #1c2331; stroke-width: 9; }
-  .ring .value { fill: none; stroke: var(--accent, #00d4ff); stroke-width: 9; stroke-linecap: round; transition: stroke-dashoffset 0.6s ease; }
+  .ring .track { fill: none; stroke: var(--control-bg); stroke-width: 9; }
+  .ring .progress { fill: none; stroke: var(--accent); stroke-width: 9; stroke-linecap: round; transition: stroke-dashoffset 0.6s var(--ease); }
   .ring .center {
     position: absolute; inset: 0;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
   }
-  .ring .center .big { font-size: calc(clamp(20px, 9vh, 44px) * var(--value-scale, 1)); color: var(--value-color, #e8ecf2); font-weight: 600; line-height: 1; }
-  .ring .center .cap { font-size: calc(clamp(9px, 3vh, 13px) * var(--title-scale, 1)); color: var(--title-color, #7d8697); letter-spacing: 0.14em; margin-top: 4px; }
+  /* Per-role custom properties (set from settings only when they differ from the
+   * manifest defaults) fall through to the theme tokens. */
+  .ring .center .big { font-size: calc(clamp(20px, 9vh, 44px) * var(--value-scale, 1)); color: var(--value-color, var(--text)); font-weight: 600; line-height: 1; }
+  .ring .center .cap { font-size: calc(clamp(9px, 3vh, 13px) * var(--title-scale, 1)); color: var(--title-color, var(--text-muted)); letter-spacing: 0.14em; margin-top: 4px; }
   #stats { display: flex; flex-direction: column; gap: 8%; }
-  .stat .label { font-size: calc(clamp(9px, 3vh, 13px) * var(--label-scale, 1)); color: var(--label-color, #7d8697); letter-spacing: 0.1em; text-transform: uppercase; }
-  .stat .val { font-size: calc(clamp(16px, 7vh, 34px) * var(--value-scale, 1)); color: var(--value-color, #e8ecf2); font-weight: 600; }
-  .stat .val small { font-size: 55%; color: #7d8697; font-weight: 400; }
-  #hint { position: fixed; left: 12px; bottom: 8px; font-size: calc(clamp(8px, 2.4vh, 11px) * var(--hint-scale, 1)); color: var(--hint-color, #545d6e); max-width: 92%; }
-  #hint[hidden] { display: none; }
+  .stat .label { font-size: calc(clamp(9px, 3vh, 13px) * var(--label-scale, 1)); color: var(--label-color, var(--text-muted)); letter-spacing: 0.1em; }
+  .stat .val { font-size: calc(clamp(16px, 7vh, 34px) * var(--value-scale, 1)); color: var(--value-color, var(--text)); font-weight: 600; }
+  .stat .val .unit { font-size: 55%; font-weight: 400; }
+  #hint { position: fixed; left: 12px; bottom: 8px; font-size: calc(clamp(8px, 2.4vh, 11px) * var(--hint-scale, 1)); color: var(--hint-color, var(--text-dim)); max-width: 92%; }
 </style>
 </head>
 <body>
   <div class="ring">
     <svg viewBox="0 0 100 100">
       <circle class="track" cx="50" cy="50" r="44"></circle>
-      <circle class="value" id="ringValue" cx="50" cy="50" r="44"></circle>
+      <circle class="progress" id="ringValue" cx="50" cy="50" r="44"></circle>
     </svg>
     <div class="center">
-      <div class="big" id="load">--</div>
-      <div class="cap">CPU LOAD</div>
+      <div class="big value" id="load">--</div>
+      <div class="cap kicker">CPU LOAD</div>
     </div>
   </div>
   <div id="stats"></div>
@@ -60,19 +54,27 @@
   ring.style.strokeDashoffset = String(CIRCUMFERENCE);
 
   WW.onInit((state) => {
-    document.body.classList.toggle('bg-transparent', state.settings.bgStyle === 'transparent');
-    document.body.classList.toggle('bg-glass', state.settings.bgStyle === 'glass');
-    document.body.style.setProperty('--accent', state.settings.accentColor || '#00d4ff');
-
-    // Per-text-type customization (color + percent size scale).
     const s = state.settings;
-    document.body.style.setProperty('--title-color', s.titleColor || '#7d8697');
+    // bgStyle drives the widget-base panel-opacity classes (default = solid).
+    document.body.classList.toggle('bg-solid', s.bgStyle !== 'transparent' && s.bgStyle !== 'glass');
+    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
+    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
+
+    // Per-text-type customization (color + percent size scale). The host merges
+    // manifest defaults into settings, so a color still at its default is left
+    // unset and the CSS falls through to the theme tokens.
+    const override = (prop, value, def) => {
+      if (value && String(value).toLowerCase() !== def) document.body.style.setProperty(prop, value);
+      else document.body.style.removeProperty(prop);
+    };
+    override('--accent', s.accentColor, '#00d4ff');
+    override('--title-color', s.titleColor, '#7d8697');
+    override('--value-color', s.valueColor, '#e8ecf2');
+    override('--label-color', s.labelColor, '#7d8697');
+    override('--hint-color', s.hintColor, '#545d6e');
     document.body.style.setProperty('--title-scale', String((Number(s.titleSize) || 100) / 100));
-    document.body.style.setProperty('--value-color', s.valueColor || '#e8ecf2');
     document.body.style.setProperty('--value-scale', String((Number(s.valueSize) || 100) / 100));
-    document.body.style.setProperty('--label-color', s.labelColor || '#7d8697');
     document.body.style.setProperty('--label-scale', String((Number(s.labelSize) || 100) / 100));
-    document.body.style.setProperty('--hint-color', s.hintColor || '#545d6e');
     document.body.style.setProperty('--hint-scale', String((Number(s.hintSize) || 100) / 100));
   });
 
@@ -119,12 +121,13 @@
       const stat = document.createElement('div');
       stat.className = 'stat';
       const label = document.createElement('div');
-      label.className = 'label';
+      label.className = 'label kicker';
       label.textContent = row.label;
       const val = document.createElement('div');
-      val.className = 'val';
+      val.className = 'val value';
       const value = (row.sensor.value * (row.scale || 1)).toFixed(row.decimals);
       const small = document.createElement('small');
+      small.className = 'unit';
       small.textContent = row.unit;
       val.append(value, small);
       stat.append(label, val);

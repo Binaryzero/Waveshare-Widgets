@@ -3,42 +3,43 @@
 <head>
 <meta charset="utf-8" />
 <title>Weather Radar</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0e14; }
-  body { font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; color: #e8ecf2; user-select: none; }
+  /* Layout only — colors, background/bgStyle handling and the typography base come
+   * from widget-base.css. The map/radar tile pipeline is untouched; the tokens
+   * skin the chrome around it (marker, stamp, attribution, state card). */
   #map { position: absolute; inset: 0; overflow: hidden; }
   #map .tile { position: absolute; width: 256px; height: 256px; }
-  #mapDim { position: absolute; inset: 0; background: #000; pointer-events: none; }
+  /* "Darken map" scrim: fades the base tiles toward the theme background. */
+  #mapDim { position: absolute; inset: 0; background: var(--bg); pointer-events: none; }
   .frame { position: absolute; inset: 0; opacity: 0; }
   .frame.show { opacity: 0.9; }
   #marker {
     position: absolute; width: 12px; height: 12px;
-    border-radius: 50%; background: #00d4ff;
-    border: 2px solid #fff; box-shadow: 0 0 8px rgba(0,212,255,0.9);
+    border-radius: 50%; background: var(--accent);
+    border: 2px solid var(--text); box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.9);
     transform: translate(-50%, -50%);
     pointer-events: none;
   }
   #stamp {
     position: absolute; top: 6px; right: 8px;
-    color: var(--text-color, #e8ecf2);
+    color: var(--text-color, var(--text));
     font-size: calc(clamp(10px, 3.6vh, 14px) * var(--text-scale, 1));
-    background: rgba(5, 7, 11, 0.6);
+    background: rgba(var(--surface-rgb), 0.6);
     border-radius: 6px; padding: 2px 8px;
     font-variant-numeric: tabular-nums;
   }
   #attrib {
     position: absolute; bottom: 3px; right: 6px;
-    color: rgba(232, 236, 242, 0.65);
+    color: var(--text-muted);
     font-size: 9px;
-    text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+    text-shadow: 0 1px 2px rgba(var(--surface-rgb), 0.8);
   }
+  /* Setup/error state: standard state-card covering the (absent) map. It paints
+   * the surface at the effective panel opacity so it matches the tile's bgStyle. */
   #message {
     position: fixed; inset: 0;
-    display: none; align-items: center; justify-content: center;
-    text-align: center; padding: 16px;
-    color: #7d8697; font-size: clamp(12px, 4.5vh, 17px);
-    background: #0b0e14;
+    background: rgba(var(--surface-rgb), var(--panel-alpha-eff));
   }
 </style>
 </head>
@@ -48,7 +49,11 @@
   <div id="marker" hidden></div>
   <div id="stamp" hidden></div>
   <div id="attrib">&copy; OpenStreetMap &middot; RainViewer</div>
-  <div id="message"></div>
+  <div id="message" class="state-card" hidden>
+    <div class="state-icon">!</div>
+    <div class="state-title" id="messageTitle"></div>
+    <div class="state-body" id="messageBody"></div>
+  </div>
 
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
@@ -59,13 +64,33 @@
   let frameEls = [];
   let frameIndex = 0;
   let animTimer = null;
+  let refreshTimer = null;
+
+  // Manifest defaults — the host merges these into settings, so "user changed it"
+  // means "differs from the default". Only then does the color override the theme
+  // token (inline CSS variable); at default the token chain shows through.
+  const DEF = { textColor: '#e8ecf2' };
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
+  function setVar(name, value) {
+    if (value) document.body.style.setProperty(name, value);
+    else document.body.style.removeProperty(name);
+  }
 
   WW.onInit(async (state) => {
     const s = state.settings;
+    // bgStyle drives the widget-base panel-opacity classes; anything that isn't
+    // explicitly glass/transparent renders solid, matching the pre-token look for
+    // unset AND out-of-spec values (no class = glass in the base).
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+
     cfg.zoom = Math.min(10, Math.max(4, Number(s.zoom) || 7));
     cfg.animate = s.animate !== 'off';
     document.getElementById('mapDim').style.opacity = String(Math.min(80, Math.max(0, Number(s.mapDim) || 0)) / 100);
-    document.body.style.setProperty('--text-color', s.textColor || '#e8ecf2');
+    setVar('--text-color', changed(s.textColor, DEF.textColor) ? s.textColor : '');
     document.body.style.setProperty('--text-scale', (Number(s.textSize) || 100) / 100);
 
     try {
@@ -76,7 +101,9 @@
     }
     buildBaseMap();
     await refreshRadar();
-    setInterval(refreshRadar, 5 * 60 * 1000);  // RainViewer updates every ~10 min
+    // A theme edit re-delivers ww-init without a reload — re-arm, never stack.
+    clearInterval(refreshTimer);
+    refreshTimer = setInterval(refreshRadar, 5 * 60 * 1000);  // RainViewer updates every ~10 min
   });
 
   async function resolveLocation(loc) {
@@ -213,9 +240,9 @@
   }
 
   function showMessage(title, detail) {
-    const msg = document.getElementById('message');
-    msg.style.display = 'flex';
-    msg.textContent = title + (detail ? ' — ' + detail : '');
+    document.getElementById('messageTitle').textContent = title;
+    document.getElementById('messageBody').textContent = detail || '';
+    document.getElementById('message').hidden = false;
   }
 </script>
 </body>

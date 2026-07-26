@@ -579,6 +579,10 @@ public sealed class DashboardWindow : Form
             properties = w.Manifest.Properties,
         });
 
+        var tokens = new JsonObject();
+        foreach (var (name, value) in PaletteEngine.Derive(layout.Theme))
+            tokens[name] = value;
+
         return new JsonObject
         {
             ["layout"] = JsonSerializer.SerializeToNode(layout),
@@ -586,6 +590,7 @@ public sealed class DashboardWindow : Form
             ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
             ["media"] = JsonSerializer.SerializeToNode(_hub.LatestMedia, BridgeJson),
             ["backgroundHost"] = BackgroundHost,
+            ["theme"] = tokens,
             ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated, ["apiVersion"] = 1 },
         };
     }

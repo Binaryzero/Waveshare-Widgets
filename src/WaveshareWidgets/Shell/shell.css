@@ -4,8 +4,8 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #000;
-  color: #e8ecf2;
+  background: var(--bg, #000);
+  color: var(--text, #e8ecf2);
   font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   user-select: none;
   -webkit-user-select: none;
@@ -22,7 +22,7 @@ html, body {
   inset: 0;
   z-index: 0;
   overflow: hidden;
-  background: #000;
+  background: var(--bg, #000);
 }
 .bg-layer {
   position: absolute;
@@ -97,7 +97,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #7d8697;
+  color: var(--text-muted, #7d8697);
   font-size: 14px;
   text-align: center;
   padding: 12px;
@@ -122,13 +122,13 @@ html, body {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.28);
+  background: color-mix(in srgb, var(--text, #fff) 30%, transparent);
   border: 6px solid transparent;
   background-clip: padding-box;
   box-sizing: content-box;
   cursor: pointer;
 }
-#dots span.active { background-color: rgba(255, 255, 255, 0.9); background-clip: padding-box; }
+#dots span.active { background-color: color-mix(in srgb, var(--text, #fff) 92%, transparent); background-clip: padding-box; }
 
 /* Edge swipe/tap zones for page switching (widgets consume touches everywhere else) */
 .edge {
@@ -140,7 +140,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(255, 255, 255, 0.4);
+  color: color-mix(in srgb, var(--text, #fff) 45%, transparent);
   font-size: 30px;
   font-weight: 200;
   touch-action: none;
@@ -165,5 +165,5 @@ html, body {
 }
 /* display:flex above beats the UA's [hidden]{display:none}; restore it explicitly */
 #empty[hidden] { display: none; }
-#empty h1 { font-size: 28px; font-weight: 600; color: #00d4ff; }
-#empty p  { font-size: 15px; color: #7d8697; max-width: 70%; }
+#empty h1 { font-size: 28px; font-weight: 600; color: var(--accent, #4cc2ff); }
+#empty p  { font-size: 15px; color: var(--text-muted, #7d8697); max-width: 70%; }
