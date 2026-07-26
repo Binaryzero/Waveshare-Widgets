@@ -349,6 +349,11 @@ public sealed class DashboardWindow : Form
     private static readonly HttpClient ProxyClientInsecure = new(new SocketsHttpHandler
     {
         AutomaticDecompression = System.Net.DecompressionMethods.All,
+        // Embedded TLS servers on LAN devices mishandle parallel handshakes, so
+        // requests to a device are serialized through one pooled connection.
+        // TLS protocol versions stay at system defaults — the documented contract
+        // of init.insecure is only "skip certificate validation".
+        MaxConnectionsPerServer = 1,
         SslOptions = new System.Net.Security.SslClientAuthenticationOptions
         {
             RemoteCertificateValidationCallback = (_, _, _, _) => true,
@@ -397,10 +402,15 @@ public sealed class DashboardWindow : Form
             if (method is not ("GET" or "POST" or "PUT" or "HEAD"))
                 throw new InvalidOperationException($"method {method} not allowed");
 
+            var insecureRequested = message["insecure"]?.GetValue<bool>() ?? false;
+            var lanDevice = insecureRequested && IsPrivateHost(uri);
+
             using var request = new HttpRequestMessage(new HttpMethod(method), uri)
             {
-                // Browsers speak HTTP/2 to these services; sticking to 1.1 is a bot tell.
-                Version = System.Net.HttpVersion.Version20,
+                // Browsers speak HTTP/2 to internet services; sticking to 1.1 is a bot
+                // tell. LAN IoT devices are the opposite — their embedded TLS stacks
+                // (Hue's mbedTLS) mishandle h2/ALPN offers — so those get plain 1.1.
+                Version = lanDevice ? System.Net.HttpVersion.Version11 : System.Net.HttpVersion.Version20,
                 VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
             };
             var body = message["body"]?.GetValue<string>();
@@ -439,8 +449,7 @@ public sealed class DashboardWindow : Form
                 uri.Host.EndsWith("redditmedia.com", StringComparison.OrdinalIgnoreCase))
                 request.Headers.TryAddWithoutValidation("Referer", "https://www.reddit.com/");
 
-            var insecureRequested = message["insecure"]?.GetValue<bool>() ?? false;
-            var client = insecureRequested && IsPrivateHost(uri) ? ProxyClientInsecure : ProxyClient;
+            var client = lanDevice ? ProxyClientInsecure : ProxyClient;
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
             var bytes = await ReadCappedAsync(response, ProxyMaxBodyBytes);
 

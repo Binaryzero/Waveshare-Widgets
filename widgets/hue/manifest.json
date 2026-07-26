@@ -2,7 +2,7 @@
   "id": "ws.stock.hue",
   "name": "Hue Lights",
   "author": "Waveshare Widgets",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "description": "Touch control for Philips Hue rooms and zones straight from the panel: on/off, brightness, and scenes, talking to your bridge locally. Prefers the modern CLIP v2 API and falls back to the classic v1 API on older bridges. First use: press the bridge's link button, then tap Pair.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
