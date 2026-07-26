@@ -55,10 +55,34 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   fills the slot.
 - `properties` — user-configurable settings. The host merges `default`s with the
   per-instance `settings` from `layout.json` and injects the result. Types: `text`,
-  `number`, `slider`, `color`, `select`, `sensor` (a sensor id string), and `location`
+  `number`, `slider`, `color`, `select`, `sensor` (a sensor id string), `location`
   (rendered as a city-search picker; the value is either a raw string the widget should
   best-match itself, or a picked `{label, latitude, longitude}` object — handle both,
-  like the stock weather widget).
+  like the stock weather widget), and `list` (below).
+
+  **Never ask the user to type structured data.** A property whose value is really a
+  collection must use `type: "list"` — the settings window renders add/remove rows with
+  one input per field, and the stored value is an array of plain objects:
+
+  ```json
+  { "name": "hosts", "label": "Hosts", "type": "list", "itemLabel": "host",
+    "fields": [
+      { "key": "label", "label": "Name", "type": "text", "placeholder": "Router" },
+      { "key": "host",  "label": "Host / IP", "type": "text", "placeholder": "192.168.1.1" }
+    ],
+    "default": [ { "label": "Router", "host": "192.168.1.1" } ] }
+  ```
+
+  Field types: `text` and `color`. A widget upgraded from an older text property should
+  keep accepting its legacy string form from saved layouts (the editor converts
+  `"A=B, C=D"` strings to rows on screen, but the saved value only becomes an array once
+  the user edits it). Labels must never describe a syntax ("comma separated", "JSON") —
+  if you need one, the property should have been a `list`.
+
+  A `select` may declare `optionsSource` instead of a static `options` array; the
+  settings window fills the dropdown from the host at edit time. Sources:
+  `"sd-profiles"` (installed Virtual Stream Deck profile names; `""` still means
+  "first available").
 
 ## The widget API (`window.WW`)
 

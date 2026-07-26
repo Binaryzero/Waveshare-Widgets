@@ -24,8 +24,13 @@ public sealed class StreamDeckBridge
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), // Roaming
         "Elgato", "StreamDeck", "ProfilesV3");
 
+    /// <summary>Display names of every Virtual Stream Deck profile on this machine —
+    /// feeds the settings window's profile dropdown so nobody types a name by hand.</summary>
+    public static IReadOnlyList<string> ListProfileNames() =>
+        ListVsdProfiles().Select(p => p.Name).ToList();
+
     /// <summary>All Virtual Stream Deck profiles: (display name, profile directory).</summary>
-    private List<(string Name, string Dir)> ListVsdProfiles()
+    private static List<(string Name, string Dir)> ListVsdProfiles()
     {
         var result = new List<(string, string)>();
         if (!Directory.Exists(ProfilesDir))

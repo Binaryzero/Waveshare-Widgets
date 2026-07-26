@@ -108,6 +108,14 @@ public sealed class SettingsWindow : Form
                 case "pick-background":
                     HandlePickBackground(message["target"]?.GetValue<string>() ?? "");
                     break;
+
+                case "sd-profiles":
+                    Post(new JsonObject
+                    {
+                        ["type"] = "sd-profiles-result",
+                        ["profiles"] = JsonSerializer.SerializeToNode(StreamDeckBridge.ListProfileNames()),
+                    });
+                    break;
             }
         }
         catch (Exception ex)

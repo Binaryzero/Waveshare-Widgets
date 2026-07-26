@@ -126,6 +126,11 @@ palette:
    stays legible in every widget. Colors that already pass are untouched.
 5. **`--on-accent`** is near-black or white, whichever contrasts more with the accent.
 
+**When it applies.** Theme edits in the settings window preview live in the Theme panel
+and land on the panel when you hit **Save & apply** (the dashboard reloads with the new
+token map). Every stock widget consumes the tokens — a widget that hardcodes colors is
+out of compliance (§10), because it silently ignores the user's theme.
+
 **Delivery.** The token map rides the shell init payload; the shell applies it to its own
 `:root` and forwards it to every widget iframe as the `theme` field of the `ww-init`
 message. `widget-api.js` applies it to the widget's `:root` *before* `onInit` callbacks
