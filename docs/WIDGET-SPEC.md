@@ -97,7 +97,9 @@ WW.setAudio(target, {level?, muted?})          // set master ('master') or per-a
 
 `WW.fetch` extras: `init.headers` (plain object) rides the host proxy too, and
 `init.insecure: true` skips certificate validation — honored only for private/loopback
-literal IPs (for self-signed devices like the Hue bridge). `WW.listMedia()` URLs are on
+literal IPs (for self-signed devices like the Hue bridge). Insecure LAN requests go
+over HTTP/1.1 on a single serialized connection per device, since embedded TLS
+servers mishandle h2 offers and parallel handshakes. `WW.listMedia()` URLs are on
 `https://media.wsw/`, mapped to the media folder ("Open media folder" in Settings).
 
 Sensor `type` values follow LibreHardwareMonitor: `Temperature` (°C), `Load` (%),

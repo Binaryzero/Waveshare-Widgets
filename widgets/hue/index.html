@@ -124,11 +124,12 @@
     cfg.showScenes = s.showScenes !== 'off';
 
     cfg.ip = String(s.bridgeIp || '').trim();
+    let discovered = false;
     if (!cfg.ip) {
       try {
         const res = await WW.fetch('https://discovery.meethue.com/');
         const list = await res.json();
-        if (list && list[0] && list[0].internalipaddress) cfg.ip = list[0].internalipaddress;
+        if (list && list[0] && list[0].internalipaddress) { cfg.ip = list[0].internalipaddress; discovered = true; }
       } catch (e) { /* fall through to message */ }
     }
     if (!cfg.ip) {
@@ -136,10 +137,33 @@
       return;
     }
 
+    // Never trust an address blindly: cloud discovery hands out stale or wrong
+    // IPs (the bridge moved on DHCP, or the ISP shares one public IP between
+    // households), which can point at a router instead of a bridge. Every real
+    // bridge answers the unauthenticated /api/config with JSON carrying its
+    // bridgeid; anything else is not a Hue Bridge.
+    if (!(await isHueBridge(cfg.ip))) {
+      showMessage(cfg.ip + ' is not a Hue Bridge', discovered
+        ? 'Auto-discovery returned a wrong address (stale cloud cache or a shared ISP IP). Enter the bridge IP in the widget settings — the Hue app shows it under Settings → My Hue system → ⓘ.'
+        : 'Nothing at that address answers like a Hue Bridge. Check the IP in the Hue app under Settings → My Hue system → ⓘ.');
+      return;
+    }
+
     try { username = localStorage.getItem('hue-user-' + cfg.ip); } catch (e) { /* private mode */ }
     if (username) begin();
     else showPairing();
   });
+
+  async function isHueBridge(ip) {
+    try {
+      const res = await WW.fetch('http://' + ip + '/api/config');
+      if (!res.ok) return false;
+      const c = await res.json();   // routers serve HTML here — json() throws
+      return !!(c && c.bridgeid);
+    } catch (e) {
+      return false;
+    }
+  }
 
   // --- pairing -----------------------------------------------------------------
 
@@ -200,9 +224,19 @@
   }
 
   let v2Failures = 0; // consecutive CLIP v2 transport failures → demote to v1
+  let polling = false; // slow polls must not overlap the 4 s interval
 
   async function poll() {
-    if (Date.now() < holdoff) return;
+    if (polling || Date.now() < holdoff) return;
+    polling = true;
+    try {
+      await pollOnce();
+    } finally {
+      polling = false;
+    }
+  }
+
+  async function pollOnce() {
     let rooms;
     try {
       rooms = mode === 'v2' ? await pollV2() : await pollV1();

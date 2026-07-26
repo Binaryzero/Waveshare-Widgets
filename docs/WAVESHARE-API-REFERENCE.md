@@ -151,6 +151,8 @@ the proxy path; the stock Reddit Photos widget is the reference consumer.
 on the proxy path too, and `init.insecure: true` skips TLS certificate validation — but
 only for private/loopback literal IPs (RFC 1918, link-local, 127.x), for devices with
 self-signed certs like the Philips Hue bridge. Public hostnames always validate.
+Insecure LAN requests use HTTP/1.1 and are serialized through one connection per
+device — embedded TLS servers mishandle h2 offers and parallel handshakes.
 
 ---
 

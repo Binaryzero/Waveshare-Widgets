@@ -349,14 +349,14 @@ public sealed class DashboardWindow : Form
     private static readonly HttpClient ProxyClientInsecure = new(new SocketsHttpHandler
     {
         AutomaticDecompression = System.Net.DecompressionMethods.All,
-        // Embedded TLS servers (the Hue Bridge's mbedTLS) abort on TLS 1.3
-        // ClientHellos and mishandle parallel handshakes, so pin TLS 1.2 and
-        // keep the connection count low.
-        MaxConnectionsPerServer = 2,
+        // Embedded TLS servers on LAN devices mishandle parallel handshakes, so
+        // requests to a device are serialized through one pooled connection.
+        // TLS protocol versions stay at system defaults — the documented contract
+        // of init.insecure is only "skip certificate validation".
+        MaxConnectionsPerServer = 1,
         SslOptions = new System.Net.Security.SslClientAuthenticationOptions
         {
             RemoteCertificateValidationCallback = (_, _, _, _) => true,
-            EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12,
         },
     })
     { Timeout = TimeSpan.FromSeconds(15) };
