@@ -3,29 +3,20 @@
 <head>
 <meta charset="utf-8" />
 <title>Battery Levels</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; }
-  body {
-    background: #0b0e14;
-    color: #e8ecf2;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-    user-select: none;
-    -webkit-user-select: none;
-  }
-  body.bg-transparent { background: transparent; }
-  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  /* Layout only — tokens, background/bgStyle handling, typography base and the
+   * .card/.state-card/.meter anatomy come from widget-base.css. */
   #grid {
     display: grid;
-    gap: 8px;
-    padding: 8px;
+    gap: var(--space-2);
+    padding: var(--space-2);
     width: 100%;
     height: 100%;
   }
   .cell {
-    border-radius: 10px;
-    background: rgba(23, 28, 40, 0.6);
-    border: 1px solid #232a3a;
+    /* .card supplies the surface/border; keep the battery grid's tighter geometry. */
+    border-radius: var(--radius-control);
     padding: 8px 12px;
     display: flex;
     flex-direction: column;
@@ -36,7 +27,7 @@
     overflow: hidden;
   }
   .cell .name {
-    color: var(--name-color, #7d8697);
+    color: var(--name-color, var(--text-muted));
     font-size: calc(clamp(9px, 3vh, 13px) * var(--name-scale, 1));
     letter-spacing: 0.06em;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -45,45 +36,45 @@
     font-size: calc(clamp(16px, 7.5vh, 34px) * var(--value-scale, 1));
     font-weight: 600;
     line-height: 1.1;
-    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  .cell .pct small { font-size: 55%; font-weight: 400; color: var(--name-color, #7d8697); }
-  .cell.good .pct { color: var(--value-color, #3ddc84); }
-  .cell.warn .pct { color: var(--value-color, #ffc24b); }
-  .cell.bad  .pct { color: var(--value-color, #ff5577); }
+  .cell .pct small { font-size: 55%; font-weight: 400; color: var(--name-color, var(--text-muted)); }
+  /* Level colors (--ok / --warn / --err) are the default; a user-picked value
+   * color (set from JS only when moved off its manifest default) wins. */
+  .cell.good .pct { color: var(--value-color, var(--ok)); }
+  .cell.warn .pct { color: var(--value-color, var(--warn)); }
+  .cell.bad  .pct { color: var(--value-color, var(--err)); }
   .cell .bolt { display: none; font-size: 60%; vertical-align: 15%; margin-left: 0.3em; }
   .cell.charging .bolt { display: inline; }
   .cell .bar {
+    /* .meter supplies track color + fill basics; battery keeps its chunkier bar. */
     height: clamp(5px, 1.8vh, 9px);
-    border-radius: 99px;
-    background: #1c2331;
-    overflow: hidden;
+    border-radius: var(--radius-pill);
   }
-  .cell .fill {
-    height: 100%;
-    border-radius: 99px;
+  .cell .bar > i {
+    border-radius: var(--radius-pill);
     width: 0%;
-    transition: width 0.6s ease;
+    transition: width 0.6s var(--ease);
   }
-  .cell.good .fill { background: var(--value-color, #3ddc84); }
-  .cell.warn .fill { background: var(--value-color, #ffc24b); }
-  .cell.bad  .fill { background: var(--value-color, #ff5577); }
+  .cell.good .bar > i { background: var(--value-color, var(--ok)); }
+  .cell.warn .bar > i { background: var(--value-color, var(--warn)); }
+  .cell.bad  .bar > i { background: var(--value-color, var(--err)); }
+  /* Empty state: .state-card anatomy, kept at the widget's fluid sizes/tones. */
   #message {
     position: fixed; inset: 0;
-    display: none; flex-direction: column;
-    align-items: center; justify-content: center; gap: 10px;
-    text-align: center; padding: 16px 8%;
+    display: none;
+    gap: 10px;
+    padding: 16px 8%;
   }
-  #message .head { color: #7d8697; font-size: clamp(12px, 4.5vh, 17px); }
-  #message .sub { color: #545d6e; font-size: clamp(9px, 3vh, 12px); max-width: 640px; line-height: 1.45; }
+  #message .head { color: var(--text-muted); font-size: clamp(12px, 4.5vh, 17px); }
+  #message .sub { color: var(--text-dim); font-size: clamp(9px, 3vh, 12px); max-width: 640px; }
 </style>
 </head>
 <body>
   <div id="grid"></div>
-  <div id="message">
-    <div class="head">No battery-reporting devices found</div>
-    <div class="sub">Laptop packs, UPS units, and Bluetooth devices (headsets, mice, keyboards,
+  <div id="message" class="state-card">
+    <div class="head state-title">No battery-reporting devices found</div>
+    <div class="sub state-body">Laptop packs, UPS units, and Bluetooth devices (headsets, mice, keyboards,
       controllers) report battery to Windows and show up here automatically. Devices on a
       proprietary 2.4&nbsp;GHz dongle — Corsair Slipstream, Logitech Unifying — don't expose
       battery levels to Windows.</div>
@@ -98,15 +89,29 @@
 
   const CHARGING = /\s*\(charging\)\s*/i;
 
+  // Manifest defaults — the host merges these into settings, so "user changed it"
+  // means "differs from the default". Only then does the property override the
+  // theme tokens (inline CSS variable); at default the token chain shows through.
+  const DEF = { nameColor: '#7d8697', valueColor: '#e8ecf2' };
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
+  function setVar(name, value) {
+    if (value) document.body.style.setProperty(name, value);
+    else document.body.style.removeProperty(name);
+  }
+
   WW.onInit((state) => {
     const s = state.settings;
-    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
-    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
-    document.body.style.setProperty('--name-color', s.nameColor || '#7d8697');
+    // Anything that isn't explicitly glass/transparent renders solid, matching the
+    // pre-token behavior for unset AND out-of-spec values (no class = glass in base).
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+    setVar('--name-color', changed(s.nameColor, DEF.nameColor) ? s.nameColor : '');
     document.body.style.setProperty('--name-scale', String((Number(s.nameSize) || 100) / 100));
-    // Level colors (green/amber/red) are the default; a user-picked value color wins.
-    if (s.valueColor && s.valueColor !== '#e8ecf2')
-      document.body.style.setProperty('--value-color', s.valueColor);
+    // Level colors (--ok/--warn/--err) are the default; a user-picked value color wins.
+    setVar('--value-color', changed(s.valueColor, DEF.valueColor) ? s.valueColor : '');
     document.body.style.setProperty('--value-scale', String((Number(s.valueSize) || 100) / 100));
 
     cfg.lowAt = Math.min(50, Math.max(5, Number(s.lowAt) || 15));
@@ -135,7 +140,7 @@
       const v = Math.max(0, Math.min(100, Number(p.value)));
       const cls = classify(v);
       const charging = CHARGING.test(p.name);
-      ui.cell.className = 'cell ' + cls + (charging ? ' charging' : '');
+      ui.cell.className = 'cell card ' + cls + (charging ? ' charging' : '');
       ui.name.textContent = String(p.name).replace(CHARGING, ' ').trim() || p.device || 'Battery';
       ui.num.textContent = String(Math.round(v));
       ui.fill.style.width = v + '%';
@@ -156,22 +161,23 @@
 
     for (const p of packs) {
       const cell = document.createElement('div');
-      cell.className = 'cell';
+      cell.className = 'cell card';
       const name = document.createElement('div');
       name.className = 'name';
       const pct = document.createElement('div');
-      pct.className = 'pct';
+      pct.className = 'pct value';
       const num = document.createElement('span');
       num.className = 'num';
       const unit = document.createElement('small');
+      unit.className = 'unit';
       unit.textContent = '%';
       const bolt = document.createElement('span');
       bolt.className = 'bolt';
       bolt.textContent = '⚡';
       pct.append(num, unit, bolt);
       const bar = document.createElement('div');
-      bar.className = 'bar';
-      const fill = document.createElement('div');
+      bar.className = 'bar meter';
+      const fill = document.createElement('i');
       fill.className = 'fill';
       bar.appendChild(fill);
       cell.append(name, pct, bar);
