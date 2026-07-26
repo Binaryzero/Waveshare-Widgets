@@ -111,6 +111,8 @@ WW.settings          // merged property values, e.g. WW.settings.accentColor
 WW.sensors           // SensorReading[] (see Sensor model)
 WW.media             // MediaState | null
 WW.status            // { elevated: boolean, apiVersion: number }
+WW.theme             // design-token map ({'--surface': '#111314', ...}) — applied to
+                     // :root automatically before onInit; see WIDGET-STANDARD.md
 
 // Sensor lookup
 WW.sensorById(id)                 // exact id -> SensorReading | null
@@ -235,7 +237,7 @@ Shell → widget:
 
 | type | payload | meaning |
 |---|---|---|
-| `ww-init` | `settings, sensors, media, status` | first delivery + on settings change |
+| `ww-init` | `settings, sensors, media, status, theme` | first delivery + on settings change; `theme` is the design-token map (`--surface`, `--accent`, …) the API applies to `:root` and stamps as `data-appearance` |
 | `ww-sensors` | `sensors` | per-tick sensor snapshot |
 | `ww-media` | `media` | now-playing changed |
 | `ww-fetch-result` | `id, status, contentType, bodyBase64, error` | proxied fetch reply |

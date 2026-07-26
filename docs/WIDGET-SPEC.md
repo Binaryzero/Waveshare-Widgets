@@ -150,6 +150,17 @@ sensor selections must be (re)made in our Settings UI.
 - No Node/filesystem access. Bundle every asset — including fonts — in the package;
   never assume a font is installed.
 
+## Design tokens & theming
+
+Stock widgets share a design system. `widget-base.css` (linked from
+`https://app.wsw/widget-base.css`) carries the design tokens (`--surface`, `--text`,
+`--accent`, …), the `bgStyle` panel-opacity classes and the standard component classes;
+the host derives a token palette from the user's theme and pushes it into every widget at
+init (readable as `WW.theme`, applied to `:root` automatically). Style with the tokens —
+never literal colors — and your widget follows any theme with zero code. The full
+standard — token table, required states, motion/touch/performance rules and the
+compliance checklist — is [WIDGET-STANDARD.md](WIDGET-STANDARD.md).
+
 ## Design guidance for the 1280×400 strip
 
 - The panel is ~170 PPI; keep touch targets ≥ 64 px and body text ≥ 12 px.
