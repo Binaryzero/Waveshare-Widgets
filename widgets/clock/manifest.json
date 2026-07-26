@@ -2,7 +2,7 @@
   "id": "ws.stock.clock",
   "name": "Clock",
   "author": "Waveshare Widgets",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Large digital clock with date.",
   "min_api_version": 1,
   "supported_slots": [
