@@ -199,14 +199,32 @@
     pollTimer = setInterval(poll, 4000);
   }
 
+  let v2Failures = 0; // consecutive CLIP v2 transport failures → demote to v1
+
   async function poll() {
     if (Date.now() < holdoff) return;
     let rooms;
     try {
       rooms = mode === 'v2' ? await pollV2() : await pollV1();
+      v2Failures = 0;
     } catch (e) {
-      showMessage('Hue Bridge unreachable', cfg.ip + ' — ' + (e.message || e));
-      return;
+      // A TypeError is the fetch transport layer (TLS/connection), not a bridge
+      // reply. If v2 transport keeps failing, drop to v1 (plain http) for this
+      // session rather than erroring every cycle — bridge API errors (revoked
+      // key etc.) are Error, not TypeError, and still surface below.
+      if (mode === 'v2' && e instanceof TypeError && ++v2Failures >= 2) {
+        mode = 'v1';
+        WW.log('hue: CLIP v2 transport failing (' + (e.message || e) + '); falling back to v1');
+        try {
+          rooms = await pollV1();
+        } catch (e2) {
+          showMessage('Hue Bridge unreachable', cfg.ip + ' — ' + (e2.message || e2));
+          return;
+        }
+      } else {
+        showMessage('Hue Bridge unreachable', cfg.ip + ' — ' + (e.message || e));
+        return;
+      }
     }
     document.getElementById('message').style.display = 'none';
     render(rooms);
@@ -240,11 +258,11 @@
   }
 
   async function pollV2() {
-    const [rr, zr, gr] = await Promise.all([
-      v2fetch('/resource/room'),
-      v2fetch('/resource/zone'),
-      v2fetch('/resource/grouped_light'),
-    ]);
+    // Sequential on purpose: the bridge's embedded TLS server mishandles
+    // parallel handshakes, so concurrent requests fail intermittently.
+    const rr = await v2fetch('/resource/room');
+    const zr = await v2fetch('/resource/zone');
+    const gr = await v2fetch('/resource/grouped_light');
     // Surface bridge errors (revoked app key, bridge restarting) instead of
     // rendering the misleading "No rooms" empty state from an error body.
     const bad = !rr.ok ? rr : !zr.ok ? zr : !gr.ok ? gr : null;
