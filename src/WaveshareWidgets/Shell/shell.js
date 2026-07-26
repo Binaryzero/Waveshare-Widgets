@@ -26,6 +26,14 @@
   let bgPages = [];            // per-page background specs (null = inherit global)
   const bg = createBackgroundController();
 
+  // Live layout model (mutated by the on-panel editor, persisted via save-layout).
+  let layoutData = { pages: [] };
+  let widgetLib = [];
+  let widgetsById = new Map();
+  const pageEls = new Map();   // page object -> its <section class="page">
+  let slotUid = 0;
+  let editing = false;
+
   // ---- host bridge -----------------------------------------------------------
 
   window.chrome.webview.addEventListener('message', (ev) => {
@@ -130,6 +138,7 @@
   }
 
   function sendToSlot(slot, message) {
+    if (!slot.frame) return; // not-installed placeholder
     try {
       slot.frame.contentWindow.postMessage(message, '*');
     } catch (e) { /* frame may be reloading */ }
@@ -184,82 +193,160 @@
       }
     }
 
-    const widgetsById = new Map((data.widgets || []).map((w) => [w.id, w]));
-    const pages = (data.layout && data.layout.pages) || [];
-
+    layoutData = (data.layout && Array.isArray(data.layout.pages)) ? data.layout : { pages: [] };
+    widgetLib = data.widgets || [];
+    widgetsById = new Map(widgetLib.map((w) => [w.id, w]));
     backgroundHost = data.backgroundHost || backgroundHost;
-    bgGlobal = (data.layout && data.layout.background) || null;
-    bgPages = pages.map((p) => p.background || null);
+
+    renderAll();
+  }
+
+  function renderAll() {
+    refreshBgSpecs();
     bg.reset();
 
     pagesEl.textContent = '';
-    dotsEl.textContent = '';
+    pageEls.clear();
     slots = [];
 
-    let slotCount = 0;
-    let pageIndexCounter = 0;
-    for (const page of pages) {
-      const pageEl = document.createElement('section');
-      pageEl.className = 'page';
-      const pageIdx = pageIndexCounter++;
-      let slotIdx = 0;
+    for (const page of layoutData.pages) buildPage(page);
+    syncPageOrder();
+    rebuildDots();
 
-      const placements = placeSlots(page.slots || []);
-      for (const [slotIndex, slotDef] of (page.slots || []).entries()) {
-        const slotEl = document.createElement('div');
-        slotEl.className = 'slot';
-        const place = placements[slotIndex];
-        if (!place) {
-          // Page is already full; skip rather than overlap (the editor warns about this).
-          postToHost({ type: 'log', message: 'layout: page "' + (page.name || pageIdx) + '" is full, skipping slot ' + slotIndex });
-          continue;
-        }
-        slotEl.style.gridColumn = (place.col + 1) + ' / span ' + place.w;
-        slotEl.style.gridRow = place.band === 'full' ? '1 / span 2' : place.band === 'upper' ? '1' : '2';
-
-        const widget = widgetsById.get(slotDef.widgetId);
-        if (!widget) {
-          const err = document.createElement('div');
-          err.className = 'error';
-          err.textContent = `Widget "${slotDef.widgetId}" is not installed`;
-          slotEl.appendChild(err);
-        } else {
-          const frame = document.createElement('iframe');
-          // allow-same-origin is safe here: each widget is served from its own
-          // virtual host, so widgets cannot reach the shell's or each other's origin.
-          frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-          // Fragment carries a stable per-slot tag (backs the iCUE `uniqueId` global)
-          // plus this slot's merged settings, so the shim can inject property globals
-          // BEFORE widget scripts run — matching iCUE's documented injection timing.
-          const settings = mergedSettings(widget, slotDef);
-          let slotHash = '#ww-slot=p' + pageIdx + 's' + (slotIdx++);
-          try {
-            slotHash += '&ww-settings=' + encodeURIComponent(JSON.stringify(settings));
-          } catch (e) { /* unserializable settings: init delivery still applies them */ }
-          frame.src = widget.url + slotHash;
-          slotEl.appendChild(frame);
-          slots.push({
-            frame, el: slotEl, url: widget.url, hash: slotHash,
-            settings, initialized: false, retries: 0,
-          });
-          slotCount++;
-        }
-        pageEl.appendChild(slotEl);
-      }
-      pagesEl.appendChild(pageEl);
-
-      const dot = document.createElement('span');
-      const pageIndex = dotsEl.children.length;
-      dot.addEventListener('click', () => goToPage(pageIndex));
-      dotsEl.appendChild(dot);
-    }
-
-    emptyEl.hidden = slotCount > 0 || pages.length > 0;
+    emptyEl.hidden = editing || slots.length > 0 || layoutData.pages.length > 0;
     updateDots();
     bg.applyForPage(currentPage()); // paint the initial page's background at once (updateDots only debounces)
 
     generation++;
     armWatchdog(generation);
+  }
+
+  function buildPage(page) {
+    const pageEl = document.createElement('section');
+    pageEl.className = 'page';
+    pageEls.set(page, pageEl);
+
+    // "+ add widget" affordance: positioned over the page's largest free rectangle
+    // while editing (relayoutPage keeps it placed and hides it when the page is full).
+    const addZone = document.createElement('button');
+    addZone.className = 'add-zone';
+    addZone.textContent = '+';
+    addZone.addEventListener('click', () => openPalette(page));
+    pageEl.appendChild(addZone);
+
+    for (const slotDef of page.slots || []) buildSlot(page, slotDef);
+    relayoutPage(page);
+    pagesEl.appendChild(pageEl);
+    return pageEl;
+  }
+
+  function buildSlot(page, slotDef) {
+    const pageEl = pageEls.get(page);
+    const slotEl = document.createElement('div');
+    slotEl.className = 'slot';
+    const uid = ++slotUid;
+    const widget = widgetsById.get(slotDef.widgetId);
+    let record;
+
+    if (!widget) {
+      const err = document.createElement('div');
+      err.className = 'error';
+      err.textContent = `Widget "${slotDef.widgetId}" is not installed`;
+      slotEl.appendChild(err);
+      record = { frame: null, el: slotEl, def: slotDef, page, uid, settings: {}, initialized: true, retries: 9 };
+    } else {
+      const frame = document.createElement('iframe');
+      // allow-same-origin is safe here: each widget is served from its own
+      // virtual host, so widgets cannot reach the shell's or each other's origin.
+      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+      // Fragment carries a stable per-slot tag (backs the iCUE `uniqueId` global)
+      // plus this slot's merged settings, so the shim can inject property globals
+      // BEFORE widget scripts run — matching iCUE's documented injection timing.
+      // The tag is positional (page + slot index) so per-instance storage keys
+      // survive restarts.
+      const settings = mergedSettings(widget, slotDef);
+      let slotHash = '#ww-slot=p' + Math.max(0, layoutData.pages.indexOf(page)) +
+        's' + Math.max(0, (page.slots || []).indexOf(slotDef));
+      try {
+        slotHash += '&ww-settings=' + encodeURIComponent(JSON.stringify(settings));
+      } catch (e) { /* unserializable settings: init delivery still applies them */ }
+      frame.src = widget.url + slotHash;
+      slotEl.appendChild(frame);
+      record = { frame, el: slotEl, url: widget.url, hash: slotHash, def: slotDef, page, uid, settings, initialized: false, retries: 0 };
+    }
+
+    slotEl.appendChild(buildOverlay(record, widget));
+    slots.push(record);
+    pageEl.appendChild(slotEl);
+    return record;
+  }
+
+  // Applies grid placement for every slot of a page (and the add-zone). Slots that no
+  // longer fit are hidden rather than overlapped; the editor's fit checks prevent that
+  // for its own operations, so this only triggers for hand-edited layout files.
+  function relayoutPage(page) {
+    const defs = page.slots || [];
+    const placements = placeSlots(defs);
+    defs.forEach((def, i) => {
+      const rec = slots.find((s) => s.def === def);
+      if (!rec) return;
+      const place = placements[i];
+      if (!place) {
+        rec.el.style.display = 'none';
+        return;
+      }
+      rec.el.style.display = '';
+      rec.el.style.gridColumn = (place.col + 1) + ' / span ' + place.w;
+      rec.el.style.gridRow = place.band === 'full' ? '1 / span 2' : place.band === 'upper' ? '1' : '2';
+    });
+    positionAddZone(page, placements);
+  }
+
+  function positionAddZone(page, placements) {
+    const pageEl = pageEls.get(page);
+    const zone = pageEl && pageEl.querySelector('.add-zone');
+    if (!zone) return;
+    const occupied = [new Array(4).fill(false), new Array(4).fill(false)];
+    for (const place of placements || placeSlots(page.slots || [])) {
+      if (!place) continue;
+      const rows = place.band === 'full' ? [0, 1] : place.band === 'upper' ? [0] : [1];
+      for (const r of rows) for (let i = 0; i < place.w; i++) occupied[r][place.col + i] = true;
+    }
+    let best = null;
+    for (let r = 0; r < 2; r++) for (let c = 0; c < 4; c++) {
+      for (let h = 1; r + h <= 2; h++) for (let w = 1; c + w <= 4; w++) {
+        let free = true;
+        for (let i = r; i < r + h && free; i++) for (let j = c; j < c + w && free; j++) if (occupied[i][j]) free = false;
+        if (free && (!best || w * h > best.w * best.h)) best = { r, c, w, h };
+      }
+    }
+    if (!best) { zone.style.display = 'none'; return; }
+    zone.style.display = '';
+    zone.style.gridColumn = (best.c + 1) + ' / span ' + best.w;
+    zone.style.gridRow = best.h === 2 ? '1 / span 2' : String(best.r + 1);
+  }
+
+  // Pages are ordered with flex `order` so reordering never moves DOM nodes —
+  // moving an iframe in the DOM reloads it.
+  function syncPageOrder() {
+    layoutData.pages.forEach((page, i) => {
+      const el = pageEls.get(page);
+      if (el) el.style.order = String(i);
+    });
+  }
+
+  function rebuildDots() {
+    dotsEl.textContent = '';
+    layoutData.pages.forEach((_, i) => {
+      const dot = document.createElement('span');
+      dot.addEventListener('click', () => goToPage(i));
+      dotsEl.appendChild(dot);
+    });
+  }
+
+  function refreshBgSpecs() {
+    bgGlobal = layoutData.background || null;
+    bgPages = layoutData.pages.map((p) => p.background || null);
   }
 
   // Widget loads can flake (virtual-host races, heavy first paints); retry stragglers
@@ -269,7 +356,7 @@
       if (gen !== generation) return;
       let retrying = false;
       for (const slot of slots) {
-        if (slot.initialized) continue;
+        if (slot.initialized || !slot.frame) continue;
         if (slot.retries < 2) {
           slot.retries++;
           retrying = true;
@@ -314,10 +401,11 @@
   }
 
   function wakeChrome() {
-    for (const el of [dotsEl, edgeLeft, edgeRight]) el.classList.remove('idle');
+    for (const el of [dotsEl, edgeLeft, edgeRight, editBtn]) el.classList.remove('idle');
     clearTimeout(dotsIdleTimer);
+    if (editing) return; // chrome stays awake for the whole edit session
     dotsIdleTimer = setTimeout(() => {
-      for (const el of [dotsEl, edgeLeft, edgeRight]) el.classList.add('idle');
+      for (const el of [dotsEl, edgeLeft, edgeRight, editBtn]) el.classList.add('idle');
     }, 2500);
   }
 
@@ -331,6 +419,7 @@
     clearTimeout(bgSettleTimer);
     bgSettleTimer = setTimeout(() => bg.applyForPage(currentPage()), 140);
     wakeChrome();
+    if (editing) updateEditBar();
   }
 
   // ---- wallpaper (dashboard/page background) ---------------------------------------
@@ -458,6 +547,430 @@
   bindEdge(edgeRight, 1);
 
   pagesEl.addEventListener('scroll', updateDots, { passive: true });
+
+  // ---- on-panel edit mode ----------------------------------------------------------
+  // Everything is edited in place on the live dashboard: transparent overlays above the
+  // widget iframes capture gestures (widgets never see them), every mutation re-lays the
+  // affected page out and persists immediately, and "Done" only exits.
+
+  const editBtn = document.getElementById('editBtn');
+  const editBar = document.getElementById('editBar');
+  const paletteEl = document.getElementById('palette');
+  const paletteGrid = document.getElementById('paletteGrid');
+  const pageDeleteBtn = document.getElementById('pageDelete');
+
+  const WIDTH_ORDER = ['quarter', 'half', 'three-quarter', 'full'];
+  const WIDTH_LABELS = { quarter: '¼', half: '½', 'three-quarter': '¾', full: 'Full' };
+  const BAND_LABELS = { full: '⬍', upper: '▀', lower: '▄' };
+
+  function persistLayout() {
+    postToHost({ type: 'save-layout', layout: layoutData });
+  }
+
+  // Wraps a mutation in a View Transition when available so tiles glide instead of jump.
+  function mutate(fn) {
+    const step = () => { fn(); persistLayout(); };
+    if (document.startViewTransition) {
+      try { document.startViewTransition(step); return; } catch (e) { /* fall through */ }
+    }
+    step();
+  }
+
+  function sizeParts(token) {
+    let t = String(token || 'quarter').toLowerCase();
+    let band = 'full';
+    if (t.endsWith('-upper')) { band = 'upper'; t = t.slice(0, -6); }
+    else if (t.endsWith('-lower')) { band = 'lower'; t = t.slice(0, -6); }
+    if (t === 'threequarter') t = 'three-quarter';
+    if (!WIDTH_ORDER.includes(t)) t = 'quarter';
+    return { width: t, band };
+  }
+  function makeSize(width, band) { return width + (band === 'full' ? '' : '-' + band); }
+
+  function setEditing(on) {
+    editing = on;
+    document.body.classList.toggle('editing', on);
+    editBar.hidden = !on;
+    if (on && layoutData.pages.length === 0) {
+      const page = { name: 'Page 1', slots: [] };
+      layoutData.pages.push(page);
+      buildPage(page);
+      syncPageOrder(); rebuildDots(); refreshBgSpecs();
+      persistLayout();
+    }
+    if (on) {
+      emptyEl.hidden = true;
+      for (const page of layoutData.pages) positionAddZone(page);
+      updateEditBar();
+    } else {
+      emptyEl.hidden = slots.length > 0 || layoutData.pages.length > 0;
+      closePalette();
+    }
+    wakeChrome();
+  }
+  editBtn.addEventListener('click', () => setEditing(true));
+  document.getElementById('editDone').addEventListener('click', () => setEditing(false));
+
+  function updateEditBar() {
+    const i = currentPage();
+    document.getElementById('pageMoveLeft').disabled = i <= 0;
+    document.getElementById('pageMoveRight').disabled = i >= layoutData.pages.length - 1;
+    pageDeleteBtn.disabled = layoutData.pages.length <= 1;
+  }
+
+  // Two-tap confirm for destructive buttons (no native dialogs on the panel).
+  function confirmThen(btn, restoreText, needsConfirm, action) {
+    if (!needsConfirm || btn.classList.contains('confirm')) {
+      btn.classList.remove('confirm');
+      btn.textContent = restoreText;
+      clearTimeout(btn._confirmTimer);
+      action();
+      return;
+    }
+    btn.classList.add('confirm');
+    btn.textContent = 'Sure?';
+    btn._confirmTimer = setTimeout(() => {
+      btn.classList.remove('confirm');
+      btn.textContent = restoreText;
+    }, 2500);
+  }
+
+  // ---- page management -------------------------------------------------------------
+
+  document.getElementById('pageAdd').addEventListener('click', () => {
+    const page = { name: 'Page ' + (layoutData.pages.length + 1), slots: [] };
+    layoutData.pages.push(page);
+    buildPage(page);
+    syncPageOrder(); rebuildDots(); refreshBgSpecs();
+    persistLayout();
+    goToPage(layoutData.pages.length - 1);
+    updateEditBar();
+  });
+
+  pageDeleteBtn.addEventListener('click', () => {
+    const i = currentPage();
+    const page = layoutData.pages[i];
+    if (!page || layoutData.pages.length <= 1) return;
+    confirmThen(pageDeleteBtn, '✕ Page', (page.slots || []).length > 0, () => {
+      for (const rec of slots.filter((s) => s.page === page)) rec.el.remove();
+      slots = slots.filter((s) => s.page !== page);
+      const el = pageEls.get(page);
+      if (el) el.remove();
+      pageEls.delete(page);
+      layoutData.pages.splice(i, 1);
+      syncPageOrder(); rebuildDots(); refreshBgSpecs();
+      persistLayout();
+      goToPage(Math.min(i, layoutData.pages.length - 1));
+      bg.applyForPage(currentPage());
+      updateEditBar();
+    });
+  });
+
+  function movePage(delta) {
+    const i = currentPage();
+    const j = i + delta;
+    if (j < 0 || j >= layoutData.pages.length) return;
+    const [page] = layoutData.pages.splice(i, 1);
+    layoutData.pages.splice(j, 0, page);
+    syncPageOrder(); refreshBgSpecs();
+    persistLayout();
+    goToPage(j);
+    updateEditBar();
+  }
+  document.getElementById('pageMoveLeft').addEventListener('click', () => movePage(-1));
+  document.getElementById('pageMoveRight').addEventListener('click', () => movePage(1));
+
+  // ---- per-slot controls -----------------------------------------------------------
+
+  function buildOverlay(record, widget) {
+    const ov = document.createElement('div');
+    ov.className = 'edit-overlay';
+
+    const grip = document.createElement('span');
+    grip.className = 'grip';
+    grip.textContent = widget ? widget.name : record.def.widgetId;
+    ov.appendChild(grip);
+
+    const remove = document.createElement('button');
+    remove.className = 'remove';
+    remove.textContent = '✕';
+    remove.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      confirmThen(remove, '✕', true, () => removeSlot(record));
+    });
+    ov.appendChild(remove);
+
+    const size = document.createElement('button');
+    size.className = 'size';
+    const band = document.createElement('button');
+    band.className = 'band';
+    const syncLabels = () => {
+      const parts = sizeParts(record.def.size);
+      size.textContent = WIDTH_LABELS[parts.width];
+      band.textContent = BAND_LABELS[parts.band];
+    };
+    syncLabels();
+    size.addEventListener('click', (ev) => { ev.stopPropagation(); cycleWidth(record, syncLabels); });
+    band.addEventListener('click', (ev) => { ev.stopPropagation(); cycleBand(record, syncLabels); });
+    ov.appendChild(size);
+    ov.appendChild(band);
+
+    bindDrag(ov, record);
+    return ov;
+  }
+
+  function removeSlot(record) {
+    mutate(() => {
+      const defs = record.page.slots || [];
+      const i = defs.indexOf(record.def);
+      if (i >= 0) defs.splice(i, 1);
+      record.el.remove();
+      slots = slots.filter((s) => s !== record);
+      relayoutPage(record.page);
+    });
+  }
+
+  function allowedWidths(widget) {
+    const declared = new Set((widget && widget.supportedSlots && widget.supportedSlots.length)
+      ? widget.supportedSlots : WIDTH_ORDER);
+    // Per WIDGET-SPEC, widgets declaring half or full are also offered three-quarter.
+    if (declared.has('half') || declared.has('full')) declared.add('three-quarter');
+    return WIDTH_ORDER.filter((w) => declared.has(w));
+  }
+
+  // Would every slot on the page still fit if `def` had `size`?
+  function fitsWithSize(page, def, size) {
+    const original = def.size;
+    def.size = size;
+    const ok = placeSlots(page.slots || []).every((p) => p !== null);
+    def.size = original;
+    return ok;
+  }
+
+  function cycleWidth(record, syncLabels) {
+    const widget = widgetsById.get(record.def.widgetId);
+    const { width, band } = sizeParts(record.def.size);
+    const order = allowedWidths(widget);
+    const start = Math.max(0, order.indexOf(width));
+    for (let k = 1; k <= order.length; k++) {
+      const cand = order[(start + k) % order.length];
+      if (cand === width) break;
+      if (fitsWithSize(record.page, record.def, makeSize(cand, band))) {
+        applySize(record, makeSize(cand, band), syncLabels);
+        return;
+      }
+    }
+  }
+
+  function cycleBand(record, syncLabels) {
+    const { width, band } = sizeParts(record.def.size);
+    const orderB = ['full', 'upper', 'lower'];
+    const start = orderB.indexOf(band);
+    for (let k = 1; k < orderB.length; k++) {
+      const cand = orderB[(start + k) % orderB.length];
+      if (fitsWithSize(record.page, record.def, makeSize(width, cand))) {
+        applySize(record, makeSize(width, cand), syncLabels);
+        return;
+      }
+    }
+  }
+
+  function applySize(record, size, syncLabels) {
+    mutate(() => {
+      record.def.size = size;
+      relayoutPage(record.page);
+      syncLabels();
+    });
+  }
+
+  // ---- add widget (palette) --------------------------------------------------------
+
+  function defaultSizeFor(page, widget) {
+    const widths = allowedWidths(widget).slice().reverse(); // widest first, shrink into the hole
+    const probe = { widgetId: widget.id, size: 'quarter', settings: {} };
+    (page.slots = page.slots || []).push(probe);
+    let found = null;
+    outer:
+    for (const band of ['full', 'upper', 'lower']) {
+      for (const w of widths) {
+        probe.size = makeSize(w, band);
+        if (placeSlots(page.slots).every((p) => p !== null)) { found = probe.size; break outer; }
+      }
+    }
+    page.slots.pop();
+    return found;
+  }
+
+  function openPalette(page) {
+    paletteGrid.textContent = '';
+    for (const widget of widgetLib) {
+      const btn = document.createElement('button');
+      const name = document.createElement('span');
+      name.className = 'p-name';
+      name.textContent = widget.name;
+      const by = document.createElement('span');
+      by.className = 'p-by';
+      by.textContent = defaultSizeFor(page, widget) ? (widget.author || '') : 'No room on this page';
+      btn.append(name, by);
+      btn.disabled = !defaultSizeFor(page, widget);
+      btn.addEventListener('click', () => addWidget(page, widget));
+      paletteGrid.appendChild(btn);
+    }
+    paletteEl.hidden = false;
+  }
+  function closePalette() { paletteEl.hidden = true; }
+  document.getElementById('paletteBackdrop').addEventListener('click', closePalette);
+
+  function addWidget(page, widget) {
+    const size = defaultSizeFor(page, widget);
+    if (!size) return;
+    closePalette();
+    mutate(() => {
+      const def = { widgetId: widget.id, size, settings: {} };
+      (page.slots = page.slots || []).push(def);
+      buildSlot(page, def);
+      relayoutPage(page);
+      armWatchdog(generation);
+    });
+  }
+
+  // ---- drag to rearrange -----------------------------------------------------------
+  // Pointer capture from pointerdown; 7px threshold separates tap from drag; a fixed
+  // ghost follows the finger; elementsFromPoint decides the drop target every frame.
+  // Dropping on a slot reorders within the page; dropping on an edge zone moves the
+  // widget to the adjacent page (validated at drag start so a full page never lights).
+
+  let drag = null;
+
+  function bindDrag(overlay, record) {
+    overlay.addEventListener('pointerdown', (ev) => {
+      if (!editing || ev.target.closest('button')) return;
+      overlay.setPointerCapture(ev.pointerId);
+      drag = { record, startX: ev.clientX, startY: ev.clientY, active: false, ghost: null, raf: 0, last: null, targetSlot: null, targetEdge: null, canLeft: false, canRight: false };
+    });
+    overlay.addEventListener('pointermove', (ev) => {
+      if (!drag || drag.record !== record) return;
+      drag.last = { x: ev.clientX, y: ev.clientY };
+      if (!drag.active) {
+        if (Math.hypot(ev.clientX - drag.startX, ev.clientY - drag.startY) < 7) return;
+        beginDrag(record);
+      }
+      if (!drag.raf) drag.raf = requestAnimationFrame(trackDrag);
+    });
+    overlay.addEventListener('pointerup', () => finishDrag(true));
+    overlay.addEventListener('pointercancel', () => finishDrag(false));
+  }
+
+  function pageFits(page, def) {
+    (page.slots = page.slots || []).push(def);
+    const ok = placeSlots(page.slots).every((p) => p !== null);
+    page.slots.pop();
+    return ok;
+  }
+
+  function beginDrag(record) {
+    drag.active = true;
+    const rect = record.el.getBoundingClientRect();
+    const ghost = document.createElement('div');
+    ghost.id = 'dragGhost';
+    ghost.style.width = Math.min(280, Math.max(120, rect.width * 0.6)) + 'px';
+    ghost.style.height = Math.min(140, Math.max(70, rect.height * 0.5)) + 'px';
+    const widget = widgetsById.get(record.def.widgetId);
+    ghost.textContent = widget ? widget.name : record.def.widgetId;
+    document.body.appendChild(ghost);
+    record.el.classList.add('drag-src');
+    document.body.classList.add('dragging'); // re-enables the edge zones as drop targets
+    drag.ghost = ghost;
+    const i = layoutData.pages.indexOf(record.page);
+    drag.canLeft = i > 0 && pageFits(layoutData.pages[i - 1], record.def);
+    drag.canRight = i >= 0 && i < layoutData.pages.length - 1 && pageFits(layoutData.pages[i + 1], record.def);
+  }
+
+  function clearDropHighlights() {
+    for (const s of slots) s.el.classList.remove('drop-target');
+    edgeLeft.classList.remove('drop-page');
+    edgeRight.classList.remove('drop-page');
+  }
+
+  function trackDrag() {
+    if (!drag || !drag.active || !drag.last) return;
+    drag.raf = 0;
+    const { x, y } = drag.last;
+    drag.ghost.style.left = (x - parseFloat(drag.ghost.style.width) / 2) + 'px';
+    drag.ghost.style.top = (y - parseFloat(drag.ghost.style.height) / 2) + 'px';
+
+    let slotHit = null;
+    let edgeHit = null;
+    for (const el of document.elementsFromPoint(x, y)) {
+      if (!slotHit && el.classList && el.classList.contains('slot') && el !== drag.record.el) slotHit = el;
+      if (!edgeHit && el.classList && el.classList.contains('edge')) edgeHit = el;
+    }
+    const slotRec = slotHit && slots.find((s) => s.el === slotHit && s.page === drag.record.page);
+    const edgeOk = edgeHit && ((edgeHit === edgeLeft && drag.canLeft) || (edgeHit === edgeRight && drag.canRight));
+
+    clearDropHighlights();
+    if (edgeOk) {
+      // Slots reach the screen edge, so a point over the edge zone usually also hits a
+      // slot beneath it — the glowing edge is what the user is aiming at, so it wins.
+      drag.targetSlot = null;
+      drag.targetEdge = edgeHit;
+      edgeHit.classList.add('drop-page');
+    } else {
+      drag.targetSlot = slotRec ? slotHit : null;
+      drag.targetEdge = null;
+      if (drag.targetSlot) drag.targetSlot.classList.add('drop-target');
+    }
+  }
+
+  function finishDrag(commit) {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    if (d.raf) cancelAnimationFrame(d.raf);
+    if (!d.active) return; // was just a tap on the overlay
+    d.ghost.remove();
+    d.record.el.classList.remove('drag-src');
+    document.body.classList.remove('dragging');
+    clearDropHighlights();
+    if (!commit) return;
+
+    if (d.targetSlot) {
+      const target = slots.find((s) => s.el === d.targetSlot);
+      if (target && target.page === d.record.page) {
+        mutate(() => {
+          const defs = d.record.page.slots;
+          const srcIdx = defs.indexOf(d.record.def);
+          const tgtIdx = defs.indexOf(target.def);
+          defs.splice(srcIdx, 1);
+          // Dragging forward drops AFTER the target, dragging back drops BEFORE it —
+          // insert-before alone would put a forward drag right back where it started.
+          defs.splice(defs.indexOf(target.def) + (srcIdx < tgtIdx ? 1 : 0), 0, d.record.def);
+          relayoutPage(d.record.page);
+        });
+      }
+    } else if (d.targetEdge) {
+      const dir = d.targetEdge === edgeLeft ? -1 : 1;
+      const from = d.record.page;
+      const toIdx = layoutData.pages.indexOf(from) + dir;
+      const to = layoutData.pages[toIdx];
+      if (to && pageFits(to, d.record.def)) {
+        from.slots.splice(from.slots.indexOf(d.record.def), 1);
+        to.slots.push(d.record.def);
+        d.record.page = to;
+        // Moving the element between pages re-navigates the iframe; treat it as a
+        // fresh load so the watchdog covers it.
+        d.record.initialized = false;
+        d.record.retries = 0;
+        pageEls.get(to).appendChild(d.record.el);
+        relayoutPage(from);
+        relayoutPage(to);
+        armWatchdog(generation);
+        persistLayout();
+        goToPage(toIdx);
+        updateEditBar();
+      }
+    }
+  }
 
   // ---- go -------------------------------------------------------------------------
 

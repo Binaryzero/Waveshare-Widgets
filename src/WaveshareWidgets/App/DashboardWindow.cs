@@ -221,6 +221,25 @@ public sealed class DashboardWindow : Form
                         _ = _hub.ControlMediaAsync(action);
                     break;
 
+                case "save-layout":
+                    // On-panel editor persistence: the shell has already re-rendered
+                    // itself, so save quietly — no dashboard reload.
+                    try
+                    {
+                        var edited = message["layout"].Deserialize<DashboardLayout>();
+                        if (edited?.Pages is null)
+                            throw new InvalidDataException("Layout has no pages.");
+                        foreach (var page in edited.Pages)
+                            page.Slots.RemoveAll(s => string.IsNullOrWhiteSpace(s.WidgetId));
+                        LayoutStore.Save(edited);
+                        Log.Info("layout saved from on-panel editor");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn($"On-panel layout save failed: {ex.Message}");
+                    }
+                    break;
+
                 case "log":
                     Log.Info($"[shell] {message["message"]?.GetValue<string>()}");
                     break;
