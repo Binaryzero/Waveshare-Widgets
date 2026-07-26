@@ -202,6 +202,8 @@
   }
 
   function renderAll() {
+    cancelDrag();   // a re-init mid-drag must not orphan the ghost / dragging state
+    closePalette(); // palette entries capture page objects this rebuild replaces
     refreshBgSpecs();
     bg.reset();
 
@@ -219,6 +221,7 @@
 
     generation++;
     armWatchdog(generation);
+    if (editing) updateEditBar();
   }
 
   function buildPage(page) {
@@ -393,10 +396,21 @@
     return Math.round(pagesEl.scrollLeft / Math.max(1, pagesEl.clientWidth));
   }
 
+  // While a goToPage glide is still animating, scrollLeft reports the page being LEFT
+  // (or one glided past), so edit operations must act on the destination instead.
+  let navTarget = null;
+
+  function editIndex() {
+    return navTarget !== null ? navTarget : currentPage();
+  }
+
   function goToPage(index) {
     const count = dotsEl.children.length;
     const clamped = Math.max(0, Math.min(count - 1, index));
-    pagesEl.scrollTo({ left: clamped * pagesEl.clientWidth, behavior: 'smooth' });
+    const left = clamped * pagesEl.clientWidth;
+    navTarget = Math.abs(pagesEl.scrollLeft - left) < 2 ? null : clamped; // no scroll -> no scrollend
+    if (editing) disarmPageDelete(); // an armed delete must not carry over to another page
+    pagesEl.scrollTo({ left, behavior: 'smooth' });
     wakeChrome();
   }
 
@@ -411,6 +425,7 @@
 
   function updateDots() {
     const index = currentPage();
+    if (navTarget !== null && Math.abs(pagesEl.scrollLeft - navTarget * pagesEl.clientWidth) < 2) navTarget = null; // settled (scrollend fallback)
     [...dotsEl.children].forEach((dot, i) => dot.classList.toggle('active', i === index));
     // Dot highlighting tracks the scroll live, but applying a background is expensive
     // (for video it creates + network-loads + plays an element), so a single tap that
@@ -547,6 +562,7 @@
   bindEdge(edgeRight, 1);
 
   pagesEl.addEventListener('scroll', updateDots, { passive: true });
+  pagesEl.addEventListener('scrollend', () => { navTarget = null; });
 
   // ---- on-panel edit mode ----------------------------------------------------------
   // Everything is edited in place on the live dashboard: transparent overlays above the
@@ -605,6 +621,11 @@
     } else {
       emptyEl.hidden = slots.length > 0 || layoutData.pages.length > 0;
       closePalette();
+      cancelDrag();
+      // Armed confirms must not survive the session: re-entering edit within the
+      // 2.5s window would otherwise turn the first tap into an instant delete.
+      disarmPageDelete();
+      for (const btn of document.querySelectorAll('.edit-overlay .remove.confirm')) resetConfirm(btn, '✕');
     }
     wakeChrome();
   }
@@ -612,7 +633,7 @@
   document.getElementById('editDone').addEventListener('click', () => setEditing(false));
 
   function updateEditBar() {
-    const i = currentPage();
+    const i = editIndex();
     document.getElementById('pageMoveLeft').disabled = i <= 0;
     document.getElementById('pageMoveRight').disabled = i >= layoutData.pages.length - 1;
     pageDeleteBtn.disabled = layoutData.pages.length <= 1;
@@ -621,18 +642,23 @@
   // Two-tap confirm for destructive buttons (no native dialogs on the panel).
   function confirmThen(btn, restoreText, needsConfirm, action) {
     if (!needsConfirm || btn.classList.contains('confirm')) {
-      btn.classList.remove('confirm');
-      btn.textContent = restoreText;
-      clearTimeout(btn._confirmTimer);
+      resetConfirm(btn, restoreText);
       action();
       return;
     }
     btn.classList.add('confirm');
     btn.textContent = 'Sure?';
-    btn._confirmTimer = setTimeout(() => {
-      btn.classList.remove('confirm');
-      btn.textContent = restoreText;
-    }, 2500);
+    btn._confirmTimer = setTimeout(() => resetConfirm(btn, restoreText), 2500);
+  }
+
+  function resetConfirm(btn, restoreText) {
+    btn.classList.remove('confirm');
+    btn.textContent = restoreText;
+    clearTimeout(btn._confirmTimer);
+  }
+
+  function disarmPageDelete() {
+    resetConfirm(pageDeleteBtn, '✕ Page');
   }
 
   // ---- page management -------------------------------------------------------------
@@ -648,7 +674,7 @@
   });
 
   pageDeleteBtn.addEventListener('click', () => {
-    const i = currentPage();
+    const i = editIndex();
     const page = layoutData.pages[i];
     if (!page || layoutData.pages.length <= 1) return;
     confirmThen(pageDeleteBtn, '✕ Page', (page.slots || []).length > 0, () => {
@@ -667,7 +693,7 @@
   });
 
   function movePage(delta) {
-    const i = currentPage();
+    const i = editIndex();
     const j = i + delta;
     if (j < 0 || j >= layoutData.pages.length) return;
     const [page] = layoutData.pages.splice(i, 1);
@@ -720,6 +746,7 @@
   }
 
   function removeSlot(record) {
+    if (drag && drag.record === record) cancelDrag(); // removed out from under a drag
     mutate(() => {
       const defs = record.page.slots || [];
       const i = defs.indexOf(record.def);
@@ -747,40 +774,45 @@
     return ok;
   }
 
+  // The fit checks run INSIDE the mutation step: view transitions run steps
+  // asynchronously, so a decision taken at tap time could be validated against a
+  // page state an earlier queued mutation is about to change.
   function cycleWidth(record, syncLabels) {
-    const widget = widgetsById.get(record.def.widgetId);
-    const { width, band } = sizeParts(record.def.size);
-    const order = allowedWidths(widget);
-    const start = Math.max(0, order.indexOf(width));
-    for (let k = 1; k <= order.length; k++) {
-      const cand = order[(start + k) % order.length];
-      if (cand === width) break;
-      if (fitsWithSize(record.page, record.def, makeSize(cand, band))) {
-        applySize(record, makeSize(cand, band), syncLabels);
-        return;
+    mutate(() => {
+      const widget = widgetsById.get(record.def.widgetId);
+      const { width, band } = sizeParts(record.def.size);
+      const order = allowedWidths(widget);
+      const start = Math.max(0, order.indexOf(width));
+      for (let k = 1; k <= order.length; k++) {
+        const cand = order[(start + k) % order.length];
+        if (cand === width) break;
+        if (fitsWithSize(record.page, record.def, makeSize(cand, band))) {
+          applySize(record, makeSize(cand, band), syncLabels);
+          return;
+        }
       }
-    }
+    });
   }
 
   function cycleBand(record, syncLabels) {
-    const { width, band } = sizeParts(record.def.size);
-    const orderB = ['full', 'upper', 'lower'];
-    const start = orderB.indexOf(band);
-    for (let k = 1; k < orderB.length; k++) {
-      const cand = orderB[(start + k) % orderB.length];
-      if (fitsWithSize(record.page, record.def, makeSize(width, cand))) {
-        applySize(record, makeSize(width, cand), syncLabels);
-        return;
+    mutate(() => {
+      const { width, band } = sizeParts(record.def.size);
+      const orderB = ['full', 'upper', 'lower'];
+      const start = orderB.indexOf(band);
+      for (let k = 1; k < orderB.length; k++) {
+        const cand = orderB[(start + k) % orderB.length];
+        if (fitsWithSize(record.page, record.def, makeSize(width, cand))) {
+          applySize(record, makeSize(width, cand), syncLabels);
+          return;
+        }
       }
-    }
+    });
   }
 
   function applySize(record, size, syncLabels) {
-    mutate(() => {
-      record.def.size = size;
-      relayoutPage(record.page);
-      syncLabels();
-    });
+    record.def.size = size;
+    relayoutPage(record.page);
+    syncLabels();
   }
 
   // ---- add widget (palette) --------------------------------------------------------
@@ -802,6 +834,7 @@
   }
 
   function openPalette(page) {
+    cancelDrag(); // a second finger can reach the add-zone while a drag holds
     paletteGrid.textContent = '';
     for (const widget of widgetLib) {
       const btn = document.createElement('button');
@@ -822,10 +855,10 @@
   document.getElementById('paletteBackdrop').addEventListener('click', closePalette);
 
   function addWidget(page, widget) {
-    const size = defaultSizeFor(page, widget);
-    if (!size) return;
     closePalette();
     mutate(() => {
+      const size = defaultSizeFor(page, widget); // sized against the page as it IS now
+      if (!size) return;
       const def = { widgetId: widget.id, size, settings: {} };
       (page.slots = page.slots || []).push(def);
       buildSlot(page, def);
@@ -844,12 +877,14 @@
 
   function bindDrag(overlay, record) {
     overlay.addEventListener('pointerdown', (ev) => {
-      if (!editing || ev.target.closest('button')) return;
+      // One drag at a time: a second finger touching another tile mid-drag must not
+      // hijack the state (that would orphan the first drag's ghost forever).
+      if (!editing || drag || ev.target.closest('button')) return;
       overlay.setPointerCapture(ev.pointerId);
-      drag = { record, startX: ev.clientX, startY: ev.clientY, active: false, ghost: null, raf: 0, last: null, targetSlot: null, targetEdge: null, canLeft: false, canRight: false };
+      drag = { record, pointerId: ev.pointerId, startX: ev.clientX, startY: ev.clientY, active: false, ghost: null, raf: 0, last: null, targetSlot: null, targetEdge: null, canLeft: false, canRight: false };
     });
     overlay.addEventListener('pointermove', (ev) => {
-      if (!drag || drag.record !== record) return;
+      if (!drag || drag.record !== record || ev.pointerId !== drag.pointerId) return;
       drag.last = { x: ev.clientX, y: ev.clientY };
       if (!drag.active) {
         if (Math.hypot(ev.clientX - drag.startX, ev.clientY - drag.startY) < 7) return;
@@ -857,8 +892,18 @@
       }
       if (!drag.raf) drag.raf = requestAnimationFrame(trackDrag);
     });
-    overlay.addEventListener('pointerup', () => finishDrag(true));
-    overlay.addEventListener('pointercancel', () => finishDrag(false));
+    // Only the finger that started the drag may finish it.
+    overlay.addEventListener('pointerup', (ev) => {
+      if (drag && drag.record === record && ev.pointerId === drag.pointerId) finishDrag(true);
+    });
+    overlay.addEventListener('pointercancel', (ev) => {
+      if (drag && drag.record === record && ev.pointerId === drag.pointerId) finishDrag(false);
+    });
+  }
+
+  // Abandons an in-flight drag without committing (re-init, tile removed, edit exit).
+  function cancelDrag() {
+    if (drag) finishDrag(false);
   }
 
   function pageFits(page, def) {
@@ -941,6 +986,7 @@
           const defs = d.record.page.slots;
           const srcIdx = defs.indexOf(d.record.def);
           const tgtIdx = defs.indexOf(target.def);
+          if (srcIdx < 0 || tgtIdx < 0) return; // either side removed while dragging
           defs.splice(srcIdx, 1);
           // Dragging forward drops AFTER the target, dragging back drops BEFORE it —
           // insert-before alone would put a forward drag right back where it started.
@@ -951,10 +997,11 @@
     } else if (d.targetEdge) {
       const dir = d.targetEdge === edgeLeft ? -1 : 1;
       const from = d.record.page;
+      const srcIdx = (from.slots || []).indexOf(d.record.def);
       const toIdx = layoutData.pages.indexOf(from) + dir;
       const to = layoutData.pages[toIdx];
-      if (to && pageFits(to, d.record.def)) {
-        from.slots.splice(from.slots.indexOf(d.record.def), 1);
+      if (srcIdx >= 0 && to && pageFits(to, d.record.def)) {
+        from.slots.splice(srcIdx, 1);
         to.slots.push(d.record.def);
         d.record.page = to;
         // Moving the element between pages re-navigates the iframe; treat it as a
