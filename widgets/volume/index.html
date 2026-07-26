@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Volume Mixer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #0b0e14;
+    color: #e8ecf2;
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  body.bg-transparent { background: transparent; }
+  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+
+  #mixer {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 8px;
+    width: 100%;
+    height: 100%;
+  }
+  #sessions {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    overflow-y: auto;
+  }
+  #sessions:empty { display: none; }   /* let the empty message center in the full space */
+  #sessions::-webkit-scrollbar { width: 4px; }
+  #sessions::-webkit-scrollbar-thumb { background: #232a3a; border-radius: 2px; }
+
+  .row {
+    flex: none;
+    display: grid;
+    grid-template-columns: minmax(44px, 18%) auto 1fr auto;
+    align-items: center;
+    gap: clamp(6px, 1.2vw, 14px);
+    min-height: 48px;
+    padding: 4px 10px;
+    border-radius: 11px;
+    background: rgba(23, 28, 40, 0.6);
+    border: 1px solid #232a3a;
+    transition: opacity 0.15s ease;
+  }
+  .row.master {
+    border-color: #2b3550;
+    background: rgba(28, 35, 52, 0.65);
+  }
+  .row.muted { opacity: 0.45; }
+
+  .glyph {
+    font-size: clamp(14px, 5.5vh, 22px);
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .name {
+    color: var(--name-color, #e8ecf2);
+    font-size: calc(clamp(11px, 4vh, 16px) * var(--name-scale, 1));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .mute {
+    min-width: 44px;
+    min-height: 34px;
+    align-self: stretch;
+    margin: 3px 0;
+    background: rgba(35, 42, 58, 0.55);
+    border: 1px solid #232a3a;
+    border-radius: 8px;
+    color: #e8ecf2;
+    font-size: clamp(12px, 4.2vh, 17px);
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .mute:active { background: rgba(0, 212, 255, 0.18); border-color: #00d4ff; }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 32px;              /* big touch hit area */
+    min-width: 0;
+    margin: 0;
+    background: transparent;
+    accent-color: #00d4ff;
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 8px;
+    border-radius: 4px;
+    background: linear-gradient(to right,
+      #00d4ff 0%, #00d4ff var(--fill, 50%),
+      #232a3a var(--fill, 50%), #232a3a 100%);
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 22px;
+    height: 22px;
+    margin-top: -7px;
+    border-radius: 50%;
+    background: #e8ecf2;
+    border: 2px solid #00d4ff;
+    box-shadow: 0 0 8px rgba(0, 212, 255, 0.55);
+  }
+
+  .pct {
+    color: var(--value-color, #7d8697);
+    font-size: calc(clamp(11px, 4vh, 16px) * var(--value-scale, 1));
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    min-width: 4.2ch;
+    text-align: right;
+  }
+
+  #message {
+    position: fixed; inset: 0;
+    display: none; align-items: center; justify-content: center;
+    text-align: center; padding: 16px;
+    color: #7d8697; font-size: clamp(12px, 4.5vh, 17px);
+  }
+  #empty {
+    display: none;
+    align-items: center; justify-content: center;
+    flex: 1; text-align: center;
+    color: #7d8697; font-size: clamp(11px, 3.8vh, 15px);
+  }
+</style>
+</head>
+<body>
+  <div id="mixer">
+    <div id="masterRow" class="row master">
+      <span class="glyph" id="masterGlyph">🔊</span>
+      <button class="mute" id="masterMute" title="Mute master">🔊</button>
+      <input id="masterSlider" type="range" min="0" max="100" step="1" value="50" />
+      <span class="pct" id="masterPct">--</span>
+    </div>
+    <div id="sessions"></div>
+    <div id="empty">Nothing is playing audio</div>
+  </div>
+  <div id="message"></div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const SEND_GAP = 80;                 // ms between setAudio sends, per target
+  const cfg = { showMaster: true, maxApps: 8 };
+  const throttles = new Map();         // target -> {lastSent, timer, pending}
+  let dragging = false;                // true while a slider is held down
+  let lastData = null;
+  let pollTimer = null;
+  let busy = false;
+  let rowSig = null;                   // signature of the rendered session rows
+  let sessionUI = [];                  // [{row, name, mute, input, pct, target, muted}]
+
+  const el = (id) => document.getElementById(id);
+
+  // ---- throttled setAudio: at most one send per SEND_GAP ms per target -------
+  function sendAudio(target, opts) {
+    let t = throttles.get(target);
+    if (!t) { t = { lastSent: 0, timer: null, pending: null }; throttles.set(target, t); }
+    t.pending = opts;
+    if (t.timer) return;               // trailing send already scheduled
+    const wait = Math.max(0, SEND_GAP - (performance.now() - t.lastSent));
+    if (wait === 0) flush(target, t);
+    else t.timer = setTimeout(() => { t.timer = null; flush(target, t); }, wait);
+  }
+  function flush(target, t) {
+    if (!t.pending) return;
+    WW.setAudio(target, t.pending);
+    t.pending = null;
+    t.lastSent = performance.now();
+  }
+
+  function glyphFor(pct, muted) {
+    if (muted) return '🔇';
+    if (pct === 0) return '🔈';
+    return pct < 50 ? '🔉' : '🔊';
+  }
+
+  function displayName(name) {
+    return String(name || 'App').replace(/\.exe$/i, '');
+  }
+
+  // ---- row wiring ------------------------------------------------------------
+  function wireSlider(ui) {
+    const input = ui.input;
+    input.addEventListener('pointerdown', () => { dragging = true; });
+    const end = () => { dragging = false; };
+    input.addEventListener('pointerup', end);
+    input.addEventListener('pointercancel', end);
+    input.addEventListener('change', end);   // also covers keyboard adjust
+    input.addEventListener('input', () => {
+      const v = Math.round(Number(input.value)) || 0;
+      input.style.setProperty('--fill', v + '%');
+      ui.pct.textContent = v + '%';
+      if (ui.glyph) ui.glyph.textContent = glyphFor(v, ui.muted);
+      sendAudio(ui.target, { level: v / 100 });
+    });
+  }
+
+  function wireMute(ui) {
+    ui.mute.addEventListener('click', () => {
+      const next = !ui.muted;
+      WW.setAudio(ui.target, { muted: next });   // taps go straight through
+      ui.muted = next;                           // optimistic UI until next poll
+      ui.mute.textContent = next ? '🔇' : '🔊';
+      ui.row.classList.toggle('muted', next);
+      if (ui.glyph) ui.glyph.textContent = glyphFor(Math.round(Number(ui.input.value)) || 0, next);
+    });
+  }
+
+  const masterUI = {
+    row: null, glyph: null, mute: null, input: null, pct: null,
+    target: 'master', muted: false,
+  };
+
+  function updateRow(ui, snap) {
+    const v = Math.round((Number(snap.level) || 0) * 100);
+    const muted = !!snap.muted;
+    ui.muted = muted;
+    ui.input.value = String(v);
+    ui.input.style.setProperty('--fill', v + '%');
+    ui.pct.textContent = v + '%';
+    ui.mute.textContent = muted ? '🔇' : '🔊';
+    ui.row.classList.toggle('muted', muted);
+    if (ui.glyph) ui.glyph.textContent = glyphFor(v, muted);
+  }
+
+  function buildSessionRows(list) {
+    const box = el('sessions');
+    box.textContent = '';
+    sessionUI = [];
+    for (const s of list) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = displayName(s.name);
+      name.title = String(s.name || '');
+      const mute = document.createElement('button');
+      mute.className = 'mute';
+      mute.title = 'Mute ' + displayName(s.name);
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.min = '0'; input.max = '100'; input.step = '1';
+      const pct = document.createElement('span');
+      pct.className = 'pct';
+      row.append(name, mute, input, pct);
+      box.appendChild(row);
+      const ui = { row, glyph: null, name, mute, input, pct, target: String(s.pid), muted: !!s.muted };
+      wireSlider(ui);
+      wireMute(ui);
+      sessionUI.push(ui);
+    }
+  }
+
+  // ---- render ----------------------------------------------------------------
+  function render(data) {
+    const msg = el('message');
+    const mixer = el('mixer');
+    if (!data || data.available === false) {
+      mixer.style.display = 'none';
+      msg.style.display = 'flex';
+      msg.textContent = 'Audio control unavailable';
+      return;
+    }
+    mixer.style.display = 'flex';
+    msg.style.display = 'none';
+
+    el('masterRow').style.display = cfg.showMaster && data.master ? 'grid' : 'none';
+    if (cfg.showMaster && data.master) updateRow(masterUI, data.master);
+
+    const list = (data.sessions || []).slice(0, cfg.maxApps);
+    const sig = list.map((s) => s.pid + ' ' + s.name).join('');
+    if (sig !== rowSig) { buildSessionRows(list); rowSig = sig; }
+    list.forEach((s, i) => updateRow(sessionUI[i], s));
+    el('empty').style.display = list.length ? 'none' : 'flex';
+  }
+
+  async function poll() {
+    if (busy) return;
+    busy = true;
+    try {
+      const data = await WW.getAudio();
+      lastData = data;
+      if (!dragging) render(data);   // never yank a slider out of the user's hand
+    } catch (e) {
+      WW.log('volume: ' + e.message);
+    }
+    busy = false;
+  }
+
+  // ---- boot ------------------------------------------------------------------
+  masterUI.row = el('masterRow');
+  masterUI.glyph = el('masterGlyph');
+  masterUI.mute = el('masterMute');
+  masterUI.input = el('masterSlider');
+  masterUI.pct = el('masterPct');
+  wireSlider(masterUI);
+  wireMute(masterUI);
+
+  WW.onInit((state) => {
+    const s = state.settings;
+    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
+    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
+    document.body.style.setProperty('--name-color', s.nameColor || '#e8ecf2');
+    document.body.style.setProperty('--name-scale', (Number(s.nameSize) || 100) / 100);
+    document.body.style.setProperty('--value-color', s.valueColor || '#7d8697');
+    document.body.style.setProperty('--value-scale', (Number(s.valueSize) || 100) / 100);
+
+    cfg.showMaster = s.showMaster !== 'off';
+    cfg.maxApps = Math.min(12, Math.max(3, Number(s.maxApps) || 8));
+
+    rowSig = null;                    // settings may change row layout — rebuild
+    clearInterval(pollTimer);
+    poll();
+    pollTimer = setInterval(poll, 1000);
+  });
+</script>
+</body>
+</html>

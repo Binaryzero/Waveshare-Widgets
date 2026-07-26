@@ -90,7 +90,15 @@ WW.mediaControl('toggle' | 'next' | 'prev')   // transport control
 WW.log('debug message')                        // writes to the host's app.log
 WW.fetch(url, init)                            // fetch() with host-proxied CORS/bot-wall fallback
 WW.ping(hosts)                                 // real ICMP pings via the host process
+WW.listMedia()                                 // list the user's media folder -> [{name, url, kind}]
+WW.getAudio()                                  // Windows volume mixer snapshot (master + sessions)
+WW.setAudio(target, {level?, muted?})          // set master ('master') or per-app volume/mute
 ```
+
+`WW.fetch` extras: `init.headers` (plain object) rides the host proxy too, and
+`init.insecure: true` skips certificate validation — honored only for private/loopback
+literal IPs (for self-signed devices like the Hue bridge). `WW.listMedia()` URLs are on
+`https://media.wsw/`, mapped to the media folder ("Open media folder" in Settings).
 
 Sensor `type` values follow LibreHardwareMonitor: `Temperature` (°C), `Load` (%),
 `Clock` (MHz), `Fan` (RPM), `Power` (W), `Data` (GB), `Throughput` (B/s), `Voltage` (V),
@@ -99,6 +107,8 @@ and more. Values can be `null` when a source is unavailable — always render a 
 Zero-elevation sensors are always present: `sys:cpu:load`, `sys:mem:load`,
 `sys:mem:used`, `sys:mem:total`, `sys:net:down`, `sys:net:up`, plus firmware-dependent
 ACPI thermal zones as `sys:thermal:<zone>` (deviceType `System`, type `Temperature`).
+Bluetooth device and laptop batteries appear as `battery:<slug>` (type `Battery`,
+units `%`); devices on a 2.4 GHz dongle (Slipstream/Unifying) don't expose battery here.
 Precise CPU core temperature and fan/motherboard sensors only exist when the host runs
 elevated with PawnIO installed (`WW.status.elevated` tells you; degrade gracefully like
 the stock CPU widget, which falls back to a thermal zone).

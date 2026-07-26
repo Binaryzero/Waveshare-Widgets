@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Twitch Chat</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #0b0e14;
+    color: #e8ecf2;
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  body.bg-transparent { background: transparent; }
+  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  /* Light chat theme: match the embed's popout background while it loads. */
+  body.theme-light { background: #f7f7f8; }
+  body.theme-light.bg-transparent { background: transparent; }
+  body.theme-light.bg-glass { background: rgba(247, 247, 248, 0.55); }
+  #frame {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    display: block;
+    background: transparent;
+  }
+  #overlay {
+    position: fixed; inset: 0;
+    display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    gap: 1.6vh;
+    text-align: center;
+    padding: 16px;
+  }
+  #glyph {
+    width: clamp(26px, 12vh, 48px);
+    height: clamp(26px, 12vh, 48px);
+    opacity: 0.9;
+  }
+  #message {
+    color: var(--msg-color, #7d8697);
+    font-size: calc(clamp(13px, 5vh, 20px) * var(--msg-scale, 1));
+  }
+  #hint {
+    color: var(--msg-color, #7d8697);
+    opacity: 0.6;
+    font-size: calc(clamp(10px, 3.4vh, 14px) * var(--msg-scale, 1));
+  }
+</style>
+</head>
+<body>
+  <iframe id="frame" title="Twitch chat"></iframe>
+  <div id="overlay">
+    <svg id="glyph" viewBox="0 0 24 24" fill="none" stroke="#9146ff" stroke-width="1.6"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M4 4h16v11H10l-4 4v-4H4z" />
+      <path d="M9 8v3.5" /><path d="M14.5 8v3.5" />
+    </svg>
+    <div id="message"></div>
+    <small id="hint"></small>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const MSG_EMPTY = 'Set a Twitch channel in the widget settings';
+  const MSG_INVALID = "That doesn't look like a Twitch channel";
+  const HINT_EMPTY = 'e.g. "pokimane" or https://www.twitch.tv/pokimane';
+  const HINT_INVALID = 'Use a channel name or a twitch.tv link';
+
+  // Accepts a bare channel name or any twitch.tv URL (channel = first path
+  // segment, lowercased). Returns { state: 'empty' | 'invalid' | 'ok', channel? }.
+  function parseChannel(raw) {
+    const text = String(raw == null ? '' : raw).trim();
+    if (!text) return { state: 'empty' };
+    let name = text;
+    const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text);
+    if (hasScheme || text.includes('/') || /twitch\.tv/i.test(text)) {
+      let u;
+      try { u = new URL(hasScheme ? text : 'https://' + text); }
+      catch (e) { return { state: 'invalid' }; }
+      if (!/(^|\.)twitch\.tv$/i.test(u.hostname)) return { state: 'invalid' };
+      name = u.pathname.split('/').filter(Boolean)[0] || '';
+    }
+    name = name.toLowerCase();
+    if (!/^[a-z0-9_]{2,25}$/.test(name)) return { state: 'invalid' };
+    return { state: 'ok', channel: name };
+  }
+
+  WW.onInit((state) => {
+    const s = state.settings;
+    const theme = s.theme === 'light' ? 'light' : 'dark';
+    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
+    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
+    document.body.classList.toggle('theme-light', theme === 'light');
+    document.body.style.setProperty('--msg-color', s.msgColor || '#7d8697');
+    document.body.style.setProperty('--msg-scale', (Number(s.msgSize) || 100) / 100);
+
+    const frame = document.getElementById('frame');
+    const overlay = document.getElementById('overlay');
+    const parsed = parseChannel(s.channel);
+
+    if (parsed.state !== 'ok') {
+      document.getElementById('message').textContent = parsed.state === 'empty' ? MSG_EMPTY : MSG_INVALID;
+      document.getElementById('hint').textContent = parsed.state === 'empty' ? HINT_EMPTY : HINT_INVALID;
+      overlay.style.display = 'flex';
+      frame.style.display = 'none';
+      if (frame.getAttribute('src')) frame.src = 'about:blank'; // stop a previously loaded chat
+      return;
+    }
+
+    overlay.style.display = 'none';
+    frame.style.display = 'block';
+    // parent= must be the hostname this widget frame is actually served from,
+    // or Twitch refuses to render the embed. Computed at runtime — never hardcoded.
+    const src = 'https://www.twitch.tv/embed/' + parsed.channel +
+      '/chat?parent=' + encodeURIComponent(location.hostname) +
+      (theme === 'dark' ? '&darkpopout' : '');
+    if (frame.getAttribute('src') !== src) frame.src = src;
+  });
+</script>
+</body>
+</html>

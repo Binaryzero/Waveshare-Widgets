@@ -1,0 +1,18 @@
+{
+  "id": "ws.stock.battery",
+  "name": "Battery Levels",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Battery percentage for everything Windows knows about — laptop packs, UPS units, and Bluetooth peripherals (headsets, mice, keyboards, controllers). Charge bars colored by level and a charging bolt for system packs.",
+  "min_api_version": 1,
+  "supported_slots": ["quarter", "half", "full"],
+  "properties": [
+    { "name": "bgStyle", "label": "Background", "type": "select", "options": ["solid", "glass", "transparent"], "default": "solid" },
+    { "name": "lowAt", "label": "Red below (%)", "type": "slider", "min": 5, "max": 50, "step": 1, "default": 15 },
+    { "name": "warnAt", "label": "Amber below (%)", "type": "slider", "min": 10, "max": 70, "step": 1, "default": 40 },
+    { "name": "nameColor", "label": "Name color", "type": "color", "default": "#7d8697", "group": "Text" },
+    { "name": "nameSize", "label": "Name size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" },
+    { "name": "valueColor", "label": "Value color (overrides level colors)", "type": "color", "default": "#e8ecf2", "group": "Text" },
+    { "name": "valueSize", "label": "Value size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" }
+  ]
+}

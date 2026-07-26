@@ -69,6 +69,7 @@
   el('save').addEventListener('click', () => post({ type: 'save-layout', layout: state.layout }));
   el('installWidget').addEventListener('click', () => post({ type: 'install-widget' }));
   el('openFolder').addEventListener('click', () => post({ type: 'open-widgets-folder' }));
+  el('openMedia').addEventListener('click', () => post({ type: 'open-media-folder' }));
   el('addPage').addEventListener('click', () => {
     state.layout.pages.push({ name: 'Page ' + (state.layout.pages.length + 1), slots: [] });
     selectedPage = state.layout.pages.length - 1;

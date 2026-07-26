@@ -11,6 +11,8 @@
   const state = { settings: {}, sensors: [], media: null, status: null, ready: false };
   const pendingFetches = new Map();
   const pendingPings = new Map();
+  const pendingMediaLists = new Map();
+  const pendingAudioGets = new Map();
   let fetchSeq = 0;
 
   function emit(kind, payload) {
@@ -46,6 +48,18 @@
         pendingPings.delete(msg.id);
         pending.resolve(msg.results || []);
       }
+    } else if (msg.type === 'ww-media-list-result') {
+      const pending = pendingMediaLists.get(msg.id);
+      if (pending) {
+        pendingMediaLists.delete(msg.id);
+        pending.resolve(msg.files || []);
+      }
+    } else if (msg.type === 'ww-audio-result') {
+      const pending = pendingAudioGets.get(msg.id);
+      if (pending) {
+        pendingAudioGets.delete(msg.id);
+        pending.resolve({ available: msg.available !== false, master: msg.master || null, sessions: msg.sessions || [] });
+      }
     } else if (msg.type === 'ww-fetch-result') {
       const pending = pendingFetches.get(msg.id);
       if (!pending) return;
@@ -76,6 +90,13 @@
       setTimeout(() => {
         if (pendingFetches.delete(id)) reject(new TypeError('proxy fetch timed out'));
       }, 25000);
+      // Plain-object headers survive the proxy hop (needed by APIs like Hue CLIP v2);
+      // init.insecure permits self-signed TLS, honored by the host for LAN hosts only.
+      let headers = null;
+      if (init.headers && typeof init.headers === 'object' && typeof init.headers.get !== 'function') {
+        headers = {};
+        for (const key of Object.keys(init.headers)) headers[key] = String(init.headers[key]);
+      }
       parent.postMessage({
         type: 'ww-fetch',
         id,
@@ -83,6 +104,8 @@
         method: (init.method || 'GET').toUpperCase(),
         body: typeof init.body === 'string' ? init.body : null,
         contentType: null,
+        headers,
+        insecure: init.insecure === true,
       }, '*');
     });
   }
@@ -197,6 +220,39 @@
         }, 12000);
         parent.postMessage({ type: 'ww-ping', id, hosts: (hosts || []).map(String).slice(0, 16) }, '*');
       });
+    },
+
+    /** Lists the user's media library (Settings → "Open media folder"); files serve as
+     * https://media.wsw/<name>. Resolves to [{name, kind: 'image'|'video'}]. */
+    listMedia() {
+      return new Promise((resolve, reject) => {
+        const id = 'm' + (++fetchSeq) + '-' + Math.floor(performance.now());
+        pendingMediaLists.set(id, { resolve, reject });
+        setTimeout(() => { if (pendingMediaLists.delete(id)) reject(new TypeError('media list timed out')); }, 10000);
+        parent.postMessage({ type: 'ww-media-list', id }, '*');
+      });
+    },
+
+    /** Current audio state: {available, master: {level, muted}, sessions: [{pid, name, level, muted}]}.
+     * Levels are 0..1. */
+    getAudio() {
+      return new Promise((resolve, reject) => {
+        const id = 'a' + (++fetchSeq) + '-' + Math.floor(performance.now());
+        pendingAudioGets.set(id, { resolve, reject });
+        setTimeout(() => { if (pendingAudioGets.delete(id)) reject(new TypeError('audio get timed out')); }, 10000);
+        parent.postMessage({ type: 'ww-audio-get', id }, '*');
+      });
+    },
+
+    /** Set master ('master') or per-app (pid) volume/mute. opts: {level? 0..1, muted?}. */
+    setAudio(target, opts) {
+      opts = opts || {};
+      parent.postMessage({
+        type: 'ww-audio-set',
+        target: String(target == null ? 'master' : target),
+        level: typeof opts.level === 'number' ? Math.max(0, Math.min(1, opts.level)) : undefined,
+        muted: typeof opts.muted === 'boolean' ? opts.muted : undefined,
+      }, '*');
     },
 
     /** Writes to the host's app.log — useful for debugging on the panel. */

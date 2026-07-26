@@ -101,6 +101,10 @@ public sealed class SettingsWindow : Form
                     Process.Start(new ProcessStartInfo(AppPaths.WidgetsDir) { UseShellExecute = true });
                     break;
 
+                case "open-media-folder":
+                    Process.Start(new ProcessStartInfo(AppPaths.MediaDir) { UseShellExecute = true });
+                    break;
+
                 case "pick-background":
                     HandlePickBackground(message["target"]?.GetValue<string>() ?? "");
                     break;

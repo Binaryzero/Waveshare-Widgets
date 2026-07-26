@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Gallery</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #0b0e14;
+    color: #e8ecf2;
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  body.bg-transparent { background: transparent; }
+  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  .layer {
+    position: absolute; inset: 0;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: cover;
+    opacity: 0;
+    transition: opacity 1.2s ease;
+  }
+  .layer.visible { opacity: 1; }
+  .layer video {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  #caption {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 10px 14px 8px;
+    background: linear-gradient(transparent, rgba(0,0,0,0.78));
+    opacity: 0;
+    transition: opacity 1.2s ease;
+    pointer-events: none;
+  }
+  #caption.visible { opacity: 1; }
+  #caption .name {
+    color: var(--caption-color, #e8ecf2);
+    font-size: calc(clamp(11px, 4.2vh, 16px) * var(--caption-scale, 1));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+  }
+  #paused {
+    position: absolute; top: 8px; right: 10px;
+    font-size: clamp(10px, 3.6vh, 14px);
+    color: #e8ecf2;
+    background: rgba(0,0,0,0.55);
+    border-radius: 6px;
+    padding: 3px 9px;
+    display: none;
+  }
+  #message {
+    position: absolute; inset: 0;
+    display: none; flex-direction: column; gap: 1.4vh;
+    align-items: center; justify-content: center;
+    text-align: center; padding: 18px;
+    color: #7d8697; font-size: clamp(12px, 4.5vh, 18px);
+  }
+  #message small { color: #545d6e; font-size: 80%; max-width: 90%; }
+</style>
+</head>
+<body>
+  <div class="layer" id="layerA"></div>
+  <div class="layer" id="layerB"></div>
+  <div id="caption"><div class="name"></div></div>
+  <div id="paused">paused</div>
+  <div id="message"></div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+
+  const cfg = { order: 'shuffle', dwell: 10, maxVideoSeconds: 120, fit: 'cover', showName: false };
+  const layers = [document.getElementById('layerA'), document.getElementById('layerB')];
+  let front = 0;               // which layer is currently visible
+  let items = [];              // [{name, kind}] in play order
+  let index = -1;
+  let lastSig = null;          // folder fingerprint, to detect added/removed files
+  let paused = false;
+  let advanceTimer = null;
+  let advancing = false;       // guards against overlapping loads
+  let pendingAdvance = false;  // a timer/'ended' fired while paused
+  let currentVideo = null;
+  let listTimer = null;
+  const LIST_REFRESH_MS = 5 * 60 * 1000;
+
+  WW.onInit((state) => {
+    const s = state.settings;
+    cfg.order = s.order === 'name' ? 'name' : 'shuffle';
+    cfg.dwell = Math.min(120, Math.max(4, Number(s.dwell) || 10));
+    cfg.maxVideoSeconds = Math.min(300, Math.max(10, Number(s.maxVideoSeconds) || 120));
+    cfg.fit = s.fit === 'contain' ? 'contain' : 'cover';
+    cfg.showName = s.showName === 'on';
+    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
+    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
+    document.body.style.setProperty('--caption-color', s.captionColor || '#e8ecf2');
+    document.body.style.setProperty('--caption-scale', (Number(s.captionSize) || 100) / 100);
+    for (const l of layers) l.style.backgroundSize = cfg.fit;
+    start();
+  });
+
+  async function start() {
+    showMessage('Loading your media folder…', null);
+    await refreshList(true);
+    clearInterval(listTimer);
+    listTimer = setInterval(() => refreshList(false), LIST_REFRESH_MS);
+  }
+
+  // Re-lists the folder; called at startup and every 5 minutes so newly dropped
+  // files join the rotation without a restart.
+  async function refreshList(firstLoad) {
+    let files;
+    try {
+      files = await WW.listMedia();
+    } catch (e) {
+      WW.log('gallery: listMedia failed: ' + (e.message || e));
+      if (firstLoad) showMessage('Could not read your media folder', String(e.message || e));
+      return;
+    }
+    const media = (files || []).filter((f) => f && f.name && (f.kind === 'image' || f.kind === 'video'));
+    const sig = media.map((f) => f.kind + ':' + f.name).sort().join('\n');
+    if (sig === lastSig && !firstLoad) return; // nothing changed
+    lastSig = sig;
+
+    if (media.length === 0) {
+      items = [];
+      index = -1;
+      clearTimeout(advanceTimer);
+      advanceTimer = null;
+      showMessage('Drop photos or videos into your media folder',
+        'Settings → Open media folder puts you in the right place.');
+      return;
+    }
+
+    const wasEmpty = items.length === 0;
+    const currentName = index >= 0 && items[index] ? items[index].name : null;
+    items = cfg.order === 'name'
+      ? media.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+      : shuffle(media.slice());
+    index = currentName ? items.findIndex((f) => f.name === currentName) : -1;
+    WW.log('gallery: listed ' + items.length + ' media files (' + cfg.order + ')');
+    if (firstLoad || wasEmpty) advance();
+  }
+
+  function shuffle(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+    }
+    return arr;
+  }
+
+  // --- slideshow ---------------------------------------------------------------
+
+  function fileUrl(name) { return 'https://media.wsw/' + encodeURIComponent(name); }
+
+  async function advance(direction) {
+    if (advancing || items.length === 0) return;
+    advancing = true;
+    clearTimeout(advanceTimer);
+    advanceTimer = null;
+    pendingAdvance = false;
+    // Try a few files in case some fail to load (unsupported codec, deleted, ...).
+    for (let attempts = 0; attempts < Math.min(8, items.length); attempts++) {
+      index = (index + (direction || 1) + items.length) % items.length;
+      const item = items[index];
+      try {
+        const video = item.kind === 'video' ? await preloadVideo(fileUrl(item.name)) : null;
+        if (!video) await preloadImage(fileUrl(item.name));
+        if (items.length === 0) break; // folder emptied while loading; empty state is up
+        if (video) showVideo(item, video); else showImage(item);
+        advancing = false;
+        return;
+      } catch (e) {
+        WW.log('gallery: skipping ' + item.name + ' (' + (e.message || e) + ')');
+      }
+    }
+    advancing = false;
+    if (items.length === 0) return; // refreshList's empty-folder message stands
+    showMessage('Media files are not loading', 'Check the app log for details.');
+    advanceTimer = setTimeout(tick, 30 * 1000); // keep retrying quietly (respects pause)
+  }
+
+  // Resolves once the image is fully decoded (and cached), so the crossfade only
+  // ever starts on a ready image — no flashing.
+  function preloadImage(url) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('image failed to load'));
+      img.src = url;
+    });
+  }
+
+  // Resolves with a ready-to-play muted <video> element, rejects on 404/bad codec.
+  function preloadVideo(url) {
+    return new Promise((resolve, reject) => {
+      const v = document.createElement('video');
+      v.muted = true;
+      v.autoplay = true;
+      v.playsInline = true;
+      v.preload = 'auto';
+      const to = setTimeout(() => fail(new Error('video load timed out')), 20000);
+      function cleanup() { clearTimeout(to); v.onloadeddata = v.onerror = null; }
+      function fail(err) {
+        cleanup();
+        v.removeAttribute('src');
+        try { v.load(); } catch (e) { /* ignore */ }
+        reject(err);
+      }
+      v.onloadeddata = () => { cleanup(); resolve(v); };
+      v.onerror = () => fail(new Error('video failed to load'));
+      v.src = url;
+    });
+  }
+
+  // Two-layer crossfade: prepare the hidden layer, then swap visibility.
+  function slideIn(item, setup) {
+    const back = 1 - front;
+    resetLayer(layers[back]);
+    setup(layers[back]);
+    layers[back].classList.add('visible');
+    layers[front].classList.remove('visible');
+    const oldVideo = layers[front].querySelector('video');
+    if (oldVideo) { try { oldVideo.pause(); } catch (e) { /* ignore */ } }
+    front = back;
+
+    document.getElementById('message').style.display = 'none';
+    const caption = document.getElementById('caption');
+    if (cfg.showName && item.name) {
+      caption.querySelector('.name').textContent = item.name.replace(/\.[^.]+$/, '');
+      caption.classList.add('visible');
+    } else {
+      caption.classList.remove('visible');
+    }
+  }
+
+  function resetLayer(layer) {
+    const v = layer.querySelector('video');
+    if (v) {
+      try { v.pause(); } catch (e) { /* ignore */ }
+      v.removeAttribute('src');
+      try { v.load(); } catch (e) { /* ignore */ }
+      v.remove();
+    }
+    layer.style.backgroundImage = '';
+  }
+
+  function showImage(item) {
+    currentVideo = null;
+    slideIn(item, (layer) => {
+      layer.style.backgroundImage = 'url("' + fileUrl(item.name) + '")';
+    });
+    advanceTimer = setTimeout(tick, cfg.dwell * 1000);
+  }
+
+  function showVideo(item, v) {
+    currentVideo = v;
+    slideIn(item, (layer) => {
+      v.style.objectFit = cfg.fit;
+      layer.appendChild(v);
+    });
+    v.play().catch(() => { /* frozen first frame; the cap timer still advances */ });
+    v.addEventListener('ended', () => { if (v === currentVideo) tick(); });
+    // A video that errors mid-play (truncated file) must not wedge the show.
+    v.addEventListener('error', () => { if (v === currentVideo) tick(); });
+    advanceTimer = setTimeout(tick, cfg.maxVideoSeconds * 1000); // runaway-length cap
+  }
+
+  // Timer/'ended' handler that respects pause: remembered and replayed on resume.
+  function tick() {
+    if (paused) { pendingAdvance = true; return; }
+    advance();
+  }
+
+  function showMessage(title, detail) {
+    // A message replaces the slideshow: stop any video and clear both layers so the
+    // text never fights a stale slide (and files deleted mid-play stop playing).
+    currentVideo = null;
+    for (const l of layers) { resetLayer(l); l.classList.remove('visible'); }
+    const msg = document.getElementById('message');
+    msg.style.display = 'flex';
+    msg.innerHTML = '';
+    const h = document.createElement('div');
+    h.textContent = title;
+    msg.appendChild(h);
+    if (detail) {
+      const s = document.createElement('small');
+      s.textContent = detail;
+      msg.appendChild(s);
+    }
+    document.getElementById('caption').classList.remove('visible');
+  }
+
+  // --- touch: left quarter = previous, right quarter = next, center = pause -----
+
+  document.body.addEventListener('click', (ev) => {
+    const x = ev.clientX / window.innerWidth;
+    if (x < 0.25) { advance(-1); }
+    else if (x > 0.75) { advance(1); }
+    else {
+      paused = !paused;
+      document.getElementById('paused').style.display = paused ? 'block' : 'none';
+      if (currentVideo) {
+        if (paused) { try { currentVideo.pause(); } catch (e) { /* ignore */ } }
+        else if (!currentVideo.ended) currentVideo.play().catch(() => {});
+      }
+      if (!paused && pendingAdvance) { pendingAdvance = false; advance(); }
+    }
+  });
+</script>
+</body>
+</html>
