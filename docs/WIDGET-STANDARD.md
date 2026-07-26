@@ -120,9 +120,10 @@ palette:
 4. **WCAG contrast repair.** Every role is checked against the surfaces it renders on and
    repaired if it fails: `--text` to 7.0:1, `--text-muted` to 4.5:1 (against both
    `--surface` and `--surface-alt`), `--text-dim` to 3.0:1, and the four state hues to
-   4.5:1. Repair binary-searches a mix toward black or white — whichever direction helps —
-   so any theme the user invents stays legible in every widget. Colors that already pass
-   are untouched.
+   4.5:1 — on both surfaces *and* on their own 14% tints composited over each, since
+   that is what `.pill` and state icons actually render on. Repair binary-searches a mix
+   toward black or white — whichever direction helps — so any theme the user invents
+   stays legible in every widget. Colors that already pass are untouched.
 5. **`--on-accent`** is near-black or white, whichever contrasts more with the accent.
 
 **Delivery.** The token map rides the shell init payload; the shell applies it to its own

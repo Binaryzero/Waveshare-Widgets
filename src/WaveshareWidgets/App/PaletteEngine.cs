@@ -47,16 +47,18 @@ public static class PaletteEngine
         muted = EnsureContrast(muted, [surface, surfaceAlt], MutedContrast);
         dim = EnsureContrast(dim, surface, DimContrast);
 
-        // State colors: fixed hues repaired for the theme's surfaces.
-        var ok = EnsureContrast((0x45, 0xd4, 0x83), surface, StateContrast);
-        var warn = EnsureContrast((0xf0, 0xb8, 0x4f), surface, StateContrast);
-        var err = EnsureContrast((0xff, 0x62, 0x68), surface, StateContrast);
-        var info = EnsureContrast((0x62, 0xcb, 0xea), surface, StateContrast);
+        // State colors: fixed hues repaired for the theme's surfaces — including the
+        // 14% tints of themselves that pills and state icons composite on top.
+        var ok = EnsureStateContrast((0x45, 0xd4, 0x83), surface, surfaceAlt);
+        var warn = EnsureStateContrast((0xf0, 0xb8, 0x4f), surface, surfaceAlt);
+        var err = EnsureStateContrast((0xff, 0x62, 0x68), surface, surfaceAlt);
+        var info = EnsureStateContrast((0x62, 0xcb, 0xea), surface, surfaceAlt);
 
-        // Readable foreground on accent: black or white, whichever contrasts more.
-        var onAccent = Contrast(accent, (0, 0, 0)) >= Contrast(accent, (0xff, 0xff, 0xff))
-            ? (r: (byte)0x0a, g: (byte)0x0a, b: (byte)0x0a)
-            : (r: (byte)0xff, g: (byte)0xff, b: (byte)0xff);
+        // Readable foreground on accent: compare the candidates actually emitted — on a
+        // mid-tone accent pure black can edge out white while the near-black loses to it.
+        var nearBlack = (r: (byte)0x0a, g: (byte)0x0a, b: (byte)0x0a);
+        var white = (r: (byte)0xff, g: (byte)0xff, b: (byte)0xff);
+        var onAccent = Contrast(accent, nearBlack) >= Contrast(accent, white) ? nearBlack : white;
 
         var hover = Mix(surface, text, 0.08);
 
@@ -138,6 +140,46 @@ public static class PaletteEngine
     private static (byte r, byte g, byte b) EnsureContrast(
         (byte r, byte g, byte b) color, (byte r, byte g, byte b) surface, double target) =>
         EnsureContrast(color, [surface], target);
+
+    /// <summary>
+    /// State-color repair: meets <see cref="StateContrast"/> on both surfaces AND on the
+    /// 14% tint of itself composited over each (the `.pill` / state-icon backgrounds).
+    /// The tint tracks the color being repaired, so the constraint is a moving target —
+    /// iterate to the fixed point; each pass only moves toward a pole, so it settles.
+    /// </summary>
+    private static (byte r, byte g, byte b) EnsureStateContrast(
+        (byte r, byte g, byte b) seed, (byte r, byte g, byte b) surface, (byte r, byte g, byte b) surfaceAlt)
+    {
+        double OwnMin((byte r, byte g, byte b) c)
+        {
+            var min = Math.Min(Contrast(c, surface), Contrast(c, surfaceAlt));
+            min = Math.Min(min, Contrast(c, Mix(surface, c, 0.14)));
+            return Math.Min(min, Contrast(c, Mix(surfaceAlt, c, 0.14)));
+        }
+
+        var c = EnsureContrast(seed, [surface, surfaceAlt], StateContrast);
+        for (var i = 0; i < 6; i++)
+        {
+            var next = EnsureContrast(
+                c, [surface, surfaceAlt, Mix(surface, c, 0.14), Mix(surfaceAlt, c, 0.14)], StateContrast);
+            if (next == c)
+                break;
+            c = next;
+        }
+
+        if (OwnMin(c) < StateContrast)
+        {
+            // Ratio unreachable on this theme (the composite chases the color toward the
+            // pole): settle on whichever pole does best against its own tints, if that
+            // beats where the iteration stopped.
+            var white = ((byte)0xff, (byte)0xff, (byte)0xff);
+            var black = ((byte)0x00, (byte)0x00, (byte)0x00);
+            var pole = OwnMin(white) >= OwnMin(black) ? white : black;
+            if (OwnMin(pole) > OwnMin(c))
+                c = pole;
+        }
+        return c;
+    }
 
     /// <summary>
     /// Multi-surface repair: the returned color meets <paramref name="target"/> on every
