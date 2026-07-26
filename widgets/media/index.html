@@ -3,70 +3,60 @@
 <head>
 <meta charset="utf-8" />
 <title>Now Playing</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; }
-  body {
-    background: #0b0e14;
-    color: #e8ecf2;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-    display: flex;
-    align-items: center;
-    user-select: none;
-  }
-  /* Background setting: let the dashboard wallpaper show through. */
-  body.bg-transparent { background: transparent; }
-  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  /* Widget-specific layout; tokens, background/bgStyle and typography base come
+   * from widget-base.css. */
+  body { display: flex; align-items: center; }
   #backdrop {
     position: fixed; inset: -30px;
     background-size: cover; background-position: center;
     filter: blur(24px) brightness(0.3);
     z-index: 0;
   }
+  /* On light themes wash the album-art backdrop out instead of darkening it, so
+   * the theme's dark text stays legible over it. */
+  html[data-appearance="light"] #backdrop { filter: blur(24px) saturate(0.7); opacity: 0.35; }
   #layout { position: relative; z-index: 1; display: flex; align-items: center; width: 100%; height: 100%; padding: 3.5%; gap: 4%; }
   #art {
     height: 84%; aspect-ratio: 1;
-    border-radius: 10px;
-    background: #1c2331 center/cover no-repeat;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+    border-radius: var(--radius-control);
+    background: var(--control-bg) center/cover no-repeat;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, calc(var(--panel-shadow-alpha) * 2.5));
     flex: none;
   }
   #info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1vh; }
-  #title  { font-size: calc(clamp(17px, 8.5vh, 38px) * var(--title-scale, 1)); color: var(--title-color, #e8ecf2); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #artist { font-size: calc(clamp(13px, 5.5vh, 24px) * var(--artist-scale, 1)); color: var(--artist-color, #aeb7c4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #album  { font-size: calc(clamp(11px, 4vh, 17px) * var(--album-scale, 1)); color: var(--album-color, #7d8697); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Per-role custom properties (set from settings only when they differ from the
+   * manifest defaults) fall through to the theme tokens. */
+  #title  { font-size: calc(clamp(17px, 8.5vh, 38px) * var(--title-scale, 1)); color: var(--title-color, var(--text)); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #artist { font-size: calc(clamp(13px, 5.5vh, 24px) * var(--artist-scale, 1)); color: var(--artist-color, var(--text-muted)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #album  { font-size: calc(clamp(11px, 4vh, 17px) * var(--album-scale, 1)); color: var(--album-color, var(--text-dim)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   #timeline { display: flex; align-items: center; gap: 10px; margin-top: 1.2vh; }
-  #timeline time { font-size: calc(clamp(10px, 3.6vh, 14px) * var(--time-scale, 1)); color: var(--time-color, #7d8697); font-variant-numeric: tabular-nums; flex: none; }
-  #bar {
-    flex: 1; height: 6px; border-radius: 3px;
-    background: rgba(255, 255, 255, 0.12);
-    overflow: hidden;
-  }
-  #barFill { height: 100%; width: 0%; border-radius: 3px; background: var(--accent, #00d4ff); transition: width 0.4s linear; }
+  #timeline time { font-size: calc(clamp(10px, 3.6vh, 14px) * var(--time-scale, 1)); color: var(--time-color, var(--text-dim)); font-variant-numeric: tabular-nums; flex: none; }
+  /* .meter carries the track/fill colors; the media bar keeps its 6px height and
+   * the linear fill transition matched to the 500ms position interpolation. */
+  #bar { flex: 1; height: 6px; border-radius: 3px; }
+  #bar > i { width: 0%; border-radius: 3px; transition: width 0.4s linear; }
   #timeline.no-duration { visibility: hidden; }
 
   #controls { display: flex; align-items: center; gap: 16px; margin-top: 1vh; }
-  #controls button {
-    border: 0; cursor: pointer;
+  #controls .btn {
+    border: 0; padding: 0;
     width: clamp(46px, 15vh, 68px); height: clamp(46px, 15vh, 68px);
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.08);
-    color: #e8ecf2;
     display: flex; align-items: center; justify-content: center;
     touch-action: manipulation;
   }
-  #controls button svg { width: 44%; height: 44%; fill: currentColor; }
-  #controls button:active { background: var(--accent, #00d4ff); color: #0b0e14; }
-  #controls #toggle { background: var(--accent, #00d4ff); color: #0b0e14; }
+  #controls .btn svg { width: 44%; height: 44%; fill: currentColor; }
+  #controls .btn:active, #controls #toggle { background: var(--accent); color: var(--on-accent); }
   #idle {
     position: fixed; inset: 0; z-index: 2;
     display: flex; flex-direction: column; gap: 1.6vh; align-items: center; justify-content: center;
-    background: #0b0e14;
-    color: #545d6e; font-size: clamp(14px, 5vh, 22px);
+    background: rgba(var(--surface-rgb), var(--panel-alpha-eff));
+    color: var(--text-dim); font-size: clamp(14px, 5vh, 22px);
   }
-  #idle svg { width: clamp(30px, 12vh, 54px); height: clamp(30px, 12vh, 54px); fill: #2a3346; }
-  #idle[hidden] { display: none; }
+  #idle svg { width: clamp(30px, 12vh, 54px); height: clamp(30px, 12vh, 54px); fill: var(--line); }
 </style>
 </head>
 <body>
@@ -79,18 +69,18 @@
       <div id="album"></div>
       <div id="timeline">
         <time id="elapsed">0:00</time>
-        <div id="bar"><div id="barFill"></div></div>
+        <div id="bar" class="meter"><i id="barFill"></i></div>
         <time id="total">0:00</time>
       </div>
       <div id="controls">
-        <button id="prev" aria-label="Previous">
+        <button id="prev" class="btn" aria-label="Previous">
           <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zM9.5 12 18 6v12z"/></svg>
         </button>
-        <button id="toggle" aria-label="Play/Pause">
+        <button id="toggle" class="btn" aria-label="Play/Pause">
           <svg id="iconPlay" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
           <svg id="iconPause" viewBox="0 0 24 24" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
         </button>
-        <button id="next" aria-label="Next">
+        <button id="next" class="btn" aria-label="Next">
           <svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 6l8.5 6L6 18z"/></svg>
         </button>
       </div>
@@ -113,18 +103,36 @@
   // Position arrives every ~2 s poll; interpolate between updates while playing.
   let base = { position: null, duration: null, at: 0, playing: false };
 
+  // Manifest defaults — the host merges these into settings, so "user changed it"
+  // means "differs from the default". Only then does the property override the
+  // theme tokens (inline CSS variable); at default the token chain shows through.
+  const DEF = {
+    accentColor: '#00d4ff', titleColor: '#e8ecf2', artistColor: '#aeb7c4',
+    albumColor: '#7d8697', timeColor: '#7d8697',
+  };
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
+  function setVar(name, value) {
+    if (value) document.body.style.setProperty(name, value);
+    else document.body.style.removeProperty(name);
+  }
+
   WW.onInit((state) => {
-    document.body.classList.toggle('bg-transparent', state.settings.bgStyle === 'transparent');
-    document.body.classList.toggle('bg-glass', state.settings.bgStyle === 'glass');
-    document.body.style.setProperty('--accent', state.settings.accentColor || '#00d4ff');
     const s = state.settings;
-    document.body.style.setProperty('--title-color', s.titleColor || '#e8ecf2');
+    // Anything that isn't explicitly glass/transparent renders solid, matching the
+    // pre-token behavior for unset AND out-of-spec values (no class = glass in base).
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+    setVar('--accent', changed(s.accentColor, DEF.accentColor) ? s.accentColor : '');
+    setVar('--title-color', changed(s.titleColor, DEF.titleColor) ? s.titleColor : '');
+    setVar('--artist-color', changed(s.artistColor, DEF.artistColor) ? s.artistColor : '');
+    setVar('--album-color', changed(s.albumColor, DEF.albumColor) ? s.albumColor : '');
+    setVar('--time-color', changed(s.timeColor, DEF.timeColor) ? s.timeColor : '');
     document.body.style.setProperty('--title-scale', (Number(s.titleSize) || 100) / 100);
-    document.body.style.setProperty('--artist-color', s.artistColor || '#aeb7c4');
     document.body.style.setProperty('--artist-scale', (Number(s.artistSize) || 100) / 100);
-    document.body.style.setProperty('--album-color', s.albumColor || '#7d8697');
     document.body.style.setProperty('--album-scale', (Number(s.albumSize) || 100) / 100);
-    document.body.style.setProperty('--time-color', s.timeColor || '#7d8697');
     document.body.style.setProperty('--time-scale', (Number(s.timeSize) || 100) / 100);
     render(state.media);
   });
@@ -133,7 +141,13 @@
   function render(media) {
     const idle = !media || !media.available || !media.title;
     el('idle').hidden = !idle;
-    if (idle) return;
+    if (idle) {
+      // The idle overlay follows the panel opacity now (glass/transparent tiles stay
+      // glass/transparent while idle), so stale art must not linger underneath it.
+      el('art').style.backgroundImage = 'none';
+      el('backdrop').style.backgroundImage = 'none';
+      return;
+    }
 
     el('title').textContent = media.title || '';
     el('artist').textContent = media.artist || '';

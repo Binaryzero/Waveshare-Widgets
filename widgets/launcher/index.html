@@ -3,32 +3,28 @@
 <head>
 <meta charset="utf-8" />
 <title>Launch App</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; }
-  body {
-    background: #0b0e14;
-    color: #e8ecf2;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-    user-select: none;
-    -webkit-user-select: none;
-  }
-  /* Background setting: let the dashboard wallpaper show through. */
-  body.bg-transparent { background: transparent; }
-  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  /* Layout only — tokens, background/bgStyle handling, typography base and the
+   * .state-card anatomy come from widget-base.css. */
   #grid {
     display: grid;
-    gap: 8px;
-    padding: 8px;
+    gap: var(--space-2);
+    padding: var(--space-2);
     width: 100%;
     height: 100%;
   }
-  /* Stream-deck-style key face: raised, rounded, soft top light, presses in. */
+  /* Stream-deck-style key face: raised, rounded, soft top light, presses in.
+   * The face is an interactive control (like .btn), so it uses the opaque
+   * control/surface tokens; shadow + top-light strength derive from the panel
+   * alpha formulas so the keys soften with glass/transparent backgrounds. */
   .tile {
     border-radius: 12px;
-    background: linear-gradient(165deg, #2a3040 0%, #171b24 55%, #0d1017 100%);
-    border: 1px solid #343d50;
-    box-shadow: 0 3px 10px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08);
+    background: linear-gradient(165deg, var(--control-bg) 0%, var(--surface-alt) 55%, var(--surface) 100%);
+    border: 1px solid var(--line);
+    box-shadow:
+      0 3px 10px rgba(0, 0, 0, calc(var(--panel-shadow-alpha) * 2.4)),
+      inset 0 1px 0 rgba(255, 255, 255, calc(var(--panel-border-alpha) * 0.5));
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -39,13 +35,15 @@
     overflow: hidden;
     cursor: pointer;
     touch-action: manipulation;
-    transition: transform 0.06s ease, box-shadow 0.12s ease;
+    transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
   }
   /* Press feedback: scale down + accent ring (like streamdeck keys). The .pressed
      class mirrors :active from pointer events so touch presses always flash too. */
   .tile:active, .tile.pressed {
     transform: scale(0.94);
-    box-shadow: 0 0 0 2px #00d4ff inset, 0 1px 4px rgba(0,0,0,0.6);
+    box-shadow:
+      0 0 0 2px var(--accent) inset,
+      0 1px 4px rgba(0, 0, 0, calc(var(--panel-shadow-alpha) * 2.6));
   }
   .tile .icon {
     font-family: "Segoe UI Emoji", "Noto Color Emoji", "Segoe UI Variable", system-ui, sans-serif;
@@ -53,36 +51,26 @@
     line-height: 1.15;
   }
   .tile .label {
-    color: var(--label-color, #e8ecf2);
+    /* Set from settings only when moved off the manifest default; falls through
+     * to the theme's --text token otherwise. */
+    color: var(--label-color, var(--text));
     font-size: calc(clamp(9px, 3.2vh, 14px) * var(--label-scale, 1));
     max-width: 94%;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  #message {
-    position: fixed; inset: 0;
-    display: none; flex-direction: column; gap: 1.4vh;
-    align-items: center; justify-content: center;
-    text-align: center; padding: 18px;
-    color: #7d8697; font-size: clamp(12px, 4.5vh, 17px);
-  }
-  #message code {
-    display: block;
-    font-family: Consolas, monospace;
-    font-size: clamp(9px, 3vh, 13px);
-    color: #aeb7c4;
-    background: rgba(23, 28, 40, 0.6);
-    border: 1px solid #232a3a;
-    border-radius: 10px;
-    padding: 3px 10px;
-    max-width: 96%;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  #message small { color: #545d6e; font-size: 72%; }
+  #message { position: fixed; inset: 0; }
+  #message .state-body { font-size: clamp(11px, 3.6vh, 13px); }
 </style>
 </head>
 <body>
   <div id="grid"></div>
-  <div id="message"></div>
+  <div id="message" class="state-card" hidden>
+    <div class="state-icon">🚀</div>
+    <div class="state-title">No shortcuts yet</div>
+    <div class="state-body">Add shortcuts in the widget settings — each one is a name plus a
+      program path (C:\...\app.exe) or a website (https://...). A leading emoji on the name
+      becomes the tile icon; otherwise programs get 🚀 and links get 🌐.</div>
+  </div>
 
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
@@ -90,8 +78,57 @@
   const cfg = { columns: 0 };
   let items = [];
 
+  // Manifest defaults — the host merges these into settings, so "user changed it"
+  // means "differs from the default". Only then does the property override the
+  // theme tokens (inline CSS variable); at default the token chain shows through.
+  const DEF = { labelColor: '#e8ecf2' };
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
+  function setVar(name, value) {
+    if (value) document.body.style.setProperty(name, value);
+    else document.body.style.removeProperty(name);
+  }
+
   // Leading emoji (incl. variation selectors, skin tones, and ZWJ sequences).
   const EMOJI_RE = /^(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier})*)/u;
+
+  const MAX_ITEMS = 24;
+
+  function finishItem(icon, label, target) {
+    const kind = /^https?:\/\//i.test(target) ? 'url' : 'launch';
+    if (!label) label = deriveLabel(target, kind);
+    if (!icon) icon = kind === 'url' ? '🌐' : '🚀';
+    return { icon, label, target, kind };
+  }
+
+  // Settings shape A (current): an array of { label, target } objects from the
+  // structured "Shortcuts" list. A leading emoji on the name becomes the icon.
+  // Settings shape B (legacy saved layouts): one "Label=target" per line or comma
+  // separated — kept working via parseItems below.
+  function normalizeItems(raw) {
+    if (!Array.isArray(raw)) return parseItems(raw);
+    const out = [];
+    for (const entry of raw) {
+      if (out.length >= MAX_ITEMS) break;
+      if (!entry) continue;
+      if (typeof entry === 'string') {           // tolerate stray string rows
+        for (const it of parseItems(entry)) {
+          if (out.length >= MAX_ITEMS) break;
+          out.push(it);
+        }
+        continue;
+      }
+      if (typeof entry !== 'object') continue;
+      let label = String(entry.label == null ? '' : entry.label).trim();
+      const target = String(entry.target == null ? '' : entry.target).trim();
+      if (!target) continue;
+      let icon = '';
+      const em = label.match(EMOJI_RE);
+      if (em) { icon = em[1]; label = label.slice(em[1].length).trim(); }
+      out.push(finishItem(icon, label, target));
+    }
+    return out;
+  }
 
   // "Label=target" per line (or comma separated); target is an .exe path or an
   // http(s) URL. Split on the FIRST '=' only, so "C:\a=b\x.exe" stays intact.
@@ -112,11 +149,8 @@
         target = part.slice(eq + 1).trim();
       }
       if (!target) continue;
-      const kind = /^https?:\/\//i.test(target) ? 'url' : 'launch';
-      if (!label) label = deriveLabel(target, kind);
-      if (!icon) icon = kind === 'url' ? '🌐' : '🚀';
-      out.push({ icon, label, target, kind });
-      if (out.length >= 24) break;
+      out.push(finishItem(icon, label, target));
+      if (out.length >= MAX_ITEMS) break;
     }
     return out;
   }
@@ -131,12 +165,16 @@
 
   WW.onInit((state) => {
     const s = state.settings;
-    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
-    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
-    document.body.style.setProperty('--label-color', s.labelColor || '#e8ecf2');
-    document.body.style.setProperty('--label-scale', (Number(s.labelSize) || 100) / 100);
+    // Anything that isn't explicitly glass/transparent renders solid, matching the
+    // pre-token behavior for unset AND out-of-spec values (no class = glass in base).
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+    setVar('--label-color', changed(s.labelColor, DEF.labelColor) ? s.labelColor : '');
+    document.body.style.setProperty('--label-scale', String((Number(s.labelSize) || 100) / 100));
     cfg.columns = Math.max(0, Math.min(8, Math.round(Number(s.columns) || 0)));
-    items = parseItems(s.items);
+    items = normalizeItems(s.items);
     build();
   });
 
@@ -144,21 +182,8 @@
     const grid = document.getElementById('grid');
     const msg = document.getElementById('message');
     grid.textContent = '';
-    if (!items.length) {
-      msg.style.display = 'flex';
-      msg.innerHTML = '';
-      const h = document.createElement('div');
-      h.textContent = 'Add shortcuts in the widget settings — "Label=target", comma separated:';
-      const ex1 = document.createElement('code');
-      ex1.textContent = '🎮 Steam=C:\\Program Files (x86)\\Steam\\steam.exe';
-      const ex2 = document.createElement('code');
-      ex2.textContent = 'YouTube=https://youtube.com';
-      const hint = document.createElement('small');
-      hint.textContent = 'The leading emoji is optional — programs get 🚀 and links get 🌐.';
-      msg.append(h, ex1, ex2, hint);
-      return;
-    }
-    msg.style.display = 'none';
+    msg.hidden = items.length > 0;
+    if (!items.length) return;
 
     for (const it of items) {
       const tile = document.createElement('div');

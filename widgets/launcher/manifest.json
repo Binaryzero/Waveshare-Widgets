@@ -2,12 +2,15 @@
   "id": "ws.stock.launcher",
   "name": "Launch App",
   "author": "Waveshare Widgets",
-  "version": "1.0.0",
-  "description": "A grid of tappable shortcuts that start programs or open websites on the PC. One item per line: \"Label=C:\\path\\app.exe\" or \"Label=https://site\" — an optional leading emoji becomes the tile icon.",
+  "version": "1.0.1",
+  "description": "A grid of tappable shortcuts that start programs or open websites on the PC. Each shortcut is a name plus a target — \"C:\\path\\app.exe\" or \"https://site\" — and an optional leading emoji on the name becomes the tile icon.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
   "properties": [
-    { "name": "items", "label": "Shortcuts (Label=path or URL, comma separated)", "type": "text", "default": "" },
+    { "name": "items", "label": "Shortcuts", "type": "list", "itemLabel": "shortcut", "fields": [
+      { "key": "label", "label": "Name", "type": "text", "placeholder": "Steam" },
+      { "key": "target", "label": "Path or URL", "type": "text", "placeholder": "C:\\...\\steam.exe or https://..." }
+    ], "default": [] },
     { "name": "columns", "label": "Columns (0 = auto)", "type": "slider", "min": 0, "max": 8, "step": 1, "default": 0 },
     { "name": "bgStyle", "label": "Background", "type": "select", "options": ["solid", "glass", "transparent"], "default": "solid" },
     { "name": "labelColor", "label": "Label color", "type": "color", "default": "#e8ecf2", "group": "Text" },
