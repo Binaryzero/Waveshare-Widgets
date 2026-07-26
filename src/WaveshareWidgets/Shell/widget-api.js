@@ -8,7 +8,7 @@
   if (window.WW) return; // already installed (injected + script tag)
 
   const listeners = { init: [], sensors: [], media: [], streamdeck: [], sdcapture: [] };
-  const state = { settings: {}, sensors: [], media: null, status: null, ready: false };
+  const state = { settings: {}, sensors: [], media: null, status: null, theme: null, ready: false };
   const pendingFetches = new Map();
   const pendingPings = new Map();
   const pendingMediaLists = new Map();
@@ -28,6 +28,14 @@
       state.sensors = msg.sensors || [];
       state.media = msg.media || null;
       state.status = msg.status || null;
+      // Design tokens land on :root before init callbacks so first paint is themed.
+      if (msg.theme && typeof msg.theme === 'object') {
+        state.theme = msg.theme;
+        for (const name of Object.keys(msg.theme)) {
+          if (name.indexOf('--') === 0) document.documentElement.style.setProperty(name, String(msg.theme[name]));
+        }
+        document.documentElement.dataset.appearance = String(msg.theme['--appearance'] || 'dark');
+      }
       state.ready = true;
       emit('init', state);
       emit('sensors', state.sensors);
@@ -119,6 +127,8 @@
     get media() { return state.media; },
     /** Host status: {elevated, apiVersion}. */
     get status() { return state.status; },
+    /** Design-token map ({'--surface': '#111314', ...}); applied to :root automatically. */
+    get theme() { return state.theme; },
 
     /** cb(state) — fires once settings/sensors are first delivered. */
     onInit(cb) { listeners.init.push(cb); if (state.ready) cb(state); },

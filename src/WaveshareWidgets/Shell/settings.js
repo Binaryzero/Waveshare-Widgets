@@ -80,6 +80,7 @@
 
   function renderAll() {
     renderPageList();
+    renderThemeEditor();
     renderGlobalBackground();
     renderEditor();
   }
@@ -90,6 +91,33 @@
       () => state.layout.background || null,
       (spec) => { if (spec) state.layout.background = spec; else delete state.layout.background; },
       { allowInherit: false });
+  }
+
+  // Stock seeds mirrored from PaletteEngine's defaults; shown when no theme is set.
+  const THEME_DEFAULTS = { accent: '#4cc2ff', background: '#05070b', text: '#e8ecf2', panelAlpha: 0.92 };
+
+  function renderThemeEditor() {
+    const container = el('themeEditor');
+    container.textContent = '';
+    const setKey = (key, value) => {
+      const t = state.layout.theme || (state.layout.theme = {});
+      if (value == null) delete t[key]; else t[key] = value;
+      if (!Object.keys(t).length) delete state.layout.theme;
+    };
+    const cur = state.layout.theme || {};
+
+    container.appendChild(bgColor('Accent', cur.accent || THEME_DEFAULTS.accent, (v) => setKey('accent', v)));
+    container.appendChild(bgColor('Background', cur.background || THEME_DEFAULTS.background, (v) => setKey('background', v)));
+    container.appendChild(bgColor('Text', cur.text || THEME_DEFAULTS.text, (v) => setKey('text', v)));
+    const alphaPct = Math.round((cur.panelAlpha != null ? cur.panelAlpha : THEME_DEFAULTS.panelAlpha) * 100);
+    container.appendChild(bgSlider('Panel opacity', alphaPct, 15, 100, 1, '%', (v) => setKey('panelAlpha', v / 100)));
+
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'ghost';
+    reset.textContent = 'Reset to stock theme';
+    reset.onclick = () => { delete state.layout.theme; renderThemeEditor(); };
+    container.appendChild(bgRow('', reset));
   }
 
   function renderPageList() {

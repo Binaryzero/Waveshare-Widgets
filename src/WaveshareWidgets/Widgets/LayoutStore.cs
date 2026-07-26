@@ -10,6 +10,24 @@ public sealed class DashboardLayout
 
     /// <summary>Dashboard-wide default background, shown on pages that don't override it.</summary>
     [JsonPropertyName("background")] public BackgroundSpec? Background { get; set; }
+
+    /// <summary>Global theme seeds; null means the stock dark look.</summary>
+    [JsonPropertyName("theme")] public ThemeSpec? Theme { get; set; }
+}
+
+/// <summary>
+/// The three colors a user picks plus a panel-opacity level; everything else in the
+/// design-token palette is derived from these by <c>PaletteEngine</c>.
+/// </summary>
+public sealed class ThemeSpec
+{
+    [JsonPropertyName("accent")] public string? Accent { get; set; }
+    [JsonPropertyName("background")] public string? Background { get; set; }
+    [JsonPropertyName("text")] public string? Text { get; set; }
+
+    /// <summary>Widget panel opacity, 0.15–1.0. Glass background style renders at this
+    /// level; solid forces 1; transparent forces 0.</summary>
+    [JsonPropertyName("panelAlpha")] public double PanelAlpha { get; set; } = 0.92;
 }
 
 public sealed class LayoutPage

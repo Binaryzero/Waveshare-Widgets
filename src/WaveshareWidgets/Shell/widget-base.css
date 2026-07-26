@@ -1,0 +1,219 @@
+/* Waveshare Widgets — shared widget foundation.
+ *
+ * Every stock widget links this from the shell origin:
+ *   <link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+ *
+ * It carries the design tokens (with stock-dark fallbacks; the host overwrites them
+ * on :root from the derived theme at init), the panel-opacity system behind the
+ * bgStyle setting, and the standard component classes from docs/WIDGET-STANDARD.md.
+ * Widgets style with tokens — never literal colors.
+ */
+
+:root {
+  /* Color roles (defaults = stock dark; overwritten by the theme push). */
+  --bg: #05070b;
+  --surface: #10141b;
+  --surface-rgb: 16, 20, 27;
+  --surface-alt: #171c25;
+  --surface-alt-rgb: 23, 28, 37;
+  --control-bg: #1e242f;
+  --text: #e8ecf2;
+  --text-muted: #97a0ae;
+  --text-dim: #6d7684;
+  --line: #333a46;
+  --accent: #4cc2ff;
+  --accent-rgb: 76, 194, 255;
+  --on-accent: #0a0a0a;
+  --ok: #45d483;
+  --warn: #f0b84f;
+  --err: #ff6268;
+  --info: #62cbea;
+  --ok-bg: rgba(69, 212, 131, 0.14);
+  --warn-bg: rgba(240, 184, 79, 0.14);
+  --err-bg: rgba(255, 98, 104, 0.14);
+  --info-bg: rgba(98, 203, 234, 0.14);
+  --hover-bg: #1b212b;
+  --panel-alpha: 0.92;
+
+  /* Geometry & motion */
+  --radius-card: 14px;
+  --radius-control: 10px;
+  --radius-pill: 999px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --dur-fast: 150ms;
+  --dur-mid: 240ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  /* Effective panel opacity: the bgStyle body classes override this. Border and
+   * shadow strength are formulas of it so the look stays coherent at any level. */
+  --panel-alpha-eff: var(--panel-alpha);
+  --panel-border-alpha: calc(0.06 + var(--panel-alpha-eff) * 0.10);
+  --panel-shadow-alpha: calc(0.05 + var(--panel-alpha-eff) * 0.18);
+
+  /* The surface every nested card sits on — follows the panel opacity so wallpaper
+   * shows through inner cards exactly as much as through the tile itself. */
+  --card-surface: rgba(var(--surface-alt-rgb), max(0, calc(var(--panel-alpha-eff) - 0.02)));
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: rgba(var(--surface-rgb), var(--panel-alpha-eff));
+  color: var(--text);
+  font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  font-size: 13.5px;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+/* bgStyle facade over the panel-opacity system. Widgets toggle these classes from
+ * their bgStyle setting exactly as before — the classes now feed the alpha model. */
+body.bg-solid { --panel-alpha-eff: 1; }
+body.bg-glass { --panel-alpha-eff: var(--panel-alpha); }
+body.bg-transparent {
+  --panel-alpha-eff: 0;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 12px rgba(0, 0, 0, 0.35);
+}
+
+/* ---- standard anatomy ------------------------------------------------------- */
+
+/* Nested surface: rows, sub-cards, list items. */
+.card {
+  background: var(--card-surface);
+  border: 1px solid rgba(255, 255, 255, calc(var(--panel-border-alpha) * 0.6));
+  border-radius: var(--radius-card);
+  padding: var(--space-3);
+}
+
+/* Uppercase section label above a value or block. */
+.kicker {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Live numeric readout + its unit, on one baseline. */
+.value {
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  line-height: 1.1;
+}
+.value.hero { font-size: 30px; letter-spacing: -0.02em; }
+.unit {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+/* Status pill (header right side). */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  background: rgba(var(--accent-rgb), 0.14);
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  color: var(--accent);
+}
+.pill.ok { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+.pill.warn { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
+.pill.err { background: var(--err-bg); border-color: var(--err); color: var(--err); }
+.pill.muted { background: var(--card-surface); border-color: var(--line); color: var(--text-muted); }
+
+/* Centered state card for the empty / setup / error states. */
+.state-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  text-align: center;
+  padding: var(--space-4);
+  height: 100%;
+}
+.state-card .state-icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  border-radius: 12px;
+  background: rgba(var(--accent-rgb), 0.14);
+  color: var(--accent);
+}
+.state-card .state-title { font-size: 13px; font-weight: 750; color: var(--text); }
+.state-card .state-body { font-size: 11px; color: var(--text-muted); max-width: 460px; line-height: 1.45; }
+.state-card.err .state-icon { background: var(--err-bg); color: var(--err); }
+
+/* Loading spinner (freeze under reduced motion). */
+.spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 3px solid rgba(var(--accent-rgb), 0.2);
+  border-top-color: var(--accent);
+  animation: ww-spin 0.9s linear infinite;
+}
+@keyframes ww-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+  * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}
+
+/* Horizontal meter: 4px track + fill. */
+.meter {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--control-bg);
+  overflow: hidden;
+}
+.meter > i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.35s var(--ease);
+}
+.meter.ok > i { background: var(--ok); }
+.meter.warn > i { background: var(--warn); }
+.meter.err > i { background: var(--err); }
+
+/* Touch button. */
+.btn {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--control-bg);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.btn:active { transform: scale(0.97); }
+.btn.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: 700; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

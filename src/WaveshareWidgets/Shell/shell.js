@@ -11,6 +11,7 @@
   let slots = [];
   let latestSensors = [];
   let latestMedia = null;
+  let latestTheme = null;
   let status = { elevated: false, apiVersion: 1 };
   let dotsIdleTimer = null;
   let bgSettleTimer = null;    // debounces the wallpaper swap during multi-page scrolls
@@ -123,6 +124,7 @@
       settings: slot.settings,
       sensors: latestSensors,
       media: latestMedia,
+      theme: latestTheme,
       status,
     };
   }
@@ -175,6 +177,12 @@
     latestSensors = data.sensors || [];
     latestMedia = data.media;
     status = data.status || status;
+    if (data.theme && typeof data.theme === 'object') {
+      latestTheme = data.theme;
+      for (const [name, value] of Object.entries(latestTheme)) {
+        if (name.startsWith('--')) document.documentElement.style.setProperty(name, String(value));
+      }
+    }
 
     const widgetsById = new Map((data.widgets || []).map((w) => [w.id, w]));
     const pages = (data.layout && data.layout.pages) || [];
