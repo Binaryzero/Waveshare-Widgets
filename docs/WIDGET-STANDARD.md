@@ -46,19 +46,19 @@ during development); at runtime the theme push replaces them.
 | Token | Purpose | Stock value |
 |---|---|---|
 | `--bg` | Theme background seed (the wallpaper-level color) | `#05070b` |
-| `--surface` | Widget tile background (`body` paints this via the panel-alpha system) | `#10141b` |
-| `--surface-rgb` | `--surface` as `r, g, b` for `rgba()` composition | `16, 20, 27` |
-| `--surface-alt` | Raised surface one step above the tile | `#171c25` |
-| `--surface-alt-rgb` | `--surface-alt` as `r, g, b` | `23, 28, 37` |
-| `--control-bg` | Interactive control fill (buttons, meter tracks, ring tracks) | `#1e242f` |
+| `--surface` | Widget tile background (`body` paints this via the panel-alpha system) | `#111418` |
+| `--surface-rgb` | `--surface` as `r, g, b` for `rgba()` composition | `17, 20, 24` |
+| `--surface-alt` | Raised surface one step above the tile | `#1c1e22` |
+| `--surface-alt-rgb` | `--surface-alt` as `r, g, b` | `28, 30, 34` |
+| `--control-bg` | Interactive control fill (buttons, meter tracks, ring tracks) | `#27292e` |
 | `--text` | Primary text and values | `#e8ecf2` |
-| `--text-muted` | Secondary text: labels, kickers, units | `#97a0ae` |
-| `--text-dim` | Tertiary text: hints, footer meta | `#6d7684` |
-| `--line` | Hairline borders and separators | `#333a46` |
+| `--text-muted` | Secondary text: labels, kickers, units | `#8e9196` |
+| `--text-dim` | Tertiary text: hints, footer meta | `#676a6f` |
+| `--line` | Hairline borders and separators | `#404448` |
 | `--accent` | The user's accent: highlights, active fills, focus rings | `#4cc2ff` |
 | `--accent-rgb` | `--accent` as `r, g, b` for tints like `rgba(var(--accent-rgb), 0.14)` | `76, 194, 255` |
 | `--on-accent` | Text/icon color on accent-filled surfaces (`.btn.primary`) | `#0a0a0a` |
-| `--hover-bg` | Hover/pressed row background | `#1b212b` |
+| `--hover-bg` | Hover/pressed row background | `#222529` |
 | `--panel-alpha` | The theme's glass opacity level (see [§3](#3--transparency-system)) | `0.92` |
 | `--appearance` | `dark` \| `light`; also stamped as `data-appearance` on `<html>` | `dark` |
 
@@ -136,9 +136,12 @@ out of compliance (§10), because it silently ignores the user's theme.
 message. `widget-api.js` applies it to the widget's `:root` *before* `onInit` callbacks
 fire, so the first paint is already themed, and stamps `data-appearance="dark|light"` on
 `<html>` for appearance-conditional CSS. The map is readable any time as `WW.theme`
-(`{'--surface': '#111314', …}`). Theme edits in Settings arrive as a fresh `ww-init` —
-tokens update live, no reload. Widgets that use tokens for everything need **zero code**
-to be themeable; the CSS custom-property chain does all the work.
+(`{'--surface': '#111418', …}`). Today a Save & apply reloads the dashboard, so widgets
+see the new theme as a fresh page load; the shim also supports re-delivered `ww-init`
+without a reload (the harness uses this, and future live editing will) — handle repeat
+inits idempotently: no timer stacking, no state resets. Widgets that use tokens for
+everything need **zero code** to be themeable; the CSS custom-property chain does all
+the work.
 
 ---
 

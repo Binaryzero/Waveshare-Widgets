@@ -12,15 +12,15 @@
 :root {
   /* Color roles (defaults = stock dark; overwritten by the theme push). */
   --bg: #05070b;
-  --surface: #10141b;
-  --surface-rgb: 16, 20, 27;
-  --surface-alt: #171c25;
-  --surface-alt-rgb: 23, 28, 37;
-  --control-bg: #1e242f;
+  --surface: #111418;
+  --surface-rgb: 17, 20, 24;
+  --surface-alt: #1c1e22;
+  --surface-alt-rgb: 28, 30, 34;
+  --control-bg: #27292e;
   --text: #e8ecf2;
-  --text-muted: #97a0ae;
-  --text-dim: #6d7684;
-  --line: #333a46;
+  --text-muted: #8e9196;
+  --text-dim: #676a6f;
+  --line: #404448;
   --accent: #4cc2ff;
   --accent-rgb: 76, 194, 255;
   --on-accent: #0a0a0a;
@@ -32,7 +32,7 @@
   --warn-bg: rgba(240, 184, 79, 0.14);
   --err-bg: rgba(255, 98, 104, 0.14);
   --info-bg: rgba(98, 203, 234, 0.14);
-  --hover-bg: #1b212b;
+  --hover-bg: #222529;
   --panel-alpha: 0.92;
 
   /* Geometry & motion */
