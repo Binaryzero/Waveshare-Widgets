@@ -75,6 +75,13 @@ public sealed class LayoutSlot
 {
     [JsonPropertyName("widgetId")] public string WidgetId { get; set; } = "";
 
+    /// <summary>Immutable per-instance identity backing widget-local storage keys
+    /// (the iCUE `uniqueId`). Assigned by the shell on first on-panel edit — adopting
+    /// the positional tag the instance is already running under, so stored widget
+    /// state survives rearranging. Null on layouts that were never edited on-panel
+    /// (identity stays positional, exactly as before).</summary>
+    [JsonPropertyName("instanceId")] public string? InstanceId { get; set; }
+
     /// <summary>Width: quarter (320px), half (640px), three-quarter (960px) or full
     /// (1280px) — optionally suffixed "-upper"/"-lower" for the top or bottom 200px
     /// band instead of the full 400px height (e.g. "half-upper").</summary>
