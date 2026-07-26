@@ -2,7 +2,7 @@
   "id": "ws.stock.radar",
   "name": "Weather Radar",
   "author": "Waveshare Widgets",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Live animated precipitation radar over a street map, centered on your city. Radar data by RainViewer, map tiles by OpenStreetMap — no API key needed.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
@@ -11,6 +11,7 @@
     { "name": "zoom", "label": "Zoom", "type": "slider", "min": 4, "max": 10, "step": 1, "default": 7 },
     { "name": "animate", "label": "Animate the last hour", "type": "select", "options": ["on", "off"], "default": "on" },
     { "name": "mapDim", "label": "Darken map (%)", "type": "slider", "min": 0, "max": 80, "step": 5, "default": 35 },
+    { "name": "bgStyle", "label": "Background", "type": "select", "options": ["solid", "glass", "transparent"], "default": "solid" },
     { "name": "textColor", "label": "Overlay text color", "type": "color", "default": "#e8ecf2", "group": "Text" },
     { "name": "textSize", "label": "Overlay text size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" }
   ]

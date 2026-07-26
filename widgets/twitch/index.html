@@ -3,22 +3,11 @@
 <head>
 <meta charset="utf-8" />
 <title>Twitch Chat</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; }
-  body {
-    background: #0b0e14;
-    color: #e8ecf2;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-    user-select: none;
-    -webkit-user-select: none;
-  }
-  body.bg-transparent { background: transparent; }
-  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
-  /* Light chat theme: match the embed's popout background while it loads. */
-  body.theme-light { background: #f7f7f8; }
-  body.theme-light.bg-transparent { background: transparent; }
-  body.theme-light.bg-glass { background: rgba(247, 247, 248, 0.55); }
+  /* Layout only — tokens, background/bgStyle handling, typography base and the
+   * .state-card anatomy come from widget-base.css. The chat itself is Twitch's
+   * embed; only the setup/invalid overlay renders locally. */
   #frame {
     width: 100%;
     height: 100%;
@@ -26,25 +15,23 @@
     display: block;
     background: transparent;
   }
-  #overlay {
-    position: fixed; inset: 0;
-    display: none;
-    flex-direction: column; align-items: center; justify-content: center;
-    gap: 1.6vh;
-    text-align: center;
-    padding: 16px;
-  }
+  /* Empty/invalid setup state: .state-card anatomy, kept at the widget's fluid
+   * sizes so it scales across quarter/half/full slots. */
+  #overlay { position: fixed; inset: 0; gap: 1.6vh; }
   #glyph {
     width: clamp(26px, 12vh, 48px);
     height: clamp(26px, 12vh, 48px);
+    color: var(--accent);
     opacity: 0.9;
   }
+  /* Per-widget message color (set from settings only when it differs from the
+   * manifest default) falls through to the theme tokens. */
   #message {
-    color: var(--msg-color, #7d8697);
+    color: var(--msg-color, var(--text-muted));
     font-size: calc(clamp(13px, 5vh, 20px) * var(--msg-scale, 1));
   }
   #hint {
-    color: var(--msg-color, #7d8697);
+    color: var(--msg-color, var(--text-muted));
     opacity: 0.6;
     font-size: calc(clamp(10px, 3.4vh, 14px) * var(--msg-scale, 1));
   }
@@ -52,14 +39,14 @@
 </head>
 <body>
   <iframe id="frame" title="Twitch chat"></iframe>
-  <div id="overlay">
-    <svg id="glyph" viewBox="0 0 24 24" fill="none" stroke="#9146ff" stroke-width="1.6"
+  <div id="overlay" class="state-card" hidden>
+    <svg id="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <path d="M4 4h16v11H10l-4 4v-4H4z" />
       <path d="M9 8v3.5" /><path d="M14.5 8v3.5" />
     </svg>
-    <div id="message"></div>
-    <small id="hint"></small>
+    <div id="message" class="state-title"></div>
+    <small id="hint" class="state-body"></small>
   </div>
 
 <script src="https://app.wsw/widget-api.js"></script>
@@ -89,13 +76,27 @@
     return { state: 'ok', channel: name };
   }
 
+  // Manifest defaults — the host merges these into settings, so "user changed it"
+  // means "differs from the default". Only then does the property override the
+  // theme tokens (inline CSS variable); at default the token chain shows through.
+  const DEF = { msgColor: '#7d8697' };
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
+  function setVar(name, value) {
+    if (value) document.body.style.setProperty(name, value);
+    else document.body.style.removeProperty(name);
+  }
+
   WW.onInit((state) => {
     const s = state.settings;
     const theme = s.theme === 'light' ? 'light' : 'dark';
-    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
-    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
-    document.body.classList.toggle('theme-light', theme === 'light');
-    document.body.style.setProperty('--msg-color', s.msgColor || '#7d8697');
+    // Anything that isn't explicitly glass/transparent renders solid, matching the
+    // pre-token behavior for unset AND out-of-spec values (no class = glass in base).
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+    setVar('--msg-color', changed(s.msgColor, DEF.msgColor) ? s.msgColor : '');
     document.body.style.setProperty('--msg-scale', (Number(s.msgSize) || 100) / 100);
 
     const frame = document.getElementById('frame');
@@ -105,13 +106,13 @@
     if (parsed.state !== 'ok') {
       document.getElementById('message').textContent = parsed.state === 'empty' ? MSG_EMPTY : MSG_INVALID;
       document.getElementById('hint').textContent = parsed.state === 'empty' ? HINT_EMPTY : HINT_INVALID;
-      overlay.style.display = 'flex';
+      overlay.hidden = false;
       frame.style.display = 'none';
       if (frame.getAttribute('src')) frame.src = 'about:blank'; // stop a previously loaded chat
       return;
     }
 
-    overlay.style.display = 'none';
+    overlay.hidden = true;
     frame.style.display = 'block';
     // parent= must be the hostname this widget frame is actually served from,
     // or Twitch refuses to render the embed. Computed at runtime — never hardcoded.

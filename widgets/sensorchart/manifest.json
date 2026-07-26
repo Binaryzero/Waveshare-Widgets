@@ -2,7 +2,7 @@
   "id": "ws.stock.sensorchart",
   "name": "Sensor Chart",
   "author": "Waveshare Widgets",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Live scrolling history chart for any hardware sensor — temperatures, loads, clocks, fans, power. Smooth line or area in your accent color with min/max markers and the big live value.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],

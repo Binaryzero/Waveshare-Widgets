@@ -3,18 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <title>Ping Monitor</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; }
-  body {
-    background: #0b0e14;
-    color: #e8ecf2;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-    user-select: none;
-    -webkit-user-select: none;
-  }
-  body.bg-transparent { background: transparent; }
-  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  /* Layout only — colors, background, bgStyle and the typography base come from
+   * widget-base.css. State hues map to the --ok/--warn/--err tokens. */
   #grid {
     display: grid;
     gap: 8px;
@@ -24,9 +16,7 @@
   }
   .host {
     position: relative;
-    border-radius: 10px;
-    background: rgba(23, 28, 40, 0.6);
-    border: 1px solid #232a3a;
+    border-radius: var(--radius-control);
     padding: 6px 10px 4px;
     display: flex;
     flex-direction: column;
@@ -38,13 +28,13 @@
   .host .dot {
     width: 9px; height: 9px; border-radius: 50%;
     flex: none; align-self: center;
-    background: #545d6e;
+    background: var(--text-dim);
   }
-  .host .dot.good { background: #3ddc84; box-shadow: 0 0 6px rgba(61,220,132,0.7); }
-  .host .dot.warn { background: #ffc24b; box-shadow: 0 0 6px rgba(255,194,75,0.7); }
-  .host .dot.bad  { background: #ff5577; box-shadow: 0 0 6px rgba(255,85,119,0.7); }
+  .host .dot.good { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .host .dot.warn { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+  .host .dot.bad  { background: var(--err); box-shadow: 0 0 6px var(--err); }
   .host .name {
-    color: var(--label-color, #7d8697);
+    color: var(--label-color, var(--text-muted));
     font-size: calc(clamp(9px, 3vh, 13px) * var(--label-scale, 1));
     letter-spacing: 0.06em;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -53,30 +43,31 @@
   .host .rtt {
     font-size: calc(clamp(15px, 6.5vh, 30px) * var(--value-scale, 1));
     font-weight: 600;
-    font-variant-numeric: tabular-nums;
+    line-height: normal;
   }
-  .host .rtt small { font-size: 55%; font-weight: 400; color: var(--label-color, #7d8697); }
-  .host .rtt.good { color: var(--value-color, #3ddc84); }
-  .host .rtt.warn { color: var(--value-color, #ffc24b); }
-  .host .rtt.bad  { color: var(--value-color, #ff5577); }
-  .host .rtt.down { color: var(--value-color, #545d6e); }
+  .host .rtt small { font-size: 55%; font-weight: 400; color: var(--label-color, var(--text-muted)); }
+  /* A valueColor moved off its manifest default overrides the status colors,
+   * exactly as before; at default the state tokens show through. */
+  .host .rtt.good { color: var(--value-color, var(--ok)); }
+  .host .rtt.warn { color: var(--value-color, var(--warn)); }
+  .host .rtt.bad  { color: var(--value-color, var(--err)); }
+  .host .rtt.down { color: var(--value-color, var(--text-dim)); }
   .host .loss {
-    color: var(--label-color, #7d8697);
+    color: var(--label-color, var(--text-muted));
     font-size: calc(clamp(8px, 2.4vh, 11px) * var(--label-scale, 1));
     white-space: nowrap;
   }
   .host canvas { position: absolute; inset: auto 0 0 0; width: 100%; height: 38%; opacity: 0.85; }
-  #message {
-    position: fixed; inset: 0;
-    display: none; align-items: center; justify-content: center;
-    text-align: center; padding: 16px;
-    color: #7d8697; font-size: clamp(12px, 4.5vh, 17px);
-  }
+  #message { position: fixed; inset: 0; }
 </style>
 </head>
 <body>
   <div id="grid"></div>
-  <div id="message"></div>
+  <div class="state-card" id="message" hidden>
+    <div class="state-icon">◎</div>
+    <div class="state-title">No hosts configured</div>
+    <div class="state-body">Add hosts in the widget settings — each entry needs a name and a host or IP, e.g. Router / 192.168.1.1.</div>
+  </div>
 
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
@@ -87,27 +78,69 @@
   let cards = new Map();        // host -> {dot, rtt, loss, canvas}
   let pollTimer = null;
 
-  // "Label=host, Label=host" (commas or newlines); bare hosts get themselves as label.
-  function parseTargets(text) {
-    return String(text || '').split(/[,\n]/).map((part) => {
-      const t = part.trim();
-      if (!t) return null;
-      const eq = t.indexOf('=');
-      return eq > 0
-        ? { label: t.slice(0, eq).trim(), host: t.slice(eq + 1).trim() }
-        : { label: t, host: t };
-    }).filter((x) => x && x.host).slice(0, 16);
+  // Manifest defaults — the host merges these into settings, so "user changed it"
+  // means "differs from the default". Only then does the property override the
+  // theme tokens (inline CSS variable); at default the token chain shows through.
+  const DEF = { labelColor: '#7d8697', valueColor: '#e8ecf2' };
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
+  function setVar(name, value) {
+    if (value) document.body.style.setProperty(name, value);
+    else document.body.style.removeProperty(name);
+  }
+
+  // Sparkline colors for the canvas — canvases can't resolve var(), so read the
+  // state tokens off :root. Re-read on every init: theme edits arrive as a fresh
+  // ww-init with new token values already applied to :root.
+  const spark = { ok: '', warn: '', err: '' };
+  function readSparkColors() {
+    const cs = getComputedStyle(document.documentElement);
+    const read = (name) => cs.getPropertyValue(name).trim();
+    spark.ok = read('--ok');
+    spark.warn = read('--warn');
+    spark.err = read('--err');
+  }
+
+  // Accepts both shapes of the "hosts" setting:
+  //  - new: an array of {label, host} objects (list property),
+  //  - legacy: a "Label=host, Label=host" string (commas or newlines) from old
+  //    saved layouts; bare hosts get themselves as label.
+  function parseTargets(value) {
+    let entries;
+    if (Array.isArray(value)) {
+      entries = value.map((item) => {
+        if (!item) return null;
+        if (typeof item === 'string') return { label: item.trim(), host: item.trim() };
+        const host = String(item.host == null ? '' : item.host).trim();
+        const label = String(item.label == null ? '' : item.label).trim() || host;
+        return { label, host };
+      });
+    } else {
+      entries = String(value || '').split(/[,\n]/).map((part) => {
+        const t = part.trim();
+        if (!t) return null;
+        const eq = t.indexOf('=');
+        return eq > 0
+          ? { label: t.slice(0, eq).trim(), host: t.slice(eq + 1).trim() }
+          : { label: t, host: t };
+      });
+    }
+    return entries.filter((x) => x && x.host).slice(0, 16);
   }
 
   WW.onInit((state) => {
     const s = state.settings;
-    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
-    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
-    document.body.style.setProperty('--label-color', s.labelColor || '#7d8697');
+    // Anything that isn't explicitly glass/transparent renders solid, matching the
+    // pre-token behavior for unset AND out-of-spec values.
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+    setVar('--label-color', changed(s.labelColor, DEF.labelColor) ? s.labelColor : '');
+    setVar('--value-color', changed(s.valueColor, DEF.valueColor) ? s.valueColor : '');
     document.body.style.setProperty('--label-scale', (Number(s.labelSize) || 100) / 100);
-    if (s.valueColor && s.valueColor !== '#e8ecf2')
-      document.body.style.setProperty('--value-color', s.valueColor);
     document.body.style.setProperty('--value-scale', (Number(s.valueSize) || 100) / 100);
+    readSparkColors();
 
     cfg.targets = parseTargets(s.hosts);
     cfg.interval = Math.min(30, Math.max(1, Number(s.interval) || 3));
@@ -127,12 +160,8 @@
     const msg = document.getElementById('message');
     grid.textContent = '';
     cards = new Map();
-    if (!cfg.targets.length) {
-      msg.style.display = 'flex';
-      msg.textContent = 'Add hosts in the widget settings — e.g. "Router=192.168.1.1, Cloudflare=1.1.1.1"';
-      return;
-    }
-    msg.style.display = 'none';
+    msg.hidden = !!cfg.targets.length;
+    if (!cfg.targets.length) return;
 
     // Column count that keeps cards usable at any slot size/aspect.
     const n = cfg.targets.length;
@@ -141,7 +170,7 @@
 
     for (const t of cfg.targets) {
       const card = document.createElement('div');
-      card.className = 'host';
+      card.className = 'host card';
       const top = document.createElement('div');
       top.className = 'top';
       const dot = document.createElement('span');
@@ -150,7 +179,7 @@
       name.className = 'name';
       name.textContent = t.label;
       const rtt = document.createElement('span');
-      rtt.className = 'rtt down';
+      rtt.className = 'rtt value down';
       rtt.textContent = '--';
       top.append(dot, name, rtt);
       const loss = document.createElement('div');
@@ -196,11 +225,12 @@
     const cls = classify(last.ok ? last.rtt : null);
 
     ui.dot.className = 'dot ' + (cls === 'down' ? '' : cls);
-    ui.rtt.className = 'rtt ' + cls;
+    ui.rtt.className = 'rtt value ' + cls;
     if (last.ok) {
       ui.rtt.innerHTML = '';
       ui.rtt.append(String(Math.round(last.rtt)));
       const unit = document.createElement('small');
+      unit.className = 'unit';
       unit.textContent = ' ms';
       ui.rtt.append(unit);
     } else {
@@ -228,15 +258,18 @@
       const s = samples[i];
       const x = canvas.width - (samples.length - i) * bw;
       if (!s.ok) {
-        ctx.fillStyle = 'rgba(255,85,119,0.55)';
+        ctx.globalAlpha = 0.55;
+        ctx.fillStyle = spark.err;
         ctx.fillRect(x, 0, Math.max(1, bw - 1), canvas.height);
         continue;
       }
       const cls = classify(s.rtt);
-      ctx.fillStyle = cls === 'good' ? 'rgba(61,220,132,0.5)' : cls === 'warn' ? 'rgba(255,194,75,0.55)' : 'rgba(255,85,119,0.55)';
+      ctx.globalAlpha = cls === 'good' ? 0.5 : 0.55;
+      ctx.fillStyle = cls === 'good' ? spark.ok : cls === 'warn' ? spark.warn : spark.err;
       const bh = Math.max(2, (s.rtt / max) * canvas.height);
       ctx.fillRect(x, canvas.height - bh, Math.max(1, bw - 1), bh);
     }
+    ctx.globalAlpha = 1;
   }
 
   window.addEventListener('resize', () => { for (const host of cards.keys()) renderCard(host); });

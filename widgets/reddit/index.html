@@ -3,16 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <title>Reddit Photos</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; }
-  body {
-    background: #000;
-    color: #e8ecf2;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-    user-select: none;
-    -webkit-user-select: none;
-  }
+  /* Widget-specific layout only — tokens, background/bgStyle handling and the
+   * .state-card anatomy come from widget-base.css. The scrims behind the caption
+   * and the paused badge sit on top of the PHOTO (not the tile), so they use a
+   * fixed alpha derived from --surface-rgb instead of the panel-alpha system. */
   .layer {
     position: absolute; inset: 0;
     background-repeat: no-repeat;
@@ -25,41 +21,39 @@
   #caption {
     position: absolute; left: 0; right: 0; bottom: 0;
     padding: 10px 14px 8px;
-    background: linear-gradient(transparent, rgba(0,0,0,0.78));
+    background: linear-gradient(transparent, rgba(var(--surface-rgb), 0.78));
     opacity: 0;
     transition: opacity 1.2s ease;
     pointer-events: none;
   }
   #caption.visible { opacity: 1; }
+  /* Caption colors are per-widget settings: set from JS only when the user moved
+   * them off their manifest defaults, otherwise the theme tokens show through. */
   #caption .title {
-    color: var(--title-color, #e8ecf2);
+    color: var(--title-color, var(--text));
     font-size: calc(clamp(11px, 4.2vh, 16px) * var(--title-scale, 1));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    text-shadow: 0 1px 3px rgba(var(--surface-rgb), 0.9);
   }
   #caption .meta {
     font-size: calc(clamp(9px, 3.2vh, 12px) * var(--meta-scale, 1));
-    color: var(--meta-color, #aeb7c4);
-    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    color: var(--meta-color, var(--text-muted));
+    text-shadow: 0 1px 3px rgba(var(--surface-rgb), 0.9);
   }
   #paused {
     position: absolute; top: 8px; right: 10px;
     font-size: clamp(10px, 3.6vh, 14px);
-    color: #e8ecf2;
-    background: rgba(0,0,0,0.55);
+    color: var(--text);
+    background: rgba(var(--surface-rgb), 0.55);
     border-radius: 6px;
     padding: 3px 9px;
     display: none;
   }
-  #message {
-    position: absolute; inset: 0;
-    display: none; flex-direction: column; gap: 1.4vh;
-    align-items: center; justify-content: center;
-    text-align: center; padding: 18px;
-    color: #7d8697; font-size: clamp(12px, 4.5vh, 18px);
-    background: #0b0e14;
-  }
-  #message small { color: #545d6e; font-size: 80%; max-width: 90%; }
+  /* Loading / empty / error overlay: .state-card anatomy, shown via inline display,
+   * with the widget's original fluid text sizes. */
+  #message { position: absolute; inset: 0; display: none; gap: 1.4vh; }
+  #message .state-title { font-size: clamp(12px, 4.5vh, 18px); }
+  #message .state-body { font-size: clamp(10px, 3.6vh, 14px); max-width: 90%; }
 </style>
 </head>
 <body>
@@ -67,7 +61,7 @@
   <div class="layer" id="layerB"></div>
   <div id="caption"><div class="title"></div><div class="meta"></div></div>
   <div id="paused">paused</div>
-  <div id="message"></div>
+  <div id="message" class="state-card"></div>
 
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
@@ -90,9 +84,22 @@
     cfg.dwell = Math.min(120, Math.max(4, Number(s.dwell) || 12));
     cfg.showTitle = s.showTitle !== 'off';
     cfg.fit = s.fit === 'contain' ? 'contain' : 'cover';
-    document.body.style.setProperty('--title-color', s.titleColor || '#e8ecf2');
+    // bgStyle drives the widget-base panel-opacity classes; anything that isn't
+    // explicitly glass/transparent renders solid, matching pre-token behavior
+    // for unset AND out-of-spec values (no class = glass in the base).
+    document.body.classList.toggle('bg-solid', s.bgStyle !== 'transparent' && s.bgStyle !== 'glass');
+    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
+    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
+    // The host merges manifest defaults into settings, so "user changed it" means
+    // "differs from the default" — only then do the caption colors override the
+    // theme tokens; at default the CSS falls through to var(--text)/var(--text-muted).
+    const override = (prop, value, def) => {
+      if (value && String(value).trim().toLowerCase() !== def) document.body.style.setProperty(prop, value);
+      else document.body.style.removeProperty(prop);
+    };
+    override('--title-color', s.titleColor, '#e8ecf2');
+    override('--meta-color', s.metaColor, '#aeb7c4');
     document.body.style.setProperty('--title-scale', (Number(s.titleSize) || 100) / 100);
-    document.body.style.setProperty('--meta-color', s.metaColor || '#aeb7c4');
     document.body.style.setProperty('--meta-scale', (Number(s.metaSize) || 100) / 100);
     for (const l of layers) l.style.backgroundSize = cfg.fit;
     start();
@@ -228,14 +235,21 @@
   }
 
   function showMessage(title, detail) {
+    // A message replaces the slideshow: fade out both layers and the caption so
+    // the text never fights a stale slide (the pre-token build covered them with
+    // an opaque hardcoded backdrop instead).
+    for (const l of layers) l.classList.remove('visible');
+    document.getElementById('caption').classList.remove('visible');
     const msg = document.getElementById('message');
     msg.style.display = 'flex';
     msg.innerHTML = '';
     const h = document.createElement('div');
+    h.className = 'state-title';
     h.textContent = title;
     msg.appendChild(h);
     if (detail) {
       const s = document.createElement('small');
+      s.className = 'state-body';
       s.textContent = detail;
       msg.appendChild(s);
     }

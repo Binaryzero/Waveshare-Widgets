@@ -2,12 +2,19 @@
   "id": "ws.stock.ping",
   "name": "Ping Monitor",
   "author": "Waveshare Widgets",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Real ICMP latency for multiple hosts at once — routers, NAS boxes, game servers, the internet. Per-host status, loss %, and a scrolling latency sparkline.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
   "properties": [
-    { "name": "hosts", "label": "Hosts (Label=host, comma separated)", "type": "text", "default": "Cloudflare=1.1.1.1, Google=8.8.8.8, Router=192.168.1.1" },
+    { "name": "hosts", "label": "Hosts", "type": "list", "itemLabel": "host", "fields": [
+      { "key": "label", "label": "Name", "type": "text", "placeholder": "Router" },
+      { "key": "host", "label": "Host / IP", "type": "text", "placeholder": "192.168.1.1" }
+    ], "default": [
+      { "label": "Cloudflare", "host": "1.1.1.1" },
+      { "label": "Google", "host": "8.8.8.8" },
+      { "label": "Router", "host": "192.168.1.1" }
+    ] },
     { "name": "interval", "label": "Ping every (seconds)", "type": "slider", "min": 1, "max": 30, "step": 1, "default": 3 },
     { "name": "goodMs", "label": "Good latency below (ms)", "type": "slider", "min": 5, "max": 200, "step": 5, "default": 50 },
     { "name": "badMs", "label": "Bad latency above (ms)", "type": "slider", "min": 20, "max": 500, "step": 10, "default": 120 },

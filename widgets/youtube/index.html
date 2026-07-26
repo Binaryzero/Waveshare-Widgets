@@ -3,18 +3,11 @@
 <head>
 <meta charset="utf-8" />
 <title>YouTube</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; }
-  body {
-    background: #0b0e14;
-    color: #e8ecf2;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-    user-select: none;
-    -webkit-user-select: none;
-  }
-  body.bg-transparent { background: transparent; }
-  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
+  /* Layout only — tokens, background/bgStyle handling, typography base and the
+   * .state-card anatomy come from widget-base.css. The video itself is YouTube's
+   * embed; only the setup/invalid overlay renders locally. */
   #player {
     position: fixed;
     inset: 0;
@@ -22,18 +15,20 @@
     height: 100%;
     border: 0;
     display: block;
-    background: #000;
+    background: transparent;
   }
-  #player[hidden] { display: none; }
+  /* Empty/invalid setup state: .state-card anatomy, kept at the widget's fluid
+   * sizes. Per-widget message color (set from settings only when it differs from
+   * the manifest default) falls through to the theme tokens. */
   #message {
     position: fixed; inset: 0;
-    display: none; flex-direction: column; align-items: center; justify-content: center;
     gap: 1.4vh;
-    text-align: center; padding: 16px;
-    color: var(--msg-color, #7d8697);
+    color: var(--msg-color, var(--text-muted));
     font-size: calc(clamp(12px, 4.5vh, 18px) * var(--msg-scale, 1));
   }
+  #message .head { color: inherit; font-size: inherit; }
   #message .ex {
+    color: inherit;
     font-size: 72%;
     opacity: 0.75;
     overflow-wrap: anywhere;
@@ -45,9 +40,9 @@
   <iframe id="player" hidden
           allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
           allowfullscreen></iframe>
-  <div id="message">
-    <span class="head">Add a YouTube link in Settings</span>
-    <span class="ex">e.g. https://www.youtube.com/watch?v=dQw4w9WgXcQ — youtu.be, Shorts, and playlist links work too</span>
+  <div id="message" class="state-card" hidden>
+    <span class="head state-title">Add a YouTube link in Settings</span>
+    <span class="ex state-body">e.g. https://www.youtube.com/watch?v=dQw4w9WgXcQ — youtu.be, Shorts, and playlist links work too</span>
   </div>
 
 <script src="https://app.wsw/widget-api.js"></script>
@@ -105,11 +100,26 @@
     return 'https://www.youtube-nocookie.com/embed/videoseries?list=' + target.listId + '&' + flags.join('&');
   }
 
+  // Manifest defaults — the host merges these into settings, so "user changed it"
+  // means "differs from the default". Only then does the property override the
+  // theme tokens (inline CSS variable); at default the token chain shows through.
+  const DEF = { msgColor: '#7d8697' };
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
+  function setVar(name, value) {
+    if (value) document.body.style.setProperty(name, value);
+    else document.body.style.removeProperty(name);
+  }
+
   WW.onInit((state) => {
     const s = state.settings;
-    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
-    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
-    document.body.style.setProperty('--msg-color', s.msgColor || '#7d8697');
+    // Anything that isn't explicitly glass/transparent renders solid, matching the
+    // pre-token behavior for unset AND out-of-spec values (no class = glass in base).
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+    setVar('--msg-color', changed(s.msgColor, DEF.msgColor) ? s.msgColor : '');
     document.body.style.setProperty('--msg-scale', (Number(s.msgSize) || 100) / 100);
 
     const flag = (v, dflt) => ((v == null || v === '' ? dflt : String(v)) === 'on' ? '1' : '0');
@@ -123,11 +133,11 @@
       msg.querySelector('.head').textContent = String(s.videoUrl || '').trim()
         ? 'Couldn’t read that YouTube link'
         : 'Add a YouTube link in Settings';
-      msg.style.display = 'flex';
+      msg.hidden = false;
       return;
     }
 
-    msg.style.display = 'none';
+    msg.hidden = true;
     player.hidden = false;
     const src = buildSrc(target, {
       autoplay: flag(s.autoplay, 'on'),

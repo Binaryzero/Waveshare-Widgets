@@ -2,7 +2,7 @@
   "id": "ws.stock.youtube",
   "name": "YouTube",
   "author": "Waveshare Widgets",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Plays a YouTube video, Short, or playlist through the privacy-enhanced embed. Autoplays muted and loops by default — great for ambient scenes, visualizers, and lofi streams.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],

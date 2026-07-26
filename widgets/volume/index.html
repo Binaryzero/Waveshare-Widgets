@@ -3,19 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <title>Volume Mixer</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; }
-  body {
-    background: #0b0e14;
-    color: #e8ecf2;
-    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-    user-select: none;
-    -webkit-user-select: none;
-  }
-  body.bg-transparent { background: transparent; }
-  body.bg-glass { background: rgba(11, 14, 20, 0.55); }
-
+  /* Widget-specific layout; tokens, background/bgStyle and typography base come
+   * from widget-base.css. */
   #mixer {
     display: flex;
     flex-direction: column;
@@ -34,8 +25,9 @@
   }
   #sessions:empty { display: none; }   /* let the empty message center in the full space */
   #sessions::-webkit-scrollbar { width: 4px; }
-  #sessions::-webkit-scrollbar-thumb { background: #232a3a; border-radius: 2px; }
+  #sessions::-webkit-scrollbar-thumb { background: var(--line); border-radius: 2px; }
 
+  /* Rows are .card nested surfaces; this block only reshapes their geometry. */
   .row {
     flex: none;
     display: grid;
@@ -45,14 +37,9 @@
     min-height: 48px;
     padding: 4px 10px;
     border-radius: 11px;
-    background: rgba(23, 28, 40, 0.6);
-    border: 1px solid #232a3a;
-    transition: opacity 0.15s ease;
+    transition: opacity var(--dur-fast) var(--ease);
   }
-  .row.master {
-    border-color: #2b3550;
-    background: rgba(28, 35, 52, 0.65);
-  }
+  .row.master { border-color: rgba(var(--accent-rgb), 0.35); }
   .row.muted { opacity: 0.45; }
 
   .glyph {
@@ -62,27 +49,25 @@
     overflow: hidden;
   }
   .name {
-    color: var(--name-color, #e8ecf2);
+    color: var(--name-color, var(--text));
     font-size: calc(clamp(11px, 4vh, 16px) * var(--name-scale, 1));
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;
   }
+  /* .btn supplies fill/border/color tokens and press feedback; keep the compact
+   * pre-migration geometry of the mute toggle. */
   .mute {
     min-width: 44px;
     min-height: 34px;
     align-self: stretch;
     margin: 3px 0;
-    background: rgba(35, 42, 58, 0.55);
-    border: 1px solid #232a3a;
+    padding: 0;
     border-radius: 8px;
-    color: #e8ecf2;
     font-size: clamp(12px, 4.2vh, 17px);
-    font-family: inherit;
-    cursor: pointer;
   }
-  .mute:active { background: rgba(0, 212, 255, 0.18); border-color: #00d4ff; }
+  .mute:active { background: rgba(var(--accent-rgb), 0.18); border-color: var(--accent); }
 
   input[type="range"] {
     -webkit-appearance: none;
@@ -92,15 +77,15 @@
     min-width: 0;
     margin: 0;
     background: transparent;
-    accent-color: #00d4ff;
+    accent-color: var(--accent);
     cursor: pointer;
   }
   input[type="range"]::-webkit-slider-runnable-track {
     height: 8px;
     border-radius: 4px;
     background: linear-gradient(to right,
-      #00d4ff 0%, #00d4ff var(--fill, 50%),
-      #232a3a var(--fill, 50%), #232a3a 100%);
+      var(--accent) 0%, var(--accent) var(--fill, 50%),
+      var(--control-bg) var(--fill, 50%), var(--control-bg) 100%);
   }
   input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none;
@@ -108,13 +93,13 @@
     height: 22px;
     margin-top: -7px;
     border-radius: 50%;
-    background: #e8ecf2;
-    border: 2px solid #00d4ff;
-    box-shadow: 0 0 8px rgba(0, 212, 255, 0.55);
+    background: var(--text);
+    border: 2px solid var(--accent);
+    box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.55);
   }
 
   .pct {
-    color: var(--value-color, #7d8697);
+    color: var(--value-color, var(--text-muted));
     font-size: calc(clamp(11px, 4vh, 16px) * var(--value-scale, 1));
     font-weight: 600;
     font-variant-numeric: tabular-nums;
@@ -126,21 +111,21 @@
     position: fixed; inset: 0;
     display: none; align-items: center; justify-content: center;
     text-align: center; padding: 16px;
-    color: #7d8697; font-size: clamp(12px, 4.5vh, 17px);
+    color: var(--text-muted); font-size: clamp(12px, 4.5vh, 17px);
   }
   #empty {
     display: none;
     align-items: center; justify-content: center;
     flex: 1; text-align: center;
-    color: #7d8697; font-size: clamp(11px, 3.8vh, 15px);
+    color: var(--text-muted); font-size: clamp(11px, 3.8vh, 15px);
   }
 </style>
 </head>
 <body>
   <div id="mixer">
-    <div id="masterRow" class="row master">
+    <div id="masterRow" class="row card master">
       <span class="glyph" id="masterGlyph">🔊</span>
-      <button class="mute" id="masterMute" title="Mute master">🔊</button>
+      <button class="mute btn" id="masterMute" title="Mute master">🔊</button>
       <input id="masterSlider" type="range" min="0" max="100" step="1" value="50" />
       <span class="pct" id="masterPct">--</span>
     </div>
@@ -163,6 +148,17 @@
   let sessionUI = [];                  // [{row, name, mute, input, pct, target, muted}]
 
   const el = (id) => document.getElementById(id);
+
+  // Manifest defaults — the host merges these into settings, so "user changed it"
+  // means "differs from the default". Only then does the property override the
+  // theme tokens (inline CSS variable); at default the token chain shows through.
+  const DEF = { nameColor: '#e8ecf2', valueColor: '#7d8697' };
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
+  function setVar(name, value) {
+    if (value) document.body.style.setProperty(name, value);
+    else document.body.style.removeProperty(name);
+  }
 
   // ---- throttled setAudio: at most one send per SEND_GAP ms per target -------
   function sendAudio(target, opts) {
@@ -242,13 +238,13 @@
     sessionUI = [];
     for (const s of list) {
       const row = document.createElement('div');
-      row.className = 'row';
+      row.className = 'row card';
       const name = document.createElement('span');
       name.className = 'name';
       name.textContent = displayName(s.name);
       name.title = String(s.name || '');
       const mute = document.createElement('button');
-      mute.className = 'mute';
+      mute.className = 'mute btn';
       mute.title = 'Mute ' + displayName(s.name);
       const input = document.createElement('input');
       input.type = 'range';
@@ -281,7 +277,7 @@
     if (cfg.showMaster && data.master) updateRow(masterUI, data.master);
 
     const list = (data.sessions || []).slice(0, cfg.maxApps);
-    const sig = list.map((s) => s.pid + ' ' + s.name).join('');
+    const sig = list.map((s) => s.pid + ' ' + s.name).join('');
     if (sig !== rowSig) { buildSessionRows(list); rowSig = sig; }
     list.forEach((s, i) => updateRow(sessionUI[i], s));
     el('empty').style.display = list.length ? 'none' : 'flex';
@@ -311,11 +307,17 @@
 
   WW.onInit((state) => {
     const s = state.settings;
-    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
-    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
-    document.body.style.setProperty('--name-color', s.nameColor || '#e8ecf2');
+    // Anything that isn't explicitly glass/transparent renders solid, matching the
+    // pre-token behavior for unset AND out-of-spec values (no class = glass in base).
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+    // Color settings override the theme tokens only when moved off their manifest
+    // defaults; at default the CSS falls through to --text / --text-muted.
+    setVar('--name-color', changed(s.nameColor, DEF.nameColor) ? s.nameColor : '');
+    setVar('--value-color', changed(s.valueColor, DEF.valueColor) ? s.valueColor : '');
     document.body.style.setProperty('--name-scale', (Number(s.nameSize) || 100) / 100);
-    document.body.style.setProperty('--value-color', s.valueColor || '#7d8697');
     document.body.style.setProperty('--value-scale', (Number(s.valueSize) || 100) / 100);
 
     cfg.showMaster = s.showMaster !== 'off';
