@@ -85,7 +85,7 @@
     } else if (msg.type === 'ww-log') {
       postToHost({ type: 'log', message: String(msg.message).slice(0, 2000) });
     } else if (msg.type === 'ww-ready') {
-      const slot = slots.find((s) => s.frame.contentWindow === ev.source);
+      const slot = slots.find((s) => s.frame && s.frame.contentWindow === ev.source);
       if (slot) {
         // Always answer, even for an already-initialized slot: the iframe may have
         // crashed and reloaded (common under cold-start resource pressure), and the
@@ -265,17 +265,18 @@
       // Fragment carries a stable per-slot tag (backs the iCUE `uniqueId` global)
       // plus this slot's merged settings, so the shim can inject property globals
       // BEFORE widget scripts run — matching iCUE's documented injection timing.
-      // The tag is positional (page + slot index) so per-instance storage keys
-      // survive restarts.
+      // A persisted instanceId (assigned on first on-panel edit) is the permanent
+      // identity; never-edited layouts keep the positional tag, exactly as before.
       const settings = mergedSettings(widget, slotDef);
-      let slotHash = '#ww-slot=p' + Math.max(0, layoutData.pages.indexOf(page)) +
-        's' + Math.max(0, (page.slots || []).indexOf(slotDef));
+      const tag = slotDef.instanceId ||
+        ('p' + Math.max(0, layoutData.pages.indexOf(page)) + 's' + Math.max(0, (page.slots || []).indexOf(slotDef)));
+      let slotHash = '#ww-slot=' + tag;
       try {
         slotHash += '&ww-settings=' + encodeURIComponent(JSON.stringify(settings));
       } catch (e) { /* unserializable settings: init delivery still applies them */ }
       frame.src = widget.url + slotHash;
       slotEl.appendChild(frame);
-      record = { frame, el: slotEl, url: widget.url, hash: slotHash, def: slotDef, page, uid, settings, initialized: false, retries: 0 };
+      record = { frame, el: slotEl, url: widget.url, hash: slotHash, tag, def: slotDef, page, uid, settings, initialized: false, retries: 0 };
     }
 
     slotEl.appendChild(buildOverlay(record, widget));
@@ -579,7 +580,21 @@
   const WIDTH_LABELS = { quarter: '¼', half: '½', 'three-quarter': '¾', full: 'Full' };
   const BAND_LABELS = { full: '⬍', upper: '▀', lower: '▄' };
 
+  let instanceSeq = 0;
+
   function persistLayout() {
+    // Editing makes positional identity unstable, so the first persist freezes every
+    // instance's identity: each def adopts the tag its iframe is ALREADY running under
+    // (stored widget state carries over seamlessly); defs without a live record (e.g.
+    // hidden over-full slots) get a fresh unique id.
+    for (const page of layoutData.pages) {
+      for (const def of page.slots || []) {
+        if (def.instanceId) continue;
+        const rec = slots.find((s) => s.def === def);
+        def.instanceId = (rec && rec.tag) ||
+          ('i' + Date.now().toString(36) + '-' + (++instanceSeq));
+      }
+    }
     postToHost({ type: 'save-layout', layout: layoutData });
   }
 
@@ -859,7 +874,12 @@
     mutate(() => {
       const size = defaultSizeFor(page, widget); // sized against the page as it IS now
       if (!size) return;
-      const def = { widgetId: widget.id, size, settings: {} };
+      // instanceId minted upfront: a positional tag here could collide with an
+      // identity another slot froze earlier (e.g. a previously adopted "p0s1").
+      const def = {
+        widgetId: widget.id, size, settings: {},
+        instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
+      };
       (page.slots = page.slots || []).push(def);
       buildSlot(page, def);
       relayoutPage(page);
