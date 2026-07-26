@@ -75,6 +75,7 @@
   let lastSig = null;          // folder fingerprint, to detect added/removed files
   let paused = false;
   let advanceTimer = null;
+  let started = false;      // start() runs once; later inits are live re-config pushes
   let advancing = false;       // guards against overlapping loads
   let pendingAdvance = false;  // a timer/'ended' fired while paused
   let currentVideo = null;
@@ -104,7 +105,18 @@
     override('--caption-color', s.captionColor, '#e8ecf2');
     document.body.style.setProperty('--caption-scale', (Number(s.captionSize) || 100) / 100);
     for (const l of layers) l.style.backgroundSize = cfg.fit;
-    start();
+    if (!started) {
+      started = true;
+      start();
+    } else if (items.length) {
+      // Live re-init (a theme or settings push without a reload): re-apply the order
+      // around the slide that's showing — restarting would skip a slide per push.
+      const currentName = index >= 0 && items[index] ? items[index].name : null;
+      items = cfg.order === 'name'
+        ? items.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+        : shuffle(items.slice());
+      index = currentName ? items.findIndex((f) => f.name === currentName) : -1;
+    }
   });
 
   async function start() {
