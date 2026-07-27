@@ -22,6 +22,7 @@ public sealed class NotificationCenter : IDisposable
     private System.Threading.Timer? _timer;
     private string _lastSignature = "";
     private bool _watching;
+    private bool _accessRequested;
 
     /// <summary>Raised (on a worker thread) whenever the projected payload changes.</summary>
     public event Action<JsonObject>? Updated;
@@ -68,9 +69,14 @@ public sealed class NotificationCenter : IDisposable
             var access = listener.GetAccessStatus();
             if (access == UserNotificationListenerAccessStatus.Unspecified)
             {
-                // First use: ask once. On unpackaged apps this can stay Unspecified —
-                // projected as "denied" with instructions so the widget can explain.
-                access = await listener.RequestAccessAsync();
+                // First use: ask once — once per PROCESS, not per poll; a 2 s loop of
+                // RequestAccessAsync would re-prompt on SKUs where the call surfaces UI.
+                // On unpackaged apps this can stay Unspecified — projected as "denied"
+                // with instructions so the widget can explain.
+                bool ask;
+                lock (_gate) { ask = !_accessRequested; _accessRequested = true; }
+                if (ask)
+                    access = await listener.RequestAccessAsync();
             }
 
             if (access != UserNotificationListenerAccessStatus.Allowed)
@@ -81,7 +87,10 @@ public sealed class NotificationCenter : IDisposable
 
             var items = new JsonArray();
             var notifications = await listener.GetNotificationsAsync(NotificationKinds.Toast);
-            var signature = "";
+            // "allowed|" prefix: the signature must differ from the "" watch-reset
+            // sentinel even with ZERO toasts, or the first allowed-but-empty poll is
+            // deduped away and the widget spins on "loading" forever.
+            var signature = "allowed|";
             foreach (var n in notifications.Take(MaxItems))
             {
                 string app;
@@ -112,7 +121,11 @@ public sealed class NotificationCenter : IDisposable
                     ["body"] = body,
                     ["time"] = n.CreationTime.ToUnixTimeMilliseconds(),
                 });
-                signature += n.Id + "|";
+                // Content rides the signature too: a toast UPDATED in place (progress
+                // toasts, edited messages) keeps its id and position — id-only
+                // signatures would never re-push it. Hash is per-process-stable,
+                // which is all change detection needs.
+                signature += n.Id + ":" + (app + "\n" + title + "\n" + body).GetHashCode() + "|";
             }
 
             Push(new JsonObject { ["state"] = "allowed", ["items"] = items }, signature);
