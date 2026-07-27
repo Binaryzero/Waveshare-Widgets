@@ -40,6 +40,7 @@
   // (index.html?preview). The "host" is then the settings page, bridged over
   // window.postMessage — ww-shell wraps outgoing messages, ww-host wraps incoming.
   const PREVIEW = new URLSearchParams(location.search).has('preview');
+  let previewPage = null; // page the settings window wants the replica to show
 
   if (!PREVIEW && window.chrome && window.chrome.webview) {
     window.chrome.webview.addEventListener('message', (ev) => handleHostMessage(ev.data || {}));
@@ -57,6 +58,11 @@
       for (const slot of slots) {
         if (slot.initialized) sendToSlot(slot, { type: 'ww-theme', theme: slotTheme(slot) });
       }
+    }
+    else if (msg.type === 'page') {
+      // Replica steering: the preview is pointer-events:none, so the settings window
+      // drives which page is visible (its selected page).
+      if (PREVIEW) { previewPage = msg.index | 0; goToPage(previewPage); }
     }
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
@@ -218,6 +224,7 @@
   }
 
   function onInit(data) {
+    if (PREVIEW && typeof data.page === 'number') previewPage = data.page;
     latestSensors = data.sensors || [];
     latestMedia = data.media;
     status = data.status || status;
@@ -235,7 +242,8 @@
     cancelDrag();   // a re-init mid-drag must not orphan the ghost / dragging state
     closePalette(); // palette entries capture page objects this rebuild replaces
     closeStyleEditor(false); // its record is about to be replaced
-    const keepPage = currentPage(); // a re-init (hot reload, replica refresh) keeps the page
+    const keepPage = (PREVIEW && previewPage != null) ? previewPage
+      : currentPage(); // a re-init (hot reload, replica refresh) keeps the page
     refreshBgSpecs();
     bg.reset();
 

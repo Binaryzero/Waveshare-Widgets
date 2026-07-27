@@ -205,6 +205,9 @@ public sealed class SettingsWindow : Form
                 ["layout"] = JsonSerializer.SerializeToNode(LayoutStore.Load()),
                 ["widgets"] = JsonSerializer.SerializeToNode(widgets, BridgeJson),
                 ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
+                // Seed the replica's now-playing state: MediaUpdated only fires on
+                // change, so without this an already-playing track never appears.
+                ["media"] = JsonSerializer.SerializeToNode(_hub.LatestMedia, BridgeJson),
                 ["backgroundHost"] = BackgroundHost,
                 ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated },
             },

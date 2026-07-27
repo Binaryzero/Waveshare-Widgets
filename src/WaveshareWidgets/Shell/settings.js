@@ -85,6 +85,9 @@
   const previewStage = el('previewStage');
   let replicaReady = false;
   let replicaTimer = null;
+  let lastReplicaLayout = ''; // structural snapshot (theme excluded — it rides the light push)
+
+  const replicaLayoutJson = () => JSON.stringify(Object.assign({}, state.layout, { theme: null }));
 
   function replicaPost(message) {
     if (!replicaReady) return;
@@ -96,6 +99,7 @@
   }
 
   function replicaInit() {
+    lastReplicaLayout = replicaLayoutJson();
     replicaPost({
       type: 'init',
       data: {
@@ -108,6 +112,7 @@
         // settings-init only carries {elevated}; widgets still expect the panel's
         // full status shape, so keep apiVersion present in the replica too.
         status: Object.assign({ elevated: false, apiVersion: 1 }, state.status || {}),
+        page: selectedPage,
       },
     });
   }
@@ -119,6 +124,12 @@
       // seeds ride along so the replica's styled slots re-derive their overrides
       // against the edited theme instead of keeping stale (or losing) seeds.
       replicaPost({ type: 'theme', data: replicaTheme(), seeds: state.layout.theme || null });
+      return;
+    }
+    // Selection-only renders (nothing structural changed) just steer the replica to
+    // the selected page — a full re-init would needlessly reload every widget.
+    if (replicaLayoutJson() === lastReplicaLayout) {
+      replicaPost({ type: 'page', index: selectedPage });
       return;
     }
     clearTimeout(replicaTimer);
@@ -178,7 +189,6 @@
   // ---- page panel ----------------------------------------------------------------
 
   function renderAll() {
-    refreshReplica('layout');
     renderPageList();
     renderThemeEditor();
     renderGlobalBackground();
@@ -276,6 +286,7 @@
   // ---- page editor ----------------------------------------------------------------
 
   function renderEditor() {
+    refreshReplica('layout');
     const page = state.layout.pages[selectedPage];
     const hasPage = !!page;
     el('editorEmpty').hidden = hasPage;
