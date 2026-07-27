@@ -167,6 +167,7 @@
   let started = false;
   let timer = null;
   let refreshing = false;
+  let queuedRefresh = false; // a refresh requested mid-flight (settings change) runs next
   let hasData = false;
   let failStreak = 0;
   let pendingRefresh = false;
@@ -277,7 +278,7 @@
   }
 
   async function refresh() {
-    if (refreshing) return;
+    if (refreshing) { queuedRefresh = true; return; }
     if (document.hidden) { pendingRefresh = true; return; }
     const s = WW.settings;
     // A missing key mirrors the manifest default (the host merges defaults; the
@@ -318,6 +319,12 @@
       }
     } finally {
       refreshing = false;
+      if (queuedRefresh) {
+        // A settings change arrived while this request was in flight — the data just
+        // rendered may be for the old location/units, so go again immediately.
+        queuedRefresh = false;
+        refresh();
+      }
     }
   }
 

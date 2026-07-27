@@ -123,11 +123,13 @@
   }
 
   // The meter runs from "when this countdown was configured": the first time this
-  // widget sees a given target string it records now as the origin (localStorage
-  // is scoped to the widget). A changed target string starts a new origin; keys
-  // are per-target so several instances with different targets don't fight.
+  // instance sees a given target string it records now as the origin. localStorage
+  // is per-ORIGIN and all countdown instances share one virtual host, so the key
+  // carries the per-instance slot tag — two tiles counting to the same moment keep
+  // independent origins, and a recreated tile starts fresh.
+  const INSTANCE = (location.hash.match(/ww-slot=([\w-]+)/) || [])[1] || 'solo';
   function origin(raw) {
-    const key = 'ww.countdown.origin:' + raw;
+    const key = 'ww.countdown.origin:' + INSTANCE + ':' + raw;
     try {
       const stored = Number(localStorage.getItem(key));
       if (Number.isFinite(stored) && stored > 0 && stored <= Date.now()) return stored;

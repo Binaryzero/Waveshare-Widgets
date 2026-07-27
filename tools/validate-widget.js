@@ -86,9 +86,15 @@ function validate(folder) {
   if (baseIdx < 0) {
     err('base-css', 'index.html must link https://app.wsw/widget-base.css (first, in <head>)');
   } else {
-    const styleIdx = html.indexOf('<style');
-    if (styleIdx >= 0 && styleIdx < baseIdx)
-      err('base-css-order', 'widget-base.css must be linked BEFORE the widget\'s own <style>');
+    // The foundation must be the FIRST stylesheet of any kind — a linked local
+    // stylesheet before it would override base layout just like an inline <style>.
+    let firstOther = html.search(/<style[\s>]/i);
+    for (const m of html.matchAll(/<link[^>]+rel=["']stylesheet["'][^>]*>/gi)) {
+      if (m[0].includes('widget-base.css')) continue;
+      if (firstOther < 0 || m.index < firstOther) firstOther = m.index;
+    }
+    if (firstOther >= 0 && firstOther < baseIdx)
+      err('base-css-order', 'widget-base.css must be the FIRST stylesheet — before any <style> or <link rel="stylesheet">');
   }
 
   // Tokens, never literal colors: hex colors inside <style> are the tell. Pure
