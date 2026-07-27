@@ -2,7 +2,7 @@
   "id": "ws.stock.volume",
   "name": "Volume Mixer",
   "author": "Waveshare Widgets",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "The Windows volume mixer on your panel — master volume plus a slider and mute toggle for every app playing audio, iCUE style. Drag to set levels, tap to mute.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],

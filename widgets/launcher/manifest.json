@@ -2,7 +2,7 @@
   "id": "ws.stock.launcher",
   "name": "Launch App",
   "author": "Waveshare Widgets",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A grid of tappable shortcuts that start programs or open websites on the PC. Each shortcut is a name plus a target — \"C:\\path\\app.exe\" or \"https://site\" — and an optional leading emoji on the name becomes the tile icon.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
