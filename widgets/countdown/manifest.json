@@ -1,0 +1,43 @@
+{
+  "id": "ws.stock.countdown",
+  "name": "Countdown",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Counts down to a date and time you set — biggest-unit readout, progress since you configured it, and a celebration when the moment arrives.",
+  "min_api_version": 1,
+  "supported_slots": [
+    "quarter",
+    "half"
+  ],
+  "properties": [
+    {
+      "name": "title",
+      "label": "Title",
+      "type": "text",
+      "default": "Countdown"
+    },
+    {
+      "name": "target",
+      "label": "Target date & time",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": [
+        "solid",
+        "glass",
+        "transparent"
+      ],
+      "default": "solid"
+    },
+    {
+      "name": "valueColor",
+      "label": "Value color",
+      "type": "color",
+      "default": "#e8ecf2"
+    }
+  ]
+}

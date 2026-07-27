@@ -124,7 +124,10 @@ function loadPlaywright() {
   }));
   const alpha = settings.bgStyle === 'transparent' ? 0 : settings.bgStyle === 'glass' ? Number(theme['--panel-alpha']) : 1;
   const rgb = theme['--surface-rgb'];
-  const expected = alpha === 0 ? ['rgba(0, 0, 0, 0)']
+  // Chromium ≥ 141 serializes a transparent computed background with its color
+  // components preserved (rgba(r, g, b, 0)), older builds normalized to
+  // rgba(0, 0, 0, 0) — the contract is "alpha 0", so accept both.
+  const expected = alpha === 0 ? ['rgba(0, 0, 0, 0)', `rgba(${rgb}, 0)`]
     : alpha === 1 ? [`rgb(${rgb})`, `rgba(${rgb}, 1)`]
     : [`rgba(${rgb}, ${alpha})`];
   check('bgStyle contract (body background)', expected.some((e) => bg.color === e),

@@ -53,7 +53,12 @@ Read these first, in order (they are the authority; this skill is the workflow):
    - Handle repeated `ww-init` idempotently: no timer stacking, no state resets
      (guard `start()` behind a `started` flag like the gallery).
    - Empty/loading/error are designed states (`.state-card`) that name the fix, never
-     a blank tile. Null-guard every value before `toFixed`/math.
+     a blank tile. Null-guard every value before `toFixed`/math. States apply *where
+     they can occur* — offline widgets have no stale state, and a Retry button belongs
+     only where retrying can succeed.
+   - Text settings that expect a format teach it via the property's `placeholder`,
+     never the label. If you need metadata the host doesn't store (e.g. "when was this
+     configured"), self-record it in `localStorage` keyed by the setting's value.
    - `textContent` for anything external; no `innerHTML` with fetched data; no
      `eval`; no external `<script src>`; links via `WW.openUrl` if you need one.
    - 24/7 rules: animate transform/opacity only, timers ≥ 1s unless justified, stop
@@ -73,7 +78,10 @@ Read these first, in order (they are the authority; this skill is the workflow):
    node tools/widget-harness.js widgets/<folder> --slot quarter --theme light --shot quarter-light.png
    node tools/widget-harness.js widgets/<folder> --settings '{"bgStyle":"transparent"}'
    ```
-   All checks must pass for every slot you claim in `supported_slots`, dark and light.
+   All checks must pass for every slot you claim in `supported_slots`, dark and light —
+   plus `three-quarter` if you claim half or full (the editor offers it automatically)
+   and at least one `-upper` band size (200px tall). Screenshot the POPULATED state
+   (pass settings that give the widget real content), not just the setup state.
    The harness aborts real network calls — your widget must settle into its designed
    offline state, not a blank tile or console errors. LOOK at the screenshots: the
    harness proves the contract, your eyes prove the design.
@@ -110,10 +118,15 @@ ambient engine), say so and either degrade the feature or park the port.
 ## Packaging & handoff
 
 ```powershell
-Compress-Archive -Path widgets/<folder>/* -DestinationPath <folder>.zip
+Compress-Archive -Path widgets/<folder>/* -DestinationPath <folder>.zip   # Windows
 Rename-Item <folder>.zip <folder>.wswidget
+```
+```bash
+(cd widgets/<folder> && zip -r ../../<folder>.wswidget .)                  # Linux/mac
 ```
 
 For stock widgets: leave the folder in `widgets/` (the repo is the source of truth) and
-note the widget in the README's stock list. Always end by reporting: what it shows,
+update the README stock-widget bullet (both the spelled-out count and the list).
+If verification exposed a defect in the tools themselves, fixing the tool is in
+bounds — prove the fix against a stock widget, and say so in your report. Always end by reporting: what it shows,
 its settings, validator + harness results (all green), and the screenshots.
