@@ -139,6 +139,19 @@ WW.listMedia()       // -> Promise<[{name, url, kind: 'image'|'video'}]>; served
 WW.getAudio()        // -> Promise<{available, master: {level, muted}, sessions: [{pid, name, level, muted}]}>
 WW.setAudio(target, { level?, muted? })  // target: 'master' | pid (string); level 0..1.
                                          // A pid fans out to all same-name sessions of that app.
+
+// Windows toast mirror (notifications widget)
+WW.watchNotifications(true)     // start the host's toast mirror (demand-gated polling)
+WW.notifications                // {state: 'allowed'|'denied'|'unavailable', items:[{id, app, appId, title, body, time}]}
+WW.onNotifications((n) => {})   // fires when the mirrored list changes; strings are untrusted — textContent only
+WW.dismissNotification(id)      // dismiss one toast by id
+// Windows only grants the UserNotificationListener to apps with package identity
+// (MSIX-installed). On the portable zip install expect 'denied'/'unavailable' and
+// render an explanatory state card — never an empty list.
+
+// Game mode
+WW.game                         // {active, process} — a fullscreen game is foreground
+WW.onGame((g) => {})            // gate your JS timers/streams; CSS animation pauses automatically via html[data-game]
 ```
 
 `WW.onInit(cb)` fires immediately if data already arrived. All getters are live snapshots

@@ -121,7 +121,25 @@ WW.ping(hosts)                                 // real ICMP pings via the host p
 WW.listMedia()                                 // list the user's media folder -> [{name, url, kind}]
 WW.getAudio()                                  // Windows volume mixer snapshot (master + sessions)
 WW.setAudio(target, {level?, muted?})          // set master ('master') or per-app volume/mute
+
+WW.watchNotifications(true)                    // start the host's notification mirror (demand-gated)
+WW.notifications                               // {state: 'allowed'|'denied'|'unavailable', items:[{id, app, appId, title, body, time}]}
+WW.onNotifications((n) => { ... })             // fires when the mirrored list changes
+WW.dismissNotification(id)                     // dismiss one toast by id
+
+WW.game                                        // {active, process} — a fullscreen game is foreground
+WW.onGame((g) => { ... })                      // pause your own timers/streams while g.active
 ```
+
+Game mode also stamps `html[data-game="on"|"off"]` in every widget, and
+`widget-base.css` pauses ALL CSS animation while on — JS work is yours to gate via
+`WW.onGame`. Notification strings are untrusted external text: render them with
+`textContent`, never `innerHTML`. Windows only grants the notification listener to
+apps with **package identity** (MSIX-installed); on the portable zip install expect
+`state` to come back `denied` or `unavailable`, and design for it — the stock
+notifications widget shows an explanatory card instead of an empty list. A slot can also opt out of game time entirely with
+the "hide during games" checkbox in Settings (`hideInGame` in layout.json) — the shell
+hides it and returns it to the same grid cell afterwards.
 
 `WW.fetch` extras: `init.headers` (plain object) rides the host proxy too, and
 `init.insecure: true` skips certificate validation — honored only for private/loopback

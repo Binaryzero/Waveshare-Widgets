@@ -146,10 +146,26 @@
       replicaInit();
     } else if (m.type === 'fetch' || m.type === 'ping' || m.type === 'media-list' || m.type === 'audio-get') {
       post({ type: 'preview-data', message: m });
+    } else if (m.type === 'notifications-watch') {
+      // The host's toast mirror is demand-gated by the PANEL shell; the preview must
+      // never add/remove real watch demand (SetWatching is one toggle — a second
+      // writer would fight the dashboard's bookkeeping). Answer with representative
+      // sample toasts instead (theme-panel sample-tile spirit), or the widget sits
+      // on its loading spinner forever in the replica.
+      if (m.on !== false) replicaPost({ type: 'notifications', data: sampleNotifications() });
     }
     // Everything else (save-layout, media-control, actions, audio-set, sd-*, log) is
     // dropped: the replica is a display, never a second writer or actor.
   });
+
+  function sampleNotifications() {
+    const now = Date.now();
+    return { state: 'allowed', items: [
+      { id: 1, app: 'Mail', appId: 'preview.mail', title: 'Sample notification', body: 'This is how mirrored toasts will look on the panel.', time: now - 40000 },
+      { id: 2, app: 'Mail', appId: 'preview.mail', title: 'Meeting in 15 minutes', body: 'Design sync — Room 4.', time: now - 300000 },
+      { id: 3, app: 'Chat', appId: 'preview.chat', title: 'Alex', body: 'Preview data — real notifications appear on the panel itself.', time: now - 3600000 },
+    ] };
+  }
 
   function fitReplica() {
     const width = previewStage.clientWidth || 1;
@@ -434,7 +450,20 @@
       sizeSelect.add(new Option(sizeLabel(slot.size), slot.size, false, true));
     sizeSelect.onchange = () => { slot.size = sizeSelect.value; renderCapacity(page); };
 
-    row.append(widgetSelect, sizeSelect,
+    // Hide this widget while a fullscreen game runs (its grid cell is kept).
+    const gameWrap = document.createElement('label');
+    gameWrap.className = 'game-hide';
+    gameWrap.title = 'Hide this widget while a fullscreen game is running';
+    const gameCheck = document.createElement('input');
+    gameCheck.type = 'checkbox';
+    gameCheck.checked = slot.hideInGame === true;
+    gameCheck.onchange = () => {
+      if (gameCheck.checked) slot.hideInGame = true; else delete slot.hideInGame;
+      refreshReplica('layout');
+    };
+    gameWrap.append(gameCheck, document.createTextNode('🎮✕'));
+
+    row.append(widgetSelect, sizeSelect, gameWrap,
       iconButton('▲', 'Move up', () => moveSlot(page, index, -1)),
       iconButton('▼', 'Move down', () => moveSlot(page, index, 1)),
       iconButton('✕', 'Remove', () => { page.slots.splice(index, 1); renderEditor(); }, true));

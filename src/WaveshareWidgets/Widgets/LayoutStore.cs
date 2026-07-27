@@ -92,6 +92,10 @@ public sealed class LayoutSlot
     /// (identity stays positional, exactly as before).</summary>
     [JsonPropertyName("instanceId")] public string? InstanceId { get; set; }
 
+    /// <summary>Hide this widget while a fullscreen game is in the foreground —
+    /// its grid cell is preserved, so it returns exactly where it was.</summary>
+    [JsonPropertyName("hideInGame")] public bool HideInGame { get; set; }
+
     /// <summary>Per-instance theme-seed overrides from the on-panel style editor.
     /// Non-null keys replace the dashboard theme's seeds for this widget only; the
     /// full palette is re-derived from the merged seeds (contrast repair included).</summary>

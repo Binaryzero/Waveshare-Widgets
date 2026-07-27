@@ -36,6 +36,8 @@ public sealed class DashboardWindow : Form
     private BrowserFetcher? _browserFetcher;
     private StreamDeckBridge? _streamDeck;
     private readonly AudioMixer _audio = new();
+    private readonly NotificationCenter _notifications = new();
+    private readonly GameModeWatcher _gameMode = new();
     private bool _shellReady;
 
     /// <summary>Lists the user's media library folder for the Gallery widget.</summary>
@@ -84,6 +86,9 @@ public sealed class DashboardWindow : Form
 
         _hub.SensorsUpdated += OnSensorsUpdated;
         _hub.MediaUpdated += OnMediaUpdated;
+        _notifications.Updated += (data) => PostToShellThreadSafe("notifications", data);
+        _gameMode.Changed += (data) => PostToShellThreadSafe("game-mode", data);
+        _gameMode.Start();
 
         // Crossing into a monitor with different DPI makes Windows rescale the window
         // mid-move, leaving it the wrong size on the panel; re-assert our exact bounds.
@@ -303,6 +308,15 @@ public sealed class DashboardWindow : Form
 
                 case "audio-get":
                     HandleAudioGet(message);
+                    break;
+
+                case "notifications-watch":
+                    _notifications.SetWatching(message["on"]?.GetValue<bool>() == true);
+                    break;
+
+                case "notification-dismiss":
+                    if (message["id"] is JsonValue idv && idv.TryGetValue<double>(out var nid))
+                        _ = Task.Run(() => _notifications.Dismiss((uint)nid));
                     break;
 
                 case "audio-set":
@@ -649,6 +663,7 @@ public sealed class DashboardWindow : Form
             ["media"] = JsonSerializer.SerializeToNode(_hub.LatestMedia, BridgeJson),
             ["backgroundHost"] = BackgroundHost,
             ["theme"] = tokens,
+            ["game"] = _gameMode.Current,
             ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated, ["apiVersion"] = 1 },
         };
     }
@@ -765,6 +780,8 @@ public sealed class DashboardWindow : Form
         {
             _hub.SensorsUpdated -= OnSensorsUpdated;
             _hub.MediaUpdated -= OnMediaUpdated;
+            _notifications.Dispose();
+            _gameMode.Dispose();
             _browserFetcher?.Dispose();
             _webView.Dispose();
         }

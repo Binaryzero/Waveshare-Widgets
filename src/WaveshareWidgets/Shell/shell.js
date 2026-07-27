@@ -12,6 +12,8 @@
   let latestSensors = [];
   let latestMedia = null;
   let latestTheme = null;
+  let latestNotifications = null;   // last projected payload from the host
+  let gameState = { active: false, process: '' };
   let status = { elevated: false, apiVersion: 1 };
   let dotsIdleTimer = null;
   let bgSettleTimer = null;    // debounces the wallpaper swap during multi-page scrolls
@@ -66,6 +68,12 @@
     }
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
+    else if (msg.type === 'notifications') { latestNotifications = msg.data || null; broadcast({ type: 'ww-notifications', data: latestNotifications }); }
+    else if (msg.type === 'game-mode') {
+      gameState = { active: !!(msg.data && msg.data.active), process: (msg.data && msg.data.process) || '' };
+      applyGameMode();
+      broadcast({ type: 'ww-game', game: gameState });
+    }
     else if (msg.type === 'fetch-result') {
       const target = fetchRoutes.get(msg.data && msg.data.id);
       if (target) {
@@ -154,6 +162,15 @@
       audioRoutes.set(msg.id, ev.source);
       setTimeout(() => audioRoutes.delete(msg.id), 15000);
       postToHost({ type: 'audio-get', id: msg.id });
+    } else if (msg.type === 'ww-notifications-watch') {
+      // Demand is tracked per slot and only on/off TRANSITIONS reach the host —
+      // otherwise nothing would ever send watch(false) when the last watching
+      // widget is removed, and the host would poll notifications forever.
+      const slot = slots.find((s) => s.frame && s.frame.contentWindow === ev.source);
+      if (slot) slot.notifWatch = msg.on !== false;
+      syncNotificationDemand();
+    } else if (msg.type === 'ww-notification-dismiss' && msg.id != null) {
+      postToHost({ type: 'notification-dismiss', id: msg.id });
     } else if (msg.type === 'ww-audio-set') {
       postToHost({ type: 'audio-set', target: String(msg.target || 'master'), level: msg.level, muted: msg.muted });
     }
@@ -166,8 +183,31 @@
       sensors: latestSensors,
       media: latestMedia,
       theme: slotTheme(slot),
+      notifications: latestNotifications,
+      game: gameState,
       status,
     };
+  }
+
+  // Notification polling is demand-gated in the host; recomputed from the live slot
+  // records after anything that adds or removes them, so removing the last watching
+  // widget (edit-mode ✕, page delete, re-init) actually stops the host's polling.
+  let notifWatchOn = false; // last demand posted to the host
+  function syncNotificationDemand() {
+    const on = slots.some((s) => s.notifWatch);
+    if (on === notifWatchOn) return;
+    notifWatchOn = on;
+    postToHost({ type: 'notifications-watch', on });
+  }
+
+  // Game mode: pause the shell's own chrome cost and hide slots the user marked
+  // hide-in-game (their grid cell is kept, so they come back exactly where they were).
+  function applyGameMode() {
+    document.documentElement.dataset.game = gameState.active ? 'on' : 'off';
+    for (const slot of slots) {
+      if (slot.def && slot.def.hideInGame)
+        slot.el.style.visibility = (gameState.active && !editing) ? 'hidden' : '';
+    }
   }
 
   function sendToSlot(slot, message) {
@@ -228,6 +268,9 @@
     latestSensors = data.sensors || [];
     latestMedia = data.media;
     status = data.status || status;
+    // Game state rides init: a game already fullscreen when the shell loads fired
+    // its transition before shell-ready, and the host's poll dedups it forever.
+    if (data.game) gameState = { active: !!data.game.active, process: data.game.process || '' };
     applyThemeTokens(data.theme);
 
     layoutData = (data.layout && Array.isArray(data.layout.pages)) ? data.layout : { pages: [] };
@@ -262,6 +305,8 @@
 
     generation++;
     armWatchdog(generation);
+    applyGameMode();
+    syncNotificationDemand(); // fresh records carry no demand; rebuilt widgets re-watch
     if (editing) updateEditBar();
   }
 
@@ -663,6 +708,11 @@
   function setEditing(on) {
     editing = on;
     document.body.classList.toggle('editing', on);
+    // Game-mode visibility depends on `editing`, and no game-mode EVENT arrives at
+    // edit enter/exit (the host only posts on change): re-apply here, or a game
+    // running right now leaves hide-in-game slots invisible while editing — and
+    // visible after Done until the game next flips state.
+    applyGameMode();
     editBar.hidden = !on;
     if (on && layoutData.pages.length === 0) {
       const page = { name: 'Page 1', slots: [] };
@@ -739,6 +789,7 @@
       if (styleTarget && styleTarget.page === page) closeStyleEditor(false); // its tile goes away with the page
       for (const rec of slots.filter((s) => s.page === page)) rec.el.remove();
       slots = slots.filter((s) => s.page !== page);
+      syncNotificationDemand();
       const el = pageEls.get(page);
       if (el) el.remove();
       pageEls.delete(page);
@@ -823,6 +874,7 @@
       record.el.remove();
       slots = slots.filter((s) => s !== record);
       relayoutPage(record.page);
+      syncNotificationDemand();
     });
   }
 
