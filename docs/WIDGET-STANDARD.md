@@ -126,9 +126,12 @@ palette:
    stays legible in every widget. Colors that already pass are untouched.
 5. **`--on-accent`** is near-black or white, whichever contrasts more with the accent.
 
-**When it applies.** Theme edits in the settings window preview live in the Theme panel
-and land on the panel when you hit **Save & apply** (the dashboard reloads with the new
-token map). Every stock widget consumes the tokens — a widget that hardcodes colors is
+**When it applies.** Theme edits preview live — in the Theme panel's sample tile and in
+the settings window's full panel replica — and land on the panel when you hit
+**Save & apply**. On the panel itself, the per-widget style editor (the 🎨 button in
+edit mode) can re-specify any of the four seeds for a single widget; the palette is
+re-derived from the merged seeds (contrast repair included), pushed live via `ww-theme`,
+and persisted as the slot's `style`. Every stock widget consumes the tokens — a widget that hardcodes colors is
 out of compliance (§10), because it silently ignores the user's theme.
 
 **Delivery.** The token map rides the shell init payload; the shell applies it to its own
