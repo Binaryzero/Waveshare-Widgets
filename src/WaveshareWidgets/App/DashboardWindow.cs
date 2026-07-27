@@ -302,26 +302,7 @@ public sealed class DashboardWindow : Form
                     break;
 
                 case "audio-get":
-                    _ = Task.Run(() =>
-                    {
-                        var snapshot = _audio.Read();
-                        var data = new JsonObject { ["id"] = message["id"]?.GetValue<string>() ?? "" };
-                        if (snapshot is null)
-                        {
-                            data["available"] = false;
-                        }
-                        else
-                        {
-                            data["available"] = true;
-                            data["master"] = new JsonObject { ["level"] = snapshot.MasterLevel, ["muted"] = snapshot.MasterMuted };
-                            var sessions = new JsonArray();
-                            foreach (var s in snapshot.Sessions)
-                                sessions.Add(new JsonObject { ["pid"] = s.Pid, ["name"] = s.Name, ["level"] = s.Level, ["muted"] = s.Muted });
-                            data["sessions"] = sessions;
-                        }
-                        try { BeginInvoke(() => PostToShell("audio-result", data)); }
-                        catch (ObjectDisposedException) { }
-                    });
+                    HandleAudioGet(message);
                     break;
 
                 case "audio-set":
@@ -337,6 +318,53 @@ public sealed class DashboardWindow : Form
         catch (Exception ex)
         {
             Log.Warn($"Bad web message: {ex.Message}");
+        }
+    }
+
+    private void HandleAudioGet(JsonNode message, Action<string, JsonNode?>? reply = null)
+    {
+        _ = Task.Run(() =>
+        {
+            var snapshot = _audio.Read();
+            var data = new JsonObject { ["id"] = message["id"]?.GetValue<string>() ?? "" };
+            if (snapshot is null)
+            {
+                data["available"] = false;
+            }
+            else
+            {
+                data["available"] = true;
+                data["master"] = new JsonObject { ["level"] = snapshot.MasterLevel, ["muted"] = snapshot.MasterMuted };
+                var sessions = new JsonArray();
+                foreach (var s in snapshot.Sessions)
+                    sessions.Add(new JsonObject { ["pid"] = s.Pid, ["name"] = s.Name, ["level"] = s.Level, ["muted"] = s.Muted });
+                data["sessions"] = sessions;
+            }
+            if (reply is not null)
+            {
+                reply("audio-result", data);
+                return;
+            }
+            try { BeginInvoke(() => PostToShell("audio-result", data)); }
+            catch (ObjectDisposedException) { }
+        });
+    }
+
+    /// <summary>
+    /// Routes a settings-window replica's widget data request (fetch / ping /
+    /// media-list / audio-get) through the same handlers the live dashboard uses,
+    /// sending results to <paramref name="reply"/> instead of the dashboard shell.
+    /// Side-effecting channels (audio-set, media-control, actions, Stream Deck) are
+    /// deliberately not routed — a preview must never change system state.
+    /// </summary>
+    public void HandlePreviewRequest(JsonNode? message, Action<string, JsonNode?> reply)
+    {
+        switch (message?["type"]?.GetValue<string>())
+        {
+            case "fetch": _ = HandleProxyFetchAsync(message, reply); break;
+            case "ping": _ = HandlePingAsync(message, reply); break;
+            case "media-list": reply("media-list-result", BuildMediaList(message["id"]?.GetValue<string>() ?? "")); break;
+            case "audio-get": HandleAudioGet(message, reply); break;
         }
     }
 
@@ -407,7 +435,7 @@ public sealed class DashboardWindow : Form
     /// CORS-relief proxy for widget fetches (iCUE's runtime is CORS-relaxed; ours is not).
     /// The widget shim only calls this after a normal fetch failed at the network layer.
     /// </summary>
-    private async Task HandleProxyFetchAsync(JsonNode message)
+    private async Task HandleProxyFetchAsync(JsonNode message, Action<string, JsonNode?>? reply = null)
     {
         var id = message["id"]?.GetValue<string>() ?? "";
         var result = new JsonObject { ["id"] = id };
@@ -500,6 +528,11 @@ public sealed class DashboardWindow : Form
             Log.Warn($"proxy fetch failed ({message["url"]?.GetValue<string>()}): {ex.Message}");
         }
 
+        if (reply is not null)
+        {
+            reply("fetch-result", result);
+            return;
+        }
         try
         {
             BeginInvoke(() => PostToShell("fetch-result", result));
@@ -516,7 +549,7 @@ public sealed class DashboardWindow : Form
     /// message: { id, hosts: ["1.1.1.1", "router.local", ...] } — capped, pinged in
     /// parallel, one reply: ping-result { id, results: [{host, ok, rttMs}] }.
     /// </summary>
-    private async Task HandlePingAsync(JsonNode message)
+    private async Task HandlePingAsync(JsonNode message, Action<string, JsonNode?>? reply = null)
     {
         var id = message["id"]?.GetValue<string>() ?? "";
         var hosts = new List<string>();
@@ -558,9 +591,15 @@ public sealed class DashboardWindow : Form
         foreach (var entry in await Task.WhenAll(tasks))
             results.Add(entry);
 
+        var pingResult = new JsonObject { ["id"] = id, ["results"] = results };
+        if (reply is not null)
+        {
+            reply("ping-result", pingResult);
+            return;
+        }
         try
         {
-            BeginInvoke(() => PostToShell("ping-result", new JsonObject { ["id"] = id, ["results"] = results }));
+            BeginInvoke(() => PostToShell("ping-result", pingResult));
         }
         catch (ObjectDisposedException)
         {

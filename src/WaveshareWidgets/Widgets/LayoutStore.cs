@@ -71,6 +71,16 @@ public sealed class BackgroundSpec
     [JsonPropertyName("blur")] public int Blur { get; set; }
 }
 
+/// <summary>Per-instance theme-seed overrides (a partial <see cref="ThemeSpec"/>:
+/// null keys follow the dashboard theme).</summary>
+public sealed class SlotStyle
+{
+    [JsonPropertyName("accent")] public string? Accent { get; set; }
+    [JsonPropertyName("background")] public string? Background { get; set; }
+    [JsonPropertyName("text")] public string? Text { get; set; }
+    [JsonPropertyName("panelAlpha")] public double? PanelAlpha { get; set; }
+}
+
 public sealed class LayoutSlot
 {
     [JsonPropertyName("widgetId")] public string WidgetId { get; set; } = "";
@@ -81,6 +91,11 @@ public sealed class LayoutSlot
     /// state survives rearranging. Null on layouts that were never edited on-panel
     /// (identity stays positional, exactly as before).</summary>
     [JsonPropertyName("instanceId")] public string? InstanceId { get; set; }
+
+    /// <summary>Per-instance theme-seed overrides from the on-panel style editor.
+    /// Non-null keys replace the dashboard theme's seeds for this widget only; the
+    /// full palette is re-derived from the merged seeds (contrast repair included).</summary>
+    [JsonPropertyName("style")] public SlotStyle? Style { get; set; }
 
     /// <summary>Width: quarter (320px), half (640px), three-quarter (960px) or full
     /// (1280px) — optionally suffixed "-upper"/"-lower" for the top or bottom 200px

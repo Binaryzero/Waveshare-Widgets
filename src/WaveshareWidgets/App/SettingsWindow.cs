@@ -35,6 +35,10 @@ public sealed class SettingsWindow : Form
     /// <summary>Raised after a layout is saved so the dashboard can reload.</summary>
     public event Action? LayoutSaved;
 
+    /// <summary>The live dashboard window; routes the preview replica's widget data
+    /// requests (fetch/ping/media-list/audio-get) through the real handlers.</summary>
+    public DashboardWindow? Dashboard { get; set; }
+
     public SettingsWindow(SensorHub hub, WidgetLibrary library)
     {
         _hub = hub;
@@ -67,6 +71,22 @@ public sealed class SettingsWindow : Form
             core.SetVirtualHostNameToFolderMapping(ShellHost, AppPaths.ShellDir, CoreWebView2HostResourceAccessKind.Allow);
             // So the editor can preview chosen background images/videos.
             core.SetVirtualHostNameToFolderMapping(BackgroundHost, AppPaths.BackgroundsDir, CoreWebView2HostResourceAccessKind.Allow);
+            // The live replica embeds the real shell with real widget iframes, so their
+            // origins (and the media library) must resolve here too.
+            core.SetVirtualHostNameToFolderMapping("media.wsw", AppPaths.MediaDir, CoreWebView2HostResourceAccessKind.Allow);
+            foreach (var w in _library.Widgets)
+                core.SetVirtualHostNameToFolderMapping(w.VirtualHost, w.Folder, CoreWebView2HostResourceAccessKind.Allow);
+            // The replica's widget iframes rely on the injected shim, same as the panel.
+            var shim = File.ReadAllText(Path.Combine(AppPaths.ShellDir, "widget-api.js")) + "\n" +
+                       File.ReadAllText(Path.Combine(AppPaths.ShellDir, "icue-compat.js"));
+            await core.AddScriptToExecuteOnDocumentCreatedAsync(shim);
+            _hub.SensorsUpdated += OnSensorsUpdated;
+            _hub.MediaUpdated += OnMediaUpdated;
+            FormClosed += (_, _) =>
+            {
+                _hub.SensorsUpdated -= OnSensorsUpdated;
+                _hub.MediaUpdated -= OnMediaUpdated;
+            };
             core.Navigate($"https://{ShellHost}/settings.html");
         }
         catch (Exception ex)
@@ -109,6 +129,24 @@ public sealed class SettingsWindow : Form
                     HandlePickBackground(message["target"]?.GetValue<string>() ?? "");
                     break;
 
+                case "preview-data":
+                    // Widget data requests surfaced by the embedded replica. Marshaled
+                    // back onto the UI thread because the fetch/ping handlers reply from
+                    // worker threads.
+                    Dashboard?.HandlePreviewRequest(message["message"], (type, data) =>
+                    {
+                        try
+                        {
+                            BeginInvoke(() => Post(new JsonObject
+                            {
+                                ["type"] = "preview-host",
+                                ["message"] = new JsonObject { ["type"] = type, ["data"] = data },
+                            }));
+                        }
+                        catch (ObjectDisposedException) { /* window closed */ }
+                    });
+                    break;
+
                 case "sd-profiles":
                     Post(new JsonObject
                     {
@@ -124,6 +162,28 @@ public sealed class SettingsWindow : Form
         }
     }
 
+    private void OnSensorsUpdated(IReadOnlyList<SensorReading> sensors) =>
+        PostPreviewThreadSafe("sensors", JsonSerializer.SerializeToNode(sensors, BridgeJson));
+
+    private void OnMediaUpdated(MediaState media) =>
+        PostPreviewThreadSafe("media", JsonSerializer.SerializeToNode(media, BridgeJson));
+
+    /// <summary>Live data for the embedded replica, marshaled onto the UI thread.</summary>
+    private void PostPreviewThreadSafe(string type, JsonNode? data)
+    {
+        if (!IsHandleCreated || IsDisposed)
+            return;
+        try
+        {
+            BeginInvoke(() => Post(new JsonObject
+            {
+                ["type"] = "preview-host",
+                ["message"] = new JsonObject { ["type"] = type, ["data"] = data },
+            }));
+        }
+        catch (ObjectDisposedException) { /* window closed */ }
+    }
+
     private void PostInit()
     {
         var widgets = _library.Widgets.Select(w => new
@@ -132,6 +192,7 @@ public sealed class SettingsWindow : Form
             name = w.Manifest.Name,
             author = w.Manifest.Author,
             version = w.Manifest.Version,
+            url = $"https://{w.VirtualHost}/index.html",
             supportedSlots = w.Manifest.SupportedSlots,
             properties = w.Manifest.Properties,
         });

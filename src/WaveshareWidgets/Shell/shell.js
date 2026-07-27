@@ -36,9 +36,18 @@
 
   // ---- host bridge -----------------------------------------------------------
 
-  window.chrome.webview.addEventListener('message', (ev) => {
-    const msg = ev.data || {};
+  // Preview mode: the shell is embedded as a live replica inside the settings window
+  // (index.html?preview). The "host" is then the settings page, bridged over
+  // window.postMessage — ww-shell wraps outgoing messages, ww-host wraps incoming.
+  const PREVIEW = new URLSearchParams(location.search).has('preview');
+
+  if (!PREVIEW && window.chrome && window.chrome.webview) {
+    window.chrome.webview.addEventListener('message', (ev) => handleHostMessage(ev.data || {}));
+  }
+
+  function handleHostMessage(msg) {
     if (msg.type === 'init') onInit(msg.data);
+    else if (msg.type === 'theme') { applyThemeTokens(msg.data); broadcast({ type: 'ww-theme', theme: latestTheme }); }
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
     else if (msg.type === 'fetch-result') {
@@ -70,9 +79,13 @@
         try { target.postMessage({ type: 'ww-audio-result', ...msg.data }, '*'); } catch (e) { /* frame gone */ }
       }
     }
-  });
+  }
 
   function postToHost(message) {
+    if (PREVIEW) {
+      try { window.parent.postMessage({ type: 'ww-shell', message }, '*'); } catch (e) { /* parent gone */ }
+      return;
+    }
     window.chrome.webview.postMessage(message);
   }
 
@@ -80,6 +93,10 @@
 
   window.addEventListener('message', (ev) => {
     const msg = ev.data || {};
+    if (PREVIEW && msg.type === 'ww-host' && ev.source === window.parent) {
+      handleHostMessage(msg.message || {});
+      return;
+    }
     if (msg.type === 'ww-media-control' && typeof msg.action === 'string') {
       postToHost({ type: 'media-control', action: msg.action });
     } else if (msg.type === 'ww-log') {
@@ -132,7 +149,7 @@
       settings: slot.settings,
       sensors: latestSensors,
       media: latestMedia,
-      theme: latestTheme,
+      theme: slotTheme(slot),
       status,
     };
   }
@@ -182,16 +199,19 @@
     });
   }
 
+  function applyThemeTokens(tokens) {
+    if (!tokens || typeof tokens !== 'object') return;
+    latestTheme = tokens;
+    for (const [name, value] of Object.entries(tokens)) {
+      if (name.startsWith('--')) document.documentElement.style.setProperty(name, String(value));
+    }
+  }
+
   function onInit(data) {
     latestSensors = data.sensors || [];
     latestMedia = data.media;
     status = data.status || status;
-    if (data.theme && typeof data.theme === 'object') {
-      latestTheme = data.theme;
-      for (const [name, value] of Object.entries(latestTheme)) {
-        if (name.startsWith('--')) document.documentElement.style.setProperty(name, String(value));
-      }
-    }
+    applyThemeTokens(data.theme);
 
     layoutData = (data.layout && Array.isArray(data.layout.pages)) ? data.layout : { pages: [] };
     widgetLib = data.widgets || [];
@@ -204,6 +224,8 @@
   function renderAll() {
     cancelDrag();   // a re-init mid-drag must not orphan the ghost / dragging state
     closePalette(); // palette entries capture page objects this rebuild replaces
+    closeStyleEditor(false); // its record is about to be replaced
+    const keepPage = currentPage(); // a re-init (hot reload, replica refresh) keeps the page
     refreshBgSpecs();
     bg.reset();
 
@@ -216,6 +238,7 @@
     rebuildDots();
 
     emptyEl.hidden = editing || slots.length > 0 || layoutData.pages.length > 0;
+    pagesEl.scrollLeft = Math.min(keepPage, Math.max(0, layoutData.pages.length - 1)) * pagesEl.clientWidth;
     updateDots();
     bg.applyForPage(currentPage()); // paint the initial page's background at once (updateDots only debounces)
 
@@ -572,6 +595,7 @@
 
   const editBtn = document.getElementById('editBtn');
   const editBar = document.getElementById('editBar');
+  if (PREVIEW) editBtn.style.display = 'none'; // the replica is view-only
   const paletteEl = document.getElementById('palette');
   const paletteGrid = document.getElementById('paletteGrid');
   const pageDeleteBtn = document.getElementById('pageDelete');
@@ -637,6 +661,7 @@
       emptyEl.hidden = slots.length > 0 || layoutData.pages.length > 0;
       closePalette();
       cancelDrag();
+      closeStyleEditor(); // flushes any trailing style edit
       // Armed confirms must not survive the session: re-entering edit within the
       // 2.5s window would otherwise turn the first tap into an instant delete.
       disarmPageDelete();
@@ -756,12 +781,22 @@
     ov.appendChild(size);
     ov.appendChild(band);
 
+    if (widget) {
+      const style = document.createElement('button');
+      style.className = 'style';
+      style.textContent = '🎨';
+      style.title = 'Style this widget';
+      style.addEventListener('click', (ev) => { ev.stopPropagation(); openStyleEditor(record); });
+      ov.appendChild(style);
+    }
+
     bindDrag(ov, record);
     return ov;
   }
 
   function removeSlot(record) {
     if (drag && drag.record === record) cancelDrag(); // removed out from under a drag
+    if (styleTarget === record) closeStyleEditor(false);
     mutate(() => {
       const defs = record.page.slots || [];
       const i = defs.indexOf(record.def);
@@ -829,6 +864,135 @@
     relayoutPage(record.page);
     syncLabels();
   }
+
+  // ---- per-widget style editor -----------------------------------------------------
+  // A right-docked panel over the live tile: checked rows re-specify theme seeds for
+  // this instance only; the full palette is re-derived (contrast repair included) and
+  // pushed live via ww-theme, then persisted debounced.
+
+  const stylePanel = document.getElementById('stylePanel');
+  const spRows = document.getElementById('spRows');
+  const spTitle = document.getElementById('spTitle');
+  const STOCK_SEEDS = { accent: '#4cc2ff', background: '#05070b', text: '#e8ecf2', panelAlpha: 0.92 };
+  let styleTarget = null;
+  let stylePersistTimer = null;
+
+  function themeSeeds() {
+    return Object.assign({}, STOCK_SEEDS, layoutData.theme || {});
+  }
+
+  /** The token map a slot should run under: global theme, or re-derived from the
+   * merged seeds when the slot carries style overrides. */
+  function slotTheme(slot) {
+    const style = slot.def && slot.def.style;
+    if (!style || !Object.keys(style).length) return latestTheme;
+    return window.WWPalette.derive(Object.assign(themeSeeds(), style));
+  }
+
+  function pushSlotTheme(record) {
+    sendToSlot(record, { type: 'ww-theme', theme: slotTheme(record) || window.WWPalette.derive(themeSeeds()) });
+  }
+
+  function openStyleEditor(record) {
+    styleTarget = record;
+    const widget = widgetsById.get(record.def.widgetId);
+    spTitle.textContent = widget ? widget.name : record.def.widgetId;
+    for (const s of slots) s.el.classList.toggle('style-editing', s === record);
+    buildStyleRows();
+    stylePanel.hidden = false;
+  }
+
+  function closeStyleEditor(flush) {
+    if (flush !== false && stylePersistTimer) {
+      clearTimeout(stylePersistTimer);
+      stylePersistTimer = null;
+      persistLayout(); // flush-on-close: never lose a trailing edit
+    }
+    styleTarget = null;
+    stylePanel.hidden = true;
+    for (const s of slots) s.el.classList.remove('style-editing');
+  }
+
+  function styleChanged() {
+    if (!styleTarget) return;
+    const style = styleTarget.def.style;
+    if (style && !Object.keys(style).length) delete styleTarget.def.style;
+    pushSlotTheme(styleTarget);
+    clearTimeout(stylePersistTimer);
+    stylePersistTimer = setTimeout(() => { stylePersistTimer = null; persistLayout(); }, 300);
+  }
+
+  function buildStyleRows() {
+    spRows.textContent = '';
+    const def = styleTarget.def;
+    const seeds = themeSeeds();
+    const hex = (v, fallback) => (/^#[0-9a-f]{6}$/i.test(v || '') ? v : fallback);
+
+    for (const r of [{ key: 'accent', label: 'Accent' }, { key: 'background', label: 'Background' }, { key: 'text', label: 'Text' }]) {
+      const row = document.createElement('div');
+      row.className = 'sp-row';
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      const label = document.createElement('label');
+      label.textContent = r.label;
+      const color = document.createElement('input');
+      color.type = 'color';
+      const cur = def.style && def.style[r.key];
+      check.checked = cur != null;
+      color.disabled = !check.checked;
+      color.value = hex(cur, hex(seeds[r.key], '#4cc2ff'));
+      check.addEventListener('change', () => {
+        color.disabled = !check.checked;
+        const style = def.style || (def.style = {});
+        if (check.checked) style[r.key] = color.value; else delete style[r.key];
+        styleChanged();
+      });
+      color.addEventListener('input', () => {
+        (def.style || (def.style = {}))[r.key] = color.value;
+        styleChanged();
+      });
+      row.append(check, label, color);
+      spRows.appendChild(row);
+    }
+
+    const row = document.createElement('div');
+    row.className = 'sp-row';
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    const label = document.createElement('label');
+    label.textContent = 'Panel opacity';
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.min = 15; range.max = 100; range.step = 1;
+    const out = document.createElement('output');
+    const cur = def.style && def.style.panelAlpha;
+    check.checked = cur != null;
+    range.disabled = !check.checked;
+    range.value = String(Math.round((cur != null ? cur : seeds.panelAlpha) * 100));
+    out.value = range.value + '%';
+    check.addEventListener('change', () => {
+      range.disabled = !check.checked;
+      const style = def.style || (def.style = {});
+      if (check.checked) style.panelAlpha = Number(range.value) / 100; else delete style.panelAlpha;
+      styleChanged();
+    });
+    range.addEventListener('input', () => {
+      out.value = range.value + '%';
+      (def.style || (def.style = {})).panelAlpha = Number(range.value) / 100;
+      styleChanged();
+    });
+    row.append(check, label, range, out);
+    spRows.appendChild(row);
+  }
+
+  document.getElementById('spClose').addEventListener('click', () => closeStyleEditor());
+  document.getElementById('spReset').addEventListener('click', () => {
+    if (!styleTarget) return;
+    delete styleTarget.def.style;
+    pushSlotTheme(styleTarget);
+    buildStyleRows();
+    persistLayout();
+  });
 
   // ---- add widget (palette) --------------------------------------------------------
 
