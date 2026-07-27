@@ -342,12 +342,19 @@
   }
 
   // --- render (single path over the normalized model) --------------------------
+  // Cards are BUILT only when the structure changes (room set, names, scenes,
+  // column count) and updated in place otherwise — the reconcile poll right after
+  // a tap must never replace the card under the user's finger.
+
+  let roomSig = null;   // structural signature of the built cards
+  let roomUI = [];      // [{ card, stateEl, fill, room }] in render order
 
   function render(rooms) {
-    const wrap = document.getElementById('rooms');
-    wrap.textContent = '';
     rooms = rooms.slice().sort((a, b) => a.name.localeCompare(b.name));
     if (!rooms.length) {
+      document.getElementById('rooms').textContent = '';
+      roomSig = null;
+      roomUI = [];
       showMessage('No rooms on this bridge', 'Create rooms in the Hue app and they\'ll appear here.');
       return;
     }
@@ -356,14 +363,40 @@
     // per card the name ellipsizes to one letter and the −/+ buttons squeeze the
     // brightness bar to zero width.
     cols = Math.max(1, Math.min(cols, Math.floor(document.body.clientWidth / 150) || 1));
+    const sig = cols + '|' + rooms.map((r) =>
+      r.key + ':' + r.name + ':' + r.scenes.map((sc) => sc.id + '=' + sc.name).join(',')).join(';');
+    if (sig !== roomSig) {
+      buildCards(rooms, cols);
+      roomSig = sig;
+    }
+    // Reconcile in place: merge polled truth into the objects the tap handlers
+    // hold, then repaint — this also rolls back any optimistic flip that failed.
+    rooms.forEach((r, i) => {
+      Object.assign(roomUI[i].room, r);
+      updateCard(roomUI[i]);
+    });
+  }
+
+  function updateCard(ui) {
+    const r = ui.room;
+    ui.card.classList.toggle('on', r.on);
+    ui.stateEl.textContent = r.on ? r.pct + '%' : 'off';
+    ui.fill.style.width = (r.on ? r.pct : 0) + '%';
+  }
+
+  function buildCards(rooms, cols) {
+    const wrap = document.getElementById('rooms');
+    wrap.textContent = '';
+    roomUI = [];
     wrap.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
 
     for (const r of rooms) {
       const card = document.createElement('div');
-      card.className = 'room card' + (r.on ? ' on' : '');
+      card.className = 'room card';
+      const ui = { card, stateEl: null, fill: null, room: r };
 
       const head = document.createElement('div');
-      head.className = 'head';
+      head.className = 'head pressable';
       const bulb = document.createElement('span');
       bulb.className = 'bulb';
       bulb.textContent = '💡';
@@ -372,25 +405,27 @@
       name.textContent = r.name;
       const stateEl = document.createElement('span');
       stateEl.className = 'state';
-      stateEl.textContent = r.on ? r.pct + '%' : 'off';
+      ui.stateEl = stateEl;
       head.append(bulb, name, stateEl);
-      head.addEventListener('click', () => toggleRoom(r));
+      head.addEventListener('click', () => toggleRoom(ui));
       card.appendChild(head);
 
       const briRow = document.createElement('div');
       briRow.className = 'bri';
       const minus = document.createElement('button');
+      minus.className = 'pressable';
       minus.textContent = '−';
-      minus.addEventListener('click', () => stepBrightness(r, -1));
+      minus.addEventListener('click', () => stepBrightness(ui, -1));
       const bar = document.createElement('div');
       bar.className = 'bar meter';
       const fill = document.createElement('i');
       fill.className = 'fill';
-      fill.style.width = (r.on ? r.pct : 0) + '%';
+      ui.fill = fill;
       bar.appendChild(fill);
       const plus = document.createElement('button');
+      plus.className = 'pressable';
       plus.textContent = '+';
-      plus.addEventListener('click', () => stepBrightness(r, +1));
+      plus.addEventListener('click', () => stepBrightness(ui, +1));
       briRow.append(minus, bar, plus);
       card.appendChild(briRow);
 
@@ -401,53 +436,78 @@
           const b = document.createElement('button');
           b.className = 'btn';
           b.textContent = sc.name;
-          b.addEventListener('click', (ev) => { ev.stopPropagation(); recallScene(r, sc.id); });
+          b.addEventListener('click', (ev) => { ev.stopPropagation(); recallScene(ui, sc.id, b); });
           row.appendChild(b);
         }
         card.appendChild(row);
       }
+      roomUI.push(ui);
       wrap.appendChild(card);
     }
   }
 
   // --- actions (dispatch per API mode) -----------------------------------------
+  // State theater: every tap flips the UI optimistically and reconciles from the
+  // next poll; a failed/refused CLIP request fail-flashes the tapped card/chip.
 
-  function toggleRoom(r) {
-    if (mode === 'v2') actV2('/resource/grouped_light/' + r.v2Light, { on: { on: !r.on } });
-    else actV1(r.v1Group, { on: !r.on });
+  // Restartable flash (fail-flash / confirm-flash from widget-base): remove,
+  // force reflow, re-add — otherwise a second flash on the same element is silent.
+  function flash(elm, cls) {
+    elm.classList.remove(cls);
+    void elm.offsetWidth;
+    elm.classList.add(cls);
   }
 
-  function stepBrightness(r, dir) {
-    const pct = Math.max(1, Math.min(100, r.pct + dir * BRI_STEP));
-    if (mode === 'v2') actV2('/resource/grouped_light/' + r.v2Light, { on: { on: true }, dimming: { brightness: pct } });
-    else actV1(r.v1Group, { on: true, bri: Math.max(1, Math.min(254, Math.round(pct / 100 * 254))) });
+  function toggleRoom(ui) {
+    const r = ui.room;
+    r.on = !r.on;                  // optimistic — the next poll reconciles
+    updateCard(ui);
+    if (mode === 'v2') actV2('/resource/grouped_light/' + r.v2Light, { on: { on: r.on } }, ui.card);
+    else actV1(r.v1Group, { on: r.on }, ui.card);
   }
 
-  function recallScene(r, sceneId) {
-    if (mode === 'v2') actV2('/resource/scene/' + sceneId, { recall: { action: 'active' } });
-    else actV1(r.v1Group, { scene: sceneId });
+  function stepBrightness(ui, dir) {
+    const r = ui.room;
+    r.pct = Math.max(1, Math.min(100, r.pct + dir * BRI_STEP));
+    r.on = true;                   // stepping implies on (matches the PUT below)
+    updateCard(ui);                // optimistic — the next poll reconciles
+    if (mode === 'v2') actV2('/resource/grouped_light/' + r.v2Light, { on: { on: true }, dimming: { brightness: r.pct } }, ui.card);
+    else actV1(r.v1Group, { on: true, bri: Math.max(1, Math.min(254, Math.round(r.pct / 100 * 254))) }, ui.card);
   }
 
-  async function actV1(groupId, body) {
+  function recallScene(ui, sceneId, chip) {
+    // A scene recall often changes nothing visible on the card, so the chip
+    // confirm-flashes on success (and fail-flashes like every other action).
+    if (mode === 'v2') actV2('/resource/scene/' + sceneId, { recall: { action: 'active' } }, chip, true);
+    else actV1(ui.room.v1Group, { scene: sceneId }, chip, true);
+  }
+
+  async function actV1(groupId, body, el, confirm) {
     holdoff = Date.now() + 1200;   // let the bridge settle before the next poll repaints
     try {
-      await WW.fetch(v1api('/groups/' + groupId + '/action'), {
+      const res = await WW.fetch(v1api('/groups/' + groupId + '/action'), {
         method: 'PUT',
         body: JSON.stringify(body),
       });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      if (confirm && el) flash(el, 'confirm-flash');
     } catch (e) {
       WW.log('hue: action failed: ' + e.message);
+      if (el) flash(el, 'fail-flash');   // the reconcile poll below reverts the optimistic UI
     }
     holdoff = 0;
     poll();
   }
 
-  async function actV2(path, body) {
+  async function actV2(path, body, el, confirm) {
     holdoff = Date.now() + 1200;
     try {
-      await v2fetch(path, { method: 'PUT', body: JSON.stringify(body) });
+      const res = await v2fetch(path, { method: 'PUT', body: JSON.stringify(body) });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      if (confirm && el) flash(el, 'confirm-flash');
     } catch (e) {
       WW.log('hue: action failed: ' + e.message);
+      if (el) flash(el, 'fail-flash');   // the reconcile poll below reverts the optimistic UI
     }
     holdoff = 0;
     poll();
