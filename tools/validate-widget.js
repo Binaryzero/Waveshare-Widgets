@@ -88,9 +88,15 @@ function validate(folder) {
   } else {
     // The foundation must be the FIRST stylesheet of any kind — a linked local
     // stylesheet before it would override base layout just like an inline <style>.
+    // The rel VALUE is parsed to its attribute boundary (quotes or whitespace) and
+    // token-matched, so a preload whose filename merely contains "stylesheet"
+    // (rel=preload href=stylesheet.css) cannot false-positive.
     let firstOther = html.search(/<style[\s>]/i);
-    for (const m of html.matchAll(/<link[^>]+rel=["']stylesheet["'][^>]*>/gi)) {
+    for (const m of html.matchAll(/<link\b[^>]*>/gi)) {
       if (m[0].includes('widget-base.css')) continue;
+      const rel = m[0].match(/\brel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i);
+      const value = rel ? (rel[1] ?? rel[2] ?? rel[3] ?? '') : '';
+      if (!value.toLowerCase().split(/\s+/).includes('stylesheet')) continue;
       if (firstOther < 0 || m.index < firstOther) firstOther = m.index;
     }
     if (firstOther >= 0 && firstOther < baseIdx)
