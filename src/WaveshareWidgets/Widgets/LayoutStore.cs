@@ -144,7 +144,7 @@ public static class LayoutStore
     {
         try
         {
-            File.WriteAllText(AppPaths.LayoutFile, JsonSerializer.Serialize(layout, JsonOptions));
+            DurableStore.Write(AppPaths.LayoutFile, JsonSerializer.Serialize(layout, JsonOptions));
         }
         catch (Exception ex)
         {

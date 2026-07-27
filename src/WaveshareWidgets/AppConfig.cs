@@ -48,7 +48,7 @@ public sealed class AppConfig
     {
         try
         {
-            File.WriteAllText(AppPaths.ConfigFile, JsonSerializer.Serialize(this, JsonOptions));
+            DurableStore.Write(AppPaths.ConfigFile, JsonSerializer.Serialize(this, JsonOptions));
         }
         catch (Exception ex)
         {

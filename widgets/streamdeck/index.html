@@ -189,7 +189,10 @@
         renderLive(lastProfile);
       }
     } else if (data.available === false) {
-      poll(); // window went away: refresh the profile so the fallback/message shows
+      // Window went away: remember it NOW so taps in the stale window fail-flash
+      // instead of posting into the void, then refresh for the fallback/message.
+      if (lastProfile) lastProfile.available = false;
+      poll();
     }
   });
 
@@ -207,6 +210,14 @@
     pollTimer = setInterval(poll, 4000);
     clearInterval(captureTimer);
     if (cfg.live) captureTimer = setInterval(() => WW.requestStreamDeckCapture(), cfg.liveRefresh);
+  }
+
+  // Restartable state-theater flash (fail-flash from widget-base): remove, force
+  // reflow, re-add — otherwise a second failure on the same key shows nothing.
+  function flash(elm, cls) {
+    elm.classList.remove(cls);
+    void elm.offsetWidth;
+    elm.classList.add(cls);
   }
 
   function showMessage(title, detail) {
@@ -243,8 +254,15 @@
 
   // Map a tap on the letterboxed capture back to a key cell and trigger it.
   document.getElementById('live').addEventListener('click', (ev) => {
+    const live = document.getElementById('live');
     const img = document.getElementById('liveImg');
-    if (!img.naturalWidth || !img.naturalHeight) return;
+    // Deck gone (capture reported available:false and the refresh poll hasn't
+    // repainted yet) or no frame to map the tap onto — refuse visibly, not silently.
+    if (!lastProfile || lastProfile.available === false ||
+        !img.naturalWidth || !img.naturalHeight) {
+      flash(live, 'fail-flash');
+      return;
+    }
     const rows = Number(img.dataset.rows) || 3;
     const cols = Number(img.dataset.cols) || 5;
     const r = img.getBoundingClientRect();
@@ -256,14 +274,17 @@
     WW.streamDeckClick(row, col, rows, cols);
     WW.log('streamdeck: live click ' + row + ',' + col);
 
-    // brief highlight over the tapped cell
-    const flash = document.getElementById('liveFlash');
-    flash.style.left = (r.left + col * (r.width / cols)) + 'px';
-    flash.style.top = (r.top + row * (r.height / rows)) + 'px';
-    flash.style.width = (r.width / cols) + 'px';
-    flash.style.height = (r.height / rows) + 'px';
-    flash.style.opacity = '1';
-    setTimeout(() => { flash.style.opacity = '0'; }, 220);
+    // Brief highlight over the tapped cell. NOTE: named hl, not flash — a
+    // `const flash` here would shadow the top-level flash() helper across the
+    // WHOLE handler scope, turning the fail-flash call above into a TDZ
+    // ReferenceError (the refused tap would throw instead of flashing).
+    const hl = document.getElementById('liveFlash');
+    hl.style.left = (r.left + col * (r.width / cols)) + 'px';
+    hl.style.top = (r.top + row * (r.height / rows)) + 'px';
+    hl.style.width = (r.width / cols) + 'px';
+    hl.style.height = (r.height / rows) + 'px';
+    hl.style.opacity = '1';
+    setTimeout(() => { hl.style.opacity = '0'; }, 220);
   });
 
   function renderPicker(profiles) {
@@ -276,8 +297,11 @@
     picker.textContent = '';
     for (const name of profiles) {
       const b = document.createElement('button');
+      // Not a .btn (keeps the compact chip look) — .pressable supplies the
+      // pressed physicality the bare chip lacked.
+      b.className = 'pressable';
       b.textContent = name;
-      if (name === cfg.profileName || (!cfg.profileName && name === profiles[0])) b.className = 'active';
+      if (name === cfg.profileName || (!cfg.profileName && name === profiles[0])) b.className = 'pressable active';
       b.addEventListener('click', () => {
         cfg.profileName = name;
         try { localStorage.setItem('ww-sd-profile', name); } catch (e) { /* private mode */ }
@@ -365,6 +389,13 @@
           cell.appendChild(f);
         }
         cell.addEventListener('click', () => {
+          // The deck can vanish between polls (VSD window closed); the grid is
+          // then stale for up to 4 s. ww-sd-click is fire-and-forget, so refuse
+          // the tap visibly here instead of posting into the void.
+          if (!lastProfile || lastProfile.available === false) {
+            flash(cell, 'fail-flash');
+            return;
+          }
           WW.streamDeckClick(btn.row, btn.col, rows, cols);
           WW.log('streamdeck: click ' + btn.row + ',' + btn.col + ' (' + (btn.title || '') + ')');
         });

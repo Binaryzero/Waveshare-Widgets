@@ -139,6 +139,8 @@ WW.listMedia()       // -> Promise<[{name, url, kind: 'image'|'video'}]>; served
 WW.getAudio()        // -> Promise<{available, master: {level, muted}, sessions: [{pid, name, level, muted}]}>
 WW.setAudio(target, { level?, muted? })  // target: 'master' | pid (string); level 0..1.
                                          // A pid fans out to all same-name sessions of that app.
+                                         // Resolves {ok}; ok:false = the host couldn't apply it
+                                         // (session gone) — revert your optimistic UI and flash.
 
 // Windows toast mirror (notifications widget)
 WW.watchNotifications(true)     // start the host's toast mirror (demand-gated polling)
@@ -193,6 +195,7 @@ Sensor tiers (what exists depends on the machine and elevation):
 | Always present (no elevation) | Source |
 |---|---|
 | `sys:cpu:load`, `sys:mem:load`, `sys:mem:used`, `sys:mem:total`, `sys:net:down`, `sys:net:up` | performance counters + memory status |
+| `sys:idle:seconds` (type `Idle`, units `s`) | `GetLastInputInfo` — seconds since the last keyboard/mouse input, for "at the PC" logic (vitals away-freeze) |
 | `sys:thermal:<zone>` | ACPI thermal zones (firmware-dependent CPU-ish temp) |
 | GPU temp/load/VRAM, storage | LibreHardwareMonitor (vendor user-mode DLLs) |
 | `corsair:<id>:battery` | iCUE SDK, if `iCUESDK.x64_2019.dll` present + iCUE SDK enabled |

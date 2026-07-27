@@ -178,6 +178,14 @@
     build();
   });
 
+  // Restartable state-theater flash (confirm-flash from widget-base): remove,
+  // force reflow, re-add — otherwise back-to-back taps on a tile show nothing.
+  function flash(elm, cls) {
+    elm.classList.remove(cls);
+    void elm.offsetWidth;
+    elm.classList.add(cls);
+  }
+
   function build() {
     const grid = document.getElementById('grid');
     const msg = document.getElementById('message');
@@ -187,7 +195,7 @@
 
     for (const it of items) {
       const tile = document.createElement('div');
-      tile.className = 'tile';
+      tile.className = 'tile pressable';
       tile.title = it.target;
       const icon = document.createElement('div');
       icon.className = 'icon';
@@ -204,6 +212,9 @@
       tile.addEventListener('click', () => {
         WW.action(it.kind, it.target);
         WW.log('launch: ' + it.kind + ' ' + it.target);
+        // ww-action is fire-and-forget (no result round-trip) and launching has
+        // no other visible effect in the widget — confirm-flash the tile.
+        flash(tile, 'confirm-flash');
       });
       grid.appendChild(tile);
     }

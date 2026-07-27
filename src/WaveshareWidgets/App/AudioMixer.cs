@@ -81,7 +81,10 @@ public sealed class AudioMixer
     }
 
     /// <summary>Sets master ("master") or a session's (pid as string) level/mute.</summary>
-    public void Apply(string target, float? level, bool? muted)
+    /// <summary>Returns whether anything was actually applied — false when the target
+    /// session vanished or the endpoint failed, so the widget can revert its
+    /// optimistic UI instead of silently disagreeing with Windows.</summary>
+    public bool Apply(string target, float? level, bool? muted)
     {
         try
         {
@@ -98,17 +101,18 @@ public sealed class AudioMixer
                     if (muted is { } m)
                         epVolume.SetMute(m, ref ctx);
                     Marshal.ReleaseComObject(epVolume);
-                    return;
+                    return true;
                 }
 
                 if (!int.TryParse(target, out var targetPid))
-                    return;
+                    return false;
                 var manager = Activate<IAudioSessionManager2>(device);
                 manager.GetSessionEnumerator(out var sessionEnum);
                 sessionEnum.GetCount(out var count);
                 // Apply to every session of the target app's NAME, not just the pid:
                 // multi-process apps (browsers, games with helpers) split their audio.
                 string? targetName = null;
+                var applied = false;
                 for (var pass = 0; pass < 2; pass++)
                 {
                     for (var i = 0; i < count; i++)
@@ -131,6 +135,7 @@ public sealed class AudioMixer
                                     volume.SetMasterVolume(Math.Clamp(sl, 0f, 1f), ref sctx);
                                 if (muted is { } sm)
                                     volume.SetMute(sm, ref sctx);
+                                applied = true;
                             }
                             Marshal.ReleaseComObject(control);
                         }
@@ -141,6 +146,7 @@ public sealed class AudioMixer
                 }
                 Marshal.ReleaseComObject(sessionEnum);
                 Marshal.ReleaseComObject(manager);
+                return applied;
             }
             finally
             {
@@ -151,6 +157,7 @@ public sealed class AudioMixer
         catch (Exception ex)
         {
             Log.Warn($"Audio set failed: {ex.Message}");
+            return false;
         }
     }
 

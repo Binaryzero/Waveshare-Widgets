@@ -120,7 +120,7 @@ WW.fetch(url, init)                            // fetch() with host-proxied CORS
 WW.ping(hosts)                                 // real ICMP pings via the host process
 WW.listMedia()                                 // list the user's media folder -> [{name, url, kind}]
 WW.getAudio()                                  // Windows volume mixer snapshot (master + sessions)
-WW.setAudio(target, {level?, muted?})          // set master ('master') or per-app volume/mute
+WW.setAudio(target, {level?, muted?})          // set master ('master') or per-app volume/mute; resolves {ok}
 
 WW.watchNotifications(true)                    // start the host's notification mirror (demand-gated)
 WW.notifications                               // {state: 'allowed'|'denied'|'unavailable', items:[{id, app, appId, title, body, time}]}
@@ -153,7 +153,10 @@ Sensor `type` values follow LibreHardwareMonitor: `Temperature` (°C), `Load` (%
 and more. Values can be `null` when a source is unavailable — always render a placeholder.
 
 Zero-elevation sensors are always present: `sys:cpu:load`, `sys:mem:load`,
-`sys:mem:used`, `sys:mem:total`, `sys:net:down`, `sys:net:up`, plus firmware-dependent
+`sys:mem:used`, `sys:mem:total`, `sys:net:down`, `sys:net:up`,
+`sys:idle:seconds` (seconds since the last keyboard/mouse input, type `Idle`,
+units `s` — for "is the user at the PC" logic like the vitals widget's
+away-freeze), plus firmware-dependent
 ACPI thermal zones as `sys:thermal:<zone>` (deviceType `System`, type `Temperature`).
 Bluetooth device and laptop batteries appear as `battery:<slug>` (type `Battery`,
 units `%`); devices on a 2.4 GHz dongle (Slipstream/Unifying) don't expose battery here.

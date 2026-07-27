@@ -324,7 +324,16 @@ public sealed class DashboardWindow : Form
                         var target = message["target"]?.GetValue<string>() ?? "master";
                         float? level = message["level"] is JsonValue lv && lv.TryGetValue<double>(out var ld) ? (float)ld : null;
                         bool? muted = message["muted"] is JsonValue mv && mv.TryGetValue<bool>(out var mb) ? mb : null;
-                        _ = Task.Run(() => _audio.Apply(target, level, muted));
+                        var ackId = message["id"]?.GetValue<string>();
+                        _ = Task.Run(() =>
+                        {
+                            // Acked so the volume widget can fail-flash and revert its
+                            // optimistic UI on a real Core Audio failure (session gone,
+                            // endpoint changed) instead of silently disagreeing.
+                            var ok = _audio.Apply(target, level, muted);
+                            if (!string.IsNullOrEmpty(ackId))
+                                PostToShellThreadSafe("audio-result", new JsonObject { ["id"] = ackId, ["ok"] = ok });
+                        });
                     }
                     break;
             }

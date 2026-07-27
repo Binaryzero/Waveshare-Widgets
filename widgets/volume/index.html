@@ -160,21 +160,48 @@
     else document.body.style.removeProperty(name);
   }
 
+  // Restartable state-theater flash (fail-flash from widget-base): remove, force
+  // reflow, re-add — otherwise a second failure on the same row shows nothing.
+  function flash(elm, cls) {
+    elm.classList.remove(cls);
+    void elm.offsetWidth;
+    elm.classList.add(cls);
+  }
+
+  // Roll a row back to the last authoritative snapshot after a failed send.
+  function revertRow(ui) {
+    if (!lastData) return;
+    const snap = ui.target === 'master' ? lastData.master
+      : (lastData.sessions || []).find((s) => String(s.pid) === ui.target);
+    if (snap) updateRow(ui, snap);
+  }
+
   // ---- throttled setAudio: at most one send per SEND_GAP ms per target -------
-  function sendAudio(target, opts) {
-    let t = throttles.get(target);
-    if (!t) { t = { lastSent: 0, timer: null, pending: null }; throttles.set(target, t); }
+  function sendAudio(ui, opts) {
+    let t = throttles.get(ui.target);
+    if (!t) { t = { lastSent: 0, timer: null, pending: null, ui: null }; throttles.set(ui.target, t); }
     t.pending = opts;
+    t.ui = ui;
     if (t.timer) return;               // trailing send already scheduled
     const wait = Math.max(0, SEND_GAP - (performance.now() - t.lastSent));
-    if (wait === 0) flush(target, t);
-    else t.timer = setTimeout(() => { t.timer = null; flush(target, t); }, wait);
+    if (wait === 0) flush(ui.target, t);
+    else t.timer = setTimeout(() => { t.timer = null; flush(ui.target, t); }, wait);
   }
   function flush(target, t) {
     if (!t.pending) return;
-    WW.setAudio(target, t.pending);
+    const opts = t.pending;
     t.pending = null;
     t.lastSent = performance.now();
+    // setAudio resolves {ok} — ok:false means the host really couldn't apply it
+    // (session gone, endpoint changed). Either that or a throw must not die
+    // silently: fail-flash the row and roll the optimistic slider/glyph back.
+    Promise.resolve().then(() => WW.setAudio(target, opts)).then((r) => {
+      if (r && r.ok === false) throw new Error('host refused');
+    }).catch((e) => {
+      WW.log('volume: set failed: ' + ((e && e.message) || e));
+      flash(t.ui.row, 'fail-flash');
+      revertRow(t.ui);
+    });
   }
 
   function glyphFor(pct, muted) {
@@ -200,18 +227,30 @@
       input.style.setProperty('--fill', v + '%');
       ui.pct.textContent = v + '%';
       if (ui.glyph) ui.glyph.textContent = glyphFor(v, ui.muted);
-      sendAudio(ui.target, { level: v / 100 });
+      sendAudio(ui, { level: v / 100 });
     });
   }
 
   function wireMute(ui) {
     ui.mute.addEventListener('click', () => {
-      const next = !ui.muted;
-      WW.setAudio(ui.target, { muted: next });   // taps go straight through
-      ui.muted = next;                           // optimistic UI until next poll
-      ui.mute.textContent = next ? '🔇' : '🔊';
-      ui.row.classList.toggle('muted', next);
-      if (ui.glyph) ui.glyph.textContent = glyphFor(Math.round(Number(ui.input.value)) || 0, next);
+      const prev = ui.muted;
+      const next = !prev;
+      const paint = (muted) => {
+        ui.muted = muted;
+        ui.mute.textContent = muted ? '🔇' : '🔊';
+        ui.row.classList.toggle('muted', muted);
+        if (ui.glyph) ui.glyph.textContent = glyphFor(Math.round(Number(ui.input.value)) || 0, muted);
+      };
+      paint(next);                               // optimistic UI until next poll
+      // Taps go straight through (no throttle); a throwing setAudio or an
+      // {ok:false} ack must fail-flash the row and revert the optimistic flip.
+      Promise.resolve().then(() => WW.setAudio(ui.target, { muted: next })).then((r) => {
+        if (r && r.ok === false) throw new Error('host refused');
+      }).catch((e) => {
+        WW.log('volume: mute failed: ' + ((e && e.message) || e));
+        paint(prev);
+        flash(ui.row, 'fail-flash');
+      });
     });
   }
 

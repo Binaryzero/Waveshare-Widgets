@@ -271,6 +271,36 @@ Related: sensor `value` can be `null` at any tick — always render a placeholde
 never `NaN` or `undefined`, and degrade to fallback sensors where they exist (the stock
 CPU widget falls back from the kernel-driver CPU temp to an ACPI thermal zone).
 
+### Action feedback ("state theater")
+
+**No tap may be a silent no-op.** Every interactive element must answer the finger:
+
+- **Pressed physicality** — interactive tiles that aren't `.btn` get `.pressable`
+  (scale + brightness on `:active`; `.btn` already has it). The user should *feel*
+  the press even when the action takes a moment.
+- **Optimistic flip + reconcile** — toggles that hit a device or API flip the UI
+  immediately, then reconcile with the next poll/response; on failure, revert the
+  flip **and** fail-flash.
+- **`.fail-flash`** — a failed or refused action flashes the element red. Never
+  swallow an error into the console while the panel looks like nothing happened.
+- **`.confirm-flash`** — an action whose success has no other visible effect (launch
+  an app, copy, fire-and-forget) pulses the element with `--ok` once.
+
+Flashes are **restartable**: remove the class, force a reflow, re-add — otherwise a
+second failure on the same element shows nothing.
+
+```js
+function flash(el, cls) {
+  el.classList.remove(cls);
+  void el.offsetWidth;   // restart the animation even mid-run
+  el.classList.add(cls);
+}
+```
+
+Under reduced motion the flash utilities keep their (color-only) animation — feedback
+is not motion; in game mode all animation pauses panel-wide, which is acceptable
+because the user is in the game, not on the panel.
+
 ---
 
 ## 6 · Typography
@@ -402,6 +432,8 @@ Copy this into your widget's PR / release notes and check every line:
 - [ ] Error: `.state-card.err` with a Retry button
 - [ ] Stale: keeps last data visible, dimmed, with `.pill.muted`
 - [ ] `null` sensor values render a placeholder, with fallback sensors where applicable
+- [ ] No silent no-op: actions give pressed feedback, failures `.fail-flash` (with
+      optimistic flips reverted), invisible successes `.confirm-flash`
 
 ### Typography, motion, touch
 - [ ] `tabular-nums` on every live number

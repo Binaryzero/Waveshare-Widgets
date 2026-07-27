@@ -13,6 +13,7 @@
   const pendingPings = new Map();
   const pendingMediaLists = new Map();
   const pendingAudioGets = new Map();
+  const pendingAudioSets = new Map();
   let fetchSeq = 0;
   // The shell routes results by id alone, across EVERY widget frame — a per-frame
   // counter plus a ms-floored clock can collide between frames loaded in the same
@@ -103,6 +104,11 @@
         pending.resolve(msg.files || []);
       }
     } else if (msg.type === 'ww-audio-result') {
+      const setPending = pendingAudioSets.get(msg.id);
+      if (setPending) {
+        pendingAudioSets.delete(msg.id);
+        setPending.resolve({ ok: msg.ok !== false });
+      }
       const pending = pendingAudioGets.get(msg.id);
       if (pending) {
         pendingAudioGets.delete(msg.id);
@@ -312,15 +318,25 @@
       });
     },
 
-    /** Set master ('master') or per-app (pid) volume/mute. opts: {level? 0..1, muted?}. */
+    /** Set master ('master') or per-app (pid) volume/mute. opts: {level? 0..1, muted?}.
+     * Resolves {ok} — ok:false means the host could not apply it (endpoint changed,
+     * session gone). Hosts without the ack channel (settings preview, older builds)
+     * resolve {ok:true} after a short wait so callers can always await this without
+     * false-flashing. */
     setAudio(target, opts) {
       opts = opts || {};
-      parent.postMessage({
-        type: 'ww-audio-set',
-        target: String(target == null ? 'master' : target),
-        level: typeof opts.level === 'number' ? Math.max(0, Math.min(1, opts.level)) : undefined,
-        muted: typeof opts.muted === 'boolean' ? opts.muted : undefined,
-      }, '*');
+      return new Promise((resolve) => {
+        const id = reqId('as');
+        pendingAudioSets.set(id, { resolve });
+        setTimeout(() => { if (pendingAudioSets.delete(id)) resolve({ ok: true }); }, 3000);
+        parent.postMessage({
+          type: 'ww-audio-set',
+          id,
+          target: String(target == null ? 'master' : target),
+          level: typeof opts.level === 'number' ? Math.max(0, Math.min(1, opts.level)) : undefined,
+          muted: typeof opts.muted === 'boolean' ? opts.muted : undefined,
+        }, '*');
+      });
     },
 
     /** Writes to the host's app.log — useful for debugging on the panel. */
