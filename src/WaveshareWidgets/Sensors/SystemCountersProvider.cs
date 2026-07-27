@@ -126,6 +126,18 @@ public sealed class SystemCountersProvider : ISensorProvider
             }
         }
 
+        // Seconds since the last keyboard/mouse input, session-wide — powers "at the
+        // PC" logic like the vitals widget's away-freeze. GetLastInputInfo reports in
+        // TickCount milliseconds, which wraps at 49.7 days; uint subtraction handles
+        // the wrap correctly.
+        var lastInput = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
+        if (GetLastInputInfo(ref lastInput))
+        {
+            var idleMs = unchecked((uint)Environment.TickCount - lastInput.dwTime);
+            readings.Add(new SensorReading("sys:idle:seconds", "Input Idle", "System", "System", "Idle", "s",
+                Math.Round(idleMs / 1000.0)));
+        }
+
         var memory = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
         if (GlobalMemoryStatusEx(ref memory))
         {
@@ -179,4 +191,14 @@ public sealed class SystemCountersProvider : ISensorProvider
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LASTINPUTINFO
+    {
+        public uint cbSize;
+        public uint dwTime;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
 }

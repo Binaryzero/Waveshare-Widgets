@@ -193,6 +193,7 @@ Sensor tiers (what exists depends on the machine and elevation):
 | Always present (no elevation) | Source |
 |---|---|
 | `sys:cpu:load`, `sys:mem:load`, `sys:mem:used`, `sys:mem:total`, `sys:net:down`, `sys:net:up` | performance counters + memory status |
+| `sys:idle:seconds` (type `Idle`, units `s`) | `GetLastInputInfo` — seconds since the last keyboard/mouse input, for "at the PC" logic (vitals away-freeze) |
 | `sys:thermal:<zone>` | ACPI thermal zones (firmware-dependent CPU-ish temp) |
 | GPU temp/load/VRAM, storage | LibreHardwareMonitor (vendor user-mode DLLs) |
 | `corsair:<id>:battery` | iCUE SDK, if `iCUESDK.x64_2019.dll` present + iCUE SDK enabled |
