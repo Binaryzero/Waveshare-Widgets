@@ -204,6 +204,11 @@
     if (collapsed) {
       previewFrame.removeAttribute('src'); // suspend: no hidden widgets burning CPU
       replicaReady = false;
+      // An intentionally suspended preview is not a failure — a watchdog armed in
+      // the last six seconds must not fire a false "did not start".
+      clearTimeout(replicaWatchdog);
+      el('previewHint').textContent = PREVIEW_HINT_DEFAULT;
+      el('previewHint').classList.remove('warn');
     } else {
       previewFrame.src = 'index.html?preview=1';
       fitReplica();
