@@ -1,0 +1,31 @@
+{
+  "id": "ws.stock.notifications",
+  "name": "Notifications",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Mirrors Windows toast notifications on the panel — newest first, grouped by app. Dismiss items, tap an app name to mute it, and flip the privacy eye to blur titles and bodies until tapped.",
+  "min_api_version": 1,
+  "supported_slots": [
+    "quarter",
+    "half"
+  ],
+  "properties": [
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": [
+        "solid",
+        "glass",
+        "transparent"
+      ],
+      "default": "solid"
+    },
+    {
+      "name": "appColor",
+      "label": "App name color",
+      "type": "color",
+      "default": "#4cc2ff"
+    }
+  ]
+}

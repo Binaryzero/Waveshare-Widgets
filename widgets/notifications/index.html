@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Notifications</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Widget-specific layout; tokens, background/bgStyle and the typography base
+   * come from widget-base.css. Designed for quarter (320px) first. */
+  body {
+    display: flex;
+    flex-direction: column;
+    gap: clamp(6px, 1.8vh, 10px);
+    padding: clamp(8px, 2.5vh, 14px) clamp(10px, 3%, 18px);
+  }
+  header { flex: none; display: flex; align-items: center; gap: var(--space-2); }
+  #countPill { font-variant-numeric: tabular-nums; }
+  #eyeBtn {
+    margin-left: auto;
+    width: 40px;
+    min-width: 40px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+  }
+  #eyeBtn svg { display: block; }
+
+  /* Muted-app chips: tap to unmute. */
+  #muteBar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  #muteBar .kicker { color: var(--text-dim); }
+  .chip {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+  }
+  .chip .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+  .chip .x { color: var(--text-muted); }
+
+  #list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(8px, 2vh, 12px);
+    scrollbar-width: none;
+  }
+  #list::-webkit-scrollbar { display: none; }
+  #list > .state-card { flex: 1; }
+
+  .cluster { display: flex; flex-direction: column; gap: 6px; }
+  /* App header: the whole row is the mute toggle (≥40px touch target). */
+  .app-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 40px;
+    margin: 0;
+    padding: 0 var(--space-1);
+    background: none;
+    border: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: opacity var(--dur-fast) var(--ease);
+  }
+  .app-head:active { opacity: 0.55; }
+  .app-name {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--app-color, var(--accent));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .app-count { font-size: 11px; font-weight: 700; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+  .item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+  }
+  .item.masked { cursor: pointer; transition: transform var(--dur-fast) var(--ease); }
+  .item.masked:active { transform: scale(0.98); }
+  .item .txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .t-row { display: flex; align-items: baseline; gap: var(--space-2); }
+  .title {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 650;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .time { flex: none; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .body {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .dismiss { width: 40px; min-width: 40px; padding: 0; color: var(--text-muted); }
+
+  /* Wide slots (three-quarter offered automatically with half): two columns,
+   * clusters kept whole. */
+  @media (min-width: 800px) {
+    #list { display: block; column-count: 2; column-gap: clamp(8px, 2vh, 12px); }
+    .cluster { break-inside: avoid; margin-bottom: clamp(8px, 2vh, 12px); }
+    #list > .state-card { height: 100%; }
+  }
+
+  /* State overlay paints the surface at the tile's effective opacity so it
+   * matches the bgStyle (stock countdown/weather pattern). */
+  #state {
+    position: fixed;
+    inset: 0;
+    background: rgba(var(--surface-rgb), var(--panel-alpha-eff));
+  }
+</style>
+</head>
+<body>
+  <header>
+    <span class="kicker">Notifications</span>
+    <span class="pill" id="countPill" hidden>0</span>
+    <button class="btn" id="eyeBtn" aria-label="Hide notification text" aria-pressed="false" hidden>
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/>
+        <circle cx="12" cy="12" r="2.6"/>
+        <line id="eyeSlash" x1="4.5" y1="4.5" x2="19.5" y2="19.5" hidden/>
+      </svg>
+    </button>
+  </header>
+  <div id="muteBar" hidden></div>
+  <main id="list"></main>
+  <div class="state-card" id="state">
+    <div class="spinner" id="stateSpinner"></div>
+    <div class="state-icon" id="stateIcon" hidden></div>
+    <div class="state-title" id="stateTitle" hidden></div>
+    <div class="state-body" id="stateBody" hidden></div>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+
+  // Manifest defaults — the host merges these into settings, so "user changed it"
+  // means "differs from the default". Only then does the property override the
+  // theme tokens (inline CSS variable); at default --accent shows through.
+  const DEF = { appColor: '#4cc2ff' };
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
+  function setVar(name, value) {
+    if (value) document.body.style.setProperty(name, value);
+    else document.body.style.removeProperty(name);
+  }
+
+  // Per-instance persistence (mutes, privacy eye): localStorage is per-ORIGIN and
+  // all notification instances share one virtual host, so keys carry the slot tag
+  // (the stock countdown's INSTANCE pattern) — two tiles keep independent mutes.
+  const INSTANCE = (location.hash.match(/ww-slot=([\w-]+)/) || [])[1] || 'solo';
+  const MUTE_KEY = 'ww.notifications.mute:' + INSTANCE;
+  const EYE_KEY = 'ww.notifications.eye:' + INSTANCE;
+  const MASK = '●●●'; // "●●●" — privacy placeholder for hidden text
+
+  let payload = null;          // last ww-notifications payload (null until first)
+  let privacy = false;         // eye toggle: mask titles/bodies until tapped
+  const muted = new Map();     // appKey -> display name
+  let revealed = new Set();    // ids un-masked by tap — cleared on every update
+  const dismissed = new Set(); // optimistic local removals, pruned per payload
+  const timeEls = [];          // [{el, t}] for the 30 s relative-time refresh
+  let started = false;         // repeated ww-init must not stack timers
+
+  (function loadStored() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(MUTE_KEY) || '[]');
+      if (Array.isArray(raw))
+        for (const e of raw) if (e && e.k) muted.set(String(e.k), String(e.n || e.k));
+    } catch (e) { /* corrupt entry — start unmuted */ }
+    try { privacy = localStorage.getItem(EYE_KEY) === 'on'; } catch (e) { privacy = false; }
+  })();
+  function saveMuted() {
+    try { localStorage.setItem(MUTE_KEY, JSON.stringify([...muted].map(([k, n]) => ({ k, n })))); }
+    catch (e) { /* best effort */ }
+  }
+  function saveEye() {
+    try { localStorage.setItem(EYE_KEY, privacy ? 'on' : 'off'); }
+    catch (e) { /* best effort */ }
+  }
+
+  WW.onInit((state) => {
+    const s = state.settings;
+    // Anything that isn't explicitly glass/transparent renders solid, matching
+    // the stock widgets for unset AND out-of-spec values.
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+    setVar('--app-color', changed(s.appColor, DEF.appColor) ? s.appColor : '');
+
+    // Demand-gated host polling: watch on init (idempotent), host stops when no
+    // widget is watching. A re-init may already carry the latest payload.
+    WW.watchNotifications(true);
+    payload = WW.notifications;
+    render();
+
+    if (!started) {
+      started = true;
+      setInterval(tickTimes, 30000);
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) tickTimes(); });
+    }
+  });
+
+  // Registered once at top level — onInit re-fires per ww-init and would stack.
+  WW.onNotifications((p) => {
+    payload = p;
+    revealed = new Set(); // tap-to-reveal lasts until the next update
+    render();
+  });
+
+  // ---- data shaping ---------------------------------------------------------
+
+  function parseTime(v) {
+    if (v == null || v === '') return null;
+    let t = typeof v === 'number' ? v : NaN;
+    if (!Number.isFinite(t)) {
+      const n = Number(v);
+      t = Number.isFinite(n) ? n : Date.parse(String(v));
+    }
+    if (!Number.isFinite(t)) return null;
+    if (t > 1e9 && t < 1e11) t *= 1000; // epoch seconds -> ms
+    return t;
+  }
+
+  function relTime(t) {
+    if (t == null) return '';
+    const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (s < 60) return 'now';
+    if (s < 3600) return Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+    return Math.floor(s / 86400) + 'd ago';
+  }
+
+  // 30 s cadence: only the relative-time text nodes are touched, write-if-changed.
+  function tickTimes() {
+    if (document.hidden) return;
+    try {
+      for (const e of timeEls) {
+        const txt = relTime(e.t);
+        if (e.el.textContent !== txt) e.el.textContent = txt;
+      }
+    } catch (e) { WW.log('notifications time tick failed: ' + e.message); }
+  }
+
+  // Normalized, newest-first, minus locally-dismissed items. All strings here are
+  // untrusted external text — rendered with textContent only, never innerHTML.
+  function currentItems() {
+    const arr = payload && Array.isArray(payload.items) ? payload.items : [];
+    const out = [];
+    for (const raw of arr) {
+      if (!raw || raw.id == null) continue;
+      const app = String(raw.app == null ? '' : raw.app).trim();
+      const appId = String(raw.appId == null ? '' : raw.appId).trim();
+      out.push({
+        id: raw.id,
+        sid: String(raw.id),
+        key: (appId || app || 'unknown').toLowerCase(),
+        name: app || appId || 'App',
+        title: String(raw.title == null ? '' : raw.title).trim(),
+        body: String(raw.body == null ? '' : raw.body).trim(),
+        t: parseTime(raw.time),
+      });
+    }
+    // Newest first; undated items sink to the end in delivery order (stable sort).
+    out.sort((a, b) => (b.t == null ? -1 : b.t) - (a.t == null ? -1 : a.t));
+    const ids = new Set(out.map((i) => i.sid));
+    for (const d of [...dismissed]) if (!ids.has(d)) dismissed.delete(d);
+    return out.filter((i) => !dismissed.has(i.sid));
+  }
+
+  // ---- rendering ------------------------------------------------------------
+
+  function showOverlay(kind) {
+    const st = $('state');
+    st.hidden = false;
+    $('stateSpinner').hidden = kind !== 'loading';
+    $('stateIcon').hidden = kind === 'loading';
+    $('stateTitle').hidden = kind === 'loading';
+    $('stateBody').hidden = kind === 'loading';
+    if (kind === 'denied') {
+      $('stateIcon').textContent = '!';
+      $('stateTitle').textContent = 'Notification access is off';
+      $('stateBody').textContent = 'Windows Settings → Privacy & security → Notifications — turn on "Let apps access notifications" so the panel can mirror your toasts.';
+    } else if (kind === 'unavailable') {
+      $('stateIcon').textContent = '◎';
+      $('stateTitle').textContent = 'Notifications unavailable';
+      $('stateBody').textContent = 'Notification mirroring is not supported on this system.';
+    }
+    $('list').hidden = true;
+    $('muteBar').hidden = true;
+    $('countPill').hidden = true;
+    $('eyeBtn').hidden = true;
+  }
+
+  function inlineState(icon, title, body) {
+    const card = document.createElement('div');
+    card.className = 'state-card';
+    const i = document.createElement('div');
+    i.className = 'state-icon';
+    i.textContent = icon;
+    const t = document.createElement('div');
+    t.className = 'state-title';
+    t.textContent = title;
+    const b = document.createElement('div');
+    b.className = 'state-body';
+    b.textContent = body;
+    card.append(i, t, b);
+    return card;
+  }
+
+  function renderMuteBar() {
+    const bar = $('muteBar');
+    bar.textContent = '';
+    bar.hidden = muted.size === 0;
+    if (!muted.size) return;
+    const label = document.createElement('span');
+    label.className = 'kicker';
+    label.textContent = 'Muted';
+    bar.appendChild(label);
+    for (const [key, name] of muted) {
+      const chip = document.createElement('button');
+      chip.className = 'btn chip';
+      chip.setAttribute('aria-label', 'Unmute ' + name);
+      const n = document.createElement('span');
+      n.className = 'n';
+      n.textContent = name;
+      const x = document.createElement('span');
+      x.className = 'x';
+      x.textContent = '✕';
+      chip.append(n, x);
+      chip.addEventListener('click', () => {
+        muted.delete(key);
+        saveMuted();
+        render();
+      });
+      bar.appendChild(chip);
+    }
+  }
+
+  function updateEye() {
+    const btn = $('eyeBtn');
+    btn.classList.toggle('primary', privacy);
+    btn.setAttribute('aria-pressed', privacy ? 'true' : 'false');
+    btn.setAttribute('aria-label', privacy ? 'Show notification text' : 'Hide notification text');
+    // SVGElement has no .hidden property — toggle the attribute for the [hidden] rule.
+    if (privacy) $('eyeSlash').removeAttribute('hidden');
+    else $('eyeSlash').setAttribute('hidden', '');
+  }
+
+  function appHead(it) {
+    const head = document.createElement('button');
+    head.className = 'app-head';
+    head.setAttribute('aria-label', 'Mute ' + it.name);
+    const name = document.createElement('span');
+    name.className = 'app-name';
+    name.textContent = it.name;
+    const count = document.createElement('span');
+    count.className = 'app-count';
+    head.append(name, count);
+    head.addEventListener('click', () => {
+      muted.set(it.key, it.name);
+      saveMuted();
+      render();
+    });
+    return head;
+  }
+
+  function itemRow(it) {
+    const masked = privacy && !revealed.has(it.sid);
+    const row = document.createElement('div');
+    row.className = 'item card' + (masked ? ' masked' : '');
+    row.dataset.id = it.sid;
+    row.dataset.app = it.key;
+
+    // A title-less toast promotes its body to the title line (never repeated below).
+    const rawTitle = it.title || it.body || 'Notification';
+    const rawBody = it.title ? it.body : '';
+
+    const txt = document.createElement('div');
+    txt.className = 'txt';
+    const trow = document.createElement('div');
+    trow.className = 't-row';
+    const title = document.createElement('span');
+    title.className = 'title';
+    title.textContent = masked ? MASK : rawTitle;
+    const time = document.createElement('span');
+    time.className = 'time';
+    time.textContent = relTime(it.t);
+    if (it.t != null) timeEls.push({ el: time, t: it.t });
+    trow.append(title, time);
+    txt.appendChild(trow);
+    const bodyText = masked ? (rawBody ? MASK + ' ' + MASK : '') : rawBody;
+    if (bodyText) {
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.textContent = bodyText;
+      txt.appendChild(body);
+    }
+
+    const btn = document.createElement('button');
+    btn.className = 'btn dismiss';
+    btn.textContent = '✕';
+    btn.setAttribute('aria-label', 'Dismiss notification');
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation(); // the row itself may be a reveal target
+      WW.dismissNotification(it.id);
+      dismissed.add(it.sid); // optimistic removal; host payload confirms later
+      render();
+    });
+
+    row.append(txt, btn);
+    if (masked) row.addEventListener('click', () => { revealed.add(it.sid); render(); });
+    return row;
+  }
+
+  function render() {
+    try { renderInner(); }
+    catch (e) { WW.log('notifications render failed: ' + e.message); }
+  }
+
+  function renderInner() {
+    if (!payload || typeof payload !== 'object') { showOverlay('loading'); return; }
+    if (payload.state === 'denied') { showOverlay('denied'); return; }
+    if (payload.state === 'unavailable') { showOverlay('unavailable'); return; }
+
+    $('state').hidden = true;
+    $('list').hidden = false;
+    $('eyeBtn').hidden = false;
+    updateEye();
+    renderMuteBar();
+
+    const items = currentItems();
+    const visible = items.filter((it) => !muted.has(it.key));
+    const pill = $('countPill');
+    pill.hidden = visible.length === 0;
+    pill.textContent = String(visible.length);
+
+    // Batch: build the whole list off-DOM, then swap in one write.
+    timeEls.length = 0;
+    const frag = document.createDocumentFragment();
+    if (!visible.length) {
+      frag.appendChild(items.length
+        ? inlineState('◎', 'All muted',
+            items.length + (items.length === 1 ? ' notification is' : ' notifications are') +
+            ' hidden by muted apps — tap a chip above to unmute.')
+        : inlineState('✓', 'All caught up', 'New Windows notifications will show up here.'));
+    } else {
+      // Consecutive same-app items cluster under one tappable app header.
+      let clusterBox = null;
+      let countEl = null;
+      let lastKey = null;
+      let count = 0;
+      for (const it of visible) {
+        if (it.key !== lastKey) {
+          clusterBox = document.createElement('section');
+          clusterBox.className = 'cluster';
+          const head = appHead(it);
+          countEl = head.querySelector('.app-count');
+          clusterBox.appendChild(head);
+          frag.appendChild(clusterBox);
+          lastKey = it.key;
+          count = 0;
+        }
+        count++;
+        if (count > 1) countEl.textContent = String(count);
+        clusterBox.appendChild(itemRow(it));
+      }
+    }
+    const list = $('list');
+    list.textContent = '';
+    list.appendChild(frag);
+  }
+
+  $('eyeBtn').addEventListener('click', () => {
+    privacy = !privacy;
+    saveEye();
+    revealed = new Set();
+    render();
+  });
+</script>
+</body>
+</html>
