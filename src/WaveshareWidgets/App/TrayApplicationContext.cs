@@ -161,6 +161,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             return;
         }
         _settings = new SettingsWindow(_hub, _library);
+        _settings.Dashboard = _dashboard;
         _settings.LayoutSaved += () => _dashboard?.ReloadDashboard();
         _settings.Show();
     }

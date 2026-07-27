@@ -247,3 +247,30 @@ main { flex: 1; display: flex; min-height: 0; }
 /* ---- structured list editor -------------------------------------------------- */
 .list-editor .factory-row input[type="text"] { flex: 1; min-width: 0; }
 .list-editor .factory-row input[type="color"] { flex: none; }
+
+/* ---- live replica ------------------------------------------------------------ */
+#previewWrap {
+  padding: 10px 16px 4px;
+  border-bottom: 1px solid var(--line);
+}
+#previewBar { display: flex; align-items: center; gap: 12px; }
+#previewBar .panel-title { margin: 0; }
+#previewBar .panel-hint { margin: 0; flex: 1; }
+#previewStage {
+  position: relative;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #000;
+}
+#previewStage.collapsed { display: none; }
+#previewFrame {
+  width: 1280px;
+  height: 400px;
+  border: 0;
+  display: block;
+  transform-origin: top left;
+  /* scale set from JS to fit the stage width */
+  pointer-events: none; /* the replica is a display, not a second editor */
+}

@@ -17,6 +17,17 @@
     </div>
   </header>
 
+  <!-- Live replica: the real dashboard shell at native 1280×400, scaled to fit.
+       Driven with the EDITED layout/theme, so changes preview before Save & apply. -->
+  <section id="previewWrap">
+    <div id="previewBar">
+      <span class="panel-title">Live preview</span>
+      <span class="panel-hint" id="previewHint">The panel as your unsaved edits would look — widgets are live.</span>
+      <button id="previewToggle" class="ghost">Hide</button>
+    </div>
+    <div id="previewStage"><iframe id="previewFrame" title="Panel preview"></iframe></div>
+  </section>
+
   <main>
     <aside id="pagesPanel">
       <div class="panel-title">Pages</div>
@@ -60,6 +71,7 @@
   </main>
 
   <div id="toast" hidden></div>
+  <script src="palette.js"></script>
   <script src="settings.js"></script>
 </body>
 </html>

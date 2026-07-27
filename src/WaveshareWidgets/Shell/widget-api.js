@@ -7,18 +7,40 @@
   'use strict';
   if (window.WW) return; // already installed (injected + script tag)
 
-  const listeners = { init: [], sensors: [], media: [], streamdeck: [], sdcapture: [] };
+  const listeners = { init: [], sensors: [], media: [], theme: [], streamdeck: [], sdcapture: [] };
   const state = { settings: {}, sensors: [], media: null, status: null, theme: null, ready: false };
   const pendingFetches = new Map();
   const pendingPings = new Map();
   const pendingMediaLists = new Map();
   const pendingAudioGets = new Map();
   let fetchSeq = 0;
+  // The shell routes results by id alone, across EVERY widget frame — a per-frame
+  // counter plus a ms-floored clock can collide between frames loaded in the same
+  // tick, delivering one widget's result to another. A random tail prevents that.
+  const reqId = (prefix) =>
+    prefix + (++fetchSeq) + '-' + Math.floor(performance.now()) + '-' + Math.random().toString(36).slice(2, 8);
 
   function emit(kind, payload) {
     for (const cb of listeners[kind]) {
       try { cb(payload); } catch (e) { console.error('[WW]', e); }
     }
+  }
+
+  function applyThemeTokens(theme) {
+    if (!theme || typeof theme !== 'object') return;
+    state.theme = theme;
+    const apply = function () {
+      const root = document.documentElement;
+      if (!root) return;
+      for (const name of Object.keys(state.theme)) {
+        if (name.indexOf('--') === 0) root.style.setProperty(name, String(state.theme[name]));
+      }
+      root.dataset.appearance = String(state.theme['--appearance'] || 'dark');
+    };
+    // A push delivered at document-start (injection-time races) can precede the root
+    // element; applying then would throw and swallow the message. Defer until <html>.
+    if (document.documentElement) apply();
+    else document.addEventListener('DOMContentLoaded', apply, { once: true });
   }
 
   window.addEventListener('message', (ev) => {
@@ -29,26 +51,17 @@
       state.media = msg.media || null;
       state.status = msg.status || null;
       // Design tokens land on :root before init callbacks so first paint is themed.
-      if (msg.theme && typeof msg.theme === 'object') {
-        state.theme = msg.theme;
-        const applyTheme = function () {
-          const root = document.documentElement;
-          if (!root) return;
-          for (const name of Object.keys(state.theme)) {
-            if (name.indexOf('--') === 0) root.style.setProperty(name, String(state.theme[name]));
-          }
-          root.dataset.appearance = String(state.theme['--appearance'] || 'dark');
-        };
-        // An init delivered at document-start (injection-time races) can precede the
-        // root element; applying then would throw and swallow the whole init. Defer
-        // until the parser has created <html>.
-        if (document.documentElement) applyTheme();
-        else document.addEventListener('DOMContentLoaded', applyTheme, { once: true });
-      }
+      applyThemeTokens(msg.theme);
       state.ready = true;
       emit('init', state);
       emit('sensors', state.sensors);
       if (state.media) emit('media', state.media);
+    } else if (msg.type === 'ww-theme') {
+      // Live theme push (settings replica edits, per-widget style overrides): tokens
+      // update in place — token-driven CSS repaints with zero widget code; canvas
+      // widgets can re-read via WW.onTheme.
+      applyThemeTokens(msg.theme);
+      emit('theme', state.theme);
     } else if (msg.type === 'ww-sensors') {
       state.sensors = msg.sensors || [];
       emit('sensors', state.sensors);
@@ -102,7 +115,7 @@
   function proxyFetch(url, init) {
     init = init || {};
     return new Promise((resolve, reject) => {
-      const id = 'w' + (++fetchSeq) + '-' + Math.floor(performance.now());
+      const id = reqId('w');
       pendingFetches.set(id, { resolve, reject });
       setTimeout(() => {
         if (pendingFetches.delete(id)) reject(new TypeError('proxy fetch timed out'));
@@ -145,6 +158,9 @@
     onSensors(cb) { listeners.sensors.push(cb); },
     /** cb(media) — fires when now-playing info changes. */
     onMedia(cb) { listeners.media.push(cb); },
+    /** cb(theme) — fires when the token map changes live (style edits); tokens are
+     * already on :root by then. Only needed by widgets that paint on canvas. */
+    onTheme(cb) { listeners.theme.push(cb); },
 
     /** Find a sensor by exact id. */
     sensorById(id) {
@@ -232,7 +248,7 @@
      */
     ping(hosts) {
       return new Promise((resolve, reject) => {
-        const id = 'p' + (++fetchSeq) + '-' + Math.floor(performance.now());
+        const id = reqId('p');
         pendingPings.set(id, { resolve, reject });
         setTimeout(() => {
           if (pendingPings.delete(id)) reject(new TypeError('ping timed out'));
@@ -245,7 +261,7 @@
      * https://media.wsw/<name>. Resolves to [{name, kind: 'image'|'video'}]. */
     listMedia() {
       return new Promise((resolve, reject) => {
-        const id = 'm' + (++fetchSeq) + '-' + Math.floor(performance.now());
+        const id = reqId('m');
         pendingMediaLists.set(id, { resolve, reject });
         setTimeout(() => { if (pendingMediaLists.delete(id)) reject(new TypeError('media list timed out')); }, 10000);
         parent.postMessage({ type: 'ww-media-list', id }, '*');
@@ -256,7 +272,7 @@
      * Levels are 0..1. */
     getAudio() {
       return new Promise((resolve, reject) => {
-        const id = 'a' + (++fetchSeq) + '-' + Math.floor(performance.now());
+        const id = reqId('a');
         pendingAudioGets.set(id, { resolve, reject });
         setTimeout(() => { if (pendingAudioGets.delete(id)) reject(new TypeError('audio get timed out')); }, 10000);
         parent.postMessage({ type: 'ww-audio-get', id }, '*');

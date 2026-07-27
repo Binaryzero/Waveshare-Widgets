@@ -29,6 +29,14 @@
     <button id="editDone" class="primary">Done</button>
   </div>
 
+  <!-- Per-widget style editor: right-docked panel, live over the real tile. -->
+  <div id="stylePanel" hidden>
+    <div class="sp-head"><span id="spTitle">Style</span><button id="spClose" title="Close">&#10005;</button></div>
+    <p class="sp-hint">Checked rows override the theme for this widget only. Everything else keeps following it.</p>
+    <div id="spRows"></div>
+    <button id="spReset" class="sp-reset">Follow the theme again</button>
+  </div>
+
   <!-- Centered widget palette (add-widget modal). -->
   <div id="palette" hidden>
     <div id="paletteBackdrop"></div>
@@ -42,6 +50,7 @@
     <h1>Waveshare Widgets</h1>
     <p>No widgets on screen yet. Tap the pencil in the corner to add some.</p>
   </div>
+  <script src="palette.js"></script>
   <script src="shell.js"></script>
 </body>
 </html>

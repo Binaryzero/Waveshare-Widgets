@@ -96,6 +96,7 @@ Include the API from the shell's origin:
 WW.onInit(({ settings, sensors, media, status }) => { /* first data delivery */ });
 WW.onSensors((sensors) => { /* every ~2 s */ });
 WW.onMedia((media) => { /* when now-playing changes */ });
+WW.onTheme((theme) => { /* live token change (style edits); tokens are already on :root */ });
 
 WW.settings          // merged property values, e.g. WW.settings.accentColor
 WW.sensors           // latest snapshot: [{id, name, device, deviceType, type, units, value}]

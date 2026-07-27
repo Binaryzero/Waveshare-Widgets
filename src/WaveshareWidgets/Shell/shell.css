@@ -386,3 +386,48 @@ body.editing #dots, body.editing .edge { opacity: 0.85; }
  * edges come back as drop targets ("move to the next page"). */
 body.editing .edge { pointer-events: none; }
 body.editing.dragging .edge { pointer-events: auto; }
+
+/* Per-widget style editor (edit mode): right-docked over the live tile. */
+#stylePanel {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 9;
+  width: 270px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface, #111418) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+#stylePanel[hidden] { display: none; }
+.sp-head { display: flex; align-items: center; justify-content: space-between; }
+#spTitle { font-size: 13px; font-weight: 800; color: var(--text, #e8ecf2); }
+#spClose {
+  min-width: 34px; min-height: 30px;
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  border-radius: 8px; background: transparent; color: var(--text, #e8ecf2);
+  font: inherit; cursor: pointer; touch-action: manipulation;
+}
+.sp-hint { font-size: 10.5px; line-height: 1.4; color: var(--text-muted, #8e9196); margin: 0; }
+.sp-row { display: flex; align-items: center; gap: 8px; min-height: 40px; }
+.sp-row label { flex: 1; font-size: 12px; font-weight: 600; color: var(--text, #e8ecf2); }
+.sp-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent, #4cc2ff); }
+.sp-row input[type="color"] { width: 44px; height: 30px; border: 0; background: transparent; padding: 0; }
+.sp-row input[type="color"]:disabled, .sp-row input[type="range"]:disabled { opacity: 0.3; }
+.sp-row input[type="range"] { width: 110px; accent-color: var(--accent, #4cc2ff); }
+.sp-row output { font-size: 11px; color: var(--text-muted, #8e9196); min-width: 34px; text-align: right; }
+.sp-reset {
+  min-height: 40px;
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  border-radius: 10px; background: transparent; color: var(--text, #e8ecf2);
+  font: inherit; font-weight: 600; cursor: pointer; touch-action: manipulation;
+}
+.edit-overlay .style { bottom: 4px; left: 4px; }
+.slot.style-editing .edit-overlay { border-color: var(--accent, #4cc2ff); border-style: solid; }

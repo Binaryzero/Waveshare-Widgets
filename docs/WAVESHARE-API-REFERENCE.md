@@ -105,6 +105,7 @@ handle both value shapes — see the stock weather widget.
 WW.onInit(({ settings, sensors, media, status }) => { /* first data delivery */ });
 WW.onSensors((sensors) => { /* every poll tick, ~2 s */ });
 WW.onMedia((media) => { /* when now-playing changes */ });
+WW.onTheme((theme) => { /* live token change (style edits); tokens are already on :root */ });
 
 // State (current snapshots)
 WW.settings          // merged property values, e.g. WW.settings.accentColor
