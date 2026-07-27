@@ -173,16 +173,19 @@
   // The preview is a STRIP above the editor, not the centerpiece: fit the stage
   // width but never scale past native or past a strip height — unbounded fitting
   // rendered the panel BIGGER than 1280×400 on wide windows, eating most of the
-  // screen and pushing the whole editor into scroll (#27).
-  const PREVIEW_MAX_HEIGHT = 220;
+  // screen and pushing the whole editor into scroll (#27). The strip height
+  // follows the window (~30%, clamped 160–320): a fixed cap read "too small" on
+  // large screens and would dominate small ones.
   function fitReplica() {
     const width = previewStage.clientWidth || 1;
-    const scale = Math.min(width / 1280, PREVIEW_MAX_HEIGHT / 400, 1);
+    const maxH = Math.max(160, Math.min(320, Math.round(window.innerHeight * 0.3)));
+    const scale = Math.min(width / 1280, maxH / 400, 1);
     previewFrame.style.transform = 'scale(' + scale + ')';
     previewFrame.style.marginLeft = Math.max(0, Math.round((width - 1280 * scale) / 2)) + 'px';
     previewStage.style.height = Math.round(400 * scale) + 'px';
   }
   new ResizeObserver(fitReplica).observe(previewStage);
+  window.addEventListener('resize', fitReplica); // stage width alone misses height-only resizes
 
   // A dead preview must say so, not sit there as a black slab: if the shell never
   // reports ready, surface it where the user is looking (#27 companion diagnostic).

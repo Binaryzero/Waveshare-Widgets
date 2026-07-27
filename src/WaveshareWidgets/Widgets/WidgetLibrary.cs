@@ -66,8 +66,13 @@ public sealed partial class WidgetLibrary : IDisposable
     private void SeedStockWidgets()
     {
         if (!Directory.Exists(AppPaths.StockWidgetsDir))
+        {
+            Log.Warn($"Stock widgets folder missing next to the app ({AppPaths.StockWidgetsDir}) — nothing to seed");
             return;
+        }
 
+        int seeded = 0, current = 0;
+        var failed = new List<string>();
         foreach (var sourceDir in Directory.GetDirectories(AppPaths.StockWidgetsDir))
         {
             var name = Path.GetFileName(sourceDir);
@@ -76,19 +81,43 @@ public sealed partial class WidgetLibrary : IDisposable
             {
                 var fingerprint = Fingerprint(sourceDir);
                 if (Directory.Exists(targetDir) && MarkerMatches(targetDir, fingerprint))
+                {
+                    current++;
                     continue;
+                }
 
-                if (Directory.Exists(targetDir))
-                    Directory.Delete(targetDir, recursive: true);
+                DeleteTree(targetDir);
                 CopyDirectory(sourceDir, targetDir);
                 File.WriteAllText(Path.Combine(targetDir, SeedMarker), fingerprint);
+                seeded++;
                 Log.Info($"Seeded stock widget: {name}");
             }
             catch (Exception ex)
             {
-                Log.Warn($"Seeding {name} failed: {ex.Message}");
+                failed.Add(name);
+                Log.Warn($"Seeding {name} FAILED — the installed copy is stale: {ex.Message}");
             }
         }
+        // One unmissable summary line: this is the first thing to look for in app.log
+        // when a field report says widget changes "aren't there" after an update.
+        Log.Info($"Stock widget seeding: {seeded} refreshed, {current} already current" +
+                 (failed.Count > 0 ? $", {failed.Count} FAILED ({string.Join(", ", failed)})" : ""));
+    }
+
+    /// <summary>Recursive delete that survives what Windows actually does to installed
+    /// files: read-only attributes (copied media, some unzip tools) make
+    /// Directory.Delete throw, silently stranding the stale copy.</summary>
+    private static void DeleteTree(string dir)
+    {
+        if (!Directory.Exists(dir))
+            return;
+        foreach (var file in Directory.GetFiles(dir, "*", SearchOption.AllDirectories))
+        {
+            var attributes = File.GetAttributes(file);
+            if ((attributes & FileAttributes.ReadOnly) != 0)
+                File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
+        }
+        Directory.Delete(dir, recursive: true);
     }
 
     private static bool MarkerMatches(string installedDir, string fingerprint)
@@ -153,11 +182,24 @@ public sealed partial class WidgetLibrary : IDisposable
                     manifest.Properties = IcueManifestReader.ParseProperties(indexPath);
 
                 var host = $"{Slug(manifest.Id)}.widgets.wsw";
-                if (!usedHosts.Add(host))
+                var duplicate = widgets.FindIndex(w => w.VirtualHost == host);
+                if (duplicate >= 0)
                 {
-                    Log.Warn($"Skipping widget '{manifest.Id}' in '{folder}': duplicate id");
+                    // Same id in two folders (e.g. a stale package install alongside the
+                    // seeded stock copy). First-alphabetical used to win silently, which
+                    // could pin a months-old copy in front of every fresh re-seed — the
+                    // HIGHER manifest version wins now, and the loser is named.
+                    var kept = widgets[duplicate];
+                    var keepNew = Version.TryParse(manifest.Version, out var nv) &&
+                                  (!Version.TryParse(kept.Manifest.Version, out var kv) || nv > kv);
+                    Log.Warn($"Duplicate widget id '{manifest.Id}': keeping " +
+                             $"'{(keepNew ? folder : kept.Folder)}' (v{(keepNew ? manifest.Version : kept.Manifest.Version)}), " +
+                             $"shadowing '{(keepNew ? kept.Folder : folder)}' — delete one to silence this");
+                    if (keepNew)
+                        widgets[duplicate] = new InstalledWidget(manifest, folder, host);
                     continue;
                 }
+                usedHosts.Add(host);
                 widgets.Add(new InstalledWidget(manifest, folder, host));
             }
             catch (Exception ex)
