@@ -143,6 +143,9 @@
     const m = msg.message || {};
     if (m.type === 'ready') {
       replicaReady = true;
+      clearTimeout(replicaWatchdog);
+      el('previewHint').textContent = PREVIEW_HINT_DEFAULT;
+      el('previewHint').classList.remove('warn');
       replicaInit();
     } else if (m.type === 'fetch' || m.type === 'ping' || m.type === 'media-list' || m.type === 'audio-get') {
       post({ type: 'preview-data', message: m });
@@ -167,13 +170,33 @@
     ] };
   }
 
+  // The preview is a STRIP above the editor, not the centerpiece: fit the stage
+  // width but never scale past native or past a strip height — unbounded fitting
+  // rendered the panel BIGGER than 1280×400 on wide windows, eating most of the
+  // screen and pushing the whole editor into scroll (#27).
+  const PREVIEW_MAX_HEIGHT = 220;
   function fitReplica() {
     const width = previewStage.clientWidth || 1;
-    const scale = width / 1280;
+    const scale = Math.min(width / 1280, PREVIEW_MAX_HEIGHT / 400, 1);
     previewFrame.style.transform = 'scale(' + scale + ')';
+    previewFrame.style.marginLeft = Math.max(0, Math.round((width - 1280 * scale) / 2)) + 'px';
     previewStage.style.height = Math.round(400 * scale) + 'px';
   }
   new ResizeObserver(fitReplica).observe(previewStage);
+
+  // A dead preview must say so, not sit there as a black slab: if the shell never
+  // reports ready, surface it where the user is looking (#27 companion diagnostic).
+  const PREVIEW_HINT_DEFAULT = el('previewHint').textContent;
+  let replicaWatchdog = null;
+  function armReplicaWatchdog() {
+    clearTimeout(replicaWatchdog);
+    replicaWatchdog = setTimeout(() => {
+      if (replicaReady) return;
+      el('previewHint').textContent =
+        'Preview did not start — the panel shell failed to load here. Check app.log (enable dev tools in config.json for details).';
+      el('previewHint').classList.add('warn');
+    }, 6000);
+  }
 
   el('previewToggle').addEventListener('click', () => {
     const collapsed = previewStage.classList.toggle('collapsed');
@@ -184,11 +207,13 @@
     } else {
       previewFrame.src = 'index.html?preview=1';
       fitReplica();
+      armReplicaWatchdog();
     }
   });
 
   previewFrame.src = 'index.html?preview=1';
   fitReplica();
+  armReplicaWatchdog();
 
   // ---- top bar ----------------------------------------------------------------
 
@@ -664,11 +689,40 @@
         return wrap;
       }
       case 'color': {
+        // Widgets only let a color setting override the theme tokens when it differs
+        // from its manifest default — but a native color input can never be cleared,
+        // so once touched a color was pinned forever (#29). The row now says which
+        // side it's on and offers the way back.
+        const wrap = document.createElement('div');
+        wrap.className = 'color-wrap';
         const input = document.createElement('input');
         input.type = 'color';
-        input.value = typeof current === 'string' && /^#[0-9a-f]{6}$/i.test(current) ? current : '#00d4ff';
-        input.oninput = () => set(input.value);
-        return input;
+        const def = typeof prop.default === 'string' && /^#[0-9a-f]{6}$/i.test(prop.default) ? prop.default : '#00d4ff';
+        input.value = typeof current === 'string' && /^#[0-9a-f]{6}$/i.test(current) ? current : def;
+        const state = document.createElement('span');
+        state.className = 'color-state';
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.className = 'color-reset';
+        reset.textContent = 'Use theme';
+        reset.title = 'Clear this override and follow the theme';
+        const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+        const sync = () => {
+          const overridden = slot.settings[prop.name] !== undefined && norm(slot.settings[prop.name]) !== norm(prop.default);
+          state.textContent = overridden ? 'custom' : 'themed';
+          state.classList.toggle('overridden', overridden);
+          reset.hidden = !overridden;
+        };
+        input.oninput = () => { set(input.value); sync(); };
+        reset.onclick = () => {
+          delete slot.settings[prop.name]; // absent = default = the theme shows through
+          input.value = def;
+          refreshReplica('layout');
+          sync();
+        };
+        sync();
+        wrap.append(input, state, reset);
+        return wrap;
       }
       case 'slider': {
         const wrap = document.createElement('div');
