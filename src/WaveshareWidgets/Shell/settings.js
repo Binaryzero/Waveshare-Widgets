@@ -62,12 +62,102 @@
       const waiters = sdProfileWaiters.splice(0);
       const profiles = Array.isArray(msg.profiles) ? msg.profiles.filter((p) => typeof p === 'string') : [];
       waiters.forEach((cb) => cb(profiles));
+    } else if (msg.type === 'preview-host') {
+      // Live data (sensors/media) and replica request results from the host — keep our
+      // snapshot fresh for the next replica re-init, then pass straight through.
+      const m = msg.message || {};
+      if (m.type === 'sensors') state.sensors = m.data || [];
+      else if (m.type === 'media') state.media = m.data || null;
+      replicaPost(m);
     }
   });
 
   function post(message) {
     window.chrome.webview.postMessage(message);
   }
+
+  // ---- live replica -----------------------------------------------------------
+  // The real shell (index.html?preview) embedded at native 1280×400 and scaled to
+  // fit, driven with the EDITED (unsaved) layout and theme. Structural edits push a
+  // debounced full re-init; theme edits ride a light token push (no iframe reloads).
+
+  const previewFrame = el('previewFrame');
+  const previewStage = el('previewStage');
+  let replicaReady = false;
+  let replicaTimer = null;
+
+  function replicaPost(message) {
+    if (!replicaReady) return;
+    try { previewFrame.contentWindow.postMessage({ type: 'ww-host', message }, '*'); } catch (e) { /* not loaded */ }
+  }
+
+  function replicaTheme() {
+    return derivePalette(Object.assign({}, THEME_DEFAULTS, state.layout.theme || {}));
+  }
+
+  function replicaInit() {
+    replicaPost({
+      type: 'init',
+      data: {
+        layout: state.layout,
+        widgets: state.widgets,
+        sensors: state.sensors,
+        media: state.media || null,
+        backgroundHost,
+        theme: replicaTheme(),
+        status: state.status || { elevated: false, apiVersion: 1 },
+      },
+    });
+  }
+
+  /** kind: 'layout' (debounced full re-init) | 'theme' (light token push). */
+  function refreshReplica(kind) {
+    if (!replicaReady || previewStage.classList.contains('collapsed')) return;
+    if (kind === 'theme') {
+      replicaPost({ type: 'theme', data: replicaTheme() });
+      return;
+    }
+    clearTimeout(replicaTimer);
+    replicaTimer = setTimeout(replicaInit, 350);
+  }
+
+  window.addEventListener('message', (ev) => {
+    if (ev.source !== previewFrame.contentWindow) return;
+    const msg = ev.data || {};
+    if (msg.type !== 'ww-shell') return;
+    const m = msg.message || {};
+    if (m.type === 'ready') {
+      replicaReady = true;
+      replicaInit();
+    } else if (m.type === 'fetch' || m.type === 'ping' || m.type === 'media-list' || m.type === 'audio-get') {
+      post({ type: 'preview-data', message: m });
+    }
+    // Everything else (save-layout, media-control, actions, audio-set, sd-*, log) is
+    // dropped: the replica is a display, never a second writer or actor.
+  });
+
+  function fitReplica() {
+    const width = previewStage.clientWidth || 1;
+    const scale = width / 1280;
+    previewFrame.style.transform = 'scale(' + scale + ')';
+    previewStage.style.height = Math.round(400 * scale) + 'px';
+  }
+  new ResizeObserver(fitReplica).observe(previewStage);
+
+  el('previewToggle').addEventListener('click', () => {
+    const collapsed = previewStage.classList.toggle('collapsed');
+    el('previewToggle').textContent = collapsed ? 'Show' : 'Hide';
+    if (collapsed) {
+      previewFrame.removeAttribute('src'); // suspend: no hidden widgets burning CPU
+      replicaReady = false;
+    } else {
+      previewFrame.src = 'index.html?preview=1';
+      fitReplica();
+    }
+  });
+
+  previewFrame.src = 'index.html?preview=1';
+  fitReplica();
 
   // ---- top bar ----------------------------------------------------------------
 
@@ -84,6 +174,7 @@
   // ---- page panel ----------------------------------------------------------------
 
   function renderAll() {
+    refreshReplica('layout');
     renderPageList();
     renderThemeEditor();
     renderGlobalBackground();
@@ -94,104 +185,19 @@
     renderBackgroundEditor(
       el('globalBg'),
       () => state.layout.background || null,
-      (spec) => { if (spec) state.layout.background = spec; else delete state.layout.background; },
+      (spec) => {
+        if (spec) state.layout.background = spec; else delete state.layout.background;
+        refreshReplica('layout');
+      },
       { allowInherit: false });
   }
 
   // Stock seeds mirrored from PaletteEngine's defaults; shown when no theme is set.
   const THEME_DEFAULTS = { accent: '#4cc2ff', background: '#05070b', text: '#e8ecf2', panelAlpha: 0.92 };
 
-  // ---- palette derivation (JS port of App/PaletteEngine.cs) ----------------------------
-  // Drives the live theme preview. Kept in lockstep with the C# engine — the harness
-  // property-tests both implementations token-for-token over 208 seed themes.
-
-  function derivePalette(spec) {
-    const mixc = (a, b, t) => [0, 1, 2].map((i) => Math.round(a[i] + (b[i] - a[i]) * t));
-    const lum = (c) => {
-      const ch = (v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4); };
-      return 0.2126 * ch(c[0]) + 0.7152 * ch(c[1]) + 0.0722 * ch(c[2]);
-    };
-    const contrastc = (a, b) => {
-      const la = lum(a), lb = lum(b);
-      return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
-    };
-    const parse = (hex, def) => {
-      if (typeof hex !== 'string' || hex.trim() === '') return def;
-      let h = hex.trim().replace(/^#*/, '');
-      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
-      if (!/^[0-9a-fA-F]{6}$/.test(h)) return def;
-      const v = parseInt(h, 16);
-      return [(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff];
-    };
-    const WHITE = [0xff, 0xff, 0xff], BLACK = [0, 0, 0];
-    const ensure = (color, surfaces, target) => {
-      const minC = (c) => Math.min.apply(null, surfaces.map((s) => contrastc(c, s)));
-      if (minC(color) >= target) return color;
-      let pole = lum(surfaces[0]) < 0.5 ? WHITE : BLACK;
-      if (minC(pole) < target) {
-        const opp = pole === WHITE ? BLACK : WHITE;
-        if (minC(opp) > minC(pole)) pole = opp;
-        if (minC(pole) < target) return pole;
-      }
-      let lo = 0, hi = 1;
-      for (let i = 0; i < 18; i++) {
-        const mid = (lo + hi) / 2;
-        if (minC(mixc(color, pole, mid)) >= target) hi = mid; else lo = mid;
-      }
-      return mixc(color, pole, hi);
-    };
-    const ensureState = (seed, surface, surfaceAlt) => {
-      const ownMin = (c) => Math.min(
-        contrastc(c, surface), contrastc(c, surfaceAlt),
-        contrastc(c, mixc(surface, c, 0.14)), contrastc(c, mixc(surfaceAlt, c, 0.14)));
-      let c = ensure(seed, [surface, surfaceAlt], 4.5);
-      for (let i = 0; i < 6; i++) {
-        const next = ensure(c, [surface, surfaceAlt, mixc(surface, c, 0.14), mixc(surfaceAlt, c, 0.14)], 4.5);
-        if (next[0] === c[0] && next[1] === c[1] && next[2] === c[2]) break;
-        c = next;
-      }
-      if (ownMin(c) < 4.5) {
-        const pole = ownMin(WHITE) >= ownMin(BLACK) ? WHITE : BLACK;
-        if (ownMin(pole) > ownMin(c)) c = pole;
-      }
-      return c;
-    };
-    const hexOf = (c) => '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('');
-    const rgbOf = (c) => c[0] + ', ' + c[1] + ', ' + c[2];
-    const tintOf = (c) => 'rgba(' + c[0] + ', ' + c[1] + ', ' + c[2] + ', 0.14)';
-
-    const accent = parse(spec.accent, [0x4c, 0xc2, 0xff]);
-    const background = parse(spec.background, [0x05, 0x07, 0x0b]);
-    let text = parse(spec.text, [0xe8, 0xec, 0xf2]);
-    const panelAlpha = Math.min(1.0, Math.max(0.15, spec.panelAlpha == null ? 0.92 : spec.panelAlpha));
-    const dark = lum(background) < 0.35;
-    const surface = mixc(background, text, dark ? 0.055 : 0.035);
-    const surfaceAlt = mixc(background, text, dark ? 0.10 : 0.07);
-    const control = mixc(background, text, dark ? 0.15 : 0.11);
-    let muted = mixc(text, surface, 0.42);
-    let dim = mixc(text, surface, 0.60);
-    const line = mixc(text, surface, 0.78);
-    text = ensure(text, [surface], 7.0);
-    muted = ensure(muted, [surface, surfaceAlt], 4.5);
-    dim = ensure(dim, [surface], 3.0);
-    const ok = ensureState([0x45, 0xd4, 0x83], surface, surfaceAlt);
-    const warn = ensureState([0xf0, 0xb8, 0x4f], surface, surfaceAlt);
-    const err = ensureState([0xff, 0x62, 0x68], surface, surfaceAlt);
-    const info = ensureState([0x62, 0xcb, 0xea], surface, surfaceAlt);
-    const NEAR_BLACK = [0x0a, 0x0a, 0x0a];
-    const onAccent = contrastc(accent, NEAR_BLACK) >= contrastc(accent, WHITE) ? NEAR_BLACK : WHITE;
-    const hover = mixc(surface, text, 0.08);
-    return {
-      '--bg': hexOf(background), '--surface': hexOf(surface), '--surface-rgb': rgbOf(surface),
-      '--surface-alt': hexOf(surfaceAlt), '--surface-alt-rgb': rgbOf(surfaceAlt),
-      '--control-bg': hexOf(control), '--text': hexOf(text), '--text-muted': hexOf(muted),
-      '--text-dim': hexOf(dim), '--line': hexOf(line), '--accent': hexOf(accent),
-      '--accent-rgb': rgbOf(accent), '--on-accent': hexOf(onAccent),
-      '--ok': hexOf(ok), '--warn': hexOf(warn), '--err': hexOf(err), '--info': hexOf(info),
-      '--ok-bg': tintOf(ok), '--warn-bg': tintOf(warn), '--err-bg': tintOf(err), '--info-bg': tintOf(info),
-      '--hover-bg': hexOf(hover), '--panel-alpha': String(panelAlpha),
-    };
-  }
+  // Palette derivation lives in palette.js (shared with the dashboard shell for the
+  // live replica and per-widget style overrides).
+  const derivePalette = window.WWPalette.derive;
 
   function renderThemeEditor() {
     const container = el('themeEditor');
@@ -221,6 +227,7 @@
       if (value == null) delete t[key]; else t[key] = value;
       if (!Object.keys(t).length) delete state.layout.theme;
       refreshPreview();
+      refreshReplica('theme');
     };
     const cur = state.layout.theme || {};
 
@@ -240,7 +247,7 @@
     reset.type = 'button';
     reset.className = 'ghost';
     reset.textContent = 'Reset to stock theme';
-    reset.onclick = () => { delete state.layout.theme; renderThemeEditor(); };
+    reset.onclick = () => { delete state.layout.theme; renderThemeEditor(); refreshReplica('theme'); };
     container.appendChild(bgRow('', reset));
     refreshPreview();
   }
@@ -277,7 +284,10 @@
     renderBackgroundEditor(
       el('pageBg'),
       () => page.background || null,
-      (spec) => { if (spec) page.background = spec; else delete page.background; },
+      (spec) => {
+        if (spec) page.background = spec; else delete page.background;
+        refreshReplica('layout');
+      },
       { allowInherit: true });
 
     const nameInput = el('pageName');
@@ -492,7 +502,7 @@
 
   function propEditor(prop, slot) {
     const current = slot.settings[prop.name] !== undefined ? slot.settings[prop.name] : prop.default;
-    const set = (value) => { slot.settings[prop.name] = value; };
+    const set = (value) => { slot.settings[prop.name] = value; refreshReplica('layout'); };
 
     switch (prop.type) {
       case 'switch': { // iCUE boolean toggle
