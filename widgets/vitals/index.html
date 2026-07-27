@@ -502,6 +502,7 @@
   for (const m of METERS) cfg.enabled[m] = true;
   let started = false;      // repeated ww-init must not stack timers
   let game = false;         // WW.game truce flag, kept fresh via WW.onGame
+  let renderedOnce = false; // per-init: has this config painted at least once?
   let openMeter = null;     // which meter's coaching card is up
   let lastBubbleAt = 0;     // in-memory cooldown anchor
   let bubbleTimer = null;
@@ -714,13 +715,18 @@
   // ---- tick loop -----------------------------------------------------------------------
   // The bookkeeping half always runs (a 30s read-apply-write of a pure function is
   // the widget's core accounting; skipping it while hidden would mis-count desk
-  // time), but ALL rendering and bubbles stop while hidden or during a game.
+  // time), but rendering and bubbles stop while hidden or during a game — except
+  // that each (re)init paints ONCE even mid-game: the panel stays visible during
+  // games, so a widget initialized then must not sit on the loading spinner (or
+  // stale settings) until the game ends. maybeBubble self-guards via canBubble,
+  // which is always false while gameActive.
   function tick() {
     try {
       const now = Date.now();
       const st = applyDrain(loadState(now), now, currentOpts());
       saveState(st);
-      if (!document.hidden && !game) {
+      if (!document.hidden && (!game || !renderedOnce)) {
+        renderedOnce = true;
         render(st);
         maybeBubble(st, now);
       }
@@ -743,6 +749,7 @@
     game = !!(WW.game && WW.game.active);
     closeCard();                       // a re-init may have changed the meter set
     for (const k of Object.keys(last)) delete last[k]; // repaint with new config
+    renderedOnce = false;              // new config earns one paint even mid-game
 
     if (!started) {                    // repeated ww-init must not stack timers
       started = true;

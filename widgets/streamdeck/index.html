@@ -274,14 +274,17 @@
     WW.streamDeckClick(row, col, rows, cols);
     WW.log('streamdeck: live click ' + row + ',' + col);
 
-    // brief highlight over the tapped cell
-    const flash = document.getElementById('liveFlash');
-    flash.style.left = (r.left + col * (r.width / cols)) + 'px';
-    flash.style.top = (r.top + row * (r.height / rows)) + 'px';
-    flash.style.width = (r.width / cols) + 'px';
-    flash.style.height = (r.height / rows) + 'px';
-    flash.style.opacity = '1';
-    setTimeout(() => { flash.style.opacity = '0'; }, 220);
+    // Brief highlight over the tapped cell. NOTE: named hl, not flash — a
+    // `const flash` here would shadow the top-level flash() helper across the
+    // WHOLE handler scope, turning the fail-flash call above into a TDZ
+    // ReferenceError (the refused tap would throw instead of flashing).
+    const hl = document.getElementById('liveFlash');
+    hl.style.left = (r.left + col * (r.width / cols)) + 'px';
+    hl.style.top = (r.top + row * (r.height / rows)) + 'px';
+    hl.style.width = (r.width / cols) + 'px';
+    hl.style.height = (r.height / rows) + 'px';
+    hl.style.opacity = '1';
+    setTimeout(() => { hl.style.opacity = '0'; }, 220);
   });
 
   function renderPicker(profiles) {
