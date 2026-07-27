@@ -782,6 +782,8 @@
       default: { // text
         const input = document.createElement('input');
         input.type = 'text';
+        // The sanctioned place to teach an expected format — labels must not.
+        if (prop.placeholder) input.placeholder = String(prop.placeholder);
         input.value = current != null ? String(current) : '';
         input.oninput = () => set(input.value);
         return input;

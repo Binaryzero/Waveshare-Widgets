@@ -245,8 +245,11 @@ Toggle between the body and the state layer with the `hidden` attribute — the 
 
 ## 5 · Required states
 
-**Every widget must implement all four.** A widget that only handles the happy path shows
-a frozen skeleton or dead `--` rows on half the machines it's installed on.
+**Every widget must implement each state that can occur for it.** A widget that only
+handles the happy path shows a frozen skeleton or dead `--` rows on half the machines
+it's installed on. Fully-offline widgets have no Stale state; a Retry button belongs
+only where retrying can succeed (a network call — not a settings parse error, whose
+error state should instead name the setting to fix).
 
 | State | When | Standard rendering |
 |---|---|---|

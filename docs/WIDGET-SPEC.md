@@ -73,6 +73,9 @@ Install via tray → **Install widget…**, or unzip the folder directly into
     "default": [ { "label": "Router", "host": "192.168.1.1" } ] }
   ```
 
+  Text properties support a `placeholder` — the sanctioned place to show an expected
+  format (e.g. `"2026-12-24 18:00"`); labels must never teach syntax.
+
   Field types: `text` and `color`. A widget upgraded from an older text property should
   keep accepting its legacy string form from saved layouts (the editor converts
   `"A=B, C=D"` strings to rows on screen, but the saved value only becomes an array once

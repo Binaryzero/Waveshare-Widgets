@@ -1,0 +1,47 @@
+{
+  "id": "ws.stock.forecast7",
+  "name": "7-Day Forecast",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Week-ahead outlook from Open-Meteo: seven days of condition, high/low and precipitation chance for any city — no API key. Inspired by DGM Previsión 7 días from the Xenon gallery.",
+  "min_api_version": 1,
+  "supported_slots": [
+    "half",
+    "full"
+  ],
+  "properties": [
+    {
+      "name": "location",
+      "label": "Location",
+      "type": "location",
+      "default": "Madrid"
+    },
+    {
+      "name": "units",
+      "label": "Units",
+      "type": "select",
+      "options": [
+        "celsius",
+        "fahrenheit"
+      ],
+      "default": "celsius"
+    },
+    {
+      "name": "accentColor",
+      "label": "Accent Color",
+      "type": "color",
+      "default": "#4cc2ff"
+    },
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": [
+        "solid",
+        "glass",
+        "transparent"
+      ],
+      "default": "solid"
+    }
+  ]
+}
