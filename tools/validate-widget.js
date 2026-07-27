@@ -89,7 +89,9 @@ function validate(folder) {
     // The foundation must be the FIRST stylesheet of any kind — a linked local
     // stylesheet before it would override base layout just like an inline <style>.
     let firstOther = html.search(/<style[\s>]/i);
-    for (const m of html.matchAll(/<link[^>]+rel=["']stylesheet["'][^>]*>/gi)) {
+    // rel may be quoted or bare, and can carry extra tokens (rel="alternate
+    // stylesheet"); match the whole tag so m[0] still sees the base-css href below.
+    for (const m of html.matchAll(/<link\b[^>]*\brel\s*=\s*["']?[^"'>]*\bstylesheet\b[^>]*>/gi)) {
       if (m[0].includes('widget-base.css')) continue;
       if (firstOther < 0 || m.index < firstOther) firstOther = m.index;
     }

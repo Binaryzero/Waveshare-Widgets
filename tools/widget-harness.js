@@ -24,6 +24,9 @@ const SHELL = path.join(__dirname, '../src/WaveshareWidgets/Shell');
 const SLOTS = {
   quarter: [320, 400], half: [640, 400], 'three-quarter': [960, 400], full: [1280, 400],
   'quarter-upper': [320, 200], 'half-upper': [640, 200], 'three-quarter-upper': [960, 200], 'full-upper': [1280, 200],
+  // -lower bands are dimensionally identical to -upper (bottom 200px half); listed so
+  // a claimed lower slot tests at 200px instead of silently becoming a NaN viewport.
+  'quarter-lower': [320, 200], 'half-lower': [640, 200], 'three-quarter-lower': [960, 200], 'full-lower': [1280, 200],
 };
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.json': 'application/json',
