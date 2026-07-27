@@ -46,7 +46,17 @@ const themeArg = opt('theme', 'dark');
 const theme = themeArg === 'dark' ? derive({})
   : themeArg === 'light' ? derive({ background: '#e8e6e1', text: '#12161a', accent: '#b04a2f' })
   : derive(JSON.parse(themeArg));
-const settings = JSON.parse(opt('settings', '{}'));
+// Merge manifest defaults under the provided settings, exactly like the host does —
+// a widget must see the same payload here as on the panel.
+const settings = (() => {
+  const given = JSON.parse(opt('settings', '{}'));
+  const merged = {};
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(folder, 'manifest.json'), 'utf8'));
+    for (const prop of manifest.properties || []) if (prop.name) merged[prop.name] = prop.default;
+  } catch (e) { /* validator owns manifest errors */ }
+  return Object.assign(merged, given);
+})();
 const shot = opt('shot', null);
 const asJson = args.includes('--json');
 

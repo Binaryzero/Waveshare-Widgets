@@ -82,9 +82,12 @@ Read these first, in order (they are the authority; this skill is the workflow):
    plus `three-quarter` if you claim half or full (the editor offers it automatically)
    and at least one `-upper` band size (200px tall). Screenshot the POPULATED state
    (pass settings that give the widget real content), not just the setup state.
-   The harness aborts real network calls — your widget must settle into its designed
-   offline state, not a blank tile or console errors. LOOK at the screenshots: the
-   harness proves the contract, your eyes prove the design.
+   The harness merges manifest defaults under `--settings` exactly like the host, and
+   aborts real network calls — your widget must settle into its designed offline
+   state, not a blank tile or console errors. Data-path behavior (stubbed API
+   responses, stale/retry flows) needs a purpose-built runner: copy the route-fulfill
+   pattern from `tools/widget-harness.js` and stub your API's responses. LOOK at the
+   screenshots: the harness proves the contract, your eyes prove the design.
 
 6. **Iterate on failures.** Both tools emit `--json` with stable rule/check names —
    fix, re-run, repeat until clean. Then bump nothing else: version stays at `1.0.0`
@@ -107,7 +110,9 @@ preset's files into the port.** What you may use from the decoded preset:
   `--accent`? a state color? a user color setting?), sizes/layout become a fresh design
   in our grid.
 
-Workflow: decode (`node -e` with `Buffer.from(code, 'base64url')`), read the manifest
+Workflow: decode (`node -e` with `Buffer.from(code, 'base64url')` — or, if the user
+pastes already-decoded JSON, the per-file payloads are still base64 inside
+`data.files`), read the manifest
 and files to UNDERSTAND them, write an intent summary (data in → display out →
 settings), then close the preset and follow the BUILD workflow from step 1 with that
 summary as the spec. Credit the original: the manifest `description` should say
