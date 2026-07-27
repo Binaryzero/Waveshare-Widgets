@@ -7,6 +7,16 @@ on:
   workflow_dispatch:
 
 jobs:
+  widget-versions:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Widget version bump guard
+        run: node tools/check-widget-versions.js "origin/${{ github.base_ref }}"
+
   build:
     runs-on: windows-latest
     steps:

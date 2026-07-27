@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -51,6 +53,16 @@ public sealed partial class WidgetLibrary : IDisposable
         }, null, 800, Timeout.Infinite);
     }
 
+    /// <summary>Name of the fingerprint marker written next to each seeded copy.</summary>
+    private const string SeedMarker = ".stock-seed";
+
+    /// <summary>Stock widgets upgrade in place whenever the app ships DIFFERENT CONTENT —
+    /// a fingerprint of the shipped folder is recorded at seed time and compared on every
+    /// start. Manifest versions used to gate this, which silently stranded every install
+    /// whenever a widget changed without a version bump (issue #26). An installed copy
+    /// with no marker (pre-fingerprint installs) is re-seeded once, healing stale copies
+    /// in the field. To customize a stock widget without it ever being overwritten, copy
+    /// the folder and give it a new id.</summary>
     private void SeedStockWidgets()
     {
         if (!Directory.Exists(AppPaths.StockWidgetsDir))
@@ -58,40 +70,56 @@ public sealed partial class WidgetLibrary : IDisposable
 
         foreach (var sourceDir in Directory.GetDirectories(AppPaths.StockWidgetsDir))
         {
-            var targetDir = Path.Combine(AppPaths.WidgetsDir, Path.GetFileName(sourceDir));
-            if (Directory.Exists(targetDir) && !StockIsNewer(sourceDir, targetDir))
-                continue;
+            var name = Path.GetFileName(sourceDir);
+            var targetDir = Path.Combine(AppPaths.WidgetsDir, name);
+            try
+            {
+                var fingerprint = Fingerprint(sourceDir);
+                if (Directory.Exists(targetDir) && MarkerMatches(targetDir, fingerprint))
+                    continue;
 
-            if (Directory.Exists(targetDir))
-                Directory.Delete(targetDir, recursive: true);
-            CopyDirectory(sourceDir, targetDir);
-            Log.Info($"Seeded stock widget: {Path.GetFileName(sourceDir)}");
+                if (Directory.Exists(targetDir))
+                    Directory.Delete(targetDir, recursive: true);
+                CopyDirectory(sourceDir, targetDir);
+                File.WriteAllText(Path.Combine(targetDir, SeedMarker), fingerprint);
+                Log.Info($"Seeded stock widget: {name}");
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"Seeding {name} failed: {ex.Message}");
+            }
         }
     }
 
-    /// <summary>Stock widgets upgrade in place when the app ships a newer manifest version.
-    /// To customize a stock widget without it being overwritten, copy the folder and give
-    /// it a new id.</summary>
-    private static bool StockIsNewer(string stockDir, string installedDir)
+    private static bool MarkerMatches(string installedDir, string fingerprint)
     {
         try
         {
-            var stock = ReadVersion(Path.Combine(stockDir, "manifest.json"));
-            var installed = ReadVersion(Path.Combine(installedDir, "manifest.json"));
-            return stock is not null && (installed is null || stock > installed);
+            var marker = Path.Combine(installedDir, SeedMarker);
+            return File.Exists(marker) && File.ReadAllText(marker).Trim() == fingerprint;
         }
         catch
         {
-            return false; // unreadable manifests: leave the installed copy alone
+            return false; // unreadable marker: treat as stale and re-seed
         }
     }
 
-    private static Version? ReadVersion(string manifestPath)
+    /// <summary>Order-independent content hash of a widget folder: relative paths
+    /// (normalized) plus file bytes. Any shipped change — html, manifest, assets —
+    /// changes the fingerprint.</summary>
+    private static string Fingerprint(string dir)
     {
-        if (!File.Exists(manifestPath))
-            return null;
-        var manifest = JsonSerializer.Deserialize<WidgetManifest>(File.ReadAllText(manifestPath));
-        return Version.TryParse(manifest?.Version, out var version) ? version : null;
+        using var sha = SHA256.Create();
+        foreach (var file in Directory.GetFiles(dir, "*", SearchOption.AllDirectories)
+                     .OrderBy(f => Path.GetRelativePath(dir, f).Replace('\\', '/'), StringComparer.Ordinal))
+        {
+            var rel = Encoding.UTF8.GetBytes(Path.GetRelativePath(dir, file).Replace('\\', '/') + "\n");
+            sha.TransformBlock(rel, 0, rel.Length, null, 0);
+            var content = File.ReadAllBytes(file);
+            sha.TransformBlock(content, 0, content.Length, null, 0);
+        }
+        sha.TransformFinalBlock([], 0, 0);
+        return Convert.ToHexString(sha.Hash!);
     }
 
     public void Rescan()

@@ -136,6 +136,12 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 .props .slider-wrap { display: flex; align-items: center; gap: 10px; }
 .props .slider-wrap output { color: var(--muted); min-width: 40px; text-align: right; }
+/* Color rows say whether they follow the theme or pin a custom value, and offer
+ * the way back — a native color input can never be cleared (#29). */
+.props .color-wrap { display: flex; align-items: center; gap: 8px; }
+.props .color-state { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.props .color-state.overridden { color: var(--accent); }
+.props .color-reset { padding: 2px 8px; font-size: 11px; }
 .props select, .props input[type="text"], .props input[type="number"] { width: 100%; max-width: 380px; }
 
 .props .muted { color: var(--muted); font-size: 12px; }
@@ -256,6 +262,7 @@ main { flex: 1; display: flex; min-height: 0; }
 #previewBar { display: flex; align-items: center; gap: 12px; }
 #previewBar .panel-title { margin: 0; }
 #previewBar .panel-hint { margin: 0; flex: 1; }
+#previewBar .panel-hint.warn { color: var(--warn, #f0b84f); }
 #previewStage {
   position: relative;
   margin-top: 8px;
