@@ -124,11 +124,23 @@
     cfg.ip = String(s.bridgeIp || '').trim();
     let discovered = false;
     if (!cfg.ip) {
-      try {
-        const res = await WW.fetch('https://discovery.meethue.com/');
-        const list = await res.json();
-        if (list && list[0] && list[0].internalipaddress) { cfg.ip = list[0].internalipaddress; discovered = true; }
-      } catch (e) { /* fall through to message */ }
+      // Cloud discovery is rate-limited by Philips and CORS-noisy (the browser-first
+      // attempt logs an error before the proxy fallback) — at most one attempt per
+      // 10 minutes, cached in localStorage so every instance and re-init shares it (#36).
+      const DISCO_KEY = 'hue-discovery';
+      let cached = null;
+      try { cached = JSON.parse(localStorage.getItem(DISCO_KEY) || 'null'); } catch (e) { /* ignore */ }
+      const fresh = cached && typeof cached.at === 'number' && Date.now() - cached.at < 600000;
+      if (fresh) {
+        if (cached.ip) { cfg.ip = String(cached.ip); discovered = true; }
+      } else {
+        try {
+          const res = await WW.fetch('https://discovery.meethue.com/');
+          const list = await res.json();
+          if (list && list[0] && list[0].internalipaddress) { cfg.ip = list[0].internalipaddress; discovered = true; }
+        } catch (e) { /* fall through to message */ }
+        try { localStorage.setItem(DISCO_KEY, JSON.stringify({ at: Date.now(), ip: cfg.ip || null })); } catch (e) { /* ignore */ }
+      }
     }
     if (!cfg.ip) {
       showMessage('No Hue Bridge found', 'Set the bridge IP in the widget settings (it\'s shown in the Hue app under Settings → My Hue system).');

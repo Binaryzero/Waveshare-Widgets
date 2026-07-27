@@ -90,17 +90,30 @@
       return (translations && translations[key] != null) ? String(translations[key]) : String(key);
     };
   }
-  fetch('translation.json')
-    .then((r) => (r.ok ? r.json() : null))
-    .then((json) => {
-      if (json && typeof json === 'object') {
-        // Either a flat {key: text} map or nested per-language tables.
-        translations = (json.en && typeof json.en === 'object') ? json.en : json;
-      }
-    })
-    .catch(() => { /* no translation file */ })
-    .finally(() => { trReady = true; maybeInit(); });
-  setTimeout(() => { if (!trReady) { trReady = true; maybeInit(); } }, 1500);
+  // Only iCUE packages carry translation.json — fetching it unconditionally put a
+  // FILE_NOT_FOUND console line into every stock widget on every load (#36). The
+  // reliable tell for an iCUE package is its x-icue-* meta declarations, so wait
+  // for the DOM and fetch only when they are present.
+  function loadTranslations() {
+    fetch('translation.json')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => {
+        if (json && typeof json === 'object') {
+          // Either a flat {key: text} map or nested per-language tables.
+          translations = (json.en && typeof json.en === 'object') ? json.en : json;
+        }
+      })
+      .catch(() => { /* no translation file */ })
+      .finally(() => { trReady = true; maybeInit(); });
+    setTimeout(() => { if (!trReady) { trReady = true; maybeInit(); } }, 1500);
+  }
+  function armTranslations() {
+    if (document.querySelector('meta[name="x-icue-property"], meta[name="x-icue-groups"]'))
+      loadTranslations();
+    else { trReady = true; maybeInit(); }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', armTranslations);
+  else armTranslations();
 
   // --- Qt-style signals ---
 
