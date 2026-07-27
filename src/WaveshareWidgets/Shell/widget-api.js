@@ -7,8 +7,8 @@
   'use strict';
   if (window.WW) return; // already installed (injected + script tag)
 
-  const listeners = { init: [], sensors: [], media: [], theme: [], streamdeck: [], sdcapture: [] };
-  const state = { settings: {}, sensors: [], media: null, status: null, theme: null, ready: false };
+  const listeners = { init: [], sensors: [], media: [], theme: [], streamdeck: [], sdcapture: [], notifications: [], game: [] };
+  const state = { settings: {}, sensors: [], media: null, status: null, theme: null, notifications: null, game: { active: false, process: '' }, ready: false };
   const pendingFetches = new Map();
   const pendingPings = new Map();
   const pendingMediaLists = new Map();
@@ -43,6 +43,16 @@
     else document.addEventListener('DOMContentLoaded', apply, { once: true });
   }
 
+  function applyGame(game) {
+    state.game = { active: !!(game && game.active), process: (game && game.process) || '' };
+    const stamp = function () {
+      if (document.documentElement)
+        document.documentElement.dataset.game = state.game.active ? 'on' : 'off';
+    };
+    if (document.documentElement) stamp();
+    else document.addEventListener('DOMContentLoaded', stamp, { once: true });
+  }
+
   window.addEventListener('message', (ev) => {
     const msg = ev.data || {};
     if (msg.type === 'ww-init') {
@@ -50,6 +60,8 @@
       state.sensors = msg.sensors || [];
       state.media = msg.media || null;
       state.status = msg.status || null;
+      if (msg.notifications !== undefined) state.notifications = msg.notifications;
+      if (msg.game) applyGame(msg.game);
       // Design tokens land on :root before init callbacks so first paint is themed.
       applyThemeTokens(msg.theme);
       state.ready = true;
@@ -62,6 +74,12 @@
       // widgets can re-read via WW.onTheme.
       applyThemeTokens(msg.theme);
       emit('theme', state.theme);
+    } else if (msg.type === 'ww-notifications') {
+      state.notifications = msg.data || null;
+      emit('notifications', state.notifications);
+    } else if (msg.type === 'ww-game') {
+      applyGame(msg.game);
+      emit('game', state.game);
     } else if (msg.type === 'ww-sensors') {
       state.sensors = msg.sensors || [];
       emit('sensors', state.sensors);
@@ -161,6 +179,21 @@
     /** cb(theme) — fires when the token map changes live (style edits); tokens are
      * already on :root by then. Only needed by widgets that paint on canvas. */
     onTheme(cb) { listeners.theme.push(cb); },
+    /** Mirrored Windows toasts: {state: 'allowed'|'denied'|'unavailable', items:[...]}.
+     * null until watching (call WW.watchNotifications(true) first). */
+    get notifications() { return state.notifications; },
+    /** cb(payload) — fires when the mirrored notification list changes. */
+    onNotifications(cb) { listeners.notifications.push(cb); },
+    /** Start/stop the host's notification polling. Demand-gated: watch on init,
+     * and the host stops polling when no widget is watching. */
+    watchNotifications(on) { parent.postMessage({ type: 'ww-notifications-watch', on: on !== false }, '*'); },
+    /** Dismiss one mirrored notification by its id. */
+    dismissNotification(id) { parent.postMessage({ type: 'ww-notification-dismiss', id }, '*'); },
+    /** Game mode: {active, process}. Also stamped as html[data-game="on"|"off"];
+     * widget-base.css pauses CSS animation while on. */
+    get game() { return state.game; },
+    /** cb(game) — fires when game mode flips; pause your own timers/streams. */
+    onGame(cb) { listeners.game.push(cb); },
 
     /** Find a sensor by exact id. */
     sensorById(id) {

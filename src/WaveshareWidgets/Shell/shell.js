@@ -12,6 +12,8 @@
   let latestSensors = [];
   let latestMedia = null;
   let latestTheme = null;
+  let latestNotifications = null;   // last projected payload from the host
+  let gameState = { active: false, process: '' };
   let status = { elevated: false, apiVersion: 1 };
   let dotsIdleTimer = null;
   let bgSettleTimer = null;    // debounces the wallpaper swap during multi-page scrolls
@@ -66,6 +68,12 @@
     }
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
+    else if (msg.type === 'notifications') { latestNotifications = msg.data || null; broadcast({ type: 'ww-notifications', data: latestNotifications }); }
+    else if (msg.type === 'game-mode') {
+      gameState = { active: !!(msg.data && msg.data.active), process: (msg.data && msg.data.process) || '' };
+      applyGameMode();
+      broadcast({ type: 'ww-game', game: gameState });
+    }
     else if (msg.type === 'fetch-result') {
       const target = fetchRoutes.get(msg.data && msg.data.id);
       if (target) {
@@ -154,6 +162,10 @@
       audioRoutes.set(msg.id, ev.source);
       setTimeout(() => audioRoutes.delete(msg.id), 15000);
       postToHost({ type: 'audio-get', id: msg.id });
+    } else if (msg.type === 'ww-notifications-watch') {
+      postToHost({ type: 'notifications-watch', on: msg.on !== false });
+    } else if (msg.type === 'ww-notification-dismiss' && msg.id != null) {
+      postToHost({ type: 'notification-dismiss', id: msg.id });
     } else if (msg.type === 'ww-audio-set') {
       postToHost({ type: 'audio-set', target: String(msg.target || 'master'), level: msg.level, muted: msg.muted });
     }
@@ -166,8 +178,20 @@
       sensors: latestSensors,
       media: latestMedia,
       theme: slotTheme(slot),
+      notifications: latestNotifications,
+      game: gameState,
       status,
     };
+  }
+
+  // Game mode: pause the shell's own chrome cost and hide slots the user marked
+  // hide-in-game (their grid cell is kept, so they come back exactly where they were).
+  function applyGameMode() {
+    document.documentElement.dataset.game = gameState.active ? 'on' : 'off';
+    for (const slot of slots) {
+      if (slot.def && slot.def.hideInGame)
+        slot.el.style.visibility = (gameState.active && !editing) ? 'hidden' : '';
+    }
   }
 
   function sendToSlot(slot, message) {
@@ -262,6 +286,7 @@
 
     generation++;
     armWatchdog(generation);
+    applyGameMode();
     if (editing) updateEditBar();
   }
 

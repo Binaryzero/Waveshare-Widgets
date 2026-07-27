@@ -434,7 +434,20 @@
       sizeSelect.add(new Option(sizeLabel(slot.size), slot.size, false, true));
     sizeSelect.onchange = () => { slot.size = sizeSelect.value; renderCapacity(page); };
 
-    row.append(widgetSelect, sizeSelect,
+    // Hide this widget while a fullscreen game runs (its grid cell is kept).
+    const gameWrap = document.createElement('label');
+    gameWrap.className = 'game-hide';
+    gameWrap.title = 'Hide this widget while a fullscreen game is running';
+    const gameCheck = document.createElement('input');
+    gameCheck.type = 'checkbox';
+    gameCheck.checked = slot.hideInGame === true;
+    gameCheck.onchange = () => {
+      if (gameCheck.checked) slot.hideInGame = true; else delete slot.hideInGame;
+      refreshReplica('layout');
+    };
+    gameWrap.append(gameCheck, document.createTextNode('🎮✕'));
+
+    row.append(widgetSelect, sizeSelect, gameWrap,
       iconButton('▲', 'Move up', () => moveSlot(page, index, -1)),
       iconButton('▼', 'Move down', () => moveSlot(page, index, 1)),
       iconButton('✕', 'Remove', () => { page.slots.splice(index, 1); renderEditor(); }, true));

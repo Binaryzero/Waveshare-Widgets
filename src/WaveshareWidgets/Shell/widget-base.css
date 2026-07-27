@@ -223,3 +223,11 @@ body.bg-transparent {
 .btn.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: 700; }
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Game mode: while a fullscreen game is foreground the host stamps
+ * html[data-game="on"] — CSS animation cost drops to zero panel-wide. Widgets
+ * with JS timers/streams should also listen via WW.onGame. */
+html[data-game="on"] * {
+  animation-play-state: paused !important;
+  transition: none !important;
+}
