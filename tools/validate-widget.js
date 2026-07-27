@@ -1,0 +1,180 @@
+#!/usr/bin/env node
+// Standards validator for Waveshare widgets — the single validation boundary the
+// build-widget skill, humans, and imports all share (see docs/WIDGET-STANDARD.md).
+//
+//   node tools/validate-widget.js widgets/clock           one widget, human output
+//   node tools/validate-widget.js --all widgets           every widget, summary
+//   node tools/validate-widget.js --json widgets/clock    machine-readable report
+//
+// Exit code 0 = no errors (warnings allowed), 1 = errors found or unreadable input.
+// Every failure carries a stable rule id so automated repair loops can react.
+'use strict';
+const fs = require('fs');
+const path = require('path');
+
+const KNOWN_TYPES = new Set(['text', 'number', 'slider', 'color', 'select', 'switch',
+  'sensor', 'sensors-factory', 'location', 'list', 'media-selector']);
+const KNOWN_SLOTS = new Set(['quarter', 'half', 'three-quarter', 'full']);
+const LIST_FIELD_TYPES = new Set(['text', 'color']);
+// Labels must never teach a syntax — structured values use the list type.
+const SYNTAX_IN_LABEL = /comma[ -]?separated|semicolon|delimited|one per line|json|\w+=\w+/i;
+
+function validate(folder) {
+  const report = { folder, ok: true, errors: [], warnings: [], externalHosts: [] };
+  const err = (rule, detail) => { report.ok = false; report.errors.push({ rule, detail }); };
+  const warn = (rule, detail) => { report.warnings.push({ rule, detail }); };
+
+  // ---- manifest -----------------------------------------------------------------
+  const manifestPath = path.join(folder, 'manifest.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (e) {
+    err('manifest-parse', manifestPath + ': ' + e.message);
+    return report;
+  }
+
+  if (!/^[a-z0-9]+(\.[a-z0-9-]+)+$/.test(manifest.id || ''))
+    err('manifest-id', `id "${manifest.id}" must be reverse-DNS, lowercase (e.g. com.example.my-widget)`);
+  for (const key of ['name', 'author', 'description'])
+    if (typeof manifest[key] !== 'string' || !manifest[key].trim())
+      err('manifest-' + key, `"${key}" is required`);
+  if (!/^\d+\.\d+\.\d+([-+].+)?$/.test(manifest.version || ''))
+    err('manifest-version', `version "${manifest.version}" must be semver (x.y.z)`);
+  if (typeof manifest.min_api_version !== 'number')
+    err('manifest-api', 'min_api_version (number) is required');
+  const slots = manifest.supported_slots;
+  if (!Array.isArray(slots) || !slots.length)
+    err('manifest-slots', 'supported_slots must be a non-empty array');
+  else for (const s of slots)
+    if (!KNOWN_SLOTS.has(s)) err('manifest-slots', `unknown slot "${s}"`);
+
+  for (const prop of manifest.properties || []) {
+    const where = `property "${prop.name || '?'}"`;
+    if (!prop.name) err('prop-name', 'a property is missing "name"');
+    const type = prop.type || 'text';
+    if (!KNOWN_TYPES.has(type)) err('prop-type', `${where}: unknown type "${type}"`);
+    if (SYNTAX_IN_LABEL.test(prop.label || ''))
+      err('prop-label-syntax', `${where}: label "${prop.label}" teaches a syntax — use type "list" (or a better label); users never type delimited data`);
+    if (type === 'select' && !Array.isArray(prop.options) && !prop.optionsSource)
+      err('prop-select', `${where}: select needs "options" or "optionsSource"`);
+    if (type === 'slider' && (typeof prop.min !== 'number' || typeof prop.max !== 'number'))
+      err('prop-slider', `${where}: slider needs numeric min/max`);
+    if (type === 'list') {
+      if (!Array.isArray(prop.fields) || !prop.fields.length)
+        err('prop-list', `${where}: list needs a "fields" array`);
+      else for (const f of prop.fields) {
+        if (!f.key) err('prop-list', `${where}: a list field is missing "key"`);
+        if (!LIST_FIELD_TYPES.has(f.type || 'text'))
+          err('prop-list', `${where}: list field type "${f.type}" not supported (text | color)`);
+      }
+    }
+  }
+
+  // ---- index.html ---------------------------------------------------------------
+  const htmlPath = path.join(folder, 'index.html');
+  let html;
+  try {
+    html = fs.readFileSync(htmlPath, 'utf8');
+  } catch (e) {
+    err('html-missing', 'index.html is required');
+    return report;
+  }
+
+  // The foundation stylesheet, linked before any widget CSS.
+  const baseIdx = html.indexOf('https://app.wsw/widget-base.css');
+  if (baseIdx < 0) {
+    err('base-css', 'index.html must link https://app.wsw/widget-base.css (first, in <head>)');
+  } else {
+    const styleIdx = html.indexOf('<style');
+    if (styleIdx >= 0 && styleIdx < baseIdx)
+      err('base-css-order', 'widget-base.css must be linked BEFORE the widget\'s own <style>');
+  }
+
+  // Tokens, never literal colors: hex colors inside <style> are the tell. Pure
+  // black/white are allowed only for shadow/scrim alphas via rgba() — flagged
+  // separately below.
+  const styleBlocks = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => m[1]).join('\n');
+  const noComments = styleBlocks.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const m of noComments.matchAll(/#[0-9a-fA-F]{3,8}\b/g)) {
+    err('hardcoded-color', `hex literal ${m[0]} in <style> — use a design token (var(--…)); see WIDGET-STANDARD §1`);
+  }
+  for (const m of noComments.matchAll(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/g)) {
+    const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    const mono = r === g && g === b && (r === 0 || r === 255);
+    if (!mono)
+      err('hardcoded-color', `literal ${m[0]}…) in <style> — compose from tokens (rgba(var(--surface-rgb), …)) instead`);
+  }
+
+  // Self-contained: no external scripts or stylesheets (embeds/iframes and data
+  // fetches are widget business; script execution from third parties is not).
+  for (const m of html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) {
+    const src = m[1];
+    if (/^https?:\/\//i.test(src) && !src.startsWith('https://app.wsw/'))
+      err('external-script', `external <script src="${src}"> — widgets must be self-contained (only app.wsw scripts allowed)`);
+  }
+  for (const m of html.matchAll(/<link[^>]+href=["'](https?:\/\/[^"']+)["']/gi)) {
+    if (!m[1].startsWith('https://app.wsw/'))
+      err('external-style', `external stylesheet ${m[1]} — bundle styles in the widget`);
+  }
+
+  // Informational: which external hosts the widget's code mentions.
+  const hostSet = new Set();
+  for (const m of html.matchAll(/https?:\/\/([a-z0-9.-]+\.[a-z]{2,})/gi)) {
+    const host = m[1].toLowerCase();
+    if (!host.endsWith('.wsw') && host !== 'app.wsw') hostSet.add(host);
+  }
+  report.externalHosts = [...hostSet].sort();
+
+  // Dangerous sinks.
+  if (/\beval\s*\(|new\s+Function\s*\(/.test(html))
+    err('eval', 'eval() / new Function() are banned');
+  if (/setInterval\s*\([^)]*,\s*([0-9]{1,2})\s*\)/.test(html))
+    warn('fast-timer', 'setInterval under 100ms — this runs 24/7 on the panel; batch or slow it down');
+
+  // bgStyle contract: widgets that offer the setting must map it to the base classes,
+  // with solid as the fallback for unset/out-of-spec values.
+  const hasBgStyle = (manifest.properties || []).some((p) => p.name === 'bgStyle');
+  if (hasBgStyle && !/bg-solid/.test(html))
+    err('bgstyle-mapping', 'bgStyle property declared but bg-solid is never applied — unset values must render solid (see the stock clock)');
+
+  // Reduced motion: infinite animations should freeze under prefers-reduced-motion.
+  if (/animation[^;]*infinite/.test(noComments) && !/prefers-reduced-motion/.test(noComments))
+    warn('reduced-motion', 'infinite animation without a prefers-reduced-motion guard (widget-base.css covers its own classes only)');
+
+  return report;
+}
+
+function human(report) {
+  const lines = [`${report.ok ? 'OK  ' : 'FAIL'} ${report.folder}`];
+  for (const e of report.errors) lines.push(`  ERROR   [${e.rule}] ${e.detail}`);
+  for (const w of report.warnings) lines.push(`  warning [${w.rule}] ${w.detail}`);
+  if (report.externalHosts.length) lines.push(`  external hosts: ${report.externalHosts.join(', ')}`);
+  return lines.join('\n');
+}
+
+// ---- CLI ------------------------------------------------------------------------
+const args = process.argv.slice(2);
+const asJson = args.includes('--json');
+const all = args.includes('--all');
+const targets = args.filter((a) => !a.startsWith('--'));
+if (!targets.length) {
+  console.error('usage: validate-widget.js [--json] <widget-folder>  |  [--json] --all <widgets-dir>');
+  process.exit(1);
+}
+
+let folders = targets;
+if (all) {
+  folders = [];
+  for (const dir of targets) {
+    for (const name of fs.readdirSync(dir)) {
+      const f = path.join(dir, name);
+      if (fs.existsSync(path.join(f, 'manifest.json'))) folders.push(f);
+    }
+  }
+}
+
+const reports = folders.map(validate);
+if (asJson) console.log(JSON.stringify(all ? reports : reports[0], null, 1));
+else console.log(reports.map(human).join('\n'));
+process.exit(reports.every((r) => r.ok) ? 0 : 1);
