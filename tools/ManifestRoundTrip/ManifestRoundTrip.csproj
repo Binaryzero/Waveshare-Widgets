@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CI guard: proves every shipped manifest survives the host's deserialize→serialize
+       round-trip with no key/value loss, using the REAL WidgetManifest types. Exists
+       because the C# model silently stripped list-type keys (fields/itemLabel/…) for
+       months while JS-fixture harnesses stayed green (issues #30/#31). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/WaveshareWidgets/Widgets/WidgetManifest.cs" />
+  </ItemGroup>
+</Project>
