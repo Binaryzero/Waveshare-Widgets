@@ -172,7 +172,11 @@
     } else if (msg.type === 'ww-notification-dismiss' && msg.id != null) {
       postToHost({ type: 'notification-dismiss', id: msg.id });
     } else if (msg.type === 'ww-audio-set') {
-      postToHost({ type: 'audio-set', target: String(msg.target || 'master'), level: msg.level, muted: msg.muted });
+      if (msg.id) {
+        audioRoutes.set(msg.id, ev.source);
+        setTimeout(() => audioRoutes.delete(msg.id), 15000);
+      }
+      postToHost({ type: 'audio-set', id: msg.id, target: String(msg.target || 'master'), level: msg.level, muted: msg.muted });
     }
   });
 

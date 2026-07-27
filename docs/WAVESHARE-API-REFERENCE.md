@@ -139,6 +139,8 @@ WW.listMedia()       // -> Promise<[{name, url, kind: 'image'|'video'}]>; served
 WW.getAudio()        // -> Promise<{available, master: {level, muted}, sessions: [{pid, name, level, muted}]}>
 WW.setAudio(target, { level?, muted? })  // target: 'master' | pid (string); level 0..1.
                                          // A pid fans out to all same-name sessions of that app.
+                                         // Resolves {ok}; ok:false = the host couldn't apply it
+                                         // (session gone) — revert your optimistic UI and flash.
 
 // Windows toast mirror (notifications widget)
 WW.watchNotifications(true)     // start the host's toast mirror (demand-gated polling)

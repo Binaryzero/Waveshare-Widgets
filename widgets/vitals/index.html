@@ -429,9 +429,11 @@
         next.streak = (dayDiff(state.lastDay, today) === 1 && allTended) ? state.streak + 1 : 0;
       for (const m of METERS) { next.meters[m] = SEGMENTS; next.tendedToday[m] = false; }
       next.lastDay = today;
-    } else if (today !== state.lastDay) {
-      next.lastDay = today; // clock moved backwards across midnight — adopt, no refill
     }
+    // A backwards day (clock or timezone moved back across midnight) is NOT
+    // adopted — lastDay is monotonic. Rewriting it to the older date would re-arm
+    // the rollover for a day that was already processed, refilling every meter and
+    // double-awarding the streak the moment the clock returns.
 
     // 2 · How much of the elapsed wall-clock actually counts as at-PC time.
     let countable = now - state.lastTick;

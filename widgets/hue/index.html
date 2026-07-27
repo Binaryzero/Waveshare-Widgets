@@ -490,6 +490,11 @@
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error('HTTP ' + res.status);
+      // v1 reports many refusals as a 200 whose body array carries error entries
+      // (deleted scene, unreachable group) — status alone proves nothing.
+      const answers = await res.json().catch(() => null);
+      const refused = Array.isArray(answers) && answers.find((a) => a && a.error);
+      if (refused) throw new Error(refused.error.description || 'bridge refused');
       if (confirm && el) flash(el, 'confirm-flash');
     } catch (e) {
       WW.log('hue: action failed: ' + e.message);
@@ -504,6 +509,10 @@
     try {
       const res = await v2fetch(path, { method: 'PUT', body: JSON.stringify(body) });
       if (!res.ok) throw new Error('HTTP ' + res.status);
+      // v2 is better behaved status-wise, but errors[] can still ride a 200.
+      const v2body = await res.json().catch(() => null);
+      if (v2body && Array.isArray(v2body.errors) && v2body.errors.length)
+        throw new Error(v2body.errors[0].description || 'bridge refused');
       if (confirm && el) flash(el, 'confirm-flash');
     } catch (e) {
       WW.log('hue: action failed: ' + e.message);

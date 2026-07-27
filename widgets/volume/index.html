@@ -192,10 +192,12 @@
     const opts = t.pending;
     t.pending = null;
     t.lastSent = performance.now();
-    // setAudio is fire-and-forget today, but if it throws (or a host hook makes it
-    // reject) the tap must not die silently: fail-flash the row and roll the
-    // optimistic slider/glyph back to the last known state.
-    Promise.resolve().then(() => WW.setAudio(target, opts)).catch((e) => {
+    // setAudio resolves {ok} — ok:false means the host really couldn't apply it
+    // (session gone, endpoint changed). Either that or a throw must not die
+    // silently: fail-flash the row and roll the optimistic slider/glyph back.
+    Promise.resolve().then(() => WW.setAudio(target, opts)).then((r) => {
+      if (r && r.ok === false) throw new Error('host refused');
+    }).catch((e) => {
       WW.log('volume: set failed: ' + ((e && e.message) || e));
       flash(t.ui.row, 'fail-flash');
       revertRow(t.ui);
@@ -240,9 +242,11 @@
         if (ui.glyph) ui.glyph.textContent = glyphFor(Math.round(Number(ui.input.value)) || 0, muted);
       };
       paint(next);                               // optimistic UI until next poll
-      // Taps go straight through (no throttle); a throwing/rejecting setAudio
-      // must fail-flash the row and revert the optimistic flip.
-      Promise.resolve().then(() => WW.setAudio(ui.target, { muted: next })).catch((e) => {
+      // Taps go straight through (no throttle); a throwing setAudio or an
+      // {ok:false} ack must fail-flash the row and revert the optimistic flip.
+      Promise.resolve().then(() => WW.setAudio(ui.target, { muted: next })).then((r) => {
+        if (r && r.ok === false) throw new Error('host refused');
+      }).catch((e) => {
         WW.log('volume: mute failed: ' + ((e && e.message) || e));
         paint(prev);
         flash(ui.row, 'fail-flash');

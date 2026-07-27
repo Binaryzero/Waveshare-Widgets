@@ -120,7 +120,7 @@ WW.fetch(url, init)                            // fetch() with host-proxied CORS
 WW.ping(hosts)                                 // real ICMP pings via the host process
 WW.listMedia()                                 // list the user's media folder -> [{name, url, kind}]
 WW.getAudio()                                  // Windows volume mixer snapshot (master + sessions)
-WW.setAudio(target, {level?, muted?})          // set master ('master') or per-app volume/mute
+WW.setAudio(target, {level?, muted?})          // set master ('master') or per-app volume/mute; resolves {ok}
 
 WW.watchNotifications(true)                    // start the host's notification mirror (demand-gated)
 WW.notifications                               // {state: 'allowed'|'denied'|'unavailable', items:[{id, app, appId, title, body, time}]}
