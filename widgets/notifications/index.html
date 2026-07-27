@@ -304,11 +304,11 @@
     if (kind === 'denied') {
       $('stateIcon').textContent = '!';
       $('stateTitle').textContent = 'Notification access is off';
-      $('stateBody').textContent = 'Windows Settings → Privacy & security → Notifications — turn on "Let apps access notifications" so the panel can mirror your toasts.';
+      $('stateBody').textContent = 'Windows Settings → Privacy & security → Notifications — turn on "Let apps access notifications". If the app never appears there, this portable build lacks the package identity Windows requires for notification access.';
     } else if (kind === 'unavailable') {
       $('stateIcon').textContent = '◎';
       $('stateTitle').textContent = 'Notifications unavailable';
-      $('stateBody').textContent = 'Notification mirroring is not supported on this system.';
+      $('stateBody').textContent = 'Windows refused the notification listener — it generally requires an app installed with package identity (MSIX), which this portable build does not have.';
     }
     $('list').hidden = true;
     $('muteBar').hidden = true;

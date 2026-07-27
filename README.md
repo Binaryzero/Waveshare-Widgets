@@ -52,7 +52,9 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   7-Day Forecast, Weather Radar, Reddit Photos, Ping Monitor, iFrame, Stream Deck
   mirror (live Virtual Stream Deck with clickable keys), Philips Hue (CLIP v2 + v1),
   Battery, Gallery, YouTube, Twitch Chat, Launch App, Sensor Chart, Volume mixer,
-  Fans, Notifications (Windows toast mirror with per-app mute and a privacy blur).
+  Fans, Notifications (Windows toast mirror with per-app mute and a privacy blur —
+  note Windows only grants notification access to packaged (MSIX) installs, so on
+  the portable zip the widget explains itself instead of mirroring).
 - **iCUE widget compatibility**: many `.icuewidget` packages from the
   [Elgato Marketplace](https://marketplace.elgato.com/icue/widgets) install and run
   as-is — the runtime emulates the `Sensorsdataprovider` plugin API and reads

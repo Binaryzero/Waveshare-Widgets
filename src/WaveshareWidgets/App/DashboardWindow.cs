@@ -663,6 +663,7 @@ public sealed class DashboardWindow : Form
             ["media"] = JsonSerializer.SerializeToNode(_hub.LatestMedia, BridgeJson),
             ["backgroundHost"] = BackgroundHost,
             ["theme"] = tokens,
+            ["game"] = _gameMode.Current,
             ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated, ["apiVersion"] = 1 },
         };
     }

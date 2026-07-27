@@ -134,7 +134,10 @@ WW.onGame((g) => { ... })                      // pause your own timers/streams 
 Game mode also stamps `html[data-game="on"|"off"]` in every widget, and
 `widget-base.css` pauses ALL CSS animation while on — JS work is yours to gate via
 `WW.onGame`. Notification strings are untrusted external text: render them with
-`textContent`, never `innerHTML`. A slot can also opt out of game time entirely with
+`textContent`, never `innerHTML`. Windows only grants the notification listener to
+apps with **package identity** (MSIX-installed); on the portable zip install expect
+`state` to come back `denied` or `unavailable`, and design for it — the stock
+notifications widget shows an explanatory card instead of an empty list. A slot can also opt out of game time entirely with
 the "hide during games" checkbox in Settings (`hideInGame` in layout.json) — the shell
 hides it and returns it to the same grid cell afterwards.
 

@@ -19,12 +19,23 @@ public sealed class GameModeWatcher : IDisposable
         ["explorer", "searchhost", "startmenuexperiencehost", "shellexperiencehost",
          "lockapp", "waresharewidgets", "wavesharewidgets", "dwm", "idle"];
 
+    private readonly object _gate = new();
     private System.Threading.Timer? _timer;
     private bool _active;
     private string _process = "";
 
     /// <summary>Raised (worker thread) when game-mode flips; payload {active, process}.</summary>
     public event Action<JsonObject>? Changed;
+
+    /// <summary>
+    /// Latest committed state, for the shell init payload. Transitions only fire as
+    /// events — one raised before the shell is ready is dropped there, and the poll's
+    /// dedup means it is never re-raised — so init must carry the current state.
+    /// </summary>
+    public JsonObject Current
+    {
+        get { lock (_gate) { return new JsonObject { ["active"] = _active, ["process"] = _process }; } }
+    }
 
     public void Start() => _timer ??= new System.Threading.Timer(_ => Poll(), null, PollMs, PollMs);
 
@@ -33,10 +44,13 @@ public sealed class GameModeWatcher : IDisposable
         try
         {
             var (active, process) = Detect();
-            if (active == _active && process == _process)
-                return;
-            _active = active;
-            _process = process;
+            lock (_gate)
+            {
+                if (active == _active && process == _process)
+                    return;
+                _active = active;
+                _process = process;
+            }
             Changed?.Invoke(new JsonObject { ["active"] = active, ["process"] = process });
         }
         catch (Exception ex)

@@ -268,6 +268,9 @@
     latestSensors = data.sensors || [];
     latestMedia = data.media;
     status = data.status || status;
+    // Game state rides init: a game already fullscreen when the shell loads fired
+    // its transition before shell-ready, and the host's poll dedups it forever.
+    if (data.game) gameState = { active: !!data.game.active, process: data.game.process || '' };
     applyThemeTokens(data.theme);
 
     layoutData = (data.layout && Array.isArray(data.layout.pages)) ? data.layout : { pages: [] };

@@ -33,7 +33,18 @@ public sealed class NotificationCenter : IDisposable
         lock (_gate)
         {
             if (on == _watching)
+            {
+                // A repeated "on" means a NEW shell page (reload, crash recovery)
+                // re-declared demand: its predecessor never posted watch(false), and
+                // the buffered payload died with it. Reset dedup and poll now so the
+                // rebuilt widget isn't stuck on "loading" until a toast changes.
+                if (on && _timer is not null)
+                {
+                    _lastSignature = "";
+                    _timer.Change(0, PollMs);
+                }
                 return;
+            }
             _watching = on;
             if (on)
             {
