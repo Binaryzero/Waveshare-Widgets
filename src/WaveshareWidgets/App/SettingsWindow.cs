@@ -246,6 +246,11 @@ public sealed class SettingsWindow : Form
         try
         {
             var installed = _library.InstallPackage(dialog.FileName);
+            // The replica renders real widget iframes, so a just-installed widget's
+            // virtual host must resolve in THIS WebView too (InitializeAsync only
+            // mapped the widgets present when the window opened).
+            _webView.CoreWebView2?.SetVirtualHostNameToFolderMapping(
+                installed.VirtualHost, installed.Folder, CoreWebView2HostResourceAccessKind.Allow);
             Post(new JsonObject { ["type"] = "widget-installed", ["name"] = installed.Manifest.Name });
             PostInit(); // refresh widget list and sensor snapshot in the editor
         }

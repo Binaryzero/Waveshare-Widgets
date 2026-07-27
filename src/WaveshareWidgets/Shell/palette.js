@@ -94,6 +94,7 @@
       '--ok': hexOf(ok), '--warn': hexOf(warn), '--err': hexOf(err), '--info': hexOf(info),
       '--ok-bg': tintOf(ok), '--warn-bg': tintOf(warn), '--err-bg': tintOf(err), '--info-bg': tintOf(info),
       '--hover-bg': hexOf(hover), '--panel-alpha': String(panelAlpha),
+      '--appearance': dark ? 'dark' : 'light',
     };
   }
 

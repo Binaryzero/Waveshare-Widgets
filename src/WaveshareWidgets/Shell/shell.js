@@ -47,7 +47,17 @@
 
   function handleHostMessage(msg) {
     if (msg.type === 'init') onInit(msg.data);
-    else if (msg.type === 'theme') { applyThemeTokens(msg.data); broadcast({ type: 'ww-theme', theme: latestTheme }); }
+    else if (msg.type === 'theme') {
+      // Live retheme (settings replica): refresh the seeds first so styled slots
+      // re-derive against the EDITED theme, then push per slot — a slot carrying
+      // style overrides keeps its own palette instead of being flattened to the
+      // global map.
+      if ('seeds' in msg) layoutData.theme = msg.seeds || undefined;
+      applyThemeTokens(msg.data);
+      for (const slot of slots) {
+        if (slot.initialized) sendToSlot(slot, { type: 'ww-theme', theme: slotTheme(slot) });
+      }
+    }
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
     else if (msg.type === 'fetch-result') {
@@ -718,6 +728,7 @@
     const page = layoutData.pages[i];
     if (!page || layoutData.pages.length <= 1) return;
     confirmThen(pageDeleteBtn, '✕ Page', (page.slots || []).length > 0, () => {
+      if (styleTarget && styleTarget.page === page) closeStyleEditor(false); // its tile goes away with the page
       for (const rec of slots.filter((s) => s.page === page)) rec.el.remove();
       slots = slots.filter((s) => s.page !== page);
       const el = pageEls.get(page);

@@ -14,6 +14,11 @@
   const pendingMediaLists = new Map();
   const pendingAudioGets = new Map();
   let fetchSeq = 0;
+  // The shell routes results by id alone, across EVERY widget frame — a per-frame
+  // counter plus a ms-floored clock can collide between frames loaded in the same
+  // tick, delivering one widget's result to another. A random tail prevents that.
+  const reqId = (prefix) =>
+    prefix + (++fetchSeq) + '-' + Math.floor(performance.now()) + '-' + Math.random().toString(36).slice(2, 8);
 
   function emit(kind, payload) {
     for (const cb of listeners[kind]) {
@@ -110,7 +115,7 @@
   function proxyFetch(url, init) {
     init = init || {};
     return new Promise((resolve, reject) => {
-      const id = 'w' + (++fetchSeq) + '-' + Math.floor(performance.now());
+      const id = reqId('w');
       pendingFetches.set(id, { resolve, reject });
       setTimeout(() => {
         if (pendingFetches.delete(id)) reject(new TypeError('proxy fetch timed out'));
@@ -243,7 +248,7 @@
      */
     ping(hosts) {
       return new Promise((resolve, reject) => {
-        const id = 'p' + (++fetchSeq) + '-' + Math.floor(performance.now());
+        const id = reqId('p');
         pendingPings.set(id, { resolve, reject });
         setTimeout(() => {
           if (pendingPings.delete(id)) reject(new TypeError('ping timed out'));
@@ -256,7 +261,7 @@
      * https://media.wsw/<name>. Resolves to [{name, kind: 'image'|'video'}]. */
     listMedia() {
       return new Promise((resolve, reject) => {
-        const id = 'm' + (++fetchSeq) + '-' + Math.floor(performance.now());
+        const id = reqId('m');
         pendingMediaLists.set(id, { resolve, reject });
         setTimeout(() => { if (pendingMediaLists.delete(id)) reject(new TypeError('media list timed out')); }, 10000);
         parent.postMessage({ type: 'ww-media-list', id }, '*');
@@ -267,7 +272,7 @@
      * Levels are 0..1. */
     getAudio() {
       return new Promise((resolve, reject) => {
-        const id = 'a' + (++fetchSeq) + '-' + Math.floor(performance.now());
+        const id = reqId('a');
         pendingAudioGets.set(id, { resolve, reject });
         setTimeout(() => { if (pendingAudioGets.delete(id)) reject(new TypeError('audio get timed out')); }, 10000);
         parent.postMessage({ type: 'ww-audio-get', id }, '*');

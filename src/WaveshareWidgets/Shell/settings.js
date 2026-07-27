@@ -105,7 +105,9 @@
         media: state.media || null,
         backgroundHost,
         theme: replicaTheme(),
-        status: state.status || { elevated: false, apiVersion: 1 },
+        // settings-init only carries {elevated}; widgets still expect the panel's
+        // full status shape, so keep apiVersion present in the replica too.
+        status: Object.assign({ elevated: false, apiVersion: 1 }, state.status || {}),
       },
     });
   }
@@ -114,7 +116,9 @@
   function refreshReplica(kind) {
     if (!replicaReady || previewStage.classList.contains('collapsed')) return;
     if (kind === 'theme') {
-      replicaPost({ type: 'theme', data: replicaTheme() });
+      // seeds ride along so the replica's styled slots re-derive their overrides
+      // against the edited theme instead of keeping stale (or losing) seeds.
+      replicaPost({ type: 'theme', data: replicaTheme(), seeds: state.layout.theme || null });
       return;
     }
     clearTimeout(replicaTimer);
