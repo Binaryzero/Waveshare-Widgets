@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Vitals</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Widget-specific layout; tokens, background/bgStyle and the typography base
+   * come from widget-base.css. Designed for quarter (320px) first. */
+  body {
+    display: flex;
+    flex-direction: column;
+    padding: clamp(8px, 2.5vh, 14px) clamp(10px, 3%, 18px);
+    gap: clamp(4px, 1.2vh, 8px);
+  }
+  header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+  #streakPill { flex: none; font-variant-numeric: tabular-nums; }
+
+  #main {
+    flex: 1; min-height: 0;
+    display: flex; flex-direction: column; align-items: stretch; justify-content: center;
+    gap: clamp(6px, 1.8vh, 14px);
+  }
+
+  /* ---- pixel pet ------------------------------------------------------------ */
+  #petBox { flex: none; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  #pet { display: block; width: clamp(60px, 19vh, 108px); aspect-ratio: 13 / 12; }
+  #pet rect { shape-rendering: crispEdges; }
+  /* Mood recolors the whole creature through currentColor — state tokens only. */
+  #pet.bright { color: var(--ok); }
+  #pet.neutral { color: var(--accent); }
+  #pet.droopy { color: var(--warn); }
+  #pet.critical { color: var(--err); }
+  .px-b { fill: currentColor; }
+  .px-s { fill: currentColor; opacity: 0.45; }
+  /* Ink and glint detail pixels over the state-hued body: the sanctioned
+   * monochrome rgba() alphas — they stay legible on every theme's state hues. */
+  .px-e { fill: rgba(0, 0, 0, 0.72); }
+  .px-h { fill: rgba(255, 255, 255, 0.85); }
+  /* Slow blink + a gentle bob — opacity/transform only, so game mode pauses them
+   * for free (html[data-game="on"] in the base). JS never re-enables motion under
+   * reduced motion; the base only guards its own classes, so we guard ours. */
+  #pet .eyes { animation: vt-blink 4.4s step-end infinite; }
+  @keyframes vt-blink {
+    0%, 90.9% { opacity: 1; }
+    91%, 95.9% { opacity: 0; }
+    96%, 100% { opacity: 1; }
+  }
+  #pet { animation: vt-bob 4.2s ease-in-out infinite; }
+  @keyframes vt-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(2.5%); } }
+  @media (prefers-reduced-motion: reduce) { #pet, #pet .eyes { animation: none; } }
+  #petName {
+    font-size: 12px; font-weight: 700; color: var(--text-muted);
+    max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* ---- meters ---------------------------------------------------------------- */
+  #meters { flex: none; display: flex; flex-direction: column; gap: clamp(4px, 1.2vh, 8px); }
+  .meter-row {
+    display: flex; align-items: center; gap: var(--space-2);
+    width: 100%; min-height: 44px;
+    padding: 4px clamp(8px, 2vh, 12px);
+    font: inherit; color: inherit; text-align: left; cursor: pointer;
+  }
+  .m-label { flex: none; width: 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .segs {
+    flex: 1; min-width: 0;
+    display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px;
+    height: clamp(10px, 2.6vh, 14px);
+  }
+  .segs i { border-radius: 2px; background: var(--control-bg); }
+  .meter-row.ok .segs i.f { background: var(--ok); }
+  .meter-row.warn .segs i.f { background: var(--warn); }
+  .meter-row.err .segs i.f { background: var(--err); }
+  .m-val {
+    flex: none; min-width: 4ch; text-align: right;
+    font-size: 11px; font-weight: 700; color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- XP / streak footer ----------------------------------------------------- */
+  #xpRow { flex: none; display: flex; align-items: center; gap: var(--space-2); }
+  #lvl { flex: none; color: var(--text-muted); }
+  #lvlMeter { flex: 1; min-width: 0; max-width: 160px; }
+  #xpText { flex: none; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+  /* ---- speech bubble ---------------------------------------------------------- */
+  #bubble {
+    position: fixed; top: clamp(6px, 2vh, 12px); left: 50%;
+    transform: translateX(-50%);
+    z-index: 5;
+    max-width: min(380px, 88%);
+    padding: 6px 12px;
+    font-size: 12px; line-height: 1.4; color: var(--text);
+    border-color: rgba(var(--accent-rgb), 0.5);
+    animation: vt-pop var(--dur-mid) var(--ease);
+  }
+  @keyframes vt-pop {
+    from { opacity: 0; transform: translateX(-50%) translateY(-4px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+  }
+
+  /* ---- coaching card overlay --------------------------------------------------
+   * Overlay grammar: backdrop tap closes (no refill), content tap does not,
+   * ✕ closes too. Only the explicit primary button refills. */
+  #overlay {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: center;
+    padding: clamp(8px, 3vh, 20px);
+    background: rgba(0, 0, 0, 0.55);
+  }
+  #cardBox {
+    position: relative;
+    width: min(440px, 94%); max-height: 100%;
+    overflow-y: auto; scrollbar-width: none;
+    display: flex; flex-direction: column; gap: clamp(4px, 1.4vh, 8px);
+    padding: clamp(10px, 3vh, 18px);
+  }
+  #cardBox::-webkit-scrollbar { display: none; }
+  #cardTitle { font-size: clamp(14px, 4vh, 17px); font-weight: 750; color: var(--text); padding-right: 44px; }
+  #cardBody { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
+  #cardActions { display: flex; gap: var(--space-2); margin-top: 2px; }
+  #cardDone { flex: 1; min-height: 44px; }
+  #cardClose { position: absolute; top: 6px; right: 6px; width: 40px; padding: 0; color: var(--text-muted); }
+
+  /* ---- wide slots -------------------------------------------------------------- */
+  @media (min-width: 520px) {
+    #main { flex-direction: row; align-items: center; justify-content: center; gap: clamp(10px, 3vw, 28px); }
+    #meters { flex: 1; min-width: 0; max-width: 560px; }
+  }
+  @media (min-width: 900px) {
+    #meters {
+      max-width: 980px;
+      display: grid; grid-template-columns: 1fr 1fr; align-content: center;
+      gap: clamp(6px, 1.6vh, 10px) clamp(10px, 2vw, 18px);
+    }
+  }
+
+  /* ---- 200px bands: thin bars, small pet, no XP row. The header is dropped so
+   * all four meter rows keep the 40px touch floor inside 200px. ---------------- */
+  @media (max-height: 240px) {
+    body { padding: 6px 10px; gap: 4px; }
+    header, #xpRow, #petName { display: none; }
+    #main { flex-direction: row; align-items: center; justify-content: center; gap: clamp(8px, 2vw, 18px); }
+    #meters { flex: 1; min-width: 0; }
+    #pet { width: clamp(40px, 24vh, 56px); }
+    .meter-row { min-height: 40px; padding: 2px 8px; }
+    .segs { height: 8px; }
+  }
+
+  /* State layer covers the whole tile; it paints the surface at the effective
+   * panel opacity so it matches the tile's bgStyle (stock countdown pattern). */
+  #state {
+    position: fixed; inset: 0;
+    background: rgba(var(--surface-rgb), var(--panel-alpha-eff));
+  }
+</style>
+</head>
+<body>
+  <header>
+    <span class="kicker">Vitals</span>
+    <span class="pill ok" id="streakPill" hidden></span>
+  </header>
+  <main id="main" hidden>
+    <section id="petBox" aria-hidden="true">
+      <svg id="pet" viewBox="0 0 13 12"></svg>
+      <div id="petName"></div>
+    </section>
+    <section id="meters"></section>
+  </main>
+  <footer id="xpRow" hidden>
+    <span class="kicker" id="lvl">Lv 0</span>
+    <div class="meter" id="lvlMeter"><i id="lvlFill" style="width: 0%"></i></div>
+    <span id="xpText">0 XP</span>
+  </footer>
+  <div class="state-card" id="state">
+    <div class="spinner" id="stateSpinner"></div>
+    <div class="state-icon" id="stateIcon" hidden></div>
+    <div class="state-title" id="stateTitle" hidden></div>
+    <div class="state-body" id="stateBody" hidden></div>
+  </div>
+  <div class="card" id="bubble" hidden></div>
+  <div id="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="cardTitle">
+    <div class="card" id="cardBox">
+      <span class="kicker" id="cardKicker"></span>
+      <div id="cardTitle"></div>
+      <div id="cardBody"></div>
+      <div id="cardActions">
+        <button class="btn primary" id="cardDone"></button>
+      </div>
+      <button class="btn" id="cardClose" aria-label="Close">✕</button>
+    </div>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+
+  // ---- tuning constants (the whole behavior is documented here) -----------------
+  const METERS = ['water', 'eyes', 'posture', 'stretch'];
+  const SEGMENTS = 10;                    // cells per meter; all full at day start
+  // Drain pace: minutes of counted at-PC time per segment.
+  //   standard: 24 min/segment -> a full meter (10 segments) empties over ~4 h
+  //   gentle:   36 min/segment -> ×1.5 slower  (~6 h)
+  //   brisk:    16 min/segment -> ×1.5 faster  (~2 h 40 m)
+  const PACE_MIN_PER_SEGMENT = { gentle: 36, standard: 24, brisk: 16 };
+  const IDLE_LIMIT_S = 300;               // idle beyond 5 min => not at the PC
+  const AWAY_GAP_MS = 10 * 60000;         // boot fence: a gap over 10 min counts 0
+  const XP_PER_TEND = 25;                 // XP per tended meter
+  const XP_PER_LEVEL = 500;               // level = floor(xp / 500)
+  const TICK_MS = 30000;                  // drain bookkeeping cadence
+  const BUBBLE_COOLDOWN_MS = 180000;      // at most one speech bubble per ~3 min
+  const BUBBLE_SHOW_MS = 12000;           // how long a bubble stays up
+  const NIGHT_START = 23, NIGHT_END = 7;  // the "quiet" window (local hours)
+
+  // ---- per-meter coaching copy ---------------------------------------------------
+  const META = {
+    water: {
+      label: 'Water', title: 'Time for a sip',
+      body: 'Have some water — a few good sips or a whole glass. It keeps the headaches away and the brain quick.',
+      done: 'Done — drank some',
+    },
+    eyes: {
+      label: 'Eyes', title: 'Rest your eyes',
+      body: 'Look at something far away — across the room or out a window — for about twenty seconds, and blink a few times on purpose.',
+      done: 'Done — rested them',
+    },
+    posture: {
+      label: 'Posture', title: 'Reset your posture',
+      body: 'Sit tall: ears over shoulders, shoulders down and back, both feet on the floor. Hold it for two slow breaths.',
+      done: 'Done — sitting tall',
+    },
+    stretch: {
+      label: 'Stretch', title: 'Shake it out',
+      body: 'Stand up and reach for the ceiling, roll the shoulders, shake out the wrists. Thirty seconds is plenty.',
+      done: 'Done — stretched',
+    },
+  };
+
+  // The pet's line bank — one gentle, lightly wry voice; drawn via a no-repeat
+  // shuffle bag persisted in state so nothing repeats until the bank is exhausted.
+  const LINES = [
+    'A sip now beats a headache later.',
+    'The water is not going to drink itself.',
+    'Refill the human, not just the mug.',
+    'Hydration is a stat buff. Just saying.',
+    'Water: still the best patch ever shipped.',
+    'Your eyes have been sprinting. Walk them for a bit.',
+    'Look at something far away. The screen will cope.',
+    'Blink twice if you forgot to blink.',
+    'The far wall is showing a documentary. Go watch.',
+    'Screens never blink. You should, though.',
+    'Dry eyes are a side quest you can skip.',
+    'Shoulders are not earrings. Let them down.',
+    'Ears over shoulders — that is the whole trick.',
+    'Sit tall. Pretend the ceiling is proud of you.',
+    'Neck check: is it doing the forward thing again?',
+    'The slouch crept back. Politely decline it.',
+    'Your chair is not load-bearing for your face.',
+    'Unfold yourself. You are not a laptop.',
+    'Spines like moving. Yours told me.',
+    'A tiny stretch now, a smug feeling all day.',
+    'Stand up, reach up, sit back down a legend.',
+    'Stretch break: cheaper than a new back.',
+    'Roll the shoulders. Backward feels fancy.',
+    'Shake out the wrists. They have opinions.',
+    'Your future back says thanks in advance.',
+    'Little stretches keep the creaks away.',
+    'One glass of water is one point for team you.',
+    'Twenty seconds of far focus. I will wait.',
+    'Reach for the sky. It is good practice.',
+    'Small habits, big pet mood.',
+  ];
+
+  // ---- pixel pet art (original) ---------------------------------------------------
+  // 13×12 cell matrices. B body · s shade · E eye (blinks) · M mouth · H glint.
+  const PIXELS = {
+    bright: [
+      '...B.....B...',
+      '...B.....B..H',
+      '..BBBBBBBBB..',
+      '.BBBBBBBBBBB.',
+      '.BBEEBBBEEBB.',
+      '.BBEEBBBEEBB.',
+      '.BBBBBBBBBBB.',
+      '.BBMBBBBBMBB.',
+      '.BBBMMMMMBBB.',
+      '..sBBBBBBBs..',
+      '..BB.....BB..',
+      '.............',
+    ],
+    neutral: [
+      '.............',
+      '...B.....B...',
+      '..BBBBBBBBB..',
+      '.BBBBBBBBBBB.',
+      '.BBEEBBBEEBB.',
+      '.BBEEBBBEEBB.',
+      '.BBBBBBBBBBB.',
+      '.BBBBBBBBBBB.',
+      '.BBBBMMMBBBB.',
+      '..sBBBBBBBs..',
+      '..BB.....BB..',
+      '.............',
+    ],
+    droopy: [
+      '.............',
+      '.............',
+      '..B.......B..',
+      '..BBBBBBBBB..',
+      '.BBBBBBBBBBB.',
+      '.BBEEBBBEEBB.',
+      '.BBBBBBBBBBB.',
+      '.BBBMMMMMBBB.',
+      '.BBMBBBBBMBB.',
+      '..sBBBBBBBs..',
+      '..BB.....BB..',
+      '.............',
+    ],
+    critical: [
+      '.............',
+      '.............',
+      '.............',
+      '...........H.',
+      '...........H.',
+      '....BBBBB....',
+      '..BBBBBBBBB..',
+      '.BBEEBBBEEBB.',
+      'BBBBBMMMBBBBB',
+      '.BBBBBBBBBBB.',
+      '..sssssssss..',
+      '.............',
+    ],
+  };
+  const PX_CLASS = { B: 'px-b', s: 'px-s', E: 'px-e', M: 'px-e', H: 'px-h' };
+
+  // ---- per-instance persistence ---------------------------------------------------
+  // localStorage is per-ORIGIN and all vitals instances share one virtual host, so
+  // the key carries the per-instance slot tag (the stock countdown's INSTANCE
+  // pattern) — two tiles keep independent meters, XP and streaks.
+  const INSTANCE = (location.hash.match(/ww-slot=([\w-]+)/) || [])[1] || 'solo';
+  const STATE_KEY = 'ww.vitals.state:' + INSTANCE;
+
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const num = (v, dflt) => (typeof v === 'number' && isFinite(v) ? v : dflt);
+
+  function dayOf(ts) {
+    const d = new Date(ts);
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+  // Whole local days from day-string a to day-string b (1 = the very next day).
+  function dayDiff(a, b) {
+    const pa = String(a).split('-').map(Number), pb = String(b).split('-').map(Number);
+    const da = new Date(pa[0], pa[1] - 1, pa[2]), db = new Date(pb[0], pb[1] - 1, pb[2]);
+    return Math.round((db.getTime() - da.getTime()) / 86400000);
+  }
+
+  function defaultState(now) {
+    const meters = {}, tended = {};
+    for (const m of METERS) { meters[m] = SEGMENTS; tended[m] = false; }
+    return { v: 1, lastTick: now, meters, tendedToday: tended, xp: 0, streak: 0, lastDay: dayOf(now), bag: [] };
+  }
+
+  function loadState(now) {
+    try {
+      const raw = JSON.parse(localStorage.getItem(STATE_KEY) || 'null');
+      if (raw && raw.v === 1) {
+        const st = {
+          v: 1,
+          lastTick: num(raw.lastTick, now),
+          meters: {}, tendedToday: {},
+          xp: Math.max(0, num(raw.xp, 0)),
+          streak: Math.max(0, Math.floor(num(raw.streak, 0))),
+          lastDay: /^\d{4}-\d{2}-\d{2}$/.test(String(raw.lastDay)) ? String(raw.lastDay) : dayOf(now),
+          bag: [],
+        };
+        const rm = raw.meters || {}, rt = raw.tendedToday || {};
+        for (const m of METERS) {
+          st.meters[m] = clamp(num(rm[m], SEGMENTS), 0, SEGMENTS);
+          st.tendedToday[m] = rt[m] === true;
+        }
+        if (Array.isArray(raw.bag))
+          st.bag = raw.bag.filter((i) => Number.isInteger(i) && i >= 0 && i < LINES.length);
+        return st;
+      }
+    } catch (e) { /* corrupt or absent — start fresh */ }
+    return defaultState(now);
+  }
+
+  function saveState(st) {
+    try { localStorage.setItem(STATE_KEY, JSON.stringify(st)); } catch (e) { /* best effort */ }
+  }
+
+  // ---- the drain math: one PURE function ------------------------------------------
+  // applyDrain(state, now, opts) -> new state. Never mutates its inputs, and calling
+  // it again with the same (state, now, opts) returns an identical result — so the
+  // settings window's read-only preview instance can tick against the same storage
+  // and both writers converge instead of corrupting each other.
+  //
+  // opts: { pace: 'gentle'|'standard'|'brisk',
+  //         enabled: {water,eyes,posture,stretch: bool},
+  //         gameActive: bool,          // WW.game truce — time doesn't count
+  //         idleSeconds: number|null } // sys:idle:seconds; null/absent = active
+  function applyDrain(state, now, opts) {
+    const o = opts || {};
+    const enabled = o.enabled || { water: true, eyes: true, posture: true, stretch: true };
+    const perSeg = PACE_MIN_PER_SEGMENT[o.pace] || PACE_MIN_PER_SEGMENT.standard;
+    const next = {
+      v: 1, lastTick: now,
+      meters: Object.assign({}, state.meters),
+      tendedToday: Object.assign({}, state.tendedToday),
+      xp: state.xp, streak: state.streak, lastDay: state.lastDay,
+      bag: (state.bag || []).slice(),
+    };
+
+    // 1 · Local-midnight rollover, before draining: refill every meter, judge the
+    // finished day's streak, and stamp the new date — the stamp is what makes a
+    // restart after midnight a no-op instead of a double-apply.
+    const today = dayOf(now);
+    if (today !== state.lastDay && dayDiff(state.lastDay, today) >= 1) {
+      const names = METERS.filter((m) => enabled[m]);
+      const allTended = names.length > 0 && names.every((m) => state.tendedToday[m] === true);
+      // Streak = consecutive fully-tended days. A multi-day gap contains untended
+      // days, so only an exactly-next-day rollover can extend it. With no meters
+      // enabled there is nothing to judge — the streak is left untouched.
+      if (names.length > 0)
+        next.streak = (dayDiff(state.lastDay, today) === 1 && allTended) ? state.streak + 1 : 0;
+      for (const m of METERS) { next.meters[m] = SEGMENTS; next.tendedToday[m] = false; }
+      next.lastDay = today;
+    } else if (today !== state.lastDay) {
+      next.lastDay = today; // clock moved backwards across midnight — adopt, no refill
+    }
+
+    // 2 · How much of the elapsed wall-clock actually counts as at-PC time.
+    let countable = now - state.lastTick;
+    if (!(countable > 0)) countable = 0;                 // clock moved backwards
+    if (countable > AWAY_GAP_MS) countable = 0;          // away / PC off / just booted
+    if (o.gameActive) countable = 0;                     // gamer truce
+    if (o.idleSeconds != null && o.idleSeconds > IDLE_LIMIT_S) countable = 0; // idle at desk
+
+    // 3 · Drain the enabled meters. Disabled meters hold their value.
+    if (countable > 0) {
+      const drained = countable / 60000 / perSeg;
+      for (const m of METERS)
+        if (enabled[m]) next.meters[m] = Math.max(0, next.meters[m] - drained);
+    }
+    return next;
+  }
+
+  // ---- mood + bubbles --------------------------------------------------------------
+  function worstOf(meters, enabled) {
+    let worst = null;
+    for (const m of METERS)
+      if (enabled[m]) worst = worst == null ? meters[m] : Math.min(worst, meters[m]);
+    return worst; // null when no meter is enabled
+  }
+  function moodFor(meters, enabled) {
+    const w = worstOf(meters, enabled);
+    if (w == null || w >= 7) return 'bright';
+    if (w >= 4) return 'neutral';
+    if (w >= 1.5) return 'droopy';
+    return 'critical';
+  }
+
+  function isNight(ts) {
+    const h = new Date(ts).getHours();
+    return h >= NIGHT_START || h < NIGHT_END;
+  }
+  // Pure eligibility check so the harness can probe suppression deterministically.
+  // Reduced motion does NOT suppress bubbles — the base zeroes the pop animation,
+  // so the line simply appears without motion.
+  function canBubble(now, o) {
+    if (o.gameActive) return false;
+    if (o.quiet && isNight(now)) return false;
+    if (o.worst == null || o.worst >= SEGMENTS / 2) return false; // only below half
+    if (now - (o.lastBubbleAt || 0) < BUBBLE_COOLDOWN_MS) return false;
+    return true;
+  }
+
+  // No-repeat shuffle bag: the bag holds line indices not yet shown; when it runs
+  // out it refills with a fresh shuffle. Pure given (state, rng).
+  function shuffled(arr, rng) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+    }
+    return arr;
+  }
+  function drawFromBag(state, rng) {
+    const r = rng || Math.random;
+    const bag = Array.isArray(state.bag) && state.bag.length
+      ? state.bag.slice()
+      : shuffled(LINES.map((_, i) => i), r);
+    const index = bag.pop();
+    return { index, bag };
+  }
+
+  // ---- runtime ---------------------------------------------------------------------
+  const cfg = { petName: 'Pip', pace: 'standard', quiet: true, enabled: {} };
+  for (const m of METERS) cfg.enabled[m] = true;
+  let started = false;      // repeated ww-init must not stack timers
+  let game = false;         // WW.game truce flag, kept fresh via WW.onGame
+  let openMeter = null;     // which meter's coaching card is up
+  let lastBubbleAt = 0;     // in-memory cooldown anchor
+  let bubbleTimer = null;
+  const rows = new Map();   // meter -> {el, segEls, valEl, lastFilled, lastSev}
+  const last = {};          // write-if-changed cache for scalar DOM text
+  let builtSig = null;      // enabled-set signature the meter rows were built for
+  let lastMood = null;
+
+  function idleSeconds() {
+    // sys:idle:seconds (System / Idle / "s"): seconds since last keyboard or mouse
+    // input. The sensor may be absent on older hosts — absent means "active".
+    const s = WW.sensorById ? WW.sensorById('sys:idle:seconds') : null;
+    return s && typeof s.value === 'number' && isFinite(s.value) ? s.value : null;
+  }
+  function currentOpts() {
+    return { pace: cfg.pace, enabled: cfg.enabled, gameActive: game, idleSeconds: idleSeconds() };
+  }
+
+  function put(id, text) { // write-if-changed guard
+    if (last[id] === text) return false;
+    last[id] = text;
+    return true;
+  }
+
+  function showState(kind, icon, title, body) {
+    const st = $('state');
+    st.hidden = false;
+    $('stateSpinner').hidden = kind !== 'loading';
+    $('stateIcon').hidden = kind === 'loading';
+    $('stateTitle').hidden = kind === 'loading';
+    $('stateBody').hidden = kind === 'loading' || !body;
+    $('stateIcon').textContent = icon || '';
+    $('stateTitle').textContent = title || '';
+    $('stateBody').textContent = body || '';
+    $('main').hidden = true;
+    $('xpRow').hidden = true;
+  }
+  function showMain() {
+    $('state').hidden = true;
+    $('main').hidden = false;
+    $('xpRow').hidden = false;
+  }
+
+  // ---- pet rendering ----------------------------------------------------------------
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  function buildPet(mood) {
+    const svg = $('pet');
+    svg.textContent = '';
+    const eyes = document.createElementNS(SVGNS, 'g');
+    eyes.setAttribute('class', 'eyes');
+    const grid = PIXELS[mood];
+    for (let y = 0; y < grid.length; y++) {
+      const row = grid[y];
+      for (let x = 0; x < row.length; x++) {
+        const ch = row[x];
+        if (ch === '.') continue;
+        const r = document.createElementNS(SVGNS, 'rect');
+        r.setAttribute('x', x); r.setAttribute('y', y);
+        r.setAttribute('width', 1); r.setAttribute('height', 1);
+        r.setAttribute('class', PX_CLASS[ch] || 'px-b');
+        (ch === 'E' ? eyes : svg).appendChild(r);
+      }
+    }
+    svg.appendChild(eyes);
+    svg.setAttribute('class', mood);
+    svg.dataset.mood = mood;
+  }
+
+  // ---- meter rows -------------------------------------------------------------------
+  function buildRows() {
+    rows.clear();
+    const frag = document.createDocumentFragment();
+    for (const m of METERS) {
+      if (!cfg.enabled[m]) continue;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'meter-row card pressable';
+      btn.dataset.meter = m;
+      const label = document.createElement('span');
+      label.className = 'kicker m-label';
+      label.textContent = META[m].label;
+      const segs = document.createElement('div');
+      segs.className = 'segs';
+      const segEls = [];
+      for (let i = 0; i < SEGMENTS; i++) {
+        const cell = document.createElement('i');
+        segs.appendChild(cell);
+        segEls.push(cell);
+      }
+      const val = document.createElement('span');
+      val.className = 'm-val';
+      btn.append(label, segs, val);
+      btn.addEventListener('click', () => openCard(m));
+      rows.set(m, { el: btn, segEls, valEl: val, lastFilled: null, lastSev: null });
+      frag.appendChild(btn);
+    }
+    const box = $('meters');
+    box.textContent = ''; // one batched swap
+    box.appendChild(frag);
+  }
+
+  function sevFor(v) { return v >= 5 ? 'ok' : v >= 2.5 ? 'warn' : 'err'; }
+
+  function renderMeters(st) {
+    for (const [m, rec] of rows) {
+      const v = clamp(num(st.meters[m], 0), 0, SEGMENTS);
+      const filled = Math.round(v);
+      const sev = sevFor(v);
+      if (rec.lastFilled === filled && rec.lastSev === sev) continue;
+      rec.lastFilled = filled;
+      rec.lastSev = sev;
+      rec.el.className = 'meter-row card pressable ' + sev;
+      for (let i = 0; i < SEGMENTS; i++) rec.segEls[i].className = i < filled ? 'f' : '';
+      rec.valEl.textContent = filled + '/' + SEGMENTS;
+      rec.el.setAttribute('aria-label', META[m].label + ': ' + filled + ' of ' + SEGMENTS + ' — tap for a tip');
+    }
+  }
+
+  function render(st) {
+    const sig = METERS.filter((m) => cfg.enabled[m]).join(',');
+    if (!sig) {
+      showState('empty', '🌱', 'All meters are off',
+        'Turn on Water, Eyes, Posture or Stretch in the widget settings to start tending.');
+      return;
+    }
+    showMain();
+    if (sig !== builtSig) { builtSig = sig; buildRows(); lastMood = null; }
+    renderMeters(st);
+
+    const mood = moodFor(st.meters, cfg.enabled);
+    if (mood !== lastMood) { lastMood = mood; buildPet(mood); }
+    if (put('petName', cfg.petName)) $('petName').textContent = cfg.petName;
+
+    const lvl = Math.floor(st.xp / XP_PER_LEVEL);
+    if (put('lvl', String(lvl))) $('lvl').textContent = 'Lv ' + lvl;
+    const pct = Math.round(((st.xp % XP_PER_LEVEL) / XP_PER_LEVEL) * 100);
+    if (put('lvlFill', String(pct))) $('lvlFill').style.width = pct + '%';
+    if (put('xpText', String(st.xp))) $('xpText').textContent = st.xp.toLocaleString() + ' XP';
+
+    const pill = $('streakPill');
+    const streakTxt = st.streak > 0 ? st.streak + '-day streak' : '';
+    if (put('streak', streakTxt)) {
+      pill.hidden = !streakTxt;
+      pill.textContent = streakTxt;
+    }
+  }
+
+  // ---- speech bubble ----------------------------------------------------------------
+  function hideBubble() {
+    if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null; }
+    $('bubble').hidden = true;
+  }
+  function showBubble(text) {
+    const b = $('bubble');
+    b.hidden = true;            // restart the pop animation on re-show
+    b.textContent = text;
+    b.hidden = false;
+    if (bubbleTimer) clearTimeout(bubbleTimer);
+    bubbleTimer = setTimeout(() => { $('bubble').hidden = true; bubbleTimer = null; }, BUBBLE_SHOW_MS);
+  }
+  function maybeBubble(st, now) {
+    const worst = worstOf(st.meters, cfg.enabled);
+    if (!canBubble(now, { gameActive: game, quiet: cfg.quiet, worst, lastBubbleAt })) return;
+    if (Math.random() < 0.4) return;  // "occasionally", not metronomically
+    const draw = drawFromBag(st);
+    lastBubbleAt = now;
+    saveState(Object.assign({}, st, { bag: draw.bag }));
+    showBubble(LINES[draw.index]);
+  }
+
+  // ---- coaching card overlay ----------------------------------------------------------
+  function openCard(m) {
+    openMeter = m;
+    $('cardKicker').textContent = META[m].label;
+    $('cardTitle').textContent = META[m].title;
+    $('cardBody').textContent = META[m].body;
+    $('cardDone').textContent = META[m].done;
+    $('overlay').hidden = false;
+  }
+  function closeCard() {
+    openMeter = null;
+    $('overlay').hidden = true;
+  }
+  // Backdrop tap closes WITHOUT refilling — a stray tap must never fake self-care.
+  $('overlay').addEventListener('click', (ev) => { if (ev.target === $('overlay')) closeCard(); });
+  $('cardBox').addEventListener('click', (ev) => ev.stopPropagation());
+  $('cardClose').addEventListener('click', closeCard);
+  $('cardDone').addEventListener('click', () => {
+    const m = openMeter;
+    closeCard();
+    if (m) tend(m);
+  });
+
+  function tend(m) {
+    const now = Date.now();
+    let st = applyDrain(loadState(now), now, currentOpts()); // settle time first
+    st.meters = Object.assign({}, st.meters); st.meters[m] = SEGMENTS;
+    st.tendedToday = Object.assign({}, st.tendedToday); st.tendedToday[m] = true;
+    st.xp += XP_PER_TEND;
+    saveState(st);
+    render(st);
+    const rec = rows.get(m);
+    if (rec) { // restartable confirm flash on the tended meter
+      rec.el.classList.remove('confirm-flash');
+      void rec.el.offsetWidth;
+      rec.el.classList.add('confirm-flash');
+    }
+  }
+
+  // ---- tick loop -----------------------------------------------------------------------
+  // The bookkeeping half always runs (a 30s read-apply-write of a pure function is
+  // the widget's core accounting; skipping it while hidden would mis-count desk
+  // time), but ALL rendering and bubbles stop while hidden or during a game.
+  function tick() {
+    try {
+      const now = Date.now();
+      const st = applyDrain(loadState(now), now, currentOpts());
+      saveState(st);
+      if (!document.hidden && !game) {
+        render(st);
+        maybeBubble(st, now);
+      }
+    } catch (e) { WW.log('vitals tick failed: ' + e.message); }
+  }
+
+  WW.onInit((state) => {
+    const s = state.settings;
+    // Anything that isn't explicitly glass/transparent renders solid, matching
+    // the stock widgets for unset AND out-of-spec values.
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+
+    cfg.petName = String(s.petName == null ? '' : s.petName).trim() || 'Pip';
+    cfg.pace = PACE_MIN_PER_SEGMENT[s.pace] ? s.pace : 'standard';
+    cfg.quiet = s.quiet !== 'off';
+    for (const m of METERS) cfg.enabled[m] = s[m] !== 'off';
+    game = !!(WW.game && WW.game.active);
+    closeCard();                       // a re-init may have changed the meter set
+    for (const k of Object.keys(last)) delete last[k]; // repaint with new config
+
+    if (!started) {                    // repeated ww-init must not stack timers
+      started = true;
+      setInterval(tick, TICK_MS);
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+    }
+    tick();
+  });
+
+  // Gamer truce: registered once at top level (onInit re-fires per ww-init).
+  WW.onGame((g) => {
+    game = !!g.active;
+    if (game) hideBubble();
+    else tick();                       // catch up as soon as the game ends
+  });
+
+  // Another instance (the settings preview shares this storage) wrote state —
+  // repaint from storage so both tiles show the same numbers.
+  window.addEventListener('storage', (ev) => {
+    if (ev.key !== STATE_KEY || !started || document.hidden || game) return;
+    try { render(loadState(Date.now())); } catch (e) { /* next tick repaints */ }
+  });
+
+  // Deterministic probing surface for the widget harness (pure pieces + a forced
+  // tick). Not used by the widget's own flow beyond what is exported.
+  window.__vitals = {
+    applyDrain, defaultState, loadState, saveState, dayOf, dayDiff,
+    moodFor, worstOf, sevFor, canBubble, drawFromBag, showBubble,
+    tickNow: tick, LINES, PIXELS, PACE_MIN_PER_SEGMENT, SEGMENTS,
+    IDLE_LIMIT_S, AWAY_GAP_MS, XP_PER_TEND, XP_PER_LEVEL,
+    BUBBLE_COOLDOWN_MS, STATE_KEY, INSTANCE,
+  };
+</script>
+</body>
+</html>
