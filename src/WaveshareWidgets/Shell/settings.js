@@ -584,7 +584,11 @@
 
     const nameInput = el('pageName');
     nameInput.value = page.name || '';
-    nameInput.oninput = () => { page.name = nameInput.value; markDirty(); renderPageList(); };
+    // Renames go through the structural refresh like every other layout edit: it
+    // arms the replica debounce, and the armed timer is exactly what makes
+    // captureReplicaLayout drop stale replica copies — a rename that only touched
+    // our side was silently reverted by the next replica gesture's capture.
+    nameInput.oninput = () => { page.name = nameInput.value; renderPageList(); refreshReplica('layout'); };
 
     // Two-tap confirm: the first tap arms the button (and auto-disarms), only a
     // second tap actually deletes — a page full of tuned widgets is easy to fat-finger.

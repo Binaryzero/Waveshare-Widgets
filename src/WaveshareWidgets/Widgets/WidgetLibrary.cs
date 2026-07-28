@@ -266,13 +266,12 @@ public sealed partial class WidgetLibrary : IDisposable
     }
 
     /// <summary>Compares SemVer-ish manifest versions ("1.2.3", "2.0.0-beta.1",
-    /// "2.0.0+build.7"). <see cref="Version.TryParse(string?, out Version?)"/> alone
-    /// rejects prerelease/build suffixes, which made a suffixed NEWER duplicate lose
-    /// to an older plain version. Numeric cores compare numerically; equal cores rank
-    /// a release above any prerelease; two prereleases fall back to an ordinal compare
-    /// (an approximation of SemVer's dotted rules — sufficient for picking which
-    /// duplicate folder wins). Unparseable cores rank lowest; two unparseables tie
-    /// (the first copy found keeps its spot).</summary>
+    /// "2.0.0+build.7"). Every numeric identifier — core parts AND prerelease
+    /// numerics — compares as an arbitrary-precision digit string, so nothing is
+    /// bounded by Int32/Int64 the way <see cref="Version"/> or an integer parse
+    /// would be. Equal cores rank a release above any prerelease. Unparseable
+    /// cores (non-digit parts) rank lowest; two unparseables tie (the first copy
+    /// found keeps its spot).</summary>
     private static int CompareManifestVersions(string? a, string? b)
     {
         var (coreA, preA, okA) = SplitSemVer(a);
@@ -281,14 +280,30 @@ public sealed partial class WidgetLibrary : IDisposable
             return okA ? 1 : -1;
         if (!okA)
             return 0;
-        var byCore = coreA.CompareTo(coreB);
-        if (byCore != 0)
-            return byCore;
+        for (var i = 0; i < Math.Max(coreA.Length, coreB.Length); i++)
+        {
+            var cmp = CompareDigitStrings(
+                i < coreA.Length ? coreA[i] : "0",
+                i < coreB.Length ? coreB[i] : "0");
+            if (cmp != 0)
+                return cmp;
+        }
         var releaseA = preA.Length == 0;
         var releaseB = preB.Length == 0;
         if (releaseA != releaseB)
             return releaseA ? 1 : -1;
         return ComparePrerelease(preA, preB);
+    }
+
+    /// <summary>Numeric compare of two all-digit strings with no magnitude bound:
+    /// trim leading zeros, shorter ranks lower, equal lengths compare digit-wise.</summary>
+    private static int CompareDigitStrings(string a, string b)
+    {
+        var trimmedA = a.TrimStart('0');
+        var trimmedB = b.TrimStart('0');
+        return trimmedA.Length != trimmedB.Length
+            ? trimmedA.Length.CompareTo(trimmedB.Length)
+            : string.CompareOrdinal(trimmedA, trimmedB);
     }
 
     /// <summary>SemVer §11 prerelease comparison: dot-separated identifiers compare
@@ -314,11 +329,7 @@ public sealed partial class WidgetLibrary : IDisposable
             int cmp;
             if (isNumA && isNumB)
             {
-                var trimmedA = idsA[i].TrimStart('0');
-                var trimmedB = idsB[i].TrimStart('0');
-                cmp = trimmedA.Length != trimmedB.Length
-                    ? trimmedA.Length.CompareTo(trimmedB.Length)
-                    : string.CompareOrdinal(trimmedA, trimmedB);
+                cmp = CompareDigitStrings(idsA[i], idsB[i]);
             }
             else if (isNumA != isNumB)
             {
@@ -334,7 +345,7 @@ public sealed partial class WidgetLibrary : IDisposable
         return 0;
     }
 
-    private static (Version Core, string Prerelease, bool Ok) SplitSemVer(string? version)
+    private static (string[] Core, string Prerelease, bool Ok) SplitSemVer(string? version)
     {
         var v = (version ?? "").Trim();
         var plus = v.IndexOf('+');
@@ -343,11 +354,19 @@ public sealed partial class WidgetLibrary : IDisposable
         var dash = v.IndexOf('-');
         var prerelease = dash >= 0 ? v[(dash + 1)..] : "";
         var core = dash >= 0 ? v[..dash] : v;
-        if (core.Length > 0 && !core.Contains('.'))
-            core += ".0"; // System.Version needs at least major.minor
-        return Version.TryParse(core, out var parsed)
-            ? (parsed, prerelease, true)
-            : (new Version(0, 0), prerelease, false);
+        var parts = core.Split('.');
+        // Core parts stay digit STRINGS (compared arbitrary-precision) — parsing
+        // them into Version/int would cap valid SemVer numerics at Int32.
+        var ok = core.Length > 0;
+        foreach (var part in parts)
+        {
+            if (!IsDigits(part))
+            {
+                ok = false;
+                break;
+            }
+        }
+        return (parts, prerelease, ok);
     }
 
     /// <summary>Installs a .wswidget package (a zip containing manifest.json + index.html at its root).</summary>
