@@ -791,26 +791,44 @@
     renderAll();
   }
 
-  // Mirror of the shell's first-fit placement. Total cells alone can't tell whether
-  // everything fits (five quarter-uppers are only 5/8 cells, but the top row holds 4),
-  // so simulate the real 4x2 placement and count the slots that get dropped.
+  // Mirror of the shell's two-pass placement (anchors first, then order-based
+  // first-fit). Total cells alone can't tell whether everything fits (five
+  // quarter-uppers are only 5/8 cells, but the top row holds 4), and ignoring
+  // `col` pins would let the gallery offer sizes the real placement then hides
+  // (a pinned tile the simulation flowed left can block the columns the shell
+  // actually keeps free) — so simulate the real 4x2 placement and count drops.
   function countUnplaced(slots) {
     const occupied = [new Array(4).fill(false), new Array(4).fill(false)]; // [row][col]
-    let dropped = 0;
-    for (const s of slots) {
+    const placed = new Array(slots.length).fill(false);
+    const geo = (s) => {
       const { width, band } = parseSize(s.size);
-      const w = WIDTH_COLS[width];
-      const rows = band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1];
-      let placed = false;
-      for (let col = 0; col + w <= 4 && !placed; col++) {
-        let fits = true;
-        for (const r of rows) for (let i = 0; i < w && fits; i++) if (occupied[r][col + i]) fits = false;
-        if (!fits) continue;
-        for (const r of rows) for (let i = 0; i < w; i++) occupied[r][col + i] = true;
-        placed = true;
-      }
-      if (!placed) dropped++;
-    }
+      return { w: WIDTH_COLS[width], rows: band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1] };
+    };
+    const free = (rows, col, w) => {
+      if (col < 0 || col + w > 4) return false;
+      for (const r of rows) for (let i = 0; i < w; i++) if (occupied[r][col + i]) return false;
+      return true;
+    };
+    const take = (rows, col, w) => {
+      for (const r of rows) for (let i = 0; i < w; i++) occupied[r][col + i] = true;
+    };
+    // Pass A — anchored slots (1-based col) claim their column; a blocked
+    // anchor falls through to the flow pass, exactly like the shell.
+    slots.forEach((s, i) => {
+      const anchor = (s.col >= 1 && s.col <= 4) ? s.col - 1 : null;
+      if (anchor === null) return;
+      const { w, rows } = geo(s);
+      if (free(rows, anchor, w)) { take(rows, anchor, w); placed[i] = true; }
+    });
+    // Pass B — everything else flows first-fit in array order.
+    let dropped = 0;
+    slots.forEach((s, i) => {
+      if (placed[i]) return;
+      const { w, rows } = geo(s);
+      let col = -1;
+      for (let c = 0; c + w <= 4; c++) if (free(rows, c, w)) { col = c; break; }
+      if (col >= 0) take(rows, col, w); else dropped++;
+    });
     return dropped;
   }
 
