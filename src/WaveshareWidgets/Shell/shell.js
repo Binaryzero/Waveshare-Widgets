@@ -818,7 +818,11 @@
     // visible after Done until the game next flips state.
     applyGameMode();
     editBar.hidden = !on;
-    if (on && layoutData.pages.length === 0) {
+    // On-device, entering edit on an empty panel needs a page to drop widgets on.
+    // NEVER in the replica: the settings window owns page management there, and
+    // auto-creating one after the user deleted their last page silently undid the
+    // deletion (the capture stream adopted the unsolicited page right back).
+    if (on && !PREVIEW && layoutData.pages.length === 0) {
       const page = { name: 'Page 1', slots: [] };
       layoutData.pages.push(page);
       buildPage(page);

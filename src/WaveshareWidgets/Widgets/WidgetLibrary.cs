@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace WaveshareWidgets.Widgets;
@@ -86,6 +87,22 @@ public sealed partial class WidgetLibrary : IDisposable
                     continue;
                 }
 
+                if (Directory.Exists(targetDir) &&
+                    !File.Exists(Path.Combine(targetDir, SeedMarker)) &&
+                    !SameWidgetId(sourceDir, targetDir))
+                {
+                    // An UNMARKED folder whose manifest id differs from the stock widget is
+                    // the user's own work that merely shares the folder name (adding the
+                    // stock "deck" folder made this collision real). Never delete it — move
+                    // it aside so both widgets survive; folder names carry no identity, so
+                    // the moved widget keeps working. Unmarked SAME-id copies still re-seed
+                    // (the documented pre-fingerprint heal); marked copies refresh as stock.
+                    var aside = UniqueDir(targetDir + "-user");
+                    Directory.Move(targetDir, aside);
+                    Log.Warn($"Widget folder '{name}' held a non-stock widget — moved to " +
+                             $"'{Path.GetFileName(aside)}' so the stock widget can seed");
+                }
+
                 DeleteTree(targetDir);
                 CopyDirectory(sourceDir, targetDir);
                 File.WriteAllText(Path.Combine(targetDir, SeedMarker), fingerprint);
@@ -118,6 +135,43 @@ public sealed partial class WidgetLibrary : IDisposable
                 File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
         }
         Directory.Delete(dir, recursive: true);
+    }
+
+    /// <summary>Do two widget folders declare the same manifest id? Any read/parse
+    /// failure counts as "different" — an ambiguous target is treated as user
+    /// content and preserved rather than deleted.</summary>
+    private static bool SameWidgetId(string dirA, string dirB)
+    {
+        try
+        {
+            var idA = JsonNode.Parse(File.ReadAllText(Path.Combine(dirA, "manifest.json")))?["id"]?.GetValue<string>();
+            var idB = JsonNode.Parse(File.ReadAllText(Path.Combine(dirB, "manifest.json")))?["id"]?.GetValue<string>();
+            return !string.IsNullOrEmpty(idA) && idA == idB;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string UniqueDir(string baseDir)
+    {
+        var dir = baseDir;
+        for (var i = 2; Directory.Exists(dir); i++)
+            dir = baseDir + i;
+        return dir;
+    }
+
+    private static bool IsDigits(string s)
+    {
+        if (s.Length == 0)
+            return false;
+        foreach (var c in s)
+        {
+            if (c is < '0' or > '9')
+                return false;
+        }
+        return true;
     }
 
     private static bool MarkerMatches(string installedDir, string fingerprint)
@@ -252,11 +306,28 @@ public sealed partial class WidgetLibrary : IDisposable
                 return -1;
             if (i >= idsB.Length)
                 return 1;
-            var isNumA = long.TryParse(idsA[i], out var numA);
-            var isNumB = long.TryParse(idsB[i], out var numB);
-            var cmp = isNumA && isNumB ? numA.CompareTo(numB)
-                : isNumA != isNumB ? (isNumA ? -1 : 1)
-                : string.CompareOrdinal(idsA[i], idsB[i]);
+            // Numeric identifiers compare as arbitrary-precision numbers (SemVer puts
+            // no 64-bit bound on them): all-digit strings compare by trimmed length,
+            // then digit-by-digit — no integer parse to overflow.
+            var isNumA = IsDigits(idsA[i]);
+            var isNumB = IsDigits(idsB[i]);
+            int cmp;
+            if (isNumA && isNumB)
+            {
+                var trimmedA = idsA[i].TrimStart('0');
+                var trimmedB = idsB[i].TrimStart('0');
+                cmp = trimmedA.Length != trimmedB.Length
+                    ? trimmedA.Length.CompareTo(trimmedB.Length)
+                    : string.CompareOrdinal(trimmedA, trimmedB);
+            }
+            else if (isNumA != isNumB)
+            {
+                cmp = isNumA ? -1 : 1;
+            }
+            else
+            {
+                cmp = string.CompareOrdinal(idsA[i], idsB[i]);
+            }
             if (cmp != 0)
                 return cmp;
         }
