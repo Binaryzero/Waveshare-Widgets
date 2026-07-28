@@ -162,6 +162,13 @@ public sealed partial class WidgetLibrary : IDisposable
         return dir;
     }
 
+    /// <summary>Short stable discriminator for host-slug collisions between distinct ids.</summary>
+    private static string ShortHash(string value)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        return Convert.ToHexString(bytes, 0, 4).ToLowerInvariant();
+    }
+
     private static bool IsDigits(string s)
     {
         if (s.Length == 0)
@@ -235,8 +242,11 @@ public sealed partial class WidgetLibrary : IDisposable
                 if (manifest.Properties.Count == 0)
                     manifest.Properties = IcueManifestReader.ParseProperties(indexPath);
 
-                var host = $"{Slug(manifest.Id)}.widgets.wsw";
-                var duplicate = widgets.FindIndex(w => w.VirtualHost == host);
+                // Duplicates are decided by the EXACT manifest id — never by the slugged
+                // host, where distinct ids can collide ("com.example.foo-bar" and
+                // "com.example.foo.bar" both slug to "com-example-foo-bar"); version-
+                // resolving across that collision silently uninstalled a different widget.
+                var duplicate = widgets.FindIndex(w => w.Manifest.Id == manifest.Id);
                 if (duplicate >= 0)
                 {
                     // Same id in two folders (e.g. a stale package install alongside the
@@ -249,10 +259,23 @@ public sealed partial class WidgetLibrary : IDisposable
                              $"'{(keepNew ? folder : kept.Folder)}' (v{(keepNew ? manifest.Version : kept.Manifest.Version)}), " +
                              $"shadowing '{(keepNew ? kept.Folder : folder)}' — delete one to silence this");
                     if (keepNew)
-                        widgets[duplicate] = new InstalledWidget(manifest, folder, host);
+                        widgets[duplicate] = new InstalledWidget(manifest, folder, kept.VirtualHost);
                     continue;
                 }
-                usedHosts.Add(host);
+
+                var host = $"{Slug(manifest.Id)}.widgets.wsw";
+                if (!usedHosts.Add(host))
+                {
+                    // A DIFFERENT id that happens to slug to an occupied host: both widgets
+                    // stay installed — this one gets a deterministic hash-suffixed host
+                    // (layouts reference widgets by id, never by host, so it's transparent).
+                    host = $"{Slug(manifest.Id)}-{ShortHash(manifest.Id)}.widgets.wsw";
+                    var bump = 2;
+                    while (!usedHosts.Add(host))
+                        host = $"{Slug(manifest.Id)}-{ShortHash(manifest.Id)}{bump++}.widgets.wsw";
+                    Log.Warn($"Widget id '{manifest.Id}' slugs to a host another widget already " +
+                             $"uses — serving it from '{host}' instead");
+                }
                 widgets.Add(new InstalledWidget(manifest, folder, host));
             }
             catch (Exception ex)
