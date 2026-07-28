@@ -368,8 +368,13 @@
     }
     let fans;
     if (selection.length) {
-      // User-picked fans, in the order they arranged them in Settings.
-      fans = selection.map((it) => all.find((s) => s.id === it.sensorId)).filter(Boolean);
+      // User-picked fans, in the order they arranged them in Settings. The editor
+      // permits picking the same fan twice; duplicate ids would fight over one
+      // card (the map is keyed by id) and inflate the spinning tally — the first
+      // pick wins, keeping its color.
+      const seen = new Set();
+      fans = selection.map((it) => all.find((s) => s.id === it.sensorId)).filter(Boolean)
+        .filter((f) => (seen.has(f.id) ? false : (seen.add(f.id), true)));
       if (!fans.length) {
         showState('none', 'Selected fans not found',
           'None of the fans picked in this widget’s settings are reporting — ' +

@@ -2,7 +2,7 @@
   "id": "ws.stock.fans",
   "name": "Fans",
   "author": "Waveshare Widgets",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Every fan and pump at a glance — spinning impellers with live RPM, grouped by location. Shows all fans automatically, or pick specific ones in Settings. Tap a fan's name to rename it.",
   "min_api_version": 1,
   "supported_slots": [

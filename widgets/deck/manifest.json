@@ -2,23 +2,92 @@
   "id": "ws.stock.deck",
   "name": "Control Deck",
   "author": "Waveshare Widgets",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "A touch button grid — launch apps, open URLs, send hotkeys, control media. Each button is an icon, a name, and a target: a program path, an https:// link, hotkey:ctrl+shift+m, or media:toggle. Self-contained; no Stream Deck or iCUE required.",
   "min_api_version": 1,
-  "supported_slots": ["quarter", "half", "full"],
+  "supported_slots": [
+    "quarter",
+    "half",
+    "full"
+  ],
   "properties": [
-    { "name": "buttons", "label": "Buttons", "type": "list", "itemLabel": "button", "fields": [
-      { "key": "icon", "label": "Icon", "type": "text", "placeholder": "🧮" },
-      { "key": "label", "label": "Name", "type": "text", "placeholder": "Calc" },
-      { "key": "target", "label": "Target", "type": "text", "placeholder": "calc.exe · https://… · hotkey:ctrl+shift+m · media:toggle" }
-    ], "default": [
-      { "icon": "🧮", "label": "Calc", "target": "calc.exe" },
-      { "icon": "🌐", "label": "Reddit", "target": "https://reddit.com" },
-      { "icon": "⏯️", "label": "Play", "target": "media:toggle" },
-      { "icon": "🔇", "label": "Mute", "target": "hotkey:volumemute" }
-    ] },
-    { "name": "columns", "label": "Columns (0 = auto)", "type": "slider", "min": 0, "max": 8, "step": 1, "default": 0 },
-    { "name": "bgStyle", "label": "Background", "type": "select", "options": ["solid", "glass", "transparent"], "default": "solid" },
-    { "name": "labelSize", "label": "Label size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" }
+    {
+      "name": "buttons",
+      "label": "Buttons",
+      "type": "list",
+      "itemLabel": "button",
+      "fields": [
+        {
+          "key": "icon",
+          "label": "Icon",
+          "type": "text",
+          "placeholder": "🧮"
+        },
+        {
+          "key": "label",
+          "label": "Name",
+          "type": "text",
+          "placeholder": "Calc"
+        },
+        {
+          "key": "target",
+          "label": "Target",
+          "type": "text",
+          "placeholder": "calc.exe · https://… · hotkey:ctrl+shift+m · media:toggle"
+        }
+      ],
+      "default": [
+        {
+          "icon": "🧮",
+          "label": "Calc",
+          "target": "calc.exe"
+        },
+        {
+          "icon": "🌐",
+          "label": "Reddit",
+          "target": "https://reddit.com"
+        },
+        {
+          "icon": "⏯️",
+          "label": "Play",
+          "target": "media:toggle"
+        },
+        {
+          "icon": "🔇",
+          "label": "Mute",
+          "target": "hotkey:volumemute"
+        }
+      ]
+    },
+    {
+      "name": "columns",
+      "label": "Columns (0 = auto)",
+      "type": "slider",
+      "min": 0,
+      "max": 8,
+      "step": 1,
+      "default": 0
+    },
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": [
+        "solid",
+        "glass",
+        "transparent"
+      ],
+      "default": "solid"
+    },
+    {
+      "name": "labelSize",
+      "label": "Label size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
+    }
   ]
 }

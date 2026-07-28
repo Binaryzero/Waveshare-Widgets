@@ -110,22 +110,26 @@
       : { type: 'invalid', reason: 'media verb must be toggle, next or prev' };
   }
   function classify(kind, target) {
-    if (kind) {                                   // legacy per-button kind wins
-      switch (norm(kind)) {
-        case 'url': return /^https?:\/\//i.test(target) ? { type: 'url', arg: target }
-                      : { type: 'invalid', reason: 'url target must be http(s)' };
-        case 'media': return mediaExec(target);
-        case 'hotkey': return hotkeyExec(target);
-        case 'launch': return { type: 'launch', arg: target };
-        default: return { type: 'invalid', reason: 'unknown action kind "' + kind + '"' };
-      }
-    }
+    // Explicit syntax in the Target field ALWAYS wins: the settings editor shows
+    // only the unified target, so a migrated row edited to "hotkey:volumemute"
+    // must act on what the user typed, not on a hidden legacy `kind` riding along
+    // from the old JSON config. The legacy kind only interprets prefix-less,
+    // scheme-less targets ("toggle", "volumemute") it was written for.
     const m = target.match(/^(hotkey|media):/i);
     if (m) {
       const rest = target.slice(m[1].length + 1).trim();
       return m[1].toLowerCase() === 'hotkey' ? hotkeyExec(rest) : mediaExec(rest);
     }
     if (/^https?:\/\//i.test(target)) return { type: 'url', arg: target };
+    if (kind) {
+      switch (norm(kind)) {
+        case 'url': return { type: 'invalid', reason: 'url target must be http(s)' };
+        case 'media': return mediaExec(target);
+        case 'hotkey': return hotkeyExec(target);
+        case 'launch': return { type: 'launch', arg: target };
+        default: return { type: 'invalid', reason: 'unknown action kind "' + kind + '"' };
+      }
+    }
     return { type: 'launch', arg: target };
   }
 

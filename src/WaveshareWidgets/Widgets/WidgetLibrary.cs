@@ -190,8 +190,7 @@ public sealed partial class WidgetLibrary : IDisposable
                     // could pin a months-old copy in front of every fresh re-seed — the
                     // HIGHER manifest version wins now, and the loser is named.
                     var kept = widgets[duplicate];
-                    var keepNew = Version.TryParse(manifest.Version, out var nv) &&
-                                  (!Version.TryParse(kept.Manifest.Version, out var kv) || nv > kv);
+                    var keepNew = CompareManifestVersions(manifest.Version, kept.Manifest.Version) > 0;
                     Log.Warn($"Duplicate widget id '{manifest.Id}': keeping " +
                              $"'{(keepNew ? folder : kept.Folder)}' (v{(keepNew ? manifest.Version : kept.Manifest.Version)}), " +
                              $"shadowing '{(keepNew ? kept.Folder : folder)}' — delete one to silence this");
@@ -210,6 +209,48 @@ public sealed partial class WidgetLibrary : IDisposable
 
         Widgets = widgets.OrderBy(w => w.Manifest.Name, StringComparer.OrdinalIgnoreCase).ToList();
         Log.Info($"Widget library: {Widgets.Count} widget(s) installed");
+    }
+
+    /// <summary>Compares SemVer-ish manifest versions ("1.2.3", "2.0.0-beta.1",
+    /// "2.0.0+build.7"). <see cref="Version.TryParse(string?, out Version?)"/> alone
+    /// rejects prerelease/build suffixes, which made a suffixed NEWER duplicate lose
+    /// to an older plain version. Numeric cores compare numerically; equal cores rank
+    /// a release above any prerelease; two prereleases fall back to an ordinal compare
+    /// (an approximation of SemVer's dotted rules — sufficient for picking which
+    /// duplicate folder wins). Unparseable cores rank lowest; two unparseables tie
+    /// (the first copy found keeps its spot).</summary>
+    private static int CompareManifestVersions(string? a, string? b)
+    {
+        var (coreA, preA, okA) = SplitSemVer(a);
+        var (coreB, preB, okB) = SplitSemVer(b);
+        if (okA != okB)
+            return okA ? 1 : -1;
+        if (!okA)
+            return 0;
+        var byCore = coreA.CompareTo(coreB);
+        if (byCore != 0)
+            return byCore;
+        var releaseA = preA.Length == 0;
+        var releaseB = preB.Length == 0;
+        if (releaseA != releaseB)
+            return releaseA ? 1 : -1;
+        return string.CompareOrdinal(preA, preB);
+    }
+
+    private static (Version Core, string Prerelease, bool Ok) SplitSemVer(string? version)
+    {
+        var v = (version ?? "").Trim();
+        var plus = v.IndexOf('+');
+        if (plus >= 0)
+            v = v[..plus]; // build metadata never affects precedence
+        var dash = v.IndexOf('-');
+        var prerelease = dash >= 0 ? v[(dash + 1)..] : "";
+        var core = dash >= 0 ? v[..dash] : v;
+        if (core.Length > 0 && !core.Contains('.'))
+            core += ".0"; // System.Version needs at least major.minor
+        return Version.TryParse(core, out var parsed)
+            ? (parsed, prerelease, true)
+            : (new Version(0, 0), prerelease, false);
     }
 
     /// <summary>Installs a .wswidget package (a zip containing manifest.json + index.html at its root).</summary>

@@ -1486,6 +1486,7 @@
           const srcParts = sizeParts(d.record.def.size);
           const tgtParts = sizeParts(target.def.size);
           const oldSize = d.record.def.size;
+          const beforeOrder = defs.slice();
           const beforePlaced = placedSet(defs);
           if (srcParts.band !== 'full' && tgtParts.band !== 'full' && srcParts.band !== tgtParts.band)
             d.record.def.size = makeSize(srcParts.width, tgtParts.band);
@@ -1493,12 +1494,16 @@
           // Dragging forward drops AFTER the target, dragging back drops BEFORE it —
           // insert-before alone would put a forward drag right back where it started.
           defs.splice(defs.indexOf(target.def) + (srcIdx < tgtIdx ? 1 : 0), 0, d.record.def);
-          // Revert the adopted band if it would cost any currently-VISIBLE slot its
-          // spot (identity, not counts: totals can balance while a visible widget
-          // trades places with a hidden legacy one). Hidden slots never veto.
+          // If ANY slot that was visible before — the dragged one included — would
+          // lose its spot, revert the WHOLE gesture: on legacy over-full pages the
+          // reorder alone can hand a hidden slot the freed space and push visible
+          // widgets off screen, so restoring just the size would keep the damage
+          // (identity, not counts: totals can balance while widgets trade places).
           const adoptedPlaces = placeSlots(defs);
-          if (!defs.every((dd, k) => dd === d.record.def || !beforePlaced.has(dd) || adoptedPlaces[k] !== null))
+          if (!defs.every((dd, k) => !beforePlaced.has(dd) || adoptedPlaces[k] !== null)) {
             d.record.def.size = oldSize;
+            defs.splice(0, defs.length, ...beforeOrder);
+          }
           if (d.record.syncLabels) d.record.syncLabels();
           relayoutPage(d.record.page);
         });
