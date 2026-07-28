@@ -1909,17 +1909,32 @@
 
   function pageFits(page, def) {
     const defs = (page.slots = page.slots || []);
-    const beforePlaced = placedSet(defs);
-    defs.push(def);
     const places = placeSlots(defs);
-    defs.pop();
-    // Identity, not counts: an ANCHORED arrival can hide a visible tile while a
-    // previously hidden one takes the freed space — the unplaced count stays
-    // equal and a count check would accept the swap. The incoming def must
-    // place, and every slot that placed before must keep its spot (the same
-    // rule the cell-drop and reorder paths enforce).
-    return places[places.length - 1] !== null &&
-      defs.every((d, i) => !beforePlaced.has(d) || places[i] !== null);
+    // Probe with every placed occupant PINNED where it currently renders: an
+    // arrival must fit the free space as the user SEES it. Identity alone
+    // still let an anchored arrival "fit" by shuffling occupants to new
+    // columns (or trading a visible tile for a hidden one — counts balance).
+    const probe = defs.map((d, i) => places[i]
+      ? { size: d.size, col: places[i].col + 1 }
+      : { size: d.size, col: d.col });
+    probe.push({ size: def.size, col: def.col });
+    const placed = placeSlots(probe);
+    return placed[placed.length - 1] !== null &&
+      probe.every((p, i) => i === probe.length - 1 || places[i] === null || placed[i] !== null);
+  }
+
+  // Freeze the CURRENT rendering: give every placed slot its rendered column
+  // as an explicit pin. Drop gestures promise "nobody else moves" — without
+  // this, unanchored peers first-fit into whatever footprint the gesture
+  // vacates (two flowing quarters: dragging the first one right slid the
+  // second one left into its old column).
+  function pinPlacedSlots(page, except) {
+    const defs = page.slots || [];
+    const places = placeSlots(defs);
+    defs.forEach((d, i) => {
+      if (d === except || places[i] === null) return;
+      d.col = places[i].col + 1;
+    });
   }
 
   function beginDrag(record) {
@@ -1978,12 +1993,6 @@
       }
     }
     candidates.sort((a, b) => b.area - a.area); // biggest footprint first
-    const rest = (rec.page.slots || []).filter((d) => d !== rec.def);
-    // The protected set is what was visible BEFORE the gesture, computed on the
-    // FULL page: merely removing the dragged widget can let a hidden legacy slot
-    // grab the freed space and knock a previously visible one off screen — a set
-    // built after removal would bless exactly that swap. Hidden slots never veto.
-    const beforePlaced = placedSet(rec.page.slots || []);
     // The user aims at the hole they can SEE: a drop may only claim cells that
     // are currently free (the dragged tile's own footprint counts as free —
     // shrinking or sliding within it is fine). Probe feasibility alone is too
@@ -1999,6 +2008,18 @@
       if (!p) return;
       const rows = p.band === 'full' ? [0, 1] : p.band === 'upper' ? [0] : [1];
       for (const r of rows) for (let k = 0; k < p.w; k++) othersOccupied[r][p.col + k] = true;
+    });
+    // Probe against peers PINNED where they render — the commit pins them the
+    // same way, so the probe and the landing agree, and a peer can never flow
+    // into the footprint the drag vacates. Visible-before slots must keep
+    // placing; hidden legacy slots never veto (and stay unpinned, so merely
+    // removing the dragged widget can't hand them a visible tile's spot).
+    const rest = [];
+    const restWasPlaced = [];
+    (rec.page.slots || []).forEach((d, i) => {
+      if (d === rec.def) return;
+      rest.push(fullPlaces[i] ? { size: d.size, col: fullPlaces[i].col + 1 } : { size: d.size, col: d.col });
+      restWasPlaced.push(fullPlaces[i] !== null);
     });
     const cellsFree = (band, a, w) => {
       const rows = band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1];
@@ -2025,7 +2046,7 @@
         const places = placeSlots(probe);
         const own = places[probe.length - 1];
         if (own === null || own.col !== a) continue; // anchor cell blocked
-        if (!probe.every((d, k) => k === probe.length - 1 || !beforePlaced.has(d) || places[k] !== null)) continue;
+        if (!probe.every((d, k) => k === probe.length - 1 || !restWasPlaced[k] || places[k] !== null)) continue;
         if (!best || c < best.rank) best = { size: cand.size, col: a + 1, place: own, rank: c };
         break; // nearest fitting anchor for this candidate size
       }
@@ -2154,7 +2175,10 @@
         if (defs.indexOf(d.record.def) < 0) return; // removed while dragging
         // targetCell was validated against the live page: pin the widget to the
         // column the user pointed at. Order stays put — the anchor, not the
-        // index, decides where this widget renders from now on.
+        // index, decides where this widget renders from now on. Every OTHER
+        // placed slot gets pinned where it renders too, or an unanchored peer
+        // would first-fit into the footprint this drag just vacated.
+        pinPlacedSlots(d.record.page, d.record.def);
         d.record.def.size = t.size;
         d.record.def.col = t.col;
         if (d.record.syncLabels) d.record.syncLabels();
@@ -2167,6 +2191,11 @@
       const toIdx = layoutData.pages.indexOf(from) + dir;
       const to = layoutData.pages[toIdx];
       if (srcIdx >= 0 && to && pageFits(to, d.record.def)) {
+        // The move touches ONLY the moved widget: pin both pages' occupants
+        // where they render, or the remaining source tiles slide into the
+        // vacated footprint and the arrival can shuffle the target page.
+        pinPlacedSlots(from, d.record.def);
+        pinPlacedSlots(to, null);
         from.slots.splice(srcIdx, 1);
         to.slots.push(d.record.def);
         d.record.page = to;
