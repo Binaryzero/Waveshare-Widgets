@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Waveshare Widgets — Settings</title>
+  <link rel="icon" href="data:," /><!-- desktop window, no favicon; silences the 404 -->
   <link rel="stylesheet" href="settings.css" />
 </head>
 <body>
@@ -33,53 +34,66 @@
   </section>
 
   <main>
-    <aside id="pagesPanel">
-      <div class="panel-title">Pages</div>
+    <!-- Pages strip: one chip per page (click = select AND steer the preview there);
+         the active chip carries the ◀ ▶ reorder arrows. This is the ONLY place to
+         add/reorder/delete pages when editing from the desktop — the preview's edit
+         capsule hides its page buttons here. -->
+    <nav id="pagesStrip" aria-label="Pages">
       <ul id="pageList"></ul>
-      <button id="addPage" class="ghost wide">+ Add page</button>
+      <button id="addPage" class="ghost chip-add">+ Add page</button>
+    </nav>
 
-      <details class="rail-section" open>
-        <summary class="panel-title">Theme</summary>
-        <p class="panel-hint">Three colors drive every widget on the panel: pick an accent, a background and a
-          text color, and the app derives the full palette from them — surfaces, labels, state colors — fixing
-          contrast automatically so nothing becomes unreadable. Panel opacity sets how much wallpaper shows
-          through widget tiles (widgets set to the "glass" background style).</p>
-        <div id="themeEditor" class="bg-editor"></div>
-      </details>
-
-      <details class="rail-section" open>
-        <summary class="panel-title">Dashboard background</summary>
-        <p class="panel-hint">Wallpaper shown behind widgets on every page (unless a page sets its own).</p>
-        <div id="globalBg" class="bg-editor"></div>
-      </details>
-    </aside>
-
-    <section id="editor">
-      <div id="pageHeader">
-        <input id="pageName" type="text" placeholder="Page name" />
-        <div id="capacity"></div>
-        <span class="spacer"></span>
-        <button id="movePageLeft" class="ghost" title="Move page earlier">◀</button>
-        <button id="movePageRight" class="ghost" title="Move page later">▶</button>
-        <button id="deletePage" class="danger ghost">Delete page</button>
+    <!-- One context panel, one job per tab — replaces the old two-column wall of text. -->
+    <section id="contextPanel">
+      <div id="tabBar" role="tablist" aria-label="Settings sections">
+        <button id="tabPage" class="tab active" role="tab" aria-selected="true">Page</button>
+        <button id="tabWidget" class="tab" role="tab" aria-selected="false">Widget</button>
+        <button id="tabTheme" class="tab" role="tab" aria-selected="false">Theme</button>
+        <button id="tabWallpaper" class="tab" role="tab" aria-selected="false">Wallpaper</button>
       </div>
 
-      <!-- Widgets on this page: compact chips — click to configure, ✕ to remove.
-           Doubles as the selection path when the preview is hidden or dead. -->
-      <div id="slotList"></div>
-      <button id="addSlot" class="ghost wide">+ Add widget</button>
+      <div id="contextBody">
+        <!-- Page: name, capacity, delete, and this page's background override. -->
+        <section id="panePage" class="pane" role="tabpanel">
+          <div id="pageHeader">
+            <input id="pageName" type="text" placeholder="Page name" />
+            <div id="capacity"></div>
+            <span class="spacer"></span>
+            <button id="deletePage" class="danger ghost">Delete page</button>
+          </div>
+          <section id="pageBgWrap" class="bg-section">
+            <div class="panel-title">Page background</div>
+            <p class="panel-hint">Overrides the dashboard wallpaper just for this page.</p>
+            <div id="pageBg" class="bg-editor"></div>
+          </section>
+          <div id="editorEmpty" hidden>
+            <p>No pages yet. Add one to get started.</p>
+          </div>
+        </section>
 
-      <!-- Detail panel: ONLY the selected slot's properties (or page-level panels). -->
-      <div id="slotDetail"></div>
+        <!-- Widget: this page's widgets as chips + the selected widget's detail card.
+             The add gallery lives HERE, not in the preview — a palette inside the
+             scaled replica covered the very layout being edited (#45). -->
+        <section id="paneWidget" class="pane" role="tabpanel" hidden>
+          <div class="widget-strip">
+            <div id="slotList"></div>
+            <button id="addSlot" class="ghost">+ Add widget</button>
+          </div>
+          <div id="widgetGallery" hidden></div>
+          <div id="slotDetail"></div>
+        </section>
 
-      <section id="pageBgWrap" class="bg-section">
-        <div class="panel-title">Page background</div>
-        <p class="panel-hint">Overrides the dashboard background just for this page. Pick a type to unlock the full controls (colors, file, fit, dim, blur).</p>
-        <div id="pageBg" class="bg-editor"></div>
-      </section>
+        <!-- Theme: three seed colors + opacity drive every widget on the panel. -->
+        <section id="paneTheme" class="pane" role="tabpanel" hidden>
+          <p class="panel-hint">Three colors drive every widget; the full palette is derived automatically.</p>
+          <div id="themeEditor" class="bg-editor"></div>
+        </section>
 
-      <div id="editorEmpty" hidden>
-        <p>No pages yet. Add one to get started.</p>
+        <!-- Wallpaper: the dashboard-wide background. -->
+        <section id="paneWallpaper" class="pane" role="tabpanel" hidden>
+          <p class="panel-hint">Wallpaper shown behind widgets on every page (unless a page sets its own).</p>
+          <div id="globalBg" class="bg-editor"></div>
+        </section>
       </div>
     </section>
   </main>

@@ -38,7 +38,6 @@ button.danger { color: var(--danger); }
 button.danger:hover { border-color: var(--danger); }
 /* Armed state of the two-tap delete confirm */
 button.danger[data-armed] { background: var(--danger); border-color: var(--danger); color: #fff; }
-button.wide { width: 100%; margin-top: 10px; }
 button.icon { padding: 5px 9px; }
 
 input[type="text"], input[type="number"], select {
@@ -70,38 +69,152 @@ header {
 header h1 { font-size: 17px; font-weight: 600; }
 header .actions { display: flex; gap: 10px; }
 
-main { flex: 1; display: flex; min-height: 0; }
+/* Single-column context area: pages strip on top, tabbed panel below. The window
+ * itself never scrolls — only #contextBody scrolls when its content overflows. */
+main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
-#pagesPanel {
-  width: 220px;
-  flex: none;
-  background: var(--panel);
-  border-right: 1px solid var(--line);
-  padding: 14px;
-  overflow-y: auto;
-}
 .panel-title { color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.1em; margin-bottom: 10px; }
-#pageList { list-style: none; display: flex; flex-direction: column; gap: 6px; }
-#pageList li {
-  padding: 9px 12px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  cursor: pointer;
+.panel-hint { color: var(--muted); font-size: 11px; line-height: 1.4; margin-bottom: 10px; }
+
+/* ---- pages strip -------------------------------------------------------------- */
+#pagesStrip {
+  flex: none;
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 8px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+#pageList { list-style: none; display: flex; align-items: center; gap: 8px; }
+#pageList li {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  cursor: pointer;
+  white-space: nowrap;
 }
 #pageList li:hover { background: var(--card); }
-#pageList li.active { background: var(--card); border-color: var(--accent); }
-#pageList li .count { color: var(--muted); font-size: 12px; }
+#pageList li.active { background: var(--card); border-color: var(--accent); color: var(--accent); }
+#pageList li .count { color: var(--muted); font-size: 11px; }
+/* ◀ ▶ reorder arrows, shown on the active chip only. */
+#pageList li .chip-move {
+  border: 0;
+  background: transparent;
+  padding: 0 3px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+#pageList li .chip-move:hover:not(:disabled) { color: var(--accent); }
+#pageList li .chip-move:disabled { opacity: 0.35; cursor: default; }
+#addPage { flex: none; border-radius: 999px; padding: 5px 14px; white-space: nowrap; }
 
-#editor { flex: 1; padding: 16px 18px; overflow-y: auto; }
+/* ---- context panel (segmented tabs) ------------------------------------------- */
+#contextPanel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#tabBar {
+  flex: none;
+  align-self: flex-start;
+  display: inline-flex;
+  gap: 4px;
+  margin: 10px 18px 0;
+  padding: 3px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+#tabBar .tab {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+#tabBar .tab:hover { color: var(--text); }
+#tabBar .tab.active { background: var(--card); color: var(--accent); }
+#contextBody { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 18px 16px; }
+.pane[hidden] { display: none; }
+
+/* ---- Page tab ----------------------------------------------------------------- */
 #pageHeader { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 #pageHeader #pageName { width: 240px; }
 #pageHeader .spacer { flex: 1; }
 #capacity { color: var(--muted); font-size: 12px; }
 #capacity.warn { color: var(--danger); }
+
+#editorEmpty { color: var(--muted); text-align: center; margin: 48px 0; }
+
+/* ---- Widget tab --------------------------------------------------------------- */
+.widget-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#addSlot { flex: none; border-radius: 999px; padding: 6px 14px; white-space: nowrap; }
+#addSlot.open { border-color: var(--accent); color: var(--accent); }
+
+/* Add-widget gallery: settings-side picker (#45) — the replica's modal palette
+ * covered the scaled layout being edited. */
+#widgetGallery {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+}
+#widgetGallery[hidden] { display: none; }
+#widgetGallery .gallery-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  padding: 10px 12px;
+}
+#widgetGallery .gallery-item:disabled { opacity: 0.55; cursor: default; }
+#widgetGallery .gallery-item:disabled:hover { border-color: var(--line); }
+#widgetGallery .g-name { font-weight: 600; }
+#widgetGallery .g-by { color: var(--muted); font-size: 11px; }
+
+/* Compact slot chips: click to configure, ✕ to remove. */
+#slotList { display: flex; flex-wrap: wrap; gap: 8px; }
+.slot-chip {
+  display: inline-flex;
+  align-items: center;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.slot-chip.active { border-color: var(--accent); }
+.slot-chip .chip-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 6px 2px 6px 12px;
+}
+.slot-chip.active .chip-main { color: var(--accent); }
+.slot-chip .chip-size { color: var(--muted); font-size: 11px; }
+.slot-chip > button.icon { border: 0; background: transparent; padding: 6px 10px 6px 6px; }
+
+/* Detail panel (selected slot only). */
+#slotDetail { margin-top: 14px; }
+#slotDetail .slot-card { margin-bottom: 0; }
+.detail-hint { margin: 6px 0 0; }
+.section-title {
+  color: var(--accent);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin: 0 0 6px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 4px;
+}
 
 .slot-card {
   background: var(--card);
@@ -155,11 +268,27 @@ main { flex: 1; display: flex; min-height: 0; }
 .factory-row select { flex: 1; min-width: 0; }
 .factory > button { align-self: flex-start; }
 
-#editorEmpty { color: var(--muted); text-align: center; margin-top: 60px; }
+.slot-style { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.slot-style .section-title { border-bottom: 0; padding-bottom: 0; }
+.style-row { display: flex; align-items: center; gap: 10px; min-height: 32px; max-width: 380px; }
+.style-row label { flex: 1; color: var(--muted); }
+.style-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+.style-row input[type="range"] { flex: 1; min-width: 60px; max-width: 140px; }
+.style-row output { color: var(--muted); min-width: 40px; text-align: right; font-size: 12px; }
+.prop-error { color: var(--danger); font-size: 12px; }
 
-/* ---- background editor ---- */
-.bg-panel-title { margin-top: 22px; }
-.panel-hint { color: var(--muted); font-size: 11px; line-height: 1.4; margin-bottom: 10px; }
+/* Per-slot "hide during games" toggle. */
+.slot-row .game-hide {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* ---- background editor -------------------------------------------------------- */
 .bg-editor { display: flex; flex-direction: column; gap: 8px; }
 .bg-row { display: flex; align-items: center; gap: 10px; }
 .bg-row > label { color: var(--muted); width: 58px; flex: none; font-size: 12px; }
@@ -186,6 +315,22 @@ main { flex: 1; display: flex; min-height: 0; }
   padding-top: 14px;
 }
 .bg-section .bg-editor { max-width: 480px; }
+
+/* Wallpaper editor: keep control rows readable, not viewport-wide. */
+#globalBg { max-width: 520px; }
+
+/* Theme editor: the live preview tile sits BESIDE the seed controls so the whole
+ * tab fits without scrolling at typical window heights. */
+#themeEditor {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(240px, 380px);
+  gap: 8px 20px;
+  align-items: center;
+  max-width: 720px;
+}
+#themeEditor .theme-preview { grid-column: 1; grid-row: 1 / span 5; align-self: start; }
+#themeEditor > .bg-row { grid-column: 2; }
+#themeEditor .bg-row > label { width: 86px; }
 
 #toast {
   position: fixed;
@@ -258,6 +403,7 @@ main { flex: 1; display: flex; min-height: 0; }
 #previewWrap {
   padding: 10px 16px 4px;
   border-bottom: 1px solid var(--line);
+  flex: none;
 }
 #previewBar { display: flex; align-items: center; gap: 12px; }
 #previewBar .panel-title { margin: 0; }
@@ -296,72 +442,3 @@ main { flex: 1; display: flex; min-height: 0; }
 
 /* Unsaved-changes marker on Save & apply. */
 #save.dirty::after { content: ' •'; }
-
-/* Collapsible rail sections (Theme, Dashboard background). */
-details.rail-section { margin-top: 22px; }
-details.rail-section > summary { cursor: pointer; display: flex; align-items: center; gap: 6px; list-style: none; }
-details.rail-section > summary::-webkit-details-marker { display: none; }
-details.rail-section > summary::before {
-  content: '▸';
-  font-size: 10px;
-  color: var(--muted);
-  transition: transform 0.15s;
-}
-details.rail-section[open] > summary::before { transform: rotate(90deg); }
-
-/* Compact slot chips: click to configure, ✕ to remove. */
-#slotList { display: flex; flex-wrap: wrap; gap: 8px; }
-.slot-chip {
-  display: inline-flex;
-  align-items: center;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  overflow: hidden;
-}
-.slot-chip.active { border-color: var(--accent); }
-.slot-chip .chip-main {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 6px 2px 6px 12px;
-}
-.slot-chip.active .chip-main { color: var(--accent); }
-.slot-chip .chip-size { color: var(--muted); font-size: 11px; }
-.slot-chip > button.icon { border: 0; background: transparent; padding: 6px 10px 6px 6px; }
-
-/* Detail panel (selected slot only). */
-#slotDetail { margin-top: 14px; }
-#slotDetail .slot-card { margin-bottom: 0; }
-.detail-hint { margin: 6px 0 0; }
-.section-title {
-  color: var(--accent);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  margin: 0 0 6px;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 4px;
-}
-.slot-style { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
-.slot-style .section-title { border-bottom: 0; padding-bottom: 0; }
-.style-row { display: flex; align-items: center; gap: 10px; min-height: 32px; max-width: 380px; }
-.style-row label { flex: 1; color: var(--muted); }
-.style-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
-.style-row input[type="range"] { flex: 1; min-width: 60px; max-width: 140px; }
-.style-row output { color: var(--muted); min-width: 40px; text-align: right; font-size: 12px; }
-.prop-error { color: var(--danger); font-size: 12px; }
-
-/* Per-slot "hide during games" toggle. */
-.slot-row .game-hide {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--muted);
-  cursor: pointer;
-  white-space: nowrap;
-}

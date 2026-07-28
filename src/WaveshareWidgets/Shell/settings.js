@@ -37,8 +37,31 @@
   let backgroundHost = 'backgrounds.wsw';
   let pendingBgPick = null;    // callback(source, kind) for the in-flight file dialog
   let sdProfileWaiters = [];   // callbacks awaiting an sd-profiles-result
+  let galleryOpen = false;     // settings-side add-widget gallery (Widget tab)
+  let instanceSeq = 0;         // suffix for minted instanceIds (gallery adds)
 
   const el = (id) => document.getElementById(id);
+
+  // ---- context tabs ----------------------------------------------------------
+  // One panel, one job per tab: Page (name/capacity/delete/background), Widget
+  // (chips + selected slot detail), Theme, Wallpaper. Selection events steer the
+  // tab (a replica tap opens Widget); everything else leaves the user's tab alone.
+
+  const TABS = { page: 'tabPage', widget: 'tabWidget', theme: 'tabTheme', wallpaper: 'tabWallpaper' };
+  const PANES = { page: 'panePage', widget: 'paneWidget', theme: 'paneTheme', wallpaper: 'paneWallpaper' };
+  let activeTab = 'page';
+
+  function setTab(name) {
+    if (!PANES[name]) name = 'page';
+    activeTab = name;
+    for (const key of Object.keys(TABS)) {
+      const on = key === name;
+      el(TABS[key]).classList.toggle('active', on);
+      el(TABS[key]).setAttribute('aria-selected', String(on));
+      el(PANES[key]).hidden = !on;
+    }
+  }
+  for (const key of Object.keys(TABS)) el(TABS[key]).addEventListener('click', () => setTab(key));
 
   // ---- host bridge -----------------------------------------------------------
 
@@ -194,8 +217,13 @@
       if (idx !== selectedPage && idx >= 0 && idx < state.layout.pages.length) {
         selectedPage = idx;
         selectedSlot = null; // a follow-up slot-selected re-adopts if a tile moved with us
+        galleryOpen = false; // an open gallery was aimed at the page we just left
         renderPageList();
         renderEditorPanel();
+        // The strip and Page tab refreshed in place — don't steal the user's tab.
+        // Exception: the Widget tab was showing a selection that no longer exists;
+        // fall back to the page context instead of an orphaned hint.
+        if (activeTab === 'widget') setTab('page');
       }
     } else if (m.type === 'save-layout') {
       // The interactive replica IS the editor (#32): its continuous persists are the
@@ -206,6 +234,17 @@
       // Click-to-configure: the replica says which tile the user tapped (or where a
       // mutation moved the already-selected one, or -1/-1 when it went away).
       onReplicaSelection(m.page | 0, m.index | 0);
+    } else if (m.type === 'add-widget') {
+      // The replica's "+" zone hands the add over to us (#45): a modal palette
+      // inside the scaled strip covered the very layout being edited. Follow the
+      // page the tap happened on, then open the settings-side gallery.
+      const idx = m.index | 0;
+      if (idx !== selectedPage && idx >= 0 && idx < state.layout.pages.length) {
+        selectedPage = idx;
+        selectedSlot = null;
+        renderPageList();
+      }
+      openGallery();
     } else if (m.type === 'fetch' || m.type === 'ping' || m.type === 'media-list' || m.type === 'audio-get') {
       post({ type: 'preview-data', message: m });
     } else if (m.type === 'notifications-watch') {
@@ -259,8 +298,10 @@
     if (!page || !(page.slots || [])[slotIdx]) return;
     selectedPage = pageIdx;
     selectedSlot = slotIdx;
+    galleryOpen = false; // the tap picked an existing widget — detail takes over
     renderPageList();
     renderEditorPanel();
+    setTab('widget'); // a real adoption (tap / palette add) — show the detail card
   }
 
   function markDirty() {
@@ -438,11 +479,6 @@
     const cur = state.layout.theme || {};
 
     container.appendChild(preview);
-    const note = document.createElement('p');
-    note.className = 'panel-hint';
-    note.textContent = 'Live preview — the panel itself updates when you hit Save & apply.';
-    container.appendChild(note);
-
     container.appendChild(bgColor('Accent', cur.accent || THEME_DEFAULTS.accent, (v) => setKey('accent', v)));
     container.appendChild(bgColor('Background', cur.background || THEME_DEFAULTS.background, (v) => setKey('background', v)));
     container.appendChild(bgColor('Text', cur.text || THEME_DEFAULTS.text, (v) => setKey('text', v)));
@@ -458,6 +494,8 @@
     refreshPreview();
   }
 
+  // Horizontal pages strip: one chip per page (name + widget count); click selects
+  // AND steers the replica there. The active chip carries the ◀ ▶ reorder arrows.
   function renderPageList() {
     const list = el('pageList');
     list.textContent = '';
@@ -470,6 +508,13 @@
       count.className = 'count';
       count.textContent = (page.slots || []).length;
       item.append(name, count);
+      if (i === selectedPage) {
+        const left = chipMove('movePageLeft', '◀', 'Move page earlier', -1);
+        left.disabled = i === 0;
+        const right = chipMove('movePageRight', '▶', 'Move page later', 1);
+        right.disabled = i === state.layout.pages.length - 1;
+        item.append(left, right);
+      }
       item.addEventListener('click', () => {
         if (selectedPage !== i) selectedSlot = null; // selection is per page
         selectedPage = i;
@@ -477,6 +522,20 @@
       });
       list.appendChild(item);
     });
+  }
+
+  function chipMove(id, glyph, title, delta) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = id;
+    btn.className = 'chip-move';
+    btn.textContent = glyph;
+    btn.title = title;
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation(); // the chip's own click would re-select
+      movePage(delta);
+    });
+    return btn;
   }
 
   // ---- page editor ----------------------------------------------------------------
@@ -494,10 +553,16 @@
     el('editorEmpty').hidden = hasPage;
     el('pageHeader').style.display = hasPage ? 'flex' : 'none';
     el('addSlot').style.display = hasPage ? 'block' : 'none';
-    el('pageBgWrap').style.display = 'none'; // renderSlotDetail decides (page-level context)
+    el('pageBgWrap').style.display = hasPage ? 'block' : 'none';
     el('slotList').textContent = '';
     el('slotDetail').textContent = '';
-    if (!hasPage) return;
+    if (!hasPage) {
+      galleryOpen = false;
+      renderWidgetGallery(null);
+      // Nothing to manage widget-wise; the empty state lives on the Page tab.
+      if (activeTab === 'widget') setTab('page');
+      return;
+    }
 
     renderBackgroundEditor(
       el('pageBg'),
@@ -535,32 +600,95 @@
       selectedSlot = null;
       renderAll();
     };
-    el('movePageLeft').onclick = () => movePage(-1);
-    el('movePageRight').onclick = () => movePage(1);
 
-    el('addSlot').onclick = () => addWidgetToPage(page);
+    el('addSlot').onclick = () => (galleryOpen ? closeGallery() : openGallery());
 
     page.slots = page.slots || [];
     if (selectedSlot !== null && !page.slots[selectedSlot]) selectedSlot = null; // stale index
     renderSlotStrip(page);
     renderSlotDetail(page);
+    renderWidgetGallery(page);
     renderCapacity(page);
   }
 
-  function addWidgetToPage(page) {
-    // Preferred path: the replica's own palette (live previews, fit-aware sizing).
-    if (editMode && replicaReady && !previewStage.classList.contains('collapsed')) {
-      replicaPost({ type: 'open-palette', index: selectedPage });
-      return;
+  // ---- add-widget gallery -----------------------------------------------------
+  // Settings-side picker (#45): the replica's modal palette covered the scaled
+  // layout being edited, so adds happen HERE — whether they start from the
+  // "+ Add widget" button (toggle: second click closes) or from the replica's
+  // "+" zone (the shell bounces that tap up as an add-widget message).
+
+  function openGallery() {
+    galleryOpen = true;
+    setTab('widget');
+    renderEditorPanel();
+  }
+
+  function closeGallery() {
+    galleryOpen = false;
+    renderEditorPanel();
+  }
+
+  // Mirror of the shell's defaultSizeFor: widest size that still lets EVERY slot
+  // on the page place — full height first, then a top/bottom band to fill holes.
+  function defaultSizeFor(page, widget) {
+    const widths = offeredWidths(widget).slice().reverse(); // widest first, shrink into the hole
+    const slots = (page.slots = page.slots || []);
+    const probe = { size: 'quarter' };
+    slots.push(probe);
+    let found = null;
+    outer:
+    for (const band of ['full', 'upper', 'lower']) {
+      for (const w of widths) {
+        probe.size = w + (band === 'full' ? '' : '-' + band);
+        if (countUnplaced(slots) === 0) { found = probe.size; break outer; }
+      }
     }
-    // Fallback (preview hidden, dead, or display-only): direct append, as before.
-    const first = state.widgets[0];
+    slots.pop();
+    return found;
+  }
+
+  function renderWidgetGallery(page) {
+    const wrap = el('widgetGallery');
+    const open = galleryOpen && !!page;
+    wrap.hidden = !open;
+    el('addSlot').classList.toggle('open', open);
+    el('addSlot').textContent = open ? '✕ Close' : '+ Add widget';
+    el('slotDetail').style.display = open ? 'none' : '';
+    wrap.textContent = '';
+    if (!open) return;
+    for (const widget of state.widgets) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'gallery-item';
+      const size = defaultSizeFor(page, widget);
+      const name = document.createElement('span');
+      name.className = 'g-name';
+      name.textContent = widget.name;
+      const by = document.createElement('span');
+      by.className = 'g-by';
+      by.textContent = size ? (widget.author || '') : 'No room on this page';
+      btn.append(name, by);
+      btn.disabled = !size;
+      btn.addEventListener('click', () => addWidgetToPage(page, widget));
+      wrap.appendChild(btn);
+    }
+  }
+
+  function addWidgetToPage(page, widget) {
+    const size = defaultSizeFor(page, widget); // sized against the page as it IS now
+    if (!size) return;
+    galleryOpen = false;
     page.slots.push({
-      widgetId: first ? first.id : '',
-      size: first && first.supportedSlots && first.supportedSlots[0] ? first.supportedSlots[0] : 'quarter',
+      widgetId: widget.id,
+      size,
       settings: {},
+      // Minted like the shell does: a positional tag could collide with an
+      // identity another slot froze earlier.
+      instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
     });
     selectedSlot = page.slots.length - 1;
+    setTab('widget');
+    renderPageList(); // the strip's widget count changed
     renderEditor();
   }
 
@@ -639,7 +767,9 @@
 
   function selectSlot(i) {
     selectedSlot = selectedSlot === i ? null : i; // click the active chip to deselect
+    galleryOpen = false; // chip interaction takes the Widget tab over from the gallery
     renderEditorPanel();
+    if (selectedSlot != null) setTab('widget'); // chip select shows the detail card
     // Mirror into the replica (index -1 clears its highlight).
     replicaPost({ type: 'select-slot', page: selectedPage, index: selectedSlot == null ? -1 : selectedSlot });
   }
@@ -656,8 +786,6 @@
   function renderSlotDetail(page) {
     const host = el('slotDetail');
     const slot = selectedSlot !== null ? page.slots[selectedSlot] : null;
-    // Page-level context (background) shows when no slot is selected.
-    el('pageBgWrap').style.display = slot ? 'none' : 'block';
     if (!slot) {
       const hint = document.createElement('p');
       hint.className = 'panel-hint detail-hint';
@@ -766,15 +894,16 @@
     return card;
   }
 
-  // Per-slot style overrides — the same seeds the on-panel 🎨 editor writes into
-  // def.style: checked keys re-derive this one widget's palette (contrast repair
-  // included); everything unchecked keeps following the global theme.
+  // Per-slot appearance overrides — THE appearance control for a widget (#42), the
+  // same seeds the on-panel 🎨 editor writes into def.style: checked keys re-derive
+  // this one widget's palette (contrast repair included); everything unchecked
+  // keeps following the global theme (Theme tab).
   function renderSlotStyle(slot) {
     const wrap = document.createElement('div');
     wrap.className = 'slot-style';
     const title = document.createElement('div');
     title.className = 'section-title';
-    title.textContent = 'Style override';
+    title.textContent = 'Appearance — overrides the theme for this widget only';
     wrap.appendChild(title);
 
     const setStyleKey = (key, value) => {
