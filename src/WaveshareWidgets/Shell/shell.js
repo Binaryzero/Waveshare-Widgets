@@ -990,18 +990,20 @@
     return WIDTH_ORDER.filter((w) => declared.has(w));
   }
 
-  // Would `def` at `size` place, without costing any currently-placing slot its
-  // spot? (Slots that already fail to place — legacy over-full pages — don't veto.)
+  // Would `def` at `size` place, without costing any currently-placing OTHER
+  // slot its spot? (Slots that already fail to place — legacy over-full pages —
+  // don't veto; hidden slots becoming visible is fine, visible ones vanishing
+  // is not, even when the totals balance out.)
   function fitsWithSize(page, def, size) {
     const defs = page.slots || [];
     const original = def.size;
-    const before = unplacedCount(defs);
+    const beforePlaced = placedSet(defs);
     def.size = size;
     const places = placeSlots(defs);
-    const after = places.reduce((n, p) => n + (p === null ? 1 : 0), 0);
     const selfPlaced = places[defs.indexOf(def)] !== null;
+    const othersKeep = defs.every((d, i) => d === def || !beforePlaced.has(d) || places[i] !== null);
     def.size = original;
-    return selfPlaced && after <= before;
+    return selfPlaced && othersKeep;
   }
 
   // The fit checks run INSIDE the mutation step: view transitions run steps
@@ -1297,9 +1299,19 @@
   // hide them instead of rejecting the file). Field bug: one hidden slot made
   // every fit check on the page fail — adds all "No room", drops all bouncing —
   // while free space sat visibly on screen. The bar for any edit is "nobody who
-  // places today loses their spot", never "the whole page is perfect".
+  // places today loses their spot", never "the whole page is perfect". That bar
+  // is about IDENTITY, not counts: a count comparison would accept trading a
+  // visible widget for a previously hidden one (Codex, #38).
   function unplacedCount(defs) {
     return placeSlots(defs).reduce((n, p) => n + (p === null ? 1 : 0), 0);
+  }
+
+  // The defs (by object identity) that currently get a spot on the page.
+  function placedSet(defs) {
+    const places = placeSlots(defs);
+    const set = new Set();
+    defs.forEach((def, i) => { if (places[i] !== null) set.add(def); });
+    return set;
   }
 
   function pageFits(page, def) {
@@ -1368,7 +1380,8 @@
     }
     candidates.sort((a, b) => b.area - a.area); // biggest footprint first
     const rest = (rec.page.slots || []).filter((d) => d !== rec.def);
-    const baseline = unplacedCount(rest); // hidden legacy over-full slots never veto a drop
+    const restPlaced = placedSet(rest); // hidden legacy over-full slots never veto a drop —
+                                        // but every slot VISIBLE now must stay visible
     let best = null;
     for (let c = 0; c < candidates.length; c++) {
       const cand = candidates[c];
@@ -1376,8 +1389,8 @@
         const probe = rest.slice();
         probe.splice(i, 0, { size: cand.size }); // placeSlots only reads .size — never mutate the live def
         const places = placeSlots(probe);
-        const nulls = places.reduce((n, p) => n + (p === null ? 1 : 0), 0);
-        if (places[i] === null || nulls > baseline) continue;
+        if (places[i] === null) continue;
+        if (!probe.every((d, k) => k === i || !restPlaced.has(d) || places[k] !== null)) continue;
         // Distance from the pointed-at column to the placed SPAN (not its left
         // edge): pointing at the right half of a wide landing spot must not read
         // as "missed it" and hand the win to a smaller size.
@@ -1473,17 +1486,19 @@
           const srcParts = sizeParts(d.record.def.size);
           const tgtParts = sizeParts(target.def.size);
           const oldSize = d.record.def.size;
-          const before = unplacedCount(defs);
+          const beforePlaced = placedSet(defs);
           if (srcParts.band !== 'full' && tgtParts.band !== 'full' && srcParts.band !== tgtParts.band)
             d.record.def.size = makeSize(srcParts.width, tgtParts.band);
           defs.splice(srcIdx, 1);
           // Dragging forward drops AFTER the target, dragging back drops BEFORE it —
           // insert-before alone would put a forward drag right back where it started.
           defs.splice(defs.indexOf(target.def) + (srcIdx < tgtIdx ? 1 : 0), 0, d.record.def);
-          // A pure reorder never costs a spot; the adopted band might — revert it
-          // only if the page places WORSE than before (hidden legacy slots that
-          // never placed don't count against the drop).
-          if (unplacedCount(defs) > before) d.record.def.size = oldSize;
+          // Revert the adopted band if it would cost any currently-VISIBLE slot its
+          // spot (identity, not counts: totals can balance while a visible widget
+          // trades places with a hidden legacy one). Hidden slots never veto.
+          const adoptedPlaces = placeSlots(defs);
+          if (!defs.every((dd, k) => dd === d.record.def || !beforePlaced.has(dd) || adoptedPlaces[k] !== null))
+            d.record.def.size = oldSize;
           if (d.record.syncLabels) d.record.syncLabels();
           relayoutPage(d.record.page);
         });

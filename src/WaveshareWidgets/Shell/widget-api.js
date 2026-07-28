@@ -273,8 +273,9 @@
       }
       return fetch(url, init).then((response) => {
         // Bot walls sometimes serve their block page WITH CORS headers, so the
-        // request "succeeds" as a 403/429; retry those via the host.
-        if (response.status === 403 || response.status === 429) {
+        // request "succeeds" as a 403/429; retry those via the host — unless the
+        // caller explicitly opted out of the proxy entirely.
+        if ((response.status === 403 || response.status === 429) && init.proxy !== 'never') {
           return proxyFetch(url, init).catch(() => response);
         }
         return response;

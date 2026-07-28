@@ -118,9 +118,10 @@
           translations = (json.en && typeof json.en === 'object') ? json.en : json;
         }
       })
-      .catch(() => {
-        if (missKey) { try { sessionStorage.setItem(missKey, '1'); } catch (e) { /* ignore */ } }
-      })
+      // A rejected fetch is NOT a missing file: transient navigation/network
+      // failures must stay retryable, or one hiccup mutes translations for the
+      // whole session. Only the definitive not-ok response above memoizes.
+      .catch(() => { /* transient failure: no memo, retry on next load */ })
       .finally(() => { trReady = true; maybeInit(); });
     setTimeout(() => { if (!trReady) { trReady = true; maybeInit(); } }, 1500);
   }

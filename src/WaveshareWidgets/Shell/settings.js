@@ -31,7 +31,9 @@
   let editMode = true;         // replica is the interactive WYSIWYG surface (default on)
   let dirty = false;           // unsaved edits pending Save & apply
   let editSeq = 0;             // bumps on every edit; the save ack only clears dirty
-  let savedEditSeq = -1;       // when nothing changed since the posted snapshot
+                               // when nothing changed since the acked snapshot
+  let saveSeq = 0;             // request id sent with each save, echoed in the ack
+  const pendingSaves = new Map(); // saveSeq -> editSeq at post time (in-flight saves)
   let initializing = false;    // suppress dirty-marking during a settings-init render
   let toastTimer = null;
   let backgroundHost = 'backgrounds.wsw';
@@ -79,12 +81,18 @@
       initializing = false;
       clearDirty(); // freshly loaded state IS the saved state
     } else if (msg.type === 'saved') {
-      // Only clear the marker when nothing changed since the posted snapshot — an
-      // edit racing the async ack must stay visibly unsaved or it's easy to close
-      // the window and lose it.
-      if (editSeq === savedEditSeq) clearDirty();
+      // Each ack names the save it answers (the host echoes our seq). Clear the
+      // marker only when nothing changed since THAT snapshot was posted — an edit
+      // racing the ack, or a second save still in flight, must stay visibly
+      // unsaved or it's easy to close the window and lose it. An ack without a
+      // seq (older host) falls back to the newest in-flight snapshot.
+      const acked = msg.seq != null ? pendingSaves.get(msg.seq)
+        : (pendingSaves.size ? [...pendingSaves.values()].pop() : undefined);
+      if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
+      if (acked !== undefined && editSeq === acked) clearDirty();
       toast('Saved — dashboard updated');
     } else if (msg.type === 'save-failed') {
+      if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
       toast('Save failed: ' + msg.message, true);
     } else if (msg.type === 'widget-installed') {
       toast('Installed "' + msg.name + '"');
@@ -406,8 +414,9 @@
   // ---- top bar ----------------------------------------------------------------
 
   el('save').addEventListener('click', () => {
-    savedEditSeq = editSeq; // ack clears dirty only if this is still current
-    post({ type: 'save-layout', layout: state.layout });
+    const seq = ++saveSeq;
+    pendingSaves.set(seq, editSeq); // the ack clears dirty only if this is still current
+    post({ type: 'save-layout', layout: state.layout, seq });
   });
   el('installWidget').addEventListener('click', () => post({ type: 'install-widget' }));
   el('openFolder').addEventListener('click', () => post({ type: 'open-widgets-folder' }));
@@ -1067,7 +1076,11 @@
           add.className = 'ghost';
           add.textContent = '+ Add sensor';
           add.addEventListener('click', () => {
-            items.push({ sensorId: (state.sensors[0] || {}).id || '', color: '#76b900' });
+            // Seed from the sensors this property actually accepts — the first
+            // sensor overall is usually a temperature, and a Fan-typed picker
+            // preselecting it reads as "selected fans not found" (Codex, #38).
+            const pool = (state.sensors || []).filter((s) => !prop.sensor_type || s.type === prop.sensor_type);
+            items.push({ sensorId: (pool[0] || {}).id || '', color: '#76b900' });
             commit();
             renderList();
           });
@@ -1257,11 +1270,21 @@
         wrap.className = 'factory list-editor';
         const fields = prop.fields;
 
-        // Accept the stored array, or convert a legacy "A=B, C=D" delimited string from
-        // an old layout into rows mapped onto the first two fields.
+        // Accept the stored array; migrate a legacy JSON-ARRAY string (the old
+        // Control Deck stored its buttons that way — splitting it as "A=B" pairs
+        // rendered JSON fragments as rows and the first edit wrote them back,
+        // corrupting the config); or convert a legacy "A=B, C=D" delimited string
+        // into rows mapped onto the first two fields. Extra keys on parsed
+        // objects (e.g. the old deck's `kind`) ride along untouched — widgets
+        // that honor them keep working.
         let items;
-        if (Array.isArray(current)) {
-          items = current.filter((x) => x && typeof x === 'object').map((x) => Object.assign({}, x));
+        let legacyJson = null;
+        if (typeof current === 'string' && current.trim().startsWith('[')) {
+          try { legacyJson = JSON.parse(current); } catch (e) { legacyJson = null; }
+          if (!Array.isArray(legacyJson)) legacyJson = null;
+        }
+        if (Array.isArray(current) || legacyJson) {
+          items = (legacyJson || current).filter((x) => x && typeof x === 'object').map((x) => Object.assign({}, x));
         } else if (typeof current === 'string' && current.trim()) {
           items = current.split(',').map((pair) => {
             const eq = pair.indexOf('=');

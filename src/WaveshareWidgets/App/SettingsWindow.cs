@@ -110,7 +110,7 @@ public sealed class SettingsWindow : Form
                     break;
 
                 case "save-layout":
-                    HandleSave(message["layout"]);
+                    HandleSave(message["layout"], message["seq"]?.GetValue<long>());
                     break;
 
                 case "install-widget":
@@ -214,7 +214,11 @@ public sealed class SettingsWindow : Form
         });
     }
 
-    private void HandleSave(JsonNode? layoutNode)
+    /// <summary>Saves the posted layout. The optional <paramref name="seq"/> is a
+    /// client request id echoed verbatim in the reply, so the editor can match each
+    /// acknowledgement to the exact snapshot it saved — two saves racing one ack
+    /// must not clear the dirty marker for work the second save still holds.</summary>
+    private void HandleSave(JsonNode? layoutNode, long? seq)
     {
         try
         {
@@ -227,12 +231,16 @@ public sealed class SettingsWindow : Form
 
             LayoutStore.Save(layout);
             LayoutSaved?.Invoke();
-            Post(new JsonObject { ["type"] = "saved" });
+            var ok = new JsonObject { ["type"] = "saved" };
+            if (seq is not null) ok["seq"] = seq.Value;
+            Post(ok);
         }
         catch (Exception ex)
         {
             Log.Warn($"Layout save failed: {ex.Message}");
-            Post(new JsonObject { ["type"] = "save-failed", ["message"] = ex.Message });
+            var failed = new JsonObject { ["type"] = "save-failed", ["message"] = ex.Message };
+            if (seq is not null) failed["seq"] = seq.Value;
+            Post(failed);
         }
     }
 
