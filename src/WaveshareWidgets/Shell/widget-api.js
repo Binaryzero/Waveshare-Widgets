@@ -8,6 +8,12 @@
   if (window.WW) return; // already installed (injected + script tag)
 
   const listeners = { init: [], sensors: [], media: [], theme: [], streamdeck: [], sdcapture: [], notifications: [], game: [] };
+  // Stamped until the first ww-init arrives; widget-base.css shows a muted
+  // "waiting for panel data…" hint so delivery failures are visible in the field.
+  if (document.documentElement) document.documentElement.dataset.wwWaiting = '1';
+  else document.addEventListener('DOMContentLoaded', function () {
+    if (document.documentElement && !state.ready) document.documentElement.dataset.wwWaiting = '1';
+  }, { once: true });
   const state = { settings: {}, sensors: [], media: null, status: null, theme: null, notifications: null, game: { active: false, process: '' }, ready: false };
   const pendingFetches = new Map();
   const pendingPings = new Map();
@@ -65,6 +71,10 @@
       if (msg.game) applyGame(msg.game);
       // Design tokens land on :root before init callbacks so first paint is themed.
       applyThemeTokens(msg.theme);
+      // Clears the "waiting for panel data" stamp widget-base.css renders: a
+      // widget that loads but never receives init must say so ON SCREEN instead
+      // of sitting as an undiagnosable blank tile (field report: empty deck).
+      if (document.documentElement) delete document.documentElement.dataset.wwWaiting;
       state.ready = true;
       emit('init', state);
       emit('sensors', state.sensors);

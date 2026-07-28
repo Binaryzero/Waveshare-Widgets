@@ -200,7 +200,17 @@
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const blob = await res.blob();
     if (blob.size < 1024) throw new Error('placeholder response (' + blob.size + ' bytes)');
-    return URL.createObjectURL(blob);
+    const blobUrl = URL.createObjectURL(blob);
+    // A bot-wall HTML page proxied as 200 clears the size floor but paints a
+    // BLACK tile under a live caption. Only bytes that actually decode as an
+    // image reach the crossfade; anything else counts as a failed attempt.
+    await new Promise((ok, bad) => {
+      const probe = new Image();
+      probe.onload = () => ok();
+      probe.onerror = () => { URL.revokeObjectURL(blobUrl); bad(new Error('response is not a decodable image')); };
+      probe.src = blobUrl;
+    });
+    return blobUrl;
   }
 
   const blobBySide = [null, null];

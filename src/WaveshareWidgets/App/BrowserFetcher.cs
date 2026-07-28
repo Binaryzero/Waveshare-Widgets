@@ -77,15 +77,22 @@ public sealed class BrowserFetcher : IDisposable
                 await Task.Delay(700); // let a JS challenge finish and set cookies
 
                 // Kick off a same-origin fetch and stash its result on window; then poll.
+                // The body crosses ExecuteScriptAsync as base64: reading text() UTF-8
+                // mangles every binary response — the field's Reddit tiles showed the
+                // caption (JSON listing survived) over a black image (JPEG destroyed).
                 var jsUrl = JsonSerializer.Serialize(url); // safely quoted JS string literal
                 await core.ExecuteScriptAsync($$"""
                     (() => {
                       window.__wwResult = null;
-                      fetch({{jsUrl}}, { credentials: 'include', headers: { 'Accept': 'application/json,text/plain,*/*' } })
-                        .then(r => r.text().then(t => {
-                          window.__wwResult = { status: r.status, ct: r.headers.get('content-type') || '', body: t };
+                      fetch({{jsUrl}}, { credentials: 'include', headers: { 'Accept': 'application/json,image/*,text/plain,*/*' } })
+                        .then(r => r.arrayBuffer().then(buf => {
+                          const bytes = new Uint8Array(buf);
+                          let bin = '';
+                          for (let i = 0; i < bytes.length; i += 0x8000)
+                            bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+                          window.__wwResult = { status: r.status, ct: r.headers.get('content-type') || '', b64: btoa(bin) };
                         }))
-                        .catch(e => { window.__wwResult = { status: 0, ct: '', body: '', error: String(e) }; });
+                        .catch(e => { window.__wwResult = { status: 0, ct: '', b64: '', error: String(e) }; });
                     })();
                     """);
 
@@ -105,8 +112,11 @@ public sealed class BrowserFetcher : IDisposable
                     }
                     var status = root.TryGetProperty("status", out var s) ? s.GetInt32() : 0;
                     var contentType = root.TryGetProperty("ct", out var c) ? c.GetString() : null;
-                    var body = root.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "";
-                    return (status == 0 ? 200 : status, contentType, System.Text.Encoding.UTF8.GetBytes(body));
+                    var b64 = root.TryGetProperty("b64", out var b) ? b.GetString() ?? "" : "";
+                    byte[] bodyBytes;
+                    try { bodyBytes = Convert.FromBase64String(b64); }
+                    catch (FormatException) { bodyBytes = Array.Empty<byte>(); }
+                    return (status == 0 ? 200 : status, contentType, bodyBytes);
                 }
                 Log.Warn($"browser fetch timed out ({url})");
                 return null;

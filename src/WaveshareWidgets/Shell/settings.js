@@ -74,6 +74,8 @@
       if (!state.layout || !Array.isArray(state.layout.pages)) state.layout = { pages: [] };
       backgroundHost = state.backgroundHost || backgroundHost;
       widgetsById = new Map((state.widgets || []).map((w) => [w.id, w]));
+      // Build stamp in the header: "which version am I running" answered on sight.
+      el('appVersion').textContent = (state.status && state.status.version) || '';
       selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
       selectedSlot = null;
       lastWorkingLayout = replicaLayoutJson(); // loaded state IS the edit baseline

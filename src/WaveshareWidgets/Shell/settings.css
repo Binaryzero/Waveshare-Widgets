@@ -522,3 +522,12 @@ input.toggle-check:checked::after { transform: translateX(18px); }
 .emoji-pop button:hover { background: color-mix(in srgb, var(--accent, #4cc2ff) 25%, transparent); }
 .picker-wrap { display: flex; gap: 6px; align-items: center; }
 .picker-wrap input { flex: 1; min-width: 0; }
+
+/* Build stamp beside the window title — bug reports name their build on sight. */
+header h1 #appVersion {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-dim, #6b7280);
+  letter-spacing: 0.06em;
+  margin-left: 8px;
+}

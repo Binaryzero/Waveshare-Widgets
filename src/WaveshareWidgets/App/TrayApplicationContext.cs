@@ -26,7 +26,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         AppPaths.EnsureCreated();
         // Stamp every log with the running build so bug reports are unambiguous.
-        Log.Info($"WaveshareWidgets {typeof(TrayApplicationContext).Assembly.GetName().Version} starting");
+        Log.Info($"WaveshareWidgets {AppVersion.Describe} starting");
         _config = AppConfig.Load();
 
         _library.Initialize();
@@ -37,7 +37,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _trayIcon = new NotifyIcon
         {
             Icon = CreateTrayIcon(),
-            Text = "Waveshare Widgets",
+            Text = $"Waveshare Widgets {AppVersion.Describe}",
             Visible = true,
             ContextMenuStrip = BuildTrayMenu(),
         };
@@ -128,6 +128,11 @@ public sealed class TrayApplicationContext : ApplicationContext
     private ContextMenuStrip BuildTrayMenu()
     {
         var menu = new ContextMenuStrip();
+
+        // The build stamp lives at the top of the menu: "which version am I
+        // running" must never require digging through logs.
+        menu.Items.Add(new ToolStripMenuItem($"Waveshare Widgets {AppVersion.Describe}") { Enabled = false });
+        menu.Items.Add(new ToolStripSeparator());
 
         var settingsItem = new ToolStripMenuItem("Settings…") { Font = new Font(menu.Font, FontStyle.Bold) };
         settingsItem.Click += (_, _) => OpenSettings();

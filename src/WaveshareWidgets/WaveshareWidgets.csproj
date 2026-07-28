@@ -11,7 +11,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- Allows compiling the Windows-targeted project from non-Windows build hosts (CI, dev containers). -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Description>iCUE-style widget dashboard for the Waveshare 7.9inch HDMI LCD (1280x400)</Description>
   </PropertyGroup>
 
