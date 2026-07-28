@@ -27,12 +27,43 @@
   let state = { layout: { pages: [] }, widgets: [], sensors: [] };
   let widgetsById = new Map();
   let selectedPage = 0;
+  let selectedSlot = null;     // slot index (within the selected page) the detail panel shows
+  let editMode = true;         // replica is the interactive WYSIWYG surface (default on)
+  let dirty = false;           // unsaved edits pending Save & apply
+  let editSeq = 0;             // bumps on every edit; the save ack only clears dirty
+                               // when nothing changed since the acked snapshot
+  let saveSeq = 0;             // request id sent with each save, echoed in the ack
+  const pendingSaves = new Map(); // saveSeq -> editSeq at post time (in-flight saves)
+  let initializing = false;    // suppress dirty-marking during a settings-init render
   let toastTimer = null;
   let backgroundHost = 'backgrounds.wsw';
   let pendingBgPick = null;    // callback(source, kind) for the in-flight file dialog
   let sdProfileWaiters = [];   // callbacks awaiting an sd-profiles-result
+  let galleryOpen = false;     // settings-side add-widget gallery (Widget tab)
+  let instanceSeq = 0;         // suffix for minted instanceIds (gallery adds)
 
   const el = (id) => document.getElementById(id);
+
+  // ---- context tabs ----------------------------------------------------------
+  // One panel, one job per tab: Page (name/capacity/delete/background), Widget
+  // (chips + selected slot detail), Theme, Wallpaper. Selection events steer the
+  // tab (a replica tap opens Widget); everything else leaves the user's tab alone.
+
+  const TABS = { page: 'tabPage', widget: 'tabWidget', theme: 'tabTheme', wallpaper: 'tabWallpaper' };
+  const PANES = { page: 'panePage', widget: 'paneWidget', theme: 'paneTheme', wallpaper: 'paneWallpaper' };
+  let activeTab = 'page';
+
+  function setTab(name) {
+    if (!PANES[name]) name = 'page';
+    activeTab = name;
+    for (const key of Object.keys(TABS)) {
+      const on = key === name;
+      el(TABS[key]).classList.toggle('active', on);
+      el(TABS[key]).setAttribute('aria-selected', String(on));
+      el(PANES[key]).hidden = !on;
+    }
+  }
+  for (const key of Object.keys(TABS)) el(TABS[key]).addEventListener('click', () => setTab(key));
 
   // ---- host bridge -----------------------------------------------------------
 
@@ -44,10 +75,25 @@
       backgroundHost = state.backgroundHost || backgroundHost;
       widgetsById = new Map((state.widgets || []).map((w) => [w.id, w]));
       selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
+      selectedSlot = null;
+      lastWorkingLayout = replicaLayoutJson(); // loaded state IS the edit baseline
+      initializing = true;
       renderAll();
+      initializing = false;
+      clearDirty(); // freshly loaded state IS the saved state
     } else if (msg.type === 'saved') {
+      // Each ack names the save it answers (the host echoes our seq). Clear the
+      // marker only when nothing changed since THAT snapshot was posted — an edit
+      // racing the ack, or a second save still in flight, must stay visibly
+      // unsaved or it's easy to close the window and lose it. An ack without a
+      // seq (older host) falls back to the newest in-flight snapshot.
+      const acked = msg.seq != null ? pendingSaves.get(msg.seq)
+        : (pendingSaves.size ? [...pendingSaves.values()].pop() : undefined);
+      if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
+      if (acked !== undefined && editSeq === acked) clearDirty();
       toast('Saved — dashboard updated');
     } else if (msg.type === 'save-failed') {
+      if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
       toast('Save failed: ' + msg.message, true);
     } else if (msg.type === 'widget-installed') {
       toast('Installed "' + msg.name + '"');
@@ -85,7 +131,16 @@
   const previewStage = el('previewStage');
   let replicaReady = false;
   let replicaTimer = null;
+  let initGen = 0;            // bumped per replica init; captures echo the generation
+                              // they were built under, so a save-layout the replica
+                              // emitted BEFORE applying the latest init (posting is
+                              // async) can be recognized as stale and dropped.
   let lastReplicaLayout = ''; // structural snapshot (theme excluded — it rides the light push)
+  let lastWorkingLayout = ''; // edit detector: the working copy at the last layout render.
+                              // Separate from lastReplicaLayout, which tracks REPLICA
+                              // DELIVERY and goes stale while the preview is suspended —
+                              // comparing against it re-marked a saved layout dirty on a
+                              // mere page selection after editing with the preview hidden.
 
   const replicaLayoutJson = () => JSON.stringify(Object.assign({}, state.layout, { theme: null }));
 
@@ -99,10 +154,17 @@
   }
 
   function replicaInit() {
+    // This IS the delivery any armed debounce was waiting for — disarm it, both so
+    // a 'ready' arriving mid-debounce can't double-init and so replicaTimer stays a
+    // truthful "settings edits are still undelivered" signal for the capture guard.
+    clearTimeout(replicaTimer);
+    replicaTimer = null;
+    initGen++;
     lastReplicaLayout = replicaLayoutJson();
     replicaPost({
       type: 'init',
       data: {
+        gen: initGen,
         layout: state.layout,
         widgets: state.widgets,
         sensors: state.sensors,
@@ -115,20 +177,42 @@
         page: selectedPage,
       },
     });
+    if (editMode) {
+      // The replica just (re)built from scratch: put it straight back into edit
+      // mode and restore the selection highlight (both are per-document state).
+      replicaPost({ type: 'edit-mode', on: true });
+      postReplicaSelection();
+    }
+  }
+
+  function postReplicaSelection() {
+    if (selectedSlot == null || !state.layout.pages[selectedPage]) return;
+    replicaPost({ type: 'select-slot', page: selectedPage, index: selectedSlot });
   }
 
   /** kind: 'layout' (debounced full re-init) | 'theme' (light token push). */
   function refreshReplica(kind) {
-    if (!replicaReady || previewStage.classList.contains('collapsed')) return;
     if (kind === 'theme') {
+      markDirty();
+      if (!replicaReady || previewStage.classList.contains('collapsed')) return;
       // seeds ride along so the replica's styled slots re-derive their overrides
       // against the edited theme instead of keeping stale (or losing) seeds.
       replicaPost({ type: 'theme', data: replicaTheme(), seeds: state.layout.theme || null });
       return;
     }
+    const json = replicaLayoutJson();
+    if (json !== lastWorkingLayout) { // a real structural edit, replica alive or not
+      lastWorkingLayout = json;
+      markDirty();
+    }
+    if (!replicaReady || previewStage.classList.contains('collapsed')) return;
     // Selection-only renders (nothing structural changed) just steer the replica to
-    // the selected page — a full re-init would needlessly reload every widget.
-    if (replicaLayoutJson() === lastReplicaLayout) {
+    // the selected page — a full re-init would needlessly reload every widget. The
+    // replica already shows exactly this layout, so an earlier armed re-init (e.g.
+    // an edit since reverted) has nothing left to deliver: disarm it.
+    if (json === lastReplicaLayout) {
+      clearTimeout(replicaTimer);
+      replicaTimer = null;
       replicaPost({ type: 'page', index: selectedPage });
       return;
     }
@@ -147,6 +231,54 @@
       el('previewHint').textContent = PREVIEW_HINT_DEFAULT;
       el('previewHint').classList.remove('warn');
       replicaInit();
+    } else if (m.type === 'page-changed') {
+      // The editing replica navigated (page add, edge-drop, capsule arrows): follow
+      // it, or the rail/detail/Add-widget keep operating on the page the preview no
+      // longer shows. Out-of-range indices (capture was dropped) are ignored; our
+      // own 'page' steering echoes back as an equal index and no-ops here.
+      // Same staleness rules as captures and selections: a navigation the OLD
+      // replica completed while settings edits are undelivered (armed debounce)
+      // or before applying the latest init (generation echo) indexes a layout we
+      // no longer hold — following it would point every page/widget edit at the
+      // wrong page after a reorder or deletion.
+      if (replicaTimer || (m.gen | 0) !== initGen) return;
+      const idx = m.index | 0;
+      if (idx !== selectedPage && idx >= 0 && idx < state.layout.pages.length) {
+        selectedPage = idx;
+        selectedSlot = null; // a follow-up slot-selected re-adopts if a tile moved with us
+        galleryOpen = false; // an open gallery was aimed at the page we just left
+        renderPageList();
+        renderEditorPanel();
+        // The strip and Page tab refreshed in place — don't steal the user's tab.
+        // Exception: the Widget tab was showing a selection that no longer exists;
+        // fall back to the page context instead of an orphaned hint.
+        if (activeTab === 'widget') setTab('page');
+      }
+    } else if (m.type === 'save-layout') {
+      // The interactive replica IS the editor (#32): its continuous persists are the
+      // edit stream. Captured into the working copy — unsaved until Save & apply —
+      // never forwarded to the real host.
+      captureReplicaLayout(m.layout, m.gen);
+    } else if (m.type === 'slot-selected') {
+      // Click-to-configure: the replica says which tile the user tapped (or where a
+      // mutation moved the already-selected one, or -1/-1 when it went away).
+      onReplicaSelection(m.page | 0, m.index | 0, m.instanceId || null, m.gen);
+    } else if (m.type === 'add-widget') {
+      // The replica's "+" zone hands the add over to us (#45): a modal palette
+      // inside the scaled strip covered the very layout being edited. Follow the
+      // page the tap happened on, then open the settings-side gallery.
+      // Same staleness rules as page-changed/slot-selected: a tap in the OLD
+      // replica (undelivered edits or an outdated generation) indexes a layout
+      // we no longer hold — following it would open the gallery on, and add the
+      // widget to, the wrong page after a reorder or deletion.
+      if (replicaTimer || (m.gen | 0) !== initGen) return;
+      const idx = m.index | 0;
+      if (idx !== selectedPage && idx >= 0 && idx < state.layout.pages.length) {
+        selectedPage = idx;
+        selectedSlot = null;
+        renderPageList();
+      }
+      openGallery();
     } else if (m.type === 'fetch' || m.type === 'ping' || m.type === 'media-list' || m.type === 'audio-get') {
       post({ type: 'preview-data', message: m });
     } else if (m.type === 'notifications-watch') {
@@ -157,9 +289,92 @@
       // on its loading spinner forever in the replica.
       if (m.on !== false) replicaPost({ type: 'notifications', data: sampleNotifications() });
     }
-    // Everything else (save-layout, media-control, actions, audio-set, sd-*, log) is
-    // dropped: the replica is a display, never a second writer or actor.
+    // Everything else (media-control, actions, audio-set, sd-*, log) is dropped:
+    // the replica edits the layout, but is never an actor for the outside world.
   });
+
+  // ---- WYSIWYG capture --------------------------------------------------------
+  // The replica shell edits its own copy of the layout and streams every mutation
+  // as a save-layout post. Adopt that copy as the working state and refresh the
+  // panels around the preview WITHOUT re-initing the replica — it already shows
+  // exactly this layout (the lastReplicaLayout snapshot swallows the echo).
+
+  function captureReplicaLayout(layout, gen) {
+    if (!layout || !Array.isArray(layout.pages)) return;
+    // A capture built under an older init generation comes from a document state
+    // we have since replaced: clearing replicaTimer happens when the init is
+    // POSTED, but the replica applies it asynchronously, and a gesture (or a
+    // deferred view-transition mutation) completing in that gap streams the OLD
+    // copy. The armed-timer guard below can't see it — the timer is already
+    // clear — so the generation echo is the authority: stale gen, stale capture.
+    if ((gen | 0) !== initGen) return;
+    // An armed re-init debounce means the settings side holds edits the replica has
+    // NOT received yet — this capture was built from a stale copy, and adopting it
+    // would silently revert those edits (and the still-armed timer would then
+    // re-init the replica as a pure echo, reloading every widget). Drop it: the
+    // imminent re-init repaints the replica from the settings truth, visibly
+    // superseding the replica gesture instead of corrupting the working copy.
+    if (replicaTimer) return;
+    state.layout = layout;
+    lastReplicaLayout = replicaLayoutJson();
+    lastWorkingLayout = lastReplicaLayout; // replica edits advance the edit baseline too
+    selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
+    markDirty();
+    renderPageList();
+    renderEditorPanel();
+  }
+
+  function onReplicaSelection(pageIdx, slotIdx, instanceId, gen) {
+    // An armed re-init debounce means the replica still shows a layout we have
+    // since edited: every index it emits — select AND deselect — references the
+    // OLD copy, and a mere existence check can bless the WRONG slot (delete slot
+    // 0 from the strip, tap the tile still showing old slot 1: our slot 1 is a
+    // different widget). Same rule as captureReplicaLayout: drop it — the
+    // imminent re-init repaints the replica and re-imposes our selection.
+    // The generation echo covers the post-to-apply gap the timer can't see, and
+    // unlike the instanceId check below it also protects LEGACY slots that have
+    // no id to verify: a matching generation proves the replica applied the
+    // current init, so its indices refer to the layout we hold right now.
+    if (replicaTimer || (gen | 0) !== initGen) return;
+    if (pageIdx < 0 || slotIdx < 0) {
+      if (selectedSlot === null) return;
+      selectedSlot = null;
+      renderEditorPanel();
+      return;
+    }
+    if (pageIdx === selectedPage && slotIdx === selectedSlot) return; // echo of our own select-slot
+    // Only adopt indices that exist in OUR copy. A tap can race a pending structural
+    // edit (e.g. the rail just deleted the page the replica still shows): its indices
+    // reference a layout we no longer hold, and adopting the slot index would render
+    // ANOTHER slot's properties. The imminent re-init resets the replica anyway.
+    const page = state.layout.pages[pageIdx];
+    if (!page || !(page.slots || [])[slotIdx]) return;
+    // Identity check for the residual window the timer can't see (an init posted
+    // but not yet applied by the iframe): when the replica names the tapped tile,
+    // adopt the indices only if OUR slot at that position is the same instance.
+    if (instanceId && (page.slots || [])[slotIdx].instanceId !== instanceId) return;
+    selectedPage = pageIdx;
+    selectedSlot = slotIdx;
+    galleryOpen = false; // the tap picked an existing widget — detail takes over
+    renderPageList();
+    renderEditorPanel();
+    setTab('widget'); // a real adoption (tap / palette add) — show the detail card
+  }
+
+  function markDirty() {
+    if (initializing) return;
+    editSeq++; // every edit bumps, even while already dirty — the save ack compares
+    if (dirty) return;
+    dirty = true;
+    el('save').classList.add('dirty');
+    el('save').title = 'You have unsaved changes';
+  }
+
+  function clearDirty() {
+    dirty = false;
+    el('save').classList.remove('dirty');
+    el('save').title = '';
+  }
 
   function sampleNotifications() {
     const now = Date.now();
@@ -173,16 +388,23 @@
   // The preview is a STRIP above the editor, not the centerpiece: fit the stage
   // width but never scale past native or past a strip height — unbounded fitting
   // rendered the panel BIGGER than 1280×400 on wide windows, eating most of the
-  // screen and pushing the whole editor into scroll (#27).
-  const PREVIEW_MAX_HEIGHT = 220;
+  // screen and pushing the whole editor into scroll (#27). The strip height
+  // follows the window (~30%, clamped 160–320): a fixed cap read "too small" on
+  // large screens and would dominate small ones. While "Edit layout" is on the
+  // strip IS the editing surface, so the cap rises to ~45% for usable targets —
+  // the same clamp logic, just a taller ceiling (#32).
   function fitReplica() {
     const width = previewStage.clientWidth || 1;
-    const scale = Math.min(width / 1280, PREVIEW_MAX_HEIGHT / 400, 1);
+    const maxH = editMode
+      ? Math.max(200, Math.min(430, Math.round(window.innerHeight * 0.45)))
+      : Math.max(160, Math.min(320, Math.round(window.innerHeight * 0.3)));
+    const scale = Math.min(width / 1280, maxH / 400, 1);
     previewFrame.style.transform = 'scale(' + scale + ')';
     previewFrame.style.marginLeft = Math.max(0, Math.round((width - 1280 * scale) / 2)) + 'px';
     previewStage.style.height = Math.round(400 * scale) + 'px';
   }
   new ResizeObserver(fitReplica).observe(previewStage);
+  window.addEventListener('resize', fitReplica); // stage width alone misses height-only resizes
 
   // A dead preview must say so, not sit there as a black slab: if the shell never
   // reports ready, surface it where the user is looking (#27 companion diagnostic).
@@ -216,19 +438,42 @@
     }
   });
 
+  // ---- WYSIWYG edit toggle ----------------------------------------------------
+  // Default ON: the replica takes pointer input and runs the shell's own edit mode
+  // (drag, resize, ✕, +, tap-to-configure). OFF returns the look-don't-touch strip.
+  function applyEditMode() {
+    const btn = el('editToggle');
+    btn.classList.toggle('on', editMode);
+    btn.setAttribute('aria-pressed', String(editMode));
+    previewStage.classList.toggle('interactive', editMode);
+    fitReplica();
+    replicaPost({ type: 'edit-mode', on: editMode });
+    if (editMode) postReplicaSelection();
+  }
+  el('editToggle').addEventListener('click', () => {
+    editMode = !editMode;
+    applyEditMode();
+  });
+
+  applyEditMode(); // stamp the initial classes (replica messages no-op until ready)
   previewFrame.src = 'index.html?preview=1';
   fitReplica();
   armReplicaWatchdog();
 
   // ---- top bar ----------------------------------------------------------------
 
-  el('save').addEventListener('click', () => post({ type: 'save-layout', layout: state.layout }));
+  el('save').addEventListener('click', () => {
+    const seq = ++saveSeq;
+    pendingSaves.set(seq, editSeq); // the ack clears dirty only if this is still current
+    post({ type: 'save-layout', layout: state.layout, seq });
+  });
   el('installWidget').addEventListener('click', () => post({ type: 'install-widget' }));
   el('openFolder').addEventListener('click', () => post({ type: 'open-widgets-folder' }));
   el('openMedia').addEventListener('click', () => post({ type: 'open-media-folder' }));
   el('addPage').addEventListener('click', () => {
     state.layout.pages.push({ name: 'Page ' + (state.layout.pages.length + 1), slots: [] });
     selectedPage = state.layout.pages.length - 1;
+    selectedSlot = null;
     renderAll();
   });
 
@@ -292,11 +537,6 @@
     const cur = state.layout.theme || {};
 
     container.appendChild(preview);
-    const note = document.createElement('p');
-    note.className = 'panel-hint';
-    note.textContent = 'Live preview — the panel itself updates when you hit Save & apply.';
-    container.appendChild(note);
-
     container.appendChild(bgColor('Accent', cur.accent || THEME_DEFAULTS.accent, (v) => setKey('accent', v)));
     container.appendChild(bgColor('Background', cur.background || THEME_DEFAULTS.background, (v) => setKey('background', v)));
     container.appendChild(bgColor('Text', cur.text || THEME_DEFAULTS.text, (v) => setKey('text', v)));
@@ -312,6 +552,8 @@
     refreshPreview();
   }
 
+  // Horizontal pages strip: one chip per page (name + widget count); click selects
+  // AND steers the replica there. The active chip carries the ◀ ▶ reorder arrows.
   function renderPageList() {
     const list = el('pageList');
     list.textContent = '';
@@ -324,15 +566,46 @@
       count.className = 'count';
       count.textContent = (page.slots || []).length;
       item.append(name, count);
-      item.addEventListener('click', () => { selectedPage = i; renderAll(); });
+      if (i === selectedPage) {
+        const left = chipMove('movePageLeft', '◀', 'Move page earlier', -1);
+        left.disabled = i === 0;
+        const right = chipMove('movePageRight', '▶', 'Move page later', 1);
+        right.disabled = i === state.layout.pages.length - 1;
+        item.append(left, right);
+      }
+      item.addEventListener('click', () => {
+        if (selectedPage !== i) selectedSlot = null; // selection is per page
+        selectedPage = i;
+        renderAll();
+      });
       list.appendChild(item);
     });
+  }
+
+  function chipMove(id, glyph, title, delta) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = id;
+    btn.className = 'chip-move';
+    btn.textContent = glyph;
+    btn.title = title;
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation(); // the chip's own click would re-select
+      movePage(delta);
+    });
+    return btn;
   }
 
   // ---- page editor ----------------------------------------------------------------
 
   function renderEditor() {
     refreshReplica('layout');
+    renderEditorPanel();
+  }
+
+  // Everything below/around the preview, WITHOUT poking the replica — used directly
+  // when the replica itself originated the change (capture) and already shows it.
+  function renderEditorPanel() {
     const page = state.layout.pages[selectedPage];
     const hasPage = !!page;
     el('editorEmpty').hidden = hasPage;
@@ -340,7 +613,14 @@
     el('addSlot').style.display = hasPage ? 'block' : 'none';
     el('pageBgWrap').style.display = hasPage ? 'block' : 'none';
     el('slotList').textContent = '';
-    if (!hasPage) return;
+    el('slotDetail').textContent = '';
+    if (!hasPage) {
+      galleryOpen = false;
+      renderWidgetGallery(null);
+      // Nothing to manage widget-wise; the empty state lives on the Page tab.
+      if (activeTab === 'widget') setTab('page');
+      return;
+    }
 
     renderBackgroundEditor(
       el('pageBg'),
@@ -353,7 +633,11 @@
 
     const nameInput = el('pageName');
     nameInput.value = page.name || '';
-    nameInput.oninput = () => { page.name = nameInput.value; renderPageList(); };
+    // Renames go through the structural refresh like every other layout edit: it
+    // arms the replica debounce, and the armed timer is exactly what makes
+    // captureReplicaLayout drop stale replica copies — a rename that only touched
+    // our side was silently reverted by the next replica gesture's capture.
+    nameInput.oninput = () => { page.name = nameInput.value; renderPageList(); refreshReplica('layout'); };
 
     // Two-tap confirm: the first tap arms the button (and auto-disarms), only a
     // second tap actually deletes — a page full of tuned widgets is easy to fat-finger.
@@ -375,24 +659,110 @@
       delete delBtn.dataset.armed;
       state.layout.pages.splice(selectedPage, 1);
       selectedPage = Math.max(0, selectedPage - 1);
+      selectedSlot = null;
       renderAll();
     };
-    el('movePageLeft').onclick = () => movePage(-1);
-    el('movePageRight').onclick = () => movePage(1);
 
-    el('addSlot').onclick = () => {
-      const first = state.widgets[0];
-      page.slots.push({
-        widgetId: first ? first.id : '',
-        size: first && first.supportedSlots && first.supportedSlots[0] ? first.supportedSlots[0] : 'quarter',
-        settings: {},
-      });
-      renderEditor();
-    };
+    el('addSlot').onclick = () => (galleryOpen ? closeGallery() : openGallery());
 
     page.slots = page.slots || [];
-    page.slots.forEach((slot, i) => el('slotList').appendChild(renderSlot(page, slot, i)));
+    if (selectedSlot !== null && !page.slots[selectedSlot]) selectedSlot = null; // stale index
+    renderSlotStrip(page);
+    renderSlotDetail(page);
+    renderWidgetGallery(page);
     renderCapacity(page);
+  }
+
+  // ---- add-widget gallery -----------------------------------------------------
+  // Settings-side picker (#45): the replica's modal palette covered the scaled
+  // layout being edited, so adds happen HERE — whether they start from the
+  // "+ Add widget" button (toggle: second click closes) or from the replica's
+  // "+" zone (the shell bounces that tap up as an add-widget message).
+
+  function openGallery() {
+    galleryOpen = true;
+    setTab('widget');
+    renderEditorPanel();
+  }
+
+  function closeGallery() {
+    galleryOpen = false;
+    renderEditorPanel();
+  }
+
+  // Mirror of the shell's defaultSizeFor: widest size that fits WITHOUT costing
+  // any currently-placing slot its spot. Legacy layouts can carry slots that
+  // already fail to place (over-full pages hide them) — they must not veto adds
+  // into the free space that IS visible (field bug: every gallery entry said
+  // "No room" while half the page sat empty).
+  function defaultSizeFor(page, widget) {
+    const widths = offeredWidths(widget).slice().reverse(); // widest first, shrink into the hole
+    const slots = (page.slots = page.slots || []);
+    const baseline = countUnplaced(slots);
+    const probe = { size: 'quarter' };
+    slots.push(probe);
+    let found = null;
+    outer:
+    for (const band of ['full', 'upper', 'lower']) {
+      for (const w of widths) {
+        probe.size = w + (band === 'full' ? '' : '-' + band);
+        if (countUnplaced(slots) === baseline) { found = probe.size; break outer; }
+      }
+    }
+    slots.pop();
+    return found;
+  }
+
+  function renderWidgetGallery(page) {
+    const wrap = el('widgetGallery');
+    const open = galleryOpen && !!page;
+    wrap.hidden = !open;
+    el('addSlot').classList.toggle('open', open);
+    el('addSlot').textContent = open ? '✕ Close' : '+ Add widget';
+    el('slotDetail').style.display = open ? 'none' : '';
+    wrap.textContent = '';
+    if (!open) return;
+    for (const widget of state.widgets) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'gallery-item';
+      const size = defaultSizeFor(page, widget);
+      const name = document.createElement('span');
+      name.className = 'g-name';
+      name.textContent = widget.name;
+      const by = document.createElement('span');
+      by.className = 'g-by';
+      by.textContent = size ? (widget.author || '') : 'No room on this page';
+      btn.append(name, by);
+      btn.disabled = !size;
+      btn.addEventListener('click', () => addWidgetToPage(page, widget));
+      wrap.appendChild(btn);
+    }
+    // A wall of disabled entries reads as "broken", not "full" — say it plainly.
+    if (![...wrap.children].some((b) => !b.disabled)) {
+      const note = document.createElement('p');
+      note.className = 'g-full panel-hint';
+      note.textContent = 'This page is full — remove a widget or add a page.';
+      wrap.prepend(note);
+    }
+  }
+
+  function addWidgetToPage(page, widget) {
+    const size = defaultSizeFor(page, widget); // sized against the page as it IS now
+    if (!size) return;
+    galleryOpen = false;
+    page.slots.push({
+      widgetId: widget.id,
+      size,
+      settings: {},
+      // Minted like the shell does: a positional tag could collide with an
+      // identity another slot froze earlier.
+      instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
+    });
+    selectedSlot = page.slots.length - 1;
+    setTab('widget');
+    renderPageList(); // the strip's widget count changed
+    renderEditor();
   }
 
   function movePage(delta) {
@@ -438,7 +808,70 @@
       cap.textContent += ' — ' + dropped + ' widget' + (dropped > 1 ? 's' : '') + ' won\'t fit and will be dropped';
   }
 
-  function renderSlot(page, slot, index) {
+  // ---- slot strip (compact chips) + detail panel ------------------------------------
+  // Master–detail: the strip lists this page's widgets (click to configure, ✕ to
+  // remove) and doubles as the selection path when the preview is hidden or dead;
+  // the detail panel shows ONLY the selected slot's properties.
+
+  const CHIP_WIDTH = { quarter: '¼', half: '½', 'three-quarter': '¾', full: 'Full' };
+  const CHIP_BAND = { full: '', upper: ' ▀', lower: ' ▄' };
+
+  function renderSlotStrip(page) {
+    const strip = el('slotList');
+    page.slots.forEach((slot, i) => {
+      const chip = document.createElement('div');
+      chip.className = 'slot-chip' + (i === selectedSlot ? ' active' : '');
+      const main = document.createElement('button');
+      main.type = 'button';
+      main.className = 'chip-main';
+      const w = widgetsById.get(slot.widgetId);
+      const name = document.createElement('span');
+      name.textContent = w ? w.name : slot.widgetId;
+      const size = document.createElement('span');
+      size.className = 'chip-size';
+      const parts = parseSize(slot.size);
+      size.textContent = CHIP_WIDTH[parts.width] + CHIP_BAND[parts.band];
+      main.append(name, size);
+      main.addEventListener('click', () => selectSlot(i));
+      chip.append(main, iconButton('✕', 'Remove', () => removeSlotAt(page, i), true));
+      strip.appendChild(chip);
+    });
+  }
+
+  function selectSlot(i) {
+    selectedSlot = selectedSlot === i ? null : i; // click the active chip to deselect
+    galleryOpen = false; // chip interaction takes the Widget tab over from the gallery
+    renderEditorPanel();
+    if (selectedSlot != null) setTab('widget'); // chip select shows the detail card
+    // Mirror into the replica (index -1 clears its highlight).
+    replicaPost({ type: 'select-slot', page: selectedPage, index: selectedSlot == null ? -1 : selectedSlot });
+  }
+
+  function removeSlotAt(page, i) {
+    page.slots.splice(i, 1);
+    if (selectedSlot !== null) {
+      if (selectedSlot === i) selectedSlot = null;
+      else if (selectedSlot > i) selectedSlot--;
+    }
+    renderEditor();
+  }
+
+  function renderSlotDetail(page) {
+    const host = el('slotDetail');
+    const slot = selectedSlot !== null ? page.slots[selectedSlot] : null;
+    if (!slot) {
+      const hint = document.createElement('p');
+      hint.className = 'panel-hint detail-hint';
+      hint.textContent = page.slots.length
+        ? 'Select a widget in the preview to configure it.'
+        : 'This page is empty. Add widgets with “+ Add widget” or the + zone in the preview.';
+      host.appendChild(hint);
+      return;
+    }
+    host.appendChild(renderSlotCard(page, slot, selectedSlot));
+  }
+
+  function renderSlotCard(page, slot, index) {
     const card = document.createElement('div');
     card.className = 'slot-card';
 
@@ -478,7 +911,7 @@
     }
     if (![...sizeSelect.options].some((o) => o.selected))
       sizeSelect.add(new Option(sizeLabel(slot.size), slot.size, false, true));
-    sizeSelect.onchange = () => { slot.size = sizeSelect.value; renderCapacity(page); };
+    sizeSelect.onchange = () => { slot.size = sizeSelect.value; renderEditor(); };
 
     // Hide this widget while a fullscreen game runs (its grid cell is kept).
     const gameWrap = document.createElement('label');
@@ -494,10 +927,12 @@
     gameWrap.append(gameCheck, document.createTextNode('🎮✕'));
 
     row.append(widgetSelect, sizeSelect, gameWrap,
-      iconButton('▲', 'Move up', () => moveSlot(page, index, -1)),
-      iconButton('▼', 'Move down', () => moveSlot(page, index, 1)),
-      iconButton('✕', 'Remove', () => { page.slots.splice(index, 1); renderEditor(); }, true));
+      iconButton('◀', 'Move earlier', () => moveSlot(page, index, -1)),
+      iconButton('▶', 'Move later', () => moveSlot(page, index, 1)),
+      iconButton('✕', 'Remove', () => removeSlotAt(page, index), true));
     card.appendChild(row);
+
+    card.appendChild(renderSlotStyle(slot));
 
     // property editors, sectioned by group where the widget declares them
     if (widget && widget.properties && widget.properties.length) {
@@ -515,11 +950,91 @@
         }
         const label = document.createElement('label');
         label.textContent = prop.label || prop.name;
-        grid.append(label, propEditor(prop, slot));
+        // One malformed property (e.g. an old host stripping manifest keys from the
+        // projection) must not take the whole panel down with it.
+        let editor;
+        try {
+          editor = propEditor(prop, slot);
+        } catch (e) {
+          editor = document.createElement('span');
+          editor.className = 'prop-error';
+          editor.textContent = (prop.label || prop.name || 'property') + ' — this control failed to render';
+        }
+        grid.append(label, editor);
       }
       card.appendChild(grid);
     }
     return card;
+  }
+
+  // Per-slot appearance overrides — THE appearance control for a widget (#42), the
+  // same seeds the on-panel 🎨 editor writes into def.style: checked keys re-derive
+  // this one widget's palette (contrast repair included); everything unchecked
+  // keeps following the global theme (Theme tab).
+  function renderSlotStyle(slot) {
+    const wrap = document.createElement('div');
+    wrap.className = 'slot-style';
+    const title = document.createElement('div');
+    title.className = 'section-title';
+    title.textContent = 'Appearance — overrides the theme for this widget only';
+    wrap.appendChild(title);
+
+    const setStyleKey = (key, value) => {
+      const s = slot.style || (slot.style = {});
+      if (value == null) delete s[key]; else s[key] = value;
+      if (!Object.keys(s).length) delete slot.style;
+      refreshReplica('layout');
+    };
+    const cur = slot.style || {};
+    const seeds = Object.assign({}, THEME_DEFAULTS, state.layout.theme || {});
+    const hex6 = (v, fb) => (/^#[0-9a-f]{6}$/i.test(v || '') ? v : fb);
+
+    for (const [key, labelText] of [['accent', 'Accent'], ['background', 'Background'], ['text', 'Text']]) {
+      const row = document.createElement('div');
+      row.className = 'style-row';
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.checked = cur[key] != null;
+      const label = document.createElement('label');
+      label.textContent = labelText;
+      const color = document.createElement('input');
+      color.type = 'color';
+      color.disabled = !check.checked;
+      color.value = hex6(cur[key], hex6(seeds[key], '#4cc2ff'));
+      check.onchange = () => {
+        color.disabled = !check.checked;
+        setStyleKey(key, check.checked ? color.value : null);
+      };
+      color.oninput = () => setStyleKey(key, color.value);
+      row.append(check, label, color);
+      wrap.appendChild(row);
+    }
+
+    const row = document.createElement('div');
+    row.className = 'style-row';
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    const label = document.createElement('label');
+    label.textContent = 'Panel opacity';
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.min = 15; range.max = 100; range.step = 1;
+    const out = document.createElement('output');
+    check.checked = cur.panelAlpha != null;
+    range.disabled = !check.checked;
+    range.value = String(Math.round((cur.panelAlpha != null ? cur.panelAlpha : seeds.panelAlpha) * 100));
+    out.value = range.value + '%';
+    check.onchange = () => {
+      range.disabled = !check.checked;
+      setStyleKey('panelAlpha', check.checked ? Number(range.value) / 100 : null);
+    };
+    range.oninput = () => {
+      out.value = range.value + '%';
+      setStyleKey('panelAlpha', Number(range.value) / 100);
+    };
+    row.append(check, label, range, out);
+    wrap.appendChild(row);
+    return wrap;
   }
 
   function moveSlot(page, index, delta) {
@@ -527,6 +1042,8 @@
     if (target < 0 || target >= page.slots.length) return;
     const [slot] = page.slots.splice(index, 1);
     page.slots.splice(target, 0, slot);
+    if (selectedSlot === index) selectedSlot = target;       // selection follows its slot
+    else if (selectedSlot === target) selectedSlot = index;  // ±1 swap displaced the neighbor
     renderEditor();
   }
 
@@ -612,7 +1129,11 @@
           add.className = 'ghost';
           add.textContent = '+ Add sensor';
           add.addEventListener('click', () => {
-            items.push({ sensorId: (state.sensors[0] || {}).id || '', color: '#76b900' });
+            // Seed from the sensors this property actually accepts — the first
+            // sensor overall is usually a temperature, and a Fan-typed picker
+            // preselecting it reads as "selected fans not found" (Codex, #38).
+            const pool = (state.sensors || []).filter((s) => !prop.sensor_type || s.type === prop.sensor_type);
+            items.push({ sensorId: (pool[0] || {}).id || '', color: '#76b900' });
             commit();
             renderList();
           });
@@ -785,17 +1306,38 @@
         return select;
       }
       case 'list': { // structured rows — the user never types a delimited string
+        // A projection without `fields` (old hosts stripped them from the manifest on
+        // the way here) cannot back a structured editor: guessed keys would corrupt
+        // the stored value. Fall back to the legacy single text input instead.
+        if (!Array.isArray(prop.fields) || !prop.fields.length) {
+          const input = document.createElement('input');
+          input.type = 'text';
+          if (prop.placeholder) input.placeholder = String(prop.placeholder);
+          input.value = Array.isArray(current)
+            ? current.map((x) => (x && typeof x === 'object') ? Object.values(x).join('=') : String(x)).join(', ')
+            : (current != null ? String(current) : '');
+          input.oninput = () => set(input.value);
+          return input;
+        }
         const wrap = document.createElement('div');
         wrap.className = 'factory list-editor';
-        const fields = Array.isArray(prop.fields) && prop.fields.length
-          ? prop.fields
-          : [{ key: 'value', label: 'Value', type: 'text' }];
+        const fields = prop.fields;
 
-        // Accept the stored array, or convert a legacy "A=B, C=D" delimited string from
-        // an old layout into rows mapped onto the first two fields.
+        // Accept the stored array; migrate a legacy JSON-ARRAY string (the old
+        // Control Deck stored its buttons that way — splitting it as "A=B" pairs
+        // rendered JSON fragments as rows and the first edit wrote them back,
+        // corrupting the config); or convert a legacy "A=B, C=D" delimited string
+        // into rows mapped onto the first two fields. Extra keys on parsed
+        // objects (e.g. the old deck's `kind`) ride along untouched — widgets
+        // that honor them keep working.
         let items;
-        if (Array.isArray(current)) {
-          items = current.filter((x) => x && typeof x === 'object').map((x) => Object.assign({}, x));
+        let legacyJson = null;
+        if (typeof current === 'string' && current.trim().startsWith('[')) {
+          try { legacyJson = JSON.parse(current); } catch (e) { legacyJson = null; }
+          if (!Array.isArray(legacyJson)) legacyJson = null;
+        }
+        if (Array.isArray(current) || legacyJson) {
+          items = (legacyJson || current).filter((x) => x && typeof x === 'object').map((x) => Object.assign({}, x));
         } else if (typeof current === 'string' && current.trim()) {
           items = current.split(',').map((pair) => {
             const eq = pair.indexOf('=');
@@ -835,19 +1377,30 @@
             }, true));
             wrap.appendChild(row);
           });
-          const add = document.createElement('button');
-          add.className = 'ghost';
-          add.textContent = '+ Add ' + (prop.itemLabel || 'item');
-          add.addEventListener('click', () => {
-            const item = {};
-            for (const field of fields) item[field.key] = field.type === 'color' ? '#4cc2ff' : '';
-            items.push(item);
-            commit();
-            renderList();
-            const first = wrap.querySelector('.factory-row:last-of-type input');
-            if (first) first.focus();
-          });
-          wrap.appendChild(add);
+          // A declared maxItems caps the editor too — rows the widget will never
+          // render must not be addable (they'd look configured and do nothing).
+          const cap = Math.max(0, Math.round(Number(prop.maxItems) || 0));
+          if (cap && items.length >= cap) {
+            const full = document.createElement('p');
+            full.className = 'panel-hint';
+            full.textContent = 'Limit reached — this widget shows at most ' + cap + ' ' +
+              (prop.itemLabel || 'item') + 's.';
+            wrap.appendChild(full);
+          } else {
+            const add = document.createElement('button');
+            add.className = 'ghost';
+            add.textContent = '+ Add ' + (prop.itemLabel || 'item');
+            add.addEventListener('click', () => {
+              const item = {};
+              for (const field of fields) item[field.key] = field.type === 'color' ? '#4cc2ff' : '';
+              items.push(item);
+              commit();
+              renderList();
+              const first = wrap.querySelector('.factory-row:last-of-type input');
+              if (first) first.focus();
+            });
+            wrap.appendChild(add);
+          }
         };
         renderList();
         return wrap;

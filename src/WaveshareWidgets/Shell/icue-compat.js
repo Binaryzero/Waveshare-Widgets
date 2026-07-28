@@ -90,17 +90,53 @@
       return (translations && translations[key] != null) ? String(translations[key]) : String(key);
     };
   }
-  fetch('translation.json')
-    .then((r) => (r.ok ? r.json() : null))
-    .then((json) => {
-      if (json && typeof json === 'object') {
-        // Either a flat {key: text} map or nested per-language tables.
-        translations = (json.en && typeof json.en === 'object') ? json.en : json;
-      }
-    })
-    .catch(() => { /* no translation file */ })
-    .finally(() => { trReady = true; maybeInit(); });
-  setTimeout(() => { if (!trReady) { trReady = true; maybeInit(); } }, 1500);
+  // Only iCUE packages carry translation.json — fetching it unconditionally put a
+  // FILE_NOT_FOUND console line into every stock widget on every load (#36). The
+  // reliable tell for an iCUE package is its x-icue-* meta declarations, so wait
+  // for the DOM and fetch only when they are present.
+  function loadTranslations() {
+    // An iCUE package WITHOUT a translation.json 404s this probe on every single
+    // load — with per-widget re-inits that reads as endless console spam (#36).
+    // Remember the miss for the session and skip the fetch. Keyed per DOCUMENT
+    // PATH, not per origin: several documents can share an origin (the shell and
+    // settings pages both live on app.wsw) and one document's miss must never
+    // suppress another's real translation file.
+    let missKey = null;
+    try {
+      missKey = 'ww-tr-missing:' + location.pathname;
+      if (sessionStorage.getItem(missKey) === '1') { trReady = true; maybeInit(); return; }
+    } catch (e) { missKey = null; /* storage unavailable: probe as before */ }
+    fetch('translation.json')
+      .then((r) => {
+        if (r.ok) return r.json();
+        if (missKey) { try { sessionStorage.setItem(missKey, '1'); } catch (e) { /* ignore */ } }
+        return null;
+      })
+      .then((json) => {
+        if (json && typeof json === 'object') {
+          // Either a flat {key: text} map or nested per-language tables.
+          translations = (json.en && typeof json.en === 'object') ? json.en : json;
+        }
+      })
+      // A rejected fetch is NOT a missing file: transient navigation/network
+      // failures must stay retryable, or one hiccup mutes translations for the
+      // whole session. Only the definitive not-ok response above memoizes.
+      .catch(() => { /* transient failure: no memo, retry on next load */ })
+      .finally(() => { trReady = true; maybeInit(); });
+    setTimeout(() => { if (!trReady) { trReady = true; maybeInit(); } }, 1500);
+  }
+  function armTranslations() {
+    // iCUE packages may use tr() + translation.json WITHOUT declaring any property
+    // metas (translations are documented independently in ICUE-API-REFERENCE), so
+    // metas alone can't gate the fetch. The reliable NEGATIVE tell is our own
+    // widget-api script tag — native widgets carry it, iCUE packages never do.
+    const icueMetas = document.querySelector('meta[name="x-icue-property"], meta[name="x-icue-groups"]');
+    const nativeApi = document.querySelector('script[src*="widget-api.js"]');
+    if (icueMetas || !nativeApi) loadTranslations();
+    else { trReady = true; maybeInit(); }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', armTranslations);
+  else armTranslations();
 
   // --- Qt-style signals ---
 

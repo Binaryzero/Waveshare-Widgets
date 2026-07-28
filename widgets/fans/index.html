@@ -47,11 +47,12 @@
   }
   .imp { width: clamp(34px, 13vh, 60px); aspect-ratio: 1; }
   .frame { fill: none; stroke: var(--control-bg); stroke-width: 4; }
-  /* The impeller color setting only lands here when it differs from the manifest
-   * default; otherwise the theme accent shows through. Spin period is the per-card
-   * --spin variable, set from JS via the RPM -> period legibility remap. */
+  /* Impeller tint follows the theme accent (single-source appearance). The per-card
+   * --fan-color is a DATA color: set from JS only for fans the user picked in the
+   * "Fans shown" list, where the color identifies that fan. Spin period is the
+   * per-card --spin variable, set from JS via the RPM -> period legibility remap. */
   .rotor {
-    fill: var(--imp-color, var(--accent));
+    fill: var(--fan-color, var(--accent));
     transform-box: view-box;
     transform-origin: center;
     animation: fan-spin var(--spin, 1.2s) linear infinite;
@@ -143,15 +144,15 @@
   'use strict';
   const $ = (id) => document.getElementById(id);
 
-  // Manifest defaults — the host merges these into settings, so "user changed it"
-  // means "differs from the default". Only then does the property override the
-  // theme tokens (inline CSS variable); at default the token chain shows through.
-  const DEF = { impellerColor: '#00d4ff' };
-  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
-  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
-  function setVar(name, value) {
-    if (value) document.body.style.setProperty(name, value);
-    else document.body.style.removeProperty(name);
+  // "Fans shown" (sensors-factory): [{sensorId, color}] in the user's order. Empty
+  // means auto — every Fan-type sensor, sorted by device/name. The per-item color
+  // is a DATA color (identifies that fan); it never restyles the widget chrome.
+  let selection = [];
+  function readSelection(settings) {
+    const raw = Array.isArray(settings.fans) ? settings.fans : [];
+    return raw
+      .filter((x) => x && typeof x === 'object' && typeof x.sensorId === 'string' && x.sensorId)
+      .map((x) => ({ sensorId: x.sensorId, color: /^#[0-9a-f]{6}$/i.test(x.color || '') ? x.color : '' }));
   }
 
   // Legibility remap: real per-rev speed would strobe on screen, so the observed
@@ -265,7 +266,7 @@
   }
 
   // ---- cards --------------------------------------------------------------------
-  function buildCard(sensor) {
+  function buildCard(sensor, color) {
     const el = document.getElementById('cardT').content.firstElementChild.cloneNode(true);
     const c = {
       el,
@@ -281,13 +282,16 @@
       lastText: null,
       editing: false,
     };
+    // Data color from the "Fans shown" list — identifies the picked fan. Absent
+    // (auto mode, or no color chosen) the rotor falls through to the theme accent.
+    if (color) el.style.setProperty('--fan-color', color);
     c.nameBtn.textContent = displayName(sensor);
     c.nameBtn.addEventListener('click', () => beginRename(c));
     cards.set(sensor.id, c);
     return el;
   }
 
-  function buildGrid(fans) {
+  function buildGrid(fans, colorOf) {
     cards.clear();
     const groups = new Map();
     for (const f of fans) {
@@ -309,7 +313,7 @@
       sec.appendChild(h);
       const wrap = document.createElement('div');
       wrap.className = 'cards';
-      for (const f of groups.get(key)) wrap.appendChild(buildCard(f));
+      for (const f of groups.get(key)) wrap.appendChild(buildCard(f, colorOf(f.id)));
       sec.appendChild(wrap);
       frag.appendChild(sec);
     }
@@ -344,20 +348,60 @@
 
   // ---- render loop (driven by the host's ~2s sensor push, never a timer) --------
   function update() {
-    const fans = (WW.sensors || []).filter((s) => s && s.type === 'Fan');
-    if (!fans.length) {
+    const all = (WW.sensors || []).filter((s) => s && s.type === 'Fan');
+    if (!all.length) {
+      // Diagnose, don't shrug: the two real-world reasons for zero Fan sensors are
+      // distinguishable and each has a different remedy the user can act on.
       if (WW.status && WW.status.elevated) {
-        showState('none', 'No fan sensors',
-          'This board doesn’t expose fan sensors — nothing to show here.');
+        showState('none', 'No fan readings from this system',
+          'Motherboard fan headers are read from the SuperIO chip via the PawnIO ' +
+          'driver — install PawnIO (pawnio.eu) if it isn’t, or this board’s chip may ' +
+          'be unsupported. USB fan/AIO controllers appear when the hub supports them.');
       } else {
-        showState('setup', 'Fan sensors need elevation',
-          'For fan and pump RPM install PawnIO and run as administrator.');
+        // Hard Windows constraint, stated once and only when there is nothing to
+        // show: an unelevated process cannot read motherboard fan headers at all.
+        showState('none', 'No fan readings available to this app',
+          'Windows only exposes motherboard fan headers to an elevated process ' +
+          '(with the PawnIO driver). GPU and USB fan/AIO hub fans appear without it.');
       }
       return;
     }
+    let fans;
+    let missing = 0;
+    if (selection.length) {
+      // User-picked fans, in the order they arranged them in Settings. The editor
+      // permits picking the same fan twice; duplicate ids would fight over one
+      // card (the map is keyed by id) and inflate the spinning tally — the first
+      // pick wins, keeping its color.
+      const seen = new Set();
+      fans = selection.map((it) => all.find((s) => s.id === it.sensorId)).filter(Boolean)
+        .filter((f) => (seen.has(f.id) ? false : (seen.add(f.id), true)));
+      // Distinct picks absent from the snapshot: a chosen fan disappeared
+      // (unplugged header, hub offline, lost elevation). Dropping it silently
+      // let the pill read "1/1 spinning" for a two-fan selection.
+      missing = new Set(selection.map((it) => it.sensorId)).size - fans.length;
+      if (!fans.length) {
+        showState('none', 'Selected fans not found',
+          'None of the fans picked in this widget’s settings are reporting — ' +
+          'open Settings and pick from the fans this system exposes.');
+        return;
+      }
+    } else {
+      // Auto mode: every fan, in a stable device/name order (snapshot order can
+      // shuffle between providers; sorting keeps cards from jumping around).
+      fans = all.slice().sort((a, b) =>
+        String(a.device || '').localeCompare(String(b.device || '')) ||
+        String(a.name || '').localeCompare(String(b.name || '')) ||
+        String(a.id).localeCompare(String(b.id)));
+    }
     showMain();
-    const sig = fans.map((f) => f.id).join('|');
-    if (sig !== curSig) { curSig = sig; buildGrid(fans); }
+    const colorOf = (id) => {
+      const it = selection.find((x) => x.sensorId === id);
+      return (it && it.color) || '';
+    };
+    // Signature includes the data colors so a color change in Settings rebuilds.
+    const sig = fans.map((f) => f.id + '@' + colorOf(f.id)).join('|');
+    if (sig !== curSig) { curSig = sig; buildGrid(fans, colorOf); }
     let pumpsDown = 0, spinning = 0;
     for (const f of fans) {
       const c = cards.get(f.id);
@@ -367,6 +411,7 @@
       if (!c.stopped) spinning++;
     }
     if (pumpsDown) setPill('Check pump', 'err');
+    else if (missing) setPill(spinning + '/' + fans.length + ' spinning · ' + missing + ' missing', 'warn');
     else setPill(spinning + '/' + fans.length + ' spinning', 'muted');
   }
 
@@ -387,7 +432,9 @@
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
-    setVar('--imp-color', changed(s.impellerColor, DEF.impellerColor) ? s.impellerColor : '');
+    // Settings re-delivery (ww-init) is where a changed "Fans shown" list lands;
+    // the grid signature includes ids + colors, so tick() rebuilds as needed.
+    selection = readSelection(s);
     if (!started) {   // repeated ww-init must not stack listeners
       started = true;
       document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });

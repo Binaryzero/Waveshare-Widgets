@@ -51,9 +51,7 @@
     line-height: 1.15;
   }
   .tile .label {
-    /* Set from settings only when moved off the manifest default; falls through
-     * to the theme's --text token otherwise. */
-    color: var(--label-color, var(--text));
+    color: var(--text);
     font-size: calc(clamp(9px, 3.2vh, 14px) * var(--label-scale, 1));
     max-width: 94%;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -77,17 +75,6 @@
   'use strict';
   const cfg = { columns: 0 };
   let items = [];
-
-  // Manifest defaults — the host merges these into settings, so "user changed it"
-  // means "differs from the default". Only then does the property override the
-  // theme tokens (inline CSS variable); at default the token chain shows through.
-  const DEF = { labelColor: '#e8ecf2' };
-  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
-  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
-  function setVar(name, value) {
-    if (value) document.body.style.setProperty(name, value);
-    else document.body.style.removeProperty(name);
-  }
 
   // Leading emoji (incl. variation selectors, skin tones, and ZWJ sequences).
   const EMOJI_RE = /^(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier})*)/u;
@@ -171,7 +158,8 @@
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
-    setVar('--label-color', changed(s.labelColor, DEF.labelColor) ? s.labelColor : '');
+    // Appearance comes from the theme tokens (global theme or the per-slot style
+    // override) — legacy labelColor keys in old layouts are deliberately ignored.
     document.body.style.setProperty('--label-scale', String((Number(s.labelSize) || 100) / 100));
     cfg.columns = Math.max(0, Math.min(8, Math.round(Number(s.columns) || 0)));
     items = normalizeItems(s.items);

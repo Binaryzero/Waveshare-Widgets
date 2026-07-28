@@ -282,6 +282,15 @@ body.editing .edit-overlay { display: block; }
 
 /* Slot being dragged + the slot currently under the finger. */
 .slot.drag-src { opacity: 0.35; }
+
+/* Free-space landing spot: where the dragged widget will actually be placed. */
+.page .cell-hint {
+  border: 2px dashed var(--accent, #4cc2ff);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent, #4cc2ff) 10%, transparent);
+  pointer-events: none;
+  z-index: 5;
+}
 .slot.drop-target .edit-overlay {
   border-style: solid;
   border-color: var(--accent, #4cc2ff);
@@ -294,6 +303,21 @@ body.editing .edge.drop-page {
 body.editing .edge.right.drop-page {
   background: linear-gradient(to left, color-mix(in srgb, var(--accent, #4cc2ff) 30%, transparent), transparent);
 }
+
+/* Palette full-page notice: spans the grid, reads as a state, not an error. */
+#paletteGrid .p-full {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: var(--text-muted, #8b93a5);
+  font-size: 14px;
+  padding: 6px 0;
+}
+
+/* While editing, the edge zones must never sit between the finger and a tile's
+ * corner controls (field report: a right-column tile's size chips were dead under
+ * the zone). They return as cross-page drop targets only while a drag is live. */
+body.editing .edge { pointer-events: none; opacity: 0.25; }
+body.editing.dragging .edge { pointer-events: auto; opacity: 0.85; }
 
 /* Fixed-position ghost that follows the finger during a drag. */
 #dragGhost {
@@ -431,3 +455,18 @@ body.editing.dragging .edge { pointer-events: auto; }
 }
 .edit-overlay .style { bottom: 4px; left: 4px; }
 .slot.style-editing .edit-overlay { border-color: var(--accent, #4cc2ff); border-style: solid; }
+
+/* WYSIWYG selection (settings replica): the slot whose properties the settings
+ * window's detail panel is showing. WHITE, not accent — the accent tints half
+ * the screen already, and the selection has to be findable among four identical
+ * widgets at preview scale (field report). A spotlight dims everything else. */
+body.editing .slot.selected .edit-overlay {
+  border-style: solid;
+  border-color: #ffffff;
+  background: color-mix(in srgb, #ffffff 10%, transparent);
+  box-shadow: inset 0 0 0 3px #ffffff, 0 0 18px rgba(255, 255, 255, 0.35);
+}
+body.preview.editing .slot, body.preview.editing .add-zone { transition: opacity 0.15s ease; }
+body.preview.editing.has-selection .slot:not(.selected),
+body.preview.editing.has-selection .add-zone { opacity: 0.45; }
+body.preview.editing.has-selection .slot.selected { z-index: 4; }

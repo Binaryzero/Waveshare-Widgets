@@ -26,7 +26,15 @@ public sealed class WidgetManifest
 }
 
 /// <summary>A user-configurable widget setting, declared in the manifest and rendered by the host.
-/// Types: text, number, slider, color, select, sensor.</summary>
+/// Types: text, number, slider, color, select, sensor, location, list (see WIDGET-SPEC).
+///
+/// This class sits in the middle of a round-trip — manifest.json is deserialized here and
+/// re-serialized to the settings window — so ANY schema key it doesn't carry is silently
+/// stripped in the field. That is exactly what happened to the list-type keys below: the
+/// settings window received lists with no field definitions, the editor threw, and whole
+/// property panels vanished on real installs while harness fixtures (raw JS, no C# in the
+/// path) stayed green. The extension-data map is the safety net: unknown keys now ride
+/// through untouched, and tools/ManifestRoundTrip in CI fails the build on any loss.</summary>
 public sealed class WidgetProperty
 {
     [JsonPropertyName("name")] public string Name { get; set; } = "";
@@ -41,4 +49,21 @@ public sealed class WidgetProperty
 
     /// <summary>Settings-UI section this property belongs to (iCUE x-icue-groups).</summary>
     [JsonPropertyName("group")] public string? Group { get; set; }
+
+    /// <summary>Row field definitions for the list type ([{key, label, type, placeholder}]).
+    /// Pass-through data — the settings window is the only consumer.</summary>
+    [JsonPropertyName("fields")] public JsonNode? Fields { get; set; }
+
+    /// <summary>Noun for the list type's add-row button ("Add host").</summary>
+    [JsonPropertyName("itemLabel")] public string? ItemLabel { get; set; }
+
+    /// <summary>Expected-format hint for text inputs — the sanctioned place to teach syntax.</summary>
+    [JsonPropertyName("placeholder")] public string? Placeholder { get; set; }
+
+    /// <summary>Host-provided dropdown source for selects (e.g. "sd-profiles").</summary>
+    [JsonPropertyName("optionsSource")] public string? OptionsSource { get; set; }
+
+    /// <summary>Any manifest key this model doesn't know yet survives the round-trip here
+    /// instead of being stripped on its way to the settings window.</summary>
+    [JsonExtensionData] public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
 }

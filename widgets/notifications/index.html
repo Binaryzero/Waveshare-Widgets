@@ -75,7 +75,7 @@
     font-weight: 800;
     letter-spacing: 0.5px;
     text-transform: uppercase;
-    color: var(--app-color, var(--accent));
+    color: var(--accent);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -158,17 +158,6 @@
   'use strict';
   const $ = (id) => document.getElementById(id);
 
-  // Manifest defaults — the host merges these into settings, so "user changed it"
-  // means "differs from the default". Only then does the property override the
-  // theme tokens (inline CSS variable); at default --accent shows through.
-  const DEF = { appColor: '#4cc2ff' };
-  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
-  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
-  function setVar(name, value) {
-    if (value) document.body.style.setProperty(name, value);
-    else document.body.style.removeProperty(name);
-  }
-
   // Per-instance persistence (mutes, privacy eye): localStorage is per-ORIGIN and
   // all notification instances share one virtual host, so keys carry the slot tag
   // (the stock countdown's INSTANCE pattern) — two tiles keep independent mutes.
@@ -210,7 +199,8 @@
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
-    setVar('--app-color', changed(s.appColor, DEF.appColor) ? s.appColor : '');
+    // App-name color comes from the theme's --accent (global theme or the
+    // per-slot style override) — legacy appColor keys are ignored.
 
     // Demand-gated host polling: watch on init (idempotent), host stops when no
     // widget is watching. A re-init may already carry the latest payload.

@@ -17,6 +17,11 @@ internal static class AppPaths
     /// <summary>User media library (Gallery widget etc.), served as https://media.wsw/.</summary>
     public static string MediaDir { get; } = Path.Combine(DataDir, "media");
 
+    /// <summary>Persisted widget-id → virtual-host assignments. Hosts are browser
+    /// ORIGINS (localStorage keys, credentials); once assigned they must never
+    /// change or be handed to a different widget.</summary>
+    public static string HostMapFile { get; } = Path.Combine(DataDir, "widget-hosts.json");
+
     /// <summary>Web assets for the dashboard shell page, shipped next to the exe.</summary>
     public static string ShellDir { get; } = Path.Combine(AppContext.BaseDirectory, "Shell");
 

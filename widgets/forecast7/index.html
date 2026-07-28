@@ -172,17 +172,6 @@
   let failStreak = 0;
   let pendingRefresh = false;
 
-  // Manifest defaults — the host merges these into settings, so "user changed it"
-  // means "differs from the default". Only then does the property override the
-  // theme token; at default the theme's accent shows through.
-  const DEF = { accentColor: '#4cc2ff' };
-  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
-  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
-  function setVar(name, value) {
-    if (value) document.body.style.setProperty(name, value);
-    else document.body.style.removeProperty(name);
-  }
-
   function applySettings(s) {
     // Anything that isn't explicitly glass/transparent renders solid, covering
     // unset AND out-of-spec values.
@@ -190,7 +179,8 @@
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
-    setVar('--accent', changed(s.accentColor, DEF.accentColor) ? s.accentColor : '');
+    // Accent comes from the theme tokens (global theme or the per-slot style
+    // override) — legacy accentColor keys in old layouts are deliberately ignored.
   }
 
   // Exactly one overlay (or none) is visible at a time; the data layer hides

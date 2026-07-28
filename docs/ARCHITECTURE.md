@@ -72,15 +72,18 @@ process tree is unacceptable — at the cost of arbitrary HTML widgets).
 | Tier | Source | Needs |
 |---|---|---|
 | Always | Clock (JS), performance counters (`sys:*`), ACPI thermal zones (`sys:thermal:*`), memory, media, weather | nothing |
-| Unelevated LHM | GPU temps/load/VRAM (vendor user-mode DLLs), storage, memory | nothing |
-| Elevated LHM | CPU core temps, fans, voltages, motherboard/SuperIO | admin + PawnIO driver |
+| Unelevated LHM | GPU temps/load/VRAM (vendor user-mode DLLs), storage, memory, USB fan/AIO controllers and digital PSUs (user-mode HID: fan/pump RPM) | nothing |
+| Elevated LHM | CPU core temps, motherboard/SuperIO fan headers, voltages | admin **+** PawnIO driver — both; either alone yields nothing |
 
 The ACPI thermal-zone tier exists because Windows offers no driver-free CPU-core
 temperature API: the zones are firmware-defined and vary in accuracy, but they are the
 best "no extra software" approximation, and the stock CPU widget falls back to them
 automatically. LibreHardwareMonitorLib must be ≥ 0.9.6 — earlier packages embed the
 WinRing0 driver, which Defender quarantines and the Windows 11 vulnerable-driver
-blocklist refuses to load (symptom: no CPU temps even when elevated).
+blocklist refuses to load (symptom: no CPU temps even when elevated). 0.9.6 bundles no
+driver at all: it talks to hardware exclusively through the separately installed PawnIO
+driver, whose device only elevated processes can open — so "installed PawnIO but not
+elevated" and "elevated without PawnIO" both look like missing sensors, silently.
 
 Widgets can check `WW.status.elevated` and degrade (the stock CPU widget shows a hint
 instead of a blank temperature).

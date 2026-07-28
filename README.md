@@ -32,7 +32,8 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   (image/video/gradient, AVIF included) shows through widgets' transparent
   background style.
 - **Sensors** from [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
-  (CPU/GPU/memory/storage/motherboard) plus zero-elevation fallbacks (performance
+  (CPU/GPU/memory/storage/motherboard, plus USB fan/AIO controllers and digital
+  PSUs) plus zero-elevation fallbacks (performance
   counters, memory status), Bluetooth/laptop battery levels via Windows PnP,
   media now-playing + transport control via Windows
   (`GlobalSystemMediaTransportControls`), and anything a widget fetches itself
@@ -48,9 +49,11 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
 - **Settings UI**: tray → **Settings…** opens a visual editor for pages, slots, and
   every widget's declared properties (colors, sliders, sensor pickers, structured
   lists) — no JSON editing required — plus the Theme panel with a live preview.
-- **Twenty-three stock widgets**: CPU, GPU, Clock, Countdown, Now Playing, Weather,
+- **Twenty-four stock widgets**: CPU, GPU, Clock, Countdown, Now Playing, Weather,
   7-Day Forecast, Weather Radar, Reddit Photos, Ping Monitor, iFrame, Stream Deck
-  mirror (live Virtual Stream Deck with clickable keys), Philips Hue (CLIP v2 + v1),
+  mirror (live Virtual Stream Deck with clickable keys), Control Deck (a touch
+  button grid — launch apps, open URLs, send hotkeys, control media; no Stream
+  Deck or iCUE required), Philips Hue (CLIP v2 + v1),
   Battery, Gallery, YouTube, Twitch Chat, Launch App, Sensor Chart, Volume mixer,
   Fans, Notifications (Windows toast mirror with per-app mute and a privacy blur —
   note Windows only grants notification access to packaged (MSIX) installs, so on
@@ -96,18 +99,26 @@ The app lives in the system tray. Right-click it for: **Settings…** (the layou
 widget-property editor), reload, open widgets folder, install widget packages, pick
 the display, and start-with-Windows.
 
-### About CPU temperature
+### About CPU temperature and fan RPM
 
-Windows has **no driver-free API for CPU core temperature** — every monitoring tool
-(HWiNFO, AIDA64, Afterburner, Fan Control) ships a kernel driver for it. This app
-handles that in tiers:
+Windows has **no driver-free API for CPU core temperature or motherboard fan headers** —
+every monitoring tool (HWiNFO, AIDA64, Afterburner, Fan Control) ships a kernel driver
+for them. This app handles that in tiers:
 
-1. **Zero-install (default):** it reads Windows' built-in ACPI **thermal zone**
-   counters. On many boards this tracks the CPU package well; on some desktops the
-   zone is missing or coarse. No admin, no drivers.
-2. **Accurate CPU cores/fans/voltages:** install [PawnIO](https://pawnio.eu/) (the
-   Microsoft-attested, sandboxed driver also used by Fan Control, LibreHardwareMonitor
-   and OpenRGB) and run the app **as administrator**.
+1. **Zero-install (default):** CPU temperature comes from Windows' built-in ACPI
+   **thermal zone** counters (on many boards this tracks the CPU package well; on some
+   desktops the zone is missing or coarse). Fan RPMs appear for GPU fans and for USB
+   fan/AIO controllers (NZXT, Aquacomputer, Corsair Commander/Hydro, digital PSUs, …).
+   No admin, no drivers.
+2. **CPU core temps + motherboard fan headers + voltages:** install
+   [PawnIO](https://pawnio.eu/) (the Microsoft-attested, sandboxed driver also used by
+   Fan Control, LibreHardwareMonitor and OpenRGB) **and** run the app **as
+   administrator**. **Both are required — either one alone changes nothing.** PawnIO's
+   driver only accepts commands from elevated processes, and this app ships no other
+   driver (its LibreHardwareMonitorLib 0.9.6 talks to hardware exclusively through
+   PawnIO), so an unelevated launch shows the exact same sensors whether PawnIO is
+   installed or not. Symptom to check: the Fans widget tells you when it's running
+   unelevated.
 
 Everything else — GPU stats, memory, network, media, clock, weather — works unelevated
 with nothing extra installed.
@@ -146,7 +157,7 @@ Example `layout.json`:
       "name": "System",
       "slots": [
         { "widgetId": "ws.stock.cpu", "size": "half" },
-        { "widgetId": "ws.stock.gpu", "size": "half", "settings": { "accentColor": "#ff5577" } }
+        { "widgetId": "ws.stock.gpu", "size": "half", "style": { "accent": "#ff5577" } }
       ]
     },
     {

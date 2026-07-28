@@ -26,6 +26,9 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Manifest round-trip guard
+        run: dotnet run --project tools/ManifestRoundTrip
+
       - name: Publish
         run: dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained false -o publish
 

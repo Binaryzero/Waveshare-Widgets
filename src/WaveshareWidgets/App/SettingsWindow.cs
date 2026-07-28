@@ -110,7 +110,7 @@ public sealed class SettingsWindow : Form
                     break;
 
                 case "save-layout":
-                    HandleSave(message["layout"]);
+                    HandleSave(message["layout"], message["seq"]?.GetValue<long>());
                     break;
 
                 case "install-widget":
@@ -133,18 +133,29 @@ public sealed class SettingsWindow : Form
                     // Widget data requests surfaced by the embedded replica. Marshaled
                     // back onto the UI thread because the fetch/ping handlers reply from
                     // worker threads.
-                    Dashboard?.HandlePreviewRequest(message["message"], (type, data) =>
+                    if (Dashboard is { IsDisposed: false } dashboard)
                     {
-                        try
+                        dashboard.HandlePreviewRequest(message["message"], (type, data) =>
                         {
-                            BeginInvoke(() => Post(new JsonObject
+                            try
                             {
-                                ["type"] = "preview-host",
-                                ["message"] = new JsonObject { ["type"] = type, ["data"] = data },
-                            }));
-                        }
-                        catch (ObjectDisposedException) { /* window closed */ }
-                    });
+                                BeginInvoke(() => Post(new JsonObject
+                                {
+                                    ["type"] = "preview-host",
+                                    ["message"] = new JsonObject { ["type"] = type, ["data"] = data },
+                                }));
+                            }
+                            catch (ObjectDisposedException) { /* window closed */ }
+                        });
+                    }
+                    else
+                    {
+                        // No dashboard window (panel not detected): the settings window
+                        // still opens with a live preview, so answer immediately instead
+                        // of silently dropping the request — widgets would otherwise sit
+                        // on their API timeouts instead of rendering their fallbacks.
+                        HandlePreviewWithoutDashboard(message["message"]);
+                    }
                     break;
 
                 case "sd-profiles":
@@ -160,6 +171,56 @@ public sealed class SettingsWindow : Form
         {
             Log.Warn($"Bad settings message: {ex.Message}");
         }
+    }
+
+    /// <summary>Immediate answers for the replica's data requests when no dashboard
+    /// window exists (panel not detected). The media library is served for real (the
+    /// listing is dashboard-independent); fetch and ping fail fast so widgets show
+    /// their error/empty states; audio reports the widget's designed "unavailable".</summary>
+    private void HandlePreviewWithoutDashboard(JsonNode? message)
+    {
+        var id = message?["id"]?.GetValue<string>() ?? "";
+        switch (message?["type"]?.GetValue<string>())
+        {
+            case "fetch":
+                PostPreview("fetch-result", new JsonObject
+                {
+                    ["id"] = id,
+                    ["error"] = "dashboard not running (panel not detected)",
+                });
+                break;
+
+            case "ping":
+                var results = new JsonArray();
+                if (message["hosts"] is JsonArray hosts)
+                    foreach (var h in hosts)
+                    {
+                        var host = h?.GetValue<string>()?.Trim();
+                        if (!string.IsNullOrEmpty(host) && results.Count < 16)
+                            results.Add(new JsonObject
+                            {
+                                ["host"] = host,
+                                ["ok"] = false,
+                                ["error"] = "dashboard not running (panel not detected)",
+                            });
+                    }
+                PostPreview("ping-result", new JsonObject { ["id"] = id, ["results"] = results });
+                break;
+
+            case "media-list":
+                PostPreview("media-list-result", DashboardWindow.BuildMediaList(id));
+                break;
+
+            case "audio-get":
+                PostPreview("audio-result", new JsonObject { ["id"] = id, ["available"] = false });
+                break;
+        }
+
+        void PostPreview(string type, JsonNode? data) => Post(new JsonObject
+        {
+            ["type"] = "preview-host",
+            ["message"] = new JsonObject { ["type"] = type, ["data"] = data },
+        });
     }
 
     private void OnSensorsUpdated(IReadOnlyList<SensorReading> sensors) =>
@@ -214,7 +275,11 @@ public sealed class SettingsWindow : Form
         });
     }
 
-    private void HandleSave(JsonNode? layoutNode)
+    /// <summary>Saves the posted layout. The optional <paramref name="seq"/> is a
+    /// client request id echoed verbatim in the reply, so the editor can match each
+    /// acknowledgement to the exact snapshot it saved — two saves racing one ack
+    /// must not clear the dirty marker for work the second save still holds.</summary>
+    private void HandleSave(JsonNode? layoutNode, long? seq)
     {
         try
         {
@@ -227,12 +292,16 @@ public sealed class SettingsWindow : Form
 
             LayoutStore.Save(layout);
             LayoutSaved?.Invoke();
-            Post(new JsonObject { ["type"] = "saved" });
+            var ok = new JsonObject { ["type"] = "saved" };
+            if (seq is not null) ok["seq"] = seq.Value;
+            Post(ok);
         }
         catch (Exception ex)
         {
             Log.Warn($"Layout save failed: {ex.Message}");
-            Post(new JsonObject { ["type"] = "save-failed", ["message"] = ex.Message });
+            var failed = new JsonObject { ["type"] = "save-failed", ["message"] = ex.Message };
+            if (seq is not null) failed["seq"] = seq.Value;
+            Post(failed);
         }
     }
 
@@ -249,11 +318,16 @@ public sealed class SettingsWindow : Form
         try
         {
             var installed = _library.InstallPackage(dialog.FileName);
-            // The replica renders real widget iframes, so a just-installed widget's
-            // virtual host must resolve in THIS WebView too (InitializeAsync only
-            // mapped the widgets present when the window opened).
-            _webView.CoreWebView2?.SetVirtualHostNameToFolderMapping(
-                installed.VirtualHost, installed.Folder, CoreWebView2HostResourceAccessKind.Allow);
+            // The replica renders real widget iframes, so virtual hosts must
+            // resolve in THIS WebView too (InitializeAsync only mapped the
+            // widgets present when the window opened). Remap the WHOLE library,
+            // not just the new arrival — the install's rescan can also pick up
+            // widgets dropped into the folder since the window opened.
+            if (_webView.CoreWebView2 is { } core)
+            {
+                foreach (var w in _library.Widgets)
+                    core.SetVirtualHostNameToFolderMapping(w.VirtualHost, w.Folder, CoreWebView2HostResourceAccessKind.Allow);
+            }
             Post(new JsonObject { ["type"] = "widget-installed", ["name"] = installed.Manifest.Name });
             PostInit(); // refresh widget list and sensor snapshot in the editor
         }

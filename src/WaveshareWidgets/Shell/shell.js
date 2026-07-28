@@ -43,6 +43,9 @@
   // window.postMessage — ww-shell wraps outgoing messages, ww-host wraps incoming.
   const PREVIEW = new URLSearchParams(location.search).has('preview');
   let previewPage = null; // page the settings window wants the replica to show
+  let previewGen = 0;     // init generation this document state was built under;
+                          // echoed on every persist so the settings window can drop
+                          // captures that raced a newer init (posting is async)
 
   if (!PREVIEW && window.chrome && window.chrome.webview) {
     window.chrome.webview.addEventListener('message', (ev) => handleHostMessage(ev.data || {}));
@@ -65,6 +68,25 @@
       // Replica steering: the preview is pointer-events:none, so the settings window
       // drives which page is visible (its selected page).
       if (PREVIEW) { previewPage = msg.index | 0; goToPage(previewPage); }
+    }
+    else if (msg.type === 'edit-mode') {
+      // WYSIWYG settings (#32): the embedding settings window drives the replica's
+      // edit mode so the preview becomes the primary editing surface. Explicit
+      // opt-in and PREVIEW-gated — a real panel never receives this message, and a
+      // host that never sends it keeps the old view-only replica.
+      if (PREVIEW) setEditing(!!msg.on);
+    }
+    else if (msg.type === 'select-slot') {
+      // Settings-side selection (its slot list / a re-init restore) mirrored into
+      // the replica's highlight. Never announced back — the host already knows.
+      if (PREVIEW && editing) selectSlotAt(msg.page | 0, msg.index | 0, false);
+    }
+    else if (msg.type === 'open-palette') {
+      // Settings "+ Add widget" fallback: open the shell's own add-widget palette.
+      if (PREVIEW && editing && layoutData.pages.length) {
+        const p = layoutData.pages[Math.max(0, Math.min(layoutData.pages.length - 1, msg.index | 0))];
+        if (p) openPalette(p);
+      }
     }
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
@@ -268,6 +290,7 @@
   }
 
   function onInit(data) {
+    if (PREVIEW) previewGen = data.gen | 0;
     if (PREVIEW && typeof data.page === 'number') previewPage = data.page;
     latestSensors = data.sensors || [];
     latestMedia = data.media;
@@ -282,7 +305,37 @@
     widgetsById = new Map(widgetLib.map((w) => [w.id, w]));
     backgroundHost = data.backgroundHost || backgroundHost;
 
+    // Instance identity must be unique: layouts from older builds can carry
+    // DUPLICATE instanceIds (positional freezes colliding with earlier
+    // adoptions), and two look-alike widgets sharing one id share widget-local
+    // storage — settings and state on one tile visibly bleed into the other
+    // (field report: "editing settings on the top one directly impacts the one
+    // below it"). Collisions are checked against each slot's EFFECTIVE tag —
+    // a slot with no instanceId runs under its derived positional tag
+    // ("p0s0"), which an explicit id elsewhere can collide with just as hard.
+    // Re-mint duplicates here; the panel persists the healed ids.
+    const seenIds = new Set();
+    let reMinted = 0;
+    layoutData.pages.forEach((page, pi) => {
+      (page.slots || []).forEach((def, si) => {
+        let effective = def.instanceId || ('p' + pi + 's' + si);
+        if (seenIds.has(effective)) {
+          def.instanceId = 'i' + Date.now().toString(36) + '-' + (++instanceSeq) + 'd';
+          effective = def.instanceId;
+          reMinted++;
+        }
+        seenIds.add(effective);
+      });
+    });
+
     renderAll();
+
+    if (reMinted && !PREVIEW) {
+      // Heal the stored layout so the dupes never come back. The replica skips
+      // this: its capture stream must never dirty a freshly opened editor.
+      postToHost({ type: 'log', message: 'healed ' + reMinted + ' duplicate widget instanceId(s)' });
+      persistLayout();
+    }
   }
 
   function renderAll() {
@@ -297,6 +350,7 @@
     pagesEl.textContent = '';
     pageEls.clear();
     slots = [];
+    selected = null; // records are being replaced; the settings window re-sends select-slot after a re-init
 
     for (const page of layoutData.pages) buildPage(page);
     syncPageOrder();
@@ -501,6 +555,10 @@
     const left = clamped * pagesEl.clientWidth;
     navTarget = Math.abs(pagesEl.scrollLeft - left) < 2 ? null : clamped; // no scroll -> no scrollend
     if (editing) disarmPageDelete(); // an armed delete must not carry over to another page
+    // WYSIWYG: page moves initiated inside the editing replica (add page, edge-drop,
+    // capsule arrows) must steer the settings window too, or its rail/detail panel
+    // keeps operating on the page the preview no longer shows.
+    if (PREVIEW && editing) postToHost({ type: 'page-changed', index: clamped, gen: previewGen });
     pagesEl.scrollTo({ left, behavior: 'smooth' });
     wakeChrome();
   }
@@ -662,7 +720,17 @@
 
   const editBtn = document.getElementById('editBtn');
   const editBar = document.getElementById('editBar');
-  if (PREVIEW) editBtn.style.display = 'none'; // the replica is view-only
+  if (PREVIEW) {
+    // In the settings replica the HOST owns edit mode (its "Edit layout" toggle):
+    // hide the pencil and Done so the replica can't fall out of sync with it.
+    editBtn.style.display = 'none';
+    // Nothing floats over the canvas in the replica (field report: the capsule
+    // and style panel covered — and BLOCKED — the very tiles being edited). The
+    // settings window around this frame owns page management, navigation (pages
+    // strip + the dots) and appearance; the preview shows only widgets.
+    editBar.style.display = 'none';
+    document.body.classList.add('preview'); // CSS scoping for replica-only styling
+  }
   const paletteEl = document.getElementById('palette');
   const paletteGrid = document.getElementById('paletteGrid');
   const pageDeleteBtn = document.getElementById('pageDelete');
@@ -672,6 +740,43 @@
   const BAND_LABELS = { full: '⬍', upper: '▀', lower: '▄' };
 
   let instanceSeq = 0;
+
+  // ---- preview slot selection (WYSIWYG settings, #32) ------------------------------
+  // In the settings replica, tapping a tile selects it: the tile gets a highlight and
+  // the settings window is told which slot to show in its detail panel. The panel
+  // (non-preview) never posts selection — the dashboard has no detail panel.
+  let selected = null;
+
+  function applySelectionClass() {
+    for (const s of slots) s.el.classList.toggle('selected', s === selected);
+    // Spotlight scoping: with a selection active the replica dims everything else,
+    // so "which of the four identical widgets am I editing" answers itself.
+    document.body.classList.toggle('has-selection', !!selected);
+  }
+
+  function postSelection() {
+    if (!PREVIEW) return;
+    let pageIdx = -1, slotIdx = -1;
+    if (selected) {
+      pageIdx = layoutData.pages.indexOf(selected.page);
+      slotIdx = (selected.page.slots || []).indexOf(selected.def);
+      if (pageIdx < 0 || slotIdx < 0) { selected = null; pageIdx = -1; slotIdx = -1; }
+    }
+    postToHost({ type: 'slot-selected', page: pageIdx, index: slotIdx,
+      instanceId: (selected && selected.def.instanceId) || null, gen: previewGen });
+  }
+
+  function selectRecord(record, announce) {
+    selected = record || null;
+    applySelectionClass();
+    if (announce !== false) postSelection();
+  }
+
+  function selectSlotAt(pageIdx, slotIdx, announce) {
+    const page = layoutData.pages[pageIdx];
+    const def = page && (page.slots || [])[slotIdx];
+    selectRecord((def && slots.find((s) => s.def === def)) || null, announce);
+  }
 
   function persistLayout() {
     // Editing makes positional identity unstable, so the first persist freezes every
@@ -686,7 +791,12 @@
           ('i' + Date.now().toString(36) + '-' + (++instanceSeq));
       }
     }
-    postToHost({ type: 'save-layout', layout: layoutData });
+    const save = { type: 'save-layout', layout: layoutData };
+    if (PREVIEW) save.gen = previewGen; // stale-capture detection in the settings window
+    postToHost(save);
+    // Mutations shift indices; keep the settings window's detail panel pointed at
+    // the same slot it was showing (it captures the layout above, then this).
+    if (PREVIEW && selected) postSelection();
   }
 
   // Wraps a mutation in a View Transition when available so tiles glide instead of jump.
@@ -718,7 +828,11 @@
     // visible after Done until the game next flips state.
     applyGameMode();
     editBar.hidden = !on;
-    if (on && layoutData.pages.length === 0) {
+    // On-device, entering edit on an empty panel needs a page to drop widgets on.
+    // NEVER in the replica: the settings window owns page management there, and
+    // auto-creating one after the user deleted their last page silently undid the
+    // deletion (the capture stream adopted the unsolicited page right back).
+    if (on && !PREVIEW && layoutData.pages.length === 0) {
       const page = { name: 'Page 1', slots: [] };
       layoutData.pages.push(page);
       buildPage(page);
@@ -734,6 +848,7 @@
       closePalette();
       cancelDrag();
       closeStyleEditor(); // flushes any trailing style edit
+      if (PREVIEW) selectRecord(null, false); // highlight off; the host keeps its own selection
       // Armed confirms must not survive the session: re-entering edit within the
       // 2.5s window would otherwise turn the first tap into an instant delete.
       disarmPageDelete();
@@ -791,6 +906,7 @@
     if (!page || layoutData.pages.length <= 1) return;
     confirmThen(pageDeleteBtn, '✕ Page', (page.slots || []).length > 0, () => {
       if (styleTarget && styleTarget.page === page) closeStyleEditor(false); // its tile goes away with the page
+      if (selected && selected.page === page) selectRecord(null); // the detail target's page is going away
       for (const rec of slots.filter((s) => s.page === page)) rec.el.remove();
       slots = slots.filter((s) => s.page !== page);
       syncNotificationDemand();
@@ -806,19 +922,12 @@
     });
   });
 
-  function movePage(delta) {
-    const i = editIndex();
-    const j = i + delta;
-    if (j < 0 || j >= layoutData.pages.length) return;
-    const [page] = layoutData.pages.splice(i, 1);
-    layoutData.pages.splice(j, 0, page);
-    syncPageOrder(); refreshBgSpecs();
-    persistLayout();
-    goToPage(j);
-    updateEditBar();
-  }
-  document.getElementById('pageMoveLeft').addEventListener('click', () => movePage(-1));
-  document.getElementById('pageMoveRight').addEventListener('click', () => movePage(1));
+  // The capsule arrows NAVIGATE. They used to reorder the current page — which
+  // moved the dot indicator without changing the visible content (the viewed page
+  // travels with the reorder), reading as a dead control and silently rearranging
+  // the page order (#39). Reordering lives in the settings window's pages strip.
+  document.getElementById('pageMoveLeft').addEventListener('click', () => goToPage(editIndex() - 1));
+  document.getElementById('pageMoveRight').addEventListener('click', () => goToPage(editIndex() + 1));
 
   // ---- per-slot controls -----------------------------------------------------------
 
@@ -850,12 +959,16 @@
       band.textContent = BAND_LABELS[parts.band];
     };
     syncLabels();
+    record.syncLabels = syncLabels; // drag drops can change the band; the chips must follow
     size.addEventListener('click', (ev) => { ev.stopPropagation(); cycleWidth(record, syncLabels); });
     band.addEventListener('click', (ev) => { ev.stopPropagation(); cycleBand(record, syncLabels); });
     ov.appendChild(size);
     ov.appendChild(band);
 
-    if (widget) {
+    // No 🎨 in the replica: the settings window's Appearance section is the one
+    // style editor there — two editors for the same seeds on one screen had them
+    // visibly fighting (field report: "double settings menu").
+    if (widget && !PREVIEW) {
       const style = document.createElement('button');
       style.className = 'style';
       style.textContent = '🎨';
@@ -871,6 +984,7 @@
   function removeSlot(record) {
     if (drag && drag.record === record) cancelDrag(); // removed out from under a drag
     if (styleTarget === record) closeStyleEditor(false);
+    if (selected === record) selectRecord(null); // tell the host its detail target is gone
     mutate(() => {
       const defs = record.page.slots || [];
       const i = defs.indexOf(record.def);
@@ -890,13 +1004,20 @@
     return WIDTH_ORDER.filter((w) => declared.has(w));
   }
 
-  // Would every slot on the page still fit if `def` had `size`?
+  // Would `def` at `size` place, without costing any currently-placing OTHER
+  // slot its spot? (Slots that already fail to place — legacy over-full pages —
+  // don't veto; hidden slots becoming visible is fine, visible ones vanishing
+  // is not, even when the totals balance out.)
   function fitsWithSize(page, def, size) {
+    const defs = page.slots || [];
     const original = def.size;
+    const beforePlaced = placedSet(defs);
     def.size = size;
-    const ok = placeSlots(page.slots || []).every((p) => p !== null);
+    const places = placeSlots(defs);
+    const selfPlaced = places[defs.indexOf(def)] !== null;
+    const othersKeep = defs.every((d, i) => d === def || !beforePlaced.has(d) || places[i] !== null);
     def.size = original;
-    return ok;
+    return selfPlaced && othersKeep;
   }
 
   // The fit checks run INSIDE the mutation step: view transitions run steps
@@ -969,6 +1090,7 @@
   }
 
   function openStyleEditor(record) {
+    if (PREVIEW) return; // the settings window's Appearance section owns styling there
     styleTarget = record;
     const widget = widgetsById.get(record.def.widgetId);
     spTitle.textContent = widget ? widget.name : record.def.widgetId;
@@ -1074,21 +1196,32 @@
   function defaultSizeFor(page, widget) {
     const widths = allowedWidths(widget).slice().reverse(); // widest first, shrink into the hole
     const probe = { widgetId: widget.id, size: 'quarter', settings: {} };
-    (page.slots = page.slots || []).push(probe);
+    const defs = (page.slots = page.slots || []);
+    const before = unplacedCount(defs);
+    defs.push(probe);
     let found = null;
     outer:
     for (const band of ['full', 'upper', 'lower']) {
       for (const w of widths) {
         probe.size = makeSize(w, band);
-        if (placeSlots(page.slots).every((p) => p !== null)) { found = probe.size; break outer; }
+        if (unplacedCount(defs) === before) { found = probe.size; break outer; }
       }
     }
-    page.slots.pop();
+    defs.pop();
     return found;
   }
 
   function openPalette(page) {
     cancelDrag(); // a second finger can reach the add-zone while a drag holds
+    // Toggle: pressing "+" again dismisses instead of stacking a re-open (#46).
+    if (!paletteEl.hidden) { closePalette(); return; }
+    if (PREVIEW && editing) {
+      // The replica is a small scaled strip inside the settings window — a modal
+      // palette here covers the very layout being edited (#46). Hand off to the
+      // settings window's widget gallery instead.
+      postToHost({ type: 'add-widget', index: Math.max(0, layoutData.pages.indexOf(page)), gen: previewGen });
+      return;
+    }
     paletteGrid.textContent = '';
     for (const widget of widgetLib) {
       const btn = document.createElement('button');
@@ -1102,6 +1235,13 @@
       btn.disabled = !defaultSizeFor(page, widget);
       btn.addEventListener('click', () => addWidget(page, widget));
       paletteGrid.appendChild(btn);
+    }
+    // A wall of disabled entries reads as "broken", not "full" — say it plainly.
+    if (![...paletteGrid.children].some((b) => !b.disabled)) {
+      const note = document.createElement('p');
+      note.className = 'p-full';
+      note.textContent = 'This page is full — remove a widget or add a page.';
+      paletteGrid.prepend(note);
     }
     paletteEl.hidden = false;
   }
@@ -1120,9 +1260,13 @@
         instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
       };
       (page.slots = page.slots || []).push(def);
-      buildSlot(page, def);
+      const rec = buildSlot(page, def);
       relayoutPage(page);
       armWatchdog(generation);
+      // The just-added widget is what the user configures next: select it so the
+      // settings detail panel binds to it (#41). Announced by persistLayout right
+      // after this mutation — the layout lands before the selection referencing it.
+      if (PREVIEW) selectRecord(rec, false);
     });
   }
 
@@ -1140,7 +1284,7 @@
       // hijack the state (that would orphan the first drag's ghost forever).
       if (!editing || drag || ev.target.closest('button')) return;
       overlay.setPointerCapture(ev.pointerId);
-      drag = { record, pointerId: ev.pointerId, startX: ev.clientX, startY: ev.clientY, active: false, ghost: null, raf: 0, last: null, targetSlot: null, targetEdge: null, canLeft: false, canRight: false };
+      drag = { record, pointerId: ev.pointerId, startX: ev.clientX, startY: ev.clientY, active: false, ghost: null, raf: 0, last: null, targetSlot: null, targetEdge: null, targetCell: null, hint: null, canLeft: false, canRight: false };
     });
     overlay.addEventListener('pointermove', (ev) => {
       if (!drag || drag.record !== record || ev.pointerId !== drag.pointerId) return;
@@ -1165,10 +1309,31 @@
     if (drag) finishDrag(false);
   }
 
+  // Legacy layouts can carry slots that ALREADY fail to place (over-full pages
+  // hide them instead of rejecting the file). Field bug: one hidden slot made
+  // every fit check on the page fail — adds all "No room", drops all bouncing —
+  // while free space sat visibly on screen. The bar for any edit is "nobody who
+  // places today loses their spot", never "the whole page is perfect". That bar
+  // is about IDENTITY, not counts: a count comparison would accept trading a
+  // visible widget for a previously hidden one (Codex, #38).
+  function unplacedCount(defs) {
+    return placeSlots(defs).reduce((n, p) => n + (p === null ? 1 : 0), 0);
+  }
+
+  // The defs (by object identity) that currently get a spot on the page.
+  function placedSet(defs) {
+    const places = placeSlots(defs);
+    const set = new Set();
+    defs.forEach((def, i) => { if (places[i] !== null) set.add(def); });
+    return set;
+  }
+
   function pageFits(page, def) {
-    (page.slots = page.slots || []).push(def);
-    const ok = placeSlots(page.slots).every((p) => p !== null);
-    page.slots.pop();
+    const defs = (page.slots = page.slots || []);
+    const before = unplacedCount(defs);
+    defs.push(def);
+    const ok = unplacedCount(defs) === before; // the pushed def is last: unchanged count = it placed
+    defs.pop();
     return ok;
   }
 
@@ -1194,6 +1359,78 @@
     for (const s of slots) s.el.classList.remove('drop-target');
     edgeLeft.classList.remove('drop-page');
     edgeRight.classList.remove('drop-page');
+    if (drag && drag.hint) drag.hint.style.display = 'none';
+  }
+
+  // Maps a pointer position over the dragged widget's own page to a landing spot in
+  // FREE grid space. Empty cells are first-class drop targets (#40 — the field demo
+  // showed drags ending on the "+" zone bouncing back): half-height widgets adopt the
+  // band of the row under the pointer, and a widget pointed at a hole SMALLER than
+  // itself shrinks into it instead of bouncing back (field report: "onto a smaller
+  // space ... it should be the smaller size"). Landing where the user points wins;
+  // at equal distance the largest size that fits wins — so a plain move into open
+  // space keeps the size, and only a genuinely tighter hole resizes.
+  // Returns { index, size, place, dist } or null when nothing fits anywhere near.
+  function cellTargetAt(x, y) {
+    const rec = drag.record;
+    const pageEl = pageEls.get(rec.page);
+    if (!pageEl) return null;
+    const rect = pageEl.getBoundingClientRect();
+    if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) return null;
+    const col = Math.max(0, Math.min(3, Math.floor(((x - rect.left) / Math.max(1, rect.width)) * 4)));
+    const row = (y - rect.top) < rect.height / 2 ? 0 : 1;
+    const parts = sizeParts(rec.def.size);
+    const rowBand = row === 0 ? 'upper' : 'lower';
+    const widths = allowedWidths(widgetsById.get(rec.def.widgetId));
+    const startW = Math.max(0, widths.indexOf(parts.width));
+    const widthList = [parts.width].concat(widths.slice(0, startW).reverse()); // current, then narrower
+    const bandList = parts.band === 'full' ? ['full', rowBand] : [rowBand];
+    const candidates = [];
+    for (const band of bandList) {
+      for (const width of widthList) {
+        candidates.push({ size: makeSize(width, band),
+          area: (WIDTH_ORDER.indexOf(width) + 1) * (band === 'full' ? 2 : 1) });
+      }
+    }
+    candidates.sort((a, b) => b.area - a.area); // biggest footprint first
+    const rest = (rec.page.slots || []).filter((d) => d !== rec.def);
+    // The protected set is what was visible BEFORE the gesture, computed on the
+    // FULL page: merely removing the dragged widget can let a hidden legacy slot
+    // grab the freed space and knock a previously visible one off screen — a set
+    // built after removal would bless exactly that swap. Hidden slots never veto.
+    const beforePlaced = placedSet(rec.page.slots || []);
+    let best = null;
+    for (let c = 0; c < candidates.length; c++) {
+      const cand = candidates[c];
+      for (let i = 0; i <= rest.length; i++) {
+        const probe = rest.slice();
+        probe.splice(i, 0, { size: cand.size }); // placeSlots only reads .size — never mutate the live def
+        const places = placeSlots(probe);
+        if (places[i] === null) continue;
+        if (!probe.every((d, k) => k === i || !beforePlaced.has(d) || places[k] !== null)) continue;
+        // Distance from the pointed-at column to the placed SPAN (not its left
+        // edge): pointing at the right half of a wide landing spot must not read
+        // as "missed it" and hand the win to a smaller size.
+        const right = places[i].col + places[i].w - 1;
+        const dist = col < places[i].col ? places[i].col - col : (col > right ? col - right : 0);
+        if (!best || dist < best.dist || (dist === best.dist && c < best.rank)) {
+          best = { index: i, size: cand.size, place: places[i], dist, rank: c };
+        }
+      }
+    }
+    return best;
+  }
+
+  function showCellHint(place) {
+    if (!drag.hint) {
+      const el = document.createElement('div');
+      el.className = 'cell-hint';
+      pageEls.get(drag.record.page).appendChild(el);
+      drag.hint = el;
+    }
+    drag.hint.style.display = '';
+    drag.hint.style.gridColumn = (place.col + 1) + ' / span ' + place.w;
+    drag.hint.style.gridRow = place.band === 'full' ? '1 / span 2' : place.band === 'upper' ? '1' : '2';
   }
 
   function trackDrag() {
@@ -1213,16 +1450,24 @@
     const edgeOk = edgeHit && ((edgeHit === edgeLeft && drag.canLeft) || (edgeHit === edgeRight && drag.canRight));
 
     clearDropHighlights();
+    drag.targetSlot = null;
+    drag.targetEdge = null;
+    drag.targetCell = null;
     if (edgeOk) {
       // Slots reach the screen edge, so a point over the edge zone usually also hits a
       // slot beneath it — the glowing edge is what the user is aiming at, so it wins.
-      drag.targetSlot = null;
       drag.targetEdge = edgeHit;
       edgeHit.classList.add('drop-page');
+    } else if (slotRec) {
+      drag.targetSlot = slotHit;
+      drag.targetSlot.classList.add('drop-target');
     } else {
-      drag.targetSlot = slotRec ? slotHit : null;
-      drag.targetEdge = null;
-      if (drag.targetSlot) drag.targetSlot.classList.add('drop-target');
+      // Free space (including the "+" zone and the widget's own footprint).
+      const cell = cellTargetAt(x, y);
+      if (cell) {
+        drag.targetCell = cell;
+        showCellHint(cell.place);
+      }
     }
   }
 
@@ -1231,8 +1476,14 @@
     const d = drag;
     drag = null;
     if (d.raf) cancelAnimationFrame(d.raf);
-    if (!d.active) return; // was just a tap on the overlay
+    if (!d.active) {
+      // A tap (never crossed the drag threshold): in the settings replica that is
+      // the click-to-configure gesture — select this slot for the detail panel.
+      if (commit && PREVIEW && editing) selectRecord(d.record);
+      return;
+    }
     d.ghost.remove();
+    if (d.hint) d.hint.remove();
     d.record.el.classList.remove('drag-src');
     document.body.classList.remove('dragging');
     clearDropHighlights();
@@ -1246,13 +1497,46 @@
           const srcIdx = defs.indexOf(d.record.def);
           const tgtIdx = defs.indexOf(target.def);
           if (srcIdx < 0 || tgtIdx < 0) return; // either side removed while dragging
+          // Dropping onto a tile in the OTHER half-height band adopts that band —
+          // reorder alone would first-fit the widget straight back into its old
+          // row, which reads as a bounce-back (#40).
+          const srcParts = sizeParts(d.record.def.size);
+          const tgtParts = sizeParts(target.def.size);
+          const oldSize = d.record.def.size;
+          const beforeOrder = defs.slice();
+          const beforePlaced = placedSet(defs);
+          if (srcParts.band !== 'full' && tgtParts.band !== 'full' && srcParts.band !== tgtParts.band)
+            d.record.def.size = makeSize(srcParts.width, tgtParts.band);
           defs.splice(srcIdx, 1);
           // Dragging forward drops AFTER the target, dragging back drops BEFORE it —
           // insert-before alone would put a forward drag right back where it started.
           defs.splice(defs.indexOf(target.def) + (srcIdx < tgtIdx ? 1 : 0), 0, d.record.def);
+          // If ANY slot that was visible before — the dragged one included — would
+          // lose its spot, revert the WHOLE gesture: on legacy over-full pages the
+          // reorder alone can hand a hidden slot the freed space and push visible
+          // widgets off screen, so restoring just the size would keep the damage
+          // (identity, not counts: totals can balance while widgets trade places).
+          const adoptedPlaces = placeSlots(defs);
+          if (!defs.every((dd, k) => !beforePlaced.has(dd) || adoptedPlaces[k] !== null)) {
+            d.record.def.size = oldSize;
+            defs.splice(0, defs.length, ...beforeOrder);
+          }
+          if (d.record.syncLabels) d.record.syncLabels();
           relayoutPage(d.record.page);
         });
       }
+    } else if (d.targetCell) {
+      const t = d.targetCell;
+      mutate(() => {
+        const defs = d.record.page.slots || [];
+        const from = defs.indexOf(d.record.def);
+        if (from < 0) return; // removed while dragging
+        defs.splice(from, 1);
+        d.record.def.size = t.size; // targetCell was validated against the live page
+        defs.splice(Math.min(t.index, defs.length), 0, d.record.def);
+        if (d.record.syncLabels) d.record.syncLabels();
+        relayoutPage(d.record.page);
+      });
     } else if (d.targetEdge) {
       const dir = d.targetEdge === edgeLeft ? -1 : 1;
       const from = d.record.page;

@@ -2,7 +2,7 @@
   "id": "ws.stock.clock",
   "name": "Clock",
   "author": "Waveshare Widgets",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Large digital clock with date.",
   "min_api_version": 1,
   "supported_slots": [
@@ -11,12 +11,6 @@
     "full"
   ],
   "properties": [
-    {
-      "name": "accentColor",
-      "label": "Accent Color",
-      "type": "color",
-      "default": "#e8ecf2"
-    },
     {
       "name": "hour12",
       "label": "12-hour Format",
@@ -49,13 +43,6 @@
       "default": "solid"
     },
     {
-      "name": "timeColor",
-      "label": "Time color",
-      "type": "color",
-      "default": "#e8ecf2",
-      "group": "Text"
-    },
-    {
       "name": "timeSize",
       "label": "Time size",
       "type": "slider",
@@ -63,13 +50,6 @@
       "max": 200,
       "step": 5,
       "default": 100,
-      "group": "Text"
-    },
-    {
-      "name": "dateColor",
-      "label": "Date color",
-      "type": "color",
-      "default": "#7d8697",
       "group": "Text"
     },
     {

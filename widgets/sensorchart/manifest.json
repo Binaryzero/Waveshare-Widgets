@@ -2,7 +2,7 @@
   "id": "ws.stock.sensorchart",
   "name": "Sensor Chart",
   "author": "Waveshare Widgets",
-  "version": "1.0.1",
+  "version": "1.1.1",
   "description": "Live scrolling history chart for any hardware sensor — temperatures, loads, clocks, fans, power. Smooth line or area in your accent color with min/max markers and the big live value.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
@@ -12,11 +12,8 @@
     { "name": "chartStyle", "label": "Chart style", "type": "select", "options": ["line", "area"], "default": "area" },
     { "name": "showValue", "label": "Show current value", "type": "select", "options": ["on", "off"], "default": "on" },
     { "name": "autoScale", "label": "Auto-scale axis (off = 0..max)", "type": "select", "options": ["on", "off"], "default": "on" },
-    { "name": "accentColor", "label": "Accent Color", "type": "color", "default": "#00d4ff" },
     { "name": "bgStyle", "label": "Background", "type": "select", "options": ["solid", "glass", "transparent"], "default": "solid" },
-    { "name": "titleColor", "label": "Title color", "type": "color", "default": "#7d8697", "group": "Text" },
     { "name": "titleSize", "label": "Title size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" },
-    { "name": "valueColor", "label": "Value color", "type": "color", "default": "#e8ecf2", "group": "Text" },
     { "name": "valueSize", "label": "Value size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" }
   ]
 }

@@ -17,17 +17,15 @@
     display: flex; align-items: baseline; gap: 12px;
     flex: none; min-width: 0;
   }
-  /* Per-role custom properties (set from settings only when they differ from the
-   * manifest defaults) fall through to the theme tokens. */
   #title {
-    color: var(--title-color, var(--text-muted));
+    color: var(--text-muted);
     font-size: calc(clamp(10px, 3.4vh, 15px) * var(--title-scale, 1));
     letter-spacing: 0.06em;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     flex: 1; min-width: 0;
   }
   #value {
-    color: var(--value-color, var(--text));
+    color: var(--text);
     font-size: calc(clamp(17px, 8.5vh, 42px) * var(--value-scale, 1));
     font-weight: 600;
     font-variant-numeric: tabular-nums;
@@ -36,7 +34,7 @@
   }
   #value small {
     font-size: 52%; font-weight: 400;
-    color: var(--title-color, var(--text-muted));
+    color: var(--text-muted);
     margin-left: 2px;
   }
   #value.hidden { display: none; }
@@ -67,7 +65,6 @@
   const cfg = {
     sensorId: '', rangeMinutes: 10, chartStyle: 'area',
     showValue: true, autoScale: true,
-    accent: '',               // user-picked accent when moved off its default, else '' = theme
   };
   const samples = [];         // [{t, v}] for the tracked sensor, oldest first
   let trackedId = null;       // sensor id the samples belong to
@@ -81,18 +78,7 @@
   };
   const ctx = el.canvas.getContext('2d');
 
-  // Manifest defaults — the host merges these into settings, so "user changed it"
-  // means "differs from the default". Only then does the property override the
-  // theme tokens; at default the token chain shows through.
-  const DEF = { accentColor: '#00d4ff', titleColor: '#7d8697', valueColor: '#e8ecf2' };
-  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
-  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
-  function setVar(name, value) {
-    if (value) document.body.style.setProperty(name, value);
-    else document.body.style.removeProperty(name);
-  }
-
-  // "r, g, b" parts of a token/setting color so the canvas can compose alphas.
+  // "r, g, b" parts of a token color so the canvas can compose alphas.
   function toRgbParts(color) {
     const c = String(color || '').trim();
     let m = /^#([0-9a-f]{6})$/i.exec(c);
@@ -113,8 +99,8 @@
 
   // Chart colors for the canvas — canvases can't resolve var(), so read the tokens
   // off :root. Re-read on every init: theme edits arrive as a fresh ww-init with
-  // the new token values already applied to :root. A user accentColor moved off
-  // its manifest default stays authoritative over the theme accent.
+  // the new token values already applied to :root. The line/area always paints in
+  // the theme accent (global theme or the per-slot style override).
   const chart = {
     accent: '#4cc2ff', accentRgb: '76, 194, 255',
     textRgb: '232, 236, 242', mutedRgb: '151, 160, 174',
@@ -124,9 +110,8 @@
     const cs = getComputedStyle(document.documentElement);
     const read = (name) => cs.getPropertyValue(name).trim();
     const themeAccent = read('--accent') || '#4cc2ff';
-    chart.accent = cfg.accent || themeAccent;
-    chart.accentRgb = (cfg.accent ? toRgbParts(cfg.accent)
-      : (read('--accent-rgb') || toRgbParts(themeAccent))) || '76, 194, 255';
+    chart.accent = themeAccent;
+    chart.accentRgb = read('--accent-rgb') || toRgbParts(themeAccent) || '76, 194, 255';
     chart.textRgb = toRgbParts(read('--text')) || '232, 236, 242';
     chart.mutedRgb = toRgbParts(read('--text-muted')) || '151, 160, 174';
     chart.font = getComputedStyle(document.body).fontFamily || chart.font;
@@ -140,8 +125,8 @@
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
-    setVar('--title-color', changed(s.titleColor, DEF.titleColor) ? s.titleColor : '');
-    setVar('--value-color', changed(s.valueColor, DEF.valueColor) ? s.valueColor : '');
+    // Appearance comes from the theme tokens (global theme or the per-slot style
+    // override) — legacy color keys in old layouts are deliberately ignored.
     document.body.style.setProperty('--title-scale', (Number(s.titleSize) || 100) / 100);
     document.body.style.setProperty('--value-scale', (Number(s.valueSize) || 100) / 100);
 
@@ -150,8 +135,6 @@
     cfg.chartStyle = s.chartStyle === 'line' ? 'line' : 'area';
     cfg.showValue = s.showValue !== 'off';
     cfg.autoScale = s.autoScale !== 'off';
-    cfg.accent = changed(s.accentColor, DEF.accentColor) &&
-      /^#[0-9a-fA-F]{6}$/.test(s.accentColor) ? s.accentColor : '';
     readChartColors();
 
     el.value.classList.toggle('hidden', !cfg.showValue);
@@ -161,6 +144,11 @@
   });
 
   WW.onSensors(update);
+
+  // Live theme/style edits arrive as token pushes WITHOUT a re-init: the CSS
+  // repaints itself, but the canvas draws from these cached values — re-read
+  // and repaint or the chart keeps the old accent until an iframe reload.
+  WW.onTheme(() => { readChartColors(); draw(); });
 
   function resolveSensor() {
     if (cfg.sensorId) return WW.sensorById(cfg.sensorId);
