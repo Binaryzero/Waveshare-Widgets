@@ -241,7 +241,7 @@
     } else if (m.type === 'slot-selected') {
       // Click-to-configure: the replica says which tile the user tapped (or where a
       // mutation moved the already-selected one, or -1/-1 when it went away).
-      onReplicaSelection(m.page | 0, m.index | 0);
+      onReplicaSelection(m.page | 0, m.index | 0, m.instanceId || null);
     } else if (m.type === 'add-widget') {
       // The replica's "+" zone hands the add over to us (#45): a modal palette
       // inside the scaled strip covered the very layout being edited. Follow the
@@ -290,7 +290,14 @@
     renderEditorPanel();
   }
 
-  function onReplicaSelection(pageIdx, slotIdx) {
+  function onReplicaSelection(pageIdx, slotIdx, instanceId) {
+    // An armed re-init debounce means the replica still shows a layout we have
+    // since edited: every index it emits — select AND deselect — references the
+    // OLD copy, and a mere existence check can bless the WRONG slot (delete slot
+    // 0 from the strip, tap the tile still showing old slot 1: our slot 1 is a
+    // different widget). Same rule as captureReplicaLayout: drop it — the
+    // imminent re-init repaints the replica and re-imposes our selection.
+    if (replicaTimer) return;
     if (pageIdx < 0 || slotIdx < 0) {
       if (selectedSlot === null) return;
       selectedSlot = null;
@@ -304,6 +311,10 @@
     // ANOTHER slot's properties. The imminent re-init resets the replica anyway.
     const page = state.layout.pages[pageIdx];
     if (!page || !(page.slots || [])[slotIdx]) return;
+    // Identity check for the residual window the timer can't see (an init posted
+    // but not yet applied by the iframe): when the replica names the tapped tile,
+    // adopt the indices only if OUR slot at that position is the same instance.
+    if (instanceId && (page.slots || [])[slotIdx].instanceId !== instanceId) return;
     selectedPage = pageIdx;
     selectedSlot = slotIdx;
     galleryOpen = false; // the tap picked an existing widget — detail takes over
