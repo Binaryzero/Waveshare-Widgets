@@ -66,6 +66,25 @@
       // drives which page is visible (its selected page).
       if (PREVIEW) { previewPage = msg.index | 0; goToPage(previewPage); }
     }
+    else if (msg.type === 'edit-mode') {
+      // WYSIWYG settings (#32): the embedding settings window drives the replica's
+      // edit mode so the preview becomes the primary editing surface. Explicit
+      // opt-in and PREVIEW-gated — a real panel never receives this message, and a
+      // host that never sends it keeps the old view-only replica.
+      if (PREVIEW) setEditing(!!msg.on);
+    }
+    else if (msg.type === 'select-slot') {
+      // Settings-side selection (its slot list / a re-init restore) mirrored into
+      // the replica's highlight. Never announced back — the host already knows.
+      if (PREVIEW && editing) selectSlotAt(msg.page | 0, msg.index | 0, false);
+    }
+    else if (msg.type === 'open-palette') {
+      // Settings "+ Add widget" fallback: open the shell's own add-widget palette.
+      if (PREVIEW && editing && layoutData.pages.length) {
+        const p = layoutData.pages[Math.max(0, Math.min(layoutData.pages.length - 1, msg.index | 0))];
+        if (p) openPalette(p);
+      }
+    }
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
     else if (msg.type === 'notifications') { latestNotifications = msg.data || null; broadcast({ type: 'ww-notifications', data: latestNotifications }); }
@@ -297,6 +316,7 @@
     pagesEl.textContent = '';
     pageEls.clear();
     slots = [];
+    selected = null; // records are being replaced; the settings window re-sends select-slot after a re-init
 
     for (const page of layoutData.pages) buildPage(page);
     syncPageOrder();
@@ -662,7 +682,12 @@
 
   const editBtn = document.getElementById('editBtn');
   const editBar = document.getElementById('editBar');
-  if (PREVIEW) editBtn.style.display = 'none'; // the replica is view-only
+  if (PREVIEW) {
+    // In the settings replica the HOST owns edit mode (its "Edit layout" toggle):
+    // hide the pencil and Done so the replica can't fall out of sync with it.
+    editBtn.style.display = 'none';
+    document.getElementById('editDone').style.display = 'none';
+  }
   const paletteEl = document.getElementById('palette');
   const paletteGrid = document.getElementById('paletteGrid');
   const pageDeleteBtn = document.getElementById('pageDelete');
@@ -672,6 +697,40 @@
   const BAND_LABELS = { full: '⬍', upper: '▀', lower: '▄' };
 
   let instanceSeq = 0;
+
+  // ---- preview slot selection (WYSIWYG settings, #32) ------------------------------
+  // In the settings replica, tapping a tile selects it: the tile gets a highlight and
+  // the settings window is told which slot to show in its detail panel. The panel
+  // (non-preview) never posts selection — the dashboard has no detail panel.
+  let selected = null;
+
+  function applySelectionClass() {
+    for (const s of slots) s.el.classList.toggle('selected', s === selected);
+  }
+
+  function postSelection() {
+    if (!PREVIEW) return;
+    let pageIdx = -1, slotIdx = -1;
+    if (selected) {
+      pageIdx = layoutData.pages.indexOf(selected.page);
+      slotIdx = (selected.page.slots || []).indexOf(selected.def);
+      if (pageIdx < 0 || slotIdx < 0) { selected = null; pageIdx = -1; slotIdx = -1; }
+    }
+    postToHost({ type: 'slot-selected', page: pageIdx, index: slotIdx,
+      instanceId: (selected && selected.def.instanceId) || null });
+  }
+
+  function selectRecord(record, announce) {
+    selected = record || null;
+    applySelectionClass();
+    if (announce !== false) postSelection();
+  }
+
+  function selectSlotAt(pageIdx, slotIdx, announce) {
+    const page = layoutData.pages[pageIdx];
+    const def = page && (page.slots || [])[slotIdx];
+    selectRecord((def && slots.find((s) => s.def === def)) || null, announce);
+  }
 
   function persistLayout() {
     // Editing makes positional identity unstable, so the first persist freezes every
@@ -687,6 +746,9 @@
       }
     }
     postToHost({ type: 'save-layout', layout: layoutData });
+    // Mutations shift indices; keep the settings window's detail panel pointed at
+    // the same slot it was showing (it captures the layout above, then this).
+    if (PREVIEW && selected) postSelection();
   }
 
   // Wraps a mutation in a View Transition when available so tiles glide instead of jump.
@@ -734,6 +796,7 @@
       closePalette();
       cancelDrag();
       closeStyleEditor(); // flushes any trailing style edit
+      if (PREVIEW) selectRecord(null, false); // highlight off; the host keeps its own selection
       // Armed confirms must not survive the session: re-entering edit within the
       // 2.5s window would otherwise turn the first tap into an instant delete.
       disarmPageDelete();
@@ -791,6 +854,7 @@
     if (!page || layoutData.pages.length <= 1) return;
     confirmThen(pageDeleteBtn, '✕ Page', (page.slots || []).length > 0, () => {
       if (styleTarget && styleTarget.page === page) closeStyleEditor(false); // its tile goes away with the page
+      if (selected && selected.page === page) selectRecord(null); // the detail target's page is going away
       for (const rec of slots.filter((s) => s.page === page)) rec.el.remove();
       slots = slots.filter((s) => s.page !== page);
       syncNotificationDemand();
@@ -871,6 +935,7 @@
   function removeSlot(record) {
     if (drag && drag.record === record) cancelDrag(); // removed out from under a drag
     if (styleTarget === record) closeStyleEditor(false);
+    if (selected === record) selectRecord(null); // tell the host its detail target is gone
     mutate(() => {
       const defs = record.page.slots || [];
       const i = defs.indexOf(record.def);
@@ -1231,7 +1296,12 @@
     const d = drag;
     drag = null;
     if (d.raf) cancelAnimationFrame(d.raf);
-    if (!d.active) return; // was just a tap on the overlay
+    if (!d.active) {
+      // A tap (never crossed the drag threshold): in the settings replica that is
+      // the click-to-configure gesture — select this slot for the detail panel.
+      if (commit && PREVIEW && editing) selectRecord(d.record);
+      return;
+    }
     d.ghost.remove();
     d.record.el.classList.remove('drag-src');
     document.body.classList.remove('dragging');

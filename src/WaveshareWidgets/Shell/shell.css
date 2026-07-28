@@ -431,3 +431,13 @@ body.editing.dragging .edge { pointer-events: auto; }
 }
 .edit-overlay .style { bottom: 4px; left: 4px; }
 .slot.style-editing .edit-overlay { border-color: var(--accent, #4cc2ff); border-style: solid; }
+
+/* WYSIWYG selection (settings replica): the slot whose properties the settings
+ * window's detail panel is showing. Same family as the style-editing affordance,
+ * but stronger — it has to read at ~0.9 preview scale. */
+body.editing .slot.selected .edit-overlay {
+  border-style: solid;
+  border-color: var(--accent, #4cc2ff);
+  background: color-mix(in srgb, var(--accent, #4cc2ff) 13%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent, #4cc2ff) 45%, transparent);
+}

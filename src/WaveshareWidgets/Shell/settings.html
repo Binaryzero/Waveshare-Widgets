@@ -17,15 +17,19 @@
     </div>
   </header>
 
-  <!-- Live replica: the real dashboard shell at native 1280×400, scaled to fit.
-       Driven with the EDITED layout/theme, so changes preview before Save & apply. -->
+  <!-- WYSIWYG surface: the real dashboard shell at native 1280×400, scaled to fit.
+       With "Edit layout" on (the default) it runs the shell's own on-panel edit
+       mode — drag to rearrange, corner buttons to resize, ✕ to remove, + to add,
+       tap a tile to configure it in the detail panel below. Nothing touches the
+       panel until Save & apply. -->
   <section id="previewWrap">
     <div id="previewBar">
       <span class="panel-title">Live preview</span>
-      <span class="panel-hint" id="previewHint">The panel as your unsaved edits would look — widgets are live.</span>
+      <button id="editToggle" class="ghost toggle" aria-pressed="true" title="Edit the layout directly in the preview">Edit layout</button>
+      <span class="panel-hint" id="previewHint">Drag, resize and tap widgets right here — the panel as your unsaved edits would look.</span>
       <button id="previewToggle" class="ghost">Hide</button>
     </div>
-    <div id="previewStage"><iframe id="previewFrame" title="Panel preview"></iframe></div>
+    <div id="previewStage" class="interactive"><iframe id="previewFrame" title="Panel preview"></iframe></div>
   </section>
 
   <main>
@@ -34,16 +38,20 @@
       <ul id="pageList"></ul>
       <button id="addPage" class="ghost wide">+ Add page</button>
 
-      <div class="panel-title bg-panel-title">Theme</div>
-      <p class="panel-hint">Three colors drive every widget on the panel: pick an accent, a background and a
-        text color, and the app derives the full palette from them — surfaces, labels, state colors — fixing
-        contrast automatically so nothing becomes unreadable. Panel opacity sets how much wallpaper shows
-        through widget tiles (widgets set to the "glass" background style).</p>
-      <div id="themeEditor" class="bg-editor"></div>
+      <details class="rail-section" open>
+        <summary class="panel-title">Theme</summary>
+        <p class="panel-hint">Three colors drive every widget on the panel: pick an accent, a background and a
+          text color, and the app derives the full palette from them — surfaces, labels, state colors — fixing
+          contrast automatically so nothing becomes unreadable. Panel opacity sets how much wallpaper shows
+          through widget tiles (widgets set to the "glass" background style).</p>
+        <div id="themeEditor" class="bg-editor"></div>
+      </details>
 
-      <div class="panel-title bg-panel-title">Dashboard background</div>
-      <p class="panel-hint">Wallpaper shown behind widgets on every page (unless a page sets its own).</p>
-      <div id="globalBg" class="bg-editor"></div>
+      <details class="rail-section" open>
+        <summary class="panel-title">Dashboard background</summary>
+        <p class="panel-hint">Wallpaper shown behind widgets on every page (unless a page sets its own).</p>
+        <div id="globalBg" class="bg-editor"></div>
+      </details>
     </aside>
 
     <section id="editor">
@@ -55,8 +63,14 @@
         <button id="movePageRight" class="ghost" title="Move page later">▶</button>
         <button id="deletePage" class="danger ghost">Delete page</button>
       </div>
+
+      <!-- Widgets on this page: compact chips — click to configure, ✕ to remove.
+           Doubles as the selection path when the preview is hidden or dead. -->
       <div id="slotList"></div>
-      <button id="addSlot" class="ghost wide">+ Add widget to this page</button>
+      <button id="addSlot" class="ghost wide">+ Add widget</button>
+
+      <!-- Detail panel: ONLY the selected slot's properties (or page-level panels). -->
+      <div id="slotDetail"></div>
 
       <section id="pageBgWrap" class="bg-section">
         <div class="panel-title">Page background</div>
