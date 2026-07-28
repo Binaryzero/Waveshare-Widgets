@@ -306,19 +306,23 @@
     // adoptions), and two look-alike widgets sharing one id share widget-local
     // storage — settings and state on one tile visibly bleed into the other
     // (field report: "editing settings on the top one directly impacts the one
-    // below it"). Re-mint duplicates here; the panel persists the healed ids.
+    // below it"). Collisions are checked against each slot's EFFECTIVE tag —
+    // a slot with no instanceId runs under its derived positional tag
+    // ("p0s0"), which an explicit id elsewhere can collide with just as hard.
+    // Re-mint duplicates here; the panel persists the healed ids.
     const seenIds = new Set();
     let reMinted = 0;
-    for (const page of layoutData.pages) {
-      for (const def of page.slots || []) {
-        if (!def.instanceId) continue;
-        if (seenIds.has(def.instanceId)) {
+    layoutData.pages.forEach((page, pi) => {
+      (page.slots || []).forEach((def, si) => {
+        let effective = def.instanceId || ('p' + pi + 's' + si);
+        if (seenIds.has(effective)) {
           def.instanceId = 'i' + Date.now().toString(36) + '-' + (++instanceSeq) + 'd';
+          effective = def.instanceId;
           reMinted++;
         }
-        seenIds.add(def.instanceId);
-      }
-    }
+        seenIds.add(effective);
+      });
+    });
 
     renderAll();
 

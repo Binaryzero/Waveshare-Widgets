@@ -367,6 +367,7 @@
       return;
     }
     let fans;
+    let missing = 0;
     if (selection.length) {
       // User-picked fans, in the order they arranged them in Settings. The editor
       // permits picking the same fan twice; duplicate ids would fight over one
@@ -375,6 +376,10 @@
       const seen = new Set();
       fans = selection.map((it) => all.find((s) => s.id === it.sensorId)).filter(Boolean)
         .filter((f) => (seen.has(f.id) ? false : (seen.add(f.id), true)));
+      // Distinct picks absent from the snapshot: a chosen fan disappeared
+      // (unplugged header, hub offline, lost elevation). Dropping it silently
+      // let the pill read "1/1 spinning" for a two-fan selection.
+      missing = new Set(selection.map((it) => it.sensorId)).size - fans.length;
       if (!fans.length) {
         showState('none', 'Selected fans not found',
           'None of the fans picked in this widget’s settings are reporting — ' +
@@ -406,6 +411,7 @@
       if (!c.stopped) spinning++;
     }
     if (pumpsDown) setPill('Check pump', 'err');
+    else if (missing) setPill(spinning + '/' + fans.length + ' spinning · ' + missing + ' missing', 'warn');
     else setPill(spinning + '/' + fans.length + ' spinning', 'muted');
   }
 

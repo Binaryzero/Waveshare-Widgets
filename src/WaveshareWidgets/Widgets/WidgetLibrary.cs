@@ -169,6 +169,37 @@ public sealed partial class WidgetLibrary : IDisposable
         return Convert.ToHexString(bytes, 0, 4).ToLowerInvariant();
     }
 
+    /// <summary>Persisted widget-id → virtual-host assignments. Hosts are browser
+    /// origins (localStorage, credentials), so an entry is written once and kept
+    /// forever — an unreadable file starts a fresh map rather than crashing scan.</summary>
+    private static Dictionary<string, string> LoadHostMap()
+    {
+        try
+        {
+            if (File.Exists(AppPaths.HostMapFile))
+                return JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(AppPaths.HostMapFile))
+                       ?? new Dictionary<string, string>();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not read widget host map: {ex.Message} — starting a new one");
+        }
+        return new Dictionary<string, string>();
+    }
+
+    private static void SaveHostMap(Dictionary<string, string> map)
+    {
+        try
+        {
+            DurableStore.Write(AppPaths.HostMapFile,
+                JsonSerializer.Serialize(map, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not save widget host map: {ex.Message}");
+        }
+    }
+
     private static bool IsDigits(string s)
     {
         if (s.Length == 0)
@@ -268,30 +299,39 @@ public sealed partial class WidgetLibrary : IDisposable
             }
         }
 
-        // Pass 2: assign hosts from the COMPLETE collision picture, so the result
-        // never depends on directory enumeration order. Any slug shared by two or
-        // more distinct ids suffixes EVERY member with a hash of its exact id —
-        // order-dependent assignment let the clean host swap owners between
-        // restarts, silently handing one widget the other's origin-scoped storage.
+        // Pass 2: assign hosts from a PERSISTED id → host map, so an id keeps the
+        // same host forever — even across installs/uninstalls of a slug-colliding
+        // widget. Deciding from the currently-installed set alone let the clean
+        // host swap owners between runs (install a collider, restart, uninstall
+        // it, restart: the suffixed widget silently adopted the clean origin and
+        // its predecessor's localStorage/credentials). Once a host is in the map
+        // it is reserved for that id permanently and never reused for another.
         // Layouts reference widgets by id, never by host, so suffixes are transparent.
-        var slugOwners = resolved
-            .GroupBy(w => Slug(w.Manifest.Id))
-            .ToDictionary(g => g.Key, g => g.Count());
+        var hostMap = LoadHostMap();
+        var mapChanged = false;
+        var usedHosts = new HashSet<string>(hostMap.Values, StringComparer.OrdinalIgnoreCase);
         var widgets = new List<InstalledWidget>();
-        var usedHosts = new HashSet<string>();
         foreach (var (manifest, folder) in resolved)
         {
-            var slug = Slug(manifest.Id);
-            var host = slugOwners[slug] > 1
-                ? $"{slug}-{ShortHash(manifest.Id)}.widgets.wsw"
-                : $"{slug}.widgets.wsw";
-            var bump = 2;
-            while (!usedHosts.Add(host))
-                host = $"{slug}-{ShortHash(manifest.Id)}{bump++}.widgets.wsw";
-            if (slugOwners[slug] > 1)
-                Log.Warn($"Widget id '{manifest.Id}' shares its host slug with another widget — serving it from '{host}'");
+            if (!hostMap.TryGetValue(manifest.Id, out var host))
+            {
+                var slug = Slug(manifest.Id);
+                host = $"{slug}.widgets.wsw";
+                if (!usedHosts.Add(host))
+                {
+                    host = $"{slug}-{ShortHash(manifest.Id)}.widgets.wsw";
+                    var bump = 2;
+                    while (!usedHosts.Add(host))
+                        host = $"{slug}-{ShortHash(manifest.Id)}{bump++}.widgets.wsw";
+                    Log.Warn($"Widget id '{manifest.Id}' shares its host slug with a previously seen widget — serving it from '{host}'");
+                }
+                hostMap[manifest.Id] = host;
+                mapChanged = true;
+            }
             widgets.Add(new InstalledWidget(manifest, folder, host));
         }
+        if (mapChanged)
+            SaveHostMap(hostMap);
 
         Widgets = widgets.OrderBy(w => w.Manifest.Name, StringComparer.OrdinalIgnoreCase).ToList();
         Log.Info($"Widget library: {Widgets.Count} widget(s) installed");
