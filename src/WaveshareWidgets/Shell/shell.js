@@ -43,6 +43,9 @@
   // window.postMessage — ww-shell wraps outgoing messages, ww-host wraps incoming.
   const PREVIEW = new URLSearchParams(location.search).has('preview');
   let previewPage = null; // page the settings window wants the replica to show
+  let previewGen = 0;     // init generation this document state was built under;
+                          // echoed on every persist so the settings window can drop
+                          // captures that raced a newer init (posting is async)
 
   if (!PREVIEW && window.chrome && window.chrome.webview) {
     window.chrome.webview.addEventListener('message', (ev) => handleHostMessage(ev.data || {}));
@@ -287,6 +290,7 @@
   }
 
   function onInit(data) {
+    if (PREVIEW) previewGen = data.gen | 0;
     if (PREVIEW && typeof data.page === 'number') previewPage = data.page;
     latestSensors = data.sensors || [];
     latestMedia = data.media;
@@ -787,7 +791,9 @@
           ('i' + Date.now().toString(36) + '-' + (++instanceSeq));
       }
     }
-    postToHost({ type: 'save-layout', layout: layoutData });
+    const save = { type: 'save-layout', layout: layoutData };
+    if (PREVIEW) save.gen = previewGen; // stale-capture detection in the settings window
+    postToHost(save);
     // Mutations shift indices; keep the settings window's detail panel pointed at
     // the same slot it was showing (it captures the layout above, then this).
     if (PREVIEW && selected) postSelection();

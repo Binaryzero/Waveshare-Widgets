@@ -131,6 +131,10 @@
   const previewStage = el('previewStage');
   let replicaReady = false;
   let replicaTimer = null;
+  let initGen = 0;            // bumped per replica init; captures echo the generation
+                              // they were built under, so a save-layout the replica
+                              // emitted BEFORE applying the latest init (posting is
+                              // async) can be recognized as stale and dropped.
   let lastReplicaLayout = ''; // structural snapshot (theme excluded — it rides the light push)
   let lastWorkingLayout = ''; // edit detector: the working copy at the last layout render.
                               // Separate from lastReplicaLayout, which tracks REPLICA
@@ -155,10 +159,12 @@
     // truthful "settings edits are still undelivered" signal for the capture guard.
     clearTimeout(replicaTimer);
     replicaTimer = null;
+    initGen++;
     lastReplicaLayout = replicaLayoutJson();
     replicaPost({
       type: 'init',
       data: {
+        gen: initGen,
         layout: state.layout,
         widgets: state.widgets,
         sensors: state.sensors,
@@ -246,7 +252,7 @@
       // The interactive replica IS the editor (#32): its continuous persists are the
       // edit stream. Captured into the working copy — unsaved until Save & apply —
       // never forwarded to the real host.
-      captureReplicaLayout(m.layout);
+      captureReplicaLayout(m.layout, m.gen);
     } else if (m.type === 'slot-selected') {
       // Click-to-configure: the replica says which tile the user tapped (or where a
       // mutation moved the already-selected one, or -1/-1 when it went away).
@@ -282,8 +288,15 @@
   // panels around the preview WITHOUT re-initing the replica — it already shows
   // exactly this layout (the lastReplicaLayout snapshot swallows the echo).
 
-  function captureReplicaLayout(layout) {
+  function captureReplicaLayout(layout, gen) {
     if (!layout || !Array.isArray(layout.pages)) return;
+    // A capture built under an older init generation comes from a document state
+    // we have since replaced: clearing replicaTimer happens when the init is
+    // POSTED, but the replica applies it asynchronously, and a gesture (or a
+    // deferred view-transition mutation) completing in that gap streams the OLD
+    // copy. The armed-timer guard below can't see it — the timer is already
+    // clear — so the generation echo is the authority: stale gen, stale capture.
+    if ((gen | 0) !== initGen) return;
     // An armed re-init debounce means the settings side holds edits the replica has
     // NOT received yet — this capture was built from a stale copy, and adopting it
     // would silently revert those edits (and the still-armed timer would then
