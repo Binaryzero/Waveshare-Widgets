@@ -35,8 +35,8 @@
     align-items: center;
     justify-content: center;
     gap: 2px;
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--key-min, 44px);
+    min-height: var(--key-min, 44px);
     overflow: hidden;
     cursor: pointer;
     touch-action: manipulation;
@@ -198,7 +198,8 @@
     cfg.columns = Math.max(0, Math.min(8, Math.round(Number(s.columns) || 0)));
     const parsed = normalizeButtons(s.buttons);
     buttons = parsed.items || [];
-    build(parsed.error, parsed.hidden || 0);
+    lastBuild = { error: parsed.error, hidden: parsed.hidden || 0 };
+    build(lastBuild.error, lastBuild.hidden);
   });
 
   // Restartable state-theater flash (from widget-base): remove, force reflow,
@@ -216,6 +217,20 @@
     document.getElementById('messageTitle').textContent = title;
     document.getElementById('messageBody').textContent = body;
     msg.hidden = false;
+  }
+
+  // Viewport fit: keys keep the 44px touch minimum when they can, shrink to a
+  // 36px dense floor when the slot is crowded (half-height bands), and past that
+  // the tail rides the "+N hidden" chip — a clipped, untappable button is never
+  // rendered. PAD/GAP mirror the CSS.
+  const MIN_KEY = 44, MIN_KEY_DENSE = 36, PAD = 8, GAP = 8;
+  let lastBuild = { error: null, hidden: 0 };
+  let keyMin = MIN_KEY; // active minimum, set by build(), read by layout()
+
+  function capacityFor(minKey) {
+    const cols = Math.max(1, Math.floor((window.innerWidth - PAD * 2 + GAP) / (minKey + GAP)));
+    const rows = Math.max(1, Math.floor((window.innerHeight - PAD * 2 + GAP) / (minKey + GAP)));
+    return { cols, rows, count: cols * rows };
   }
 
   function build(error, hidden) {
@@ -240,7 +255,24 @@
       return;
     }
 
-    for (const def of buttons) {
+    // Fit pass: how many key faces (buttons + a possible chip) does this slot
+    // hold at a tappable size?
+    keyMin = MIN_KEY;
+    let cap = capacityFor(keyMin);
+    let shown = buttons;
+    let trimmed = 0;
+    if (buttons.length + (hidden > 0 ? 1 : 0) > cap.count) {
+      keyMin = MIN_KEY_DENSE;
+      cap = capacityFor(keyMin);
+      if (buttons.length + (hidden > 0 ? 1 : 0) > cap.count) {
+        shown = buttons.slice(0, Math.max(1, cap.count - 1));
+        trimmed = buttons.length - shown.length;
+      }
+    }
+    document.body.style.setProperty('--key-min', keyMin + 'px');
+    const chipHidden = hidden + trimmed;
+
+    for (const def of shown) {
       const key = document.createElement('button');
       key.type = 'button';
       key.className = 'key pressable';
@@ -276,18 +308,21 @@
       });
       grid.appendChild(key);
     }
-    if (hidden > 0) {
+    if (chipHidden > 0) {
       // Never truncate silently: the editor saved these rows, so say on the tile
-      // exactly how many are beyond the 32-key ceiling.
+      // exactly how many are beyond the ceiling — the 32-key maximum or, in a
+      // small slot, the number of tappable key faces that actually fit.
       const more = document.createElement('div');
       more.className = 'key more';
-      more.title = 'This deck shows at most ' + MAX_BUTTONS + ' buttons';
+      more.title = trimmed
+        ? 'This slot has room for ' + shown.length + ' tappable buttons — resize the widget or remove some'
+        : 'This deck shows at most ' + MAX_BUTTONS + ' buttons';
       const icon = document.createElement('div');
       icon.className = 'icon';
       icon.textContent = '⋯';
       const label = document.createElement('div');
       label.className = 'label';
-      label.textContent = '+' + hidden + ' hidden (max ' + MAX_BUTTONS + ')';
+      label.textContent = '+' + chipHidden + ' hidden ' + (trimmed ? '(no room)' : '(max ' + MAX_BUTTONS + ')');
       more.append(icon, label);
       grid.appendChild(more);
     }
@@ -310,20 +345,27 @@
   function layout() {
     const n = document.querySelectorAll('#grid .key').length; // includes the over-limit notice
     if (!n) return;
-    const cols = Math.max(1, Math.min(cfg.columns > 0 ? cfg.columns : autoCols(n), n));
+    // Clamp the column choice to what the viewport fits at the active key
+    // minimum: the user's columns setting (or the aspect heuristic) must never
+    // force a grid wider or taller than the slot — build() sized the key count
+    // to capacity, and this keeps the arrangement inside it too.
+    const cap = capacityFor(keyMin);
+    const desired = cfg.columns > 0 ? cfg.columns : autoCols(n);
+    const cols = Math.max(1, Math.min(n,
+      Math.max(Math.min(desired, cap.cols), Math.ceil(n / cap.rows))));
     const rows = Math.ceil(n / cols);
     const grid = document.getElementById('grid');
     grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
     grid.style.gridTemplateRows = 'repeat(' + rows + ', 1fr)';
     // Emoji sized off the actual cell, so it stays big but never overflows.
-    const pad = 8, gap = 8;
-    const cellW = (window.innerWidth - pad * 2 - gap * (cols - 1)) / cols;
-    const cellH = (window.innerHeight - pad * 2 - gap * (rows - 1)) / rows;
+    const cellW = (window.innerWidth - PAD * 2 - GAP * (cols - 1)) / cols;
+    const cellH = (window.innerHeight - PAD * 2 - GAP * (rows - 1)) / rows;
     const icon = Math.max(14, Math.min(cellH * 0.44, cellW * 0.6, 96));
     document.body.style.setProperty('--icon-size', Math.round(icon) + 'px');
   }
 
-  window.addEventListener('resize', layout);
+  // A resize changes the fit capacity, not just the arrangement — rebuild.
+  window.addEventListener('resize', () => build(lastBuild.error, lastBuild.hidden));
 </script>
 </body>
 </html>

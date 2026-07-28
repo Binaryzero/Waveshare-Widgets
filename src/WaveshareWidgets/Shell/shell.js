@@ -558,7 +558,7 @@
     // WYSIWYG: page moves initiated inside the editing replica (add page, edge-drop,
     // capsule arrows) must steer the settings window too, or its rail/detail panel
     // keeps operating on the page the preview no longer shows.
-    if (PREVIEW && editing) postToHost({ type: 'page-changed', index: clamped });
+    if (PREVIEW && editing) postToHost({ type: 'page-changed', index: clamped, gen: previewGen });
     pagesEl.scrollTo({ left, behavior: 'smooth' });
     wakeChrome();
   }
@@ -763,7 +763,7 @@
       if (pageIdx < 0 || slotIdx < 0) { selected = null; pageIdx = -1; slotIdx = -1; }
     }
     postToHost({ type: 'slot-selected', page: pageIdx, index: slotIdx,
-      instanceId: (selected && selected.def.instanceId) || null });
+      instanceId: (selected && selected.def.instanceId) || null, gen: previewGen });
   }
 
   function selectRecord(record, announce) {

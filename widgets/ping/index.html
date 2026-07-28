@@ -143,6 +143,14 @@
     }
   });
 
+  // Live theme/style edits arrive as token pushes WITHOUT a re-init: the CSS
+  // repaints itself, but the sparkline canvases draw from the cached state
+  // colors — re-read and repaint or they keep the old palette until reload.
+  WW.onTheme(() => {
+    readSparkColors();
+    for (const host of cards.keys()) renderCard(host);
+  });
+
   function buildCards() {
     const grid = document.getElementById('grid');
     const msg = document.getElementById('message');

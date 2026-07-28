@@ -145,6 +145,11 @@
 
   WW.onSensors(update);
 
+  // Live theme/style edits arrive as token pushes WITHOUT a re-init: the CSS
+  // repaints itself, but the canvas draws from these cached values — re-read
+  // and repaint or the chart keeps the old accent until an iframe reload.
+  WW.onTheme(() => { readChartColors(); draw(); });
+
   function resolveSensor() {
     if (cfg.sensorId) return WW.sensorById(cfg.sensorId);
     return WW.findSensor({ type: 'Temperature' }) || WW.findSensor({});

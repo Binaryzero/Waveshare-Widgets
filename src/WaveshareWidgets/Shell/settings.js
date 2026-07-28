@@ -236,6 +236,12 @@
       // it, or the rail/detail/Add-widget keep operating on the page the preview no
       // longer shows. Out-of-range indices (capture was dropped) are ignored; our
       // own 'page' steering echoes back as an equal index and no-ops here.
+      // Same staleness rules as captures and selections: a navigation the OLD
+      // replica completed while settings edits are undelivered (armed debounce)
+      // or before applying the latest init (generation echo) indexes a layout we
+      // no longer hold — following it would point every page/widget edit at the
+      // wrong page after a reorder or deletion.
+      if (replicaTimer || (m.gen | 0) !== initGen) return;
       const idx = m.index | 0;
       if (idx !== selectedPage && idx >= 0 && idx < state.layout.pages.length) {
         selectedPage = idx;
@@ -256,7 +262,7 @@
     } else if (m.type === 'slot-selected') {
       // Click-to-configure: the replica says which tile the user tapped (or where a
       // mutation moved the already-selected one, or -1/-1 when it went away).
-      onReplicaSelection(m.page | 0, m.index | 0, m.instanceId || null);
+      onReplicaSelection(m.page | 0, m.index | 0, m.instanceId || null, m.gen);
     } else if (m.type === 'add-widget') {
       // The replica's "+" zone hands the add over to us (#45): a modal palette
       // inside the scaled strip covered the very layout being edited. Follow the
@@ -313,14 +319,18 @@
     renderEditorPanel();
   }
 
-  function onReplicaSelection(pageIdx, slotIdx, instanceId) {
+  function onReplicaSelection(pageIdx, slotIdx, instanceId, gen) {
     // An armed re-init debounce means the replica still shows a layout we have
     // since edited: every index it emits — select AND deselect — references the
     // OLD copy, and a mere existence check can bless the WRONG slot (delete slot
     // 0 from the strip, tap the tile still showing old slot 1: our slot 1 is a
     // different widget). Same rule as captureReplicaLayout: drop it — the
     // imminent re-init repaints the replica and re-imposes our selection.
-    if (replicaTimer) return;
+    // The generation echo covers the post-to-apply gap the timer can't see, and
+    // unlike the instanceId check below it also protects LEGACY slots that have
+    // no id to verify: a matching generation proves the replica applied the
+    // current init, so its indices refer to the layout we hold right now.
+    if (replicaTimer || (gen | 0) !== initGen) return;
     if (pageIdx < 0 || slotIdx < 0) {
       if (selectedSlot === null) return;
       selectedSlot = null;
