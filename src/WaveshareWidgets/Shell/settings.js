@@ -1083,6 +1083,12 @@
     if (target < 0 || target >= page.slots.length) return;
     const [slot] = page.slots.splice(index, 1);
     page.slots.splice(target, 0, slot);
+    // ◀/▶ is an ORDER gesture: column pins on the swapped pair would override
+    // the reorder (placement claims anchors before consulting order) and the
+    // move would persist invisibly. Both pins dissolve — same rule as dropping
+    // one tile onto another on the panel.
+    delete slot.col;
+    if (page.slots[index]) delete page.slots[index].col;
     if (selectedSlot === index) selectedSlot = target;       // selection follows its slot
     else if (selectedSlot === target) selectedSlot = index;  // ±1 swap displaced the neighbor
     renderEditor();
@@ -1109,10 +1115,12 @@
     '💬', '📧', '📅', '⏰', '🌙', '☀️', '☁️', '💡', '🔋', '📶', '🧭', '🗺️',
   ];
 
-  // Leading emoji (with variation selectors / skin tones / ZWJ sequences) plus
-  // trailing whitespace — what a picker:'emoji-prefix' pick swaps out so the
-  // text after the icon survives (launcher labels: "🎮 Steam" → "🚀 Steam").
-  const LEAD_EMOJI_RE = /^\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier})*\s*/u;
+  // Leading emoji plus trailing whitespace — what a picker:'emoji-prefix' pick
+  // swaps out so the text after the icon survives (launcher labels: "🎮 Steam"
+  // → "🚀 Steam"). Covers regional-indicator flags (🇺🇸) and keycaps (1️⃣) as
+  // well as pictographic VS16/skin-tone/ZWJ/tag sequences — mirror of the
+  // launcher widget's own leading-icon matcher.
+  const LEAD_EMOJI_RE = /^(?:[\u{1F1E6}-\u{1F1FF}]{2}|[0-9#*]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier}|[\u{E0020}-\u{E007F}])*)\s*/u;
 
   function closeEmojiPop() {
     const pop = document.querySelector('.emoji-pop');

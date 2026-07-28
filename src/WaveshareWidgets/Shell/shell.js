@@ -66,8 +66,10 @@
     }
     else if (msg.type === 'page') {
       // Replica steering: the preview is pointer-events:none, so the settings window
-      // drives which page is visible (its selected page).
-      if (PREVIEW) { previewPage = msg.index | 0; goToPage(previewPage); }
+      // drives which page is visible (its selected page). Silent — the settings
+      // window already shows this page; an echo would re-trigger its stale-nav
+      // self-heal in a loop.
+      if (PREVIEW) { previewPage = msg.index | 0; goToPage(previewPage, true); }
     }
     else if (msg.type === 'edit-mode') {
       // WYSIWYG settings (#32): the embedding settings window drives the replica's
@@ -601,7 +603,7 @@
     return navTarget !== null ? navTarget : currentPage();
   }
 
-  function goToPage(index) {
+  function goToPage(index, silent) {
     const count = dotsEl.children.length;
     const clamped = Math.max(0, Math.min(count - 1, index));
     const left = clamped * pagesEl.clientWidth;
@@ -609,8 +611,10 @@
     if (editing) disarmPageDelete(); // an armed delete must not carry over to another page
     // WYSIWYG: page moves initiated inside the editing replica (add page, edge-drop,
     // capsule arrows) must steer the settings window too, or its rail/detail panel
-    // keeps operating on the page the preview no longer shows.
-    if (PREVIEW && editing) postToHost({ type: 'page-changed', index: clamped, gen: previewGen });
+    // keeps operating on the page the preview no longer shows. HOST-steered moves
+    // are silent: echoing them back turns the settings' own stale-navigation
+    // re-steer into a message ping-pong until its debounce clears.
+    if (PREVIEW && editing && !silent) postToHost({ type: 'page-changed', index: clamped, gen: previewGen });
     pagesEl.scrollTo({ left, behavior: 'smooth' });
     wakeChrome();
   }
@@ -1288,10 +1292,12 @@
     '💬', '📧', '📅', '⏰', '🌙', '☀️', '☁️', '💡', '🔋', '📶', '🧭', '🗺️',
   ];
 
-  // Leading emoji (with variation selectors / skin tones / ZWJ sequences) plus
-  // trailing whitespace — what a picker:'emoji-prefix' pick swaps out so the
-  // text after the icon survives (launcher labels: "🎮 Steam" → "🚀 Steam").
-  const PS_LEAD_EMOJI = /^\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier})*\s*/u;
+  // Leading emoji plus trailing whitespace — what a picker:'emoji-prefix' pick
+  // swaps out so the text after the icon survives (launcher labels: "🎮 Steam"
+  // → "🚀 Steam"). Covers regional-indicator flags (🇺🇸) and keycaps (1️⃣) as
+  // well as pictographic VS16/skin-tone/ZWJ/tag sequences — mirror of the
+  // launcher widget's own leading-icon matcher.
+  const PS_LEAD_EMOJI = /^(?:[\u{1F1E6}-\u{1F1FF}]{2}|[0-9#*]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier}|[\u{E0020}-\u{E007F}])*)\s*/u;
 
   function closeEmojiPop() {
     const pop = document.querySelector('.emoji-pop');

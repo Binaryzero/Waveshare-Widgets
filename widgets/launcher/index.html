@@ -76,8 +76,9 @@
   const cfg = { columns: 0 };
   let items = [];
 
-  // Leading emoji (incl. variation selectors, skin tones, and ZWJ sequences).
-  const EMOJI_RE = /^(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier})*)/u;
+  // Leading emoji: regional-indicator flags (🇺🇸), keycaps (1️⃣), and
+  // pictographic sequences (incl. variation selectors, skin tones, ZWJ, tags).
+  const EMOJI_RE = /^([\u{1F1E6}-\u{1F1FF}]{2}|[0-9#*]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier}|[\u{E0020}-\u{E007F}])*)/u;
 
   const MAX_ITEMS = 24;
 
