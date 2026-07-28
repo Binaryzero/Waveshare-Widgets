@@ -352,7 +352,14 @@ body.editing.dragging .edge { pointer-events: auto; opacity: 0.85; }
   touch-action: manipulation;
   animation: ww-add-pulse 2.2s ease-in-out infinite;
 }
-body.editing .add-zone { display: grid; place-items: center; }
+body.editing .add-zone { display: grid; place-items: center; align-content: center; gap: 2px; }
+.add-zone .az-plus { font-size: 30px; font-weight: 300; line-height: 1; }
+.add-zone .az-label {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  color: color-mix(in srgb, var(--accent, #4cc2ff) 85%, transparent);
+}
 @keyframes ww-add-pulse {
   0%, 100% { border-color: color-mix(in srgb, var(--accent, #4cc2ff) 55%, transparent); }
   50% { border-color: color-mix(in srgb, var(--accent, #4cc2ff) 90%, transparent); }

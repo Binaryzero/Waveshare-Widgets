@@ -250,7 +250,15 @@
       // or before applying the latest init (generation echo) indexes a layout we
       // no longer hold — following it would point every page/widget edit at the
       // wrong page after a reorder or deletion.
-      if (replicaTimer || (m.gen | 0) !== initGen) return;
+      // A DROPPED navigation must still converge: unlike captures (the imminent
+      // re-init repaints the replica), nothing else corrects a page split, and
+      // the field showed the strip stuck on one page while the preview displayed
+      // another — with every edit landing on the wrong page's state. Steer the
+      // replica back to OUR page so the two surfaces re-agree visibly.
+      if (replicaTimer || (m.gen | 0) !== initGen) {
+        replicaPost({ type: 'page', index: selectedPage });
+        return;
+      }
       const idx = m.index | 0;
       if (idx !== selectedPage && idx >= 0 && idx < state.layout.pages.length) {
         selectedPage = idx;

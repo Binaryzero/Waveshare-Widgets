@@ -272,18 +272,48 @@
   // Returns per-slot {col, w, band} or null when the page is already full.
   function placeSlots(slotDefs) {
     const occupied = [new Array(4).fill(false), new Array(4).fill(false)]; // [row][col]
-    return slotDefs.map((def) => {
+    const results = new Array(slotDefs.length).fill(null);
+    const rowsOf = (band) => band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1];
+    const free = (rows, col, w) => {
+      if (col < 0 || col + w > 4) return false;
+      for (const r of rows) for (let i = 0; i < w; i++) if (occupied[r][col + i]) return false;
+      return true;
+    };
+    const take = (rows, col, w) => {
+      for (const r of rows) for (let i = 0; i < w; i++) occupied[r][col + i] = true;
+    };
+    // Pass A — anchors first. A slot dropped onto a free cell carries `col`
+    // (1-based): it claims THAT column. Without anchors, order-based first-fit
+    // packs half-width tiles back to the left no matter where they were dropped
+    // — the field recording's "drag and drop is still not working": dropping
+    // onto the empty right half committed an order swap that rendered in the
+    // exact same place. An anchor that no longer fits (resize, collision on an
+    // old layout) falls back to flow placement below instead of vanishing.
+    slotDefs.forEach((def, i) => {
+      const anchor = (def.col >= 1 && def.col <= 4) ? def.col - 1 : null;
+      if (anchor === null) return;
       const { w, band } = parseSize(def.size);
-      const rows = band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1];
-      for (let col = 0; col + w <= 4; col++) {
-        let fits = true;
-        for (const r of rows) for (let i = 0; i < w && fits; i++) if (occupied[r][col + i]) fits = false;
-        if (!fits) continue;
-        for (const r of rows) for (let i = 0; i < w; i++) occupied[r][col + i] = true;
-        return { col, w, band };
+      const rows = rowsOf(band);
+      if (free(rows, anchor, w)) {
+        take(rows, anchor, w);
+        results[i] = { col: anchor, w, band };
       }
-      return null;
     });
+    // Pass B — everything else flows first-fit into the remaining cells
+    // (the original model; unanchored layouts behave exactly as before).
+    slotDefs.forEach((def, i) => {
+      if (results[i] !== null) return;
+      const { w, band } = parseSize(def.size);
+      const rows = rowsOf(band);
+      for (let col = 0; col + w <= 4; col++) {
+        if (free(rows, col, w)) {
+          take(rows, col, w);
+          results[i] = { col, w, band };
+          return;
+        }
+      }
+    });
+    return results;
   }
 
   function applyThemeTokens(tokens) {
@@ -383,7 +413,16 @@
     // while editing (relayoutPage keeps it placed and hides it when the page is full).
     const addZone = document.createElement('button');
     addZone.className = 'add-zone';
-    addZone.textContent = '+';
+    // A bare "+" read as decoration in the field ("the palette icon is gone") —
+    // say what the zone does.
+    const plus = document.createElement('span');
+    plus.className = 'az-plus';
+    plus.textContent = '+';
+    const azLabel = document.createElement('span');
+    azLabel.className = 'az-label';
+    azLabel.textContent = 'Add widget';
+    addZone.append(plus, azLabel);
+    addZone.title = 'Add a widget to this page';
     addZone.addEventListener('click', () => openPalette(page));
     pageEl.appendChild(addZone);
 
@@ -958,6 +997,7 @@
     const remove = document.createElement('button');
     remove.className = 'remove';
     remove.textContent = '✕';
+    remove.title = 'Remove this widget (tap twice)';
     remove.addEventListener('click', (ev) => {
       ev.stopPropagation();
       confirmThen(remove, '✕', true, () => removeSlot(record));
@@ -968,10 +1008,19 @@
     size.className = 'size';
     const band = document.createElement('button');
     band.className = 'band';
+    // Field report: the bottom-right chips were unexplained glyphs. The tooltip
+    // names the CURRENT value and what tapping does (hover on the desktop
+    // replica; on-glass they at least read right to assistive tech).
+    const WIDTH_NAMES = { quarter: 'quarter', half: 'half', 'three-quarter': 'three-quarter', full: 'full' };
+    const BAND_NAMES = { full: 'full height', upper: 'top half', lower: 'bottom half' };
     const syncLabels = () => {
       const parts = sizeParts(record.def.size);
       size.textContent = WIDTH_LABELS[parts.width];
       band.textContent = BAND_LABELS[parts.band];
+      size.title = 'Width: ' + (WIDTH_NAMES[parts.width] || parts.width) + ' of the screen — tap to cycle';
+      band.title = 'Height: ' + (BAND_NAMES[parts.band] || parts.band) + ' — tap to cycle';
+      size.setAttribute('aria-label', size.title);
+      band.setAttribute('aria-label', band.title);
     };
     syncLabels();
     record.syncLabels = syncLabels; // drag drops can change the band; the chips must follow
@@ -1887,20 +1936,25 @@
     let best = null;
     for (let c = 0; c < candidates.length; c++) {
       const cand = candidates[c];
-      for (let i = 0; i <= rest.length; i++) {
+      const w = parseSize(cand.size).w;
+      // Anchor columns whose span would cover the pointed-at column, nearest
+      // span-center first: the drop pins the widget WHERE THE USER POINTED —
+      // probing insertion order instead let first-fit pack it back to the left,
+      // which read as a bounce whenever the left column was free.
+      const anchors = [];
+      for (let a = Math.max(0, col - w + 1); a <= Math.min(col, 4 - w); a++) anchors.push(a);
+      anchors.sort((a, b) =>
+        Math.abs(a + (w - 1) / 2 - col) - Math.abs(b + (w - 1) / 2 - col) || a - b);
+      for (const a of anchors) {
         const probe = rest.slice();
-        probe.splice(i, 0, { size: cand.size }); // placeSlots only reads .size — never mutate the live def
+        // placeSlots only reads .size/.col — never mutate the live def.
+        probe.push({ size: cand.size, col: a + 1 });
         const places = placeSlots(probe);
-        if (places[i] === null) continue;
-        if (!probe.every((d, k) => k === i || !beforePlaced.has(d) || places[k] !== null)) continue;
-        // Distance from the pointed-at column to the placed SPAN (not its left
-        // edge): pointing at the right half of a wide landing spot must not read
-        // as "missed it" and hand the win to a smaller size.
-        const right = places[i].col + places[i].w - 1;
-        const dist = col < places[i].col ? places[i].col - col : (col > right ? col - right : 0);
-        if (!best || dist < best.dist || (dist === best.dist && c < best.rank)) {
-          best = { index: i, size: cand.size, place: places[i], dist, rank: c };
-        }
+        const own = places[probe.length - 1];
+        if (own === null || own.col !== a) continue; // anchor cell blocked
+        if (!probe.every((d, k) => k === probe.length - 1 || !beforePlaced.has(d) || places[k] !== null)) continue;
+        if (!best || c < best.rank) best = { size: cand.size, col: a + 1, place: own, rank: c };
+        break; // nearest fitting anchor for this candidate size
       }
     }
     return best;
@@ -1988,10 +2042,14 @@
           const srcParts = sizeParts(d.record.def.size);
           const tgtParts = sizeParts(target.def.size);
           const oldSize = d.record.def.size;
+          const oldCol = d.record.def.col;
           const beforeOrder = defs.slice();
           const beforePlaced = placedSet(defs);
           if (srcParts.band !== 'full' && tgtParts.band !== 'full' && srcParts.band !== tgtParts.band)
             d.record.def.size = makeSize(srcParts.width, tgtParts.band);
+          // Dropping ONTO a tile means "next to that widget" — order semantics;
+          // a column pin from an earlier cell drop would override the reorder.
+          delete d.record.def.col;
           defs.splice(srcIdx, 1);
           // Dragging forward drops AFTER the target, dragging back drops BEFORE it —
           // insert-before alone would put a forward drag right back where it started.
@@ -2004,6 +2062,7 @@
           const adoptedPlaces = placeSlots(defs);
           if (!defs.every((dd, k) => !beforePlaced.has(dd) || adoptedPlaces[k] !== null)) {
             d.record.def.size = oldSize;
+            if (oldCol !== undefined) d.record.def.col = oldCol;
             defs.splice(0, defs.length, ...beforeOrder);
           }
           if (d.record.syncLabels) d.record.syncLabels();
@@ -2014,11 +2073,12 @@
       const t = d.targetCell;
       mutate(() => {
         const defs = d.record.page.slots || [];
-        const from = defs.indexOf(d.record.def);
-        if (from < 0) return; // removed while dragging
-        defs.splice(from, 1);
-        d.record.def.size = t.size; // targetCell was validated against the live page
-        defs.splice(Math.min(t.index, defs.length), 0, d.record.def);
+        if (defs.indexOf(d.record.def) < 0) return; // removed while dragging
+        // targetCell was validated against the live page: pin the widget to the
+        // column the user pointed at. Order stays put — the anchor, not the
+        // index, decides where this widget renders from now on.
+        d.record.def.size = t.size;
+        d.record.def.col = t.col;
         if (d.record.syncLabels) d.record.syncLabels();
         relayoutPage(d.record.page);
       });
