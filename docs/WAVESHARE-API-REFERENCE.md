@@ -83,14 +83,15 @@ section heading).
 | `text` | – | string |
 | `number` | `min`, `max`, `step` | number |
 | `slider` | `min`, `max`, `step` | number |
-| `color` | – | string (hex) |
+| `color` | – | string (hex) — **data colors only** (content, e.g. a pen or series color); appearance (text/accent/background/state colors) comes from the design tokens + per-slot style override, never from manifest properties |
 | `select` | `options: string[]` | string |
 | `switch` | – | boolean |
 | `sensor` | `sensor_type` (filter) | string (sensor id) |
+| `sensors-factory` | `sensor_type` (filter) | `[{sensorId, color}]` — an add/remove list of sensors, each with a per-sensor data color (see the stock Fans widget) |
 | `location` | – | string (city name) **or** `{label, latitude, longitude}` (picked) |
 
 ```json
-{ "name": "accentColor", "label": "Accent Color", "type": "color", "default": "#00d4ff" }
+{ "name": "units", "label": "Units", "type": "select", "options": ["celsius", "fahrenheit"], "default": "celsius" }
 ```
 
 The `location` type renders a city-search picker (disambiguates duplicate place names);
@@ -108,7 +109,7 @@ WW.onMedia((media) => { /* when now-playing changes */ });
 WW.onTheme((theme) => { /* live token change (style edits); tokens are already on :root */ });
 
 // State (current snapshots)
-WW.settings          // merged property values, e.g. WW.settings.accentColor
+WW.settings          // merged property values, e.g. WW.settings.units
 WW.sensors           // SensorReading[] (see Sensor model)
 WW.media             // MediaState | null
 WW.status            // { elevated: boolean, apiVersion: number }
@@ -198,12 +199,13 @@ Sensor tiers (what exists depends on the machine and elevation):
 | `sys:idle:seconds` (type `Idle`, units `s`) | `GetLastInputInfo` — seconds since the last keyboard/mouse input, for "at the PC" logic (vitals away-freeze) |
 | `sys:thermal:<zone>` | ACPI thermal zones (firmware-dependent CPU-ish temp) |
 | GPU temp/load/VRAM, storage | LibreHardwareMonitor (vendor user-mode DLLs) |
+| Fan/pump RPM from USB fan hubs, AIO coolers and digital PSUs | LibreHardwareMonitor (user-mode HID — no elevation) |
 | `corsair:<id>:battery` | iCUE SDK, if `iCUESDK.x64_2019.dll` present + iCUE SDK enabled |
 | `battery:<slug>` (type `Battery`, units `%`) | Bluetooth device battery via Windows PnP (`DEVPKEY_Bluetooth_Battery`) + laptop batteries via `Win32_Battery`; charging shown as `Name (charging)`. 2.4 GHz-dongle devices (Slipstream/Unifying) expose nothing here. |
 
-| Needs elevation + PawnIO | Source |
+| Needs elevation **and** PawnIO (both — either alone yields nothing) | Source |
 |---|---|
-| CPU core temps, fan RPM, voltages, motherboard/SuperIO | LibreHardwareMonitor kernel driver |
+| CPU core temps, motherboard/SuperIO fan headers, voltages | LibreHardwareMonitor via the PawnIO driver (its device is admin-only) |
 
 Always render a placeholder for `value === null`, and degrade when a sensor is absent —
 check `WW.status.elevated` and pick fallbacks (the stock CPU widget does this).

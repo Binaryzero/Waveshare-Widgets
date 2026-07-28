@@ -37,7 +37,6 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   "preview_icon": "preview.png",
   "supported_slots": ["quarter", "half", "full"],
   "properties": [
-    { "name": "accentColor", "label": "Accent Color", "type": "color", "default": "#00d4ff" },
     { "name": "city", "label": "City", "type": "text", "default": "Berlin" },
     { "name": "scale", "label": "Scale", "type": "slider", "min": 0.5, "max": 2, "step": 0.1, "default": 1 },
     { "name": "mode", "label": "Mode", "type": "select", "options": ["simple", "detailed"], "default": "simple" },
@@ -55,10 +54,21 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   fills the slot.
 - `properties` — user-configurable settings. The host merges `default`s with the
   per-instance `settings` from `layout.json` and injects the result. Types: `text`,
-  `number`, `slider`, `color`, `select`, `sensor` (a sensor id string), `location`
+  `number`, `slider`, `color`, `select`, `sensor` (a sensor id string),
+  `sensors-factory` (an add/remove list of sensors, optionally filtered by
+  `sensor_type`; the value is `[{sensorId, color}]` — see the stock Fans widget),
+  `location`
   (rendered as a city-search picker; the value is either a raw string the widget should
   best-match itself, or a picked `{label, latitude, longitude}` object — handle both,
   like the stock weather widget), and `list` (below).
+
+  **`color` properties are reserved for data colors** — colors that are *content*, such
+  as a per-series line color, where two instances legitimately differ as data. Never
+  declare color properties for appearance (text, labels, accents, backgrounds, state
+  colors): appearance is single-sourced from the design tokens — the global theme plus
+  the per-slot style override (the 🎨 editor / the slot's `style` in `layout.json`) —
+  so style with `var(--token)` and it follows automatically. See
+  [WIDGET-STANDARD.md](WIDGET-STANDARD.md).
 
   **Never ask the user to type structured data.** A property whose value is really a
   collection must use `type: "list"` — the settings window renders add/remove rows with
@@ -101,7 +111,7 @@ WW.onSensors((sensors) => { /* every ~2 s */ });
 WW.onMedia((media) => { /* when now-playing changes */ });
 WW.onTheme((theme) => { /* live token change (style edits); tokens are already on :root */ });
 
-WW.settings          // merged property values, e.g. WW.settings.accentColor
+WW.settings          // merged property values, e.g. WW.settings.city
 WW.sensors           // latest snapshot: [{id, name, device, deviceType, type, units, value}]
 WW.media             // {available, title, artist, album, status, thumbnail}
 WW.status            // {elevated, apiVersion}
@@ -160,9 +170,11 @@ away-freeze), plus firmware-dependent
 ACPI thermal zones as `sys:thermal:<zone>` (deviceType `System`, type `Temperature`).
 Bluetooth device and laptop batteries appear as `battery:<slug>` (type `Battery`,
 units `%`); devices on a 2.4 GHz dongle (Slipstream/Unifying) don't expose battery here.
-Precise CPU core temperature and fan/motherboard sensors only exist when the host runs
-elevated with PawnIO installed (`WW.status.elevated` tells you; degrade gracefully like
-the stock CPU widget, which falls back to a thermal zone).
+Precise CPU core temperature and motherboard/SuperIO sensors (fan headers, voltages)
+only exist when the host runs elevated **and** PawnIO is installed — both, either alone
+yields nothing (`WW.status.elevated` tells you; degrade gracefully like the stock CPU
+widget, which falls back to a thermal zone). Fan RPMs from GPUs and from USB fan/AIO
+controllers appear without elevation.
 
 ## iCUE widget compatibility
 

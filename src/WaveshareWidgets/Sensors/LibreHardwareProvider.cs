@@ -4,9 +4,11 @@ namespace WaveshareWidgets.Sensors;
 
 /// <summary>
 /// Primary sensor backend, wrapping LibreHardwareMonitorLib.
-/// Unelevated it still yields GPU stats (via the vendor's user-mode driver DLLs), memory and
-/// storage data; CPU temperatures and motherboard/SuperIO sensors appear only when the app
-/// runs elevated (see README).
+/// Unelevated it still yields GPU stats (via the vendor's user-mode driver DLLs), memory,
+/// storage, and USB fan/AIO-controller readings (user-mode HID); CPU core temperatures and
+/// motherboard/SuperIO sensors (fan headers, voltages) appear only when the app runs
+/// elevated AND the PawnIO driver is installed — LHM 0.9.6 talks to hardware exclusively
+/// through PawnIO's admin-only device, so either one alone yields nothing (see README).
 /// </summary>
 public sealed class LibreHardwareProvider : ISensorProvider
 {
@@ -25,7 +27,16 @@ public sealed class LibreHardwareProvider : ISensorProvider
             IsMemoryEnabled = true,
             IsMotherboardEnabled = true,
             IsStorageEnabled = true,
+            // Fan/pump hubs and AIO coolers (Aquacomputer, NZXT, Corsair Commander/Hydro,
+            // TBalancer, AeroCool, Razer, ...) — user-mode USB/HID, so their fan RPMs work
+            // WITHOUT elevation. With this off, a build whose fans hang off a controller
+            // reports no Fan sensors at all even though "the machine has fans".
+            IsControllerEnabled = true,
+            // Corsair/NZXT digital PSUs (fan RPM, rail voltages/power) — also user-mode USB.
+            IsPsuEnabled = true,
             IsNetworkEnabled = false, // network throughput comes from SystemCountersProvider
+            // Battery deliberately off: BatteryProvider already reports battery:<slug>
+            // sensors; enabling LHM's would duplicate them under different ids.
         };
         try
         {

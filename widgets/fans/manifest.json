@@ -2,8 +2,8 @@
   "id": "ws.stock.fans",
   "name": "Fans",
   "author": "Waveshare Widgets",
-  "version": "1.0.0",
-  "description": "Every fan and pump at a glance — spinning impellers with live RPM, grouped by location. Tap a fan's name to rename it.",
+  "version": "1.1.0",
+  "description": "Every fan and pump at a glance — spinning impellers with live RPM, grouped by location. Shows all fans automatically, or pick specific ones in Settings. Tap a fan's name to rename it.",
   "min_api_version": 1,
   "supported_slots": [
     "quarter",
@@ -12,10 +12,11 @@
   ],
   "properties": [
     {
-      "name": "impellerColor",
-      "label": "Impeller Color",
-      "type": "color",
-      "default": "#00d4ff"
+      "name": "fans",
+      "label": "Fans shown",
+      "type": "sensors-factory",
+      "sensor_type": "Fan",
+      "default": []
     },
     {
       "name": "bgStyle",
