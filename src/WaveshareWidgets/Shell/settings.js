@@ -1344,8 +1344,11 @@
         if (prop.step != null) input.step = prop.step;
         input.value = current != null ? current : '';
         input.oninput = () => {
+          // Constraint validation doesn't block input events: without the
+          // validity check an out-of-range value (dwell=1 against min 4) would
+          // commit and reach widgets that don't defensively clamp.
           const parsed = parseFloat(input.value);
-          if (!Number.isNaN(parsed)) set(parsed);
+          if (!Number.isNaN(parsed) && input.validity.valid) set(parsed);
         };
         return input;
       }

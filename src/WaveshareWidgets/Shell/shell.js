@@ -505,8 +505,15 @@
 
   // Widget loads can flake (virtual-host races, heavy first paints); retry stragglers
   // a couple of times before declaring them failed.
+  let watchdogTimer = null;
   function armWatchdog(gen) {
-    setTimeout(() => {
+    // ONE pending chain, ever: arming replaces the previous timer. Stacked chains
+    // (rapid settings reloads each arming their own) would sweep the same
+    // uninitialized slot at the spacing between edits and burn both retries in
+    // fractions of the intended seven-second startup window.
+    clearTimeout(watchdogTimer);
+    watchdogTimer = setTimeout(() => {
+      watchdogTimer = null;
       if (gen !== generation) return;
       let retrying = false;
       for (const slot of slots) {
@@ -1310,6 +1317,11 @@
     } catch (e) { /* unserializable settings: init delivery still applies them */ }
     record.hash = hash;
     record.initialized = false; // the fresh document's ww-ready gets a full init
+    // The document that registered any notification demand is being destroyed —
+    // carrying its flag forward would keep the host polling toasts forever if
+    // the fresh document (new settings) never re-opts or the reload fails.
+    record.notifWatch = false;
+    syncNotificationDemand();
     record.frame.src = record.url + '?r=' + (++propReloadSeq) + hash;
     // This navigation can flake exactly like an initial load (virtual-host races,
     // heavy first paints) — and the boot watchdog chain has long since finished.
@@ -1427,13 +1439,23 @@
         if (prop.step != null) input.step = prop.step;
         input.value = current != null ? String(current) : '';
         input.oninput = () => {
-          // Same rule as the desktop editor: a cleared/half-typed field commits
-          // nothing — Number('') is 0, which would persist a below-minimum zero
-          // the moment the debounce (or Done) fired.
+          // A cleared/half-typed field commits nothing (Number('') is 0), and
+          // neither does a value outside the manifest's min/max/step — HTML
+          // constraint validation doesn't block input events, so validity is
+          // checked here before anything persists out-of-contract.
           const parsed = parseFloat(input.value);
-          if (!Number.isNaN(parsed)) set(prop, parsed);
+          if (!Number.isNaN(parsed) && input.validity.valid) set(prop, parsed);
         };
         return input;
+      }
+      case 'media-selector': {
+        // iCUE background media picker: the value is a structured object the
+        // desktop editor already declares unsupported — never a text box, which
+        // would show "[object Object]" and corrupt it on the first keystroke.
+        const note = document.createElement('p');
+        note.className = 'ps-cap';
+        note.textContent = 'Background media is not supported yet.';
+        return note;
       }
       case 'switch': {
         // Boolean toggle (iCUE + native). Falling through to text would show
