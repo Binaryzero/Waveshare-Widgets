@@ -108,6 +108,11 @@
   }
 
   function replicaInit() {
+    // This IS the delivery any armed debounce was waiting for — disarm it, both so
+    // a 'ready' arriving mid-debounce can't double-init and so replicaTimer stays a
+    // truthful "settings edits are still undelivered" signal for the capture guard.
+    clearTimeout(replicaTimer);
+    replicaTimer = null;
     lastReplicaLayout = replicaLayoutJson();
     replicaPost({
       type: 'init',
@@ -151,8 +156,12 @@
     if (json !== lastReplicaLayout) markDirty(); // a real structural edit, replica alive or not
     if (!replicaReady || previewStage.classList.contains('collapsed')) return;
     // Selection-only renders (nothing structural changed) just steer the replica to
-    // the selected page — a full re-init would needlessly reload every widget.
+    // the selected page — a full re-init would needlessly reload every widget. The
+    // replica already shows exactly this layout, so an earlier armed re-init (e.g.
+    // an edit since reverted) has nothing left to deliver: disarm it.
     if (json === lastReplicaLayout) {
+      clearTimeout(replicaTimer);
+      replicaTimer = null;
       replicaPost({ type: 'page', index: selectedPage });
       return;
     }
@@ -202,6 +211,13 @@
 
   function captureReplicaLayout(layout) {
     if (!layout || !Array.isArray(layout.pages)) return;
+    // An armed re-init debounce means the settings side holds edits the replica has
+    // NOT received yet — this capture was built from a stale copy, and adopting it
+    // would silently revert those edits (and the still-armed timer would then
+    // re-init the replica as a pure echo, reloading every widget). Drop it: the
+    // imminent re-init repaints the replica from the settings truth, visibly
+    // superseding the replica gesture instead of corrupting the working copy.
+    if (replicaTimer) return;
     state.layout = layout;
     lastReplicaLayout = replicaLayoutJson();
     selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
@@ -218,7 +234,13 @@
       return;
     }
     if (pageIdx === selectedPage && slotIdx === selectedSlot) return; // echo of our own select-slot
-    if (state.layout.pages[pageIdx]) selectedPage = pageIdx;
+    // Only adopt indices that exist in OUR copy. A tap can race a pending structural
+    // edit (e.g. the rail just deleted the page the replica still shows): its indices
+    // reference a layout we no longer hold, and adopting the slot index would render
+    // ANOTHER slot's properties. The imminent re-init resets the replica anyway.
+    const page = state.layout.pages[pageIdx];
+    if (!page || !(page.slots || [])[slotIdx]) return;
+    selectedPage = pageIdx;
     selectedSlot = slotIdx;
     renderPageList();
     renderEditorPanel();
