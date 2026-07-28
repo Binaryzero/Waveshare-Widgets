@@ -1984,10 +1984,31 @@
     // grab the freed space and knock a previously visible one off screen — a set
     // built after removal would bless exactly that swap. Hidden slots never veto.
     const beforePlaced = placedSet(rec.page.slots || []);
+    // The user aims at the hole they can SEE: a drop may only claim cells that
+    // are currently free (the dragged tile's own footprint counts as free —
+    // shrinking or sliding within it is fine). Probe feasibility alone is too
+    // loose: a full-height candidate can "fit" by RELOCATING another visible
+    // tile — the field video's 7-12s gesture kept the full-height CPU full on
+    // the bottom-left hole and teleported the GPU across the screen instead of
+    // shrinking into the hole the user pointed at.
+    const fullPlaces = placeSlots(rec.page.slots || []);
+    const othersOccupied = [new Array(4).fill(false), new Array(4).fill(false)];
+    (rec.page.slots || []).forEach((d, i) => {
+      if (d === rec.def) return;
+      const p = fullPlaces[i];
+      if (!p) return;
+      const rows = p.band === 'full' ? [0, 1] : p.band === 'upper' ? [0] : [1];
+      for (const r of rows) for (let k = 0; k < p.w; k++) othersOccupied[r][p.col + k] = true;
+    });
+    const cellsFree = (band, a, w) => {
+      const rows = band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1];
+      for (const r of rows) for (let k = 0; k < w; k++) if (othersOccupied[r][a + k]) return false;
+      return true;
+    };
     let best = null;
     for (let c = 0; c < candidates.length; c++) {
       const cand = candidates[c];
-      const w = parseSize(cand.size).w;
+      const { w, band } = parseSize(cand.size);
       // Anchor columns whose span would cover the pointed-at column, nearest
       // span-center first: the drop pins the widget WHERE THE USER POINTED —
       // probing insertion order instead let first-fit pack it back to the left,
@@ -1997,6 +2018,7 @@
       anchors.sort((a, b) =>
         Math.abs(a + (w - 1) / 2 - col) - Math.abs(b + (w - 1) / 2 - col) || a - b);
       for (const a of anchors) {
+        if (!cellsFree(band, a, w)) continue; // claims another visible tile's cells
         const probe = rest.slice();
         // placeSlots only reads .size/.col — never mutate the live def.
         probe.push({ size: cand.size, col: a + 1 });
