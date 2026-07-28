@@ -90,12 +90,6 @@
     font: inherit; font-size: 12px; text-align: center;
   }
   .chk { position: absolute; top: 2px; right: 2px; }
-  /* Elevation hint (footer meta, WIDGET-STANDARD §4): visible only unelevated,
-   * when motherboard fan headers are silently missing from the list. */
-  .hint {
-    flex: none; font-size: 10px; color: var(--text-dim); text-align: center;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
   /* State layer covers the whole tile; it paints the surface at the effective
    * panel opacity so it matches the tile's bgStyle (like the stock countdown). */
   #state {
@@ -110,7 +104,6 @@
     <span class="pill" id="pill" hidden></span>
   </header>
   <main id="grid" hidden></main>
-  <footer class="hint" id="hint" hidden>Run as administrator to see motherboard fans</footer>
   <div class="state-card" id="state">
     <div class="spinner" id="stateSpinner"></div>
     <div class="state-icon" id="stateIcon" hidden></div>
@@ -221,7 +214,6 @@
     $('stateBody').textContent = body || '';
     grid.hidden = true;
     $('pill').hidden = true;
-    $('hint').hidden = true;
     lastPill = null;
   }
 
@@ -366,9 +358,11 @@
           'driver — install PawnIO (pawnio.eu) if it isn’t, or this board’s chip may ' +
           'be unsupported. USB fan/AIO controllers appear when the hub supports them.');
       } else {
-        showState('setup', 'Run Waveshare Widgets as administrator',
-          'Motherboard fan sensors need elevated access — run the app as ' +
-          'administrator (with the PawnIO driver installed) to see fan and pump RPM.');
+        // Hard Windows constraint, stated once and only when there is nothing to
+        // show: an unelevated process cannot read motherboard fan headers at all.
+        showState('none', 'No fan readings available to this app',
+          'Windows only exposes motherboard fan headers to an elevated process ' +
+          '(with the PawnIO driver). GPU and USB fan/AIO hub fans appear without it.');
       }
       return;
     }
@@ -408,12 +402,6 @@
     }
     if (pumpsDown) setPill('Check pump', 'err');
     else setPill(spinning + '/' + fans.length + ' spinning', 'muted');
-    // Field case: SOME fans (GPU, USB controllers) show unelevated while the
-    // motherboard headers stay invisible — say why the list looks short
-    // (WIDGET-STANDARD §4: footer meta carries the elevation hint).
-    const hint = $('hint');
-    const showHint = !(WW.status && WW.status.elevated);
-    if (hint.hidden !== !showHint) hint.hidden = !showHint;
   }
 
   // 24/7 rules: skip work while hidden or while a fullscreen game is foreground

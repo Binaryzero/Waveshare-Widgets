@@ -301,7 +301,33 @@
     widgetsById = new Map(widgetLib.map((w) => [w.id, w]));
     backgroundHost = data.backgroundHost || backgroundHost;
 
+    // Instance identity must be unique: layouts from older builds can carry
+    // DUPLICATE instanceIds (positional freezes colliding with earlier
+    // adoptions), and two look-alike widgets sharing one id share widget-local
+    // storage — settings and state on one tile visibly bleed into the other
+    // (field report: "editing settings on the top one directly impacts the one
+    // below it"). Re-mint duplicates here; the panel persists the healed ids.
+    const seenIds = new Set();
+    let reMinted = 0;
+    for (const page of layoutData.pages) {
+      for (const def of page.slots || []) {
+        if (!def.instanceId) continue;
+        if (seenIds.has(def.instanceId)) {
+          def.instanceId = 'i' + Date.now().toString(36) + '-' + (++instanceSeq) + 'd';
+          reMinted++;
+        }
+        seenIds.add(def.instanceId);
+      }
+    }
+
     renderAll();
+
+    if (reMinted && !PREVIEW) {
+      // Heal the stored layout so the dupes never come back. The replica skips
+      // this: its capture stream must never dirty a freshly opened editor.
+      postToHost({ type: 'log', message: 'healed ' + reMinted + ' duplicate widget instanceId(s)' });
+      persistLayout();
+    }
   }
 
   function renderAll() {
@@ -690,12 +716,12 @@
     // In the settings replica the HOST owns edit mode (its "Edit layout" toggle):
     // hide the pencil and Done so the replica can't fall out of sync with it.
     editBtn.style.display = 'none';
-    document.getElementById('editDone').style.display = 'none';
-    // One surface per job (#42): when editing from the desktop, page add/delete
-    // belong to the settings window around this replica — the capsule keeps only
-    // prev/next navigation there.
-    document.getElementById('pageAdd').style.display = 'none';
-    document.getElementById('pageDelete').style.display = 'none';
+    // Nothing floats over the canvas in the replica (field report: the capsule
+    // and style panel covered — and BLOCKED — the very tiles being edited). The
+    // settings window around this frame owns page management, navigation (pages
+    // strip + the dots) and appearance; the preview shows only widgets.
+    editBar.style.display = 'none';
+    document.body.classList.add('preview'); // CSS scoping for replica-only styling
   }
   const paletteEl = document.getElementById('palette');
   const paletteGrid = document.getElementById('paletteGrid');
@@ -715,6 +741,9 @@
 
   function applySelectionClass() {
     for (const s of slots) s.el.classList.toggle('selected', s === selected);
+    // Spotlight scoping: with a selection active the replica dims everything else,
+    // so "which of the four identical widgets am I editing" answers itself.
+    document.body.classList.toggle('has-selection', !!selected);
   }
 
   function postSelection() {
@@ -922,7 +951,10 @@
     ov.appendChild(size);
     ov.appendChild(band);
 
-    if (widget) {
+    // No 🎨 in the replica: the settings window's Appearance section is the one
+    // style editor there — two editors for the same seeds on one screen had them
+    // visibly fighting (field report: "double settings menu").
+    if (widget && !PREVIEW) {
       const style = document.createElement('button');
       style.className = 'style';
       style.textContent = '🎨';
@@ -958,13 +990,18 @@
     return WIDTH_ORDER.filter((w) => declared.has(w));
   }
 
-  // Would every slot on the page still fit if `def` had `size`?
+  // Would `def` at `size` place, without costing any currently-placing slot its
+  // spot? (Slots that already fail to place — legacy over-full pages — don't veto.)
   function fitsWithSize(page, def, size) {
+    const defs = page.slots || [];
     const original = def.size;
+    const before = unplacedCount(defs);
     def.size = size;
-    const ok = placeSlots(page.slots || []).every((p) => p !== null);
+    const places = placeSlots(defs);
+    const after = places.reduce((n, p) => n + (p === null ? 1 : 0), 0);
+    const selfPlaced = places[defs.indexOf(def)] !== null;
     def.size = original;
-    return ok;
+    return selfPlaced && after <= before;
   }
 
   // The fit checks run INSIDE the mutation step: view transitions run steps
@@ -1037,6 +1074,7 @@
   }
 
   function openStyleEditor(record) {
+    if (PREVIEW) return; // the settings window's Appearance section owns styling there
     styleTarget = record;
     const widget = widgetsById.get(record.def.widgetId);
     spTitle.textContent = widget ? widget.name : record.def.widgetId;
@@ -1142,16 +1180,18 @@
   function defaultSizeFor(page, widget) {
     const widths = allowedWidths(widget).slice().reverse(); // widest first, shrink into the hole
     const probe = { widgetId: widget.id, size: 'quarter', settings: {} };
-    (page.slots = page.slots || []).push(probe);
+    const defs = (page.slots = page.slots || []);
+    const before = unplacedCount(defs);
+    defs.push(probe);
     let found = null;
     outer:
     for (const band of ['full', 'upper', 'lower']) {
       for (const w of widths) {
         probe.size = makeSize(w, band);
-        if (placeSlots(page.slots).every((p) => p !== null)) { found = probe.size; break outer; }
+        if (unplacedCount(defs) === before) { found = probe.size; break outer; }
       }
     }
-    page.slots.pop();
+    defs.pop();
     return found;
   }
 
@@ -1179,6 +1219,13 @@
       btn.disabled = !defaultSizeFor(page, widget);
       btn.addEventListener('click', () => addWidget(page, widget));
       paletteGrid.appendChild(btn);
+    }
+    // A wall of disabled entries reads as "broken", not "full" — say it plainly.
+    if (![...paletteGrid.children].some((b) => !b.disabled)) {
+      const note = document.createElement('p');
+      note.className = 'p-full';
+      note.textContent = 'This page is full — remove a widget or add a page.';
+      paletteGrid.prepend(note);
     }
     paletteEl.hidden = false;
   }
@@ -1246,10 +1293,21 @@
     if (drag) finishDrag(false);
   }
 
+  // Legacy layouts can carry slots that ALREADY fail to place (over-full pages
+  // hide them instead of rejecting the file). Field bug: one hidden slot made
+  // every fit check on the page fail — adds all "No room", drops all bouncing —
+  // while free space sat visibly on screen. The bar for any edit is "nobody who
+  // places today loses their spot", never "the whole page is perfect".
+  function unplacedCount(defs) {
+    return placeSlots(defs).reduce((n, p) => n + (p === null ? 1 : 0), 0);
+  }
+
   function pageFits(page, def) {
-    (page.slots = page.slots || []).push(def);
-    const ok = placeSlots(page.slots).every((p) => p !== null);
-    page.slots.pop();
+    const defs = (page.slots = page.slots || []);
+    const before = unplacedCount(defs);
+    defs.push(def);
+    const ok = unplacedCount(defs) === before; // the pushed def is last: unchanged count = it placed
+    defs.pop();
     return ok;
   }
 
@@ -1281,9 +1339,12 @@
   // Maps a pointer position over the dragged widget's own page to a landing spot in
   // FREE grid space. Empty cells are first-class drop targets (#40 — the field demo
   // showed drags ending on the "+" zone bouncing back): half-height widgets adopt the
-  // band of the row under the pointer, and the insertion index is chosen so first-fit
-  // places the widget in the column the user is pointing at (nearest that fits).
-  // Returns { index, size, place } or null when nothing fits around that cell.
+  // band of the row under the pointer, and a widget pointed at a hole SMALLER than
+  // itself shrinks into it instead of bouncing back (field report: "onto a smaller
+  // space ... it should be the smaller size"). Landing where the user points wins;
+  // at equal distance the largest size that fits wins — so a plain move into open
+  // space keeps the size, and only a genuinely tighter hole resizes.
+  // Returns { index, size, place, dist } or null when nothing fits anywhere near.
   function cellTargetAt(x, y) {
     const rec = drag.record;
     const pageEl = pageEls.get(rec.page);
@@ -1293,17 +1354,39 @@
     const col = Math.max(0, Math.min(3, Math.floor(((x - rect.left) / Math.max(1, rect.width)) * 4)));
     const row = (y - rect.top) < rect.height / 2 ? 0 : 1;
     const parts = sizeParts(rec.def.size);
-    const band = parts.band === 'full' ? 'full' : (row === 0 ? 'upper' : 'lower');
-    const size = makeSize(parts.width, band);
+    const rowBand = row === 0 ? 'upper' : 'lower';
+    const widths = allowedWidths(widgetsById.get(rec.def.widgetId));
+    const startW = Math.max(0, widths.indexOf(parts.width));
+    const widthList = [parts.width].concat(widths.slice(0, startW).reverse()); // current, then narrower
+    const bandList = parts.band === 'full' ? ['full', rowBand] : [rowBand];
+    const candidates = [];
+    for (const band of bandList) {
+      for (const width of widthList) {
+        candidates.push({ size: makeSize(width, band),
+          area: (WIDTH_ORDER.indexOf(width) + 1) * (band === 'full' ? 2 : 1) });
+      }
+    }
+    candidates.sort((a, b) => b.area - a.area); // biggest footprint first
     const rest = (rec.page.slots || []).filter((d) => d !== rec.def);
+    const baseline = unplacedCount(rest); // hidden legacy over-full slots never veto a drop
     let best = null;
-    for (let i = 0; i <= rest.length; i++) {
-      const probe = rest.slice();
-      probe.splice(i, 0, { size }); // placeSlots only reads .size — never mutate the live def here
-      const places = placeSlots(probe);
-      if (!places.every((p) => p !== null)) continue;
-      const dist = Math.abs(places[i].col - col);
-      if (!best || dist < best.dist) best = { index: i, size, place: places[i], dist };
+    for (let c = 0; c < candidates.length; c++) {
+      const cand = candidates[c];
+      for (let i = 0; i <= rest.length; i++) {
+        const probe = rest.slice();
+        probe.splice(i, 0, { size: cand.size }); // placeSlots only reads .size — never mutate the live def
+        const places = placeSlots(probe);
+        const nulls = places.reduce((n, p) => n + (p === null ? 1 : 0), 0);
+        if (places[i] === null || nulls > baseline) continue;
+        // Distance from the pointed-at column to the placed SPAN (not its left
+        // edge): pointing at the right half of a wide landing spot must not read
+        // as "missed it" and hand the win to a smaller size.
+        const right = places[i].col + places[i].w - 1;
+        const dist = col < places[i].col ? places[i].col - col : (col > right ? col - right : 0);
+        if (!best || dist < best.dist || (dist === best.dist && c < best.rank)) {
+          best = { index: i, size: cand.size, place: places[i], dist, rank: c };
+        }
+      }
     }
     return best;
   }
@@ -1390,14 +1473,17 @@
           const srcParts = sizeParts(d.record.def.size);
           const tgtParts = sizeParts(target.def.size);
           const oldSize = d.record.def.size;
+          const before = unplacedCount(defs);
           if (srcParts.band !== 'full' && tgtParts.band !== 'full' && srcParts.band !== tgtParts.band)
             d.record.def.size = makeSize(srcParts.width, tgtParts.band);
           defs.splice(srcIdx, 1);
           // Dragging forward drops AFTER the target, dragging back drops BEFORE it —
           // insert-before alone would put a forward drag right back where it started.
           defs.splice(defs.indexOf(target.def) + (srcIdx < tgtIdx ? 1 : 0), 0, d.record.def);
-          // A pure reorder always fits (same sizes); the adopted band might not.
-          if (!placeSlots(defs).every((p) => p !== null)) d.record.def.size = oldSize;
+          // A pure reorder never costs a spot; the adopted band might — revert it
+          // only if the page places WORSE than before (hidden legacy slots that
+          // never placed don't count against the drop).
+          if (unplacedCount(defs) > before) d.record.def.size = oldSize;
           if (d.record.syncLabels) d.record.syncLabels();
           relayoutPage(d.record.page);
         });

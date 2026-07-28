@@ -97,10 +97,13 @@
   function loadTranslations() {
     // An iCUE package WITHOUT a translation.json 404s this probe on every single
     // load — with per-widget re-inits that reads as endless console spam (#36).
-    // Remember the miss for the session (per widget origin) and skip the fetch.
+    // Remember the miss for the session and skip the fetch. Keyed per DOCUMENT
+    // PATH, not per origin: several documents can share an origin (the shell and
+    // settings pages both live on app.wsw) and one document's miss must never
+    // suppress another's real translation file.
     let missKey = null;
     try {
-      missKey = 'ww-tr-missing';
+      missKey = 'ww-tr-missing:' + location.pathname;
       if (sessionStorage.getItem(missKey) === '1') { trReady = true; maybeInit(); return; }
     } catch (e) { missKey = null; /* storage unavailable: probe as before */ }
     fetch('translation.json')

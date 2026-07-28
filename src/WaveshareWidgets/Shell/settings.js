@@ -628,11 +628,15 @@
     renderEditorPanel();
   }
 
-  // Mirror of the shell's defaultSizeFor: widest size that still lets EVERY slot
-  // on the page place — full height first, then a top/bottom band to fill holes.
+  // Mirror of the shell's defaultSizeFor: widest size that fits WITHOUT costing
+  // any currently-placing slot its spot. Legacy layouts can carry slots that
+  // already fail to place (over-full pages hide them) — they must not veto adds
+  // into the free space that IS visible (field bug: every gallery entry said
+  // "No room" while half the page sat empty).
   function defaultSizeFor(page, widget) {
     const widths = offeredWidths(widget).slice().reverse(); // widest first, shrink into the hole
     const slots = (page.slots = page.slots || []);
+    const baseline = countUnplaced(slots);
     const probe = { size: 'quarter' };
     slots.push(probe);
     let found = null;
@@ -640,7 +644,7 @@
     for (const band of ['full', 'upper', 'lower']) {
       for (const w of widths) {
         probe.size = w + (band === 'full' ? '' : '-' + band);
-        if (countUnplaced(slots) === 0) { found = probe.size; break outer; }
+        if (countUnplaced(slots) === baseline) { found = probe.size; break outer; }
       }
     }
     slots.pop();
@@ -671,6 +675,13 @@
       btn.disabled = !size;
       btn.addEventListener('click', () => addWidgetToPage(page, widget));
       wrap.appendChild(btn);
+    }
+    // A wall of disabled entries reads as "broken", not "full" — say it plainly.
+    if (![...wrap.children].some((b) => !b.disabled)) {
+      const note = document.createElement('p');
+      note.className = 'g-full panel-hint';
+      note.textContent = 'This page is full — remove a widget or add a page.';
+      wrap.prepend(note);
     }
   }
 
