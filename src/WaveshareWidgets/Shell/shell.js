@@ -1380,8 +1380,11 @@
     }
     candidates.sort((a, b) => b.area - a.area); // biggest footprint first
     const rest = (rec.page.slots || []).filter((d) => d !== rec.def);
-    const restPlaced = placedSet(rest); // hidden legacy over-full slots never veto a drop —
-                                        // but every slot VISIBLE now must stay visible
+    // The protected set is what was visible BEFORE the gesture, computed on the
+    // FULL page: merely removing the dragged widget can let a hidden legacy slot
+    // grab the freed space and knock a previously visible one off screen — a set
+    // built after removal would bless exactly that swap. Hidden slots never veto.
+    const beforePlaced = placedSet(rec.page.slots || []);
     let best = null;
     for (let c = 0; c < candidates.length; c++) {
       const cand = candidates[c];
@@ -1390,7 +1393,7 @@
         probe.splice(i, 0, { size: cand.size }); // placeSlots only reads .size — never mutate the live def
         const places = placeSlots(probe);
         if (places[i] === null) continue;
-        if (!probe.every((d, k) => k === i || !restPlaced.has(d) || places[k] !== null)) continue;
+        if (!probe.every((d, k) => k === i || !beforePlaced.has(d) || places[k] !== null)) continue;
         // Distance from the pointed-at column to the placed SPAN (not its left
         // edge): pointing at the right half of a wide landing spot must not read
         // as "missed it" and hand the win to a smaller size.

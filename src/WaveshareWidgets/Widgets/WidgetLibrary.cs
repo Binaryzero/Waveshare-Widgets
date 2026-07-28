@@ -234,7 +234,33 @@ public sealed partial class WidgetLibrary : IDisposable
         var releaseB = preB.Length == 0;
         if (releaseA != releaseB)
             return releaseA ? 1 : -1;
-        return string.CompareOrdinal(preA, preB);
+        return ComparePrerelease(preA, preB);
+    }
+
+    /// <summary>SemVer §11 prerelease comparison: dot-separated identifiers compare
+    /// pairwise — numeric ones numerically (and below any alphanumeric identifier),
+    /// alphanumeric ones ordinally; when one list prefixes the other, the shorter
+    /// ranks lower. So "beta.2" &lt; "beta.10" &lt; "beta.10.x" (a plain ordinal
+    /// compare would have put beta.2 above beta.10).</summary>
+    private static int ComparePrerelease(string a, string b)
+    {
+        var idsA = a.Split('.');
+        var idsB = b.Split('.');
+        for (var i = 0; i < Math.Max(idsA.Length, idsB.Length); i++)
+        {
+            if (i >= idsA.Length)
+                return -1;
+            if (i >= idsB.Length)
+                return 1;
+            var isNumA = long.TryParse(idsA[i], out var numA);
+            var isNumB = long.TryParse(idsB[i], out var numB);
+            var cmp = isNumA && isNumB ? numA.CompareTo(numB)
+                : isNumA != isNumB ? (isNumA ? -1 : 1)
+                : string.CompareOrdinal(idsA[i], idsB[i]);
+            if (cmp != 0)
+                return cmp;
+        }
+        return 0;
     }
 
     private static (Version Core, string Prerelease, bool Ok) SplitSemVer(string? version)

@@ -126,7 +126,11 @@
       const DISCO_KEY = 'hue-discovery';
       let cached = null;
       try { cached = JSON.parse(localStorage.getItem(DISCO_KEY) || 'null'); } catch (e) { /* ignore */ }
-      const fresh = cached && typeof cached.at === 'number' && Date.now() - cached.at < 600000;
+      // A FOUND bridge is trusted for 10 minutes; a MISS only for one — a failure
+      // while the network/bridge is still coming up must not pin "No Hue Bridge
+      // found" on every instance for ten minutes after connectivity recovers.
+      const fresh = cached && typeof cached.at === 'number' &&
+        Date.now() - cached.at < (cached.ip ? 600000 : 60000);
       if (fresh) {
         if (cached.ip) { cfg.ip = String(cached.ip); discovered = true; }
       } else {
