@@ -2,7 +2,7 @@
   "id": "ws.stock.deck",
   "name": "Control Deck",
   "author": "Waveshare Widgets",
-  "version": "1.2.4",
+  "version": "1.3.0",
   "description": "A touch button grid — launch apps, open URLs, send hotkeys, control media. Each button is an icon, a name, and a target: a program path, an https:// link, hotkey:ctrl+shift+m, or media:toggle. Self-contained; no Stream Deck or iCUE required.",
   "min_api_version": 1,
   "supported_slots": [
@@ -21,7 +21,8 @@
           "key": "icon",
           "label": "Icon",
           "type": "text",
-          "placeholder": "🧮"
+          "placeholder": "🧮",
+          "picker": "emoji"
         },
         {
           "key": "label",
@@ -33,7 +34,8 @@
           "key": "target",
           "label": "Target",
           "type": "text",
-          "placeholder": "calc.exe · https://… · hotkey:ctrl+shift+m · media:toggle"
+          "placeholder": "calc.exe · https://… · hotkey:ctrl+shift+m · media:toggle",
+          "picker": "file"
         }
       ],
       "default": [

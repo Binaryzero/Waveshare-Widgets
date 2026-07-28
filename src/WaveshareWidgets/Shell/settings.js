@@ -97,6 +97,15 @@
       toast('Save failed: ' + msg.message, true);
     } else if (msg.type === 'widget-installed') {
       toast('Installed "' + msg.name + '"');
+    } else if (msg.type === 'file-picked') {
+      // Browse-button round trip (#48): fill the field that asked and commit
+      // through its own handler. A null path is a cancelled dialog.
+      const target = pendingFilePicks.get(msg.id);
+      pendingFilePicks.delete(msg.id);
+      if (target && msg.path) {
+        target.value = msg.path;
+        target.dispatchEvent(new Event('input'));
+      }
     } else if (msg.type === 'background-picked') {
       const cb = pendingBgPick;
       pendingBgPick = null;
@@ -241,7 +250,15 @@
       // or before applying the latest init (generation echo) indexes a layout we
       // no longer hold — following it would point every page/widget edit at the
       // wrong page after a reorder or deletion.
-      if (replicaTimer || (m.gen | 0) !== initGen) return;
+      // A DROPPED navigation must still converge: unlike captures (the imminent
+      // re-init repaints the replica), nothing else corrects a page split, and
+      // the field showed the strip stuck on one page while the preview displayed
+      // another — with every edit landing on the wrong page's state. Steer the
+      // replica back to OUR page so the two surfaces re-agree visibly.
+      if (replicaTimer || (m.gen | 0) !== initGen) {
+        replicaPost({ type: 'page', index: selectedPage });
+        return;
+      }
       const idx = m.index | 0;
       if (idx !== selectedPage && idx >= 0 && idx < state.layout.pages.length) {
         selectedPage = idx;
@@ -774,26 +791,44 @@
     renderAll();
   }
 
-  // Mirror of the shell's first-fit placement. Total cells alone can't tell whether
-  // everything fits (five quarter-uppers are only 5/8 cells, but the top row holds 4),
-  // so simulate the real 4x2 placement and count the slots that get dropped.
+  // Mirror of the shell's two-pass placement (anchors first, then order-based
+  // first-fit). Total cells alone can't tell whether everything fits (five
+  // quarter-uppers are only 5/8 cells, but the top row holds 4), and ignoring
+  // `col` pins would let the gallery offer sizes the real placement then hides
+  // (a pinned tile the simulation flowed left can block the columns the shell
+  // actually keeps free) — so simulate the real 4x2 placement and count drops.
   function countUnplaced(slots) {
     const occupied = [new Array(4).fill(false), new Array(4).fill(false)]; // [row][col]
-    let dropped = 0;
-    for (const s of slots) {
+    const placed = new Array(slots.length).fill(false);
+    const geo = (s) => {
       const { width, band } = parseSize(s.size);
-      const w = WIDTH_COLS[width];
-      const rows = band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1];
-      let placed = false;
-      for (let col = 0; col + w <= 4 && !placed; col++) {
-        let fits = true;
-        for (const r of rows) for (let i = 0; i < w && fits; i++) if (occupied[r][col + i]) fits = false;
-        if (!fits) continue;
-        for (const r of rows) for (let i = 0; i < w; i++) occupied[r][col + i] = true;
-        placed = true;
-      }
-      if (!placed) dropped++;
-    }
+      return { w: WIDTH_COLS[width], rows: band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1] };
+    };
+    const free = (rows, col, w) => {
+      if (col < 0 || col + w > 4) return false;
+      for (const r of rows) for (let i = 0; i < w; i++) if (occupied[r][col + i]) return false;
+      return true;
+    };
+    const take = (rows, col, w) => {
+      for (const r of rows) for (let i = 0; i < w; i++) occupied[r][col + i] = true;
+    };
+    // Pass A — anchored slots (1-based col) claim their column; a blocked
+    // anchor falls through to the flow pass, exactly like the shell.
+    slots.forEach((s, i) => {
+      const anchor = (s.col >= 1 && s.col <= 4) ? s.col - 1 : null;
+      if (anchor === null) return;
+      const { w, rows } = geo(s);
+      if (free(rows, anchor, w)) { take(rows, anchor, w); placed[i] = true; }
+    });
+    // Pass B — everything else flows first-fit in array order.
+    let dropped = 0;
+    slots.forEach((s, i) => {
+      if (placed[i]) return;
+      const { w, rows } = geo(s);
+      let col = -1;
+      for (let c = 0; c + w <= 4; c++) if (free(rows, c, w)) { col = c; break; }
+      if (col >= 0) take(rows, col, w); else dropped++;
+    });
     return dropped;
   }
 
@@ -939,6 +974,9 @@
       const grid = document.createElement('div');
       grid.className = 'props';
       slot.settings = slot.settings || {};
+      // Controls that need the full panel width; everything else packs two-up so
+      // a widget's settings sit on screen instead of scrolling as a form.
+      const WIDE_TYPES = new Set(['list', 'sensors-factory', 'location', 'media-selector']);
       let lastGroup = null;
       for (const prop of widget.properties) {
         if (prop.group && prop.group !== lastGroup) {
@@ -960,7 +998,10 @@
           editor.className = 'prop-error';
           editor.textContent = (prop.label || prop.name || 'property') + ' — this control failed to render';
         }
-        grid.append(label, editor);
+        const field = document.createElement('div');
+        field.className = 'prop-field' + (WIDE_TYPES.has(prop.type) ? ' wide' : '');
+        field.append(label, editor);
+        grid.appendChild(field);
       }
       card.appendChild(grid);
     }
@@ -1042,6 +1083,12 @@
     if (target < 0 || target >= page.slots.length) return;
     const [slot] = page.slots.splice(index, 1);
     page.slots.splice(target, 0, slot);
+    // ◀/▶ is an ORDER gesture: column pins on the swapped pair would override
+    // the reorder (placement claims anchors before consulting order) and the
+    // move would persist invisibly. Both pins dissolve — same rule as dropping
+    // one tile onto another on the panel.
+    delete slot.col;
+    if (page.slots[index]) delete page.slots[index].col;
     if (selectedSlot === index) selectedSlot = target;       // selection follows its slot
     else if (selectedSlot === target) selectedSlot = index;  // ±1 swap displaced the neighbor
     renderEditor();
@@ -1054,6 +1101,77 @@
     btn.title = title;
     btn.addEventListener('click', onClick);
     return btn;
+  }
+
+  // ---- field pickers (#48) ----------------------------------------------------
+  // Manifest fields/properties can declare picker:'emoji' (icon fields) or
+  // picker:'file' (path targets) — free-text stays available, the picker just
+  // stops "type an emoji" and "type C:\...\app.exe" from being the ONLY way.
+
+  const EMOJI_CHOICES = [
+    '🧮', '🌐', '📁', '📷', '🎨', '📝', '📊', '💻', '🖥️', '⌨️', '🖱️', '🎧',
+    '🎮', '🕹️', '🎬', '🎵', '📺', '📻', '🔊', '🔇', '⏯️', '⏭️', '⏮️', '⏹️',
+    '🚀', '⚡', '🔥', '⭐', '❤️', '🏠', '🔧', '⚙️', '🔒', '🔑', '🛡️', '📦',
+    '💬', '📧', '📅', '⏰', '🌙', '☀️', '☁️', '💡', '🔋', '📶', '🧭', '🗺️',
+  ];
+
+  // Leading emoji plus trailing whitespace — what a picker:'emoji-prefix' pick
+  // swaps out so the text after the icon survives (launcher labels: "🎮 Steam"
+  // → "🚀 Steam"). Covers regional-indicator flags (🇺🇸) and keycaps (1️⃣) as
+  // well as pictographic VS16/skin-tone/ZWJ/tag sequences — mirror of the
+  // launcher widget's own leading-icon matcher.
+  const LEAD_EMOJI_RE = /^(?:[\u{1F1E6}-\u{1F1FF}]{2}|[0-9#*]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier}|[\u{E0020}-\u{E007F}])*)\s*/u;
+
+  function closeEmojiPop() {
+    const pop = document.querySelector('.emoji-pop');
+    if (pop) pop.remove();
+    document.removeEventListener('pointerdown', onEmojiOutside, true);
+  }
+  function onEmojiOutside(ev) {
+    if (!ev.target.closest('.emoji-pop')) closeEmojiPop();
+  }
+
+  function makeEmojiBtn(input, prefix) {
+    return iconButton('😀', 'Pick an icon', (ev) => {
+      ev.stopPropagation();
+      if (document.querySelector('.emoji-pop')) { closeEmojiPop(); return; }
+      const pop = document.createElement('div');
+      pop.className = 'emoji-pop';
+      for (const e of EMOJI_CHOICES) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = e;
+        b.addEventListener('click', () => {
+          // prefix mode keeps the text and swaps only the leading icon.
+          input.value = prefix ? (e + ' ' + input.value.replace(LEAD_EMOJI_RE, '')).trimEnd() : e;
+          input.dispatchEvent(new Event('input')); // commits through the field's handler
+          closeEmojiPop();
+        });
+        pop.appendChild(b);
+      }
+      document.body.appendChild(pop);
+      const r = ev.currentTarget.getBoundingClientRect();
+      pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8)) + 'px';
+      pop.style.top = Math.min(r.bottom + 4, window.innerHeight - pop.offsetHeight - 8) + 'px';
+      document.addEventListener('pointerdown', onEmojiOutside, true);
+    });
+  }
+
+  let filePickSeq = 0;
+  const pendingFilePicks = new Map(); // id -> input awaiting the host's dialog
+
+  function makeFileBtn(input) {
+    return iconButton('📂', 'Browse for a program or file', () => {
+      const id = 'fp' + (++filePickSeq);
+      pendingFilePicks.set(id, input);
+      post({ type: 'pick-file', id });
+    });
+  }
+
+  function attachFieldPicker(container, spec, input) {
+    if (spec.picker === 'emoji' || spec.picker === 'emoji-prefix')
+      container.appendChild(makeEmojiBtn(input, spec.picker === 'emoji-prefix'));
+    else if (spec.picker === 'file') container.appendChild(makeFileBtn(input));
   }
 
   // Widths a widget can take: its declared supported widths, plus three-quarter for
@@ -1091,14 +1209,39 @@
     return select;
   }
 
+  /** Segmented button group for short static option lists: every choice visible,
+   * the current one lit. Option entries are strings or {value, label}. */
+  function segmented(options, current, commit) {
+    const seg = document.createElement('div');
+    seg.className = 'seg';
+    seg.setAttribute('role', 'group');
+    const valueOf = (o) => String((o && typeof o === 'object') ? o.value : o);
+    const textOf = (o) => (o && typeof o === 'object') ? (o.label || o.value) : o;
+    const light = (chosen) => {
+      for (const b of seg.querySelectorAll('button')) b.classList.toggle('active', b.dataset.v === chosen);
+    };
+    for (const o of options) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'seg-btn';
+      b.dataset.v = valueOf(o);
+      b.textContent = textOf(o);
+      b.addEventListener('click', () => { commit(valueOf(o)); light(valueOf(o)); });
+      seg.appendChild(b);
+    }
+    light(current != null ? String(current) : '');
+    return seg;
+  }
+
   function propEditor(prop, slot) {
     const current = slot.settings[prop.name] !== undefined ? slot.settings[prop.name] : prop.default;
     const set = (value) => { slot.settings[prop.name] = value; refreshReplica('layout'); };
 
     switch (prop.type) {
-      case 'switch': { // iCUE boolean toggle
+      case 'switch': { // iCUE boolean toggle — rendered as a real switch, not a form checkbox
         const input = document.createElement('input');
         input.type = 'checkbox';
+        input.className = 'toggle-check';
         input.checked = current === true || current === 'true';
         input.onchange = () => set(input.checked);
         return input;
@@ -1270,15 +1413,28 @@
         input.type = 'number';
         if (prop.min != null) input.min = prop.min;
         if (prop.max != null) input.max = prop.max;
-        if (prop.step != null) input.step = prop.step;
+        // Without a declared step the HTML default of 1 would fail validity on
+        // fractional values the manifest never prohibited (e.g. 1.5).
+        input.step = prop.step != null ? prop.step : 'any';
         input.value = current != null ? current : '';
         input.oninput = () => {
+          // Constraint validation doesn't block input events: without the
+          // validity check an out-of-range value (dwell=1 against min 4) would
+          // commit and reach widgets that don't defensively clamp.
           const parsed = parseFloat(input.value);
-          if (!Number.isNaN(parsed)) set(parsed);
+          if (!Number.isNaN(parsed) && input.validity.valid) set(parsed);
         };
         return input;
       }
       case 'select': {
+        // Static short option lists render as segmented BUTTONS — every choice on
+        // screen at once, current one lit — instead of a closed dropdown (field
+        // report: settings should be visible, not a wall of form controls).
+        // Dynamic lists (host-backed profiles, sensors) keep the dropdown.
+        const staticOpts = prop.options || [];
+        if (!prop.optionsSource && staticOpts.length >= 2 && staticOpts.length <= 5) {
+          return segmented(staticOpts, current, set);
+        }
         const select = document.createElement('select');
         for (const option of prop.options || []) {
           select.add(new Option(option, option, false, option === current));
@@ -1371,6 +1527,7 @@
               input.setAttribute('aria-label', field.label || field.key);
               input.oninput = () => { item[field.key] = input.value; commit(); };
               row.appendChild(input);
+              attachFieldPicker(row, field, input); // picker:'emoji' / picker:'file' (#48)
             }
             row.appendChild(iconButton('✕', 'Remove ' + (prop.itemLabel || 'item'), () => {
               items.splice(i, 1); commit(); renderList();
@@ -1427,6 +1584,14 @@
         if (prop.placeholder) input.placeholder = String(prop.placeholder);
         input.value = current != null ? String(current) : '';
         input.oninput = () => set(input.value);
+        if (prop.picker) {
+          // picker:'emoji' / picker:'file' on a top-level text property (#48).
+          const wrap = document.createElement('div');
+          wrap.className = 'picker-wrap';
+          wrap.appendChild(input);
+          attachFieldPicker(wrap, prop, input);
+          return wrap;
+        }
         return input;
       }
     }

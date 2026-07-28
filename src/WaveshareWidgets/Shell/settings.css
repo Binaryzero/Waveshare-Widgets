@@ -227,16 +227,71 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .slot-row select.widget { flex: 1; }
 .slot-row select.size { width: 190px; }
 
+/* Settings sit ON SCREEN: compact fields packed two-up (label above control),
+ * not a scrolling label/input form (field report: "wall of text"). */
 .props {
   display: grid;
-  grid-template-columns: 170px 1fr;
-  gap: 8px 14px;
-  align-items: center;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px 18px;
+  align-items: start;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--line);
 }
+.prop-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.prop-field.wide { grid-column: 1 / -1; }
+.prop-field > label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
 .props label { color: var(--muted); }
+
+/* Segmented option group: every choice visible, the current one lit. */
+.seg { display: flex; flex-wrap: wrap; gap: 4px; }
+.seg-btn {
+  min-height: 30px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.seg-btn:hover { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.seg-btn.active {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent, #0a0a0a);
+  font-weight: 700;
+}
+
+/* Boolean switch: a real toggle, not a bare form checkbox. */
+input.toggle-check {
+  appearance: none;
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 35%, transparent);
+  border: 1px solid var(--line);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+input.toggle-check::after {
+  content: "";
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+input.toggle-check:checked { background: var(--accent); }
+input.toggle-check:checked::after { transform: translateX(18px); }
 .props .group-title {
   grid-column: 1 / -1;
   color: var(--accent);
@@ -258,7 +313,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .props select, .props input[type="text"], .props input[type="number"] { width: 100%; max-width: 380px; }
 
 .props .muted { color: var(--muted); font-size: 12px; }
-.props input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); justify-self: start; }
+.props input[type="checkbox"]:not(.toggle-check) { width: 18px; height: 18px; accent-color: var(--accent); justify-self: start; }
 
 .location-picker { display: flex; flex-direction: column; gap: 6px; max-width: 420px; }
 .location-picker input, .location-picker select { width: 100%; }
@@ -442,3 +497,28 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
 /* Unsaved-changes marker on Save & apply. */
 #save.dirty::after { content: ' •'; }
+
+/* ---- field pickers (#48) ---------------------------------------------------- */
+/* Emoji popover: fixed-position grid near the button that opened it. */
+.emoji-pop {
+  position: fixed;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: repeat(8, 34px);
+  gap: 2px;
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--surface, #14181e);
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+.emoji-pop button {
+  width: 34px; height: 34px;
+  border: 0; border-radius: 8px;
+  background: transparent;
+  font-size: 20px; line-height: 1;
+  cursor: pointer;
+}
+.emoji-pop button:hover { background: color-mix(in srgb, var(--accent, #4cc2ff) 25%, transparent); }
+.picker-wrap { display: flex; gap: 6px; align-items: center; }
+.picker-wrap input { flex: 1; min-width: 0; }

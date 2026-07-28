@@ -129,6 +129,10 @@ public sealed class SettingsWindow : Form
                     HandlePickBackground(message["target"]?.GetValue<string>() ?? "");
                     break;
 
+                case "pick-file":
+                    HandlePickFile(message["id"]?.GetValue<string>() ?? "");
+                    break;
+
                 case "preview-data":
                     // Widget data requests surfaced by the embedded replica. Marshaled
                     // back onto the UI thread because the fetch/ping handlers reply from
@@ -346,6 +350,26 @@ public sealed class SettingsWindow : Form
     /// stored file name to the editor, tagged with <paramref name="target"/> (which spec to
     /// update: "global" or "page:&lt;index&gt;").
     /// </summary>
+    /// <summary>File browser for path-valued widget settings (deck/launcher targets):
+    /// text fields are a miserable way to enter "C:\...\app.exe" (#48). Cancel posts
+    /// a null path so the editor can stop waiting.</summary>
+    private void HandlePickFile(string id)
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Choose a program or file to launch",
+            Filter = "Programs (*.exe;*.bat;*.cmd;*.lnk)|*.exe;*.bat;*.cmd;*.lnk|All files (*.*)|*.*",
+            CheckFileExists = true,
+        };
+        var ok = dialog.ShowDialog(this) == DialogResult.OK;
+        Post(new JsonObject
+        {
+            ["type"] = "file-picked",
+            ["id"] = id,
+            ["path"] = ok ? dialog.FileName : null,
+        });
+    }
+
     private void HandlePickBackground(string target)
     {
         using var dialog = new OpenFileDialog

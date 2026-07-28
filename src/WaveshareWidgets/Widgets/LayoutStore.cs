@@ -106,6 +106,12 @@ public sealed class LayoutSlot
     /// band instead of the full 400px height (e.g. "half-upper").</summary>
     [JsonPropertyName("size")] public string Size { get; set; } = "quarter";
 
+    /// <summary>Column anchor (1–4) set when the widget was drag-dropped onto a free
+    /// cell: it renders AT that column instead of flowing left with first-fit. Null =
+    /// flow placement (every layout before anchors existed). An anchor that no longer
+    /// fits falls back to flow in the shell rather than hiding the widget.</summary>
+    [JsonPropertyName("col")] public int? Col { get; set; }
+
     /// <summary>Per-instance overrides of the widget's declared property defaults.</summary>
     [JsonPropertyName("settings")] public JsonObject? Settings { get; set; }
 }

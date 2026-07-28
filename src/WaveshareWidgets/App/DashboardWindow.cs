@@ -312,6 +312,15 @@ public sealed class DashboardWindow : Form
                     HandleAudioGet(message);
                     break;
 
+                case "sd-profiles":
+                    // The on-device settings sheet (#48) needs the same discovered
+                    // Virtual Stream Deck profile list the desktop editor gets.
+                    PostToShell("sd-profiles-result", new JsonObject
+                    {
+                        ["profiles"] = JsonSerializer.SerializeToNode(StreamDeckBridge.ListProfileNames()),
+                    });
+                    break;
+
                 case "notifications-watch":
                     _notifications.SetWatching(message["on"]?.GetValue<bool>() == true);
                     break;

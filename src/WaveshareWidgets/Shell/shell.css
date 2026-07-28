@@ -352,7 +352,14 @@ body.editing.dragging .edge { pointer-events: auto; opacity: 0.85; }
   touch-action: manipulation;
   animation: ww-add-pulse 2.2s ease-in-out infinite;
 }
-body.editing .add-zone { display: grid; place-items: center; }
+body.editing .add-zone { display: grid; place-items: center; align-content: center; gap: 2px; }
+.add-zone .az-plus { font-size: 30px; font-weight: 300; line-height: 1; }
+.add-zone .az-label {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  color: color-mix(in srgb, var(--accent, #4cc2ff) 85%, transparent);
+}
 @keyframes ww-add-pulse {
   0%, 100% { border-color: color-mix(in srgb, var(--accent, #4cc2ff) 55%, transparent); }
   50% { border-color: color-mix(in srgb, var(--accent, #4cc2ff) 90%, transparent); }
@@ -411,8 +418,10 @@ body.editing #dots, body.editing .edge { opacity: 0.85; }
 body.editing .edge { pointer-events: none; }
 body.editing.dragging .edge { pointer-events: auto; }
 
-/* Per-widget style editor (edit mode): right-docked over the live tile. */
-#stylePanel {
+/* Per-widget style editor (edit mode) and settings sheet (#48): right-docked
+ * over the live tile — the tile IS the preview for every change. */
+#stylePanel,
+#propSheet {
   position: fixed;
   top: 8px;
   right: 8px;
@@ -430,7 +439,68 @@ body.editing.dragging .edge { pointer-events: auto; }
   overflow-y: auto;
   scrollbar-width: none;
 }
-#stylePanel[hidden] { display: none; }
+#stylePanel[hidden], #propSheet[hidden] { display: none; }
+#propSheet { width: 360px; } /* list rows need the extra room */
+
+/* Settings sheet controls: touch-first (40px+ targets), token-styled. */
+.ps-field { display: flex; flex-direction: column; gap: 4px; }
+.ps-field > label { font-size: 11px; font-weight: 700; color: var(--text-muted, #8e9196); }
+.ps-field input[type="text"], .ps-field input[type="number"], .ps-field select {
+  min-height: 38px;
+  padding: 0 10px;
+  font: inherit; font-size: 13px;
+  color: var(--text, #e8ecf2);
+  background: color-mix(in srgb, var(--surface, #111418) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  border-radius: 8px;
+}
+.ps-field input[type="color"] { width: 52px; height: 38px; border: 0; background: transparent; padding: 0; }
+.ps-inline { display: flex; gap: 6px; align-items: center; }
+.ps-inline input, .ps-inline select { flex: 1; min-width: 0; }
+.ps-inline .ps-pick {
+  min-width: 42px; min-height: 38px;
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  border-radius: 8px; background: transparent; color: var(--text, #e8ecf2);
+  font: inherit; font-size: 16px; cursor: pointer; touch-action: manipulation;
+}
+.ps-item {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 14%, transparent);
+  border-radius: 10px;
+}
+.ps-item .ps-item-head { display: flex; align-items: center; justify-content: space-between; }
+.ps-item .ps-item-head span { font-size: 11px; font-weight: 700; color: var(--text-muted, #8e9196); }
+.ps-add, .ps-remove {
+  min-height: 38px;
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  border-radius: 8px; background: transparent; color: var(--text, #e8ecf2);
+  font: inherit; font-weight: 600; cursor: pointer; touch-action: manipulation;
+}
+.ps-remove { min-width: 38px; min-height: 30px; color: #ff7676; }
+.ps-cap { font-size: 10.5px; color: var(--text-muted, #8e9196); margin: 0; }
+.edit-overlay .gear { bottom: 4px; left: 46px; }
+
+/* On-device emoji picker: same grid as the desktop popover, token-styled. */
+.emoji-pop {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: repeat(8, 36px);
+  gap: 2px;
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--surface, #14181e);
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+.emoji-pop button {
+  width: 36px; height: 36px;
+  border: 0; border-radius: 8px;
+  background: transparent;
+  font-size: 21px; line-height: 1;
+  cursor: pointer; touch-action: manipulation;
+}
 .sp-head { display: flex; align-items: center; justify-content: space-between; }
 #spTitle { font-size: 13px; font-weight: 800; color: var(--text, #e8ecf2); }
 #spClose {
@@ -470,3 +540,49 @@ body.preview.editing .slot, body.preview.editing .add-zone { transition: opacity
 body.preview.editing.has-selection .slot:not(.selected),
 body.preview.editing.has-selection .add-zone { opacity: 0.45; }
 body.preview.editing.has-selection .slot.selected { z-index: 4; }
+.ps-field input[type="checkbox"]:not(.toggle-check) { width: 22px; height: 22px; accent-color: var(--accent, #4cc2ff); }
+
+/* Segmented option group + boolean toggle for the settings sheet — every choice
+ * visible and tappable, matching the desktop editor's controls. */
+.seg { display: flex; flex-wrap: wrap; gap: 4px; }
+.seg-btn {
+  min-height: 38px;
+  padding: 0 14px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text, #e8ecf2);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  border-radius: 8px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.seg-btn.active {
+  background: var(--accent, #4cc2ff);
+  border-color: transparent;
+  color: var(--on-accent, #0a0a0a);
+  font-weight: 700;
+}
+input.toggle-check {
+  appearance: none;
+  width: 48px;
+  height: 26px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted, #8e9196) 35%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  position: relative;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background 0.15s ease;
+}
+input.toggle-check::after {
+  content: "";
+  position: absolute;
+  top: 3px; left: 3px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+input.toggle-check:checked { background: var(--accent, #4cc2ff); }
+input.toggle-check:checked::after { transform: translateX(22px); }
