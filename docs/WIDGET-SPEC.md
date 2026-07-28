@@ -88,7 +88,11 @@ Install via tray → **Install widget…**, or unzip the folder directly into
 
   Text properties and list fields may also declare a `picker` to add a picker button
   next to the free-text input (typing always stays available):
-  - `"picker": "emoji"` — an emoji grid for icon fields (deck/launcher button icons).
+  - `"picker": "emoji"` — an emoji grid for icon fields; the pick replaces the whole
+    value (deck button icons).
+  - `"picker": "emoji-prefix"` — the same grid for fields where a *leading* emoji is
+    the icon and the rest is text (launcher shortcut names): the pick swaps only the
+    leading emoji and keeps the text after it.
   - `"picker": "file"` — a native file browser that fills the field with the chosen
     path (desktop settings window only; the on-device editor keeps free text).
 

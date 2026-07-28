@@ -1288,6 +1288,11 @@
     '💬', '📧', '📅', '⏰', '🌙', '☀️', '☁️', '💡', '🔋', '📶', '🧭', '🗺️',
   ];
 
+  // Leading emoji (with variation selectors / skin tones / ZWJ sequences) plus
+  // trailing whitespace — what a picker:'emoji-prefix' pick swaps out so the
+  // text after the icon survives (launcher labels: "🎮 Steam" → "🚀 Steam").
+  const PS_LEAD_EMOJI = /^\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier})*\s*/u;
+
   function closeEmojiPop() {
     const pop = document.querySelector('.emoji-pop');
     if (pop) pop.remove();
@@ -1415,10 +1420,39 @@
     }
   }
 
+  /** Segmented button group for short static option lists: every choice visible
+   * and tappable, the current one lit — same control the desktop editor renders. */
+  function psSegmented(options, current, commit) {
+    const seg = document.createElement('div');
+    seg.className = 'seg';
+    const valueOf = (o) => String((o && typeof o === 'object') ? o.value : o);
+    const textOf = (o) => (o && typeof o === 'object') ? (o.label || o.value) : o;
+    const light = (chosen) => {
+      for (const b of seg.querySelectorAll('button')) b.classList.toggle('active', b.dataset.v === chosen);
+    };
+    for (const o of options) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'seg-btn';
+      b.dataset.v = valueOf(o);
+      b.textContent = textOf(o);
+      b.addEventListener('click', () => { commit(valueOf(o)); light(valueOf(o)); });
+      seg.appendChild(b);
+    }
+    light(current != null ? String(current) : '');
+    return seg;
+  }
+
   function psControl(prop, cur, set) {
     const current = cur(prop);
     switch (prop.type) {
       case 'select': {
+        // Short static lists show every choice as a tappable segment (dropdowns
+        // are miserable on the strip anyway); dynamic lists keep the dropdown.
+        const staticOpts = prop.options || [];
+        if (!prop.optionsSource && staticOpts.length >= 2 && staticOpts.length <= 5) {
+          return psSegmented(staticOpts, current, (v) => set(prop, v));
+        }
         const select = document.createElement('select');
         for (const o of prop.options || []) {
           const value = (o && typeof o === 'object') ? o.value : o;
@@ -1485,7 +1519,9 @@
         input.type = 'number';
         if (prop.min != null) input.min = prop.min;
         if (prop.max != null) input.max = prop.max;
-        if (prop.step != null) input.step = prop.step;
+        // Without a declared step the HTML default of 1 would fail validity on
+        // fractional values the manifest never prohibited (e.g. 1.5).
+        input.step = prop.step != null ? prop.step : 'any';
         input.value = current != null ? String(current) : '';
         input.oninput = () => {
           // A cleared/half-typed field commits nothing (Number('') is 0), and
@@ -1507,10 +1543,12 @@
         return note;
       }
       case 'switch': {
-        // Boolean toggle (iCUE + native). Falling through to text would show
-        // "true" and store the string "false" — which is truthy downstream.
+        // Boolean toggle (iCUE + native), rendered as a real switch. Falling
+        // through to text would show "true" and store the string "false" —
+        // which is truthy downstream.
         const input = document.createElement('input');
         input.type = 'checkbox';
+        input.className = 'toggle-check';
         input.checked = current === true || current === 'true';
         input.onchange = () => set(prop, input.checked);
         return input;
@@ -1544,11 +1582,11 @@
         if (prop.placeholder) input.placeholder = String(prop.placeholder);
         input.value = current != null ? String(current) : '';
         input.oninput = () => set(prop, input.value);
-        if (prop.picker === 'emoji') {
+        if (prop.picker === 'emoji' || prop.picker === 'emoji-prefix') {
           const wrap = document.createElement('div');
           wrap.className = 'ps-inline';
           wrap.appendChild(input);
-          wrap.appendChild(psEmojiBtn(input));
+          wrap.appendChild(psEmojiBtn(input, prop.picker === 'emoji-prefix'));
           return wrap;
         }
         return input; // picker:'file' stays free-text on-device (no dialog host here)
@@ -1556,7 +1594,7 @@
     }
   }
 
-  function psEmojiBtn(input) {
+  function psEmojiBtn(input, prefix) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'ps-pick';
@@ -1565,7 +1603,8 @@
     btn.addEventListener('click', (ev) => {
       ev.stopPropagation();
       openEmojiPop(btn, (e) => {
-        input.value = e;
+        // prefix mode keeps the text and swaps only the leading icon.
+        input.value = prefix ? (e + ' ' + input.value.replace(PS_LEAD_EMOJI, '')).trimEnd() : e;
         input.dispatchEvent(new Event('input'));
       });
     });
@@ -1630,11 +1669,11 @@
           }
           input.setAttribute('aria-label', f.label || f.key);
           input.oninput = () => { item[f.key] = input.value; commit(); };
-          if (f.picker === 'emoji') {
+          if (f.picker === 'emoji' || f.picker === 'emoji-prefix') {
             const row = document.createElement('div');
             row.className = 'ps-inline';
             row.appendChild(input);
-            row.appendChild(psEmojiBtn(input));
+            row.appendChild(psEmojiBtn(input, f.picker === 'emoji-prefix'));
             card.appendChild(row);
           } else {
             card.appendChild(input);
@@ -2043,13 +2082,17 @@
           const tgtParts = sizeParts(target.def.size);
           const oldSize = d.record.def.size;
           const oldCol = d.record.def.col;
+          const oldTgtCol = target.def.col;
           const beforeOrder = defs.slice();
           const beforePlaced = placedSet(defs);
           if (srcParts.band !== 'full' && tgtParts.band !== 'full' && srcParts.band !== tgtParts.band)
             d.record.def.size = makeSize(srcParts.width, tgtParts.band);
           // Dropping ONTO a tile means "next to that widget" — order semantics;
           // a column pin from an earlier cell drop would override the reorder.
+          // The TARGET's pin dissolves too: with it in place, Pass A would claim
+          // its column before order is consulted and the swap renders as a no-op.
           delete d.record.def.col;
+          delete target.def.col;
           defs.splice(srcIdx, 1);
           // Dragging forward drops AFTER the target, dragging back drops BEFORE it —
           // insert-before alone would put a forward drag right back where it started.
@@ -2063,6 +2106,7 @@
           if (!defs.every((dd, k) => !beforePlaced.has(dd) || adoptedPlaces[k] !== null)) {
             d.record.def.size = oldSize;
             if (oldCol !== undefined) d.record.def.col = oldCol;
+            if (oldTgtCol !== undefined) target.def.col = oldTgtCol;
             defs.splice(0, defs.length, ...beforeOrder);
           }
           if (d.record.syncLabels) d.record.syncLabels();

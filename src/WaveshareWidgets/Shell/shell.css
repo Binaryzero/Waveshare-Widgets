@@ -540,4 +540,49 @@ body.preview.editing .slot, body.preview.editing .add-zone { transition: opacity
 body.preview.editing.has-selection .slot:not(.selected),
 body.preview.editing.has-selection .add-zone { opacity: 0.45; }
 body.preview.editing.has-selection .slot.selected { z-index: 4; }
-.ps-field input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent, #4cc2ff); }
+.ps-field input[type="checkbox"]:not(.toggle-check) { width: 22px; height: 22px; accent-color: var(--accent, #4cc2ff); }
+
+/* Segmented option group + boolean toggle for the settings sheet — every choice
+ * visible and tappable, matching the desktop editor's controls. */
+.seg { display: flex; flex-wrap: wrap; gap: 4px; }
+.seg-btn {
+  min-height: 38px;
+  padding: 0 14px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text, #e8ecf2);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  border-radius: 8px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.seg-btn.active {
+  background: var(--accent, #4cc2ff);
+  border-color: transparent;
+  color: var(--on-accent, #0a0a0a);
+  font-weight: 700;
+}
+input.toggle-check {
+  appearance: none;
+  width: 48px;
+  height: 26px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted, #8e9196) 35%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  position: relative;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background 0.15s ease;
+}
+input.toggle-check::after {
+  content: "";
+  position: absolute;
+  top: 3px; left: 3px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+input.toggle-check:checked { background: var(--accent, #4cc2ff); }
+input.toggle-check:checked::after { transform: translateX(22px); }

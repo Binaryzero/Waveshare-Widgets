@@ -956,6 +956,9 @@
       const grid = document.createElement('div');
       grid.className = 'props';
       slot.settings = slot.settings || {};
+      // Controls that need the full panel width; everything else packs two-up so
+      // a widget's settings sit on screen instead of scrolling as a form.
+      const WIDE_TYPES = new Set(['list', 'sensors-factory', 'location', 'media-selector']);
       let lastGroup = null;
       for (const prop of widget.properties) {
         if (prop.group && prop.group !== lastGroup) {
@@ -977,7 +980,10 @@
           editor.className = 'prop-error';
           editor.textContent = (prop.label || prop.name || 'property') + ' — this control failed to render';
         }
-        grid.append(label, editor);
+        const field = document.createElement('div');
+        field.className = 'prop-field' + (WIDE_TYPES.has(prop.type) ? ' wide' : '');
+        field.append(label, editor);
+        grid.appendChild(field);
       }
       card.appendChild(grid);
     }
@@ -1085,6 +1091,11 @@
     '💬', '📧', '📅', '⏰', '🌙', '☀️', '☁️', '💡', '🔋', '📶', '🧭', '🗺️',
   ];
 
+  // Leading emoji (with variation selectors / skin tones / ZWJ sequences) plus
+  // trailing whitespace — what a picker:'emoji-prefix' pick swaps out so the
+  // text after the icon survives (launcher labels: "🎮 Steam" → "🚀 Steam").
+  const LEAD_EMOJI_RE = /^\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier})*\s*/u;
+
   function closeEmojiPop() {
     const pop = document.querySelector('.emoji-pop');
     if (pop) pop.remove();
@@ -1094,7 +1105,7 @@
     if (!ev.target.closest('.emoji-pop')) closeEmojiPop();
   }
 
-  function makeEmojiBtn(input) {
+  function makeEmojiBtn(input, prefix) {
     return iconButton('😀', 'Pick an icon', (ev) => {
       ev.stopPropagation();
       if (document.querySelector('.emoji-pop')) { closeEmojiPop(); return; }
@@ -1105,7 +1116,8 @@
         b.type = 'button';
         b.textContent = e;
         b.addEventListener('click', () => {
-          input.value = e;
+          // prefix mode keeps the text and swaps only the leading icon.
+          input.value = prefix ? (e + ' ' + input.value.replace(LEAD_EMOJI_RE, '')).trimEnd() : e;
           input.dispatchEvent(new Event('input')); // commits through the field's handler
           closeEmojiPop();
         });
@@ -1131,7 +1143,8 @@
   }
 
   function attachFieldPicker(container, spec, input) {
-    if (spec.picker === 'emoji') container.appendChild(makeEmojiBtn(input));
+    if (spec.picker === 'emoji' || spec.picker === 'emoji-prefix')
+      container.appendChild(makeEmojiBtn(input, spec.picker === 'emoji-prefix'));
     else if (spec.picker === 'file') container.appendChild(makeFileBtn(input));
   }
 
@@ -1170,14 +1183,39 @@
     return select;
   }
 
+  /** Segmented button group for short static option lists: every choice visible,
+   * the current one lit. Option entries are strings or {value, label}. */
+  function segmented(options, current, commit) {
+    const seg = document.createElement('div');
+    seg.className = 'seg';
+    seg.setAttribute('role', 'group');
+    const valueOf = (o) => String((o && typeof o === 'object') ? o.value : o);
+    const textOf = (o) => (o && typeof o === 'object') ? (o.label || o.value) : o;
+    const light = (chosen) => {
+      for (const b of seg.querySelectorAll('button')) b.classList.toggle('active', b.dataset.v === chosen);
+    };
+    for (const o of options) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'seg-btn';
+      b.dataset.v = valueOf(o);
+      b.textContent = textOf(o);
+      b.addEventListener('click', () => { commit(valueOf(o)); light(valueOf(o)); });
+      seg.appendChild(b);
+    }
+    light(current != null ? String(current) : '');
+    return seg;
+  }
+
   function propEditor(prop, slot) {
     const current = slot.settings[prop.name] !== undefined ? slot.settings[prop.name] : prop.default;
     const set = (value) => { slot.settings[prop.name] = value; refreshReplica('layout'); };
 
     switch (prop.type) {
-      case 'switch': { // iCUE boolean toggle
+      case 'switch': { // iCUE boolean toggle — rendered as a real switch, not a form checkbox
         const input = document.createElement('input');
         input.type = 'checkbox';
+        input.className = 'toggle-check';
         input.checked = current === true || current === 'true';
         input.onchange = () => set(input.checked);
         return input;
@@ -1349,7 +1387,9 @@
         input.type = 'number';
         if (prop.min != null) input.min = prop.min;
         if (prop.max != null) input.max = prop.max;
-        if (prop.step != null) input.step = prop.step;
+        // Without a declared step the HTML default of 1 would fail validity on
+        // fractional values the manifest never prohibited (e.g. 1.5).
+        input.step = prop.step != null ? prop.step : 'any';
         input.value = current != null ? current : '';
         input.oninput = () => {
           // Constraint validation doesn't block input events: without the
@@ -1361,6 +1401,14 @@
         return input;
       }
       case 'select': {
+        // Static short option lists render as segmented BUTTONS — every choice on
+        // screen at once, current one lit — instead of a closed dropdown (field
+        // report: settings should be visible, not a wall of form controls).
+        // Dynamic lists (host-backed profiles, sensors) keep the dropdown.
+        const staticOpts = prop.options || [];
+        if (!prop.optionsSource && staticOpts.length >= 2 && staticOpts.length <= 5) {
+          return segmented(staticOpts, current, set);
+        }
         const select = document.createElement('select');
         for (const option of prop.options || []) {
           select.add(new Option(option, option, false, option === current));
