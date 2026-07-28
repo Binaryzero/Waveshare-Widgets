@@ -1311,6 +1311,12 @@
     record.hash = hash;
     record.initialized = false; // the fresh document's ww-ready gets a full init
     record.frame.src = record.url + '?r=' + (++propReloadSeq) + hash;
+    // This navigation can flake exactly like an initial load (virtual-host races,
+    // heavy first paints) — and the boot watchdog chain has long since finished.
+    // Fresh retry budget, fresh watchdog, or a failed reload would sit silent
+    // forever: no ww-ready, no retries, no failure overlay.
+    record.retries = 0;
+    armWatchdog(generation);
   }
 
   let propApplyTimer = null;
@@ -1418,8 +1424,24 @@
         input.type = 'number';
         if (prop.min != null) input.min = prop.min;
         if (prop.max != null) input.max = prop.max;
+        if (prop.step != null) input.step = prop.step;
         input.value = current != null ? String(current) : '';
-        input.oninput = () => set(prop, Number(input.value));
+        input.oninput = () => {
+          // Same rule as the desktop editor: a cleared/half-typed field commits
+          // nothing — Number('') is 0, which would persist a below-minimum zero
+          // the moment the debounce (or Done) fired.
+          const parsed = parseFloat(input.value);
+          if (!Number.isNaN(parsed)) set(prop, parsed);
+        };
+        return input;
+      }
+      case 'switch': {
+        // Boolean toggle (iCUE + native). Falling through to text would show
+        // "true" and store the string "false" — which is truthy downstream.
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = current === true || current === 'true';
+        input.onchange = () => set(prop, input.checked);
         return input;
       }
       case 'color': {

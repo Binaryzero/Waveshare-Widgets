@@ -533,3 +533,4 @@ body.preview.editing .slot, body.preview.editing .add-zone { transition: opacity
 body.preview.editing.has-selection .slot:not(.selected),
 body.preview.editing.has-selection .add-zone { opacity: 0.45; }
 body.preview.editing.has-selection .slot.selected { z-index: 4; }
+.ps-field input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent, #4cc2ff); }
