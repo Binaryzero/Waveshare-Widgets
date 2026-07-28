@@ -31,17 +31,15 @@
   .room .head { display: flex; align-items: center; gap: 8px; cursor: pointer; touch-action: manipulation; }
   .room .bulb { font-size: clamp(14px, 5.5vh, 24px); filter: grayscale(1) brightness(0.6); transition: filter var(--dur-mid) var(--ease); }
   .room.on .bulb { filter: none; }
-  /* Per-role custom properties (set from settings only when they differ from the
-   * manifest defaults) fall through to the theme tokens. */
   .room .name {
     flex: 1;
-    color: var(--name-color, var(--text));
+    color: var(--text);
     font-size: calc(clamp(12px, 4.6vh, 18px) * var(--name-scale, 1));
     font-weight: 600;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .room .state {
-    color: var(--detail-color, var(--text-muted));
+    color: var(--text-muted);
     font-size: calc(clamp(9px, 3vh, 12px) * var(--detail-scale, 1));
     font-variant-numeric: tabular-nums;
   }
@@ -61,7 +59,7 @@
   .scenes .btn {
     min-width: 0; min-height: 0;
     font-size: calc(clamp(9px, 3vh, 12px) * var(--detail-scale, 1));
-    color: var(--detail-color, var(--text-muted));
+    color: var(--text-muted);
     border-radius: var(--radius-pill); padding: 2px 10px;
     touch-action: manipulation;
     max-width: 46%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -93,12 +91,17 @@
   const BRI_STEP = 15; // brightness step, percent
 
   const v1api = (path) => 'http://' + cfg.ip + '/api/' + username + path;
-  // CLIP v2: https with the bridge's self-signed cert; the v1 username doubles
-  // as the application key.
+  // Bridge traffic can NEVER succeed browser-side from a widget origin — v2 is
+  // https behind the bridge's self-signed cert (ERR_CERT_AUTHORITY_INVALID) and
+  // v1 is plain http from an https origin (blocked as mixed content). Browser-
+  // first fetches sprayed a console error on every poll (#44): go proxy-only.
+  const v1fetch = (url, init) => WW.fetch(url, Object.assign({ proxy: 'always' }, init || {}));
+  // CLIP v2: the v1 username doubles as the application key.
   const v2fetch = (path, init) => {
     init = init || {};
     init.headers = { 'hue-application-key': username };
     init.insecure = true;
+    init.proxy = 'always';
     return WW.fetch('https://' + cfg.ip + '/clip/v2' + path, init);
   };
 
@@ -108,15 +111,8 @@
     document.body.classList.toggle('bg-solid', s.bgStyle !== 'transparent' && s.bgStyle !== 'glass');
     document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
     document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
-    // The host merges manifest defaults into settings, so "user changed it" means
-    // "differs from the default"; only then does the property override the theme
-    // tokens — at default the token chain shows through.
-    const override = (prop, value, def) => {
-      if (value && String(value).trim().toLowerCase() !== def) document.body.style.setProperty(prop, value);
-      else document.body.style.removeProperty(prop);
-    };
-    override('--name-color', s.nameColor, '#e8ecf2');
-    override('--detail-color', s.detailColor, '#7d8697');
+    // Appearance comes from the theme tokens (global theme or the per-slot style
+    // override) — legacy color keys in old layouts are deliberately ignored.
     document.body.style.setProperty('--name-scale', String((Number(s.nameSize) || 100) / 100));
     document.body.style.setProperty('--detail-scale', String((Number(s.detailSize) || 100) / 100));
     cfg.showScenes = s.showScenes !== 'off';
@@ -135,7 +131,7 @@
         if (cached.ip) { cfg.ip = String(cached.ip); discovered = true; }
       } else {
         try {
-          const res = await WW.fetch('https://discovery.meethue.com/');
+          const res = await v1fetch('https://discovery.meethue.com/');  // no CORS for widget origins: proxy-only
           const list = await res.json();
           if (list && list[0] && list[0].internalipaddress) { cfg.ip = list[0].internalipaddress; discovered = true; }
         } catch (e) { /* fall through to message */ }
@@ -166,7 +162,7 @@
 
   async function isHueBridge(ip) {
     try {
-      const res = await WW.fetch('http://' + ip + '/api/config');
+      const res = await v1fetch('http://' + ip + '/api/config');
       if (!res.ok) return false;
       const c = await res.json();   // routers serve HTML here — json() throws
       return !!(c && c.bridgeid);
@@ -184,7 +180,7 @@
 
   document.getElementById('pairBtn').addEventListener('click', async () => {
     try {
-      const res = await WW.fetch('http://' + cfg.ip + '/api', {
+      const res = await v1fetch('http://' + cfg.ip + '/api', {
         method: 'POST',
         body: JSON.stringify({ devicetype: 'waveshare_widgets#panel' }),
       });
@@ -275,12 +271,12 @@
   }
 
   async function pollV1() {
-    const res = await WW.fetch(v1api('/groups'));
+    const res = await v1fetch(v1api('/groups'));
     const groups = await res.json();
     if (groups && groups[0] && groups[0].error) throw new Error(groups[0].error.description);
     let scenes = {};
     if (cfg.showScenes) {
-      const sr = await WW.fetch(v1api('/scenes'));
+      const sr = await v1fetch(v1api('/scenes'));
       scenes = await sr.json();
     }
     const scenesByGroup = new Map();
@@ -497,7 +493,7 @@
   async function actV1(groupId, body, el, confirm) {
     holdoff = Date.now() + 1200;   // let the bridge settle before the next poll repaints
     try {
-      const res = await WW.fetch(v1api('/groups/' + groupId + '/action'), {
+      const res = await v1fetch(v1api('/groups/' + groupId + '/action'), {
         method: 'PUT',
         body: JSON.stringify(body),
       });

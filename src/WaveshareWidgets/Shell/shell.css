@@ -282,6 +282,15 @@ body.editing .edit-overlay { display: block; }
 
 /* Slot being dragged + the slot currently under the finger. */
 .slot.drag-src { opacity: 0.35; }
+
+/* Free-space landing spot: where the dragged widget will actually be placed. */
+.page .cell-hint {
+  border: 2px dashed var(--accent, #4cc2ff);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent, #4cc2ff) 10%, transparent);
+  pointer-events: none;
+  z-index: 5;
+}
 .slot.drop-target .edit-overlay {
   border-style: solid;
   border-color: var(--accent, #4cc2ff);

@@ -95,15 +95,29 @@
   // reliable tell for an iCUE package is its x-icue-* meta declarations, so wait
   // for the DOM and fetch only when they are present.
   function loadTranslations() {
+    // An iCUE package WITHOUT a translation.json 404s this probe on every single
+    // load — with per-widget re-inits that reads as endless console spam (#36).
+    // Remember the miss for the session (per widget origin) and skip the fetch.
+    let missKey = null;
+    try {
+      missKey = 'ww-tr-missing';
+      if (sessionStorage.getItem(missKey) === '1') { trReady = true; maybeInit(); return; }
+    } catch (e) { missKey = null; /* storage unavailable: probe as before */ }
     fetch('translation.json')
-      .then((r) => (r.ok ? r.json() : null))
+      .then((r) => {
+        if (r.ok) return r.json();
+        if (missKey) { try { sessionStorage.setItem(missKey, '1'); } catch (e) { /* ignore */ } }
+        return null;
+      })
       .then((json) => {
         if (json && typeof json === 'object') {
           // Either a flat {key: text} map or nested per-language tables.
           translations = (json.en && typeof json.en === 'object') ? json.en : json;
         }
       })
-      .catch(() => { /* no translation file */ })
+      .catch(() => {
+        if (missKey) { try { sessionStorage.setItem(missKey, '1'); } catch (e) { /* ignore */ } }
+      })
       .finally(() => { trReady = true; maybeInit(); });
     setTimeout(() => { if (!trReady) { trReady = true; maybeInit(); } }, 1500);
   }

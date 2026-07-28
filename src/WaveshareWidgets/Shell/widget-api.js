@@ -248,8 +248,29 @@
      * falls back to a host-proxied request (browser-grade headers, and a full hidden-
      * browser fetch for hosts that fingerprint TLS, like Reddit). Returns a Response.
      * Only GET/POST with string bodies are supported on the proxy path.
+     *
+     * init.proxy: 'always' skips the browser attempt (targets that can NEVER succeed
+     * from a widget origin: LAN bridges behind self-signed TLS, plain-http endpoints
+     * blocked as mixed content, APIs without CORS) — the doomed browser attempt would
+     * spray a console error on every poll. 'never' disables the proxy fallback.
+     * Targets that fail browser-side once are remembered for the session (per target
+     * origin) and go proxy-first from then on, so repeat polls stay quiet even for
+     * widgets that never pass the option.
      */
     fetch(url, init) {
+      init = init || {};
+      let memoKey = null;
+      let remembered = false;
+      try {
+        memoKey = 'ww-proxy-first:' + new URL(url, location.href).origin;
+        remembered = sessionStorage.getItem(memoKey) === '1';
+      } catch (e) { memoKey = null; /* unparsable url or storage unavailable */ }
+      if (init.proxy === 'always' || (init.proxy !== 'never' && remembered)) {
+        return proxyFetch(url, init).catch((err) => {
+          if (init.proxy === 'always') throw err;
+          return fetch(url, init); // memory can go stale (CORS fixed upstream): last resort
+        });
+      }
       return fetch(url, init).then((response) => {
         // Bot walls sometimes serve their block page WITH CORS headers, so the
         // request "succeeds" as a 403/429; retry those via the host.
@@ -257,7 +278,13 @@
           return proxyFetch(url, init).catch(() => response);
         }
         return response;
-      }, () => proxyFetch(url, init));
+      }, (err) => {
+        if (init.proxy === 'never') throw err;
+        // A browser-level failure (CORS, mixed content, TLS) repeats forever —
+        // remember the origin so later calls skip straight to the proxy.
+        if (memoKey) { try { sessionStorage.setItem(memoKey, '1'); } catch (e) { /* storage off */ } }
+        return proxyFetch(url, init);
+      });
     },
 
     /** Request the Virtual Stream Deck profile; delivered via onStreamDeck(cb).

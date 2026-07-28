@@ -691,6 +691,11 @@
     // hide the pencil and Done so the replica can't fall out of sync with it.
     editBtn.style.display = 'none';
     document.getElementById('editDone').style.display = 'none';
+    // One surface per job (#42): when editing from the desktop, page add/delete
+    // belong to the settings window around this replica — the capsule keeps only
+    // prev/next navigation there.
+    document.getElementById('pageAdd').style.display = 'none';
+    document.getElementById('pageDelete').style.display = 'none';
   }
   const paletteEl = document.getElementById('palette');
   const paletteGrid = document.getElementById('paletteGrid');
@@ -874,19 +879,12 @@
     });
   });
 
-  function movePage(delta) {
-    const i = editIndex();
-    const j = i + delta;
-    if (j < 0 || j >= layoutData.pages.length) return;
-    const [page] = layoutData.pages.splice(i, 1);
-    layoutData.pages.splice(j, 0, page);
-    syncPageOrder(); refreshBgSpecs();
-    persistLayout();
-    goToPage(j);
-    updateEditBar();
-  }
-  document.getElementById('pageMoveLeft').addEventListener('click', () => movePage(-1));
-  document.getElementById('pageMoveRight').addEventListener('click', () => movePage(1));
+  // The capsule arrows NAVIGATE. They used to reorder the current page — which
+  // moved the dot indicator without changing the visible content (the viewed page
+  // travels with the reorder), reading as a dead control and silently rearranging
+  // the page order (#39). Reordering lives in the settings window's pages strip.
+  document.getElementById('pageMoveLeft').addEventListener('click', () => goToPage(editIndex() - 1));
+  document.getElementById('pageMoveRight').addEventListener('click', () => goToPage(editIndex() + 1));
 
   // ---- per-slot controls -----------------------------------------------------------
 
@@ -918,6 +916,7 @@
       band.textContent = BAND_LABELS[parts.band];
     };
     syncLabels();
+    record.syncLabels = syncLabels; // drag drops can change the band; the chips must follow
     size.addEventListener('click', (ev) => { ev.stopPropagation(); cycleWidth(record, syncLabels); });
     band.addEventListener('click', (ev) => { ev.stopPropagation(); cycleBand(record, syncLabels); });
     ov.appendChild(size);
@@ -1158,6 +1157,15 @@
 
   function openPalette(page) {
     cancelDrag(); // a second finger can reach the add-zone while a drag holds
+    // Toggle: pressing "+" again dismisses instead of stacking a re-open (#46).
+    if (!paletteEl.hidden) { closePalette(); return; }
+    if (PREVIEW && editing) {
+      // The replica is a small scaled strip inside the settings window — a modal
+      // palette here covers the very layout being edited (#46). Hand off to the
+      // settings window's widget gallery instead.
+      postToHost({ type: 'add-widget', index: Math.max(0, layoutData.pages.indexOf(page)) });
+      return;
+    }
     paletteGrid.textContent = '';
     for (const widget of widgetLib) {
       const btn = document.createElement('button');
@@ -1189,9 +1197,13 @@
         instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
       };
       (page.slots = page.slots || []).push(def);
-      buildSlot(page, def);
+      const rec = buildSlot(page, def);
       relayoutPage(page);
       armWatchdog(generation);
+      // The just-added widget is what the user configures next: select it so the
+      // settings detail panel binds to it (#41). Announced by persistLayout right
+      // after this mutation — the layout lands before the selection referencing it.
+      if (PREVIEW) selectRecord(rec, false);
     });
   }
 
@@ -1209,7 +1221,7 @@
       // hijack the state (that would orphan the first drag's ghost forever).
       if (!editing || drag || ev.target.closest('button')) return;
       overlay.setPointerCapture(ev.pointerId);
-      drag = { record, pointerId: ev.pointerId, startX: ev.clientX, startY: ev.clientY, active: false, ghost: null, raf: 0, last: null, targetSlot: null, targetEdge: null, canLeft: false, canRight: false };
+      drag = { record, pointerId: ev.pointerId, startX: ev.clientX, startY: ev.clientY, active: false, ghost: null, raf: 0, last: null, targetSlot: null, targetEdge: null, targetCell: null, hint: null, canLeft: false, canRight: false };
     });
     overlay.addEventListener('pointermove', (ev) => {
       if (!drag || drag.record !== record || ev.pointerId !== drag.pointerId) return;
@@ -1263,6 +1275,49 @@
     for (const s of slots) s.el.classList.remove('drop-target');
     edgeLeft.classList.remove('drop-page');
     edgeRight.classList.remove('drop-page');
+    if (drag && drag.hint) drag.hint.style.display = 'none';
+  }
+
+  // Maps a pointer position over the dragged widget's own page to a landing spot in
+  // FREE grid space. Empty cells are first-class drop targets (#40 — the field demo
+  // showed drags ending on the "+" zone bouncing back): half-height widgets adopt the
+  // band of the row under the pointer, and the insertion index is chosen so first-fit
+  // places the widget in the column the user is pointing at (nearest that fits).
+  // Returns { index, size, place } or null when nothing fits around that cell.
+  function cellTargetAt(x, y) {
+    const rec = drag.record;
+    const pageEl = pageEls.get(rec.page);
+    if (!pageEl) return null;
+    const rect = pageEl.getBoundingClientRect();
+    if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) return null;
+    const col = Math.max(0, Math.min(3, Math.floor(((x - rect.left) / Math.max(1, rect.width)) * 4)));
+    const row = (y - rect.top) < rect.height / 2 ? 0 : 1;
+    const parts = sizeParts(rec.def.size);
+    const band = parts.band === 'full' ? 'full' : (row === 0 ? 'upper' : 'lower');
+    const size = makeSize(parts.width, band);
+    const rest = (rec.page.slots || []).filter((d) => d !== rec.def);
+    let best = null;
+    for (let i = 0; i <= rest.length; i++) {
+      const probe = rest.slice();
+      probe.splice(i, 0, { size }); // placeSlots only reads .size — never mutate the live def here
+      const places = placeSlots(probe);
+      if (!places.every((p) => p !== null)) continue;
+      const dist = Math.abs(places[i].col - col);
+      if (!best || dist < best.dist) best = { index: i, size, place: places[i], dist };
+    }
+    return best;
+  }
+
+  function showCellHint(place) {
+    if (!drag.hint) {
+      const el = document.createElement('div');
+      el.className = 'cell-hint';
+      pageEls.get(drag.record.page).appendChild(el);
+      drag.hint = el;
+    }
+    drag.hint.style.display = '';
+    drag.hint.style.gridColumn = (place.col + 1) + ' / span ' + place.w;
+    drag.hint.style.gridRow = place.band === 'full' ? '1 / span 2' : place.band === 'upper' ? '1' : '2';
   }
 
   function trackDrag() {
@@ -1282,16 +1337,24 @@
     const edgeOk = edgeHit && ((edgeHit === edgeLeft && drag.canLeft) || (edgeHit === edgeRight && drag.canRight));
 
     clearDropHighlights();
+    drag.targetSlot = null;
+    drag.targetEdge = null;
+    drag.targetCell = null;
     if (edgeOk) {
       // Slots reach the screen edge, so a point over the edge zone usually also hits a
       // slot beneath it — the glowing edge is what the user is aiming at, so it wins.
-      drag.targetSlot = null;
       drag.targetEdge = edgeHit;
       edgeHit.classList.add('drop-page');
+    } else if (slotRec) {
+      drag.targetSlot = slotHit;
+      drag.targetSlot.classList.add('drop-target');
     } else {
-      drag.targetSlot = slotRec ? slotHit : null;
-      drag.targetEdge = null;
-      if (drag.targetSlot) drag.targetSlot.classList.add('drop-target');
+      // Free space (including the "+" zone and the widget's own footprint).
+      const cell = cellTargetAt(x, y);
+      if (cell) {
+        drag.targetCell = cell;
+        showCellHint(cell.place);
+      }
     }
   }
 
@@ -1307,6 +1370,7 @@
       return;
     }
     d.ghost.remove();
+    if (d.hint) d.hint.remove();
     d.record.el.classList.remove('drag-src');
     document.body.classList.remove('dragging');
     clearDropHighlights();
@@ -1320,13 +1384,36 @@
           const srcIdx = defs.indexOf(d.record.def);
           const tgtIdx = defs.indexOf(target.def);
           if (srcIdx < 0 || tgtIdx < 0) return; // either side removed while dragging
+          // Dropping onto a tile in the OTHER half-height band adopts that band —
+          // reorder alone would first-fit the widget straight back into its old
+          // row, which reads as a bounce-back (#40).
+          const srcParts = sizeParts(d.record.def.size);
+          const tgtParts = sizeParts(target.def.size);
+          const oldSize = d.record.def.size;
+          if (srcParts.band !== 'full' && tgtParts.band !== 'full' && srcParts.band !== tgtParts.band)
+            d.record.def.size = makeSize(srcParts.width, tgtParts.band);
           defs.splice(srcIdx, 1);
           // Dragging forward drops AFTER the target, dragging back drops BEFORE it —
           // insert-before alone would put a forward drag right back where it started.
           defs.splice(defs.indexOf(target.def) + (srcIdx < tgtIdx ? 1 : 0), 0, d.record.def);
+          // A pure reorder always fits (same sizes); the adopted band might not.
+          if (!placeSlots(defs).every((p) => p !== null)) d.record.def.size = oldSize;
+          if (d.record.syncLabels) d.record.syncLabels();
           relayoutPage(d.record.page);
         });
       }
+    } else if (d.targetCell) {
+      const t = d.targetCell;
+      mutate(() => {
+        const defs = d.record.page.slots || [];
+        const from = defs.indexOf(d.record.def);
+        if (from < 0) return; // removed while dragging
+        defs.splice(from, 1);
+        d.record.def.size = t.size; // targetCell was validated against the live page
+        defs.splice(Math.min(t.index, defs.length), 0, d.record.def);
+        if (d.record.syncLabels) d.record.syncLabels();
+        relayoutPage(d.record.page);
+      });
     } else if (d.targetEdge) {
       const dir = d.targetEdge === edgeLeft ? -1 : 1;
       const from = d.record.page;
