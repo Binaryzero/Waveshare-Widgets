@@ -1219,7 +1219,7 @@
       // The replica is a small scaled strip inside the settings window — a modal
       // palette here covers the very layout being edited (#46). Hand off to the
       // settings window's widget gallery instead.
-      postToHost({ type: 'add-widget', index: Math.max(0, layoutData.pages.indexOf(page)) });
+      postToHost({ type: 'add-widget', index: Math.max(0, layoutData.pages.indexOf(page)), gen: previewGen });
       return;
     }
     paletteGrid.textContent = '';

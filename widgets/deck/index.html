@@ -101,11 +101,20 @@
   function hotkeyExec(combo) {
     combo = String(combo || '').trim();
     const parts = combo.toLowerCase().split('+').map((p) => p.trim()).filter(Boolean);
-    // The host taps the last non-modifier part that maps to a virtual key; a combo
-    // with none would be a silent no-op there, so refuse it here instead.
-    const valid = parts.some((p) => !HOTKEY_MODIFIERS.has(p) && isMainKey(p));
-    return valid ? { type: 'hotkey', arg: combo }
-                 : { type: 'invalid', reason: 'hotkey "' + combo + '" has no known key' };
+    // The host presses recognized modifiers, taps the LAST part that maps to a
+    // virtual key, and silently ignores anything it doesn't know — so a typo like
+    // "ctrl+shfit+m" would land as plain Ctrl+M and "ctrl+a+b" as Ctrl+B, each
+    // with a success flash. Refuse unless every component is recognized and
+    // exactly one is a main key: what flashes green is what actually executes.
+    const mains = parts.filter((p) => !HOTKEY_MODIFIERS.has(p) && isMainKey(p));
+    const unknown = parts.filter((p) => !HOTKEY_MODIFIERS.has(p) && !isMainKey(p));
+    if (unknown.length)
+      return { type: 'invalid', reason: 'hotkey part "' + unknown[0] + '" is not a known key or modifier' };
+    if (mains.length > 1)
+      return { type: 'invalid', reason: 'hotkey "' + combo + '" names more than one key' };
+    if (mains.length !== 1)
+      return { type: 'invalid', reason: 'hotkey "' + combo + '" has no known key' };
+    return { type: 'hotkey', arg: combo };
   }
   function mediaExec(verb) {
     verb = norm(verb);

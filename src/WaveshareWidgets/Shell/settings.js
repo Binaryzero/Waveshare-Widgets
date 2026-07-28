@@ -267,6 +267,11 @@
       // The replica's "+" zone hands the add over to us (#45): a modal palette
       // inside the scaled strip covered the very layout being edited. Follow the
       // page the tap happened on, then open the settings-side gallery.
+      // Same staleness rules as page-changed/slot-selected: a tap in the OLD
+      // replica (undelivered edits or an outdated generation) indexes a layout
+      // we no longer hold — following it would open the gallery on, and add the
+      // widget to, the wrong page after a reorder or deletion.
+      if (replicaTimer || (m.gen | 0) !== initGen) return;
       const idx = m.index | 0;
       if (idx !== selectedPage && idx >= 0 && idx < state.layout.pages.length) {
         selectedPage = idx;
