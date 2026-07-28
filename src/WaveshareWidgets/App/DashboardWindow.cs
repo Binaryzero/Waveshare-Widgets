@@ -41,7 +41,9 @@ public sealed class DashboardWindow : Form
     private bool _shellReady;
 
     /// <summary>Lists the user's media library folder for the Gallery widget.</summary>
-    private static JsonObject BuildMediaList(string id)
+    /// <summary>Media library listing; static so the settings preview can serve it
+    /// even when no dashboard window exists (panel not detected).</summary>
+    internal static JsonObject BuildMediaList(string id)
     {
         var files = new JsonArray();
         try

@@ -133,18 +133,29 @@ public sealed class SettingsWindow : Form
                     // Widget data requests surfaced by the embedded replica. Marshaled
                     // back onto the UI thread because the fetch/ping handlers reply from
                     // worker threads.
-                    Dashboard?.HandlePreviewRequest(message["message"], (type, data) =>
+                    if (Dashboard is { IsDisposed: false } dashboard)
                     {
-                        try
+                        dashboard.HandlePreviewRequest(message["message"], (type, data) =>
                         {
-                            BeginInvoke(() => Post(new JsonObject
+                            try
                             {
-                                ["type"] = "preview-host",
-                                ["message"] = new JsonObject { ["type"] = type, ["data"] = data },
-                            }));
-                        }
-                        catch (ObjectDisposedException) { /* window closed */ }
-                    });
+                                BeginInvoke(() => Post(new JsonObject
+                                {
+                                    ["type"] = "preview-host",
+                                    ["message"] = new JsonObject { ["type"] = type, ["data"] = data },
+                                }));
+                            }
+                            catch (ObjectDisposedException) { /* window closed */ }
+                        });
+                    }
+                    else
+                    {
+                        // No dashboard window (panel not detected): the settings window
+                        // still opens with a live preview, so answer immediately instead
+                        // of silently dropping the request — widgets would otherwise sit
+                        // on their API timeouts instead of rendering their fallbacks.
+                        HandlePreviewWithoutDashboard(message["message"]);
+                    }
                     break;
 
                 case "sd-profiles":
@@ -160,6 +171,56 @@ public sealed class SettingsWindow : Form
         {
             Log.Warn($"Bad settings message: {ex.Message}");
         }
+    }
+
+    /// <summary>Immediate answers for the replica's data requests when no dashboard
+    /// window exists (panel not detected). The media library is served for real (the
+    /// listing is dashboard-independent); fetch and ping fail fast so widgets show
+    /// their error/empty states; audio reports the widget's designed "unavailable".</summary>
+    private void HandlePreviewWithoutDashboard(JsonNode? message)
+    {
+        var id = message?["id"]?.GetValue<string>() ?? "";
+        switch (message?["type"]?.GetValue<string>())
+        {
+            case "fetch":
+                PostPreview("fetch-result", new JsonObject
+                {
+                    ["id"] = id,
+                    ["error"] = "dashboard not running (panel not detected)",
+                });
+                break;
+
+            case "ping":
+                var results = new JsonArray();
+                if (message["hosts"] is JsonArray hosts)
+                    foreach (var h in hosts)
+                    {
+                        var host = h?.GetValue<string>()?.Trim();
+                        if (!string.IsNullOrEmpty(host) && results.Count < 16)
+                            results.Add(new JsonObject
+                            {
+                                ["host"] = host,
+                                ["ok"] = false,
+                                ["error"] = "dashboard not running (panel not detected)",
+                            });
+                    }
+                PostPreview("ping-result", new JsonObject { ["id"] = id, ["results"] = results });
+                break;
+
+            case "media-list":
+                PostPreview("media-list-result", DashboardWindow.BuildMediaList(id));
+                break;
+
+            case "audio-get":
+                PostPreview("audio-result", new JsonObject { ["id"] = id, ["available"] = false });
+                break;
+        }
+
+        void PostPreview(string type, JsonNode? data) => Post(new JsonObject
+        {
+            ["type"] = "preview-host",
+            ["message"] = new JsonObject { ["type"] = type, ["data"] = data },
+        });
     }
 
     private void OnSensorsUpdated(IReadOnlyList<SensorReading> sensors) =>

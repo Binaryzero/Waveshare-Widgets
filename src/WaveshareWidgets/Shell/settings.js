@@ -76,6 +76,7 @@
       widgetsById = new Map((state.widgets || []).map((w) => [w.id, w]));
       selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
       selectedSlot = null;
+      lastWorkingLayout = replicaLayoutJson(); // loaded state IS the edit baseline
       initializing = true;
       renderAll();
       initializing = false;
@@ -131,6 +132,11 @@
   let replicaReady = false;
   let replicaTimer = null;
   let lastReplicaLayout = ''; // structural snapshot (theme excluded — it rides the light push)
+  let lastWorkingLayout = ''; // edit detector: the working copy at the last layout render.
+                              // Separate from lastReplicaLayout, which tracks REPLICA
+                              // DELIVERY and goes stale while the preview is suspended —
+                              // comparing against it re-marked a saved layout dirty on a
+                              // mere page selection after editing with the preview hidden.
 
   const replicaLayoutJson = () => JSON.stringify(Object.assign({}, state.layout, { theme: null }));
 
@@ -189,7 +195,10 @@
       return;
     }
     const json = replicaLayoutJson();
-    if (json !== lastReplicaLayout) markDirty(); // a real structural edit, replica alive or not
+    if (json !== lastWorkingLayout) { // a real structural edit, replica alive or not
+      lastWorkingLayout = json;
+      markDirty();
+    }
     if (!replicaReady || previewStage.classList.contains('collapsed')) return;
     // Selection-only renders (nothing structural changed) just steer the replica to
     // the selected page — a full re-init would needlessly reload every widget. The
@@ -284,6 +293,7 @@
     if (replicaTimer) return;
     state.layout = layout;
     lastReplicaLayout = replicaLayoutJson();
+    lastWorkingLayout = lastReplicaLayout; // replica edits advance the edit baseline too
     selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
     markDirty();
     renderPageList();

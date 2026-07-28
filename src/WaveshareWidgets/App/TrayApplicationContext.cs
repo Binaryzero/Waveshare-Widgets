@@ -87,6 +87,11 @@ public sealed class TrayApplicationContext : ApplicationContext
                 _dashboard = new DashboardWindow(_config, _hub, _library);
                 _dashboard.Show();
                 _currentScreenDevice = screen.DeviceName;
+                // A settings window opened while the panel was absent holds a null (or
+                // disposed) dashboard reference and can only fail preview data requests
+                // fast — hand it the live window so fetch/ping/audio work from now on.
+                if (_settings is { IsDisposed: false })
+                    _settings.Dashboard = _dashboard;
                 _ = InitializeDashboardAsync(screen);
                 return;
             }
