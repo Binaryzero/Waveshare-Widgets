@@ -214,9 +214,11 @@ public sealed partial class WidgetLibrary : IDisposable
 
     public void Rescan()
     {
-        var widgets = new List<InstalledWidget>();
-        var usedHosts = new HashSet<string>();
-
+        // Pass 1: parse every candidate folder and resolve same-id duplicates
+        // (decided by the EXACT manifest id — never by the slugged host, where
+        // distinct ids can collide and version-resolving across the collision
+        // silently uninstalled a different widget).
+        var resolved = new List<(WidgetManifest Manifest, string Folder)>();
         foreach (var folder in Directory.GetDirectories(AppPaths.WidgetsDir))
         {
             var manifestPath = Path.Combine(folder, "manifest.json");
@@ -242,46 +244,53 @@ public sealed partial class WidgetLibrary : IDisposable
                 if (manifest.Properties.Count == 0)
                     manifest.Properties = IcueManifestReader.ParseProperties(indexPath);
 
-                // Duplicates are decided by the EXACT manifest id — never by the slugged
-                // host, where distinct ids can collide ("com.example.foo-bar" and
-                // "com.example.foo.bar" both slug to "com-example-foo-bar"); version-
-                // resolving across that collision silently uninstalled a different widget.
-                var duplicate = widgets.FindIndex(w => w.Manifest.Id == manifest.Id);
+                var duplicate = resolved.FindIndex(w => w.Manifest.Id == manifest.Id);
                 if (duplicate >= 0)
                 {
                     // Same id in two folders (e.g. a stale package install alongside the
                     // seeded stock copy). First-alphabetical used to win silently, which
                     // could pin a months-old copy in front of every fresh re-seed — the
                     // HIGHER manifest version wins now, and the loser is named.
-                    var kept = widgets[duplicate];
+                    var kept = resolved[duplicate];
                     var keepNew = CompareManifestVersions(manifest.Version, kept.Manifest.Version) > 0;
                     Log.Warn($"Duplicate widget id '{manifest.Id}': keeping " +
                              $"'{(keepNew ? folder : kept.Folder)}' (v{(keepNew ? manifest.Version : kept.Manifest.Version)}), " +
                              $"shadowing '{(keepNew ? kept.Folder : folder)}' — delete one to silence this");
                     if (keepNew)
-                        widgets[duplicate] = new InstalledWidget(manifest, folder, kept.VirtualHost);
+                        resolved[duplicate] = (manifest, folder);
                     continue;
                 }
-
-                var host = $"{Slug(manifest.Id)}.widgets.wsw";
-                if (!usedHosts.Add(host))
-                {
-                    // A DIFFERENT id that happens to slug to an occupied host: both widgets
-                    // stay installed — this one gets a deterministic hash-suffixed host
-                    // (layouts reference widgets by id, never by host, so it's transparent).
-                    host = $"{Slug(manifest.Id)}-{ShortHash(manifest.Id)}.widgets.wsw";
-                    var bump = 2;
-                    while (!usedHosts.Add(host))
-                        host = $"{Slug(manifest.Id)}-{ShortHash(manifest.Id)}{bump++}.widgets.wsw";
-                    Log.Warn($"Widget id '{manifest.Id}' slugs to a host another widget already " +
-                             $"uses — serving it from '{host}' instead");
-                }
-                widgets.Add(new InstalledWidget(manifest, folder, host));
+                resolved.Add((manifest, folder));
             }
             catch (Exception ex)
             {
                 Log.Warn($"Skipping widget in '{folder}': {ex.Message}");
             }
+        }
+
+        // Pass 2: assign hosts from the COMPLETE collision picture, so the result
+        // never depends on directory enumeration order. Any slug shared by two or
+        // more distinct ids suffixes EVERY member with a hash of its exact id —
+        // order-dependent assignment let the clean host swap owners between
+        // restarts, silently handing one widget the other's origin-scoped storage.
+        // Layouts reference widgets by id, never by host, so suffixes are transparent.
+        var slugOwners = resolved
+            .GroupBy(w => Slug(w.Manifest.Id))
+            .ToDictionary(g => g.Key, g => g.Count());
+        var widgets = new List<InstalledWidget>();
+        var usedHosts = new HashSet<string>();
+        foreach (var (manifest, folder) in resolved)
+        {
+            var slug = Slug(manifest.Id);
+            var host = slugOwners[slug] > 1
+                ? $"{slug}-{ShortHash(manifest.Id)}.widgets.wsw"
+                : $"{slug}.widgets.wsw";
+            var bump = 2;
+            while (!usedHosts.Add(host))
+                host = $"{slug}-{ShortHash(manifest.Id)}{bump++}.widgets.wsw";
+            if (slugOwners[slug] > 1)
+                Log.Warn($"Widget id '{manifest.Id}' shares its host slug with another widget — serving it from '{host}'");
+            widgets.Add(new InstalledWidget(manifest, folder, host));
         }
 
         Widgets = widgets.OrderBy(w => w.Manifest.Name, StringComparer.OrdinalIgnoreCase).ToList();

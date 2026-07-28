@@ -1328,19 +1328,30 @@
             }, true));
             wrap.appendChild(row);
           });
-          const add = document.createElement('button');
-          add.className = 'ghost';
-          add.textContent = '+ Add ' + (prop.itemLabel || 'item');
-          add.addEventListener('click', () => {
-            const item = {};
-            for (const field of fields) item[field.key] = field.type === 'color' ? '#4cc2ff' : '';
-            items.push(item);
-            commit();
-            renderList();
-            const first = wrap.querySelector('.factory-row:last-of-type input');
-            if (first) first.focus();
-          });
-          wrap.appendChild(add);
+          // A declared maxItems caps the editor too — rows the widget will never
+          // render must not be addable (they'd look configured and do nothing).
+          const cap = Math.max(0, Math.round(Number(prop.maxItems) || 0));
+          if (cap && items.length >= cap) {
+            const full = document.createElement('p');
+            full.className = 'panel-hint';
+            full.textContent = 'Limit reached — this widget shows at most ' + cap + ' ' +
+              (prop.itemLabel || 'item') + 's.';
+            wrap.appendChild(full);
+          } else {
+            const add = document.createElement('button');
+            add.className = 'ghost';
+            add.textContent = '+ Add ' + (prop.itemLabel || 'item');
+            add.addEventListener('click', () => {
+              const item = {};
+              for (const field of fields) item[field.key] = field.type === 'color' ? '#4cc2ff' : '';
+              items.push(item);
+              commit();
+              renderList();
+              const first = wrap.querySelector('.factory-row:last-of-type input');
+              if (first) first.focus();
+            });
+            wrap.appendChild(add);
+          }
         };
         renderList();
         return wrap;

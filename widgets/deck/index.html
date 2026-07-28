@@ -61,6 +61,9 @@
     max-width: 94%;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  /* Over-limit notice: key-face shaped but inert and muted. */
+  .key.more { cursor: default; opacity: 0.6; }
+  .key.more .label { color: var(--text-muted); }
   #message { position: fixed; inset: 0; }
   #message .state-body { font-size: clamp(11px, 3.6vh, 13px); }
 </style>
@@ -166,18 +169,19 @@
     if (arr == null) return { items: [] };
     if (!Array.isArray(arr)) return { error: 'json' };
     const items = [];
+    let hidden = 0;
     for (const entry of arr) {
-      if (items.length >= MAX_BUTTONS) break;
       if (!entry || typeof entry !== 'object') continue;
       const target = String(entry.target == null ? '' : entry.target).trim();
       const kind = String(entry.kind == null ? '' : entry.kind).trim();
       if (!target && !kind) continue;             // blank editor row
+      if (items.length >= MAX_BUTTONS) { hidden++; continue; } // counted, never silent
       const exec = classify(kind, target);
       const icon = String(entry.icon == null ? '' : entry.icon).trim() || deriveIcon(exec);
       const label = String(entry.label == null ? '' : entry.label).trim() || deriveLabel(exec, target);
       items.push({ icon, label, target, exec });
     }
-    return { items };
+    return { items, hidden };
   }
 
   WW.onInit((state) => {
@@ -194,7 +198,7 @@
     cfg.columns = Math.max(0, Math.min(8, Math.round(Number(s.columns) || 0)));
     const parsed = normalizeButtons(s.buttons);
     buttons = parsed.items || [];
-    build(parsed.error);
+    build(parsed.error, parsed.hidden || 0);
   });
 
   // Restartable state-theater flash (from widget-base): remove, force reflow,
@@ -214,7 +218,7 @@
     msg.hidden = false;
   }
 
-  function build(error) {
+  function build(error, hidden) {
     const grid = document.getElementById('grid');
     const msg = document.getElementById('message');
     grid.textContent = '';
@@ -272,6 +276,21 @@
       });
       grid.appendChild(key);
     }
+    if (hidden > 0) {
+      // Never truncate silently: the editor saved these rows, so say on the tile
+      // exactly how many are beyond the 32-key ceiling.
+      const more = document.createElement('div');
+      more.className = 'key more';
+      more.title = 'This deck shows at most ' + MAX_BUTTONS + ' buttons';
+      const icon = document.createElement('div');
+      icon.className = 'icon';
+      icon.textContent = '⋯';
+      const label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = '+' + hidden + ' hidden (max ' + MAX_BUTTONS + ')';
+      more.append(icon, label);
+      grid.appendChild(more);
+    }
     layout();
   }
 
@@ -289,7 +308,7 @@
   }
 
   function layout() {
-    const n = buttons.length;
+    const n = document.querySelectorAll('#grid .key').length; // includes the over-limit notice
     if (!n) return;
     const cols = Math.max(1, Math.min(cfg.columns > 0 ? cfg.columns : autoCols(n), n));
     const rows = Math.ceil(n / cols);
