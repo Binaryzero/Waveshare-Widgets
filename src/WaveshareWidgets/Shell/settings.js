@@ -30,6 +30,8 @@
   let selectedSlot = null;     // slot index (within the selected page) the detail panel shows
   let editMode = true;         // replica is the interactive WYSIWYG surface (default on)
   let dirty = false;           // unsaved edits pending Save & apply
+  let editSeq = 0;             // bumps on every edit; the save ack only clears dirty
+  let savedEditSeq = -1;       // when nothing changed since the posted snapshot
   let initializing = false;    // suppress dirty-marking during a settings-init render
   let toastTimer = null;
   let backgroundHost = 'backgrounds.wsw';
@@ -54,7 +56,10 @@
       initializing = false;
       clearDirty(); // freshly loaded state IS the saved state
     } else if (msg.type === 'saved') {
-      clearDirty();
+      // Only clear the marker when nothing changed since the posted snapshot — an
+      // edit racing the async ack must stay visibly unsaved or it's easy to close
+      // the window and lose it.
+      if (editSeq === savedEditSeq) clearDirty();
       toast('Saved — dashboard updated');
     } else if (msg.type === 'save-failed') {
       toast('Save failed: ' + msg.message, true);
@@ -180,6 +185,18 @@
       el('previewHint').textContent = PREVIEW_HINT_DEFAULT;
       el('previewHint').classList.remove('warn');
       replicaInit();
+    } else if (m.type === 'page-changed') {
+      // The editing replica navigated (page add, edge-drop, capsule arrows): follow
+      // it, or the rail/detail/Add-widget keep operating on the page the preview no
+      // longer shows. Out-of-range indices (capture was dropped) are ignored; our
+      // own 'page' steering echoes back as an equal index and no-ops here.
+      const idx = m.index | 0;
+      if (idx !== selectedPage && idx >= 0 && idx < state.layout.pages.length) {
+        selectedPage = idx;
+        selectedSlot = null; // a follow-up slot-selected re-adopts if a tile moved with us
+        renderPageList();
+        renderEditorPanel();
+      }
     } else if (m.type === 'save-layout') {
       // The interactive replica IS the editor (#32): its continuous persists are the
       // edit stream. Captured into the working copy — unsaved until Save & apply —
@@ -247,7 +264,9 @@
   }
 
   function markDirty() {
-    if (initializing || dirty) return;
+    if (initializing) return;
+    editSeq++; // every edit bumps, even while already dirty — the save ack compares
+    if (dirty) return;
     dirty = true;
     el('save').classList.add('dirty');
     el('save').title = 'You have unsaved changes';
@@ -345,7 +364,10 @@
 
   // ---- top bar ----------------------------------------------------------------
 
-  el('save').addEventListener('click', () => post({ type: 'save-layout', layout: state.layout }));
+  el('save').addEventListener('click', () => {
+    savedEditSeq = editSeq; // ack clears dirty only if this is still current
+    post({ type: 'save-layout', layout: state.layout });
+  });
   el('installWidget').addEventListener('click', () => post({ type: 'install-widget' }));
   el('openFolder').addEventListener('click', () => post({ type: 'open-widgets-folder' }));
   el('openMedia').addEventListener('click', () => post({ type: 'open-media-folder' }));

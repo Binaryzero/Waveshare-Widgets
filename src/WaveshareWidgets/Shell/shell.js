@@ -521,6 +521,10 @@
     const left = clamped * pagesEl.clientWidth;
     navTarget = Math.abs(pagesEl.scrollLeft - left) < 2 ? null : clamped; // no scroll -> no scrollend
     if (editing) disarmPageDelete(); // an armed delete must not carry over to another page
+    // WYSIWYG: page moves initiated inside the editing replica (add page, edge-drop,
+    // capsule arrows) must steer the settings window too, or its rail/detail panel
+    // keeps operating on the page the preview no longer shows.
+    if (PREVIEW && editing) postToHost({ type: 'page-changed', index: clamped });
     pagesEl.scrollTo({ left, behavior: 'smooth' });
     wakeChrome();
   }

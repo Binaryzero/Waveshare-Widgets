@@ -108,8 +108,13 @@
     setTimeout(() => { if (!trReady) { trReady = true; maybeInit(); } }, 1500);
   }
   function armTranslations() {
-    if (document.querySelector('meta[name="x-icue-property"], meta[name="x-icue-groups"]'))
-      loadTranslations();
+    // iCUE packages may use tr() + translation.json WITHOUT declaring any property
+    // metas (translations are documented independently in ICUE-API-REFERENCE), so
+    // metas alone can't gate the fetch. The reliable NEGATIVE tell is our own
+    // widget-api script tag — native widgets carry it, iCUE packages never do.
+    const icueMetas = document.querySelector('meta[name="x-icue-property"], meta[name="x-icue-groups"]');
+    const nativeApi = document.querySelector('script[src*="widget-api.js"]');
+    if (icueMetas || !nativeApi) loadTranslations();
     else { trReady = true; maybeInit(); }
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', armTranslations);
