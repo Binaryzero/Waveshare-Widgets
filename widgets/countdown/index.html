@@ -24,10 +24,8 @@
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 1.6vh;
   }
-  /* The per-widget color setting only lands here when it differs from the
-   * manifest default; otherwise the theme's --text shows through. */
   #value {
-    color: var(--value-color, var(--text));
+    color: var(--text);
     font-size: clamp(26px, 16vh, 64px);
     font-weight: 200;
     line-height: 1;
@@ -77,17 +75,6 @@
 <script>
   'use strict';
   const $ = (id) => document.getElementById(id);
-
-  // Manifest defaults — the host merges these into settings, so "user changed it"
-  // means "differs from the default". Only then does the property override the
-  // theme tokens (inline CSS variable); at default the token chain shows through.
-  const DEF = { valueColor: '#e8ecf2' };
-  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
-  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
-  function setVar(name, value) {
-    if (value) document.body.style.setProperty(name, value);
-    else document.body.style.removeProperty(name);
-  }
 
   // Rebuilt on every ww-init (settings edits arrive as re-inits).
   const cfg = { title: 'Countdown', raw: '', targetMs: null, startMs: null, state: 'empty' };
@@ -168,7 +155,6 @@
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
-    setVar('--value-color', changed(s.valueColor, DEF.valueColor) ? s.valueColor : '');
 
     cfg.title = String(s.title == null ? '' : s.title).trim() || 'Countdown';
     cfg.raw = String(s.target == null ? '' : s.target).trim();

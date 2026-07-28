@@ -95,10 +95,16 @@ fills behind state-colored text.
 | `--panel-shadow-alpha` | Shadow strength that tracks panel opacity | `0.05 + eff × 0.18` |
 | `--card-surface` | Background of nested cards (`.card`, `.pill.muted`) | `rgba(--surface-alt-rgb, max(0, eff − 0.02))` |
 
-User-facing color *settings* still work with tokens: set a per-role custom property from
-JS only when the setting differs from its manifest default, and let the CSS fall through —
-`color: var(--value-color, var(--text))`. At default, the theme shows through; changed,
-the user's pick wins. The stock clock and CPU widgets implement this pattern.
+**Appearance is single-sourced.** The theme tokens — the global theme plus the per-slot
+style override (the 🎨 editor in edit mode / the slot's `style` in `layout.json`, see §2)
+— are the *only* appearance system. Do **not** declare manifest `color` properties for
+chrome (text, labels, values, accents, backgrounds, state colors): they would duplicate
+the tokens, and three overlapping knobs for the same pixel is exactly the confusion the
+token system exists to remove. Manifest `color` properties are reserved for **data
+colors** — colors that are content, like a per-series line color in a `sensors-factory`
+list, where two instances legitimately differ as data. Widgets that used to ship
+appearance color properties simply ignore those keys when they linger in old saved
+layouts.
 
 ---
 
@@ -417,7 +423,8 @@ Copy this into your widget's PR / release notes and check every line:
 ### Tokens & theming
 - [ ] Links `https://app.wsw/widget-base.css` before widget CSS
 - [ ] Zero literal colors in CSS/JS — every color is a `var(--token)`
-- [ ] User color settings override tokens only when changed from their manifest default
+- [ ] No manifest `color` properties for appearance — chrome comes from the tokens
+      (global theme + per-slot style override); `color` properties only for data colors
 - [ ] Looks right on a light theme (`data-appearance="light"`) — verified
 
 ### Transparency

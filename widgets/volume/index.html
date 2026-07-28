@@ -49,7 +49,7 @@
     overflow: hidden;
   }
   .name {
-    color: var(--name-color, var(--text));
+    color: var(--text);
     font-size: calc(clamp(11px, 4vh, 16px) * var(--name-scale, 1));
     white-space: nowrap;
     overflow: hidden;
@@ -99,7 +99,7 @@
   }
 
   .pct {
-    color: var(--value-color, var(--text-muted));
+    color: var(--text-muted);
     font-size: calc(clamp(11px, 4vh, 16px) * var(--value-scale, 1));
     font-weight: 600;
     font-variant-numeric: tabular-nums;
@@ -148,17 +148,6 @@
   let sessionUI = [];                  // [{row, name, mute, input, pct, target, muted}]
 
   const el = (id) => document.getElementById(id);
-
-  // Manifest defaults — the host merges these into settings, so "user changed it"
-  // means "differs from the default". Only then does the property override the
-  // theme tokens (inline CSS variable); at default the token chain shows through.
-  const DEF = { nameColor: '#e8ecf2', valueColor: '#7d8697' };
-  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
-  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
-  function setVar(name, value) {
-    if (value) document.body.style.setProperty(name, value);
-    else document.body.style.removeProperty(name);
-  }
 
   // Restartable state-theater flash (fail-flash from widget-base): remove, force
   // reflow, re-add — otherwise a second failure on the same row shows nothing.
@@ -352,10 +341,8 @@
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
-    // Color settings override the theme tokens only when moved off their manifest
-    // defaults; at default the CSS falls through to --text / --text-muted.
-    setVar('--name-color', changed(s.nameColor, DEF.nameColor) ? s.nameColor : '');
-    setVar('--value-color', changed(s.valueColor, DEF.valueColor) ? s.valueColor : '');
+    // Appearance comes from the theme tokens (global theme or the per-slot style
+    // override) — legacy color keys in old layouts are deliberately ignored.
     document.body.style.setProperty('--name-scale', (Number(s.nameSize) || 100) / 100);
     document.body.style.setProperty('--value-scale', (Number(s.valueSize) || 100) / 100);
 

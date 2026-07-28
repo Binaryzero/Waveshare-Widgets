@@ -20,15 +20,13 @@
     position: absolute; inset: 0;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
   }
-  /* Per-role custom properties (set from settings only when they differ from the
-   * manifest defaults) fall through to the theme tokens. */
-  .ring .center .big { font-size: calc(clamp(20px, 9vh, 44px) * var(--value-scale, 1)); color: var(--value-color, var(--text)); font-weight: 600; line-height: 1; }
-  .ring .center .cap { font-size: calc(clamp(9px, 3vh, 13px) * var(--title-scale, 1)); color: var(--title-color, var(--text-muted)); letter-spacing: 0.14em; margin-top: 4px; }
+  .ring .center .big { font-size: calc(clamp(20px, 9vh, 44px) * var(--value-scale, 1)); color: var(--text); font-weight: 600; line-height: 1; }
+  .ring .center .cap { font-size: calc(clamp(9px, 3vh, 13px) * var(--title-scale, 1)); color: var(--text-muted); letter-spacing: 0.14em; margin-top: 4px; }
   #stats { display: flex; flex-direction: column; gap: 8%; }
-  .stat .label { font-size: calc(clamp(9px, 3vh, 13px) * var(--label-scale, 1)); color: var(--label-color, var(--text-muted)); letter-spacing: 0.1em; }
-  .stat .val { font-size: calc(clamp(16px, 7vh, 34px) * var(--value-scale, 1)); color: var(--value-color, var(--text)); font-weight: 600; }
+  .stat .label { font-size: calc(clamp(9px, 3vh, 13px) * var(--label-scale, 1)); color: var(--text-muted); letter-spacing: 0.1em; }
+  .stat .val { font-size: calc(clamp(16px, 7vh, 34px) * var(--value-scale, 1)); color: var(--text); font-weight: 600; }
   .stat .val .unit { font-size: 55%; font-weight: 400; }
-  #hint { position: fixed; left: 12px; bottom: 8px; font-size: calc(clamp(8px, 2.4vh, 11px) * var(--hint-scale, 1)); color: var(--hint-color, var(--text-dim)); max-width: 92%; }
+  #hint { position: fixed; left: 12px; bottom: 8px; font-size: calc(clamp(8px, 2.4vh, 11px) * var(--hint-scale, 1)); color: var(--text-dim); max-width: 92%; }
 </style>
 </head>
 <body>
@@ -60,18 +58,9 @@
     document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
     document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
 
-    // Per-text-type customization (color + percent size scale). The host merges
-    // manifest defaults into settings, so a color still at its default is left
-    // unset and the CSS falls through to the theme tokens.
-    const override = (prop, value, def) => {
-      if (value && String(value).toLowerCase() !== def) document.body.style.setProperty(prop, value);
-      else document.body.style.removeProperty(prop);
-    };
-    override('--accent', s.accentColor, '#00d4ff');
-    override('--title-color', s.titleColor, '#7d8697');
-    override('--value-color', s.valueColor, '#e8ecf2');
-    override('--label-color', s.labelColor, '#7d8697');
-    override('--hint-color', s.hintColor, '#545d6e');
+    // Per-text-type size scales. Appearance comes from the theme tokens (global
+    // theme or the per-slot style override) — legacy color keys in old layouts
+    // are deliberately ignored.
     document.body.style.setProperty('--title-scale', String((Number(s.titleSize) || 100) / 100));
     document.body.style.setProperty('--value-scale', String((Number(s.valueSize) || 100) / 100));
     document.body.style.setProperty('--label-scale', String((Number(s.labelSize) || 100) / 100));

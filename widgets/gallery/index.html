@@ -32,10 +32,8 @@
     pointer-events: none;
   }
   #caption.visible { opacity: 1; }
-  /* The caption color is a per-widget setting: set from JS only when the user
-   * moved it off its manifest default, otherwise the theme token shows through. */
   #caption .name {
-    color: var(--caption-color, var(--text));
+    color: var(--text);
     font-size: calc(clamp(11px, 4.2vh, 16px) * var(--caption-scale, 1));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     text-shadow: 0 1px 3px rgba(var(--surface-rgb), 0.9);
@@ -95,14 +93,8 @@
     document.body.classList.toggle('bg-solid', s.bgStyle !== 'transparent' && s.bgStyle !== 'glass');
     document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
     document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
-    // The host merges manifest defaults into settings, so "user changed it" means
-    // "differs from the default" — only then does the caption color override the
-    // theme token; at default the CSS falls through to var(--text).
-    const override = (prop, value, def) => {
-      if (value && String(value).trim().toLowerCase() !== def) document.body.style.setProperty(prop, value);
-      else document.body.style.removeProperty(prop);
-    };
-    override('--caption-color', s.captionColor, '#e8ecf2');
+    // Caption color comes from the theme tokens (global theme or the per-slot
+    // style override) — legacy captionColor keys in old layouts are ignored.
     document.body.style.setProperty('--caption-scale', (Number(s.captionSize) || 100) / 100);
     for (const l of layers) l.style.backgroundSize = cfg.fit;
     if (!started) {

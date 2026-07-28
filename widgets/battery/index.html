@@ -27,7 +27,7 @@
     overflow: hidden;
   }
   .cell .name {
-    color: var(--name-color, var(--text-muted));
+    color: var(--text-muted);
     font-size: calc(clamp(9px, 3vh, 13px) * var(--name-scale, 1));
     letter-spacing: 0.06em;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -38,12 +38,11 @@
     line-height: 1.1;
     white-space: nowrap;
   }
-  .cell .pct small { font-size: 55%; font-weight: 400; color: var(--name-color, var(--text-muted)); }
-  /* Level colors (--ok / --warn / --err) are the default; a user-picked value
-   * color (set from JS only when moved off its manifest default) wins. */
-  .cell.good .pct { color: var(--value-color, var(--ok)); }
-  .cell.warn .pct { color: var(--value-color, var(--warn)); }
-  .cell.bad  .pct { color: var(--value-color, var(--err)); }
+  .cell .pct small { font-size: 55%; font-weight: 400; color: var(--text-muted); }
+  /* Level colors come straight from the theme's state tokens. */
+  .cell.good .pct { color: var(--ok); }
+  .cell.warn .pct { color: var(--warn); }
+  .cell.bad  .pct { color: var(--err); }
   .cell .bolt { display: none; font-size: 60%; vertical-align: 15%; margin-left: 0.3em; }
   .cell.charging .bolt { display: inline; }
   .cell .bar {
@@ -56,9 +55,9 @@
     width: 0%;
     transition: width 0.6s var(--ease);
   }
-  .cell.good .bar > i { background: var(--value-color, var(--ok)); }
-  .cell.warn .bar > i { background: var(--value-color, var(--warn)); }
-  .cell.bad  .bar > i { background: var(--value-color, var(--err)); }
+  .cell.good .bar > i { background: var(--ok); }
+  .cell.warn .bar > i { background: var(--warn); }
+  .cell.bad  .bar > i { background: var(--err); }
   /* Empty state: .state-card anatomy, kept at the widget's fluid sizes/tones. */
   #message {
     position: fixed; inset: 0;
@@ -89,17 +88,6 @@
 
   const CHARGING = /\s*\(charging\)\s*/i;
 
-  // Manifest defaults — the host merges these into settings, so "user changed it"
-  // means "differs from the default". Only then does the property override the
-  // theme tokens (inline CSS variable); at default the token chain shows through.
-  const DEF = { nameColor: '#7d8697', valueColor: '#e8ecf2' };
-  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
-  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
-  function setVar(name, value) {
-    if (value) document.body.style.setProperty(name, value);
-    else document.body.style.removeProperty(name);
-  }
-
   WW.onInit((state) => {
     const s = state.settings;
     // Anything that isn't explicitly glass/transparent renders solid, matching the
@@ -108,10 +96,9 @@
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
-    setVar('--name-color', changed(s.nameColor, DEF.nameColor) ? s.nameColor : '');
+    // Appearance comes from the theme tokens (global theme or the per-slot style
+    // override) — legacy color keys in old layouts are deliberately ignored.
     document.body.style.setProperty('--name-scale', String((Number(s.nameSize) || 100) / 100));
-    // Level colors (--ok/--warn/--err) are the default; a user-picked value color wins.
-    setVar('--value-color', changed(s.valueColor, DEF.valueColor) ? s.valueColor : '');
     document.body.style.setProperty('--value-scale', String((Number(s.valueSize) || 100) / 100));
 
     cfg.lowAt = Math.min(50, Math.max(5, Number(s.lowAt) || 15));

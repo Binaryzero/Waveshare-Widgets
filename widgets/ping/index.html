@@ -34,7 +34,7 @@
   .host .dot.warn { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
   .host .dot.bad  { background: var(--err); box-shadow: 0 0 6px var(--err); }
   .host .name {
-    color: var(--label-color, var(--text-muted));
+    color: var(--text-muted);
     font-size: calc(clamp(9px, 3vh, 13px) * var(--label-scale, 1));
     letter-spacing: 0.06em;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -45,15 +45,14 @@
     font-weight: 600;
     line-height: normal;
   }
-  .host .rtt small { font-size: 55%; font-weight: 400; color: var(--label-color, var(--text-muted)); }
-  /* A valueColor moved off its manifest default overrides the status colors,
-   * exactly as before; at default the state tokens show through. */
-  .host .rtt.good { color: var(--value-color, var(--ok)); }
-  .host .rtt.warn { color: var(--value-color, var(--warn)); }
-  .host .rtt.bad  { color: var(--value-color, var(--err)); }
-  .host .rtt.down { color: var(--value-color, var(--text-dim)); }
+  .host .rtt small { font-size: 55%; font-weight: 400; color: var(--text-muted); }
+  /* Status colors come straight from the theme's state tokens. */
+  .host .rtt.good { color: var(--ok); }
+  .host .rtt.warn { color: var(--warn); }
+  .host .rtt.bad  { color: var(--err); }
+  .host .rtt.down { color: var(--text-dim); }
   .host .loss {
-    color: var(--label-color, var(--text-muted));
+    color: var(--text-muted);
     font-size: calc(clamp(8px, 2.4vh, 11px) * var(--label-scale, 1));
     white-space: nowrap;
   }
@@ -77,17 +76,6 @@
   const history = new Map();    // host -> [{ok, rtt}]
   let cards = new Map();        // host -> {dot, rtt, loss, canvas}
   let pollTimer = null;
-
-  // Manifest defaults — the host merges these into settings, so "user changed it"
-  // means "differs from the default". Only then does the property override the
-  // theme tokens (inline CSS variable); at default the token chain shows through.
-  const DEF = { labelColor: '#7d8697', valueColor: '#e8ecf2' };
-  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
-  const changed = (v, def) => norm(v) !== '' && norm(v) !== norm(def);
-  function setVar(name, value) {
-    if (value) document.body.style.setProperty(name, value);
-    else document.body.style.removeProperty(name);
-  }
 
   // Sparkline colors for the canvas — canvases can't resolve var(), so read the
   // state tokens off :root. Re-read on every init: theme edits arrive as a fresh
@@ -136,8 +124,8 @@
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
-    setVar('--label-color', changed(s.labelColor, DEF.labelColor) ? s.labelColor : '');
-    setVar('--value-color', changed(s.valueColor, DEF.valueColor) ? s.valueColor : '');
+    // Appearance comes from the theme tokens (global theme or the per-slot style
+    // override) — legacy color keys in old layouts are deliberately ignored.
     document.body.style.setProperty('--label-scale', (Number(s.labelSize) || 100) / 100);
     document.body.style.setProperty('--value-scale', (Number(s.valueSize) || 100) / 100);
     readSparkColors();
