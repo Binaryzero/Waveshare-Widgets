@@ -102,6 +102,11 @@
         fetchRoutes.delete(msg.data.id);
         try { target.postMessage({ type: 'ww-fetch-result', ...msg.data }, '*'); } catch (e) { /* frame gone */ }
       }
+    } else if (msg.type === 'sd-profiles-result') {
+      // Discovered VSD profile list for the settings sheet's host-backed selects.
+      const waiters = psProfileWaiters.splice(0);
+      const profiles = ((msg.data && msg.data.profiles) || []).filter((p) => typeof p === 'string');
+      waiters.forEach((cb) => { try { cb(profiles); } catch (e) { /* row rebuilt */ } });
     } else if (msg.type === 'sd-profile-result') {
       broadcast({ type: 'ww-sd-profile', profile: msg.data });
     } else if (msg.type === 'sd-capture-result') {
@@ -1217,6 +1222,8 @@
   const psTitle = document.getElementById('psTitle');
   let propTarget = null;
   let propPersistTimer = null;
+  let psProfileWaiters = []; // callbacks awaiting an sd-profiles-result
+  let propReloadSeq = 0;     // cache-busting nonce: fragment-only src changes don't navigate
 
   const PS_EMOJI = [
     '🧮', '🌐', '📁', '📷', '🎨', '📝', '📊', '💻', '🖥️', '⌨️', '🖱️', '🎧',
@@ -1253,6 +1260,9 @@
 
   function openPropSheet(record) {
     if (PREVIEW) return; // the settings window's Widget tab owns properties there
+    closePropSheet();    // flush the PREVIOUS target's pending apply/persist first —
+                         // retargeting mid-debounce must not strand its edit or
+                         // apply it to the newly opened widget
     closeStyleEditor();  // one right-docked editor at a time
     propTarget = record;
     const widget = widgetsById.get(record.def.widgetId);
@@ -1284,25 +1294,35 @@
     for (const s of slots) s.el.classList.remove('style-editing');
   }
 
-  /** Re-init the tile from its edited stored settings. The record's settings are
-   * a MERGED snapshot (defaults + stored) — re-merge so the re-init delivers the
-   * edit the same way a cold load would. */
+  /** Apply the edited stored settings by RELOADING the tile, never by re-initing
+   * the live document: widgets treat ww-init as boot, and a second one can stack
+   * what boot started (the stock Reddit widget's refresh interval, for one).
+   * A fresh document is the one path every widget already handles. The record's
+   * settings snapshot is re-merged (defaults + stored) so the reload boots
+   * exactly like a cold load would. */
   function applyPropNow(record) {
     const widget = widgetsById.get(record.def.widgetId);
     record.settings = mergedSettings(widget, record.def);
-    sendToSlot(record, initMessage(record));
+    if (!record.frame) return;
+    let hash = '#ww-slot=' + record.tag;
+    try {
+      hash += '&ww-settings=' + encodeURIComponent(JSON.stringify(record.settings));
+    } catch (e) { /* unserializable settings: init delivery still applies them */ }
+    record.hash = hash;
+    record.initialized = false; // the fresh document's ww-ready gets a full init
+    record.frame.src = record.url + '?r=' + (++propReloadSeq) + hash;
   }
 
   let propApplyTimer = null;
   function applyPropChange() {
     if (!propTarget) return;
-    // Lightly debounced: a keystroke stream must not re-init the iframe per key.
+    // Debounced: a keystroke stream must not reload the iframe per key.
     const target = propTarget;
     clearTimeout(propApplyTimer);
     propApplyTimer = setTimeout(() => {
       propApplyTimer = null;
       if (propTarget === target) applyPropNow(target);
-    }, 150);
+    }, 400);
     clearTimeout(propPersistTimer);
     propPersistTimer = setTimeout(() => { propPersistTimer = null; persistLayout(); }, 600);
   }
@@ -1338,8 +1358,43 @@
           const text = (o && typeof o === 'object') ? (o.label || o.value) : o;
           select.add(new Option(text, value, false, String(value) === String(current)));
         }
+        if (prop.optionsSource === 'sd-profiles') {
+          // Host-backed options (discovered Virtual Stream Deck profiles) — same
+          // flow as the desktop editor; without it this dropdown would be empty.
+          select.add(new Option('First available (default)', '', false, !current));
+          if (current) select.add(new Option(current, current, false, true));
+          psProfileWaiters.push((profiles) => {
+            const chosen = select.value;
+            while (select.options.length) select.remove(0);
+            select.add(new Option('First available (default)', '', false, !chosen));
+            for (const p of profiles) select.add(new Option(p, p, false, p === chosen));
+            if (chosen && !profiles.includes(chosen)) {
+              select.add(new Option(chosen + '  (not found right now)', chosen, false, true));
+            }
+          });
+          postToHost({ type: 'sd-profiles' });
+        }
         select.onchange = () => set(prop, select.value);
         return select;
+      }
+      case 'location': {
+        // Location values are STRUCTURED (label + coordinates picked via the
+        // desktop search) — a text box would show "[object Object]" and one
+        // keystroke would replace precise coordinates with garbage. Show the
+        // label, keep the value untouched; picking needs the desktop's search.
+        const wrap = document.createElement('div');
+        wrap.className = 'ps-field';
+        const shown = document.createElement('input');
+        shown.type = 'text';
+        shown.readOnly = true;
+        shown.value = (current && typeof current === 'object')
+          ? String(current.label || current.name || 'Picked location')
+          : (current != null ? String(current) : '');
+        const hint = document.createElement('p');
+        hint.className = 'ps-cap';
+        hint.textContent = 'Pick the location in the desktop settings window (it has the city search).';
+        wrap.append(shown, hint);
+        return wrap;
       }
       case 'slider': {
         const wrap = document.createElement('div');
