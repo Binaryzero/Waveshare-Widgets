@@ -1909,11 +1909,17 @@
 
   function pageFits(page, def) {
     const defs = (page.slots = page.slots || []);
-    const before = unplacedCount(defs);
+    const beforePlaced = placedSet(defs);
     defs.push(def);
-    const ok = unplacedCount(defs) === before; // the pushed def is last: unchanged count = it placed
+    const places = placeSlots(defs);
     defs.pop();
-    return ok;
+    // Identity, not counts: an ANCHORED arrival can hide a visible tile while a
+    // previously hidden one takes the freed space — the unplaced count stays
+    // equal and a count check would accept the swap. The incoming def must
+    // place, and every slot that placed before must keep its spot (the same
+    // rule the cell-drop and reorder paths enforce).
+    return places[places.length - 1] !== null &&
+      defs.every((d, i) => !beforePlaced.has(d) || places[i] !== null);
   }
 
   function beginDrag(record) {
