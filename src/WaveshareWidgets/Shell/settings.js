@@ -97,6 +97,15 @@
       toast('Save failed: ' + msg.message, true);
     } else if (msg.type === 'widget-installed') {
       toast('Installed "' + msg.name + '"');
+    } else if (msg.type === 'file-picked') {
+      // Browse-button round trip (#48): fill the field that asked and commit
+      // through its own handler. A null path is a cancelled dialog.
+      const target = pendingFilePicks.get(msg.id);
+      pendingFilePicks.delete(msg.id);
+      if (target && msg.path) {
+        target.value = msg.path;
+        target.dispatchEvent(new Event('input'));
+      }
     } else if (msg.type === 'background-picked') {
       const cb = pendingBgPick;
       pendingBgPick = null;
@@ -1056,6 +1065,68 @@
     return btn;
   }
 
+  // ---- field pickers (#48) ----------------------------------------------------
+  // Manifest fields/properties can declare picker:'emoji' (icon fields) or
+  // picker:'file' (path targets) — free-text stays available, the picker just
+  // stops "type an emoji" and "type C:\...\app.exe" from being the ONLY way.
+
+  const EMOJI_CHOICES = [
+    '🧮', '🌐', '📁', '📷', '🎨', '📝', '📊', '💻', '🖥️', '⌨️', '🖱️', '🎧',
+    '🎮', '🕹️', '🎬', '🎵', '📺', '📻', '🔊', '🔇', '⏯️', '⏭️', '⏮️', '⏹️',
+    '🚀', '⚡', '🔥', '⭐', '❤️', '🏠', '🔧', '⚙️', '🔒', '🔑', '🛡️', '📦',
+    '💬', '📧', '📅', '⏰', '🌙', '☀️', '☁️', '💡', '🔋', '📶', '🧭', '🗺️',
+  ];
+
+  function closeEmojiPop() {
+    const pop = document.querySelector('.emoji-pop');
+    if (pop) pop.remove();
+    document.removeEventListener('pointerdown', onEmojiOutside, true);
+  }
+  function onEmojiOutside(ev) {
+    if (!ev.target.closest('.emoji-pop')) closeEmojiPop();
+  }
+
+  function makeEmojiBtn(input) {
+    return iconButton('😀', 'Pick an icon', (ev) => {
+      ev.stopPropagation();
+      if (document.querySelector('.emoji-pop')) { closeEmojiPop(); return; }
+      const pop = document.createElement('div');
+      pop.className = 'emoji-pop';
+      for (const e of EMOJI_CHOICES) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = e;
+        b.addEventListener('click', () => {
+          input.value = e;
+          input.dispatchEvent(new Event('input')); // commits through the field's handler
+          closeEmojiPop();
+        });
+        pop.appendChild(b);
+      }
+      document.body.appendChild(pop);
+      const r = ev.currentTarget.getBoundingClientRect();
+      pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8)) + 'px';
+      pop.style.top = Math.min(r.bottom + 4, window.innerHeight - pop.offsetHeight - 8) + 'px';
+      document.addEventListener('pointerdown', onEmojiOutside, true);
+    });
+  }
+
+  let filePickSeq = 0;
+  const pendingFilePicks = new Map(); // id -> input awaiting the host's dialog
+
+  function makeFileBtn(input) {
+    return iconButton('📂', 'Browse for a program or file', () => {
+      const id = 'fp' + (++filePickSeq);
+      pendingFilePicks.set(id, input);
+      post({ type: 'pick-file', id });
+    });
+  }
+
+  function attachFieldPicker(container, spec, input) {
+    if (spec.picker === 'emoji') container.appendChild(makeEmojiBtn(input));
+    else if (spec.picker === 'file') container.appendChild(makeFileBtn(input));
+  }
+
   // Widths a widget can take: its declared supported widths, plus three-quarter for
   // anything fluid enough to declare half or full (all stock widgets are vh-fluid).
   function offeredWidths(widget) {
@@ -1371,6 +1442,7 @@
               input.setAttribute('aria-label', field.label || field.key);
               input.oninput = () => { item[field.key] = input.value; commit(); };
               row.appendChild(input);
+              attachFieldPicker(row, field, input); // picker:'emoji' / picker:'file' (#48)
             }
             row.appendChild(iconButton('✕', 'Remove ' + (prop.itemLabel || 'item'), () => {
               items.splice(i, 1); commit(); renderList();
@@ -1427,6 +1499,14 @@
         if (prop.placeholder) input.placeholder = String(prop.placeholder);
         input.value = current != null ? String(current) : '';
         input.oninput = () => set(input.value);
+        if (prop.picker) {
+          // picker:'emoji' / picker:'file' on a top-level text property (#48).
+          const wrap = document.createElement('div');
+          wrap.className = 'picker-wrap';
+          wrap.appendChild(input);
+          attachFieldPicker(wrap, prop, input);
+          return wrap;
+        }
         return input;
       }
     }

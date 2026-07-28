@@ -442,3 +442,28 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
 /* Unsaved-changes marker on Save & apply. */
 #save.dirty::after { content: ' •'; }
+
+/* ---- field pickers (#48) ---------------------------------------------------- */
+/* Emoji popover: fixed-position grid near the button that opened it. */
+.emoji-pop {
+  position: fixed;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: repeat(8, 34px);
+  gap: 2px;
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--surface, #14181e);
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+.emoji-pop button {
+  width: 34px; height: 34px;
+  border: 0; border-radius: 8px;
+  background: transparent;
+  font-size: 20px; line-height: 1;
+  cursor: pointer;
+}
+.emoji-pop button:hover { background: color-mix(in srgb, var(--accent, #4cc2ff) 25%, transparent); }
+.picker-wrap { display: flex; gap: 6px; align-items: center; }
+.picker-wrap input { flex: 1; min-width: 0; }

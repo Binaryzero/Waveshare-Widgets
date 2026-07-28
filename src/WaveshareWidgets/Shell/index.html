@@ -38,6 +38,13 @@
     <button id="spReset" class="sp-reset">Follow the theme again</button>
   </div>
 
+  <!-- Per-widget SETTINGS editor (on-device, #48): right-docked over the live tile.
+       Every change applies immediately — the tile next to it is the preview. -->
+  <div id="propSheet" hidden>
+    <div class="sp-head"><span id="psTitle">Settings</span><button id="psClose" title="Close">&#10005;</button></div>
+    <div id="psRows"></div>
+  </div>
+
   <!-- Centered widget palette (add-widget modal). -->
   <div id="palette" hidden>
     <div id="paletteBackdrop"></div>

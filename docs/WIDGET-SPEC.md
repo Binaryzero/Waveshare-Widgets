@@ -86,6 +86,12 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   Text properties support a `placeholder` — the sanctioned place to show an expected
   format (e.g. `"2026-12-24 18:00"`); labels must never teach syntax.
 
+  Text properties and list fields may also declare a `picker` to add a picker button
+  next to the free-text input (typing always stays available):
+  - `"picker": "emoji"` — an emoji grid for icon fields (deck/launcher button icons).
+  - `"picker": "file"` — a native file browser that fills the field with the chosen
+    path (desktop settings window only; the on-device editor keeps free text).
+
   Field types: `text` and `color`. A widget upgraded from an older text property should
   keep accepting its legacy string form from saved layouts (the editor converts
   `"A=B, C=D"` strings to rows on screen, but the saved value only becomes an array once

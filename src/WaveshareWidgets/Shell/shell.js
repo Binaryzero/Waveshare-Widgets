@@ -342,6 +342,7 @@
     cancelDrag();   // a re-init mid-drag must not orphan the ghost / dragging state
     closePalette(); // palette entries capture page objects this rebuild replaces
     closeStyleEditor(false); // its record is about to be replaced
+    closePropSheet(false);   // ditto for the settings sheet
     const keepPage = (PREVIEW && previewPage != null) ? previewPage
       : currentPage(); // a re-init (hot reload, replica refresh) keeps the page
     refreshBgSpecs();
@@ -848,6 +849,7 @@
       closePalette();
       cancelDrag();
       closeStyleEditor(); // flushes any trailing style edit
+      closePropSheet();   // same flush-on-close contract for settings edits
       if (PREVIEW) selectRecord(null, false); // highlight off; the host keeps its own selection
       // Armed confirms must not survive the session: re-entering edit within the
       // 2.5s window would otherwise turn the first tap into an instant delete.
@@ -906,6 +908,7 @@
     if (!page || layoutData.pages.length <= 1) return;
     confirmThen(pageDeleteBtn, '✕ Page', (page.slots || []).length > 0, () => {
       if (styleTarget && styleTarget.page === page) closeStyleEditor(false); // its tile goes away with the page
+      if (propTarget && propTarget.page === page) closePropSheet(false);
       if (selected && selected.page === page) selectRecord(null); // the detail target's page is going away
       for (const rec of slots.filter((s) => s.page === page)) rec.el.remove();
       slots = slots.filter((s) => s.page !== page);
@@ -965,9 +968,9 @@
     ov.appendChild(size);
     ov.appendChild(band);
 
-    // No 🎨 in the replica: the settings window's Appearance section is the one
-    // style editor there — two editors for the same seeds on one screen had them
-    // visibly fighting (field report: "double settings menu").
+    // No 🎨/⚙ in the replica: the settings window's Appearance section and Widget
+    // tab are the one editor there — two editors for the same values on one
+    // screen had them visibly fighting (field report: "double settings menu").
     if (widget && !PREVIEW) {
       const style = document.createElement('button');
       style.className = 'style';
@@ -975,6 +978,16 @@
       style.title = 'Style this widget';
       style.addEventListener('click', (ev) => { ev.stopPropagation(); openStyleEditor(record); });
       ov.appendChild(style);
+      // On-device access to the widget's OWN settings (#48): the pencil could
+      // move and restyle tiles but never configure them.
+      if ((widget.properties || []).length) {
+        const gear = document.createElement('button');
+        gear.className = 'gear';
+        gear.textContent = '⚙';
+        gear.title = 'Widget settings';
+        gear.addEventListener('click', (ev) => { ev.stopPropagation(); openPropSheet(record); });
+        ov.appendChild(gear);
+      }
     }
 
     bindDrag(ov, record);
@@ -984,6 +997,7 @@
   function removeSlot(record) {
     if (drag && drag.record === record) cancelDrag(); // removed out from under a drag
     if (styleTarget === record) closeStyleEditor(false);
+    if (propTarget === record) closePropSheet(false);
     if (selected === record) selectRecord(null); // tell the host its detail target is gone
     mutate(() => {
       const defs = record.page.slots || [];
@@ -1091,6 +1105,7 @@
 
   function openStyleEditor(record) {
     if (PREVIEW) return; // the settings window's Appearance section owns styling there
+    closePropSheet();    // one right-docked editor at a time
     styleTarget = record;
     const widget = widgetsById.get(record.def.widgetId);
     spTitle.textContent = widget ? widget.name : record.def.widgetId;
@@ -1190,6 +1205,377 @@
     buildStyleRows();
     persistLayout();
   });
+
+  // ---- per-widget settings editor (#48) ---------------------------------------------
+  // On-device counterpart of the settings window's Widget tab: a right-docked sheet
+  // of touch-first controls generated from the widget's manifest properties. Every
+  // change applies to the live tile immediately (the tile IS the preview) and
+  // persists debounced, flushing on close — same contract as the style editor.
+
+  const propSheet = document.getElementById('propSheet');
+  const psRows = document.getElementById('psRows');
+  const psTitle = document.getElementById('psTitle');
+  let propTarget = null;
+  let propPersistTimer = null;
+
+  const PS_EMOJI = [
+    '🧮', '🌐', '📁', '📷', '🎨', '📝', '📊', '💻', '🖥️', '⌨️', '🖱️', '🎧',
+    '🎮', '🕹️', '🎬', '🎵', '📺', '📻', '🔊', '🔇', '⏯️', '⏭️', '⏮️', '⏹️',
+    '🚀', '⚡', '🔥', '⭐', '❤️', '🏠', '🔧', '⚙️', '🔒', '🔑', '🛡️', '📦',
+    '💬', '📧', '📅', '⏰', '🌙', '☀️', '☁️', '💡', '🔋', '📶', '🧭', '🗺️',
+  ];
+
+  function closeEmojiPop() {
+    const pop = document.querySelector('.emoji-pop');
+    if (pop) pop.remove();
+    document.removeEventListener('pointerdown', onEmojiOutside, true);
+  }
+  function onEmojiOutside(ev) {
+    if (!ev.target.closest('.emoji-pop')) closeEmojiPop();
+  }
+  function openEmojiPop(anchor, onPick) {
+    if (document.querySelector('.emoji-pop')) { closeEmojiPop(); return; }
+    const pop = document.createElement('div');
+    pop.className = 'emoji-pop';
+    for (const e of PS_EMOJI) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = e;
+      b.addEventListener('click', () => { onPick(e); closeEmojiPop(); });
+      pop.appendChild(b);
+    }
+    document.body.appendChild(pop);
+    const r = anchor.getBoundingClientRect();
+    pop.style.left = Math.max(8, Math.min(r.left - pop.offsetWidth + r.width, window.innerWidth - pop.offsetWidth - 8)) + 'px';
+    pop.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - pop.offsetHeight - 8)) + 'px';
+    document.addEventListener('pointerdown', onEmojiOutside, true);
+  }
+
+  function openPropSheet(record) {
+    if (PREVIEW) return; // the settings window's Widget tab owns properties there
+    closeStyleEditor();  // one right-docked editor at a time
+    propTarget = record;
+    const widget = widgetsById.get(record.def.widgetId);
+    psTitle.textContent = widget ? widget.name : record.def.widgetId;
+    for (const s of slots) s.el.classList.toggle('style-editing', s === record);
+    buildPropRows(record, widget);
+    propSheet.hidden = false;
+  }
+
+  function closePropSheet(flush) {
+    if (!propTarget) return; // never wipe the style editor's highlight
+    if (flush !== false) {
+      // Flush-on-close: the live tile must show the trailing edit and the
+      // layout must carry it — never lose either to a still-armed debounce.
+      if (propApplyTimer) {
+        clearTimeout(propApplyTimer);
+        propApplyTimer = null;
+        applyPropNow(propTarget);
+      }
+      if (propPersistTimer) {
+        clearTimeout(propPersistTimer);
+        propPersistTimer = null;
+        persistLayout();
+      }
+    }
+    closeEmojiPop();
+    propTarget = null;
+    propSheet.hidden = true;
+    for (const s of slots) s.el.classList.remove('style-editing');
+  }
+
+  /** Re-init the tile from its edited stored settings. The record's settings are
+   * a MERGED snapshot (defaults + stored) — re-merge so the re-init delivers the
+   * edit the same way a cold load would. */
+  function applyPropNow(record) {
+    const widget = widgetsById.get(record.def.widgetId);
+    record.settings = mergedSettings(widget, record.def);
+    sendToSlot(record, initMessage(record));
+  }
+
+  let propApplyTimer = null;
+  function applyPropChange() {
+    if (!propTarget) return;
+    // Lightly debounced: a keystroke stream must not re-init the iframe per key.
+    const target = propTarget;
+    clearTimeout(propApplyTimer);
+    propApplyTimer = setTimeout(() => {
+      propApplyTimer = null;
+      if (propTarget === target) applyPropNow(target);
+    }, 150);
+    clearTimeout(propPersistTimer);
+    propPersistTimer = setTimeout(() => { propPersistTimer = null; persistLayout(); }, 600);
+  }
+
+  function buildPropRows(record, widget) {
+    psRows.textContent = '';
+    if (!widget) return;
+    const stored = () => (record.def.settings = record.def.settings || {});
+    const cur = (prop) => {
+      const s = record.def.settings || {};
+      return s[prop.name] !== undefined ? s[prop.name] : prop.default;
+    };
+    const set = (prop, v) => { stored()[prop.name] = v; applyPropChange(); };
+
+    for (const prop of widget.properties || []) {
+      const field = document.createElement('div');
+      field.className = 'ps-field';
+      const label = document.createElement('label');
+      label.textContent = prop.label || prop.name;
+      field.appendChild(label);
+      field.appendChild(psControl(prop, cur, set));
+      psRows.appendChild(field);
+    }
+  }
+
+  function psControl(prop, cur, set) {
+    const current = cur(prop);
+    switch (prop.type) {
+      case 'select': {
+        const select = document.createElement('select');
+        for (const o of prop.options || []) {
+          const value = (o && typeof o === 'object') ? o.value : o;
+          const text = (o && typeof o === 'object') ? (o.label || o.value) : o;
+          select.add(new Option(text, value, false, String(value) === String(current)));
+        }
+        select.onchange = () => set(prop, select.value);
+        return select;
+      }
+      case 'slider': {
+        const wrap = document.createElement('div');
+        wrap.className = 'ps-inline';
+        const range = document.createElement('input');
+        range.type = 'range';
+        range.min = prop.min != null ? prop.min : 0;
+        range.max = prop.max != null ? prop.max : 100;
+        range.step = prop.step != null ? prop.step : 1;
+        range.value = Number(current) || 0;
+        const out = document.createElement('output');
+        out.value = String(range.value);
+        // Track live, commit on release — a re-init per dragged pixel is thrash.
+        range.oninput = () => { out.value = String(range.value); };
+        range.onchange = () => set(prop, Number(range.value));
+        wrap.append(range, out);
+        return wrap;
+      }
+      case 'number': {
+        const input = document.createElement('input');
+        input.type = 'number';
+        if (prop.min != null) input.min = prop.min;
+        if (prop.max != null) input.max = prop.max;
+        input.value = current != null ? String(current) : '';
+        input.oninput = () => set(prop, Number(input.value));
+        return input;
+      }
+      case 'color': {
+        const input = document.createElement('input');
+        input.type = 'color';
+        input.value = /^#[0-9a-f]{6}$/i.test(String(current)) ? current : '#4cc2ff';
+        input.oninput = () => set(prop, input.value);
+        return input;
+      }
+      case 'sensor': {
+        const select = document.createElement('select');
+        select.add(new Option('Auto (recommended)', '', false, !current));
+        const pool = (latestSensors || []).filter((s) =>
+          !prop.sensor_type || s.type === prop.sensor_type);
+        for (const s of pool) {
+          select.add(new Option(s.device + ' — ' + s.name, s.id, false, s.id === current));
+        }
+        if (current && !pool.some((s) => s.id === current)) {
+          select.add(new Option(current + '  (missing)', current, false, true));
+        }
+        select.onchange = () => set(prop, select.value);
+        return select;
+      }
+      case 'sensors-factory': return psSensorsFactory(prop, cur, set);
+      case 'list': return psList(prop, cur, set);
+      default: { // text
+        const input = document.createElement('input');
+        input.type = 'text';
+        if (prop.placeholder) input.placeholder = String(prop.placeholder);
+        input.value = current != null ? String(current) : '';
+        input.oninput = () => set(prop, input.value);
+        if (prop.picker === 'emoji') {
+          const wrap = document.createElement('div');
+          wrap.className = 'ps-inline';
+          wrap.appendChild(input);
+          wrap.appendChild(psEmojiBtn(input));
+          return wrap;
+        }
+        return input; // picker:'file' stays free-text on-device (no dialog host here)
+      }
+    }
+  }
+
+  function psEmojiBtn(input) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ps-pick';
+    btn.textContent = '😀';
+    btn.title = 'Pick an icon';
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      openEmojiPop(btn, (e) => {
+        input.value = e;
+        input.dispatchEvent(new Event('input'));
+      });
+    });
+    return btn;
+  }
+
+  /** Structured list (deck buttons, launcher shortcuts): one card per item with
+   * labeled fields; the same legacy migrations as the settings window (JSON-array
+   * string, "A=B" pairs) so old layouts edit cleanly here too. */
+  function psList(prop, cur, set) {
+    const wrap = document.createElement('div');
+    wrap.className = 'ps-field';
+    const fields = (prop.fields && prop.fields.length) ? prop.fields
+      : [{ key: 'label', label: 'Label', type: 'text' }, { key: 'value', label: 'Value', type: 'text' }];
+    const current = cur(prop);
+    let items;
+    let legacyJson = null;
+    if (typeof current === 'string' && current.trim().startsWith('[')) {
+      try { legacyJson = JSON.parse(current); } catch (e) { legacyJson = null; }
+      if (!Array.isArray(legacyJson)) legacyJson = null;
+    }
+    if (Array.isArray(current) || legacyJson) {
+      items = (legacyJson || current).filter((x) => x && typeof x === 'object').map((x) => Object.assign({}, x));
+    } else if (typeof current === 'string' && current.trim()) {
+      items = current.split(',').map((pair) => {
+        const eq = pair.indexOf('=');
+        const item = {};
+        item[fields[0].key] = (eq < 0 ? pair : pair.slice(0, eq)).trim();
+        if (fields[1]) item[fields[1].key] = eq < 0 ? '' : pair.slice(eq + 1).trim();
+        return item;
+      }).filter((x) => Object.values(x).some((v) => v));
+    } else {
+      items = [];
+    }
+    const commit = () => set(prop, items.map((x) => Object.assign({}, x)));
+    const renderItems = () => {
+      wrap.textContent = '';
+      items.forEach((item, i) => {
+        const card = document.createElement('div');
+        card.className = 'ps-item';
+        const head = document.createElement('div');
+        head.className = 'ps-item-head';
+        const tag = document.createElement('span');
+        tag.textContent = (prop.itemLabel || 'item') + ' ' + (i + 1);
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'ps-remove';
+        del.textContent = '✕';
+        del.title = 'Remove this ' + (prop.itemLabel || 'item');
+        del.addEventListener('click', () => { items.splice(i, 1); commit(); renderItems(); });
+        head.append(tag, del);
+        card.appendChild(head);
+        for (const f of fields) {
+          const input = document.createElement('input');
+          if (f.type === 'color') {
+            input.type = 'color';
+            input.value = /^#[0-9a-f]{6}$/i.test(item[f.key]) ? item[f.key] : '#4cc2ff';
+          } else {
+            input.type = 'text';
+            input.placeholder = f.placeholder || f.label || '';
+            input.value = item[f.key] != null ? String(item[f.key]) : '';
+          }
+          input.setAttribute('aria-label', f.label || f.key);
+          input.oninput = () => { item[f.key] = input.value; commit(); };
+          if (f.picker === 'emoji') {
+            const row = document.createElement('div');
+            row.className = 'ps-inline';
+            row.appendChild(input);
+            row.appendChild(psEmojiBtn(input));
+            card.appendChild(row);
+          } else {
+            card.appendChild(input);
+          }
+        }
+        wrap.appendChild(card);
+      });
+      const cap = Math.max(0, Math.round(Number(prop.maxItems) || 0));
+      if (cap && items.length >= cap) {
+        const full = document.createElement('p');
+        full.className = 'ps-cap';
+        full.textContent = 'Limit reached — this widget shows at most ' + cap + ' ' +
+          (prop.itemLabel || 'item') + 's.';
+        wrap.appendChild(full);
+      } else {
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'ps-add';
+        add.textContent = '+ Add ' + (prop.itemLabel || 'item');
+        add.addEventListener('click', () => {
+          const item = {};
+          for (const f of fields) item[f.key] = f.type === 'color' ? '#4cc2ff' : '';
+          items.push(item);
+          commit();
+          renderItems();
+        });
+        wrap.appendChild(add);
+      }
+    };
+    renderItems();
+    return wrap;
+  }
+
+  /** Sensor picker rows (fans): sensor select + per-row color, add/remove; the
+   * pool honors the property's sensor_type filter, matching the settings window. */
+  function psSensorsFactory(prop, cur, set) {
+    const wrap = document.createElement('div');
+    wrap.className = 'ps-field';
+    const pool = (latestSensors || []).filter((s) =>
+      !prop.sensor_type || s.type === prop.sensor_type);
+    const current = cur(prop);
+    const items = (Array.isArray(current) ? current : [])
+      .filter((x) => x && typeof x === 'object').map((x) => Object.assign({}, x));
+    const commit = () => set(prop, items.map((x) => Object.assign({}, x)));
+    const renderItems = () => {
+      wrap.textContent = '';
+      items.forEach((item, i) => {
+        const row = document.createElement('div');
+        row.className = 'ps-inline';
+        const select = document.createElement('select');
+        for (const s of pool) {
+          select.add(new Option(s.device + ' — ' + s.name, s.id, false, s.id === item.sensorId));
+        }
+        if (item.sensorId && !pool.some((s) => s.id === item.sensorId)) {
+          select.add(new Option(item.sensorId + '  (missing)', item.sensorId, false, true));
+        }
+        select.onchange = () => { item.sensorId = select.value; commit(); };
+        const color = document.createElement('input');
+        color.type = 'color';
+        color.value = /^#[0-9a-f]{6}$/i.test(item.color) ? item.color : '#4cc2ff';
+        color.oninput = () => { item.color = color.value; commit(); };
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'ps-remove';
+        del.textContent = '✕';
+        del.title = 'Remove sensor';
+        del.addEventListener('click', () => { items.splice(i, 1); commit(); renderItems(); });
+        row.append(select, color, del);
+        wrap.appendChild(row);
+      });
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'ps-add';
+      add.textContent = '+ Add sensor';
+      add.disabled = !pool.length;
+      add.addEventListener('click', () => {
+        // Seed from the FILTERED pool — the first sensor of any type would be a
+        // temperature on most systems and could never resolve (Codex round 5).
+        items.push({ sensorId: pool[0].id, color: '#4cc2ff' });
+        commit();
+        renderItems();
+      });
+      wrap.appendChild(add);
+    };
+    renderItems();
+    return wrap;
+  }
+
+  document.getElementById('psClose').addEventListener('click', () => closePropSheet());
 
   // ---- add widget (palette) --------------------------------------------------------
 
