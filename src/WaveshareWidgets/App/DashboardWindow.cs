@@ -497,11 +497,26 @@ public sealed class DashboardWindow : Form
             var body = message["body"]?.GetValue<string>();
             if (body is not null && method is "POST" or "PUT")
             {
+                // The StringContent media-type overload rejects parameterized values
+                // ("application/json; charset=utf-8" throws FormatException) — parse
+                // the full header instead, keeping utf-8 as the charset when the
+                // caller named none (the body was encoded as UTF-8 either way).
                 var contentType = message["contentType"]?.GetValue<string>() ?? "text/plain";
-                request.Content = new StringContent(body, System.Text.Encoding.UTF8, contentType);
+                var content = new StringContent(body, System.Text.Encoding.UTF8);
+                if (System.Net.Http.Headers.MediaTypeHeaderValue.TryParse(contentType, out var mediaType))
+                {
+                    mediaType.CharSet ??= "utf-8";
+                    content.Headers.ContentType = mediaType;
+                }
+                request.Content = content;
             }
             // Widget-supplied extra headers (e.g. Hue CLIP v2's hue-application-key).
             // Hop-by-hop and body-framing headers stay under HttpClient's control.
+            // Headers safe to replay from a page-context fetch also feed the
+            // hidden-browser tier below — an Authorization header must survive
+            // EVERY tier of the ladder, or a private feed keeps answering 403
+            // right when the bot wall forces the escalation (#37).
+            Dictionary<string, string>? browserHeaders = null;
             if (message["headers"] is JsonObject extraHeaders)
             {
                 foreach (var (headerName, headerValue) in extraHeaders)
@@ -511,19 +526,38 @@ public sealed class DashboardWindow : Form
                     var lower = headerName.ToLowerInvariant();
                     if (lower is "host" or "content-length" or "transfer-encoding" or "connection" or "cookie")
                         continue;
+                    // Browser-owned metadata: page JS can never set Sec-*/Proxy-*
+                    // natively, so a forwarded value would SPOOF fetch metadata on
+                    // the escalated request (and suppress the host's correct
+                    // defaults below). The host stays authoritative for these.
+                    if (lower.StartsWith("sec-", StringComparison.Ordinal) ||
+                        lower.StartsWith("proxy-", StringComparison.Ordinal))
+                        continue;
                     var value = headerValue.GetValue<string>();
                     if (!request.Headers.TryAddWithoutValidation(headerName, value))
                         request.Content?.Headers.TryAddWithoutValidation(headerName, value);
+                    if (IsBrowserForwardable(lower))
+                        (browserHeaders ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase))[headerName] = value;
                 }
             }
 
-            request.Headers.TryAddWithoutValidation("User-Agent", ProxyUserAgent);
-            request.Headers.TryAddWithoutValidation("Accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,image/avif,image/webp,*/*;q=0.8");
-            request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
+            // Browser-grade defaults fill GAPS only: a forwarded header owns its
+            // name outright — appending the broad Accept default to a caller's
+            // "application/json" would hand content negotiation text/html at full
+            // preference, a representation the native request never accepted.
+            if (!request.Headers.Contains("User-Agent"))
+                request.Headers.TryAddWithoutValidation("User-Agent", ProxyUserAgent);
+            if (!request.Headers.Contains("Accept"))
+                request.Headers.TryAddWithoutValidation("Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,image/avif,image/webp,*/*;q=0.8");
+            if (!request.Headers.Contains("Accept-Language"))
+                request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
+            if (!request.Headers.Contains("Sec-Fetch-Mode"))
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
+            if (!request.Headers.Contains("Sec-Fetch-Site"))
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
+            if (!request.Headers.Contains("Sec-Fetch-Dest"))
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
             // Reddit's image CDNs (preview.redd.it, i.redd.it, external-preview.redd.it)
             // serve a fixed ~8 KB anti-hotlink placeholder unless the referer is Reddit.
             if (uri.Host.EndsWith(".redd.it", StringComparison.OrdinalIgnoreCase) ||
@@ -545,7 +579,7 @@ public sealed class DashboardWindow : Form
             if ((int)response.StatusCode is 403 or 429 && method == "GET")
             {
                 _browserFetcher ??= new BrowserFetcher();
-                var alt = await _browserFetcher.FetchAsync(uri.ToString());
+                var alt = await _browserFetcher.FetchAsync(uri.ToString(), browserHeaders);
                 if (alt is { } browser && browser.Status < 400)
                 {
                     result["status"] = browser.Status;
@@ -553,6 +587,17 @@ public sealed class DashboardWindow : Form
                     result["contentType"] = browser.ContentType;
                     result["bodyBase64"] = Convert.ToBase64String(browser.Body);
                     Log.Info($"browser fetch {uri.Host} -> {browser.Status} ({browser.Body.Length} bytes)");
+                }
+                else if (alt is { } blocked)
+                {
+                    // A real Chromium was refused too, which rules out TLS
+                    // fingerprinting — but only auth-shaped statuses suggest an
+                    // authorization problem; a 404/429/5xx is just the site's
+                    // ordinary answer and must not misdirect the field.
+                    var hint = blocked.Status is 401 or 403
+                        ? "likely authorization (missing credentials or a private resource), not TLS fingerprinting"
+                        : "the site's own answer, not TLS fingerprinting";
+                    Log.Warn($"browser fetch {uri.Host} -> {blocked.Status}; {hint}");
                 }
             }
         }
@@ -576,6 +621,23 @@ public sealed class DashboardWindow : Form
             // window closed mid-request
         }
     }
+
+    /// <summary>
+    /// Whether a widget-supplied header can be replayed from a page-context fetch in
+    /// the hidden-browser tier. Names the Fetch spec forbids page scripts to set (the
+    /// browser throws, killing the whole retry) and anything the browser must own
+    /// (cookies, origin, sec-*) stay out; auth and API-key headers pass through.
+    /// </summary>
+    private static bool IsBrowserForwardable(string lower) =>
+        lower is not ("accept-charset" or "accept-encoding" or "connection" or "content-length"
+            or "content-type" or "cookie" or "cookie2" or "date" or "dnt" or "expect" or "host"
+            or "keep-alive" or "origin" or "referer" or "te" or "trailer" or "transfer-encoding"
+            // The browser tier's whole value is its REAL identity: a widget-
+            // supplied User-Agent would override the genuine Chrome UA.
+            or "upgrade" or "user-agent" or "via")
+        && !lower.StartsWith("sec-", StringComparison.Ordinal)
+        && !lower.StartsWith("proxy-", StringComparison.Ordinal)
+        && !lower.StartsWith("access-control-", StringComparison.Ordinal);
 
     /// <summary>
     /// Real ICMP pings for the Ping Monitor widget (a browser can only fake latency with

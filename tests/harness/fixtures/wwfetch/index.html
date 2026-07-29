@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>WW.fetch fixture</title></head>
+<body>
+<script>
+'use strict';
+// Stock-style widget: WW.fetch with proxy:'always' exercises widget-api's OWN
+// proxyFetch serialization (bypassing the shim's window.fetch wrapper).
+window.__results = [];
+window.__done = false;
+(async () => {
+  try {
+    const res = await WW.fetch('http://127.0.0.1:8932/blocked.json',
+      { proxy: 'always', headers: new Headers({ 'Authorization': 'Bearer WWH' }) });
+    window.__results.push({ name: 'ww-headers', status: res.status, body: await res.text() });
+  } catch (e) { window.__results.push({ name: 'ww-headers', error: String(e) }); }
+
+  // Memoized origin whose proxy answers 403: WW.fetch must retry the native
+  // path. The icue fixture seeds the 8933 memo (same-origin sessionStorage);
+  // wait for it so the memo branch is the one under test.
+  try {
+    for (let i = 0; i < 60 && sessionStorage.getItem('ww-proxy-first:http://127.0.0.1:8933') !== '1'; i++)
+      await new Promise((r) => setTimeout(r, 250));
+    const res = await WW.fetch('http://127.0.0.1:8933/gate');
+    window.__results.push({ name: 'ww-memo-authwall', status: res.status, body: await res.text() });
+  } catch (e) { window.__results.push({ name: 'ww-memo-authwall', error: String(e) }); }
+
+  // A Headers-instance Content-Type must ride the dedicated contentType field
+  // on the hop (never the generic map — the host would double it up).
+  try {
+    const res = await WW.fetch('http://127.0.0.1:8932/blocked.json?wwct=1', {
+      proxy: 'always', method: 'POST', body: '{"b":2}',
+      headers: new Headers({ 'Content-Type': 'application/json', 'Authorization': 'Bearer WWCT' }),
+    });
+    window.__results.push({ name: 'ww-ct', status: res.status });
+  } catch (e) { window.__results.push({ name: 'ww-ct', error: String(e) }); }
+
+  // WW.fetch: pre-aborted signal rejects AbortError without touching the proxy.
+  try {
+    const ac = new AbortController();
+    ac.abort();
+    await WW.fetch('http://127.0.0.1:8931/wwabort.bin', { signal: ac.signal });
+    window.__results.push({ name: 'ww-abort', error: 'resolved unexpectedly' });
+  } catch (e) { window.__results.push({ name: 'ww-abort', errName: (e && e.name) || '' }); }
+
+  // WW.fetch: the async 403-retry sends the ENTRY-TIME header snapshot, not
+  // the caller's later mutation of the live Headers instance.
+  try {
+    const live = new Headers({ 'Authorization': 'Bearer WLIVE' });
+    const pending = WW.fetch('http://127.0.0.1:8932/blocked.json?wsnap=1', { headers: live });
+    live.set('Authorization', 'Bearer WMUT');
+    const res = await pending;
+    window.__results.push({ name: 'ww-snap', status: res.status });
+  } catch (e) { window.__results.push({ name: 'ww-snap', error: String(e) }); }
+
+  // WW.fetch: a proxied 204 resolves bodyless instead of stranding the promise.
+  try {
+    const res = await WW.fetch('http://127.0.0.1:8931/nocontent?ww=1', { proxy: 'always' });
+    window.__results.push({ name: 'ww-204', status: res.status });
+  } catch (e) { window.__results.push({ name: 'ww-204', error: String(e) }); }
+
+  // WW.fetch: aborting while the 403-retry is pending surfaces AbortError.
+  try {
+    const ac = new AbortController();
+    const pending = WW.fetch('http://127.0.0.1:8932/blocked.json?slowabort=2', { signal: ac.signal });
+    setTimeout(() => ac.abort(), 300);
+    const res = await pending;
+    window.__results.push({ name: 'ww-mid-abort', status: res.status });
+  } catch (e) { window.__results.push({ name: 'ww-mid-abort', errName: (e && e.name) || '' }); }
+
+  // WW.fetch: credentials:'include' also stays native-first on a memoized origin.
+  try {
+    const res = await WW.fetch('http://127.0.0.1:8931/wcred.bin', { credentials: 'include' });
+    window.__results.push({ name: 'ww-cred', status: res.status });
+  } catch (e) { window.__results.push({ name: 'ww-cred', error: String(e) }); }
+
+  window.__done = true;
+})();
+</script>
+</body>
+</html>

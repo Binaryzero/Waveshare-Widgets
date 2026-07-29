@@ -302,33 +302,148 @@
     return null;
   }
 
+  // Mirrors WW.fetch's escalation exactly (issue #37 — the shim's relief must
+  // give marketplace widgets the same treatment stock widgets get):
+  //  - a native fetch that failed once marks the origin proxy-first for the
+  //    session, so repeat polls skip the doomed browser attempt;
+  //  - the proxy hop forwards the request HEADERS. iCUE widgets authenticate
+  //    through plain window.fetch, and dropping an Authorization header on the
+  //    hop turns a private feed into a bot-wall-looking 403 no proxy tier can
+  //    rescue (the field's readit multireddit).
   window.fetch = function (input, init) {
+    const url = proxyableUrl(input);
+    let memoKey = null;
+    let remembered = false;
+    if (url) {
+      try {
+        memoKey = 'ww-proxy-first:' + new URL(url).origin;
+        remembered = sessionStorage.getItem(memoKey) === '1';
+      } catch (e) { memoKey = null; /* storage unavailable */ }
+    }
+    // fetch(new Request(...)) carries method/headers/body ON THE INPUT: read
+    // the proxy-relevant bits off the Request — init fields overriding per
+    // spec — so an escalated request keeps its method and headers instead of
+    // degrading to a headerless GET (Codex, round 3). Headers serialize NOW:
+    // native fetch snapshots its headers at call time, and the async
+    // escalation must retry what was actually SENT — not whatever the caller
+    // mutated the live Headers object into since (Codex, round 5).
+    const req = (input && typeof input === 'object' && typeof input.url === 'string') ? input : null;
+    const initBody = (init && init.body != null) ? init.body : null;
+    const rawHeaders = (init && init.headers) || (req && req.headers) || null;
+    const effSignal = (init && init.signal) || (req && req.signal) || null;
+    const eff = {
+      method: (init && init.method) || (req && req.method) || 'GET',
+      contentType: contentTypeOf(rawHeaders),
+      headers: headersToObject(rawHeaders),
+      body: typeof initBody === 'string' ? initBody : null,
+    };
+    // The proxy can faithfully replay only string (or empty) bodies — a
+    // FormData/Blob/URLSearchParams POST must keep LEADING with the native
+    // attempt: it reaches the server even when its response is CORS-blocked,
+    // and routing it proxy-first would silently send an empty body instead.
+    // A Request's own body is a one-shot stream that can't be inspected here,
+    // so any non-GET/HEAD Request without an overriding init body may carry one.
+    const effMethod = String(eff.method || 'GET').toUpperCase();
+    // A Request whose body accessor is observably null carries NO body — a
+    // bodyless POST/PUT keeps full proxy relief (Codex, round 9). Only when
+    // the accessor is missing does the method stay the conservative signal.
+    const mayCarryStreamBody = !!req && initBody == null && effMethod !== 'GET' && effMethod !== 'HEAD' &&
+      !(('body' in req) && req.body === null);
+    const replayable = !mayCarryStreamBody && (initBody == null || typeof initBody === 'string');
+    // An already-aborted request must reject with AbortError no matter what
+    // the memo says (Codex, round 5 — the memo branch ran before the abort
+    // check): the native path answers that correctly and touches no network.
+    if (effSignal && effSignal.aborted) return nativeFetch(input, init);
+    // Requests that lean on the browser's ambient cookies (credentials:
+    // 'include') stay native-first: the host strips Cookie by design, and an
+    // unauthenticated proxy hop can even 200 on a login-page redirect — a
+    // wrong answer no status check can catch (Codex, round 7).
+    const credentialed = (((init && init.credentials) || (req && req.credentials)) === 'include');
+    if (url && remembered && replayable && !credentialed) {
+      // Memory can go stale two ways: the proxy TRANSPORT failing (CORS fixed
+      // upstream), and the proxy being the wrong PATH for this request — an
+      // auth-shaped 401/403 answer may just mean the request needed the
+      // browser's ambient cookies, which never cross the proxy hop (the host
+      // rejects forwarded Cookie headers by design). Retry native for those
+      // and keep the proxy's answer when the native path can't do better.
+      return proxyFetch(url, eff, effSignal).then((response) => {
+        if (response.status !== 401 && response.status !== 403) return response;
+        return nativeFetch(input, init).then(
+          (native) => (native.ok ? native : response),
+          (err) => {
+            // A mid-retry abort is the caller's cancellation, never masked.
+            if (err && err.name === 'AbortError') throw err;
+            return response;
+          });
+      }, (err) => {
+        if (err && err.name === 'AbortError') throw err;
+        return nativeFetch(input, init);
+      });
+    }
     return nativeFetch(input, init).then((response) => {
       // Bot walls (Reddit's in particular) sometimes serve their block page WITH
-      // CORS headers, so the request "succeeds" as a 403/429; retry via the host.
-      const url = (response.status === 403 || response.status === 429) && proxyableUrl(input);
-      return url ? proxyFetch(url, init || {}).catch(() => response) : response;
+      // CORS headers, so the request "succeeds" as a 403/429; retry via the host
+      // — but only when the proxy can replay the request faithfully.
+      return (response.status === 403 || response.status === 429) && url && replayable
+        ? proxyFetch(url, eff, effSignal).catch((err) => {
+            // An abort during the retry is the caller's cancellation — it must
+            // surface, never be masked by the original bot-wall response.
+            if (err && err.name === 'AbortError') throw err;
+            return response;
+          })
+        : response;
     }, (error) => {
-      const url = proxyableUrl(input);
       if (!url) throw error;
-      return proxyFetch(url, init || {});
+      // A caller-initiated abort is not a network failure: no memo, no
+      // escalation — a cancellation is the caller's intent (Codex, r4).
+      if ((error && error.name === 'AbortError') || (effSignal && effSignal.aborted)) throw error;
+      // A browser-level failure (CORS, mixed content, TLS) repeats forever.
+      if (memoKey) { try { sessionStorage.setItem(memoKey, '1'); } catch (e) { /* storage off */ } }
+      // The native attempt may have DELIVERED a non-replayable body before its
+      // response was blocked — an empty proxy replay would hit the server a
+      // second time with corrupted (missing) payload. Surface the real error.
+      if (!replayable) throw error;
+      return proxyFetch(url, eff, effSignal);
     });
   };
 
-  function proxyFetch(url, init) {
+  // eff carries PRE-SERIALIZED contentType/headers (snapshotted at wrapper
+  // entry). The host hop can't carry an AbortSignal — honor it locally: never
+  // start an already-aborted request, drop an in-flight one when it fires.
+  function proxyFetch(url, eff, signal) {
     return new Promise((resolve, reject) => {
       const id = 'f' + (++fetchSeq) + '-' + Math.floor(performance.now());
-      pendingFetches.set(id, { resolve, reject });
-      setTimeout(() => {
-        if (pendingFetches.delete(id)) reject(new TypeError('proxy fetch timed out'));
+      const entry = { resolve, reject, cleanup: null };
+      pendingFetches.set(id, entry);
+      const timer = setTimeout(() => {
+        if (pendingFetches.delete(id)) {
+          if (entry.cleanup) entry.cleanup();
+          reject(new TypeError('proxy fetch timed out'));
+        }
       }, 25000);
+      if (signal) {
+        const onAbort = () => {
+          if (pendingFetches.delete(id)) {
+            clearTimeout(timer);
+            reject(new DOMException('The user aborted a request.', 'AbortError'));
+          }
+        };
+        if (signal.aborted) { onAbort(); return; }
+        signal.addEventListener('abort', onAbort);
+        // A REUSED signal must not accumulate one listener per request:
+        // cleanup runs when the request settles by any path (Codex, round 7).
+        entry.cleanup = () => { clearTimeout(timer); signal.removeEventListener('abort', onAbort); };
+      } else {
+        entry.cleanup = () => clearTimeout(timer);
+      }
       parent.postMessage({
         type: 'ww-fetch',
         id,
         url,
-        method: (init.method || 'GET').toUpperCase(),
-        body: typeof init.body === 'string' ? init.body : null,
-        contentType: contentTypeOf(init.headers),
+        method: (eff.method || 'GET').toUpperCase(),
+        body: typeof eff.body === 'string' ? eff.body : null,
+        contentType: eff.contentType != null ? eff.contentType : null,
+        headers: eff.headers || null,
       }, '*');
     });
   }
@@ -337,6 +452,13 @@
     if (!headers) return null;
     try {
       if (typeof headers.get === 'function') return headers.get('content-type');
+      if (Array.isArray(headers)) {
+        // Tuple pairs: Object.keys would yield "0","1",… and miss the name.
+        for (const pair of headers) {
+          if (pair && String(pair[0]).toLowerCase() === 'content-type') return String(pair[1]);
+        }
+        return null;
+      }
       for (const key of Object.keys(headers)) {
         if (key.toLowerCase() === 'content-type') return headers[key];
       }
@@ -344,10 +466,46 @@
     return null;
   }
 
+  // Serializes any HeadersInit shape (Headers, [[k,v]] pairs, plain object) for
+  // the proxy hop. Content-type is excluded — it already crosses as the
+  // dedicated contentType field and would double up on the host's request.
+  // Repeated names COMBINE case-insensitively with ", ", matching what native
+  // fetch does when it builds Headers from the same init.
+  function headersToObject(headers) {
+    if (!headers) return null;
+    const out = {};
+    const keyFor = {}; // lower-cased name -> the first-seen spelling
+    const add = (name, value) => {
+      const lower = String(name).toLowerCase();
+      if (keyFor[lower] === undefined) {
+        keyFor[lower] = String(name);
+        out[String(name)] = String(value);
+      } else {
+        out[keyFor[lower]] += ', ' + String(value);
+      }
+    };
+    try {
+      // Array check FIRST: arrays have a forEach of their own whose callback
+      // is (element, index) — the Headers/Map branch would mangle pairs.
+      if (Array.isArray(headers)) {
+        for (const pair of headers) if (pair && pair.length >= 2) add(pair[0], pair[1]);
+      } else if (typeof headers.forEach === 'function') {
+        headers.forEach((value, key) => add(key, value));
+      } else {
+        for (const key of Object.keys(headers)) add(key, headers[key]);
+      }
+    } catch (e) { return null; }
+    for (const key of Object.keys(out)) {
+      if (key.toLowerCase() === 'content-type') delete out[key];
+    }
+    return Object.keys(out).length ? out : null;
+  }
+
   function onFetchResult(msg) {
     const pending = pendingFetches.get(msg.id);
     if (!pending) return;
     pendingFetches.delete(msg.id);
+    if (pending.cleanup) pending.cleanup();
     if (msg.error) {
       pending.reject(new TypeError('proxy fetch failed: ' + msg.error));
       return;
@@ -358,11 +516,21 @@
       bytes = new Uint8Array(raw.length);
       for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
     }
-    pending.resolve(new Response(bytes, {
-      status: msg.status || 200,
-      statusText: msg.statusText || '',
-      headers: msg.contentType ? { 'Content-Type': msg.contentType } : {},
-    }));
+    // 204/205/304 are null-body statuses: Response() THROWS on ANY body for
+    // them (an empty Uint8Array included), and an exception here would strand
+    // the promise forever — the entry is already out of the map, so even the
+    // timeout can't fire. Build them bodyless, and reject on any construction
+    // failure instead of hanging.
+    const nullBody = msg.status === 204 || msg.status === 205 || msg.status === 304;
+    try {
+      pending.resolve(new Response(nullBody ? null : bytes, {
+        status: msg.status || 200,
+        statusText: msg.statusText || '',
+        headers: msg.contentType ? { 'Content-Type': msg.contentType } : {},
+      }));
+    } catch (e) {
+      pending.reject(new TypeError('proxy fetch result invalid: ' + e));
+    }
   }
 
   // --- sensor snapshot handling ---
