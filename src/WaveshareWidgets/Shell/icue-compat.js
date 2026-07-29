@@ -348,7 +348,12 @@
       // rejects forwarded Cookie headers by design). Retry native for those
       // and keep the proxy's answer when the native path can't do better.
       return proxyFetch(url, eff).then((response) => {
-        if (response.status !== 401 && response.status !== 403) return response;
+        // A redirected text/html answer is the login-wall shape of the same
+        // problem wearing a 200: the cookie-less proxy hop got bounced to a
+        // sign-in page. Retry native for it exactly like the auth statuses.
+        const authShaped = response.status === 401 || response.status === 403 ||
+          (response.redirected && /text\/html/i.test(response.headers.get('content-type') || ''));
+        if (!authShaped) return response;
         return nativeFetch(input, init).then(
           (native) => (native.ok ? native : response), () => response);
       }, () => nativeFetch(input, init));
@@ -356,12 +361,19 @@
     return nativeFetch(input, init).then((response) => {
       // Bot walls (Reddit's in particular) sometimes serve their block page WITH
       // CORS headers, so the request "succeeds" as a 403/429; retry via the host.
-      return (response.status === 403 || response.status === 429) && url
+      return (response.status === 403 || response.status === 429) && url && replayable
         ? proxyFetch(url, eff).catch(() => response) : response;
     }, (error) => {
-      if (!url) throw error;
+      // An AbortController cancellation is the widget's own doing, not a
+      // transport failure: rethrow without memoizing the origin or replaying
+      // a request the caller just cancelled.
+      if (!url || (error && error.name === 'AbortError')) throw error;
       // A browser-level failure (CORS, mixed content, TLS) repeats forever.
       if (memoKey) { try { sessionStorage.setItem(memoKey, '1'); } catch (e) { /* storage off */ } }
+      // A body the proxy can't carry must not be replayed bodyless: the native
+      // attempt may have reached the server (CORS blocks the RESPONSE), and a
+      // second, empty mutation would corrupt rather than relieve.
+      if (!replayable) throw error;
       return proxyFetch(url, eff);
     });
   };
@@ -452,11 +464,15 @@
       bytes = new Uint8Array(raw.length);
       for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
     }
-    pending.resolve(new Response(bytes, {
+    const response = new Response(bytes, {
       status: msg.status || 200,
       statusText: msg.statusText || '',
       headers: msg.contentType ? { 'Content-Type': msg.contentType } : {},
-    }));
+    });
+    // Constructed Responses pin .redirected to false; surface the host's
+    // "HttpClient followed redirects" report through the standard field.
+    if (msg.redirected) Object.defineProperty(response, 'redirected', { value: true });
+    pending.resolve(response);
   }
 
   // --- sensor snapshot handling ---

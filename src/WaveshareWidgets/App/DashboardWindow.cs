@@ -498,7 +498,13 @@ public sealed class DashboardWindow : Form
             if (body is not null && method is "POST" or "PUT")
             {
                 var contentType = message["contentType"]?.GetValue<string>() ?? "text/plain";
-                request.Content = new StringContent(body, System.Text.Encoding.UTF8, contentType);
+                // StringContent's mediaType parameter rejects parameterized values, and
+                // "application/json; charset=utf-8" is a perfectly ordinary fetch header —
+                // parse the full value and assign it after construction instead.
+                var content = new StringContent(body, System.Text.Encoding.UTF8);
+                if (System.Net.Http.Headers.MediaTypeHeaderValue.TryParse(contentType, out var mediaType))
+                    content.Headers.ContentType = mediaType;
+                request.Content = content;
             }
             // Widget-supplied extra headers (e.g. Hue CLIP v2's hue-application-key).
             // Hop-by-hop and body-framing headers stay under HttpClient's control.
@@ -545,6 +551,9 @@ public sealed class DashboardWindow : Form
             result["statusText"] = response.ReasonPhrase ?? "";
             result["contentType"] = response.Content.Headers.ContentType?.ToString();
             result["bodyBase64"] = Convert.ToBase64String(bytes);
+            // The shim needs to know when this answer came off a redirect chain: a
+            // cookie-less hop bounced to a login page reads as a clean 200 here.
+            result["redirected"] = response.RequestMessage?.RequestUri is { } finalUri && finalUri != uri;
             Log.Info($"proxy fetch {uri.Host} -> {(int)response.StatusCode} ({bytes.Length} bytes)");
 
             // TLS-fingerprinting bot walls (Reddit) 403 every .NET client; retry those

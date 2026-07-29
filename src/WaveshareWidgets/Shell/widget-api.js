@@ -138,11 +138,15 @@
         bytes = new Uint8Array(raw.length);
         for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
       }
-      pending.resolve(new Response(bytes, {
+      const response = new Response(bytes, {
         status: msg.status || 200,
         statusText: msg.statusText || '',
         headers: msg.contentType ? { 'Content-Type': msg.contentType } : {},
-      }));
+      });
+      // Constructed Responses pin .redirected to false; surface the host's
+      // "HttpClient followed redirects" report through the standard field.
+      if (msg.redirected) Object.defineProperty(response, 'redirected', { value: true });
+      pending.resolve(response);
     }
   });
 
@@ -318,11 +322,15 @@
       const replayable = init.body == null || typeof init.body === 'string';
       if (init.proxy === 'always' || (init.proxy !== 'never' && remembered && replayable)) {
         return proxyFetch(url, init).then((response) => {
+          if (init.proxy === 'always') return response;
           // An auth-shaped 401/403 from the proxy may just mean the request
           // needed the browser's ambient cookies, which never cross the proxy
-          // hop — retry native (unless the caller opted out of the browser
-          // path entirely) and keep the proxy's answer if native can't do better.
-          if (init.proxy === 'always' || (response.status !== 401 && response.status !== 403)) return response;
+          // hop — and a redirected text/html answer is the same problem wearing
+          // a 200 (the cookie-less hop got bounced to a sign-in page). Retry
+          // native and keep the proxy's answer if native can't do better.
+          const authShaped = response.status === 401 || response.status === 403 ||
+            (response.redirected && /text\/html/i.test(response.headers.get('content-type') || ''));
+          if (!authShaped) return response;
           return fetch(url, init).then(
             (native) => (native.ok ? native : response), () => response);
         }, (err) => {
@@ -334,15 +342,22 @@
         // Bot walls sometimes serve their block page WITH CORS headers, so the
         // request "succeeds" as a 403/429; retry those via the host — unless the
         // caller explicitly opted out of the proxy entirely.
-        if ((response.status === 403 || response.status === 429) && init.proxy !== 'never') {
+        if ((response.status === 403 || response.status === 429) && init.proxy !== 'never' && replayable) {
           return proxyFetch(url, init).catch(() => response);
         }
         return response;
       }, (err) => {
-        if (init.proxy === 'never') throw err;
+        // An AbortController cancellation is the caller's own doing, not a
+        // transport failure: rethrow without memoizing the origin or replaying
+        // a request the caller just cancelled.
+        if (init.proxy === 'never' || (err && err.name === 'AbortError')) throw err;
         // A browser-level failure (CORS, mixed content, TLS) repeats forever —
         // remember the origin so later calls skip straight to the proxy.
         if (memoKey) { try { sessionStorage.setItem(memoKey, '1'); } catch (e) { /* storage off */ } }
+        // A body the proxy can't carry must not be replayed bodyless: the native
+        // attempt may have reached the server (CORS blocks the RESPONSE), and a
+        // second, empty mutation would corrupt rather than relieve.
+        if (!replayable) throw err;
         return proxyFetch(url, init);
       });
     },
