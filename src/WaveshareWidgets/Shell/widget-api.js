@@ -128,6 +128,7 @@
       const pending = pendingFetches.get(msg.id);
       if (!pending) return;
       pendingFetches.delete(msg.id);
+      if (pending.cleanup) pending.cleanup();
       if (msg.error) {
         pending.reject(new TypeError('proxy fetch failed: ' + msg.error));
         return;
@@ -218,16 +219,28 @@
   function proxyFetch(url, snap, signal) {
     return new Promise((resolve, reject) => {
       const id = reqId('w');
-      pendingFetches.set(id, { resolve, reject });
-      setTimeout(() => {
-        if (pendingFetches.delete(id)) reject(new TypeError('proxy fetch timed out'));
+      const entry = { resolve, reject, cleanup: null };
+      pendingFetches.set(id, entry);
+      const timer = setTimeout(() => {
+        if (pendingFetches.delete(id)) {
+          if (entry.cleanup) entry.cleanup();
+          reject(new TypeError('proxy fetch timed out'));
+        }
       }, 25000);
       if (signal) {
         const onAbort = () => {
-          if (pendingFetches.delete(id)) reject(new DOMException('The user aborted a request.', 'AbortError'));
+          if (pendingFetches.delete(id)) {
+            clearTimeout(timer);
+            reject(new DOMException('The user aborted a request.', 'AbortError'));
+          }
         };
         if (signal.aborted) { onAbort(); return; }
-        signal.addEventListener('abort', onAbort, { once: true });
+        signal.addEventListener('abort', onAbort);
+        // A REUSED signal must not accumulate one listener per request:
+        // cleanup runs when the request settles by any path.
+        entry.cleanup = () => { clearTimeout(timer); signal.removeEventListener('abort', onAbort); };
+      } else {
+        entry.cleanup = () => clearTimeout(timer);
       }
       parent.postMessage(Object.assign({ type: 'ww-fetch', id, url: String(url) }, snap), '*');
     });
@@ -345,7 +358,12 @@
       // the server even when its response is CORS-blocked) instead of being
       // routed proxy-first into an empty-body replay.
       const replayable = init.body == null || typeof init.body === 'string';
-      if (init.proxy === 'always' || (init.proxy !== 'never' && remembered && replayable)) {
+      // Requests that lean on the browser's ambient cookies (credentials:
+      // 'include') stay native-first: the host strips Cookie by design, and
+      // an unauthenticated proxy hop can even 200 on a login-page redirect —
+      // a wrong answer no status check can catch.
+      const credentialed = init.credentials === 'include';
+      if (init.proxy === 'always' || (init.proxy !== 'never' && remembered && replayable && !credentialed)) {
         return proxyFetch(url, snap, init.signal).then((response) => {
           // An auth-shaped 401/403 from the proxy may just mean the request
           // needed the browser's ambient cookies, which never cross the proxy

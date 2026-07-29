@@ -350,7 +350,12 @@
     // the memo says (Codex, round 5 — the memo branch ran before the abort
     // check): the native path answers that correctly and touches no network.
     if (effSignal && effSignal.aborted) return nativeFetch(input, init);
-    if (url && remembered && replayable) {
+    // Requests that lean on the browser's ambient cookies (credentials:
+    // 'include') stay native-first: the host strips Cookie by design, and an
+    // unauthenticated proxy hop can even 200 on a login-page redirect — a
+    // wrong answer no status check can catch (Codex, round 7).
+    const credentialed = (((init && init.credentials) || (req && req.credentials)) === 'include');
+    if (url && remembered && replayable && !credentialed) {
       // Memory can go stale two ways: the proxy TRANSPORT failing (CORS fixed
       // upstream), and the proxy being the wrong PATH for this request — an
       // auth-shaped 401/403 answer may just mean the request needed the
@@ -404,16 +409,28 @@
   function proxyFetch(url, eff, signal) {
     return new Promise((resolve, reject) => {
       const id = 'f' + (++fetchSeq) + '-' + Math.floor(performance.now());
-      pendingFetches.set(id, { resolve, reject });
-      setTimeout(() => {
-        if (pendingFetches.delete(id)) reject(new TypeError('proxy fetch timed out'));
+      const entry = { resolve, reject, cleanup: null };
+      pendingFetches.set(id, entry);
+      const timer = setTimeout(() => {
+        if (pendingFetches.delete(id)) {
+          if (entry.cleanup) entry.cleanup();
+          reject(new TypeError('proxy fetch timed out'));
+        }
       }, 25000);
       if (signal) {
         const onAbort = () => {
-          if (pendingFetches.delete(id)) reject(new DOMException('The user aborted a request.', 'AbortError'));
+          if (pendingFetches.delete(id)) {
+            clearTimeout(timer);
+            reject(new DOMException('The user aborted a request.', 'AbortError'));
+          }
         };
         if (signal.aborted) { onAbort(); return; }
-        signal.addEventListener('abort', onAbort, { once: true });
+        signal.addEventListener('abort', onAbort);
+        // A REUSED signal must not accumulate one listener per request:
+        // cleanup runs when the request settles by any path (Codex, round 7).
+        entry.cleanup = () => { clearTimeout(timer); signal.removeEventListener('abort', onAbort); };
+      } else {
+        entry.cleanup = () => clearTimeout(timer);
       }
       parent.postMessage({
         type: 'ww-fetch',
@@ -484,6 +501,7 @@
     const pending = pendingFetches.get(msg.id);
     if (!pending) return;
     pendingFetches.delete(msg.id);
+    if (pending.cleanup) pending.cleanup();
     if (msg.error) {
       pending.reject(new TypeError('proxy fetch failed: ' + msg.error));
       return;

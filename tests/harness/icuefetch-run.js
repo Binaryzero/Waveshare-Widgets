@@ -58,12 +58,14 @@ const widgets = [
   // widget origin get CORS-rejected while the hit still counts (CORS is
   // enforced on the response), so hit counts expose whether the memo skipped
   // the doomed native attempt.
-  const hits = { feed: 0, form: 0, req: 0, reqget: 0 };
+  const hits = { feed: 0, form: 0, req: 0, reqget: 0, cred: 0, wcred: 0 };
   const noCors = http.createServer((req, res) => {
     const u = String(req.url);
     if (u.includes('form')) hits.form++;
     else if (u.includes('reqget')) hits.reqget++;
     else if (u.includes('req')) hits.req++;
+    else if (u.includes('wcred')) hits.wcred++;
+    else if (u.includes('cred')) hits.cred++;
     else hits.feed++;
     res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
     res.end(Buffer.from(Array.from({ length: 256 }, (_, i) => i)));
@@ -309,6 +311,19 @@ const widgets = [
   check('S21 WW.fetch: abort during the pending 403-retry surfaces AbortError',
     byName(stock, 'ww-mid-abort').errName === 'AbortError',
     JSON.stringify(byName(stock, 'ww-mid-abort')));
+
+  // ---- S22/S23 · credentialed requests lead native even on a memoized origin
+  check('S22 shim: credentials:include leads native on a memoized origin (server saw the hit)',
+    hits.cred === 1 && byName(icue, 'cred').status === 200,
+    JSON.stringify({ credHits: hits.cred, result: byName(icue, 'cred') }));
+  check('S23 WW.fetch: credentials:include also leads native on a memoized origin',
+    hits.wcred === 1 && byName(stock, 'ww-cred').status === 200,
+    JSON.stringify({ wcredHits: hits.wcred, result: byName(stock, 'ww-cred') }));
+
+  // ---- S24 · a reused signal's abort listeners are removed as requests settle
+  check('S24 reused AbortSignal: one listener added AND removed per settled proxy request',
+    byName(icue, 'leak').adds === 3 && byName(icue, 'leak').removes === 3,
+    JSON.stringify(byName(icue, 'leak')));
 
   await browser.close();
   noCors.close();

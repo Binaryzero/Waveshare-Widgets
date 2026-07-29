@@ -145,6 +145,29 @@ window.__done = false;
     push('mid-abort', { status: res.status });
   } catch (e) { push('mid-abort', { errName: (e && e.name) || '' }); }
 
+  // 15 · credentials:'include' stays native-first on a memoized origin — the
+  // proxy can't carry ambient cookies, and an unauthenticated hop can even
+  // 200 on a login redirect (Codex round 7).
+  try {
+    const res = await fetch('http://127.0.0.1:8931/cred.bin', { credentials: 'include' });
+    push('cred', { status: res.status });
+  } catch (e) { push('cred', { error: String(e) }); }
+
+  // 16 · a REUSED AbortSignal must not accumulate one listener per settled
+  // proxy request: cleanup runs on completion, counted via wrapped
+  // add/removeEventListener.
+  try {
+    const ac = new AbortController();
+    let adds = 0, removes = 0;
+    const origAdd = ac.signal.addEventListener.bind(ac.signal);
+    const origRemove = ac.signal.removeEventListener.bind(ac.signal);
+    ac.signal.addEventListener = (...a) => { if (a[0] === 'abort') adds++; return origAdd(...a); };
+    ac.signal.removeEventListener = (...a) => { if (a[0] === 'abort') removes++; return origRemove(...a); };
+    for (let i = 0; i < 3; i++)
+      await fetch('http://127.0.0.1:8931/leak.bin?i=' + i, { signal: ac.signal });
+    push('leak', { adds, removes });
+  } catch (e) { push('leak', { error: String(e) }); }
+
   window.__done = true;
 })();
 </script>

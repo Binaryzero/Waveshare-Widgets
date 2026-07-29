@@ -68,6 +68,12 @@ window.__done = false;
     window.__results.push({ name: 'ww-mid-abort', status: res.status });
   } catch (e) { window.__results.push({ name: 'ww-mid-abort', errName: (e && e.name) || '' }); }
 
+  // WW.fetch: credentials:'include' also stays native-first on a memoized origin.
+  try {
+    const res = await WW.fetch('http://127.0.0.1:8931/wcred.bin', { credentials: 'include' });
+    window.__results.push({ name: 'ww-cred', status: res.status });
+  } catch (e) { window.__results.push({ name: 'ww-cred', error: String(e) }); }
+
   window.__done = true;
 })();
 </script>
