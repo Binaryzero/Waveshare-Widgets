@@ -584,3 +584,7 @@ header h1 #appVersion {
 }
 #panelTitle { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; }
 #contextBody { overflow: auto; padding: 12px 16px 16px; min-height: 0; }
+
+/* Toasts outrank the floating inspector (z 40): save failures and operation
+ * results must never hide behind an open card. */
+#toast { z-index: 60; }

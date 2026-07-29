@@ -66,16 +66,6 @@ public sealed partial class WidgetLibrary : IDisposable
     /// the folder and give it a new id.</summary>
     private void SeedStockWidgets()
     {
-        if (!Directory.Exists(AppPaths.StockWidgetsDir))
-        {
-            Log.Warn($"Stock widgets folder missing next to the app ({AppPaths.StockWidgetsDir}) — nothing to seed");
-            return;
-        }
-
-        // Retired stock: a widget the app no longer ships (fans — its sensor
-        // pipeline required elevation) must also leave UPGRADED installs, not
-        // just fresh ones. Only marker-bearing copies are removed — an unmarked
-        // folder is the user's own work and is never touched.
         // The retired list is AUTHORITATIVE — never inferred from the shipped
         // folder's absence: extracting a release over an old install leaves stale
         // stock-widgets entries behind, which would both skip this cleanup and
@@ -98,6 +88,17 @@ public sealed partial class WidgetLibrary : IDisposable
         // permanent "not installed" card in the grid cells the widget held.
         if (retiredIds.Count > 0)
             LayoutStore.RemoveWidgets(retiredIds);
+
+        if (!Directory.Exists(AppPaths.StockWidgetsDir))
+        {
+            Log.Warn($"Stock widgets folder missing next to the app ({AppPaths.StockWidgetsDir}) — nothing to seed");
+            return;
+        }
+
+        // Retired stock: a widget the app no longer ships (fans — its sensor
+        // pipeline required elevation) must also leave UPGRADED installs, not
+        // just fresh ones. Only marker-bearing copies are removed — an unmarked
+        // folder is the user's own work and is never touched.
 
         int seeded = 0, current = 0;
         var failed = new List<string>();
