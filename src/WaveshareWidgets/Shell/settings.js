@@ -92,7 +92,7 @@
     // unreachable below an overflow:hidden document.
     const top = Math.min(
       Math.round(el('toolbar').getBoundingClientRect().bottom + 10),
-      Math.max(56, window.innerHeight - 300));
+      Math.max(56, window.innerHeight - 220));
     panel.style.top = top + 'px';
     panel.style.maxHeight = 'calc(100vh - ' + (top + 16) + 'px)';
     panel.classList.add('open');
