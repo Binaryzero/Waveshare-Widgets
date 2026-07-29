@@ -545,8 +545,7 @@
     delete def.col;
     try {
       const { width, band } = sizeParts(def.size);
-      const widths = allowedWidths(widgetsById.get(def.widgetId));
-      const widthList = [width].concat(widths.slice(0, Math.max(0, widths.indexOf(width))).reverse());
+      const widthList = [width].concat(narrowerWidths(width, widgetsById.get(def.widgetId)));
       const bandList = [band].concat(['full', 'upper', 'lower'].filter((b) => b !== band));
       for (const b of bandList) for (const w of widthList) {
         if (fitsWithSize(page, def, makeSize(w, b))) return makeSize(w, b);
@@ -2135,13 +2134,21 @@
     return { cellsFree, landingOk };
   }
 
-  // Widths a drag may land at: the current width, then narrower ones — a drop
-  // never grows a widget; only a genuinely tighter hole resizes it.
+  // Widths a drag may land at: the current width, then narrower SUPPORTED ones
+  // — a drop never grows a widget; only a genuinely tighter hole resizes it.
+  // Narrower is judged by rank, not by the current width's position in
+  // allowedWidths: a hand-edited size the widget never declared (e.g. a "full"
+  // slot on a quarter-only widget) must still shrink through the widths it
+  // does support instead of losing every candidate (Codex, PR #52).
+  function narrowerWidths(width, widget) {
+    const rank = WIDTH_ORDER.indexOf(width);
+    return allowedWidths(widget).filter((w) => WIDTH_ORDER.indexOf(w) < rank).reverse();
+  }
+
   function dragWidths(rec) {
     const parts = sizeParts(rec.def.size);
-    const widths = allowedWidths(widgetsById.get(rec.def.widgetId));
-    const startW = Math.max(0, widths.indexOf(parts.width));
-    return { parts, widthList: [parts.width].concat(widths.slice(0, startW).reverse()) };
+    const widget = widgetsById.get(rec.def.widgetId);
+    return { parts, widthList: [parts.width].concat(narrowerWidths(parts.width, widget)) };
   }
 
   // Maps a pointer position over the dragged widget's own page to a landing spot in
