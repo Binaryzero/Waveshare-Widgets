@@ -33,7 +33,9 @@ const WEBHOOK_VALUE = /web ?hook$/i;
 // All-lowercase compounds have no case boundary to split on and no word boundary to
 // match, so `apitoken` and `clientsecret` slipped through the boundary-based rules
 // entirely. These pairs are credential-bearing with no plausible innocent reading.
-const COMPOUND = /(api|client|access|auth|refresh|session|bearer|private|user|admin|service|oauth)(token|secret|key|password|passwd)/i;
+// Anchored at the END: unanchored, `userKeyboardLayout` squashes to
+// `userkeyboardlayout` and matches `userkey`, failing a keyboard-layout select.
+const COMPOUND = /(api|client|access|auth|refresh|session|bearer|private|user|admin|service|oauth)(token|secret|key|password|passwd)s?$/i;
 // A url/link/endpoint is the credential only when the name denotes the VALUE. Same
 // distinction the webhook rule makes: `privateIcsUrl` holds it, `signedUrlExpiry`
 // holds a duration and `personalLinkLabel` holds a caption.
@@ -117,6 +119,11 @@ function validate(folder) {
         err('prop-list', `${where}: list needs a "fields" array`);
       else for (const f of prop.fields) {
         if (!f.key) err('prop-list', `${where}: a list field is missing "key"`);
+        // There is no encrypted list field: the host seals only top-level `secret`
+        // properties, so a credential inside a list row lands in layout.json as
+        // plaintext no matter what the outer property is called.
+        if (f.key && looksLikeCredential(f.key))
+          err('prop-secret', `${where}: list field "${f.key}" looks like a credential, and list rows are NEVER encrypted — give the widget a top-level "secret" property instead`);
         if (!LIST_FIELD_TYPES.has(f.type || 'text'))
           err('prop-list', `${where}: list field type "${f.type}" not supported (text | color)`);
       }

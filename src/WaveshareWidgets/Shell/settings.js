@@ -31,8 +31,18 @@
   // "not set" again after any page/slot action, and emptying the field would send "",
   // which the host honours by restoring what it just stored.
   const secretsTypedHere = new Set();
-  const secretKey = (slot, name) =>
-    (slot.instanceId || slot.widgetId + '@' + ((state.layout.pages || []).findIndex((pg) => (pg.slots || []).includes(slot)))) + '|' + name;
+  const secretKey = (slot, name) => {
+    if (slot.instanceId) return 'i:' + slot.instanceId + '|' + name;
+    // No id: the key must name the SLOT, not just the widget — two id-less instances of
+    // one widget on a page would otherwise share a key, and typing a secret for one
+    // would make the other's empty field claim "saved · encrypted".
+    let at = 'orphan';
+    ((state.layout || {}).pages || []).forEach((pg, pi) => {
+      const si = (pg.slots || []).indexOf(slot);
+      if (si >= 0) at = pi + ':' + si;
+    });
+    return 'p:' + slot.widgetId + '@' + at + '|' + name;
+  };
   let widgetsById = new Map();
   let selectedPage = 0;
   let selectedSlot = null;     // slot index (within the selected page) the detail panel shows
@@ -263,6 +273,44 @@
     return Object.assign({}, state.layout, copy, { theme: null });
   }
   const replicaLayoutJson = () => JSON.stringify(replicaLayout());
+
+  /** Fold a replica capture back into the authoritative layout. Everything the replica
+   * can legitimately change (slot set, order, size, page) comes from the capture;
+   * secrets and the global theme are settings-side authority and are restored from the
+   * working copy, matched by instanceId (falling back to position for id-less slots). */
+  function mergeReplicaCapture(captured) {
+    const mine = new Map();
+    ((state.layout || {}).pages || []).forEach((page, pi) => {
+      (page.slots || []).forEach((slot, si) => {
+        mine.set(slot.instanceId ? 'i:' + slot.instanceId : 'p:' + pi + ':' + si, slot);
+      });
+    });
+    const secretsOf = (widgetId) => {
+      const w = (state.widgets || []).find((x) => x.id === widgetId);
+      return (w && w.properties || []).filter((pr) => pr.type === 'secret').map((pr) => pr.name);
+    };
+    const pages = (captured.pages || []).map((page, pi) => Object.assign({}, page, {
+      slots: (page.slots || []).map((slot, si) => {
+        const names = secretsOf(slot.widgetId);
+        if (!names.length) return slot;
+        // By id first, then by position: the replica MINTS an instanceId for legacy
+        // id-less slots on its first mutation, so an id-keyed lookup alone would miss
+        // exactly the slot whose secret we are trying to preserve.
+        const prior = (slot.instanceId && mine.get('i:' + slot.instanceId)) || mine.get('p:' + pi + ':' + si);
+        if (!prior || prior.widgetId !== slot.widgetId) return slot;
+        const settings = Object.assign({}, slot.settings);
+        for (const n of names) {
+          if (prior.settings && n in prior.settings) settings[n] = prior.settings[n];
+          else delete settings[n];
+        }
+        const merged = Object.assign({}, slot, { settings });
+        if (prior.secretsSet) merged.secretsSet = prior.secretsSet;
+        return merged;
+      }),
+    }));
+    // theme is never sent to the replica, so the capture's null is absence, not intent.
+    return Object.assign({}, captured, { pages, theme: (state.layout || {}).theme ?? null });
+  }
   // Test seam: the headless probes assert that nothing credential-shaped reaches the
   // preview. Reading a projection is harmless; it exposes no state the page lacks.
   window.__wwReplicaLayout = replicaLayout;
@@ -451,7 +499,12 @@
     // imminent re-init repaints the replica from the settings truth, visibly
     // superseding the replica gesture instead of corrupting the working copy.
     if (replicaTimer) return;
-    state.layout = layout;
+    // The replica is sent a SCRUBBED projection (no credentials, no theme), so its
+    // capture is authoritative for STRUCTURE only — which slots exist, where, at what
+    // size. Adopting it wholesale would write those blanks back over the working copy:
+    // a drag would wipe the configured theme and discard a credential the user typed
+    // but has not saved. Take the structure, keep the settings-side values.
+    state.layout = mergeReplicaCapture(layout);
     lastReplicaLayout = replicaLayoutJson();
     lastWorkingLayout = lastReplicaLayout; // replica edits advance the edit baseline too
     selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
