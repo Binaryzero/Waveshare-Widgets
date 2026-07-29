@@ -1021,6 +1021,12 @@
     widgetSelect.onchange = () => {
       slot.widgetId = widgetSelect.value;
       slot.settings = {};
+      // secretsSet describes the OUTGOING widget's stored credentials. The host scopes
+      // carry-over by widget id, so the new widget will correctly inherit nothing —
+      // but leaving the marker here would have the editor report a same-named secret
+      // (`token` is the obvious collision) as "saved · encrypted" for a widget that has
+      // never had one.
+      delete slot.secretsSet;
       const w = widgetsById.get(slot.widgetId);
       const widths = offeredWidths(w);
       const current = parseSize(slot.size);

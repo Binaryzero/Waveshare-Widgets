@@ -121,9 +121,9 @@ const widgets = [{
 
   // ---- N2 · Clear is offered only where there is something to remove
   check('N2 a stored secret offers an explicit Clear',
-    await tokenRow.locator('.ps-clear').count() === 1);
+    await tokenRow.locator('.ps-clear').evaluate((n) => n.hidden) === false);
   check('N2b a secret with nothing stored offers none',
-    await freshRow.locator('.ps-clear').count() === 0);
+    await freshRow.locator('.ps-clear').evaluate((n) => n.hidden) === true);
 
   // ---- N4 · deleting the characters by hand must reach the host as a REMOVAL
   await tokenRow.locator('input').fill('');
@@ -144,17 +144,27 @@ const widgets = [{
   check('N3b and the save carries the clear marker',
     savedSetting('token') === CLEAR, JSON.stringify(savedSetting('token')));
 
-  // ---- N5 · a secret that never had a value has nothing to remove
-  await freshRow.locator('input').fill('typed-then-removed');
-  await wait(900);
-  await freshRow.locator('input').fill('');
-  await wait(900);
-  check('N5 emptying a never-set secret sends "" — there is nothing to delete',
+  // ---- N5 · a secret nobody touched is never turned into a removal
+  check('N5 an untouched unset secret still saves as "" — there is nothing to delete',
     savedSetting('fresh') === '', JSON.stringify(savedSetting('fresh')));
   check('N5b the marker is never shown back to the user as a value',
     await tokenRow.locator('input').inputValue() === '' && await freshRow.locator('input').inputValue() === '');
   check('N5c non-secret settings ride along untouched',
     savedSetting('repo') === 'binaryzero/waveshare-widgets');
+
+  // ---- N8 · a credential typed during THIS sheet session is still removable
+  // The field started empty, so a snapshot taken at render time says "nothing stored".
+  // But edits persist on a debounce, so by the time the user deletes what they typed a
+  // credential DOES exist — and sending "" would have the host restore the value it
+  // just saved, leaving an empty-looking field over a live token (Codex r3, P1).
+  await freshRow.locator('input').fill('ghp_TYPED_INTO_AN_EMPTY_FIELD');
+  await wait(900);   // persisted: a credential now exists for this field
+  check('N8b Clear appears as soon as a credential exists',
+    await freshRow.locator('.ps-clear').evaluate((n) => n.hidden) === false);
+  await freshRow.locator('input').fill('');
+  await wait(900);
+  check('N8c deleting it sends the clear marker, not the "keep it" empty string',
+    savedSetting('fresh') === CLEAR, JSON.stringify(savedSetting('fresh')));
 
   // ---- N7 · a save the host could not protect has to surface on the panel
   await page.evaluate(() => window.__hostPush(JSON.stringify({

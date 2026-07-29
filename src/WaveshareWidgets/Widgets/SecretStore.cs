@@ -239,8 +239,8 @@ public static class SecretPolicy
     public static IReadOnlyList<SecretSealFailure> Seal(
         DashboardLayout layout, DashboardLayout? stored, Func<string, WidgetManifest?> lookup)
     {
-        var previous = BuildStoredIndex(stored, lookup, out var storedCounts);
         var incomingCounts = CountWidgets(layout);
+        var previous = BuildStoredIndex(stored, lookup, incomingCounts, out var storedCounts);
         var failures = new List<SecretSealFailure>();
         // Minting an instance id below CHANGES a slot's key, so a widget with two secrets
         // would look up its second one under the brand-new id and find nothing. Resolve
@@ -352,7 +352,8 @@ public static class SecretPolicy
     /// <summary>Indexes stored secret values — protected AND legacy plaintext, since a
     /// `text` → `secret` upgrade must be encrypted on the next save, not discarded.</summary>
     private static Dictionary<(string Slot, string Name), string> BuildStoredIndex(
-        DashboardLayout? stored, Func<string, WidgetManifest?> lookup, out Dictionary<string, int> counts)
+        DashboardLayout? stored, Func<string, WidgetManifest?> lookup,
+        Dictionary<string, int> incomingCounts, out Dictionary<string, int> counts)
     {
         counts = CountWidgets(stored);
         var index = new Dictionary<(string, string), string>();
@@ -361,10 +362,25 @@ public static class SecretPolicy
         var storedCounts = counts;
         Walk(stored, lookup, (slot, name) =>
         {
-            var key = SlotKey(slot, storedCounts, storedCounts);
             var value = AsString(slot.Settings?[name]);
-            if (key is not null && !string.IsNullOrEmpty(value))
+            if (string.IsNullOrEmpty(value))
+                return;
+            var key = SlotKey(slot, storedCounts, incomingCounts);
+            if (key is not null)
                 index[(key, name)] = value!;
+            // A slot whose id was minted by a PREVIOUS Seal is also reachable
+            // positionally, because the client that triggered that save still holds the
+            // slot WITHOUT an id — the mint happened on the host's own copy. Its next
+            // save would otherwise look like a slot with no stored secret, and the
+            // masked empty value would delete the credential. Same unambiguity gate as
+            // any positional match, so at most one incoming slot can claim it.
+            if (!string.IsNullOrEmpty(slot.InstanceId))
+            {
+                storedCounts.TryGetValue(slot.WidgetId, out var before);
+                incomingCounts.TryGetValue(slot.WidgetId, out var after);
+                if (before == 1 && after == 1)
+                    index.TryAdd((slot.WidgetId + "|w:0", name), value!);
+            }
         });
         return index;
     }

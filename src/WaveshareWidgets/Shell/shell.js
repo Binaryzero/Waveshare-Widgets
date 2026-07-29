@@ -1591,11 +1591,19 @@
         input.placeholder = prop.placeholder || 'Paste the token or key';
         const stored = (typeof current === 'string' && current !== SECRET_CLEARED) ? current : '';
         input.value = stored;
-        // Emptying a field that HELD a credential has to say so out loud. The host reads
-        // "" as "the masked desktop field came back untouched" and keeps the ciphertext
-        // already on disk — so without the marker the panel could never delete a
-        // credential: it would look gone until the next reload brought it back.
-        const commit = () => set(prop, input.value.length ? input.value : (stored ? SECRET_CLEARED : ''));
+        // Whether a credential EXISTS on disk for this field — which changes while the
+        // sheet is open, since edits persist on a debounce. A snapshot taken at render
+        // time goes stale the moment the user types into an empty field: deleting it
+        // again would send "", the host would read that as "the masked desktop field
+        // came back untouched", and it would restore the credential it had just saved —
+        // leaving a field that looks empty over a token that is still live.
+        let exists = stored.length > 0;
+        const commit = () => {
+          const typed = input.value.length > 0;
+          if (typed) exists = true;   // this keystroke is on its way to disk
+          set(prop, typed ? input.value : (exists ? SECRET_CLEARED : ''));
+          clear.hidden = !exists;
+        };
         input.addEventListener('input', commit);
         const eye = document.createElement('button');
         eye.type = 'button';
@@ -1605,17 +1613,17 @@
         eye.addEventListener('click', () => {
           input.type = input.type === 'password' ? 'text' : 'password';
         });
-        wrap.append(input, eye);
-        if (stored) {
-          // Removal needs to be one deliberate tap on glass, not "select all, delete".
-          const clear = document.createElement('button');
-          clear.type = 'button';
-          clear.className = 'ps-eye ps-clear';
-          clear.textContent = '✕';
-          clear.title = 'Remove the stored credential on save';
-          clear.addEventListener('click', () => { input.value = ''; commit(); });
-          wrap.append(clear);
-        }
+        // Removal needs to be one deliberate tap on glass, not "select all, delete".
+        // Built unconditionally and revealed by `commit`, so it appears as soon as a
+        // credential exists — including one typed during this same sheet session.
+        const clear = document.createElement('button');
+        clear.type = 'button';
+        clear.className = 'ps-eye ps-clear';
+        clear.textContent = '✕';
+        clear.title = 'Remove the stored credential on save';
+        clear.hidden = !exists;
+        clear.addEventListener('click', () => { input.value = ''; commit(); });
+        wrap.append(input, eye, clear);
         return wrap;
       }
       case 'select': {

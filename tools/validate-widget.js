@@ -21,6 +21,14 @@ const KNOWN_TYPES = new Set(['text', 'number', 'slider', 'color', 'select', 'swi
 // The compound keywords tolerate the break the splitter introduces: "OAuthAPIKey"
 // becomes "O Auth API Key", and "API Key" is still an api key.
 const CREDENTIAL_WORD = /(^|[^a-z0-9])(token|secret|password|passwd|api ?key|bearer|pat|credential|private ?key|access ?key)([^a-z0-9]|$)/i;
+// Credential-equivalent URLs (WIDGET-STANDARD: "a private ICS or webhook link"). A
+// webhook URL IS the credential — anyone holding it can post. So is a private calendar
+// address. But most url properties are public (the iframe and youtube widgets both
+// ship one), so a bare url/link/endpoint is never enough on its own: it takes a
+// secrecy qualifier, or the word webhook, which is unambiguous by itself.
+const WEBHOOK = /(^|[^a-z0-9])web ?hook([^a-z0-9]|$)/i;
+const URLISH = /(^|[^a-z0-9])(url|uri|link|endpoint|address|feed)([^a-z0-9]|$)/i;
+const SECRET_QUALIFIER = /(^|[^a-z0-9])(private|secret|signed|personal|sas)([^a-z0-9]|$)/i;
 const looksLikeCredential = (name) => {
   // Two case boundaries, because initialisms are everywhere in this domain:
   //   acronym->word  "APIToken" -> "API Token", "JWTToken" -> "JWT Token"
@@ -33,7 +41,10 @@ const looksLikeCredential = (name) => {
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/[_\-.]+/g, ' ');
-  return CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(spaced.replace(/\s+/g, ''));
+  const squashed = spaced.replace(/\s+/g, '');
+  if (CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(squashed)) return true;
+  if (WEBHOOK.test(spaced) || WEBHOOK.test(squashed)) return true;
+  return URLISH.test(spaced) && SECRET_QUALIFIER.test(spaced);
 };
 const KNOWN_SLOTS = new Set(['quarter', 'half', 'three-quarter', 'full']);
 const LIST_FIELD_TYPES = new Set(['text', 'color']);

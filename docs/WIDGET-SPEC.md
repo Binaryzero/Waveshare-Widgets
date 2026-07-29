@@ -63,7 +63,8 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   like the stock weather widget), and `list` (below).
 
   **Credentials MUST use `type: "secret"`** — bearer tokens, PATs, client secrets, API
-  keys, and credential-equivalent URLs (a private ICS or webhook link). The host
+  keys, and credential-equivalent URLs (a private ICS or webhook link — the URL *is*
+  the credential, since anyone holding it can read or post). The host
   encrypts those values with Windows DPAPI (CurrentUser scope) before `layout.json` is
   written, so the file carries no usable credential; the settings editor renders a
   masked field and never receives a stored value back (it shows only that one is saved).
@@ -83,7 +84,11 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   secret, so its unauthenticated state is what the preview shows. Widgets that used
   `text` for a credential should switch: the validator now fails
   credential-looking names on any other type (`prop-secret`), and an existing plaintext
-  value is encrypted the first time it is saved after the switch.
+  value is encrypted the first time it is saved after the switch. That check catches
+  the obvious spellings — token, secret, password, api key, PAT — plus `webhook…` and a
+  url/link/endpoint qualified as private, signed, or personal. It cannot judge a name
+  like `icsUrl` or `feedUrl`, which may be a public feed or a secret address; if yours
+  is secret, declare it `secret` regardless of what the validator says.
 
   **`color` properties are reserved for data colors** — colors that are *content*, such
   as a per-series line color, where two instances legitimately differ as data. Never

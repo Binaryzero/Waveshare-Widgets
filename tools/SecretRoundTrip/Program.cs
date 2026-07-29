@@ -321,6 +321,35 @@ SecretStore.EncryptOverride = Flip;
 var cleanRun = LayoutWith(new JsonObject { ["apiToken"] = Token });
 Check("P18d a clean save reports nothing", SecretPolicy.Seal(cleanRun, null, Lookup).Count == 0);
 
+// ---- P19 · Codex r3: the mint lands on the HOST's copy, not the client's -------------
+// Seal stamps an instanceId on its own deserialized layout, so the still-open editor
+// keeps sending the slot WITHOUT one. On its second save the stored index is keyed by
+// the minted id while the incoming slot keys positionally: the masked empty value finds
+// nothing and deletes the credential the first save just encrypted.
+var r3Client = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
+SecretPolicy.Seal(r3Client, null, Lookup);              // host mints on ITS copy...
+var r3OnDisk = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(r3Client))!;
+Check("P19 the first save encrypts and mints an id on disk",
+    SecretStore.CanUnprotect(Value(r3OnDisk, "apiToken")) && !string.IsNullOrEmpty(Slot(r3OnDisk).InstanceId),
+    Slot(r3OnDisk).InstanceId);
+// ...while the editor still holds an id-less slot with a masked (empty) secret.
+var r3SecondSave = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
+SecretPolicy.Seal(r3SecondSave, r3OnDisk, Lookup);
+Check("P19b a second save from that stale editor KEEPS the credential",
+    SecretStore.Unprotect(Value(r3SecondSave, "apiToken") ?? "") == Token,
+    Value(r3SecondSave, "apiToken"));
+// The alias must not resurrect the positional guess when the position is ambiguous.
+var r3Ambiguous = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
+        new LayoutSlot { WidgetId = "test.widget", Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
+    ] }],
+};
+SecretPolicy.Seal(r3Ambiguous, r3OnDisk, Lookup);
+Check("P19c but two id-less instances still refuse to guess which one owns it",
+    r3Ambiguous.Pages[0].Slots.All(s => s.Settings?["apiToken"] is null));
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 

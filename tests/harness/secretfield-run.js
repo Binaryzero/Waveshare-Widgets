@@ -47,6 +47,13 @@ const widgets = [{
     { name: 'fresh', label: 'Other token', type: 'secret' },
     { name: 'repo', label: 'Repository', type: 'text', default: 'owner/name' },
   ],
+}, {
+  // A DIFFERENT widget that happens to declare the same secret name — the collision
+  // that makes stale `secretsSet` visible after a swap (E10).
+  id: 'test.ha', name: 'Home Assistant', supportedSlots: ['half'],
+  properties: [
+    { name: 'token', label: 'Long-lived token', type: 'secret' },
+  ],
 }];
 
 // Exactly what the host sends after SecretPolicy.Mask: the secret blanked, plus a
@@ -188,6 +195,23 @@ const layout = {
   await page.waitForTimeout(150);
   check('E9c a clean save still reads as a plain success',
     /Saved — dashboard updated/.test(await page.locator('#toast').textContent() || ''));
+
+  // ---- E10 · swapping the widget must not inherit the old one's "saved" marker
+  // secretsSet describes the OUTGOING widget. The host scopes carry-over by widget id,
+  // so the new widget correctly inherits nothing — but a stale marker would tell the
+  // user a credential is stored for a widget that has never had one (Codex r3, P2).
+  await page.evaluate(() => {
+    const sel = document.querySelector('#slotDetail select');
+    sel.value = 'test.ha';
+    sel.dispatchEvent(new Event('change'));
+  });
+  await page.waitForTimeout(250);
+  const swapped = page.locator('#slotDetail .secret-wrap').first();
+  check('E10 after a widget swap, a same-named secret does not read as saved',
+    (await swapped.locator('.secret-state').textContent()).trim() === 'not set',
+    await swapped.locator('.secret-state').textContent());
+  check('E10b and it offers no Clear for a credential it never had',
+    await swapped.locator('button.danger').evaluate((n) => n.hidden) === true);
 
   await browser.close();
   shellSrv.close();
