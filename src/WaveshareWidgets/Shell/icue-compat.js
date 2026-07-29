@@ -302,15 +302,37 @@
     return null;
   }
 
+  // Mirrors WW.fetch's escalation exactly (issue #37 — the shim's relief must
+  // give marketplace widgets the same treatment stock widgets get):
+  //  - a native fetch that failed once marks the origin proxy-first for the
+  //    session, so repeat polls skip the doomed browser attempt;
+  //  - the proxy hop forwards the request HEADERS. iCUE widgets authenticate
+  //    through plain window.fetch, and dropping an Authorization header on the
+  //    hop turns a private feed into a bot-wall-looking 403 no proxy tier can
+  //    rescue (the field's readit multireddit).
   window.fetch = function (input, init) {
+    const url = proxyableUrl(input);
+    let memoKey = null;
+    let remembered = false;
+    if (url) {
+      try {
+        memoKey = 'ww-proxy-first:' + new URL(url).origin;
+        remembered = sessionStorage.getItem(memoKey) === '1';
+      } catch (e) { memoKey = null; /* storage unavailable */ }
+    }
+    if (url && remembered) {
+      // Memory can go stale (CORS fixed upstream): the browser path is the last resort.
+      return proxyFetch(url, init || {}).catch(() => nativeFetch(input, init));
+    }
     return nativeFetch(input, init).then((response) => {
       // Bot walls (Reddit's in particular) sometimes serve their block page WITH
       // CORS headers, so the request "succeeds" as a 403/429; retry via the host.
-      const url = (response.status === 403 || response.status === 429) && proxyableUrl(input);
-      return url ? proxyFetch(url, init || {}).catch(() => response) : response;
+      return (response.status === 403 || response.status === 429) && url
+        ? proxyFetch(url, init || {}).catch(() => response) : response;
     }, (error) => {
-      const url = proxyableUrl(input);
       if (!url) throw error;
+      // A browser-level failure (CORS, mixed content, TLS) repeats forever.
+      if (memoKey) { try { sessionStorage.setItem(memoKey, '1'); } catch (e) { /* storage off */ } }
       return proxyFetch(url, init || {});
     });
   };
@@ -329,6 +351,7 @@
         method: (init.method || 'GET').toUpperCase(),
         body: typeof init.body === 'string' ? init.body : null,
         contentType: contentTypeOf(init.headers),
+        headers: headersToObject(init.headers),
       }, '*');
     });
   }
@@ -342,6 +365,29 @@
       }
     } catch (e) { /* opaque headers */ }
     return null;
+  }
+
+  // Serializes any HeadersInit shape (Headers, [[k,v]] pairs, plain object) for
+  // the proxy hop. Content-type is excluded — it already crosses as the
+  // dedicated contentType field and would double up on the host's request.
+  function headersToObject(headers) {
+    if (!headers) return null;
+    const out = {};
+    try {
+      // Array check FIRST: arrays have a forEach of their own whose callback
+      // is (element, index) — the Headers/Map branch would mangle pairs.
+      if (Array.isArray(headers)) {
+        for (const pair of headers) if (pair && pair.length >= 2) out[pair[0]] = String(pair[1]);
+      } else if (typeof headers.forEach === 'function') {
+        headers.forEach((value, key) => { out[key] = String(value); });
+      } else {
+        for (const key of Object.keys(headers)) out[key] = String(headers[key]);
+      }
+    } catch (e) { return null; }
+    for (const key of Object.keys(out)) {
+      if (key.toLowerCase() === 'content-type') delete out[key];
+    }
+    return Object.keys(out).length ? out : null;
   }
 
   function onFetchResult(msg) {

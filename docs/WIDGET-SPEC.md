@@ -161,7 +161,9 @@ notifications widget shows an explanatory card instead of an empty list. A slot 
 the "hide during games" checkbox in Settings (`hideInGame` in layout.json) — the shell
 hides it and returns it to the same grid cell afterwards.
 
-`WW.fetch` extras: `init.headers` (plain object) rides the host proxy too, and
+`WW.fetch` extras: `init.headers` (plain object, `Headers` instance, or `[[k,v]]`
+pairs — all shapes survive the host proxy hop, so authenticated APIs keep their
+`Authorization` header when the request escalates), and
 `init.insecure: true` skips certificate validation — honored only for private/loopback
 literal IPs (for self-signed devices like the Hue bridge). Insecure LAN requests go
 over HTTP/1.1 on a single serialized connection per device, since embedded TLS

@@ -154,12 +154,26 @@
       setTimeout(() => {
         if (pendingFetches.delete(id)) reject(new TypeError('proxy fetch timed out'));
       }, 25000);
-      // Plain-object headers survive the proxy hop (needed by APIs like Hue CLIP v2);
+      // Request headers survive the proxy hop (needed by APIs like Hue CLIP v2 —
+      // and any authenticated feed: a dropped Authorization header reads as a
+      // bot-wall 403 downstream). Headers instances and [[k,v]] pairs serialize
+      // too, not just plain objects (#37 parity with the iCUE shim).
       // init.insecure permits self-signed TLS, honored by the host for LAN hosts only.
       let headers = null;
-      if (init.headers && typeof init.headers === 'object' && typeof init.headers.get !== 'function') {
+      if (init.headers && typeof init.headers === 'object') {
         headers = {};
-        for (const key of Object.keys(init.headers)) headers[key] = String(init.headers[key]);
+        try {
+          // Array check FIRST: arrays have a forEach of their own whose callback
+          // is (element, index) — the Headers/Map branch would mangle pairs.
+          if (Array.isArray(init.headers)) {
+            for (const pair of init.headers) if (pair && pair.length >= 2) headers[pair[0]] = String(pair[1]);
+          } else if (typeof init.headers.forEach === 'function') {
+            init.headers.forEach((value, key) => { headers[key] = String(value); });
+          } else {
+            for (const key of Object.keys(init.headers)) headers[key] = String(init.headers[key]);
+          }
+        } catch (e) { headers = null; /* opaque headers */ }
+        if (headers && !Object.keys(headers).length) headers = null;
       }
       parent.postMessage({
         type: 'ww-fetch',

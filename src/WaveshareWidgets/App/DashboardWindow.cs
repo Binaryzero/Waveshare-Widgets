@@ -554,6 +554,14 @@ public sealed class DashboardWindow : Form
                     result["bodyBase64"] = Convert.ToBase64String(browser.Body);
                     Log.Info($"browser fetch {uri.Host} -> {browser.Status} ({browser.Body.Length} bytes)");
                 }
+                else if (alt is { } blocked)
+                {
+                    // A real Chromium got the same refusal: this is the site's own
+                    // answer (missing auth, private resource), not TLS fingerprinting
+                    // — the ladder has no higher tier, and app.log should say which
+                    // failure the field is looking at.
+                    Log.Warn($"browser fetch {uri.Host} -> {blocked.Status}; the site refuses this request even from a real browser (authorization, not bot wall)");
+                }
             }
         }
         catch (Exception ex)
