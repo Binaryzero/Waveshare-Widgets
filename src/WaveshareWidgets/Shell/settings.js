@@ -1455,7 +1455,9 @@
         input.autocomplete = 'off';
         input.spellcheck = false;
         input.placeholder = prop.placeholder || 'Paste the token or key';
-        input.value = typeof current === 'string' ? current : '';
+        // The clear marker is a host protocol word, never something to show or re-send
+        // as if the user had typed it.
+        input.value = (typeof current === 'string' && current !== '__ww_secret_cleared__') ? current : '';
         const stored = Array.isArray(slot.secretsSet) && slot.secretsSet.includes(prop.name);
         let cleared = false; // Clear was pressed: the save will DROP the stored value
         const state = document.createElement('span');
@@ -1476,9 +1478,10 @@
         const clear = iconButton('✕', 'Remove the stored credential on the next save', () => {
           input.value = '';
           cleared = true;
-          // An explicit empty string is what tells the host to drop the stored value;
-          // an ABSENT key would instead be read as "keep what you have".
-          set('');
+          // A distinct marker, NOT an empty string: empty is what an untouched masked
+          // field sends back, and that must KEEP the stored credential. Only this word
+          // means "delete it" (SecretStore.ClearMarker on the host).
+          set('__ww_secret_cleared__');
           sync();
         }, true);
         input.addEventListener('input', () => { cleared = false; set(input.value); sync(); });

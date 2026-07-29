@@ -157,9 +157,18 @@ const layout = {
   await page.locator('#save').click();
   await page.waitForTimeout(400);
   const cleared = saved[saved.length - 1].pages[0].slots[0];
-  check('E5b the save sends token:"" — an explicit clear, not an absent key',
-    Object.prototype.hasOwnProperty.call(cleared.settings, 'token') && cleared.settings.token === '',
-    JSON.stringify(cleared.settings));
+  // An empty string is what an UNTOUCHED masked field sends, and the host keeps the
+  // stored credential for that — so a clear has to say something different or the
+  // credential silently survives the delete (Codex r1, P1).
+  check('E5b the save sends the distinct clear marker, never a bare empty string',
+    cleared.settings.token === '__ww_secret_cleared__', JSON.stringify(cleared.settings));
+  check('E5c an untouched secret still sends "" (the keep-what-you-have signal)',
+    cleared.settings.fresh === '', JSON.stringify(cleared.settings));
+
+  // ---- E8 · the marker is host protocol, never shown back to the user as a value
+  const shownAfterClear = await stored.locator('input').inputValue();
+  check('E8 the clear marker never appears in the field the user reads',
+    shownAfterClear === '', shownAfterClear);
 
   await browser.close();
   shellSrv.close();

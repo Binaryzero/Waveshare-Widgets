@@ -16,7 +16,16 @@ const KNOWN_TYPES = new Set(['text', 'number', 'slider', 'color', 'select', 'swi
   'secret', 'sensor', 'sensors-factory', 'location', 'list', 'media-selector']);
 // Names that look like credentials: declaring them as free text writes a plaintext
 // secret into layout.json, so the validator flags the type, not the widget author.
-const CREDENTIAL_NAME = /(^|[^a-z])(token|secret|password|passwd|apikey|api_key|client_secret|access_key|bearer|pat)([^a-z]|$)/i;
+// camelCase and PascalCase count — `apiToken`, `clientSecret`, `githubPAT` are the
+// COMMON spellings, so the name is split at case boundaries before matching.
+const CREDENTIAL_WORD = /(^|[^a-z0-9])(token|secret|password|passwd|apikey|bearer|pat|credential|privatekey|accesskey)([^a-z0-9]|$)/i;
+const looksLikeCredential = (name) => {
+  // "apiToken" -> "api Token"; "access_key" -> "access key" -> also "accesskey", so a
+  // two-word spelling of a one-word keyword still matches. Word boundaries keep the
+  // squashed form honest: "compatMode" -> "compatmode" does NOT match "pat".
+  const spaced = String(name || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_\-.]+/g, ' ');
+  return CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(spaced.replace(/\s+/g, ''));
+};
 const KNOWN_SLOTS = new Set(['quarter', 'half', 'three-quarter', 'full']);
 const LIST_FIELD_TYPES = new Set(['text', 'color']);
 // Labels must never teach a syntax — structured values use the list type.
@@ -62,7 +71,7 @@ function validate(folder) {
     // Credentials MUST be type "secret": that is the only type the host encrypts
     // (DPAPI, CurrentUser) before writing layout.json. As "text" the token sits on
     // disk in the clear and rides any layout copy off the machine.
-    if (type !== 'secret' && CREDENTIAL_NAME.test(prop.name || ''))
+    if (type !== 'secret' && looksLikeCredential(prop.name))
       err('prop-secret', `${where}: a credential must use type "secret" (the host encrypts those with DPAPI); "${type}" stores it as plaintext in layout.json`);
     if (type === 'secret' && prop.default != null && String(prop.default) !== '')
       err('prop-secret-default', `${where}: a secret must not ship a default value`);
