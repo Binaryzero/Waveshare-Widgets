@@ -320,7 +320,12 @@
         remembered = sessionStorage.getItem(memoKey) === '1';
       } catch (e) { memoKey = null; /* storage unavailable */ }
     }
-    if (url && remembered) {
+    // The proxy can faithfully replay only string (or empty) bodies — a
+    // FormData/Blob/URLSearchParams POST must keep LEADING with the native
+    // attempt: it reaches the server even when its response is CORS-blocked,
+    // and routing it proxy-first would silently send an empty body instead.
+    const replayable = !init || init.body == null || typeof init.body === 'string';
+    if (url && remembered && replayable) {
       // Memory can go stale two ways: the proxy TRANSPORT failing (CORS fixed
       // upstream), and the proxy being the wrong PATH for this request — an
       // auth-shaped 401/403 answer may just mean the request needed the
@@ -386,18 +391,30 @@
   // Serializes any HeadersInit shape (Headers, [[k,v]] pairs, plain object) for
   // the proxy hop. Content-type is excluded — it already crosses as the
   // dedicated contentType field and would double up on the host's request.
+  // Repeated names COMBINE case-insensitively with ", ", matching what native
+  // fetch does when it builds Headers from the same init.
   function headersToObject(headers) {
     if (!headers) return null;
     const out = {};
+    const keyFor = {}; // lower-cased name -> the first-seen spelling
+    const add = (name, value) => {
+      const lower = String(name).toLowerCase();
+      if (keyFor[lower] === undefined) {
+        keyFor[lower] = String(name);
+        out[String(name)] = String(value);
+      } else {
+        out[keyFor[lower]] += ', ' + String(value);
+      }
+    };
     try {
       // Array check FIRST: arrays have a forEach of their own whose callback
       // is (element, index) — the Headers/Map branch would mangle pairs.
       if (Array.isArray(headers)) {
-        for (const pair of headers) if (pair && pair.length >= 2) out[pair[0]] = String(pair[1]);
+        for (const pair of headers) if (pair && pair.length >= 2) add(pair[0], pair[1]);
       } else if (typeof headers.forEach === 'function') {
-        headers.forEach((value, key) => { out[key] = String(value); });
+        headers.forEach((value, key) => add(key, value));
       } else {
-        for (const key of Object.keys(headers)) out[key] = String(headers[key]);
+        for (const key of Object.keys(headers)) add(key, headers[key]);
       }
     } catch (e) { return null; }
     for (const key of Object.keys(out)) {

@@ -157,23 +157,45 @@
       // Request headers survive the proxy hop (needed by APIs like Hue CLIP v2 —
       // and any authenticated feed: a dropped Authorization header reads as a
       // bot-wall 403 downstream). Headers instances and [[k,v]] pairs serialize
-      // too, not just plain objects (#37 parity with the iCUE shim).
+      // too, not just plain objects, repeated names combining with ", " like
+      // native fetch (#37 parity with the iCUE shim). Content-Type moves to the
+      // dedicated field — a copy in the generic map would double up against the
+      // host's StringContent and hand APIs an invalid body type.
       // init.insecure permits self-signed TLS, honored by the host for LAN hosts only.
       let headers = null;
+      let bodyContentType = null;
       if (init.headers && typeof init.headers === 'object') {
         headers = {};
+        const keyFor = {}; // lower-cased name -> the first-seen spelling
+        const add = (name, value) => {
+          const lower = String(name).toLowerCase();
+          if (keyFor[lower] === undefined) {
+            keyFor[lower] = String(name);
+            headers[String(name)] = String(value);
+          } else {
+            headers[keyFor[lower]] += ', ' + String(value);
+          }
+        };
         try {
           // Array check FIRST: arrays have a forEach of their own whose callback
           // is (element, index) — the Headers/Map branch would mangle pairs.
           if (Array.isArray(init.headers)) {
-            for (const pair of init.headers) if (pair && pair.length >= 2) headers[pair[0]] = String(pair[1]);
+            for (const pair of init.headers) if (pair && pair.length >= 2) add(pair[0], pair[1]);
           } else if (typeof init.headers.forEach === 'function') {
-            init.headers.forEach((value, key) => { headers[key] = String(value); });
+            init.headers.forEach((value, key) => add(key, value));
           } else {
-            for (const key of Object.keys(init.headers)) headers[key] = String(init.headers[key]);
+            for (const key of Object.keys(init.headers)) add(key, init.headers[key]);
           }
         } catch (e) { headers = null; /* opaque headers */ }
-        if (headers && !Object.keys(headers).length) headers = null;
+        if (headers) {
+          for (const key of Object.keys(headers)) {
+            if (key.toLowerCase() === 'content-type') {
+              bodyContentType = headers[key];
+              delete headers[key];
+            }
+          }
+          if (!Object.keys(headers).length) headers = null;
+        }
       }
       parent.postMessage({
         type: 'ww-fetch',
@@ -181,7 +203,7 @@
         url: String(url),
         method: (init.method || 'GET').toUpperCase(),
         body: typeof init.body === 'string' ? init.body : null,
-        contentType: null,
+        contentType: bodyContentType,
         headers,
         insecure: init.insecure === true,
       }, '*');
@@ -289,7 +311,12 @@
         memoKey = 'ww-proxy-first:' + new URL(url, location.href).origin;
         remembered = sessionStorage.getItem(memoKey) === '1';
       } catch (e) { memoKey = null; /* unparsable url or storage unavailable */ }
-      if (init.proxy === 'always' || (init.proxy !== 'never' && remembered)) {
+      // The proxy can faithfully replay only string (or empty) bodies: a
+      // FormData/Blob POST keeps leading with the native attempt (which reaches
+      // the server even when its response is CORS-blocked) instead of being
+      // routed proxy-first into an empty-body replay.
+      const replayable = init.body == null || typeof init.body === 'string';
+      if (init.proxy === 'always' || (init.proxy !== 'never' && remembered && replayable)) {
         return proxyFetch(url, init).then((response) => {
           // An auth-shaped 401/403 from the proxy may just mean the request
           // needed the browser's ambient cookies, which never cross the proxy
