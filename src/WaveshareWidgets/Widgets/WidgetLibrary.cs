@@ -72,6 +72,19 @@ public sealed partial class WidgetLibrary : IDisposable
             return;
         }
 
+        // Retired stock: a widget the app no longer ships (fans — its sensor
+        // pipeline required elevation) must also leave UPGRADED installs, not
+        // just fresh ones. Only marker-bearing copies are removed — an unmarked
+        // folder is the user's own work and is never touched.
+        foreach (var retired in new[] { "fans" })
+        {
+            var dir = Path.Combine(AppPaths.WidgetsDir, retired);
+            if (Directory.Exists(Path.Combine(AppPaths.StockWidgetsDir, retired))) continue;
+            if (!Directory.Exists(dir) || !File.Exists(Path.Combine(dir, SeedMarker))) continue;
+            try { Directory.Delete(dir, recursive: true); Log.Info($"Removed retired stock widget '{retired}'"); }
+            catch (Exception ex) { Log.Warn($"Could not remove retired stock widget '{retired}': {ex.Message}"); }
+        }
+
         int seeded = 0, current = 0;
         var failed = new List<string>();
         foreach (var sourceDir in Directory.GetDirectories(AppPaths.StockWidgetsDir))

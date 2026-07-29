@@ -87,13 +87,21 @@
     // Float in the EMPTY region below the toolbar — never over the preview or
     // the chip row (a fixed top overlapped the toolbar and made chips
     // unclickable while the inspector was open).
-    const top = Math.round(el('toolbar').getBoundingClientRect().bottom + 10);
+    // Clamped: at the 780×480 minimum a wrapped toolbar can reach the viewport
+    // bottom — the card then overlaps chrome rather than leaving the controls
+    // unreachable below an overflow:hidden document.
+    const top = Math.min(
+      Math.round(el('toolbar').getBoundingClientRect().bottom + 10),
+      Math.max(56, window.innerHeight - 300));
     panel.style.top = top + 'px';
     panel.style.maxHeight = 'calc(100vh - ' + (top + 16) + 'px)';
     panel.classList.add('open');
   }
   function closePanel() {
     el('contextPanel').classList.remove('open');
+    // A gallery left "open" behind a closed card strands the toolbar button on
+    // "✕ Close" and can resurface stale gallery content on the next open.
+    if (galleryOpen) { galleryOpen = false; renderEditorPanel(); }
   }
   function panelOpen() {
     return el('contextPanel').classList.contains('open');

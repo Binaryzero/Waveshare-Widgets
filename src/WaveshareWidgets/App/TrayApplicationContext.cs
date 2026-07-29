@@ -65,6 +65,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         PlaceDashboard();
     }
 
+    /// <summary>NotifyIcon.Text throws above 63 chars — cap, keeping the head.</summary>
+    private static string Cap63(string text) => text.Length <= 63 ? text : text[..63];
+
     private void PlaceDashboard()
     {
         try
@@ -75,12 +78,12 @@ public sealed class TrayApplicationContext : ApplicationContext
                 _currentScreenDevice = null;
                 if (_dashboard is { IsDisposed: false })
                     _dashboard.Hide();
-                _trayIcon.Text = "Waveshare Widgets — panel not detected";
+                _trayIcon.Text = Cap63($"Waveshare Widgets {AppVersion.Describe} — panel not detected");
                 Log.Info("No 1280x400 / 400x1280 display found; dashboard hidden");
                 return;
             }
 
-            _trayIcon.Text = $"Waveshare Widgets — {screen.DeviceName} ({screen.Bounds.Width}x{screen.Bounds.Height})";
+            _trayIcon.Text = Cap63($"Waveshare Widgets {AppVersion.Describe} — {screen.DeviceName} ({screen.Bounds.Width}x{screen.Bounds.Height})");
 
             if (_dashboard is null || _dashboard.IsDisposed)
             {
