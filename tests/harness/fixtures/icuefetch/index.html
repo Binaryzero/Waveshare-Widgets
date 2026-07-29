@@ -127,6 +127,24 @@ window.__done = false;
     push('snap', { status: res.status });
   } catch (e) { push('snap', { error: String(e) }); }
 
+  // 13 · a 204 through the proxy resolves as a bodyless Response — Response()
+  // throws on any body for null-body statuses, and that used to strand the
+  // promise forever (Codex round 6).
+  try {
+    const res = await fetch('http://127.0.0.1:8931/nocontent');
+    push('no-content', { status: res.status, len: (await res.text()).length });
+  } catch (e) { push('no-content', { error: String(e) }); }
+
+  // 14 · aborting WHILE the 403-retry is pending surfaces AbortError — never
+  // the original bot-wall response.
+  try {
+    const ac = new AbortController();
+    const pending = fetch('http://127.0.0.1:8932/blocked.json?slowabort=1', { signal: ac.signal });
+    setTimeout(() => ac.abort(), 300);
+    const res = await pending;
+    push('mid-abort', { status: res.status });
+  } catch (e) { push('mid-abort', { errName: (e && e.name) || '' }); }
+
   window.__done = true;
 })();
 </script>

@@ -138,11 +138,21 @@
         bytes = new Uint8Array(raw.length);
         for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
       }
-      pending.resolve(new Response(bytes, {
-        status: msg.status || 200,
-        statusText: msg.statusText || '',
-        headers: msg.contentType ? { 'Content-Type': msg.contentType } : {},
-      }));
+      // 204/205/304 are null-body statuses: Response() THROWS on ANY body for
+      // them (an empty Uint8Array included), and an exception here would
+      // strand the promise forever — the entry is already out of the map, so
+      // even the timeout can't fire. Build them bodyless, and reject on any
+      // construction failure instead of hanging.
+      const nullBody = msg.status === 204 || msg.status === 205 || msg.status === 304;
+      try {
+        pending.resolve(new Response(nullBody ? null : bytes, {
+          status: msg.status || 200,
+          statusText: msg.statusText || '',
+          headers: msg.contentType ? { 'Content-Type': msg.contentType } : {},
+        }));
+      } catch (e) {
+        pending.reject(new TypeError('proxy fetch result invalid: ' + e));
+      }
     }
   });
 
@@ -343,9 +353,14 @@
           // path entirely) and keep the proxy's answer if native can't do better.
           if (init.proxy === 'always' || (response.status !== 401 && response.status !== 403)) return response;
           return fetch(url, init).then(
-            (native) => (native.ok ? native : response), () => response);
+            (native) => (native.ok ? native : response),
+            (err) => {
+              // A mid-retry abort is the caller's cancellation, never masked.
+              if (err && err.name === 'AbortError') throw err;
+              return response;
+            });
         }, (err) => {
-          if (init.proxy === 'always') throw err;
+          if (init.proxy === 'always' || (err && err.name === 'AbortError')) throw err;
           return fetch(url, init); // memory can go stale (CORS fixed upstream): last resort
         });
       }
@@ -354,7 +369,12 @@
         // request "succeeds" as a 403/429; retry those via the host — unless the
         // caller opted out of the proxy, or the body can't be replayed faithfully.
         if ((response.status === 403 || response.status === 429) && init.proxy !== 'never' && replayable) {
-          return proxyFetch(url, snap, init.signal).catch(() => response);
+          return proxyFetch(url, snap, init.signal).catch((err) => {
+            // An abort during the retry is the caller's cancellation — it must
+            // surface, never be masked by the original bot-wall response.
+            if (err && err.name === 'AbortError') throw err;
+            return response;
+          });
         }
         return response;
       }, (err) => {

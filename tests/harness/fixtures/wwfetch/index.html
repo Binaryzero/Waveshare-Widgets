@@ -53,6 +53,21 @@ window.__done = false;
     window.__results.push({ name: 'ww-snap', status: res.status });
   } catch (e) { window.__results.push({ name: 'ww-snap', error: String(e) }); }
 
+  // WW.fetch: a proxied 204 resolves bodyless instead of stranding the promise.
+  try {
+    const res = await WW.fetch('http://127.0.0.1:8931/nocontent?ww=1', { proxy: 'always' });
+    window.__results.push({ name: 'ww-204', status: res.status });
+  } catch (e) { window.__results.push({ name: 'ww-204', error: String(e) }); }
+
+  // WW.fetch: aborting while the 403-retry is pending surfaces AbortError.
+  try {
+    const ac = new AbortController();
+    const pending = WW.fetch('http://127.0.0.1:8932/blocked.json?slowabort=2', { signal: ac.signal });
+    setTimeout(() => ac.abort(), 300);
+    const res = await pending;
+    window.__results.push({ name: 'ww-mid-abort', status: res.status });
+  } catch (e) { window.__results.push({ name: 'ww-mid-abort', errName: (e && e.name) || '' }); }
+
   window.__done = true;
 })();
 </script>

@@ -360,15 +360,29 @@
       return proxyFetch(url, eff, effSignal).then((response) => {
         if (response.status !== 401 && response.status !== 403) return response;
         return nativeFetch(input, init).then(
-          (native) => (native.ok ? native : response), () => response);
-      }, () => nativeFetch(input, init));
+          (native) => (native.ok ? native : response),
+          (err) => {
+            // A mid-retry abort is the caller's cancellation, never masked.
+            if (err && err.name === 'AbortError') throw err;
+            return response;
+          });
+      }, (err) => {
+        if (err && err.name === 'AbortError') throw err;
+        return nativeFetch(input, init);
+      });
     }
     return nativeFetch(input, init).then((response) => {
       // Bot walls (Reddit's in particular) sometimes serve their block page WITH
       // CORS headers, so the request "succeeds" as a 403/429; retry via the host
       // — but only when the proxy can replay the request faithfully.
       return (response.status === 403 || response.status === 429) && url && replayable
-        ? proxyFetch(url, eff, effSignal).catch(() => response) : response;
+        ? proxyFetch(url, eff, effSignal).catch((err) => {
+            // An abort during the retry is the caller's cancellation — it must
+            // surface, never be masked by the original bot-wall response.
+            if (err && err.name === 'AbortError') throw err;
+            return response;
+          })
+        : response;
     }, (error) => {
       if (!url) throw error;
       // A caller-initiated abort is not a network failure: no memo, no
@@ -480,11 +494,21 @@
       bytes = new Uint8Array(raw.length);
       for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
     }
-    pending.resolve(new Response(bytes, {
-      status: msg.status || 200,
-      statusText: msg.statusText || '',
-      headers: msg.contentType ? { 'Content-Type': msg.contentType } : {},
-    }));
+    // 204/205/304 are null-body statuses: Response() THROWS on ANY body for
+    // them (an empty Uint8Array included), and an exception here would strand
+    // the promise forever — the entry is already out of the map, so even the
+    // timeout can't fire. Build them bodyless, and reject on any construction
+    // failure instead of hanging.
+    const nullBody = msg.status === 204 || msg.status === 205 || msg.status === 304;
+    try {
+      pending.resolve(new Response(nullBody ? null : bytes, {
+        status: msg.status || 200,
+        statusText: msg.statusText || '',
+        headers: msg.contentType ? { 'Content-Type': msg.contentType } : {},
+      }));
+    } catch (e) {
+      pending.reject(new TypeError('proxy fetch result invalid: ' + e));
+    }
   }
 
   // --- sensor snapshot handling ---

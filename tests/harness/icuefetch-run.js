@@ -125,18 +125,23 @@ const widgets = [
       const url = String(msg.url);
       const isFeed = url.includes('feed.bin');
       // The 8933 gate plays the "proxy cannot authenticate" role: the host
-      // ladder answers 403 there, everything else succeeds.
+      // ladder answers 403 there, everything else succeeds. 'nocontent' plays
+      // a REST API's 204; 'slowabort' replies late so the caller can abort a
+      // pending retry.
       const isGate = url.includes('8933') && url.includes('gate');
+      const is204 = url.includes('nocontent');
       const data = {
         id: msg.id,
-        status: isGate ? 403 : 200,
-        statusText: isGate ? 'Forbidden' : 'OK',
+        status: isGate ? 403 : is204 ? 204 : 200,
+        statusText: isGate ? 'Forbidden' : is204 ? 'No Content' : 'OK',
         contentType: isFeed ? 'application/octet-stream' : 'text/plain',
-        bodyBase64: isFeed
-          ? Buffer.from(Array.from({ length: 256 }, (_, i) => i)).toString('base64')
-          : Buffer.from(isGate ? 'proxy-blocked' : 'rescued').toString('base64'),
+        bodyBase64: (isFeed
+          ? Buffer.from(Array.from({ length: 256 }, (_, i) => i))
+          : Buffer.from(is204 ? '' : isGate ? 'proxy-blocked' : 'rescued')).toString('base64'),
       };
-      page.evaluate((d) => window.__hostPush(d), JSON.stringify({ type: 'fetch-result', data })).catch(() => {});
+      const send = () =>
+        page.evaluate((d) => window.__hostPush(d), JSON.stringify({ type: 'fetch-result', data })).catch(() => {});
+      if (url.includes('slowabort')) setTimeout(send, 1500); else send();
     }
   });
   await page.addInitScript(() => {
@@ -288,6 +293,22 @@ const widgets = [
     byName(stock, 'ww-abort').errName === 'AbortError' &&
     !fetchMsgs.some((m) => String(m.url).includes('wwabort')),
     JSON.stringify(byName(stock, 'ww-abort')));
+
+  // ---- S18/S19 · proxied 204 resolves as a bodyless Response (no hang)
+  check('S18 shim: a proxied 204 resolves bodyless instead of stranding the promise',
+    byName(icue, 'no-content').status === 204 && byName(icue, 'no-content').len === 0,
+    JSON.stringify(byName(icue, 'no-content')));
+  check('S19 WW.fetch: a proxied 204 resolves bodyless too',
+    byName(stock, 'ww-204').status === 204,
+    JSON.stringify(byName(stock, 'ww-204')));
+
+  // ---- S20/S21 · aborting a PENDING retry surfaces AbortError, not the 403
+  check('S20 shim: abort during the pending 403-retry surfaces AbortError',
+    byName(icue, 'mid-abort').errName === 'AbortError',
+    JSON.stringify(byName(icue, 'mid-abort')));
+  check('S21 WW.fetch: abort during the pending 403-retry surfaces AbortError',
+    byName(stock, 'ww-mid-abort').errName === 'AbortError',
+    JSON.stringify(byName(stock, 'ww-mid-abort')));
 
   await browser.close();
   noCors.close();
