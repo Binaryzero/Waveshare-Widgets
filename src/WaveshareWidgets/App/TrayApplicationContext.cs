@@ -26,7 +26,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         AppPaths.EnsureCreated();
         // Stamp every log with the running build so bug reports are unambiguous.
-        Log.Info($"WaveshareWidgets {typeof(TrayApplicationContext).Assembly.GetName().Version} starting");
+        Log.Info($"WaveshareWidgets {AppVersion.Describe} starting");
         _config = AppConfig.Load();
 
         _library.Initialize();
@@ -37,7 +37,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _trayIcon = new NotifyIcon
         {
             Icon = CreateTrayIcon(),
-            Text = "Waveshare Widgets",
+            Text = $"Waveshare Widgets {AppVersion.Describe}",
             Visible = true,
             ContextMenuStrip = BuildTrayMenu(),
         };
@@ -65,6 +65,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         PlaceDashboard();
     }
 
+    /// <summary>NotifyIcon.Text throws above 63 chars — cap, keeping the head.</summary>
+    private static string Cap63(string text) => text.Length <= 63 ? text : text[..63];
+
     private void PlaceDashboard()
     {
         try
@@ -75,12 +78,12 @@ public sealed class TrayApplicationContext : ApplicationContext
                 _currentScreenDevice = null;
                 if (_dashboard is { IsDisposed: false })
                     _dashboard.Hide();
-                _trayIcon.Text = "Waveshare Widgets — panel not detected";
+                _trayIcon.Text = Cap63($"Waveshare Widgets {AppVersion.Describe} — panel not detected");
                 Log.Info("No 1280x400 / 400x1280 display found; dashboard hidden");
                 return;
             }
 
-            _trayIcon.Text = $"Waveshare Widgets — {screen.DeviceName} ({screen.Bounds.Width}x{screen.Bounds.Height})";
+            _trayIcon.Text = Cap63($"Waveshare Widgets {AppVersion.Describe} — {screen.DeviceName} ({screen.Bounds.Width}x{screen.Bounds.Height})");
 
             if (_dashboard is null || _dashboard.IsDisposed)
             {
@@ -128,6 +131,11 @@ public sealed class TrayApplicationContext : ApplicationContext
     private ContextMenuStrip BuildTrayMenu()
     {
         var menu = new ContextMenuStrip();
+
+        // The build stamp lives at the top of the menu: "which version am I
+        // running" must never require digging through logs.
+        menu.Items.Add(new ToolStripMenuItem($"Waveshare Widgets {AppVersion.Describe}") { Enabled = false });
+        menu.Items.Add(new ToolStripSeparator());
 
         var settingsItem = new ToolStripMenuItem("Settings…") { Font = new Font(menu.Font, FontStyle.Bold) };
         settingsItem.Click += (_, _) => OpenSettings();

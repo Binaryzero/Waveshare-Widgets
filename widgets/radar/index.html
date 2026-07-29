@@ -76,7 +76,9 @@
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
 
-    cfg.zoom = Math.min(10, Math.max(4, Number(s.zoom) || 7));
+    // RainViewer radar tiles top out at zoom 7 — a saved 8-10 from the old
+    // slider range renders "Zoom Level Not Supported" tiles, so clamp hard.
+    cfg.zoom = Math.min(7, Math.max(4, Number(s.zoom) || 7));
     cfg.animate = s.animate !== 'off';
     document.getElementById('mapDim').style.opacity = String(Math.min(80, Math.max(0, Number(s.mapDim) || 0)) / 100);
     // Overlay text color comes from the theme tokens (global theme or the

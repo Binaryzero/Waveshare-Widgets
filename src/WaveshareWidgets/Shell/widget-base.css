@@ -255,3 +255,17 @@ html[data-game="on"] * {
   animation-play-state: paused !important;
   transition: none !important;
 }
+
+/* Delivery diagnostics: widget-api stamps data-ww-waiting until the first init
+ * lands. A blank tile in the field becomes a labeled state instead of a mystery. */
+html[data-ww-waiting] body::after {
+  content: "waiting for panel data…";
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font: 12px system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  color: rgba(150, 160, 172, 0.5);
+  pointer-events: none;
+}

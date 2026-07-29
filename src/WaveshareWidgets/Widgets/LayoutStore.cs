@@ -119,6 +119,29 @@ public sealed class LayoutSlot
 /// <summary>Loads/saves layout.json and creates the first-run default layout.</summary>
 public static class LayoutStore
 {
+    /// <summary>Removes every slot referencing one of the given widget ids
+    /// (retired stock migrations). Saves only when something changed.</summary>
+    public static void RemoveWidgets(IEnumerable<string> widgetIds)
+    {
+        try
+        {
+            var ids = new HashSet<string>(widgetIds, StringComparer.OrdinalIgnoreCase);
+            var layout = Load();
+            var removed = 0;
+            foreach (var page in layout.Pages)
+                removed += page.Slots.RemoveAll(s => s.WidgetId is not null && ids.Contains(s.WidgetId));
+            if (removed > 0)
+            {
+                Save(layout);
+                Log.Info($"Removed {removed} retired widget slot(s) from the saved layout");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not scrub retired widgets from the layout: {ex.Message}");
+        }
+    }
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,

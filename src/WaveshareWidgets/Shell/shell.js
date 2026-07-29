@@ -1033,16 +1033,27 @@
     ov.appendChild(size);
     ov.appendChild(band);
 
-    // No 🎨/⚙ in the replica: the settings window's Appearance section and Widget
-    // tab are the one editor there — two editors for the same values on one
-    // screen had them visibly fighting (field report: "double settings menu").
-    if (widget && !PREVIEW) {
+    // 🎨 on every surface — but ONE editor per surface: on-device it opens the
+    // on-panel style editor; in the settings replica it hands off to the
+    // settings inspector (field report: "the palette button is still missing").
+    // The ⚙ sheet stays device-only: the inspector owns properties on desktop.
+    if (widget) {
       const style = document.createElement('button');
       style.className = 'style';
       style.textContent = '🎨';
-      style.title = 'Style this widget';
-      style.addEventListener('click', (ev) => { ev.stopPropagation(); openStyleEditor(record); });
+      style.title = PREVIEW ? 'Style this widget (opens the inspector)' : 'Style this widget';
+      style.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (PREVIEW) {
+          selectRecord(record); // selection + inspector open ride the same handoff
+          postToHost({ type: 'style-widget', gen: previewGen });
+        } else {
+          openStyleEditor(record);
+        }
+      });
       ov.appendChild(style);
+    }
+    if (widget && !PREVIEW) {
       // On-device access to the widget's OWN settings (#48): the pencil could
       // move and restyle tiles but never configure them.
       if ((widget.properties || []).length) {

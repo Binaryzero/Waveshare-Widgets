@@ -63,7 +63,64 @@
       el(PANES[key]).hidden = !on;
     }
   }
-  for (const key of Object.keys(TABS)) el(TABS[key]).addEventListener('click', () => setTab(key));
+
+  // The panel is a transient floating INSPECTOR over the WYSIWYG preview, not a
+  // permanent form region: it opens for one job (tapped widget, gallery, page,
+  // theme, wallpaper) and closes out of the way. The preview is the interface.
+  function panelTitleFor(name) {
+    if (name === 'theme') return 'Theme';
+    if (name === 'wallpaper') return 'Wallpaper';
+    if (name === 'page') {
+      const page = state.layout.pages[selectedPage];
+      return page ? ('Page — ' + (page.name || 'Page ' + (selectedPage + 1))) : 'Page';
+    }
+    if (galleryOpen) return 'Add a widget';
+    const page = state.layout.pages[selectedPage];
+    const slot = page && selectedSlot != null ? (page.slots || [])[selectedSlot] : null;
+    const widget = slot && widgetsById.get(slot.widgetId);
+    return widget ? widget.name : 'Widget';
+  }
+  // Float in the EMPTY region below the toolbar — never over the preview or the
+  // chip row. Clamped: at the 780×480 minimum a wrapped toolbar can reach the
+  // viewport bottom, and then the card overlaps chrome rather than leaving its
+  // controls unreachable below an overflow:hidden document. Re-run on every
+  // resize and toolbar reflow: a window shrink or a page with more chips must
+  // not leave a stale top under a grown toolbar.
+  function positionPanel() {
+    const panel = el('contextPanel');
+    if (!panel.classList.contains('open')) return;
+    const top = Math.min(
+      Math.round(el('toolbar').getBoundingClientRect().bottom + 10),
+      Math.max(56, window.innerHeight - 220));
+    panel.style.top = top + 'px';
+    panel.style.maxHeight = 'calc(100vh - ' + (top + 16) + 'px)';
+  }
+  window.addEventListener('resize', positionPanel);
+  if (typeof ResizeObserver !== 'undefined')
+    new ResizeObserver(positionPanel).observe(el('toolbar'));
+  function openPanel(name) {
+    setTab(name);
+    el('panelTitle').textContent = panelTitleFor(name);
+    el('contextPanel').classList.add('open');
+    positionPanel();
+  }
+  function closePanel() {
+    el('contextPanel').classList.remove('open');
+    // A gallery left "open" behind a closed card strands the toolbar button on
+    // "✕ Close" and can resurface stale gallery content on the next open.
+    if (galleryOpen) { galleryOpen = false; renderEditorPanel(); }
+    // A body-appended emoji popover must die with the card, or it floats over
+    // the preview mutating a hidden input.
+    closeEmojiPop();
+  }
+  function panelOpen() {
+    return el('contextPanel').classList.contains('open');
+  }
+  el('panelClose').addEventListener('click', closePanel);
+  el('pageBtn').addEventListener('click', () => openPanel('page'));
+  el('themeBtn').addEventListener('click', () => openPanel('theme'));
+  el('wallpaperBtn').addEventListener('click', () => openPanel('wallpaper'));
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closePanel(); });
 
   // ---- host bridge -----------------------------------------------------------
 
@@ -74,6 +131,8 @@
       if (!state.layout || !Array.isArray(state.layout.pages)) state.layout = { pages: [] };
       backgroundHost = state.backgroundHost || backgroundHost;
       widgetsById = new Map((state.widgets || []).map((w) => [w.id, w]));
+      // Build stamp in the header: "which version am I running" answered on sight.
+      el('appVersion').textContent = (state.status && state.status.version) || '';
       selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
       selectedSlot = null;
       lastWorkingLayout = replicaLayoutJson(); // loaded state IS the edit baseline
@@ -266,10 +325,10 @@
         galleryOpen = false; // an open gallery was aimed at the page we just left
         renderPageList();
         renderEditorPanel();
-        // The strip and Page tab refreshed in place — don't steal the user's tab.
-        // Exception: the Widget tab was showing a selection that no longer exists;
-        // fall back to the page context instead of an orphaned hint.
-        if (activeTab === 'widget') setTab('page');
+        // An open widget inspector points at a selection that no longer exists —
+        // close it rather than showing an orphaned card. Theme/wallpaper/page
+        // inspectors are page-independent and stay.
+        if (activeTab === 'widget' && panelOpen()) closePanel();
       }
     } else if (m.type === 'save-layout') {
       // The interactive replica IS the editor (#32): its continuous persists are the
@@ -280,6 +339,10 @@
       // Click-to-configure: the replica says which tile the user tapped (or where a
       // mutation moved the already-selected one, or -1/-1 when it went away).
       onReplicaSelection(m.page | 0, m.index | 0, m.instanceId || null, m.gen);
+    } else if (m.type === 'style-widget') {
+      // 🎨 on a preview tile: the slot-selected handoff (posted first) already
+      // adopted the tile — just make sure its inspector is open.
+      if ((m.gen | 0) === initGen && !replicaTimer) openPanel('widget');
     } else if (m.type === 'add-widget') {
       // The replica's "+" zone hands the add over to us (#45): a modal palette
       // inside the scaled strip covered the very layout being edited. Follow the
@@ -359,7 +422,17 @@
       renderEditorPanel();
       return;
     }
-    if (pageIdx === selectedPage && slotIdx === selectedSlot) return; // echo of our own select-slot
+    if (pageIdx === selectedPage && slotIdx === selectedSlot) {
+      // Echo of our own select-slot — EXCEPT the tap must always LAND on the
+      // widget card: reopen a closed inspector, take over from an open Page/
+      // Theme/Wallpaper card, and dismiss a stale gallery. Only a widget card
+      // already showing this slot treats the echo as a no-op.
+      if (!panelOpen() || activeTab !== 'widget' || galleryOpen) {
+        if (galleryOpen) { galleryOpen = false; renderEditorPanel(); }
+        openPanel('widget');
+      }
+      return;
+    }
     // Only adopt indices that exist in OUR copy. A tap can race a pending structural
     // edit (e.g. the rail just deleted the page the replica still shows): its indices
     // reference a layout we no longer hold, and adopting the slot index would render
@@ -375,7 +448,7 @@
     galleryOpen = false; // the tap picked an existing widget — detail takes over
     renderPageList();
     renderEditorPanel();
-    setTab('widget'); // a real adoption (tap / palette add) — show the detail card
+    openPanel('widget'); // a real adoption (tap / palette add) — open the inspector
   }
 
   function markDirty() {
@@ -440,6 +513,9 @@
   el('previewToggle').addEventListener('click', () => {
     const collapsed = previewStage.classList.toggle('collapsed');
     el('previewToggle').textContent = collapsed ? 'Show' : 'Hide';
+    // Collapsing/restoring the stage TRANSLATES the toolbar without resizing
+    // it, so the ResizeObserver stays silent — refit an open inspector here.
+    positionPanel();
     if (collapsed) {
       previewFrame.removeAttribute('src'); // suspend: no hidden widgets burning CPU
       replicaReady = false;
@@ -623,6 +699,15 @@
   // Everything below/around the preview, WITHOUT poking the replica — used directly
   // when the replica itself originated the change (capture) and already shows it.
   function renderEditorPanel() {
+    // Every render is a possible context change (page chip select, adoption,
+    // gallery toggle): an OPEN inspector must never keep naming the previous
+    // context while showing the new one's fields.
+    if (panelOpen()) el('panelTitle').textContent = panelTitleFor(activeTab);
+    // A widget card whose target vanished (chip deselect, widget removed)
+    // closes instead of floating as an orphaned "Select a widget" hint.
+    // The gallery legitimately shows with no selection and stays.
+    if (panelOpen() && activeTab === 'widget' && !galleryOpen && selectedSlot == null)
+      closePanel();
     const page = state.layout.pages[selectedPage];
     const hasPage = !!page;
     el('editorEmpty').hidden = hasPage;
@@ -635,7 +720,7 @@
       galleryOpen = false;
       renderWidgetGallery(null);
       // Nothing to manage widget-wise; the empty state lives on the Page tab.
-      if (activeTab === 'widget') setTab('page');
+      if (activeTab === 'widget' && panelOpen()) closePanel();
       return;
     }
 
@@ -698,7 +783,7 @@
 
   function openGallery() {
     galleryOpen = true;
-    setTab('widget');
+    openPanel('widget');
     renderEditorPanel();
   }
 
@@ -777,7 +862,7 @@
       instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
     });
     selectedSlot = page.slots.length - 1;
-    setTab('widget');
+    openPanel('widget'); // gallery pick lands in the new widget's inspector
     renderPageList(); // the strip's widget count changed
     renderEditor();
   }
@@ -877,7 +962,7 @@
     selectedSlot = selectedSlot === i ? null : i; // click the active chip to deselect
     galleryOpen = false; // chip interaction takes the Widget tab over from the gallery
     renderEditorPanel();
-    if (selectedSlot != null) setTab('widget'); // chip select shows the detail card
+    if (selectedSlot != null) openPanel('widget'); // chip select opens the inspector
     // Mirror into the replica (index -1 clears its highlight).
     replicaPost({ type: 'select-slot', page: selectedPage, index: selectedSlot == null ? -1 : selectedSlot });
   }

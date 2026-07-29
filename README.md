@@ -49,13 +49,13 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
 - **Settings UI**: tray → **Settings…** opens a visual editor for pages, slots, and
   every widget's declared properties (colors, sliders, sensor pickers, structured
   lists) — no JSON editing required — plus the Theme panel with a live preview.
-- **Twenty-four stock widgets**: CPU, GPU, Clock, Countdown, Now Playing, Weather,
+- **Twenty-three stock widgets**: CPU, GPU, Clock, Countdown, Now Playing, Weather,
   7-Day Forecast, Weather Radar, Reddit Photos, Ping Monitor, iFrame, Stream Deck
   mirror (live Virtual Stream Deck with clickable keys), Control Deck (a touch
   button grid — launch apps, open URLs, send hotkeys, control media; no Stream
   Deck or iCUE required), Philips Hue (CLIP v2 + v1),
   Battery, Gallery, YouTube, Twitch Chat, Launch App, Sensor Chart, Volume mixer,
-  Fans, Notifications (Windows toast mirror with per-app mute and a privacy blur —
+  Notifications (Windows toast mirror with per-app mute and a privacy blur —
   note Windows only grants notification access to packaged (MSIX) installs, so on
   the portable zip the widget explains itself instead of mirroring), Vitals (a
   self-care HUD whose water/eyes/posture/stretch meters drain over desk time,
@@ -110,15 +110,12 @@ for them. This app handles that in tiers:
    desktops the zone is missing or coarse). Fan RPMs appear for GPU fans and for USB
    fan/AIO controllers (NZXT, Aquacomputer, Corsair Commander/Hydro, digital PSUs, …).
    No admin, no drivers.
-2. **CPU core temps + motherboard fan headers + voltages:** install
-   [PawnIO](https://pawnio.eu/) (the Microsoft-attested, sandboxed driver also used by
-   Fan Control, LibreHardwareMonitor and OpenRGB) **and** run the app **as
-   administrator**. **Both are required — either one alone changes nothing.** PawnIO's
-   driver only accepts commands from elevated processes, and this app ships no other
-   driver (its LibreHardwareMonitorLib 0.9.6 talks to hardware exclusively through
-   PawnIO), so an unelevated launch shows the exact same sensors whether PawnIO is
-   installed or not. Symptom to check: the Fans widget tells you when it's running
-   unelevated.
+2. **CPU core temps, motherboard fan headers and voltages require elevation the
+   app never asks for.** Reading them takes a kernel sensor driver (PawnIO) plus
+   an elevated process, and this app deliberately never requests or recommends
+   running as administrator: it renders remote web content, and elevating that
+   is not an acceptable risk. Launched normally (unelevated) those sensors are
+   simply absent and everything else works.
 
 Everything else — GPU stats, memory, network, media, clock, weather — works unelevated
 with nothing extra installed.

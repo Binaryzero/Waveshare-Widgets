@@ -274,7 +274,7 @@ public sealed class SettingsWindow : Form
                 // change, so without this an already-playing track never appears.
                 ["media"] = JsonSerializer.SerializeToNode(_hub.LatestMedia, BridgeJson),
                 ["backgroundHost"] = BackgroundHost,
-                ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated },
+                ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated, ["version"] = AppVersion.Describe },
             },
         });
     }

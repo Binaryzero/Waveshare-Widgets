@@ -2,7 +2,7 @@
   "id": "ws.stock.battery",
   "name": "Battery Levels",
   "author": "Waveshare Widgets",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "description": "Battery percentage for everything Windows knows about — laptop packs, UPS units, and Bluetooth peripherals (headsets, mice, keyboards, controllers). Charge bars colored by level and a charging bolt for system packs.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],

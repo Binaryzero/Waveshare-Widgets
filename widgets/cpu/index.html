@@ -41,7 +41,7 @@
     </div>
   </div>
   <div id="stats"></div>
-  <div id="hint" hidden>For per-core CPU temps install PawnIO and run as administrator.</div>
+  <div id="hint" hidden></div>
 
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
@@ -123,7 +123,7 @@
       stats.appendChild(stat);
     }
 
-    document.getElementById('hint').hidden = !!temp;
+    document.getElementById('hint').hidden = true; // never suggests elevation (removed)
   });
 </script>
 </body>

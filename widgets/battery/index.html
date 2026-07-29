@@ -44,6 +44,16 @@
   .cell.warn .pct { color: var(--warn); }
   .cell.bad  .pct { color: var(--err); }
   .cell .bolt { display: none; font-size: 60%; vertical-align: 15%; margin-left: 0.3em; }
+  /* One device fills the tile: centered, display-sized type, wide meter. */
+  #grid.solo .cell { align-items: center; text-align: center; gap: clamp(4px, 2.5vh, 12px); }
+  #grid.solo .cell .name {
+    font-size: min(calc(clamp(12px, 6vh, 24px) * var(--name-scale, 1)), 11vh);
+    letter-spacing: 0.12em;
+  }
+  /* User scale multiplies OUTSIDE the clamp — cap against tile height so a
+   * 200% setting still fits a half-height slot instead of clipping. */
+  #grid.solo .cell .pct { font-size: min(calc(clamp(30px, 26vh, 110px) * var(--value-scale, 1)), 40vh); }
+  #grid.solo .cell .bar { height: clamp(8px, 3.5vh, 16px); width: min(70%, 480px); }
   .cell.charging .bolt { display: inline; }
   .cell .bar {
     /* .meter supplies track color + fill basics; battery keeps its chunkier bar. */
@@ -144,6 +154,8 @@
       return;
     }
     msg.style.display = 'none';
+    // A lone pack fills the tile at display size — not a giant card of tiny text.
+    grid.classList.toggle('solo', packs.length === 1);
     grid.style.gridTemplateColumns = 'repeat(' + columns(packs.length) + ', 1fr)';
 
     for (const p of packs) {

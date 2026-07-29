@@ -66,17 +66,46 @@ public sealed partial class WidgetLibrary : IDisposable
     /// the folder and give it a new id.</summary>
     private void SeedStockWidgets()
     {
+        // The retired list is AUTHORITATIVE — never inferred from the shipped
+        // folder's absence: extracting a release over an old install leaves stale
+        // stock-widgets entries behind, which would both skip this cleanup and
+        // re-seed the retired widget below.
+        var retiredNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "fans" };
+        var retiredIds = new List<string>();
+        foreach (var retired in retiredNames)
+        {
+            retiredIds.Add($"ws.stock.{retired}");
+            var dir = Path.Combine(AppPaths.WidgetsDir, retired);
+            if (!Directory.Exists(dir)) continue;
+            // Marker-bearing copies are ours. Pre-fingerprint seeds carry NO marker
+            // — recognize those by the stock manifest id instead; a folder that is
+            // neither marked nor stock-id'd is the user's own work and survives.
+            if (!File.Exists(Path.Combine(dir, SeedMarker)) && ManifestIdOf(dir) != $"ws.stock.{retired}") continue;
+            try { DeleteTree(dir); Log.Info($"Removed retired stock widget '{retired}'"); }
+            catch (Exception ex) { Log.Warn($"Could not remove retired stock widget '{retired}': {ex.Message}"); }
+        }
+        // The saved layout must shed retired slots too, or the panel renders a
+        // permanent "not installed" card in the grid cells the widget held.
+        if (retiredIds.Count > 0)
+            LayoutStore.RemoveWidgets(retiredIds);
+
         if (!Directory.Exists(AppPaths.StockWidgetsDir))
         {
             Log.Warn($"Stock widgets folder missing next to the app ({AppPaths.StockWidgetsDir}) — nothing to seed");
             return;
         }
 
+        // Retired stock: a widget the app no longer ships (fans — its sensor
+        // pipeline required elevation) must also leave UPGRADED installs, not
+        // just fresh ones. Only marker-bearing copies are removed — an unmarked
+        // folder is the user's own work and is never touched.
+
         int seeded = 0, current = 0;
         var failed = new List<string>();
         foreach (var sourceDir in Directory.GetDirectories(AppPaths.StockWidgetsDir))
         {
             var name = Path.GetFileName(sourceDir);
+            if (retiredNames.Contains(name)) continue; // stale shipped copy from an overwrite upgrade
             var targetDir = Path.Combine(AppPaths.WidgetsDir, name);
             try
             {
@@ -140,6 +169,12 @@ public sealed partial class WidgetLibrary : IDisposable
     /// <summary>Do two widget folders declare the same manifest id? Any read/parse
     /// failure counts as "different" — an ambiguous target is treated as user
     /// content and preserved rather than deleted.</summary>
+    private static string? ManifestIdOf(string dir)
+    {
+        try { return JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "manifest.json")))?["id"]?.GetValue<string>(); }
+        catch { return null; }
+    }
+
     private static bool SameWidgetId(string dirA, string dirB)
     {
         try
