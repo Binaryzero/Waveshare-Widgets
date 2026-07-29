@@ -22,6 +22,13 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
 
 ## Suites
 
+- `secretfield-run.js` — the settings-editor half of the `secret` property contract
+  (issue #15): a credential renders masked, a stored one reads as
+  "saved · encrypted (hidden)" with no value in the DOM, typing/clearing say what the
+  next save will do, and the saved layout carries an explicit `""` for a cleared
+  secret (the host's "drop it" signal) rather than an absent key. The encryption
+  pipeline itself is guarded in CI by `dotnet run --project tools/SecretRoundTrip`.
+  Port used: 8951.
 - `icuefetch-run.js` — the fetch-escalation contract shared by `widget-api.js`
   (`WW.fetch`) and the iCUE compat shim (issue #37): headers of every
   `HeadersInit` shape surviving the proxy hop (repeats combining like native

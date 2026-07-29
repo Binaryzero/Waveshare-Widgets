@@ -1544,6 +1544,31 @@
   function psControl(prop, cur, set) {
     const current = cur(prop);
     switch (prop.type) {
+      case 'secret': {
+        // On-device the value IS the real credential (the host decrypts for the
+        // dashboard), so mask it on glass — shoulder-surfing a desk-height strip
+        // is trivial — with a tap-to-show for typo checking. The host re-encrypts
+        // on save; plaintext never reaches layout.json.
+        const wrap = document.createElement('div');
+        wrap.className = 'ps-secret';
+        const input = document.createElement('input');
+        input.type = 'password';
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        input.placeholder = prop.placeholder || 'Paste the token or key';
+        input.value = typeof current === 'string' ? current : '';
+        input.addEventListener('input', () => set(prop, input.value));
+        const eye = document.createElement('button');
+        eye.type = 'button';
+        eye.className = 'ps-eye';
+        eye.textContent = '👁';
+        eye.title = 'Show/hide';
+        eye.addEventListener('click', () => {
+          input.type = input.type === 'password' ? 'text' : 'password';
+        });
+        wrap.append(input, eye);
+        return wrap;
+      }
       case 'select': {
         // Short static lists show every choice as a tappable segment (dropdowns
         // are miserable on the strip anyway); dynamic lists keep the dropdown.

@@ -1442,6 +1442,50 @@
         wrap.append(input, results, chosen);
         return wrap;
       }
+      case 'secret': {
+        // Credentials (bearer tokens, PATs, client secrets, private ICS URLs). The host
+        // encrypts these with DPAPI before layout.json is written and NEVER sends a
+        // stored value back here — the editor only learns that one exists, via the
+        // slot's secretsSet list. So: masked input, a reveal toggle for what you type
+        // in this session, and a Clear that removes the stored value on the next save.
+        const wrap = document.createElement('div');
+        wrap.className = 'secret-wrap';
+        const input = document.createElement('input');
+        input.type = 'password';
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        input.placeholder = prop.placeholder || 'Paste the token or key';
+        input.value = typeof current === 'string' ? current : '';
+        const stored = Array.isArray(slot.secretsSet) && slot.secretsSet.includes(prop.name);
+        let cleared = false; // Clear was pressed: the save will DROP the stored value
+        const state = document.createElement('span');
+        state.className = 'secret-state';
+        const sync = () => {
+          const typed = input.value.length > 0;
+          // Each state says what the next save will do — "saved" must never linger
+          // after the user asked for the credential to be removed.
+          state.textContent = typed ? 'will be encrypted on save'
+            : cleared && stored ? 'will be removed on save'
+            : stored ? 'saved · encrypted (hidden)' : 'not set';
+          state.classList.toggle('set', typed || (stored && !cleared));
+          clear.hidden = !(typed || (stored && !cleared));
+        };
+        const reveal = iconButton('👁', 'Show what you typed', () => {
+          input.type = input.type === 'password' ? 'text' : 'password';
+        });
+        const clear = iconButton('✕', 'Remove the stored credential on the next save', () => {
+          input.value = '';
+          cleared = true;
+          // An explicit empty string is what tells the host to drop the stored value;
+          // an ABSENT key would instead be read as "keep what you have".
+          set('');
+          sync();
+        }, true);
+        input.addEventListener('input', () => { cleared = false; set(input.value); sync(); });
+        sync();
+        wrap.append(input, reveal, clear, state);
+        return wrap;
+      }
       case 'color': {
         // Widgets only let a color setting override the theme tokens when it differs
         // from its manifest default — but a native color input can never be cleared,

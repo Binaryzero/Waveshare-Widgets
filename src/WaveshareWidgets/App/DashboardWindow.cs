@@ -238,6 +238,9 @@ public sealed class DashboardWindow : Form
                             throw new InvalidDataException("Layout has no pages.");
                         foreach (var page in edited.Pages)
                             page.Slots.RemoveAll(s => string.IsNullOrWhiteSpace(s.WidgetId));
+                        // The shell round-trips the DECRYPTED layout it was given, so
+                        // seal before writing: plaintext credentials never hit disk.
+                        SecretPolicy.Seal(edited, LayoutStore.Load(), ManifestFor);
                         LayoutStore.Save(edited);
                         Log.Info("layout saved from on-panel editor");
                     }
@@ -721,9 +724,16 @@ public sealed class DashboardWindow : Form
         return buffer.ToArray();
     }
 
+    /// <summary>Manifest lookup for the secret pipeline (which properties are credentials).</summary>
+    private WidgetManifest? ManifestFor(string widgetId) =>
+        _library.Widgets.FirstOrDefault(w => string.Equals(w.Manifest.Id, widgetId, StringComparison.OrdinalIgnoreCase))?.Manifest;
+
     private JsonObject BuildInitPayload()
     {
         var layout = LayoutStore.Load();
+        // The dashboard's widget iframes need real credentials, so secrets are decrypted
+        // for THIS payload only — layout.json keeps the DPAPI ciphertext.
+        SecretPolicy.Reveal(layout, ManifestFor);
         var widgets = _library.Widgets.Select(w => new
         {
             id = w.Manifest.Id,

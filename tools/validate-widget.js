@@ -13,7 +13,10 @@ const fs = require('fs');
 const path = require('path');
 
 const KNOWN_TYPES = new Set(['text', 'number', 'slider', 'color', 'select', 'switch',
-  'sensor', 'sensors-factory', 'location', 'list', 'media-selector']);
+  'secret', 'sensor', 'sensors-factory', 'location', 'list', 'media-selector']);
+// Names that look like credentials: declaring them as free text writes a plaintext
+// secret into layout.json, so the validator flags the type, not the widget author.
+const CREDENTIAL_NAME = /(^|[^a-z])(token|secret|password|passwd|apikey|api_key|client_secret|access_key|bearer|pat)([^a-z]|$)/i;
 const KNOWN_SLOTS = new Set(['quarter', 'half', 'three-quarter', 'full']);
 const LIST_FIELD_TYPES = new Set(['text', 'color']);
 // Labels must never teach a syntax — structured values use the list type.
@@ -56,6 +59,13 @@ function validate(folder) {
     if (!KNOWN_TYPES.has(type)) err('prop-type', `${where}: unknown type "${type}"`);
     if (SYNTAX_IN_LABEL.test(prop.label || ''))
       err('prop-label-syntax', `${where}: label "${prop.label}" teaches a syntax — use type "list" (or a better label); users never type delimited data`);
+    // Credentials MUST be type "secret": that is the only type the host encrypts
+    // (DPAPI, CurrentUser) before writing layout.json. As "text" the token sits on
+    // disk in the clear and rides any layout copy off the machine.
+    if (type !== 'secret' && CREDENTIAL_NAME.test(prop.name || ''))
+      err('prop-secret', `${where}: a credential must use type "secret" (the host encrypts those with DPAPI); "${type}" stores it as plaintext in layout.json`);
+    if (type === 'secret' && prop.default != null && String(prop.default) !== '')
+      err('prop-secret-default', `${where}: a secret must not ship a default value`);
     if (type === 'select' && !Array.isArray(prop.options) && !prop.optionsSource)
       err('prop-select', `${where}: select needs "options" or "optionsSource"`);
     if (type === 'slider' && (typeof prop.min !== 'number' || typeof prop.max !== 'number'))

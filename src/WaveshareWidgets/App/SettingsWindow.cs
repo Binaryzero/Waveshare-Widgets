@@ -249,6 +249,10 @@ public sealed class SettingsWindow : Form
         catch (ObjectDisposedException) { /* window closed */ }
     }
 
+    /// <summary>Manifest lookup for the secret pipeline (which properties are credentials).</summary>
+    private WidgetManifest? ManifestFor(string widgetId) =>
+        _library.Widgets.FirstOrDefault(w => string.Equals(w.Manifest.Id, widgetId, StringComparison.OrdinalIgnoreCase))?.Manifest;
+
     private void PostInit()
     {
         var widgets = _library.Widgets.Select(w => new
@@ -262,12 +266,18 @@ public sealed class SettingsWindow : Form
             properties = w.Manifest.Properties,
         });
 
+        // The editor never receives a credential: secret values are blanked and replaced
+        // by a per-slot "secretsSet" hint, so the field can show a saved state while the
+        // stored ciphertext stays in layout.json (restored on save if left untouched).
+        var layoutNode = JsonSerializer.SerializeToNode(LayoutStore.Load());
+        SecretPolicy.Mask(layoutNode, ManifestFor);
+
         Post(new JsonObject
         {
             ["type"] = "settings-init",
             ["data"] = new JsonObject
             {
-                ["layout"] = JsonSerializer.SerializeToNode(LayoutStore.Load()),
+                ["layout"] = layoutNode,
                 ["widgets"] = JsonSerializer.SerializeToNode(widgets, BridgeJson),
                 ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
                 // Seed the replica's now-playing state: MediaUpdated only fires on
@@ -294,6 +304,9 @@ public sealed class SettingsWindow : Form
             foreach (var page in layout.Pages)
                 page.Slots.RemoveAll(s => string.IsNullOrWhiteSpace(s.WidgetId));
 
+            // Newly typed secrets get encrypted; masked ones the user didn't retype keep
+            // the ciphertext already on disk instead of being wiped.
+            SecretPolicy.Seal(layout, LayoutStore.Load(), ManifestFor);
             LayoutStore.Save(layout);
             LayoutSaved?.Invoke();
             var ok = new JsonObject { ["type"] = "saved" };
