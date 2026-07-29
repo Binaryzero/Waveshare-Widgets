@@ -321,8 +321,17 @@
       } catch (e) { memoKey = null; /* storage unavailable */ }
     }
     if (url && remembered) {
-      // Memory can go stale (CORS fixed upstream): the browser path is the last resort.
-      return proxyFetch(url, init || {}).catch(() => nativeFetch(input, init));
+      // Memory can go stale two ways: the proxy TRANSPORT failing (CORS fixed
+      // upstream), and the proxy being the wrong PATH for this request — an
+      // auth-shaped 401/403 answer may just mean the request needed the
+      // browser's ambient cookies, which never cross the proxy hop (the host
+      // rejects forwarded Cookie headers by design). Retry native for those
+      // and keep the proxy's answer when the native path can't do better.
+      return proxyFetch(url, init || {}).then((response) => {
+        if (response.status !== 401 && response.status !== 403) return response;
+        return nativeFetch(input, init).then(
+          (native) => (native.ok ? native : response), () => response);
+      }, () => nativeFetch(input, init));
     }
     return nativeFetch(input, init).then((response) => {
       // Bot walls (Reddit's in particular) sometimes serve their block page WITH
@@ -360,6 +369,13 @@
     if (!headers) return null;
     try {
       if (typeof headers.get === 'function') return headers.get('content-type');
+      if (Array.isArray(headers)) {
+        // Tuple pairs: Object.keys would yield "0","1",… and miss the name.
+        for (const pair of headers) {
+          if (pair && String(pair[0]).toLowerCase() === 'content-type') return String(pair[1]);
+        }
+        return null;
+      }
       for (const key of Object.keys(headers)) {
         if (key.toLowerCase() === 'content-type') return headers[key];
       }

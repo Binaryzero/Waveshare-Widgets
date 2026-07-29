@@ -502,6 +502,11 @@ public sealed class DashboardWindow : Form
             }
             // Widget-supplied extra headers (e.g. Hue CLIP v2's hue-application-key).
             // Hop-by-hop and body-framing headers stay under HttpClient's control.
+            // Headers safe to replay from a page-context fetch also feed the
+            // hidden-browser tier below — an Authorization header must survive
+            // EVERY tier of the ladder, or a private feed keeps answering 403
+            // right when the bot wall forces the escalation (#37).
+            Dictionary<string, string>? browserHeaders = null;
             if (message["headers"] is JsonObject extraHeaders)
             {
                 foreach (var (headerName, headerValue) in extraHeaders)
@@ -514,6 +519,8 @@ public sealed class DashboardWindow : Form
                     var value = headerValue.GetValue<string>();
                     if (!request.Headers.TryAddWithoutValidation(headerName, value))
                         request.Content?.Headers.TryAddWithoutValidation(headerName, value);
+                    if (IsBrowserForwardable(lower))
+                        (browserHeaders ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase))[headerName] = value;
                 }
             }
 
@@ -545,7 +552,7 @@ public sealed class DashboardWindow : Form
             if ((int)response.StatusCode is 403 or 429 && method == "GET")
             {
                 _browserFetcher ??= new BrowserFetcher();
-                var alt = await _browserFetcher.FetchAsync(uri.ToString());
+                var alt = await _browserFetcher.FetchAsync(uri.ToString(), browserHeaders);
                 if (alt is { } browser && browser.Status < 400)
                 {
                     result["status"] = browser.Status;
@@ -556,11 +563,14 @@ public sealed class DashboardWindow : Form
                 }
                 else if (alt is { } blocked)
                 {
-                    // A real Chromium got the same refusal: this is the site's own
-                    // answer (missing auth, private resource), not TLS fingerprinting
-                    // — the ladder has no higher tier, and app.log should say which
-                    // failure the field is looking at.
-                    Log.Warn($"browser fetch {uri.Host} -> {blocked.Status}; the site refuses this request even from a real browser (authorization, not bot wall)");
+                    // A real Chromium was refused too, which rules out TLS
+                    // fingerprinting — but only auth-shaped statuses suggest an
+                    // authorization problem; a 404/429/5xx is just the site's
+                    // ordinary answer and must not misdirect the field.
+                    var hint = blocked.Status is 401 or 403
+                        ? "likely authorization (missing credentials or a private resource), not TLS fingerprinting"
+                        : "the site's own answer, not TLS fingerprinting";
+                    Log.Warn($"browser fetch {uri.Host} -> {blocked.Status}; {hint}");
                 }
             }
         }
@@ -584,6 +594,21 @@ public sealed class DashboardWindow : Form
             // window closed mid-request
         }
     }
+
+    /// <summary>
+    /// Whether a widget-supplied header can be replayed from a page-context fetch in
+    /// the hidden-browser tier. Names the Fetch spec forbids page scripts to set (the
+    /// browser throws, killing the whole retry) and anything the browser must own
+    /// (cookies, origin, sec-*) stay out; auth and API-key headers pass through.
+    /// </summary>
+    private static bool IsBrowserForwardable(string lower) =>
+        lower is not ("accept-charset" or "accept-encoding" or "connection" or "content-length"
+            or "content-type" or "cookie" or "cookie2" or "date" or "dnt" or "expect" or "host"
+            or "keep-alive" or "origin" or "referer" or "te" or "trailer" or "transfer-encoding"
+            or "upgrade" or "via")
+        && !lower.StartsWith("sec-", StringComparison.Ordinal)
+        && !lower.StartsWith("proxy-", StringComparison.Ordinal)
+        && !lower.StartsWith("access-control-", StringComparison.Ordinal);
 
     /// <summary>
     /// Real ICMP pings for the Ping Monitor widget (a browser can only fake latency with

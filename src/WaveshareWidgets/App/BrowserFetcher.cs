@@ -52,10 +52,12 @@ public sealed class BrowserFetcher : IDisposable
     /// Fetches a URL through a real browser. First navigates to the target's origin root
     /// (this executes any JS bot-challenge and sets its cookies), then runs a same-origin
     /// fetch from inside that page — no CORS, cookies attached, raw text returned (so a
-    /// JSON endpoint comes back as parseable JSON, not the browser's JSON viewer). Returns
-    /// null on failure.
+    /// JSON endpoint comes back as parseable JSON, not the browser's JSON viewer). The
+    /// caller's replayable request headers ride the in-page fetch, so an authenticated
+    /// request keeps its Authorization through this tier too (#37). Returns null on failure.
     /// </summary>
-    public async Task<(int Status, string? ContentType, byte[] Body)?> FetchAsync(string url)
+    public async Task<(int Status, string? ContentType, byte[] Body)?> FetchAsync(
+        string url, IReadOnlyDictionary<string, string>? headers = null)
     {
         await _gate.WaitAsync();
         try
@@ -81,10 +83,17 @@ public sealed class BrowserFetcher : IDisposable
                 // mangles every binary response — the field's Reddit tiles showed the
                 // caption (JSON listing survived) over a black image (JPEG destroyed).
                 var jsUrl = JsonSerializer.Serialize(url); // safely quoted JS string literal
+                var headerMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Accept"] = "application/json,image/*,text/plain,*/*",
+                };
+                if (headers is not null)
+                    foreach (var (name, value) in headers) headerMap[name] = value; // caller's Accept wins
+                var jsHeaders = JsonSerializer.Serialize(headerMap); // safe JS object literal
                 await core.ExecuteScriptAsync($$"""
                     (() => {
                       window.__wwResult = null;
-                      fetch({{jsUrl}}, { credentials: 'include', headers: { 'Accept': 'application/json,image/*,text/plain,*/*' } })
+                      fetch({{jsUrl}}, { credentials: 'include', headers: {{jsHeaders}} })
                         .then(r => r.arrayBuffer().then(buf => {
                           const bytes = new Uint8Array(buf);
                           let bin = '';

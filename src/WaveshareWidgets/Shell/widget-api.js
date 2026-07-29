@@ -290,7 +290,15 @@
         remembered = sessionStorage.getItem(memoKey) === '1';
       } catch (e) { memoKey = null; /* unparsable url or storage unavailable */ }
       if (init.proxy === 'always' || (init.proxy !== 'never' && remembered)) {
-        return proxyFetch(url, init).catch((err) => {
+        return proxyFetch(url, init).then((response) => {
+          // An auth-shaped 401/403 from the proxy may just mean the request
+          // needed the browser's ambient cookies, which never cross the proxy
+          // hop — retry native (unless the caller opted out of the browser
+          // path entirely) and keep the proxy's answer if native can't do better.
+          if (init.proxy === 'always' || (response.status !== 401 && response.status !== 403)) return response;
+          return fetch(url, init).then(
+            (native) => (native.ok ? native : response), () => response);
+        }, (err) => {
           if (init.proxy === 'always') throw err;
           return fetch(url, init); // memory can go stale (CORS fixed upstream): last resort
         });
