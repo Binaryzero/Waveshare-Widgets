@@ -497,8 +497,18 @@ public sealed class DashboardWindow : Form
             var body = message["body"]?.GetValue<string>();
             if (body is not null && method is "POST" or "PUT")
             {
+                // The StringContent media-type overload rejects parameterized values
+                // ("application/json; charset=utf-8" throws FormatException) — parse
+                // the full header instead, keeping utf-8 as the charset when the
+                // caller named none (the body was encoded as UTF-8 either way).
                 var contentType = message["contentType"]?.GetValue<string>() ?? "text/plain";
-                request.Content = new StringContent(body, System.Text.Encoding.UTF8, contentType);
+                var content = new StringContent(body, System.Text.Encoding.UTF8);
+                if (System.Net.Http.Headers.MediaTypeHeaderValue.TryParse(contentType, out var mediaType))
+                {
+                    mediaType.CharSet ??= "utf-8";
+                    content.Headers.ContentType = mediaType;
+                }
+                request.Content = content;
             }
             // Widget-supplied extra headers (e.g. Hue CLIP v2's hue-application-key).
             // Hop-by-hop and body-framing headers stay under HttpClient's control.
@@ -524,13 +534,23 @@ public sealed class DashboardWindow : Form
                 }
             }
 
-            request.Headers.TryAddWithoutValidation("User-Agent", ProxyUserAgent);
-            request.Headers.TryAddWithoutValidation("Accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,image/avif,image/webp,*/*;q=0.8");
-            request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
+            // Browser-grade defaults fill GAPS only: a forwarded header owns its
+            // name outright — appending the broad Accept default to a caller's
+            // "application/json" would hand content negotiation text/html at full
+            // preference, a representation the native request never accepted.
+            if (!request.Headers.Contains("User-Agent"))
+                request.Headers.TryAddWithoutValidation("User-Agent", ProxyUserAgent);
+            if (!request.Headers.Contains("Accept"))
+                request.Headers.TryAddWithoutValidation("Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,image/avif,image/webp,*/*;q=0.8");
+            if (!request.Headers.Contains("Accept-Language"))
+                request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
+            if (!request.Headers.Contains("Sec-Fetch-Mode"))
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
+            if (!request.Headers.Contains("Sec-Fetch-Site"))
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
+            if (!request.Headers.Contains("Sec-Fetch-Dest"))
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
             // Reddit's image CDNs (preview.redd.it, i.redd.it, external-preview.redd.it)
             // serve a fixed ~8 KB anti-hotlink placeholder unless the referer is Reddit.
             if (uri.Host.EndsWith(".redd.it", StringComparison.OrdinalIgnoreCase) ||
