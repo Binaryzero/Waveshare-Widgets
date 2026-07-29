@@ -497,13 +497,17 @@ public sealed class DashboardWindow : Form
             var body = message["body"]?.GetValue<string>();
             if (body is not null && method is "POST" or "PUT")
             {
+                // The StringContent media-type overload rejects parameterized values
+                // ("application/json; charset=utf-8" throws FormatException) — parse
+                // the full header instead, keeping utf-8 as the charset when the
+                // caller named none (the body was encoded as UTF-8 either way).
                 var contentType = message["contentType"]?.GetValue<string>() ?? "text/plain";
-                // StringContent's mediaType parameter rejects parameterized values, and
-                // "application/json; charset=utf-8" is a perfectly ordinary fetch header —
-                // parse the full value and assign it after construction instead.
                 var content = new StringContent(body, System.Text.Encoding.UTF8);
                 if (System.Net.Http.Headers.MediaTypeHeaderValue.TryParse(contentType, out var mediaType))
+                {
+                    mediaType.CharSet ??= "utf-8";
                     content.Headers.ContentType = mediaType;
+                }
                 request.Content = content;
             }
             // Widget-supplied extra headers (e.g. Hue CLIP v2's hue-application-key).
@@ -522,6 +526,13 @@ public sealed class DashboardWindow : Form
                     var lower = headerName.ToLowerInvariant();
                     if (lower is "host" or "content-length" or "transfer-encoding" or "connection" or "cookie")
                         continue;
+                    // Browser-owned metadata: page JS can never set Sec-*/Proxy-*
+                    // natively, so a forwarded value would SPOOF fetch metadata on
+                    // the escalated request (and suppress the host's correct
+                    // defaults below). The host stays authoritative for these.
+                    if (lower.StartsWith("sec-", StringComparison.Ordinal) ||
+                        lower.StartsWith("proxy-", StringComparison.Ordinal))
+                        continue;
                     var value = headerValue.GetValue<string>();
                     if (!request.Headers.TryAddWithoutValidation(headerName, value))
                         request.Content?.Headers.TryAddWithoutValidation(headerName, value);
@@ -530,13 +541,23 @@ public sealed class DashboardWindow : Form
                 }
             }
 
-            request.Headers.TryAddWithoutValidation("User-Agent", ProxyUserAgent);
-            request.Headers.TryAddWithoutValidation("Accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,image/avif,image/webp,*/*;q=0.8");
-            request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
+            // Browser-grade defaults fill GAPS only: a forwarded header owns its
+            // name outright — appending the broad Accept default to a caller's
+            // "application/json" would hand content negotiation text/html at full
+            // preference, a representation the native request never accepted.
+            if (!request.Headers.Contains("User-Agent"))
+                request.Headers.TryAddWithoutValidation("User-Agent", ProxyUserAgent);
+            if (!request.Headers.Contains("Accept"))
+                request.Headers.TryAddWithoutValidation("Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,image/avif,image/webp,*/*;q=0.8");
+            if (!request.Headers.Contains("Accept-Language"))
+                request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
+            if (!request.Headers.Contains("Sec-Fetch-Mode"))
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
+            if (!request.Headers.Contains("Sec-Fetch-Site"))
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
+            if (!request.Headers.Contains("Sec-Fetch-Dest"))
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
             // Reddit's image CDNs (preview.redd.it, i.redd.it, external-preview.redd.it)
             // serve a fixed ~8 KB anti-hotlink placeholder unless the referer is Reddit.
             if (uri.Host.EndsWith(".redd.it", StringComparison.OrdinalIgnoreCase) ||
@@ -551,9 +572,6 @@ public sealed class DashboardWindow : Form
             result["statusText"] = response.ReasonPhrase ?? "";
             result["contentType"] = response.Content.Headers.ContentType?.ToString();
             result["bodyBase64"] = Convert.ToBase64String(bytes);
-            // The shim needs to know when this answer came off a redirect chain: a
-            // cookie-less hop bounced to a login page reads as a clean 200 here.
-            result["redirected"] = response.RequestMessage?.RequestUri is { } finalUri && finalUri != uri;
             Log.Info($"proxy fetch {uri.Host} -> {(int)response.StatusCode} ({bytes.Length} bytes)");
 
             // TLS-fingerprinting bot walls (Reddit) 403 every .NET client; retry those
@@ -614,7 +632,9 @@ public sealed class DashboardWindow : Form
         lower is not ("accept-charset" or "accept-encoding" or "connection" or "content-length"
             or "content-type" or "cookie" or "cookie2" or "date" or "dnt" or "expect" or "host"
             or "keep-alive" or "origin" or "referer" or "te" or "trailer" or "transfer-encoding"
-            or "upgrade" or "via")
+            // The browser tier's whole value is its REAL identity: a widget-
+            // supplied User-Agent would override the genuine Chrome UA.
+            or "upgrade" or "user-agent" or "via")
         && !lower.StartsWith("sec-", StringComparison.Ordinal)
         && !lower.StartsWith("proxy-", StringComparison.Ordinal)
         && !lower.StartsWith("access-control-", StringComparison.Ordinal);
