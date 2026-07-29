@@ -64,13 +64,19 @@
     let hours = now.getHours();
     let suffix = '';
     if (hour12) {
-      suffix = '<small>' + (hours >= 12 ? ' PM' : ' AM') + '</small>';
+      suffix = hours >= 12 ? ' PM' : ' AM';
       hours = hours % 12 || 12;
     }
     const pad = (n) => String(n).padStart(2, '0');
     const time = (hour12 ? hours : pad(hours)) + ':' + pad(now.getMinutes()) +
       (showSeconds ? ':' + pad(now.getSeconds()) : '');
-    document.getElementById('time').innerHTML = time + suffix;
+    const timeEl = document.getElementById('time');
+    timeEl.textContent = time;
+    if (suffix) {
+      const small = document.createElement('small');
+      small.textContent = suffix;
+      timeEl.appendChild(small);
+    }
     document.getElementById('date').textContent = now.toLocaleDateString(undefined, {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
     });
