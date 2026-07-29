@@ -196,6 +196,34 @@ const layout = {
   check('E9c a clean save still reads as a plain success',
     /Saved — dashboard updated/.test(await page.locator('#toast').textContent() || ''));
 
+  // ---- E11 · a credential saved during THIS session is still removable
+  // secretsSet is the state at init; the host does not refresh it and this control is
+  // not rebuilt, so after typing + saving, emptying the field would send "" and the host
+  // would restore what it had just stored (Codex r4, P1).
+  await fresh.locator('input').fill('ghp_TYPED_NOW');
+  await page.waitForTimeout(120);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  await fresh.locator('input').fill('');
+  await page.waitForTimeout(120);
+  check('E11 emptying a secret typed this session says it will be removed',
+    (await fresh.locator('.secret-state').textContent()).trim() === 'will be removed on save',
+    await fresh.locator('.secret-state').textContent());
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  check('E11b and the save sends the clear marker, not the keep-it empty string',
+    saved[saved.length - 1].pages[0].slots[0].settings.fresh === '__ww_secret_cleared__',
+    JSON.stringify(saved[saved.length - 1].pages[0].slots[0].settings));
+
+  // ---- E12 · a credential that IS the clear marker stays storeable (escaped)
+  await fresh.locator('input').fill('__ww_secret_cleared__');
+  await page.waitForTimeout(120);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  check('E12 a typed value in the reserved namespace travels escaped, not as a clear',
+    saved[saved.length - 1].pages[0].slots[0].settings.fresh === '__ww_secret_lit___ww_secret_cleared__',
+    JSON.stringify(saved[saved.length - 1].pages[0].slots[0].settings.fresh));
+
   // ---- E10 · swapping the widget must not inherit the old one's "saved" marker
   // secretsSet describes the OUTGOING widget. The host scopes carry-over by widget id,
   // so the new widget correctly inherits nothing — but a stale marker would tell the

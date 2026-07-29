@@ -31,10 +31,31 @@ public static class SecretStore
     /// must KEEP the stored credential. The two intents need different words.</summary>
     public const string ClearMarker = "__ww_secret_cleared__";
 
+    /// <summary>Escape hatch so the sentinel above doesn't make one string unstoreable.
+    /// Credentials are arbitrary text, and a token that happens to BE the clear marker
+    /// would otherwise be read as "remove this" and silently discarded. Editors prefix
+    /// any typed value starting with the reserved <c>__ww_secret_</c> namespace with
+    /// this; the host strips exactly one prefix and treats the rest as plaintext.</summary>
+    public const string LiteralPrefix = "__ww_secret_lit_";
+
     /// <summary>Cheap syntactic check: does this look like one of our envelopes? Only
     /// meaningful together with <see cref="CanUnprotect"/> — see the class remarks.</summary>
     public static bool HasMarker(string? value) =>
         value is not null && value.StartsWith(Marker, StringComparison.Ordinal);
+
+    /// <summary>Marker AND a well-formed base64 payload — i.e. shaped like something we
+    /// wrote, even if THIS user/machine cannot open it. Distinguishes a credential
+    /// sealed elsewhere (drop it; re-encrypting would double-wrap a foreign ciphertext)
+    /// from legacy plaintext that merely starts with the marker (encrypt it). Neither is
+    /// certain from the bytes alone, but a token that begins with "dpapi:v1:" AND
+    /// continues in valid base64 is vanishingly rare next to a real foreign blob.</summary>
+    public static bool LooksLikeEnvelope(string? value)
+    {
+        if (!HasMarker(value))
+            return false;
+        var payload = value![Marker.Length..];
+        return payload.Length > 0 && Convert.TryFromBase64String(payload, new byte[payload.Length], out _);
+    }
 
     /// <summary>True when the value really is an envelope this user/machine can open.
     /// The authoritative "already sealed" test.</summary>
@@ -110,6 +131,21 @@ public static class SecretStore
 /// <param name="Property">The secret property's name.</param>
 public sealed record SecretSealFailure(string WidgetId, string Property);
 
+/// <summary>An instanceId minted during a save, addressed by the position the CLIENT
+/// used. The mint happens on the host's copy, so a still-open editor keeps an id-less
+/// slot; handing the id back lets it adopt the identity before its next save.</summary>
+/// <param name="Page">Page index in the layout the client submitted.</param>
+/// <param name="Slot">Slot index within that page.</param>
+/// <param name="WidgetId">Widget at that position, so the client can refuse a stale match.</param>
+/// <param name="InstanceId">The freshly minted identity.</param>
+public sealed record SecretSlotIdentity(int Page, int Slot, string WidgetId, string InstanceId);
+
+/// <summary>What a save did beyond writing the file.</summary>
+/// <param name="Failures">Secrets that could not be protected — the save is not clean.</param>
+/// <param name="Minted">Instance ids stamped onto id-less slots during this save.</param>
+public sealed record SecretSealResult(
+    IReadOnlyList<SecretSealFailure> Failures, IReadOnlyList<SecretSlotIdentity> Minted);
+
 /// <summary>
 /// Applies <see cref="SecretStore"/> across a whole layout, using each widget's manifest
 /// to decide which settings are secrets. Three directions, one per consumer:
@@ -166,7 +202,7 @@ public static class SecretPolicy
                     slot.Settings[name] = "";
                 return;
             }
-            if (SecretStore.HasMarker(stored))
+            if (SecretStore.LooksLikeEnvelope(stored))
                 slot.Settings![name] = SecretStore.Unprotect(stored) ?? "";
             // Legacy plaintext (a property that used to be `text`) already reads as
             // itself; it gets encrypted the next time the layout is saved.
@@ -204,7 +240,7 @@ public static class SecretPolicy
                     // thing the user has to do (re-enter it). Legacy plaintext counts as
                     // set — it is readable, and the next save encrypts it.
                     var usable = !string.IsNullOrEmpty(value) &&
-                        (SecretStore.HasMarker(value) ? SecretStore.CanUnprotect(value) : true);
+                        (SecretStore.LooksLikeEnvelope(value) ? SecretStore.CanUnprotect(value) : true);
                     if (usable)
                         set.Add(name);
                     slot["settings"]![name] = SecretStore.EditorPlaceholder;
@@ -233,15 +269,22 @@ public static class SecretPolicy
     /// slot that ends up holding a sealed secret gets a stable id minted here so the
     /// fallback is one-shot.
     /// </summary>
-    /// <returns>The secrets whose protection FAILED. Nothing plaintext was written for
-    /// them, but the save is not what the user asked for — callers must say so instead
-    /// of acknowledging a clean save.</returns>
-    public static IReadOnlyList<SecretSealFailure> Seal(
+    /// <returns>The secrets whose protection FAILED (nothing plaintext was written for
+    /// them, but the save is not what the user asked for — callers must say so instead of
+    /// acknowledging a clean save), plus any instance ids minted here, which the caller
+    /// must hand back to the client that submitted the layout.</returns>
+    public static SecretSealResult Seal(
         DashboardLayout layout, DashboardLayout? stored, Func<string, WidgetManifest?> lookup)
     {
         var incomingCounts = CountWidgets(layout);
         var previous = BuildStoredIndex(stored, lookup, incomingCounts, out var storedCounts);
         var failures = new List<SecretSealFailure>();
+        var minted = new List<SecretSlotIdentity>();
+        // Position in the layout AS SUBMITTED, so the client can find the same slot.
+        var address = new Dictionary<LayoutSlot, (int Page, int Slot)>(ReferenceEqualityComparer.Instance);
+        for (var p = 0; p < (layout.Pages?.Count ?? 0); p++)
+            for (var i = 0; i < (layout.Pages![p].Slots?.Count ?? 0); i++)
+                address[layout.Pages[p].Slots![i]] = (p, i);
         // Minting an instance id below CHANGES a slot's key, so a widget with two secrets
         // would look up its second one under the brand-new id and find nothing. Resolve
         // each slot's key once, before anything can mint.
@@ -261,6 +304,11 @@ public static class SecretPolicy
                 slot.Settings!.Remove(name);
                 return;
             }
+            // A typed credential that lives in the reserved namespace arrives escaped, so
+            // it can never be mistaken for the clear marker. Unwrap exactly one prefix
+            // and carry on: the value below is the user's real plaintext.
+            if (value is not null && value.StartsWith(SecretStore.LiteralPrefix, StringComparison.Ordinal))
+                value = value[SecretStore.LiteralPrefix.Length..];
 
             // Already a real envelope (idempotent re-save of a sealed layout).
             if (SecretStore.CanUnprotect(value))
@@ -281,7 +329,7 @@ public static class SecretPolicy
                     Stamp(slot);
                     return;
                 }
-                if (SecretStore.HasMarker(kept))
+                if (SecretStore.LooksLikeEnvelope(kept))
                 {
                     // An envelope this user/machine cannot open — a layout copied from
                     // another PC or another Windows account. Re-encrypting it would wrap
@@ -289,6 +337,11 @@ public static class SecretPolicy
                     // hand the widget that ciphertext as if it were the credential and
                     // the editor would go back to reporting it saved. Drop it: Mask
                     // already shows it as "not set", and the user re-enters it.
+                    //
+                    // Shape, not just the prefix: legacy plaintext that happens to start
+                    // with "dpapi:v1:" is NOT base64 after the marker, so the documented
+                    // `text` → `secret` migration still encrypts it below instead of
+                    // deleting a perfectly good credential.
                     slot.Settings!.Remove(name);
                     return;
                 }
@@ -328,14 +381,17 @@ public static class SecretPolicy
             failures.Add(new SecretSealFailure(slot.WidgetId, name));
         });
 
-        return failures;
+        return new SecretSealResult(failures, minted);
 
         // A slot that stores a credential gets a stable identity, so the next save
         // matches it by id instead of by its position on the page.
-        static void Stamp(LayoutSlot slot)
+        void Stamp(LayoutSlot slot)
         {
-            if (string.IsNullOrEmpty(slot.InstanceId))
-                slot.InstanceId = "s" + Guid.NewGuid().ToString("n")[..12];
+            if (!string.IsNullOrEmpty(slot.InstanceId))
+                return;
+            slot.InstanceId = "s" + Guid.NewGuid().ToString("n")[..12];
+            if (address.TryGetValue(slot, out var at))
+                minted.Add(new SecretSlotIdentity(at.Page, at.Slot, slot.WidgetId, slot.InstanceId));
         }
     }
 
@@ -360,6 +416,12 @@ public static class SecretPolicy
         if (stored is null)
             return index;
         var storedCounts = counts;
+        // Two stored slots resolving the same key means the layout has duplicate
+        // instanceIds (shell.js detects and heals those, but the editor can save before
+        // the repair lands). Silently keeping the last would hand BOTH colliding
+        // incoming slots the same credential, so the key is poisoned instead: nobody
+        // inherits, and the user re-enters — the same refusal ambiguous positions get.
+        var poisoned = new HashSet<(string, string)>();
         Walk(stored, lookup, (slot, name) =>
         {
             var value = AsString(slot.Settings?[name]);
@@ -367,7 +429,10 @@ public static class SecretPolicy
                 return;
             var key = SlotKey(slot, storedCounts, incomingCounts);
             if (key is not null)
-                index[(key, name)] = value!;
+            {
+                if (!index.TryAdd((key, name), value!))
+                    poisoned.Add((key, name));
+            }
             // A slot whose id was minted by a PREVIOUS Seal is also reachable
             // positionally, because the client that triggered that save still holds the
             // slot WITHOUT an id — the mint happened on the host's own copy. Its next
@@ -382,6 +447,8 @@ public static class SecretPolicy
                     index.TryAdd((slot.WidgetId + "|w:0", name), value!);
             }
         });
+        foreach (var key in poisoned)
+            index.Remove(key);
         return index;
     }
 

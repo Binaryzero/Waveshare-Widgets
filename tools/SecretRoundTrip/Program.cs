@@ -22,7 +22,18 @@ static byte[] Flip(byte[] input)
     return output;
 }
 SecretStore.EncryptOverride = Flip;
-SecretStore.DecryptOverride = Flip;
+// A blob "sealed by another user/machine" must be BOTH well-formed (marker + valid
+// base64, so it really is shaped like one of ours) and un-openable here. Real DPAPI
+// throws for a foreign key; the stand-in throws for a tagged prefix, so the probe can
+// tell a foreign envelope apart from legacy plaintext that merely starts with the
+// marker — which is exactly the distinction Seal now makes.
+static byte[] TaggedDecrypt(byte[] b) =>
+    b.Length >= 2 && b[0] == 0xFE && b[1] == 0xED
+        ? throw new CryptographicException("that key belongs to another user")
+        : Flip(b);
+SecretStore.DecryptOverride = TaggedDecrypt;
+// marker + valid base64, first bytes tagged so decryption refuses it.
+var ForeignEnvelope = "dpapi:v1:" + Convert.ToBase64String([0xFE, 0xED, 0x01, 0x02, 0x03]);
 
 const string Token = "ghp_SUPERSECRET-abc123";
 var manifest = new WidgetManifest
@@ -135,7 +146,7 @@ Check("P7b encryption unavailable with nothing stored: the key is dropped, never
 SecretStore.EncryptOverride = Flip;
 
 // ---- P8 · an unreadable blob (other user/machine) degrades to unset ------------------
-var foreign = LayoutWith(new JsonObject { ["apiToken"] = "dpapi:v1:!!!not-base64!!!" });
+var foreign = LayoutWith(new JsonObject { ["apiToken"] = ForeignEnvelope });
 SecretPolicy.Reveal(foreign, Lookup);
 Check("P8 a secret from another user/machine reveals as empty, not as garbage",
     Value(foreign, "apiToken") == "");
@@ -213,7 +224,7 @@ var foreignNode = JsonSerializer.SerializeToNode(foreignStored);
 SecretPolicy.Mask(foreignNode, Lookup);
 Check("P13 an unreadable blob is not marked saved (the user must re-enter it here)",
     foreignNode!["pages"]![0]!["slots"]![0]!["secretsSet"] is null);
-SecretStore.DecryptOverride = Flip;
+SecretStore.DecryptOverride = TaggedDecrypt;
 
 // ---- P14 · Codex r1: plaintext that merely LOOKS like an envelope is encrypted -------
 var trap = LayoutWith(new JsonObject { ["apiToken"] = "dpapi:v1:this-is-actually-my-password" });
@@ -241,11 +252,9 @@ Check("P15 a hand-edited non-string secret reads as unset instead of throwing",
 // Re-encrypting a foreign blob would produce an envelope this machine CAN open, so
 // Reveal would hand the widget the foreign ciphertext as if it were the credential and
 // Mask would go back to calling it saved — exactly the state P13 exists to prevent.
-// The blob must be one the cipher genuinely cannot open — the probe's reversible
-// stand-in "decrypts" any well-formed base64 into garbage, so only a malformed envelope
-// models a credential sealed by another user/machine here.
-const string ForeignBlob = "dpapi:v1:!!!from-another-pc!!!";
-var r2Foreign = LayoutWith(new JsonObject { ["apiToken"] = ForeignBlob });
+// The blob must be one the cipher genuinely cannot open AND well-formed, or it would
+// read as legacy plaintext (which Seal deliberately encrypts instead of dropping).
+var r2Foreign = LayoutWith(new JsonObject { ["apiToken"] = ForeignEnvelope });
 var foreignEdit = LayoutWith(new JsonObject { ["apiToken"] = "" });   // masked, untouched
 SecretPolicy.Seal(foreignEdit, r2Foreign, Lookup);
 Check("P16 an unopenable envelope is dropped on save, not sealed inside a new one",
@@ -309,17 +318,18 @@ SecretStore.EncryptOverride = _ => throw new CryptographicException("no DPAPI he
 var retypeFails = LayoutWith(new JsonObject { ["apiToken"] = "brand-new-token" });
 var reported = SecretPolicy.Seal(retypeFails, priorSealed, Lookup);
 Check("P18 a secret that could not be protected is reported to the caller",
-    reported.Count == 1 && reported[0].WidgetId == "test.widget" && reported[0].Property == "apiToken",
-    string.Join(",", reported.Select(f => f.WidgetId + "." + f.Property)));
+    reported.Failures.Count == 1 && reported.Failures[0].WidgetId == "test.widget" &&
+    reported.Failures[0].Property == "apiToken",
+    string.Join(",", reported.Failures.Select(f => f.WidgetId + "." + f.Property)));
 Check("P18b the fail-safe still holds: the old ciphertext stays, the plaintext is not written",
     Value(retypeFails, "apiToken") == Value(priorSealed, "apiToken"));
 var freshFails = LayoutWith(new JsonObject { ["apiToken"] = "brand-new-token" });
 var reportedFresh = SecretPolicy.Seal(freshFails, null, Lookup);
 Check("P18c a discarded FRESH secret is reported too (the user was told it saved)",
-    reportedFresh.Count == 1 && Slot(freshFails).Settings?["apiToken"] is null);
+    reportedFresh.Failures.Count == 1 && Slot(freshFails).Settings?["apiToken"] is null);
 SecretStore.EncryptOverride = Flip;
 var cleanRun = LayoutWith(new JsonObject { ["apiToken"] = Token });
-Check("P18d a clean save reports nothing", SecretPolicy.Seal(cleanRun, null, Lookup).Count == 0);
+Check("P18d a clean save reports nothing", SecretPolicy.Seal(cleanRun, null, Lookup).Failures.Count == 0);
 
 // ---- P19 · Codex r3: the mint lands on the HOST's copy, not the client's -------------
 // Seal stamps an instanceId on its own deserialized layout, so the still-open editor
@@ -349,6 +359,75 @@ var r3Ambiguous = new DashboardLayout
 SecretPolicy.Seal(r3Ambiguous, r3OnDisk, Lookup);
 Check("P19c but two id-less instances still refuse to guess which one owns it",
     r3Ambiguous.Pages[0].Slots.All(s => s.Settings?["apiToken"] is null));
+
+// ---- P20 · Codex r4: marker-prefixed LEGACY PLAINTEXT survives the migration --------
+// Round 3 dropped anything marker-prefixed that would not open. That also deleted a
+// legacy `text` value that merely starts with the marker. Shape decides now: an
+// envelope is marker + valid base64; plaintext is not.
+var r4LegacyStored = LayoutWith(new JsonObject { ["apiToken"] = "dpapi:v1:!!!my-actual-token!!!" });
+var r4LegacyEdit = LayoutWith(new JsonObject { ["apiToken"] = "" });
+SecretPolicy.Seal(r4LegacyEdit, r4LegacyStored, Lookup);
+Check("P20 marker-prefixed legacy plaintext is ENCRYPTED, not deleted as a foreign blob",
+    SecretStore.Unprotect(Value(r4LegacyEdit, "apiToken") ?? "") == "dpapi:v1:!!!my-actual-token!!!",
+    Value(r4LegacyEdit, "apiToken"));
+Check("P20b a well-formed foreign envelope is still dropped",
+    SecretStore.LooksLikeEnvelope("dpapi:v1:" + Convert.ToBase64String(Encoding.UTF8.GetBytes("x"))) &&
+    !SecretStore.LooksLikeEnvelope("dpapi:v1:!!!not-base64!!!"));
+
+// ---- P21 · Codex r4: a credential that IS the clear marker stays storeable ----------
+var r4Literal = LayoutWith(new JsonObject { ["apiToken"] = SecretStore.LiteralPrefix + SecretStore.ClearMarker });
+SecretPolicy.Seal(r4Literal, null, Lookup);
+Check("P21 an escaped credential equal to the clear marker is stored, not read as a clear",
+    SecretStore.Unprotect(Value(r4Literal, "apiToken") ?? "") == SecretStore.ClearMarker,
+    Value(r4Literal, "apiToken"));
+var r4StillClears = LayoutWith(new JsonObject { ["apiToken"] = SecretStore.ClearMarker });
+SecretPolicy.Seal(r4StillClears, typed, Lookup);
+Check("P21b the UNescaped marker still means remove",
+    Slot(r4StillClears).Settings?["apiToken"] is null);
+
+// ---- P22 · Codex r4: duplicate instanceIds refuse carry-over ------------------------
+// shell.js heals duplicates, but the editor can save before the repair lands. Handing
+// both colliding slots the same credential is worse than handing neither one.
+var r4DupStored = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "dup", Size = "half", Settings = new JsonObject { ["apiToken"] = "first" } },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "dup", Size = "half", Settings = new JsonObject { ["apiToken"] = "second" } },
+    ] }],
+};
+var r4DupEdit = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "dup", Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "dup", Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
+    ] }],
+};
+SecretPolicy.Seal(r4DupEdit, r4DupStored, Lookup);
+Check("P22 duplicate instanceIds carry nothing over instead of cloning one credential",
+    r4DupEdit.Pages[0].Slots.All(sl => sl.Settings?["apiToken"] is null));
+
+// ---- P23 · Codex r4: minted ids come back so the client can adopt them ---------------
+var r4Mint = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
+var r4Result = SecretPolicy.Seal(r4Mint, null, Lookup);
+Check("P23 a minted id is reported with the position the CLIENT used",
+    r4Result.Minted.Count == 1 && r4Result.Minted[0].Page == 0 && r4Result.Minted[0].Slot == 0 &&
+    r4Result.Minted[0].WidgetId == "test.widget" && r4Result.Minted[0].InstanceId == Slot(r4Mint).InstanceId,
+    string.Join(",", r4Result.Minted.Select(m => $"{m.Page}/{m.Slot}={m.InstanceId}")));
+// Adopting it is what makes the count-change case survive: the editor now sends the id,
+// so adding a second instance can no longer strand the first (the r3 alias could not).
+var r4Adopted = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = r4Result.Minted[0].InstanceId, Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
+        new LayoutSlot { WidgetId = "test.widget", Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
+    ] }],
+};
+SecretPolicy.Seal(r4Adopted, r4Mint, Lookup);
+Check("P23b after adopting the id, adding a second instance keeps the first credential",
+    SecretStore.Unprotect(r4Adopted.Pages[0].Slots[0].Settings?["apiToken"]?.GetValue<string>() ?? "") == Token &&
+    r4Adopted.Pages[0].Slots[1].Settings?["apiToken"] is null);
+Check("P23c a save that mints nothing reports nothing",
+    SecretPolicy.Seal(LayoutWith(new JsonObject { ["apiToken"] = Token }), null, Lookup).Minted.Count == 0);
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;

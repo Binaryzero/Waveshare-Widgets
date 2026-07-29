@@ -11,6 +11,9 @@
   // masked field came back untouched and the stored credential must survive the save.
   // Must match SecretStore.ClearMarker.
   const SECRET_CLEARED = '__ww_secret_cleared__';
+  // Escape for a credential that lives in the reserved namespace (it could BE the marker
+  // above). Must match SecretStore.LiteralPrefix.
+  const SECRET_LITERAL = '__ww_secret_lit_';
 
   /** @type {{frame: HTMLIFrameElement, el: HTMLElement, settings: object, initialized: boolean, retries: number}[]} */
   let slots = [];
@@ -697,6 +700,16 @@
       if (prop.name) settings[prop.name] = prop.default;
     }
     Object.assign(settings, slotDef.settings || {});
+    // Secret-protocol words belong in the save payload and nowhere else. A widget handed
+    // the clear marker would read a non-empty string as a live credential and sit in a
+    // configured/retrying state until the next full dashboard reload — the opposite of
+    // what the user just asked for. An escaped literal must arrive as what was typed.
+    for (const prop of widget.properties || []) {
+      const v = prop.name ? settings[prop.name] : undefined;
+      if (typeof v !== 'string') continue;
+      if (v === SECRET_CLEARED) settings[prop.name] = '';
+      else if (v.startsWith(SECRET_LITERAL)) settings[prop.name] = v.slice(SECRET_LITERAL.length);
+    }
     return settings;
   }
 
@@ -1601,7 +1614,10 @@
         const commit = () => {
           const typed = input.value.length > 0;
           if (typed) exists = true;   // this keystroke is on its way to disk
-          set(prop, typed ? input.value : (exists ? SECRET_CLEARED : ''));
+          // A credential can BE the clear marker, so anything in the reserved
+          // __ww_secret_ namespace travels escaped and the host unwraps one prefix.
+          const literal = input.value.startsWith('__ww_secret_') ? SECRET_LITERAL + input.value : input.value;
+          set(prop, typed ? literal : (exists ? SECRET_CLEARED : ''));
           clear.hidden = !exists;
         };
         input.addEventListener('input', commit);

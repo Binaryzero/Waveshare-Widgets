@@ -240,7 +240,7 @@ public sealed class DashboardWindow : Form
                             page.Slots.RemoveAll(s => string.IsNullOrWhiteSpace(s.WidgetId));
                         // The shell round-trips the DECRYPTED layout it was given, so
                         // seal before writing: plaintext credentials never hit disk.
-                        var secretFailures = SecretPolicy.Seal(edited, LayoutStore.Load(), ManifestFor);
+                        var secretFailures = SecretPolicy.Seal(edited, LayoutStore.Load(), ManifestFor).Failures;
                         LayoutStore.Save(edited);
                         Log.Info("layout saved from on-panel editor");
                         if (secretFailures.Count > 0)

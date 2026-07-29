@@ -150,6 +150,16 @@
         : (pendingSaves.size ? [...pendingSaves.values()].pop() : undefined);
       if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
       if (acked !== undefined && editSeq === acked) clearDirty();
+      // The host stamps a stable instanceId on any credentialed slot that lacked one —
+      // but on ITS copy, so this editor still holds the id-less slot it sent. Adopt the
+      // identities or the next save can't find its own ciphertext and deletes it. The
+      // address is the position in the layout WE submitted; the widgetId guard keeps a
+      // stale ack from branding a slot the user has since replaced.
+      for (const m of (Array.isArray(msg.mintedIds) ? msg.mintedIds : [])) {
+        const target = (((state.layout || {}).pages || [])[m.page] || {}).slots || [];
+        const slot = target[m.slot];
+        if (slot && !slot.instanceId && slot.widgetId === m.widgetId) slot.instanceId = m.instanceId;
+      }
       // The layout saved, but a credential may not have: the host refuses to write one
       // in the clear when Windows protection is unavailable. "Saved" alone would tell
       // the user a token is active when it isn't.
@@ -1473,8 +1483,16 @@
         input.placeholder = prop.placeholder || 'Paste the token or key';
         // The clear marker is a host protocol word, never something to show or re-send
         // as if the user had typed it.
-        input.value = (typeof current === 'string' && current !== '__ww_secret_cleared__') ? current : '';
-        const stored = Array.isArray(slot.secretsSet) && slot.secretsSet.includes(prop.name);
+        input.value = (typeof current === 'string' && current !== '__ww_secret_cleared__')
+          ? (current.startsWith('__ww_secret_lit_') ? current.slice('__ww_secret_lit_'.length) : current)
+          : '';
+        // Whether a credential EXISTS on disk for this field. `secretsSet` is only the
+        // state at init: the host does not refresh it on save and this control is not
+        // rebuilt, so once the user types and saves, a credential exists that the
+        // snapshot still denies. Tracked live, or emptying the field afterwards would
+        // send "" — which the host reads as an untouched masked field, restoring the
+        // value that save had just stored, while the row claims "not set".
+        let stored = Array.isArray(slot.secretsSet) && slot.secretsSet.includes(prop.name);
         let cleared = false; // Clear was pressed: the save will DROP the stored value
         const state = document.createElement('span');
         state.className = 'secret-state';
@@ -1500,7 +1518,25 @@
           set('__ww_secret_cleared__');
           sync();
         }, true);
-        input.addEventListener('input', () => { cleared = false; set(input.value); sync(); });
+        input.addEventListener('input', () => {
+          if (input.value.length > 0) {
+            // On its way to disk, so a later empty field means "remove it", not
+            // "leave the masked value alone".
+            stored = true;
+            cleared = false;
+            // Credentials are arbitrary strings, so one of them can BE the clear marker.
+            // Anything in the reserved __ww_secret_ namespace travels escaped; the host
+            // strips exactly one prefix (SecretStore.LiteralPrefix).
+            set(input.value.startsWith('__ww_secret_') ? '__ww_secret_lit_' + input.value : input.value);
+          } else if (stored) {
+            cleared = true;
+            set('__ww_secret_cleared__');
+          } else {
+            cleared = false;
+            set('');
+          }
+          sync();
+        });
         sync();
         wrap.append(input, reveal, clear, state);
         return wrap;

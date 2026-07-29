@@ -25,8 +25,11 @@ const CREDENTIAL_WORD = /(^|[^a-z0-9])(token|secret|password|passwd|api ?key|bea
 // webhook URL IS the credential — anyone holding it can post. So is a private calendar
 // address. But most url properties are public (the iframe and youtube widgets both
 // ship one), so a bare url/link/endpoint is never enough on its own: it takes a
-// secrecy qualifier, or the word webhook, which is unambiguous by itself.
+// secrecy qualifier, or webhook in a form that names the VALUE rather than
+// configuration about it — `webhookUrl` and `slackWebhook` hold the secret;
+// `webhookEnabled` and `webhookMethod` are a switch and a verb.
 const WEBHOOK = /(^|[^a-z0-9])web ?hook([^a-z0-9]|$)/i;
+const WEBHOOK_VALUE = /web ?hook$/i;
 const URLISH = /(^|[^a-z0-9])(url|uri|link|endpoint|address|feed)([^a-z0-9]|$)/i;
 const SECRET_QUALIFIER = /(^|[^a-z0-9])(private|secret|signed|personal|sas)([^a-z0-9]|$)/i;
 const looksLikeCredential = (name) => {
@@ -43,7 +46,7 @@ const looksLikeCredential = (name) => {
     .replace(/[_\-.]+/g, ' ');
   const squashed = spaced.replace(/\s+/g, '');
   if (CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(squashed)) return true;
-  if (WEBHOOK.test(spaced) || WEBHOOK.test(squashed)) return true;
+  if (WEBHOOK.test(spaced) && (URLISH.test(spaced) || WEBHOOK_VALUE.test(spaced.trim()))) return true;
   return URLISH.test(spaced) && SECRET_QUALIFIER.test(spaced);
 };
 const KNOWN_SLOTS = new Set(['quarter', 'half', 'three-quarter', 'full']);

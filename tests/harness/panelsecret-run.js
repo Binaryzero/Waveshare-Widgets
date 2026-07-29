@@ -166,6 +166,19 @@ const widgets = [{
   check('N8c deleting it sends the clear marker, not the "keep it" empty string',
     savedSetting('fresh') === CLEAR, JSON.stringify(savedSetting('fresh')));
 
+  // ---- N9 · the clear marker is host protocol: the live widget must never see it
+  // The 400 ms apply path reloads the iframe with ww-settings from the same record the
+  // save payload comes from. A widget handed "__ww_secret_cleared__" would read a
+  // non-empty string as a live credential and keep retrying (Codex r4, P2).
+  await tokenRow.locator('input').fill('ghp_ABOUT_TO_BE_CLEARED');
+  await wait(900);
+  await tokenRow.locator('.ps-clear').click();
+  await wait(900);
+  const frameHash = await page.locator('.slot iframe').first().getAttribute('src');
+  const applied = decodeURIComponent((frameHash || '').split('ww-settings=')[1] || '');
+  check('N9 the reloaded widget receives an empty secret, not the clear marker',
+    applied.length > 0 && !applied.includes(CLEAR) && /"token":""/.test(applied), applied.slice(0, 160));
+
   // ---- N7 · a save the host could not protect has to surface on the panel
   await page.evaluate(() => window.__hostPush(JSON.stringify({
     type: 'secrets-failed', data: ['test.gh.token'],
