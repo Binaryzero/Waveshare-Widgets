@@ -63,7 +63,46 @@
       el(PANES[key]).hidden = !on;
     }
   }
-  for (const key of Object.keys(TABS)) el(TABS[key]).addEventListener('click', () => setTab(key));
+
+  // The panel is a transient floating INSPECTOR over the WYSIWYG preview, not a
+  // permanent form region: it opens for one job (tapped widget, gallery, page,
+  // theme, wallpaper) and closes out of the way. The preview is the interface.
+  function panelTitleFor(name) {
+    if (name === 'theme') return 'Theme';
+    if (name === 'wallpaper') return 'Wallpaper';
+    if (name === 'page') {
+      const page = state.layout.pages[selectedPage];
+      return page ? ('Page — ' + (page.name || 'Page ' + (selectedPage + 1))) : 'Page';
+    }
+    if (galleryOpen) return 'Add a widget';
+    const page = state.layout.pages[selectedPage];
+    const slot = page && selectedSlot != null ? (page.slots || [])[selectedSlot] : null;
+    const widget = slot && widgetsById.get(slot.widgetId);
+    return widget ? widget.name : 'Widget';
+  }
+  function openPanel(name) {
+    setTab(name);
+    el('panelTitle').textContent = panelTitleFor(name);
+    const panel = el('contextPanel');
+    // Float in the EMPTY region below the toolbar — never over the preview or
+    // the chip row (a fixed top overlapped the toolbar and made chips
+    // unclickable while the inspector was open).
+    const top = Math.round(el('toolbar').getBoundingClientRect().bottom + 10);
+    panel.style.top = top + 'px';
+    panel.style.maxHeight = 'calc(100vh - ' + (top + 16) + 'px)';
+    panel.classList.add('open');
+  }
+  function closePanel() {
+    el('contextPanel').classList.remove('open');
+  }
+  function panelOpen() {
+    return el('contextPanel').classList.contains('open');
+  }
+  el('panelClose').addEventListener('click', closePanel);
+  el('pageBtn').addEventListener('click', () => openPanel('page'));
+  el('themeBtn').addEventListener('click', () => openPanel('theme'));
+  el('wallpaperBtn').addEventListener('click', () => openPanel('wallpaper'));
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closePanel(); });
 
   // ---- host bridge -----------------------------------------------------------
 
@@ -268,10 +307,10 @@
         galleryOpen = false; // an open gallery was aimed at the page we just left
         renderPageList();
         renderEditorPanel();
-        // The strip and Page tab refreshed in place — don't steal the user's tab.
-        // Exception: the Widget tab was showing a selection that no longer exists;
-        // fall back to the page context instead of an orphaned hint.
-        if (activeTab === 'widget') setTab('page');
+        // An open widget inspector points at a selection that no longer exists —
+        // close it rather than showing an orphaned card. Theme/wallpaper/page
+        // inspectors are page-independent and stay.
+        if (activeTab === 'widget' && panelOpen()) closePanel();
       }
     } else if (m.type === 'save-layout') {
       // The interactive replica IS the editor (#32): its continuous persists are the
@@ -282,6 +321,10 @@
       // Click-to-configure: the replica says which tile the user tapped (or where a
       // mutation moved the already-selected one, or -1/-1 when it went away).
       onReplicaSelection(m.page | 0, m.index | 0, m.instanceId || null, m.gen);
+    } else if (m.type === 'style-widget') {
+      // 🎨 on a preview tile: the slot-selected handoff (posted first) already
+      // adopted the tile — just make sure its inspector is open.
+      if ((m.gen | 0) === initGen && !replicaTimer) openPanel('widget');
     } else if (m.type === 'add-widget') {
       // The replica's "+" zone hands the add over to us (#45): a modal palette
       // inside the scaled strip covered the very layout being edited. Follow the
@@ -377,7 +420,7 @@
     galleryOpen = false; // the tap picked an existing widget — detail takes over
     renderPageList();
     renderEditorPanel();
-    setTab('widget'); // a real adoption (tap / palette add) — show the detail card
+    openPanel('widget'); // a real adoption (tap / palette add) — open the inspector
   }
 
   function markDirty() {
@@ -637,7 +680,7 @@
       galleryOpen = false;
       renderWidgetGallery(null);
       // Nothing to manage widget-wise; the empty state lives on the Page tab.
-      if (activeTab === 'widget') setTab('page');
+      if (activeTab === 'widget' && panelOpen()) closePanel();
       return;
     }
 
@@ -700,7 +743,7 @@
 
   function openGallery() {
     galleryOpen = true;
-    setTab('widget');
+    openPanel('widget');
     renderEditorPanel();
   }
 
@@ -779,7 +822,7 @@
       instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
     });
     selectedSlot = page.slots.length - 1;
-    setTab('widget');
+    openPanel('widget'); // gallery pick lands in the new widget's inspector
     renderPageList(); // the strip's widget count changed
     renderEditor();
   }
@@ -879,7 +922,7 @@
     selectedSlot = selectedSlot === i ? null : i; // click the active chip to deselect
     galleryOpen = false; // chip interaction takes the Widget tab over from the gallery
     renderEditorPanel();
-    if (selectedSlot != null) setTab('widget'); // chip select shows the detail card
+    if (selectedSlot != null) openPanel('widget'); // chip select opens the inspector
     // Mirror into the replica (index -1 clears its highlight).
     replicaPost({ type: 'select-slot', page: selectedPage, index: selectedSlot == null ? -1 : selectedSlot });
   }

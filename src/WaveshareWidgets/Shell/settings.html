@@ -34,27 +34,37 @@
   </section>
 
   <main>
-    <!-- Pages strip: one chip per page (click = select AND steer the preview there);
-         the active chip carries the ◀ ▶ reorder arrows. This is the ONLY place to
-         add/reorder/delete pages when editing from the desktop — the preview's edit
-         capsule hides its page buttons here. -->
-    <nav id="pagesStrip" aria-label="Pages">
+    <!-- The WHOLE desktop chrome outside the preview is this one slim row: page
+         chips, this page's widget chips (selection fallback + hidden-widget
+         surface), and the three popover openers. Everything else happens ON the
+         preview or in the floating card it opens. -->
+    <nav id="toolbar" aria-label="Pages and widgets">
       <ul id="pageList"></ul>
       <button id="addPage" class="ghost chip-add">+ Add page</button>
+      <button id="pageBtn" class="ghost chip-add" title="Name, capacity, background and delete for the current page">Page…</button>
+      <span class="spacer"></span>
+      <div id="slotList"></div>
+      <button id="addSlot" class="ghost chip-add">+ Add widget</button>
+      <button id="themeBtn" class="ghost chip-add" title="Three colors drive every widget">🎨 Theme</button>
+      <button id="wallpaperBtn" class="ghost chip-add" title="Background behind widgets on every page">🖼 Wallpaper</button>
     </nav>
 
-    <!-- One context panel, one job per tab — replaces the old two-column wall of text. -->
-    <section id="contextPanel">
-      <div id="tabBar" role="tablist" aria-label="Settings sections">
-        <button id="tabPage" class="tab active" role="tab" aria-selected="true">Page</button>
-        <button id="tabWidget" class="tab" role="tab" aria-selected="false">Widget</button>
-        <button id="tabTheme" class="tab" role="tab" aria-selected="false">Theme</button>
-        <button id="tabWallpaper" class="tab" role="tab" aria-selected="false">Wallpaper</button>
+    <!-- ONE floating card, opened by taps on the preview (widget config), the
+         replica's + zone (gallery) or the toolbar buttons. Never a permanent
+         panel: the preview is the interface, this is its transient inspector. -->
+    <section id="contextPanel" aria-label="Inspector">
+      <div id="panelHead">
+        <span id="panelTitle"></span>
+        <button id="panelClose" class="ghost" title="Close (Esc)">✕</button>
       </div>
-
       <div id="contextBody">
-        <!-- Page: name, capacity, delete, and this page's background override. -->
-        <section id="panePage" class="pane" role="tabpanel">
+        <div id="tabBar" hidden>
+          <button id="tabPage" class="tab"></button>
+          <button id="tabWidget" class="tab"></button>
+          <button id="tabTheme" class="tab"></button>
+          <button id="tabWallpaper" class="tab"></button>
+        </div>
+        <section id="panePage" class="pane" hidden>
           <div id="pageHeader">
             <input id="pageName" type="text" placeholder="Page name" />
             <div id="capacity"></div>
@@ -70,27 +80,15 @@
             <p>No pages yet. Add one to get started.</p>
           </div>
         </section>
-
-        <!-- Widget: this page's widgets as chips + the selected widget's detail card.
-             The add gallery lives HERE, not in the preview — a palette inside the
-             scaled replica covered the very layout being edited (#45). -->
-        <section id="paneWidget" class="pane" role="tabpanel" hidden>
-          <div class="widget-strip">
-            <div id="slotList"></div>
-            <button id="addSlot" class="ghost">+ Add widget</button>
-          </div>
+        <section id="paneWidget" class="pane" hidden>
           <div id="widgetGallery" hidden></div>
           <div id="slotDetail"></div>
         </section>
-
-        <!-- Theme: three seed colors + opacity drive every widget on the panel. -->
-        <section id="paneTheme" class="pane" role="tabpanel" hidden>
+        <section id="paneTheme" class="pane" hidden>
           <p class="panel-hint">Three colors drive every widget; the full palette is derived automatically.</p>
           <div id="themeEditor" class="bg-editor"></div>
         </section>
-
-        <!-- Wallpaper: the dashboard-wide background. -->
-        <section id="paneWallpaper" class="pane" role="tabpanel" hidden>
+        <section id="paneWallpaper" class="pane" hidden>
           <p class="panel-hint">Wallpaper shown behind widgets on every page (unless a page sets its own).</p>
           <div id="globalBg" class="bg-editor"></div>
         </section>

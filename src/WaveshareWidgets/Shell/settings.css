@@ -531,3 +531,48 @@ header h1 #appVersion {
   letter-spacing: 0.06em;
   margin-left: 8px;
 }
+
+/* ===== WYSIWYG-first (field round 4) ======================================
+ * The preview IS the interface. Desktop chrome outside it collapses to ONE
+ * slim toolbar row; all configuration happens in a transient floating
+ * inspector card docked over the preview's right edge — never a permanent
+ * wall of controls under it. */
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+}
+#toolbar #pageList { display: flex; gap: 6px; margin: 0; padding: 0; list-style: none; }
+#toolbar .spacer { flex: 1; }
+#toolbar #slotList { display: flex; gap: 6px; flex-wrap: wrap; }
+#tabBar { display: none !important; }
+
+#contextPanel {
+  display: none;
+  position: fixed;
+  right: 24px;
+  width: min(600px, calc(100vw - 48px));
+  max-height: min(74vh, 760px);
+  z-index: 40;
+  padding: 0;
+  background: var(--surface, #14171c);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  flex-direction: column;
+}
+#contextPanel.open { display: flex; }
+#panelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex: none;
+}
+#panelTitle { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; }
+#contextBody { overflow: auto; padding: 12px 16px 16px; min-height: 0; }
