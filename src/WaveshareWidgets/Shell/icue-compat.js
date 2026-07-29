@@ -320,11 +320,26 @@
         remembered = sessionStorage.getItem(memoKey) === '1';
       } catch (e) { memoKey = null; /* storage unavailable */ }
     }
+    // fetch(new Request(...)) carries method/headers/body ON THE INPUT: read
+    // the proxy-relevant bits off the Request — init fields overriding per
+    // spec — so an escalated request keeps its method and headers instead of
+    // degrading to a headerless GET (Codex, round 3).
+    const req = (input && typeof input === 'object' && typeof input.url === 'string') ? input : null;
+    const initBody = (init && init.body != null) ? init.body : null;
+    const eff = {
+      method: (init && init.method) || (req && req.method) || 'GET',
+      headers: (init && init.headers) || (req && req.headers) || null,
+      body: typeof initBody === 'string' ? initBody : null,
+    };
     // The proxy can faithfully replay only string (or empty) bodies — a
     // FormData/Blob/URLSearchParams POST must keep LEADING with the native
     // attempt: it reaches the server even when its response is CORS-blocked,
     // and routing it proxy-first would silently send an empty body instead.
-    const replayable = !init || init.body == null || typeof init.body === 'string';
+    // A Request's own body is a one-shot stream that can't be inspected here,
+    // so any non-GET/HEAD Request without an overriding init body may carry one.
+    const effMethod = String(eff.method || 'GET').toUpperCase();
+    const mayCarryStreamBody = !!req && initBody == null && effMethod !== 'GET' && effMethod !== 'HEAD';
+    const replayable = !mayCarryStreamBody && (initBody == null || typeof initBody === 'string');
     if (url && remembered && replayable) {
       // Memory can go stale two ways: the proxy TRANSPORT failing (CORS fixed
       // upstream), and the proxy being the wrong PATH for this request — an
@@ -332,7 +347,7 @@
       // browser's ambient cookies, which never cross the proxy hop (the host
       // rejects forwarded Cookie headers by design). Retry native for those
       // and keep the proxy's answer when the native path can't do better.
-      return proxyFetch(url, init || {}).then((response) => {
+      return proxyFetch(url, eff).then((response) => {
         if (response.status !== 401 && response.status !== 403) return response;
         return nativeFetch(input, init).then(
           (native) => (native.ok ? native : response), () => response);
@@ -342,12 +357,12 @@
       // Bot walls (Reddit's in particular) sometimes serve their block page WITH
       // CORS headers, so the request "succeeds" as a 403/429; retry via the host.
       return (response.status === 403 || response.status === 429) && url
-        ? proxyFetch(url, init || {}).catch(() => response) : response;
+        ? proxyFetch(url, eff).catch(() => response) : response;
     }, (error) => {
       if (!url) throw error;
       // A browser-level failure (CORS, mixed content, TLS) repeats forever.
       if (memoKey) { try { sessionStorage.setItem(memoKey, '1'); } catch (e) { /* storage off */ } }
-      return proxyFetch(url, init || {});
+      return proxyFetch(url, eff);
     });
   };
 
