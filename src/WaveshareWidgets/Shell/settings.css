@@ -543,6 +543,11 @@ header h1 #appVersion {
   gap: 8px;
   flex-wrap: wrap;
   padding: 10px 16px;
+  /* Bounded + scrollable: the document is overflow:hidden, so a toolbar that
+   * wraps into many chip rows must scroll itself — clipped rows would be
+   * unreachable pages/widgets (the inspector clamp keeps its card usable). */
+  max-height: 38vh;
+  overflow-y: auto;
 }
 /* Chips WRAP (both lists): the document is overflow:hidden, so a long row
  * must grow downward — clipped chips would be unreachable pages/widgets.
