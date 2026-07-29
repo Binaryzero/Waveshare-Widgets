@@ -108,6 +108,25 @@ window.__done = false;
     });
   }
 
+  // 11 · pre-aborted request on a MEMOIZED origin still rejects AbortError —
+  // the memo must not smuggle it onto the proxy (Codex round 5).
+  try {
+    const ac = new AbortController();
+    ac.abort();
+    await fetch('http://127.0.0.1:8931/memoabort.bin', { signal: ac.signal });
+    push('memo-abort', { error: 'resolved unexpectedly' });
+  } catch (e) { push('memo-abort', { errName: (e && e.name) || '' }); }
+
+  // 12 · headers snapshot at call time: mutating the live object after fetch()
+  // must not change what the escalated retry sends.
+  try {
+    const live = { 'Authorization': 'Bearer LIVE' };
+    const pending = fetch('http://127.0.0.1:8932/blocked.json?snap=1', { headers: live });
+    live['Authorization'] = 'Bearer MUTATED';
+    const res = await pending;
+    push('snap', { status: res.status });
+  } catch (e) { push('snap', { error: String(e) }); }
+
   window.__done = true;
 })();
 </script>

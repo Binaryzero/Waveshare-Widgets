@@ -146,67 +146,80 @@
     }
   });
 
-  function proxyFetch(url, init) {
-    init = init || {};
+  // Serializes an init for the proxy hop, SNAPSHOTTING the headers at call
+  // time: native fetch snapshots its headers when invoked, and the async
+  // escalation must retry what was actually sent — not whatever the caller
+  // mutated the live Headers object into since. Request headers survive the
+  // hop (needed by APIs like Hue CLIP v2 — and any authenticated feed: a
+  // dropped Authorization header reads as a bot-wall 403 downstream). Headers
+  // instances and [[k,v]] pairs serialize too, not just plain objects,
+  // repeated names combining with ", " like native fetch (#37 parity with the
+  // iCUE shim). Content-Type moves to the dedicated field — a copy in the
+  // generic map would double up against the host's StringContent and hand
+  // APIs an invalid body type. init.insecure permits self-signed TLS,
+  // honored by the host for LAN hosts only.
+  function serializeProxyInit(init) {
+    let headers = null;
+    let bodyContentType = null;
+    if (init.headers && typeof init.headers === 'object') {
+      headers = {};
+      const keyFor = {}; // lower-cased name -> the first-seen spelling
+      const add = (name, value) => {
+        const lower = String(name).toLowerCase();
+        if (keyFor[lower] === undefined) {
+          keyFor[lower] = String(name);
+          headers[String(name)] = String(value);
+        } else {
+          headers[keyFor[lower]] += ', ' + String(value);
+        }
+      };
+      try {
+        // Array check FIRST: arrays have a forEach of their own whose callback
+        // is (element, index) — the Headers/Map branch would mangle pairs.
+        if (Array.isArray(init.headers)) {
+          for (const pair of init.headers) if (pair && pair.length >= 2) add(pair[0], pair[1]);
+        } else if (typeof init.headers.forEach === 'function') {
+          init.headers.forEach((value, key) => add(key, value));
+        } else {
+          for (const key of Object.keys(init.headers)) add(key, init.headers[key]);
+        }
+      } catch (e) { headers = null; /* opaque headers */ }
+      if (headers) {
+        for (const key of Object.keys(headers)) {
+          if (key.toLowerCase() === 'content-type') {
+            bodyContentType = headers[key];
+            delete headers[key];
+          }
+        }
+        if (!Object.keys(headers).length) headers = null;
+      }
+    }
+    return {
+      method: (init.method || 'GET').toUpperCase(),
+      body: typeof init.body === 'string' ? init.body : null,
+      contentType: bodyContentType,
+      headers,
+      insecure: init.insecure === true,
+    };
+  }
+
+  // The host hop can't carry an AbortSignal — honor it locally: never start an
+  // already-aborted request, and drop an in-flight one when it fires.
+  function proxyFetch(url, snap, signal) {
     return new Promise((resolve, reject) => {
       const id = reqId('w');
       pendingFetches.set(id, { resolve, reject });
       setTimeout(() => {
         if (pendingFetches.delete(id)) reject(new TypeError('proxy fetch timed out'));
       }, 25000);
-      // Request headers survive the proxy hop (needed by APIs like Hue CLIP v2 —
-      // and any authenticated feed: a dropped Authorization header reads as a
-      // bot-wall 403 downstream). Headers instances and [[k,v]] pairs serialize
-      // too, not just plain objects, repeated names combining with ", " like
-      // native fetch (#37 parity with the iCUE shim). Content-Type moves to the
-      // dedicated field — a copy in the generic map would double up against the
-      // host's StringContent and hand APIs an invalid body type.
-      // init.insecure permits self-signed TLS, honored by the host for LAN hosts only.
-      let headers = null;
-      let bodyContentType = null;
-      if (init.headers && typeof init.headers === 'object') {
-        headers = {};
-        const keyFor = {}; // lower-cased name -> the first-seen spelling
-        const add = (name, value) => {
-          const lower = String(name).toLowerCase();
-          if (keyFor[lower] === undefined) {
-            keyFor[lower] = String(name);
-            headers[String(name)] = String(value);
-          } else {
-            headers[keyFor[lower]] += ', ' + String(value);
-          }
+      if (signal) {
+        const onAbort = () => {
+          if (pendingFetches.delete(id)) reject(new DOMException('The user aborted a request.', 'AbortError'));
         };
-        try {
-          // Array check FIRST: arrays have a forEach of their own whose callback
-          // is (element, index) — the Headers/Map branch would mangle pairs.
-          if (Array.isArray(init.headers)) {
-            for (const pair of init.headers) if (pair && pair.length >= 2) add(pair[0], pair[1]);
-          } else if (typeof init.headers.forEach === 'function') {
-            init.headers.forEach((value, key) => add(key, value));
-          } else {
-            for (const key of Object.keys(init.headers)) add(key, init.headers[key]);
-          }
-        } catch (e) { headers = null; /* opaque headers */ }
-        if (headers) {
-          for (const key of Object.keys(headers)) {
-            if (key.toLowerCase() === 'content-type') {
-              bodyContentType = headers[key];
-              delete headers[key];
-            }
-          }
-          if (!Object.keys(headers).length) headers = null;
-        }
+        if (signal.aborted) { onAbort(); return; }
+        signal.addEventListener('abort', onAbort, { once: true });
       }
-      parent.postMessage({
-        type: 'ww-fetch',
-        id,
-        url: String(url),
-        method: (init.method || 'GET').toUpperCase(),
-        body: typeof init.body === 'string' ? init.body : null,
-        contentType: bodyContentType,
-        headers,
-        insecure: init.insecure === true,
-      }, '*');
+      parent.postMessage(Object.assign({ type: 'ww-fetch', id, url: String(url) }, snap), '*');
     });
   }
 
@@ -305,19 +318,25 @@
      */
     fetch(url, init) {
       init = init || {};
+      // Aborted before we start: the native path rejects with the spec's
+      // AbortError and touches no network — no memo, no proxy.
+      if (init.signal && init.signal.aborted) return fetch(url, init);
       let memoKey = null;
       let remembered = false;
       try {
         memoKey = 'ww-proxy-first:' + new URL(url, location.href).origin;
         remembered = sessionStorage.getItem(memoKey) === '1';
       } catch (e) { memoKey = null; /* unparsable url or storage unavailable */ }
+      // Headers serialize NOW: the async proxy retry must send what the native
+      // attempt sent, not the caller's later mutations of a live Headers object.
+      const snap = serializeProxyInit(init);
       // The proxy can faithfully replay only string (or empty) bodies: a
       // FormData/Blob POST keeps leading with the native attempt (which reaches
       // the server even when its response is CORS-blocked) instead of being
       // routed proxy-first into an empty-body replay.
       const replayable = init.body == null || typeof init.body === 'string';
       if (init.proxy === 'always' || (init.proxy !== 'never' && remembered && replayable)) {
-        return proxyFetch(url, init).then((response) => {
+        return proxyFetch(url, snap, init.signal).then((response) => {
           // An auth-shaped 401/403 from the proxy may just mean the request
           // needed the browser's ambient cookies, which never cross the proxy
           // hop — retry native (unless the caller opted out of the browser
@@ -335,13 +354,13 @@
         // request "succeeds" as a 403/429; retry those via the host — unless the
         // caller opted out of the proxy, or the body can't be replayed faithfully.
         if ((response.status === 403 || response.status === 429) && init.proxy !== 'never' && replayable) {
-          return proxyFetch(url, init).catch(() => response);
+          return proxyFetch(url, snap, init.signal).catch(() => response);
         }
         return response;
       }, (err) => {
         if (init.proxy === 'never') throw err;
         // A caller-initiated abort is not a network failure: no memo, no
-        // escalation — the proxy hop can't carry the signal anyway.
+        // escalation — a cancellation is the caller's intent.
         if ((err && err.name === 'AbortError') || (init.signal && init.signal.aborted)) throw err;
         // A browser-level failure (CORS, mixed content, TLS) repeats forever —
         // remember the origin so later calls skip straight to the proxy.
@@ -349,7 +368,7 @@
         // The native attempt may have DELIVERED a non-replayable body before its
         // response was blocked — an empty replay would double-hit the server.
         if (!replayable) throw err;
-        return proxyFetch(url, init);
+        return proxyFetch(url, snap, init.signal);
       });
     },
 

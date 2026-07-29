@@ -265,6 +265,30 @@ const widgets = [
     byName(stock, 'ww-ct').status === 200,
     JSON.stringify({ ct: wwct.contentType, headers: wwct.headers, body: wwct.body, result: byName(stock, 'ww-ct') }));
 
+  // ---- S14 · memoized origin + pre-aborted signal: AbortError, no proxy hop
+  check('S14 memoized origin + pre-aborted signal still rejects AbortError (no proxy hop)',
+    byName(icue, 'memo-abort').errName === 'AbortError' &&
+    !fetchMsgs.some((m) => String(m.url).includes('memoabort')),
+    JSON.stringify(byName(icue, 'memo-abort')));
+
+  // ---- S15 · shim escalation retries the SENT headers, not later mutations
+  const snapMsg = fetchMsgs.find((m) => String(m.url).includes('snap=1') && !String(m.url).includes('wsnap=1')) || {};
+  check('S15 escalation retries the headers that were SENT, not the mutated live object',
+    header(snapMsg, 'Authorization') === 'Bearer LIVE' && byName(icue, 'snap').status === 200,
+    JSON.stringify({ headers: snapMsg.headers, result: byName(icue, 'snap') }));
+
+  // ---- S16 · WW.fetch's async retry sends the entry-time snapshot too
+  const wsnapMsg = fetchMsgs.find((m) => String(m.url).includes('wsnap=1')) || {};
+  check('S16 WW.fetch retry also sends the entry-time header snapshot',
+    header(wsnapMsg, 'Authorization') === 'Bearer WLIVE' && byName(stock, 'ww-snap').status === 200,
+    JSON.stringify({ headers: wsnapMsg.headers, result: byName(stock, 'ww-snap') }));
+
+  // ---- S17 · WW.fetch pre-aborted: AbortError, no proxy hop
+  check('S17 WW.fetch with a pre-aborted signal rejects AbortError (no proxy hop)',
+    byName(stock, 'ww-abort').errName === 'AbortError' &&
+    !fetchMsgs.some((m) => String(m.url).includes('wwabort')),
+    JSON.stringify(byName(stock, 'ww-abort')));
+
   await browser.close();
   noCors.close();
   walled.close();
