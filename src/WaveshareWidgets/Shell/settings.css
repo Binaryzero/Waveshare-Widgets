@@ -544,7 +544,10 @@ header h1 #appVersion {
   flex-wrap: wrap;
   padding: 10px 16px;
 }
-#toolbar #pageList { display: flex; gap: 6px; margin: 0; padding: 0; list-style: none; }
+/* Chips WRAP (both lists): the document is overflow:hidden, so a long row
+ * must grow downward — clipped chips would be unreachable pages/widgets.
+ * The toolbar ResizeObserver repositions the open inspector as rows grow. */
+#toolbar #pageList { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
 #toolbar .spacer { flex: 1; }
 #toolbar #slotList { display: flex; gap: 6px; flex-wrap: wrap; }
 #tabBar { display: none !important; }

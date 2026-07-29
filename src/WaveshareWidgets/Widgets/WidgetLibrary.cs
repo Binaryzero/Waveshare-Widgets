@@ -88,7 +88,7 @@ public sealed partial class WidgetLibrary : IDisposable
             // — recognize those by the stock manifest id instead; a folder that is
             // neither marked nor stock-id'd is the user's own work and survives.
             if (!File.Exists(Path.Combine(dir, SeedMarker)) && ManifestIdOf(dir) != $"ws.stock.{retired}") continue;
-            try { Directory.Delete(dir, recursive: true); Log.Info($"Removed retired stock widget '{retired}'"); }
+            try { DeleteTree(dir); Log.Info($"Removed retired stock widget '{retired}'"); }
             catch (Exception ex) { Log.Warn($"Could not remove retired stock widget '{retired}': {ex.Message}"); }
         }
         // The saved layout must shed retired slots too, or the panel renders a

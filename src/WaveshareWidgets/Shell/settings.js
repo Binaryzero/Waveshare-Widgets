@@ -696,6 +696,10 @@
   // Everything below/around the preview, WITHOUT poking the replica — used directly
   // when the replica itself originated the change (capture) and already shows it.
   function renderEditorPanel() {
+    // Every render is a possible context change (page chip select, adoption,
+    // gallery toggle): an OPEN inspector must never keep naming the previous
+    // context while showing the new one's fields.
+    if (panelOpen()) el('panelTitle').textContent = panelTitleFor(activeTab);
     const page = state.layout.pages[selectedPage];
     const hasPage = !!page;
     el('editorEmpty').hidden = hasPage;
