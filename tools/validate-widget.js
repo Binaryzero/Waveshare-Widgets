@@ -16,14 +16,23 @@ const KNOWN_TYPES = new Set(['text', 'number', 'slider', 'color', 'select', 'swi
   'secret', 'sensor', 'sensors-factory', 'location', 'list', 'media-selector']);
 // Names that look like credentials: declaring them as free text writes a plaintext
 // secret into layout.json, so the validator flags the type, not the widget author.
-// camelCase and PascalCase count — `apiToken`, `clientSecret`, `githubPAT` are the
-// COMMON spellings, so the name is split at case boundaries before matching.
-const CREDENTIAL_WORD = /(^|[^a-z0-9])(token|secret|password|passwd|apikey|bearer|pat|credential|privatekey|accesskey)([^a-z0-9]|$)/i;
+// camelCase and PascalCase count — `apiToken`, `clientSecret`, `githubPAT`, `APIToken`
+// are the COMMON spellings, so the name is split at case boundaries before matching.
+// The compound keywords tolerate the break the splitter introduces: "OAuthAPIKey"
+// becomes "O Auth API Key", and "API Key" is still an api key.
+const CREDENTIAL_WORD = /(^|[^a-z0-9])(token|secret|password|passwd|api ?key|bearer|pat|credential|private ?key|access ?key)([^a-z0-9]|$)/i;
 const looksLikeCredential = (name) => {
-  // "apiToken" -> "api Token"; "access_key" -> "access key" -> also "accesskey", so a
-  // two-word spelling of a one-word keyword still matches. Word boundaries keep the
-  // squashed form honest: "compatMode" -> "compatmode" does NOT match "pat".
-  const spaced = String(name || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_\-.]+/g, ' ');
+  // Two case boundaries, because initialisms are everywhere in this domain:
+  //   acronym->word  "APIToken" -> "API Token", "JWTToken" -> "JWT Token"
+  //   word->Word     "apiToken" -> "api Token", "githubPAT" -> "github PAT"
+  // Separators join in ("access_key" -> "access key"), and the squashed form is tried
+  // too so a two-word spelling of a one-word keyword ("access key" -> "accesskey")
+  // still matches. Word boundaries keep the squashed pass honest: "compatMode" ->
+  // "compatmode" does NOT match "pat", and "PATH" -> "path" does not either.
+  const spaced = String(name || '')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_\-.]+/g, ' ');
   return CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(spaced.replace(/\s+/g, ''));
 };
 const KNOWN_SLOTS = new Set(['quarter', 'half', 'three-quarter', 'full']);

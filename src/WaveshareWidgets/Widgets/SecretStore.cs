@@ -44,8 +44,12 @@ public static class SecretStore
     /// (tools/SecretRoundTrip, which compiles this file) substitutes a reversible stand-in
     /// to exercise the seal→reveal contract, and clears it to exercise the
     /// no-DPAPI fail-safe. Never assigned in the shipping app.</summary>
+    // CS0649: nothing in the SHIPPING assembly assigns these, which is the point — only
+    // the probe, which compiles this same file into its own assembly, ever does.
+#pragma warning disable CS0649
     internal static Func<byte[], byte[]>? EncryptOverride;
     internal static Func<byte[], byte[]>? DecryptOverride;
+#pragma warning restore CS0649
 
     private static byte[] Encrypt(byte[] plain) => EncryptOverride is { } f
         ? f(plain)
@@ -99,6 +103,12 @@ public static class SecretStore
         }
     }
 }
+
+/// <summary>A secret the save could not protect. The credential the user typed is NOT on
+/// disk (plaintext is never a fallback), so the save must not be reported as clean.</summary>
+/// <param name="WidgetId">Widget whose slot holds the secret.</param>
+/// <param name="Property">The secret property's name.</param>
+public sealed record SecretSealFailure(string WidgetId, string Property);
 
 /// <summary>
 /// Applies <see cref="SecretStore"/> across a whole layout, using each widget's manifest
@@ -220,18 +230,27 @@ public static class SecretPolicy
     /// Carry-over identity is keyed by widget id + instance id, so replacing a widget in
     /// a slot can never hand it the previous widget's credential; layouts predating
     /// instance ids fall back to position, but only when that is unambiguous, and any
-    /// slot that stores a secret gets a stable id minted here so the fallback is
-    /// one-shot.
+    /// slot that ends up holding a sealed secret gets a stable id minted here so the
+    /// fallback is one-shot.
     /// </summary>
-    public static void Seal(DashboardLayout layout, DashboardLayout? stored, Func<string, WidgetManifest?> lookup)
+    /// <returns>The secrets whose protection FAILED. Nothing plaintext was written for
+    /// them, but the save is not what the user asked for — callers must say so instead
+    /// of acknowledging a clean save.</returns>
+    public static IReadOnlyList<SecretSealFailure> Seal(
+        DashboardLayout layout, DashboardLayout? stored, Func<string, WidgetManifest?> lookup)
     {
         var previous = BuildStoredIndex(stored, lookup, out var storedCounts);
         var incomingCounts = CountWidgets(layout);
-        var counters = new Dictionary<string, int>(StringComparer.Ordinal);
+        var failures = new List<SecretSealFailure>();
+        // Minting an instance id below CHANGES a slot's key, so a widget with two secrets
+        // would look up its second one under the brand-new id and find nothing. Resolve
+        // each slot's key once, before anything can mint.
+        var keyOf = new Dictionary<LayoutSlot, string?>(ReferenceEqualityComparer.Instance);
 
         Walk(layout, lookup, (slot, name) =>
         {
-            var key = SlotKey(slot, counters, storedCounts, incomingCounts);
+            if (!keyOf.TryGetValue(slot, out var key))
+                keyOf[slot] = key = SlotKey(slot, storedCounts, incomingCounts);
             var node = slot.Settings?[name];
             var value = AsString(node);
 
@@ -249,37 +268,74 @@ public static class SecretPolicy
 
             if (string.IsNullOrEmpty(value))
             {
-                // Untouched masked field (or non-string junk): keep what is stored,
-                // sealing it if the stored value was still legacy plaintext.
-                if (key is not null && previous.TryGetValue((key, name), out var kept))
-                    slot.Settings![name] = SecretStore.CanUnprotect(kept) ? kept : Reseal(kept, kept);
-                else if (node is not null)
+                // Untouched masked field (or non-string junk): keep what is stored.
+                if (key is null || !previous.TryGetValue((key, name), out var kept))
+                {
+                    if (node is not null)
+                        slot.Settings!.Remove(name);
+                    return;
+                }
+                if (SecretStore.CanUnprotect(kept))
+                {
+                    slot.Settings![name] = kept;
+                    Stamp(slot);
+                    return;
+                }
+                if (SecretStore.HasMarker(kept))
+                {
+                    // An envelope this user/machine cannot open — a layout copied from
+                    // another PC or another Windows account. Re-encrypting it would wrap
+                    // the FOREIGN ciphertext in an envelope we can open, so Reveal would
+                    // hand the widget that ciphertext as if it were the credential and
+                    // the editor would go back to reporting it saved. Drop it: Mask
+                    // already shows it as "not set", and the user re-enters it.
                     slot.Settings!.Remove(name);
+                    return;
+                }
+                // Legacy plaintext from a `text` → `secret` upgrade: encrypt it now.
+                if (SecretStore.TryProtect(kept, out var sealedLegacy))
+                {
+                    slot.Settings![name] = sealedLegacy;
+                    Stamp(slot);
+                }
+                else
+                {
+                    // Keeping it leaves layout.json exactly as it already was; dropping
+                    // it would destroy the credential over a transient DPAPI failure.
+                    slot.Settings![name] = kept;
+                    failures.Add(new SecretSealFailure(slot.WidgetId, name));
+                }
                 return;
             }
 
-            // Plaintext (typed now, or a legacy `text` value, or something that merely
+            // Plaintext (typed now, a legacy `text` value, or something that merely
             // starts with the marker): encrypt it.
-            var fallback = key is not null && previous.TryGetValue((key, name), out var prior) ? prior : null;
-            var result = Reseal(value!, fallback);
-            if (result is null)
-                slot.Settings!.Remove(name);
-            else
-                slot.Settings![name] = result;
-            if (result is not null && string.IsNullOrEmpty(slot.InstanceId))
+            if (SecretStore.TryProtect(value!, out var sealedValue))
             {
-                // A slot that stores a credential gets a stable identity, so the next
-                // save matches it by id instead of by its position on the page.
-                slot.InstanceId = "s" + Guid.NewGuid().ToString("n")[..12];
+                slot.Settings![name] = sealedValue;
+                Stamp(slot);
+                return;
             }
+            // Protection unavailable. Never write the plaintext: keep a readable previous
+            // value so the widget keeps working, else drop the key. Either way the user
+            // asked for something that did NOT happen, so this is reported.
+            var fallback = key is not null && previous.TryGetValue((key, name), out var prior)
+                && SecretStore.CanUnprotect(prior) ? prior : null;
+            if (fallback is not null)
+                slot.Settings![name] = fallback;
+            else
+                slot.Settings!.Remove(name);
+            failures.Add(new SecretSealFailure(slot.WidgetId, name));
         });
 
-        // Encrypts, or falls back to the previous value — never to plaintext on disk.
-        static string? Reseal(string plaintext, string? fallback)
+        return failures;
+
+        // A slot that stores a credential gets a stable identity, so the next save
+        // matches it by id instead of by its position on the page.
+        static void Stamp(LayoutSlot slot)
         {
-            if (SecretStore.TryProtect(plaintext, out var sealedValue))
-                return sealedValue;
-            return SecretStore.CanUnprotect(fallback) ? fallback : null;
+            if (string.IsNullOrEmpty(slot.InstanceId))
+                slot.InstanceId = "s" + Guid.NewGuid().ToString("n")[..12];
         }
     }
 
@@ -302,11 +358,10 @@ public static class SecretPolicy
         var index = new Dictionary<(string, string), string>();
         if (stored is null)
             return index;
-        var counters = new Dictionary<string, int>(StringComparer.Ordinal);
         var storedCounts = counts;
         Walk(stored, lookup, (slot, name) =>
         {
-            var key = SlotKey(slot, counters, storedCounts, storedCounts);
+            var key = SlotKey(slot, storedCounts, storedCounts);
             var value = AsString(slot.Settings?[name]);
             if (key is not null && !string.IsNullOrEmpty(value))
                 index[(key, name)] = value!;
@@ -319,11 +374,9 @@ public static class SecretPolicy
     /// trusted (several instances of one widget, counts changed by a move/delete) —
     /// carrying over then risks handing one instance another's credential, so the user
     /// re-enters it instead.</summary>
-    private static string? SlotKey(LayoutSlot slot, Dictionary<string, int> counters,
+    private static string? SlotKey(LayoutSlot slot,
         Dictionary<string, int> storedCounts, Dictionary<string, int> incomingCounts)
     {
-        counters.TryGetValue(slot.WidgetId, out var ordinal);
-        counters[slot.WidgetId] = ordinal + 1;
         if (!string.IsNullOrEmpty(slot.InstanceId))
             return slot.WidgetId + "|i:" + slot.InstanceId;
         storedCounts.TryGetValue(slot.WidgetId, out var before);

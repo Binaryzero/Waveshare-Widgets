@@ -150,7 +150,17 @@
         : (pendingSaves.size ? [...pendingSaves.values()].pop() : undefined);
       if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
       if (acked !== undefined && editSeq === acked) clearDirty();
-      toast('Saved — dashboard updated');
+      // The layout saved, but a credential may not have: the host refuses to write one
+      // in the clear when Windows protection is unavailable. "Saved" alone would tell
+      // the user a token is active when it isn't.
+      const failed = Array.isArray(msg.secretsFailed) ? msg.secretsFailed : [];
+      if (failed.length) {
+        toast(failed.length === 1
+          ? 'Layout saved, but the credential could NOT be encrypted and was not stored. Re-enter it and save again.'
+          : `Layout saved, but ${failed.length} credentials could NOT be encrypted and were not stored.`, true);
+      } else {
+        toast('Saved — dashboard updated');
+      }
     } else if (msg.type === 'save-failed') {
       if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
       toast('Save failed: ' + msg.message, true);

@@ -237,6 +237,90 @@ try { SecretPolicy.Seal(junk2, typed, Lookup); } catch { sealThrew = true; }
 Check("P15 a hand-edited non-string secret reads as unset instead of throwing",
     !revealThrew && !maskThrew && !sealThrew && Value(junk, "apiToken") == "");
 
+// ---- P16 · Codex r2: an unreadable envelope is DROPPED, never re-wrapped -------------
+// Re-encrypting a foreign blob would produce an envelope this machine CAN open, so
+// Reveal would hand the widget the foreign ciphertext as if it were the credential and
+// Mask would go back to calling it saved — exactly the state P13 exists to prevent.
+// The blob must be one the cipher genuinely cannot open — the probe's reversible
+// stand-in "decrypts" any well-formed base64 into garbage, so only a malformed envelope
+// models a credential sealed by another user/machine here.
+const string ForeignBlob = "dpapi:v1:!!!from-another-pc!!!";
+var r2Foreign = LayoutWith(new JsonObject { ["apiToken"] = ForeignBlob });
+var foreignEdit = LayoutWith(new JsonObject { ["apiToken"] = "" });   // masked, untouched
+SecretPolicy.Seal(foreignEdit, r2Foreign, Lookup);
+Check("P16 an unopenable envelope is dropped on save, not sealed inside a new one",
+    Slot(foreignEdit).Settings?["apiToken"] is null, Value(foreignEdit, "apiToken"));
+Check("P16b nothing was re-wrapped: no envelope survives for Reveal to hand the widget",
+    !JsonSerializer.Serialize(foreignEdit).Contains("dpapi:v1:"),
+    JsonSerializer.Serialize(foreignEdit));
+
+// ---- P17 · Codex r2: a legacy carry-over mints an id too, or it stays positional -----
+// Without this the migrated slot keeps matching by position; adding a second instance of
+// the same widget later makes the count ambiguous and its credential is dropped.
+var legacyStored2 = LayoutWith(new JsonObject { ["apiToken"] = "legacy-plaintext" }, instanceId: null);
+var legacyEdit2 = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
+SecretPolicy.Seal(legacyEdit2, legacyStored2, Lookup);
+var mintedId = Slot(legacyEdit2).InstanceId;
+Check("P17 migrating a legacy secret through the masked field also mints a stable id",
+    !string.IsNullOrEmpty(mintedId) && SecretStore.CanUnprotect(Value(legacyEdit2, "apiToken")), mintedId);
+// The whole point of the id: a SECOND instance of the same widget must not disturb it.
+var withSibling = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = mintedId, Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "other", Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
+    ] }],
+};
+SecretPolicy.Seal(withSibling, legacyEdit2, Lookup);
+Check("P17b adding a second instance no longer strips the migrated slot's credential",
+    SecretStore.Unprotect(withSibling.Pages[0].Slots[0].Settings?["apiToken"]?.GetValue<string>() ?? "") == "legacy-plaintext" &&
+    withSibling.Pages[0].Slots[1].Settings?["apiToken"] is null);
+
+// ---- P17c · two secrets on ONE slot both survive the id being minted mid-walk --------
+var r2TwoManifest = new WidgetManifest
+{
+    Id = "test.two", Name = "Two",
+    Properties = [
+        new WidgetProperty { Name = "apiToken", Label = "A", Type = "secret" },
+        new WidgetProperty { Name = "clientSecret", Label = "B", Type = "secret" },
+    ],
+};
+WidgetManifest? LookupTwo(string id) => id == "test.two" ? r2TwoManifest : null;
+DashboardLayout R2TwoLayout(JsonObject settings) => new()
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [new LayoutSlot
+    { WidgetId = "test.two", InstanceId = null, Size = "half", Settings = settings }] }],
+};
+var r2TwoStored = R2TwoLayout(new JsonObject { ["apiToken"] = "aaa", ["clientSecret"] = "bbb" });
+var r2TwoEdit = R2TwoLayout(new JsonObject { ["apiToken"] = "", ["clientSecret"] = "" });
+SecretPolicy.Seal(r2TwoEdit, r2TwoStored, LookupTwo);
+var r2TwoSlot = r2TwoEdit.Pages[0].Slots[0];
+Check("P17c minting an id mid-walk does not orphan the slot's SECOND secret",
+    SecretStore.Unprotect(r2TwoSlot.Settings?["apiToken"]?.GetValue<string>() ?? "") == "aaa" &&
+    SecretStore.Unprotect(r2TwoSlot.Settings?["clientSecret"]?.GetValue<string>() ?? "") == "bbb",
+    r2TwoSlot.Settings?.ToJsonString());
+
+// ---- P18 · Codex r2: a protection failure is REPORTED, not acknowledged as saved -----
+SecretStore.EncryptOverride = _ => throw new CryptographicException("no DPAPI here");
+var priorSealed = LayoutWith(new JsonObject { ["apiToken"] = Token });
+SecretStore.EncryptOverride = Flip;
+SecretPolicy.Seal(priorSealed, null, Lookup);
+SecretStore.EncryptOverride = _ => throw new CryptographicException("no DPAPI here");
+var retypeFails = LayoutWith(new JsonObject { ["apiToken"] = "brand-new-token" });
+var reported = SecretPolicy.Seal(retypeFails, priorSealed, Lookup);
+Check("P18 a secret that could not be protected is reported to the caller",
+    reported.Count == 1 && reported[0].WidgetId == "test.widget" && reported[0].Property == "apiToken",
+    string.Join(",", reported.Select(f => f.WidgetId + "." + f.Property)));
+Check("P18b the fail-safe still holds: the old ciphertext stays, the plaintext is not written",
+    Value(retypeFails, "apiToken") == Value(priorSealed, "apiToken"));
+var freshFails = LayoutWith(new JsonObject { ["apiToken"] = "brand-new-token" });
+var reportedFresh = SecretPolicy.Seal(freshFails, null, Lookup);
+Check("P18c a discarded FRESH secret is reported too (the user was told it saved)",
+    reportedFresh.Count == 1 && Slot(freshFails).Settings?["apiToken"] is null);
+SecretStore.EncryptOverride = Flip;
+var cleanRun = LayoutWith(new JsonObject { ["apiToken"] = Token });
+Check("P18d a clean save reports nothing", SecretPolicy.Seal(cleanRun, null, Lookup).Count == 0);
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 

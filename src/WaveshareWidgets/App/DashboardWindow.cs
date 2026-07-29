@@ -240,9 +240,22 @@ public sealed class DashboardWindow : Form
                             page.Slots.RemoveAll(s => string.IsNullOrWhiteSpace(s.WidgetId));
                         // The shell round-trips the DECRYPTED layout it was given, so
                         // seal before writing: plaintext credentials never hit disk.
-                        SecretPolicy.Seal(edited, LayoutStore.Load(), ManifestFor);
+                        var secretFailures = SecretPolicy.Seal(edited, LayoutStore.Load(), ManifestFor);
                         LayoutStore.Save(edited);
                         Log.Info("layout saved from on-panel editor");
+                        if (secretFailures.Count > 0)
+                        {
+                            // The panel re-rendered itself as if the save were clean. Tell
+                            // it otherwise, or the user walks away believing a credential
+                            // is stored when protection refused it.
+                            var names = new JsonArray();
+                            foreach (var f in secretFailures)
+                            {
+                                names.Add($"{f.WidgetId}.{f.Property}");
+                                Log.Warn($"Secret not saved (protection unavailable): {f.WidgetId}.{f.Property}");
+                            }
+                            PostToShell("secrets-failed", names);
+                        }
                     }
                     catch (Exception ex)
                     {

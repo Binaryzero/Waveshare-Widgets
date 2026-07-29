@@ -7,6 +7,11 @@
   const dotsEl = document.getElementById('dots');
   const emptyEl = document.getElementById('empty');
 
+  // Host protocol: "the user cleared this secret", as distinct from "" which means the
+  // masked field came back untouched and the stored credential must survive the save.
+  // Must match SecretStore.ClearMarker.
+  const SECRET_CLEARED = '__ww_secret_cleared__';
+
   /** @type {{frame: HTMLIFrameElement, el: HTMLElement, settings: object, initialized: boolean, retries: number}[]} */
   let slots = [];
   let latestSensors = [];
@@ -89,6 +94,15 @@
         const p = layoutData.pages[Math.max(0, Math.min(layoutData.pages.length - 1, msg.index | 0))];
         if (p) openPalette(p);
       }
+    }
+    else if (msg.type === 'secrets-failed') {
+      // The panel already re-rendered as if the save were clean, but the host could not
+      // protect a credential and refuses to write one in the clear. Say so on glass —
+      // silence here means the user walks away thinking the token is stored.
+      const items = Array.isArray(msg.data) ? msg.data : [];
+      showPanelNotice(items.length === 1
+        ? 'Could not save the credential — Windows protection unavailable. Try again.'
+        : `Could not save ${items.length} credentials — Windows protection unavailable.`);
     }
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
@@ -241,6 +255,25 @@
       if (slot.def && slot.def.hideInGame)
         slot.el.style.visibility = (gameState.active && !editing) ? 'hidden' : '';
     }
+  }
+
+  let panelNoticeTimer = null;
+
+  /** Transient banner for host-side failures the panel can't otherwise show. The strip
+   * has no dialogs and no room for one, so this rides above everything and clears
+   * itself; it is deliberately the only such surface. */
+  function showPanelNotice(text) {
+    let node = document.getElementById('panelNotice');
+    if (!node) {
+      node = document.createElement('div');
+      node.id = 'panelNotice';
+      node.className = 'panel-notice';
+      document.body.appendChild(node);
+    }
+    node.textContent = text;
+    node.hidden = false;
+    clearTimeout(panelNoticeTimer);
+    panelNoticeTimer = setTimeout(() => { node.hidden = true; }, 6000);
   }
 
   function sendToSlot(slot, message) {
@@ -1556,8 +1589,14 @@
         input.autocomplete = 'off';
         input.spellcheck = false;
         input.placeholder = prop.placeholder || 'Paste the token or key';
-        input.value = typeof current === 'string' ? current : '';
-        input.addEventListener('input', () => set(prop, input.value));
+        const stored = (typeof current === 'string' && current !== SECRET_CLEARED) ? current : '';
+        input.value = stored;
+        // Emptying a field that HELD a credential has to say so out loud. The host reads
+        // "" as "the masked desktop field came back untouched" and keeps the ciphertext
+        // already on disk — so without the marker the panel could never delete a
+        // credential: it would look gone until the next reload brought it back.
+        const commit = () => set(prop, input.value.length ? input.value : (stored ? SECRET_CLEARED : ''));
+        input.addEventListener('input', commit);
         const eye = document.createElement('button');
         eye.type = 'button';
         eye.className = 'ps-eye';
@@ -1567,6 +1606,16 @@
           input.type = input.type === 'password' ? 'text' : 'password';
         });
         wrap.append(input, eye);
+        if (stored) {
+          // Removal needs to be one deliberate tap on glass, not "select all, delete".
+          const clear = document.createElement('button');
+          clear.type = 'button';
+          clear.className = 'ps-eye ps-clear';
+          clear.textContent = '✕';
+          clear.title = 'Remove the stored credential on save';
+          clear.addEventListener('click', () => { input.value = ''; commit(); });
+          wrap.append(clear);
+        }
         return wrap;
       }
       case 'select': {

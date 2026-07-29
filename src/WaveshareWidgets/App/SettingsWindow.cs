@@ -306,11 +306,23 @@ public sealed class SettingsWindow : Form
 
             // Newly typed secrets get encrypted; masked ones the user didn't retype keep
             // the ciphertext already on disk instead of being wiped.
-            SecretPolicy.Seal(layout, LayoutStore.Load(), ManifestFor);
+            var secretFailures = SecretPolicy.Seal(layout, LayoutStore.Load(), ManifestFor);
             LayoutStore.Save(layout);
             LayoutSaved?.Invoke();
             var ok = new JsonObject { ["type"] = "saved" };
             if (seq is not null) ok["seq"] = seq.Value;
+            if (secretFailures.Count > 0)
+            {
+                // The rest of the layout saved, but a credential did not: reporting a
+                // plain "Saved" would tell the user a token is active when it is not.
+                var names = new JsonArray();
+                foreach (var f in secretFailures)
+                {
+                    names.Add($"{f.WidgetId}.{f.Property}");
+                    Log.Warn($"Secret not saved (protection unavailable): {f.WidgetId}.{f.Property}");
+                }
+                ok["secretsFailed"] = names;
+            }
             Post(ok);
         }
         catch (Exception ex)

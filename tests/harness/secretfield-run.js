@@ -170,6 +170,25 @@ const layout = {
   check('E8 the clear marker never appears in the field the user reads',
     shownAfterClear === '', shownAfterClear);
 
+  // ---- E9 · a save the host could not fully honour must NOT read as "Saved"
+  // The host encrypts; when Windows protection is unavailable it refuses to write the
+  // credential in the clear. Saying "Saved — dashboard updated" then would tell the user
+  // a token is active when it is not (Codex r2, P2).
+  await page.evaluate(() => window.__hostPush(JSON.stringify({
+    type: 'saved', seq: 999999, secretsFailed: ['test.gh.token'],
+  })));
+  await page.waitForTimeout(150);
+  const warned = await page.locator('#toast').textContent();
+  const warnClass = await page.locator('#toast').getAttribute('class');
+  check('E9 a save with an unprotectable secret warns instead of claiming success',
+    /could NOT be encrypted/i.test(warned || '') && !/^Saved/.test((warned || '').trim()), warned);
+  check('E9b it is styled as an error, not as a normal confirmation',
+    /error/.test(warnClass || ''), warnClass);
+  await page.evaluate(() => window.__hostPush(JSON.stringify({ type: 'saved', seq: 999998 })));
+  await page.waitForTimeout(150);
+  check('E9c a clean save still reads as a plain success',
+    /Saved — dashboard updated/.test(await page.locator('#toast').textContent() || ''));
+
   await browser.close();
   shellSrv.close();
   console.log(failures ? `${failures} FAILURES` : 'ALL PASS');
