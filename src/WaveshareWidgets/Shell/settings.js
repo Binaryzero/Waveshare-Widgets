@@ -513,6 +513,9 @@
   el('previewToggle').addEventListener('click', () => {
     const collapsed = previewStage.classList.toggle('collapsed');
     el('previewToggle').textContent = collapsed ? 'Show' : 'Hide';
+    // Collapsing/restoring the stage TRANSLATES the toolbar without resizing
+    // it, so the ResizeObserver stays silent — refit an open inspector here.
+    positionPanel();
     if (collapsed) {
       previewFrame.removeAttribute('src'); // suspend: no hidden widgets burning CPU
       replicaReady = false;
