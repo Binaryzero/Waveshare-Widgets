@@ -80,7 +80,11 @@ public sealed partial class WidgetLibrary : IDisposable
         {
             var dir = Path.Combine(AppPaths.WidgetsDir, retired);
             if (Directory.Exists(Path.Combine(AppPaths.StockWidgetsDir, retired))) continue;
-            if (!Directory.Exists(dir) || !File.Exists(Path.Combine(dir, SeedMarker))) continue;
+            if (!Directory.Exists(dir)) continue;
+            // Marker-bearing copies are ours. Pre-fingerprint seeds carry NO marker
+            // — recognize those by the stock manifest id instead; a folder that is
+            // neither marked nor stock-id'd is the user's own work and survives.
+            if (!File.Exists(Path.Combine(dir, SeedMarker)) && ManifestIdOf(dir) != $"ws.stock.{retired}") continue;
             try { Directory.Delete(dir, recursive: true); Log.Info($"Removed retired stock widget '{retired}'"); }
             catch (Exception ex) { Log.Warn($"Could not remove retired stock widget '{retired}': {ex.Message}"); }
         }
@@ -153,6 +157,12 @@ public sealed partial class WidgetLibrary : IDisposable
     /// <summary>Do two widget folders declare the same manifest id? Any read/parse
     /// failure counts as "different" — an ambiguous target is treated as user
     /// content and preserved rather than deleted.</summary>
+    private static string? ManifestIdOf(string dir)
+    {
+        try { return JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "manifest.json")))?["id"]?.GetValue<string>(); }
+        catch { return null; }
+    }
+
     private static bool SameWidgetId(string dirA, string dirB)
     {
         try

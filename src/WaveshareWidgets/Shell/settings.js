@@ -412,7 +412,13 @@
       renderEditorPanel();
       return;
     }
-    if (pageIdx === selectedPage && slotIdx === selectedSlot) return; // echo of our own select-slot
+    if (pageIdx === selectedPage && slotIdx === selectedSlot) {
+      // Echo of our own select-slot — EXCEPT when the user closed the inspector
+      // and tapped the same tile again: the primary WYSIWYG gesture must always
+      // reopen it (Codex: a closed selected widget could never reopen).
+      if (!panelOpen()) openPanel('widget');
+      return;
+    }
     // Only adopt indices that exist in OUR copy. A tap can race a pending structural
     // edit (e.g. the rail just deleted the page the replica still shows): its indices
     // reference a layout we no longer hold, and adopting the slot index would render
