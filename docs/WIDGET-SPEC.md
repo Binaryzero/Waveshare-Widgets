@@ -56,7 +56,7 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   per-instance `settings` from `layout.json` and injects the result. Types: `text`,
   `number`, `slider`, `color`, `select`, `sensor` (a sensor id string),
   `sensors-factory` (an add/remove list of sensors, optionally filtered by
-  `sensor_type`; the value is `[{sensorId, color}]` — see the stock Fans widget),
+  `sensor_type`; the value is `[{sensorId, color}]`),
   `location`
   (rendered as a city-search picker; the value is either a raw string the widget should
   best-match itself, or a picked `{label, latitude, longitude}` object — handle both,

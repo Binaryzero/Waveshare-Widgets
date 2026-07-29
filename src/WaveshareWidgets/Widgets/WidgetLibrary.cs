@@ -76,8 +76,11 @@ public sealed partial class WidgetLibrary : IDisposable
         // pipeline required elevation) must also leave UPGRADED installs, not
         // just fresh ones. Only marker-bearing copies are removed — an unmarked
         // folder is the user's own work and is never touched.
+        var retiredIds = new List<string>();
         foreach (var retired in new[] { "fans" })
         {
+            if (!Directory.Exists(Path.Combine(AppPaths.StockWidgetsDir, retired)))
+                retiredIds.Add($"ws.stock.{retired}");
             var dir = Path.Combine(AppPaths.WidgetsDir, retired);
             if (Directory.Exists(Path.Combine(AppPaths.StockWidgetsDir, retired))) continue;
             if (!Directory.Exists(dir)) continue;
@@ -88,6 +91,10 @@ public sealed partial class WidgetLibrary : IDisposable
             try { Directory.Delete(dir, recursive: true); Log.Info($"Removed retired stock widget '{retired}'"); }
             catch (Exception ex) { Log.Warn($"Could not remove retired stock widget '{retired}': {ex.Message}"); }
         }
+        // The saved layout must shed retired slots too, or the panel renders a
+        // permanent "not installed" card in the grid cells the widget held.
+        if (retiredIds.Count > 0)
+            LayoutStore.RemoveWidgets(retiredIds);
 
         int seeded = 0, current = 0;
         var failed = new List<string>();

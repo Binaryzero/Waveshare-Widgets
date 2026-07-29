@@ -80,28 +80,38 @@
     const widget = slot && widgetsById.get(slot.widgetId);
     return widget ? widget.name : 'Widget';
   }
-  function openPanel(name) {
-    setTab(name);
-    el('panelTitle').textContent = panelTitleFor(name);
+  // Float in the EMPTY region below the toolbar — never over the preview or the
+  // chip row. Clamped: at the 780×480 minimum a wrapped toolbar can reach the
+  // viewport bottom, and then the card overlaps chrome rather than leaving its
+  // controls unreachable below an overflow:hidden document. Re-run on every
+  // resize and toolbar reflow: a window shrink or a page with more chips must
+  // not leave a stale top under a grown toolbar.
+  function positionPanel() {
     const panel = el('contextPanel');
-    // Float in the EMPTY region below the toolbar — never over the preview or
-    // the chip row (a fixed top overlapped the toolbar and made chips
-    // unclickable while the inspector was open).
-    // Clamped: at the 780×480 minimum a wrapped toolbar can reach the viewport
-    // bottom — the card then overlaps chrome rather than leaving the controls
-    // unreachable below an overflow:hidden document.
+    if (!panel.classList.contains('open')) return;
     const top = Math.min(
       Math.round(el('toolbar').getBoundingClientRect().bottom + 10),
       Math.max(56, window.innerHeight - 220));
     panel.style.top = top + 'px';
     panel.style.maxHeight = 'calc(100vh - ' + (top + 16) + 'px)';
-    panel.classList.add('open');
+  }
+  window.addEventListener('resize', positionPanel);
+  if (typeof ResizeObserver !== 'undefined')
+    new ResizeObserver(positionPanel).observe(el('toolbar'));
+  function openPanel(name) {
+    setTab(name);
+    el('panelTitle').textContent = panelTitleFor(name);
+    el('contextPanel').classList.add('open');
+    positionPanel();
   }
   function closePanel() {
     el('contextPanel').classList.remove('open');
     // A gallery left "open" behind a closed card strands the toolbar button on
     // "✕ Close" and can resurface stale gallery content on the next open.
     if (galleryOpen) { galleryOpen = false; renderEditorPanel(); }
+    // A body-appended emoji popover must die with the card, or it floats over
+    // the preview mutating a hidden input.
+    closeEmojiPop();
   }
   function panelOpen() {
     return el('contextPanel').classList.contains('open');
@@ -413,10 +423,14 @@
       return;
     }
     if (pageIdx === selectedPage && slotIdx === selectedSlot) {
-      // Echo of our own select-slot — EXCEPT when the user closed the inspector
-      // and tapped the same tile again: the primary WYSIWYG gesture must always
-      // reopen it (Codex: a closed selected widget could never reopen).
-      if (!panelOpen()) openPanel('widget');
+      // Echo of our own select-slot — EXCEPT the tap must always LAND on the
+      // widget card: reopen a closed inspector, take over from an open Page/
+      // Theme/Wallpaper card, and dismiss a stale gallery. Only a widget card
+      // already showing this slot treats the echo as a no-op.
+      if (!panelOpen() || activeTab !== 'widget' || galleryOpen) {
+        if (galleryOpen) { galleryOpen = false; renderEditorPanel(); }
+        openPanel('widget');
+      }
       return;
     }
     // Only adopt indices that exist in OUR copy. A tap can race a pending structural
