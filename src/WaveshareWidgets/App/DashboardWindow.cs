@@ -526,6 +526,13 @@ public sealed class DashboardWindow : Form
                     var lower = headerName.ToLowerInvariant();
                     if (lower is "host" or "content-length" or "transfer-encoding" or "connection" or "cookie")
                         continue;
+                    // Browser-owned metadata: page JS can never set Sec-*/Proxy-*
+                    // natively, so a forwarded value would SPOOF fetch metadata on
+                    // the escalated request (and suppress the host's correct
+                    // defaults below). The host stays authoritative for these.
+                    if (lower.StartsWith("sec-", StringComparison.Ordinal) ||
+                        lower.StartsWith("proxy-", StringComparison.Ordinal))
+                        continue;
                     var value = headerValue.GetValue<string>();
                     if (!request.Headers.TryAddWithoutValidation(headerName, value))
                         request.Content?.Headers.TryAddWithoutValidation(headerName, value);

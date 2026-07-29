@@ -325,6 +325,12 @@ const widgets = [
     byName(icue, 'leak').adds === 3 && byName(icue, 'leak').removes === 3,
     JSON.stringify(byName(icue, 'leak')));
 
+  // ---- S25 · bodyless Request POST keeps proxy relief (proxy-first, no native hit)
+  const bodyless = fetchMsgs.find((m) => String(m.url).includes('bodyless.bin')) || {};
+  check('S25 bodyless Request POST is replayable: proxy-first as POST with no native hit',
+    bodyless.method === 'POST' && bodyless.body === null && byName(icue, 'bodyless').status === 200,
+    JSON.stringify({ method: bodyless.method, body: bodyless.body, result: byName(icue, 'bodyless') }));
+
   await browser.close();
   noCors.close();
   walled.close();

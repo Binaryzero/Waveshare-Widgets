@@ -344,7 +344,11 @@
     // A Request's own body is a one-shot stream that can't be inspected here,
     // so any non-GET/HEAD Request without an overriding init body may carry one.
     const effMethod = String(eff.method || 'GET').toUpperCase();
-    const mayCarryStreamBody = !!req && initBody == null && effMethod !== 'GET' && effMethod !== 'HEAD';
+    // A Request whose body accessor is observably null carries NO body — a
+    // bodyless POST/PUT keeps full proxy relief (Codex, round 9). Only when
+    // the accessor is missing does the method stay the conservative signal.
+    const mayCarryStreamBody = !!req && initBody == null && effMethod !== 'GET' && effMethod !== 'HEAD' &&
+      !(('body' in req) && req.body === null);
     const replayable = !mayCarryStreamBody && (initBody == null || typeof initBody === 'string');
     // An already-aborted request must reject with AbortError no matter what
     // the memo says (Codex, round 5 — the memo branch ran before the abort

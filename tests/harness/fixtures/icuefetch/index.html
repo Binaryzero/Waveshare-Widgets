@@ -168,6 +168,13 @@ window.__done = false;
     push('leak', { adds, removes });
   } catch (e) { push('leak', { error: String(e) }); }
 
+  // 17 · a BODYLESS Request POST is observably bodyless (req.body === null):
+  // it keeps full proxy relief instead of losing it to the method heuristic.
+  try {
+    const res = await fetch(new Request('http://127.0.0.1:8931/bodyless.bin', { method: 'POST' }));
+    push('bodyless', { status: res.status });
+  } catch (e) { push('bodyless', { error: String(e) }); }
+
   window.__done = true;
 })();
 </script>
