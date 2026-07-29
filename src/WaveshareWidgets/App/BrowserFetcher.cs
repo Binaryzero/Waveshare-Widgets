@@ -78,6 +78,21 @@ public sealed class BrowserFetcher : IDisposable
                     await navDone.Task;
                 await Task.Delay(700); // let a JS challenge finish and set cookies
 
+                // The bootstrap can be REDIRECTED to a different origin, and the
+                // fetch below runs inside whatever page the WebView landed on —
+                // a foreign page's scripts can wrap window.fetch and read any
+                // forwarded Authorization/API-key headers synchronously. Only
+                // the requested origin may receive the request (and a foreign-
+                // origin fetch would be CORS-bound and useless anyway).
+                string finalOrigin;
+                try { finalOrigin = new Uri(core.Source).GetLeftPart(UriPartial.Authority) + "/"; }
+                catch { finalOrigin = ""; }
+                if (!string.Equals(finalOrigin, origin, StringComparison.OrdinalIgnoreCase))
+                {
+                    Log.Warn($"browser fetch skipped ({url}): origin bootstrap redirected to '{finalOrigin}' — not running the request from a foreign origin");
+                    return null;
+                }
+
                 // Kick off a same-origin fetch and stash its result on window; then poll.
                 // The body crosses ExecuteScriptAsync as base64: reading text() UTF-8
                 // mangles every binary response — the field's Reddit tiles showed the

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>iCUE fetch fixture</title></head>
+<body>
+<script>
+'use strict';
+// iCUE-style widget: uses PLAIN window.fetch (the shim's wrapper), never WW.fetch.
+window.__results = [];
+window.__done = false;
+(async () => {
+  const push = (name, r) => window.__results.push(Object.assign({ name }, r));
+
+  // 1 · CORS-rejected native fetch escalates via the shim; the Headers-instance
+  // auth header must survive the proxy hop, and the binary body must come back
+  // intact (0..255 bytes).
+  try {
+    const h = new Headers({ 'Authorization': 'Bearer SECRET-T', 'X-Custom': 'yes', 'Content-Type': 'application/json' });
+    const res = await fetch('http://127.0.0.1:8931/feed.bin', { headers: h });
+    const buf = new Uint8Array(await res.arrayBuffer());
+    let ok = buf.length === 256;
+    for (let i = 0; ok && i < 256; i++) ok = buf[i] === i;
+    push('cors-auth', { status: res.status, bytesOk: ok });
+  } catch (e) { push('cors-auth', { error: String(e) }); }
+
+  // 2 · same origin again: the session memo must go proxy-FIRST (the counting
+  // server sees no second hit).
+  try {
+    const res = await fetch('http://127.0.0.1:8931/feed.bin', { headers: { 'X-Second': '2' } });
+    push('memo', { status: res.status, memo: sessionStorage.getItem('ww-proxy-first:http://127.0.0.1:8931') });
+  } catch (e) { push('memo', { error: String(e) }); }
+
+  // 3 · 403 served WITH CORS headers (bot-wall shape): retried via the proxy;
+  // [[k,v]]-pairs headers must serialize too.
+  try {
+    const res = await fetch('http://127.0.0.1:8932/blocked.json', { headers: [['Authorization', 'Bearer PAIRS']] });
+    push('walled', { status: res.status, body: await res.text() });
+  } catch (e) { push('walled', { error: String(e) }); }
+
+  // 4 · proxied POST with a TUPLE-PAIR Content-Type: the dedicated contentType
+  // field must carry it (Codex round 1: contentTypeOf missed tuple arrays and
+  // the pair was then deleted from the headers object — body degraded to
+  // text/plain host-side).
+  try {
+    const res = await fetch('http://127.0.0.1:8931/post.json', {
+      method: 'POST',
+      body: '{"a":1}',
+      headers: [['Content-Type', 'application/json'], ['Authorization', 'Bearer P4']],
+    });
+    push('post-ct', { status: res.status });
+  } catch (e) { push('post-ct', { error: String(e) }); }
+
+  // 5 · memoized origin whose proxy answers an auth-shaped 403: the native
+  // path must be retried (ambient-cookie case) and its success returned.
+  try {
+    await fetch('http://127.0.0.1:8933/seed').catch(() => {}); // sets the memo for 8933
+    const res = await fetch('http://127.0.0.1:8933/gate');
+    push('memo-authwall', { status: res.status, body: await res.text() });
+  } catch (e) { push('memo-authwall', { error: String(e) }); }
+
+  // 6 · non-replayable body on a memoized origin (8931): native must still
+  // LEAD — the mutation reaches the server — before the lossy proxy fallback.
+  try {
+    const res = await fetch('http://127.0.0.1:8931/form.bin', {
+      method: 'POST',
+      body: new URLSearchParams({ k: 'v' }),
+    });
+    push('form-post', { status: res.status });
+  } catch (e) { push('form-post', { error: String(e) }); }
+
+  // 7 · repeated tuple header names combine like native Headers ("a, b, c").
+  try {
+    const res = await fetch('http://127.0.0.1:8932/blocked.json?multi=1', {
+      headers: [['X-Multi', 'a'], ['X-Multi', 'b'], ['x-multi', 'c']],
+    });
+    push('multi', { status: res.status });
+  } catch (e) { push('multi', { error: String(e) }); }
+
+  // 8 · fetch(new Request(POST body)) on a memoized origin: the Request's body
+  // is a one-shot stream — native must LEAD, and the escalated hop must keep
+  // the Request's METHOD instead of degrading to a headerless GET.
+  try {
+    const res = await fetch(new Request('http://127.0.0.1:8931/req.bin', {
+      method: 'POST', body: new URLSearchParams({ q: '1' }),
+    }));
+    push('req-post', { status: res.status });
+  } catch (e) { push('req-post', { error: String(e) }); }
+
+  // 9 · a GET Request object IS replayable: proxy-first, headers intact.
+  try {
+    const res = await fetch(new Request('http://127.0.0.1:8931/reqget.bin', {
+      headers: { 'X-ReqGet': 'g' },
+    }));
+    push('req-get', { status: res.status });
+  } catch (e) { push('req-get', { error: String(e) }); }
+
+  // 10 · an intentionally aborted fetch is NOT a network failure: the abort
+  // error surfaces, the origin is never memoized, nothing escalates.
+  try {
+    const ac = new AbortController();
+    ac.abort();
+    await fetch('http://127.0.0.1:8934/abort.bin', { signal: ac.signal });
+    push('aborted', { error: 'resolved unexpectedly' });
+  } catch (e) {
+    // NB: the payload key must not be "name" — push() uses that for the entry id.
+    push('aborted', {
+      errName: (e && e.name) || '',
+      memo: sessionStorage.getItem('ww-proxy-first:http://127.0.0.1:8934'),
+    });
+  }
+
+  window.__done = true;
+})();
+</script>
+</body>
+</html>

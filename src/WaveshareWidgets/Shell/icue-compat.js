@@ -355,13 +355,22 @@
     }
     return nativeFetch(input, init).then((response) => {
       // Bot walls (Reddit's in particular) sometimes serve their block page WITH
-      // CORS headers, so the request "succeeds" as a 403/429; retry via the host.
-      return (response.status === 403 || response.status === 429) && url
+      // CORS headers, so the request "succeeds" as a 403/429; retry via the host
+      // — but only when the proxy can replay the request faithfully.
+      return (response.status === 403 || response.status === 429) && url && replayable
         ? proxyFetch(url, eff).catch(() => response) : response;
     }, (error) => {
       if (!url) throw error;
+      // A caller-initiated abort is not a network failure: no memo, no
+      // escalation — the proxy hop can't carry the signal anyway (Codex, r4).
+      const signal = (init && init.signal) || (req && req.signal) || null;
+      if ((error && error.name === 'AbortError') || (signal && signal.aborted)) throw error;
       // A browser-level failure (CORS, mixed content, TLS) repeats forever.
       if (memoKey) { try { sessionStorage.setItem(memoKey, '1'); } catch (e) { /* storage off */ } }
+      // The native attempt may have DELIVERED a non-replayable body before its
+      // response was blocked — an empty proxy replay would hit the server a
+      // second time with corrupted (missing) payload. Surface the real error.
+      if (!replayable) throw error;
       return proxyFetch(url, eff);
     });
   };

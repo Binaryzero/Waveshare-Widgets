@@ -333,16 +333,22 @@
       return fetch(url, init).then((response) => {
         // Bot walls sometimes serve their block page WITH CORS headers, so the
         // request "succeeds" as a 403/429; retry those via the host — unless the
-        // caller explicitly opted out of the proxy entirely.
-        if ((response.status === 403 || response.status === 429) && init.proxy !== 'never') {
+        // caller opted out of the proxy, or the body can't be replayed faithfully.
+        if ((response.status === 403 || response.status === 429) && init.proxy !== 'never' && replayable) {
           return proxyFetch(url, init).catch(() => response);
         }
         return response;
       }, (err) => {
         if (init.proxy === 'never') throw err;
+        // A caller-initiated abort is not a network failure: no memo, no
+        // escalation — the proxy hop can't carry the signal anyway.
+        if ((err && err.name === 'AbortError') || (init.signal && init.signal.aborted)) throw err;
         // A browser-level failure (CORS, mixed content, TLS) repeats forever —
         // remember the origin so later calls skip straight to the proxy.
         if (memoKey) { try { sessionStorage.setItem(memoKey, '1'); } catch (e) { /* storage off */ } }
+        // The native attempt may have DELIVERED a non-replayable body before its
+        // response was blocked — an empty replay would double-hit the server.
+        if (!replayable) throw err;
         return proxyFetch(url, init);
       });
     },

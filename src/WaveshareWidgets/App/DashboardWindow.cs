@@ -605,7 +605,9 @@ public sealed class DashboardWindow : Form
         lower is not ("accept-charset" or "accept-encoding" or "connection" or "content-length"
             or "content-type" or "cookie" or "cookie2" or "date" or "dnt" or "expect" or "host"
             or "keep-alive" or "origin" or "referer" or "te" or "trailer" or "transfer-encoding"
-            or "upgrade" or "via")
+            // The browser tier's whole value is its REAL identity: a widget-
+            // supplied User-Agent would override the genuine Chrome UA.
+            or "upgrade" or "user-agent" or "via")
         && !lower.StartsWith("sec-", StringComparison.Ordinal)
         && !lower.StartsWith("proxy-", StringComparison.Ordinal)
         && !lower.StartsWith("access-control-", StringComparison.Ordinal);
