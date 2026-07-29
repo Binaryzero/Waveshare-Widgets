@@ -703,6 +703,11 @@
     // gallery toggle): an OPEN inspector must never keep naming the previous
     // context while showing the new one's fields.
     if (panelOpen()) el('panelTitle').textContent = panelTitleFor(activeTab);
+    // A widget card whose target vanished (chip deselect, widget removed)
+    // closes instead of floating as an orphaned "Select a widget" hint.
+    // The gallery legitimately shows with no selection and stays.
+    if (panelOpen() && activeTab === 'widget' && !galleryOpen && selectedSlot == null)
+      closePanel();
     const page = state.layout.pages[selectedPage];
     const hasPage = !!page;
     el('editorEmpty').hidden = hasPage;
