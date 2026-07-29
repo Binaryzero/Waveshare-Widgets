@@ -429,6 +429,43 @@ Check("P23b after adopting the id, adding a second instance keeps the first cred
 Check("P23c a save that mints nothing reports nothing",
     SecretPolicy.Seal(LayoutWith(new JsonObject { ["apiToken"] = Token }), null, Lookup).Minted.Count == 0);
 
+// ---- P24 · Codex r5: an EMPTY colliding slot still poisons the shared identity ------
+// P22 used two populated duplicates. If only one has a value, the empty twin used to
+// return before registering its key, so the index kept the survivor and BOTH incoming
+// slots inherited it — the unset instance silently gaining someone else's credential.
+var r5DupStored = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "dup", Size = "half", Settings = new JsonObject { ["apiToken"] = "only-one" } },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "dup", Size = "half", Settings = new JsonObject() },
+    ] }],
+};
+var r5DupEdit = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "dup", Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "dup", Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
+    ] }],
+};
+SecretPolicy.Seal(r5DupEdit, r5DupStored, Lookup);
+Check("P24 a duplicate id poisons the key even when the colliding slot's secret is unset",
+    r5DupEdit.Pages[0].Slots.All(sl => sl.Settings?["apiToken"] is null),
+    string.Join(" | ", r5DupEdit.Pages[0].Slots.Select(sl => sl.Settings?["apiToken"]?.ToString() ?? "(absent)")));
+
+// ---- P25 · Codex r5: a failed REPLACEMENT must not destroy legacy plaintext ---------
+// The migration branch already preserves a pre-existing plaintext when protection
+// fails; the replacement branch required a decryptable envelope, so it deleted the
+// credential that was still working.
+var r5LegacyStored = LayoutWith(new JsonObject { ["apiToken"] = "still-working-plaintext" });
+SecretStore.EncryptOverride = _ => throw new CryptographicException("no DPAPI here");
+var r5Replace = LayoutWith(new JsonObject { ["apiToken"] = "the-new-one" });
+var r5Result = SecretPolicy.Seal(r5Replace, r5LegacyStored, Lookup);
+SecretStore.EncryptOverride = Flip;
+Check("P25 a failed replacement keeps the legacy plaintext that still worked",
+    Value(r5Replace, "apiToken") == "still-working-plaintext", Value(r5Replace, "apiToken"));
+Check("P25b and the failure is still reported, so the save is not called clean",
+    r5Result.Failures.Count == 1);
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 

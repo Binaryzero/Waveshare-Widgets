@@ -1602,7 +1602,12 @@
         input.autocomplete = 'off';
         input.spellcheck = false;
         input.placeholder = prop.placeholder || 'Paste the token or key';
-        const stored = (typeof current === 'string' && current !== SECRET_CLEARED) ? current : '';
+        // `current` is the STORED value, which for a credential in the reserved
+        // namespace is its escaped transport form (the host seals only its own copy, so
+        // reopening the sheet sees what we last sent). Show what the user typed, or the
+        // field displays the protocol prefix and editing escapes it a second time.
+        const raw = (typeof current === 'string' && current !== SECRET_CLEARED) ? current : '';
+        const stored = raw.startsWith(SECRET_LITERAL) ? raw.slice(SECRET_LITERAL.length) : raw;
         input.value = stored;
         // Whether a credential EXISTS on disk for this field — which changes while the
         // sheet is open, since edits persist on a debounce. A snapshot taken at render

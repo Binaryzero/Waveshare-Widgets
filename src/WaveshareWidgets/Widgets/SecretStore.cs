@@ -372,8 +372,12 @@ public static class SecretPolicy
             // Protection unavailable. Never write the plaintext: keep a readable previous
             // value so the widget keeps working, else drop the key. Either way the user
             // asked for something that did NOT happen, so this is reported.
+            // Keep whatever was stored — a sealed envelope OR legacy plaintext. Requiring
+            // a decryptable envelope here would delete a still-working plaintext credential
+            // just because its replacement could not be encrypted, which is the same loss
+            // the migration branch above deliberately avoids.
             var fallback = key is not null && previous.TryGetValue((key, name), out var prior)
-                && SecretStore.CanUnprotect(prior) ? prior : null;
+                && !string.IsNullOrEmpty(prior) ? prior : null;
             if (fallback is not null)
                 slot.Settings![name] = fallback;
             else
@@ -422,12 +426,18 @@ public static class SecretPolicy
         // incoming slots the same credential, so the key is poisoned instead: nobody
         // inherits, and the user re-enters — the same refusal ambiguous positions get.
         var poisoned = new HashSet<(string, string)>();
+        var seen = new HashSet<(string, string)>();
         Walk(stored, lookup, (slot, name) =>
         {
+            var key = SlotKey(slot, storedCounts, incomingCounts);
+            // Register the identity BEFORE the value check: a colliding slot whose secret
+            // is unset still proves the key is ambiguous. Returning early would leave the
+            // twin's credential in the index for BOTH slots to inherit.
+            if (key is not null && !seen.Add((key, name)))
+                poisoned.Add((key, name));
             var value = AsString(slot.Settings?[name]);
             if (string.IsNullOrEmpty(value))
                 return;
-            var key = SlotKey(slot, storedCounts, incomingCounts);
             if (key is not null)
             {
                 if (!index.TryAdd((key, name), value!))

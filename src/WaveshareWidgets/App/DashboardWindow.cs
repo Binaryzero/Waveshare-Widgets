@@ -240,7 +240,12 @@ public sealed class DashboardWindow : Form
                             page.Slots.RemoveAll(s => string.IsNullOrWhiteSpace(s.WidgetId));
                         // The shell round-trips the DECRYPTED layout it was given, so
                         // seal before writing: plaintext credentials never hit disk.
-                        var secretFailures = SecretPolicy.Seal(edited, LayoutStore.Load(), ManifestFor).Failures;
+                        // Seal with the manifests that REVEALED this shell's layout. The
+                        // shell is holding decrypted values; if a manifest went missing or
+                        // unparsable since then, a live lookup would stop calling the
+                        // property a secret, Seal would skip it, and the plaintext the
+                        // shell is round-tripping would be written straight to disk.
+                        var secretFailures = SecretPolicy.Seal(edited, LayoutStore.Load(), ManifestRevealedWith).Failures;
                         LayoutStore.Save(edited);
                         Log.Info("layout saved from on-panel editor");
                         if (secretFailures.Count > 0)
@@ -746,7 +751,8 @@ public sealed class DashboardWindow : Form
         var layout = LayoutStore.Load();
         // The dashboard's widget iframes need real credentials, so secrets are decrypted
         // for THIS payload only — layout.json keeps the DPAPI ciphertext.
-        SecretPolicy.Reveal(layout, ManifestFor);
+        SnapshotManifests();
+        SecretPolicy.Reveal(layout, ManifestRevealedWith);
         var widgets = _library.Widgets.Select(w => new
         {
             id = w.Manifest.Id,
@@ -856,6 +862,26 @@ public sealed class DashboardWindow : Form
 
     private void OnMediaUpdated(MediaState media) =>
         PostToShellThreadSafe("media", JsonSerializer.SerializeToNode(media, BridgeJson));
+
+    /// <summary>The manifests that produced the shell's REVEALED layout. That shell holds
+    /// decrypted credentials, so its saves must be classified by the same manifests that
+    /// decided what to decrypt — not by a library that may have changed since.</summary>
+    private Dictionary<string, WidgetManifest>? _revealedManifests;
+
+    private WidgetManifest? ManifestRevealedWith(string widgetId)
+    {
+        if (_revealedManifests is not null && _revealedManifests.TryGetValue(widgetId, out var snapshot))
+            return snapshot;
+        return ManifestFor(widgetId);
+    }
+
+    private void SnapshotManifests()
+    {
+        var snapshot = new Dictionary<string, WidgetManifest>(StringComparer.OrdinalIgnoreCase);
+        foreach (var w in _library.Widgets)
+            snapshot[w.Manifest.Id] = w.Manifest;
+        _revealedManifests = snapshot;
+    }
 
     private void PostToShellThreadSafe(string type, JsonNode? data)
     {

@@ -224,6 +224,32 @@ const layout = {
     saved[saved.length - 1].pages[0].slots[0].settings.fresh === '__ww_secret_lit___ww_secret_cleared__',
     JSON.stringify(saved[saved.length - 1].pages[0].slots[0].settings.fresh));
 
+  // ---- E13 · a TYPED credential must not reach the preview replica
+  // The replica hosts real widget iframes. Sending state.layout verbatim hands a widget
+  // the credential before the user has chosen Save — in the one surface the spec says
+  // always shows an empty secret (Codex r5, P1).
+  await fresh.locator('input').fill('ghp_NOT_SAVED_YET');
+  await page.waitForTimeout(150);
+  const replicaSees = await page.evaluate(() => {
+    const seen = [];
+    // Re-run the projection the replica is initialised with and read the secret back.
+    for (const pg of (window.__wwReplicaLayout ? window.__wwReplicaLayout().pages : [])) {
+      for (const sl of pg.slots || []) seen.push(sl.settings || {});
+    }
+    return seen;
+  }).catch(() => null);
+  if (replicaSees) {
+    check('E13 the preview projection carries no typed credential',
+      replicaSees.every((st) => !Object.values(st).some((v) => String(v).includes('ghp_NOT_SAVED_YET'))),
+      JSON.stringify(replicaSees));
+  }
+  // Belt: whatever the replica frame was actually handed must not contain it either.
+  const leaked = await page.evaluate(() => JSON.stringify(window.__wwLastReplicaInit || null));
+  check('E13b nothing posted to the replica contains the plaintext',
+    !String(leaked).includes('ghp_NOT_SAVED_YET'), String(leaked).slice(0, 200));
+  await fresh.locator('input').fill('');
+  await page.waitForTimeout(150);
+
   // ---- E10 · swapping the widget must not inherit the old one's "saved" marker
   // secretsSet describes the OUTGOING widget. The host scopes carry-over by widget id,
   // so the new widget correctly inherits nothing — but a stale marker would tell the

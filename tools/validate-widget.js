@@ -30,6 +30,14 @@ const CREDENTIAL_WORD = /(^|[^a-z0-9])(token|secret|password|passwd|api ?key|bea
 // `webhookEnabled` and `webhookMethod` are a switch and a verb.
 const WEBHOOK = /(^|[^a-z0-9])web ?hook([^a-z0-9]|$)/i;
 const WEBHOOK_VALUE = /web ?hook$/i;
+// All-lowercase compounds have no case boundary to split on and no word boundary to
+// match, so `apitoken` and `clientsecret` slipped through the boundary-based rules
+// entirely. These pairs are credential-bearing with no plausible innocent reading.
+const COMPOUND = /(api|client|access|auth|refresh|session|bearer|private|user|admin|service|oauth)(token|secret|key|password|passwd)/i;
+// A url/link/endpoint is the credential only when the name denotes the VALUE. Same
+// distinction the webhook rule makes: `privateIcsUrl` holds it, `signedUrlExpiry`
+// holds a duration and `personalLinkLabel` holds a caption.
+const URL_VALUE = /(url|uri|link|endpoint|address|feed)$/i;
 const URLISH = /(^|[^a-z0-9])(url|uri|link|endpoint|address|feed)([^a-z0-9]|$)/i;
 const SECRET_QUALIFIER = /(^|[^a-z0-9])(private|secret|signed|personal|sas)([^a-z0-9]|$)/i;
 const looksLikeCredential = (name) => {
@@ -46,8 +54,10 @@ const looksLikeCredential = (name) => {
     .replace(/[_\-.]+/g, ' ');
   const squashed = spaced.replace(/\s+/g, '');
   if (CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(squashed)) return true;
-  if (WEBHOOK.test(spaced) && (URLISH.test(spaced) || WEBHOOK_VALUE.test(spaced.trim()))) return true;
-  return URLISH.test(spaced) && SECRET_QUALIFIER.test(spaced);
+  if (COMPOUND.test(squashed)) return true;
+  const trimmed = spaced.trim();
+  if (WEBHOOK.test(spaced) && (URLISH.test(spaced) || WEBHOOK_VALUE.test(trimmed))) return true;
+  return URLISH.test(spaced) && SECRET_QUALIFIER.test(spaced) && URL_VALUE.test(trimmed);
 };
 const KNOWN_SLOTS = new Set(['quarter', 'half', 'three-quarter', 'full']);
 const LIST_FIELD_TYPES = new Set(['text', 'color']);
