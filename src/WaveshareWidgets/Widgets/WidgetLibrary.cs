@@ -76,13 +76,16 @@ public sealed partial class WidgetLibrary : IDisposable
         // pipeline required elevation) must also leave UPGRADED installs, not
         // just fresh ones. Only marker-bearing copies are removed — an unmarked
         // folder is the user's own work and is never touched.
+        // The retired list is AUTHORITATIVE — never inferred from the shipped
+        // folder's absence: extracting a release over an old install leaves stale
+        // stock-widgets entries behind, which would both skip this cleanup and
+        // re-seed the retired widget below.
+        var retiredNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "fans" };
         var retiredIds = new List<string>();
-        foreach (var retired in new[] { "fans" })
+        foreach (var retired in retiredNames)
         {
-            if (!Directory.Exists(Path.Combine(AppPaths.StockWidgetsDir, retired)))
-                retiredIds.Add($"ws.stock.{retired}");
+            retiredIds.Add($"ws.stock.{retired}");
             var dir = Path.Combine(AppPaths.WidgetsDir, retired);
-            if (Directory.Exists(Path.Combine(AppPaths.StockWidgetsDir, retired))) continue;
             if (!Directory.Exists(dir)) continue;
             // Marker-bearing copies are ours. Pre-fingerprint seeds carry NO marker
             // — recognize those by the stock manifest id instead; a folder that is
@@ -101,6 +104,7 @@ public sealed partial class WidgetLibrary : IDisposable
         foreach (var sourceDir in Directory.GetDirectories(AppPaths.StockWidgetsDir))
         {
             var name = Path.GetFileName(sourceDir);
+            if (retiredNames.Contains(name)) continue; // stale shipped copy from an overwrite upgrade
             var targetDir = Path.Combine(AppPaths.WidgetsDir, name);
             try
             {

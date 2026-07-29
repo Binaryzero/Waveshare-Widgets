@@ -110,11 +110,12 @@ for them. This app handles that in tiers:
    desktops the zone is missing or coarse). Fan RPMs appear for GPU fans and for USB
    fan/AIO controllers (NZXT, Aquacomputer, Corsair Commander/Hydro, digital PSUs, …).
    No admin, no drivers.
-2. **CPU core temps, motherboard fan headers and voltages are not surfaced.**
-   Reading them requires a kernel sensor driver and an elevated process, and this
-   app deliberately never asks to run as administrator: it renders remote web
-   content, and elevating that is not an acceptable risk. The app runs unelevated
-   by design and shows everything available without a driver.
+2. **CPU core temps, motherboard fan headers and voltages require elevation the
+   app never asks for.** Reading them takes a kernel sensor driver (PawnIO) plus
+   an elevated process, and this app deliberately never requests or recommends
+   running as administrator: it renders remote web content, and elevating that
+   is not an acceptable risk. Launched normally (unelevated) those sensors are
+   simply absent and everything else works.
 
 Everything else — GPU stats, memory, network, media, clock, weather — works unelevated
 with nothing extra installed.
