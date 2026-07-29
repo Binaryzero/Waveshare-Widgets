@@ -495,6 +495,88 @@
       rec.el.style.gridRow = place.band === 'full' ? '1 / span 2' : place.band === 'upper' ? '1' : '2';
     });
     positionAddZone(page, placements);
+    refreshHiddenShelf(page, placements);
+  }
+
+  // Registered-but-invisible widgets must never be silent (field report:
+  // "widgets become lost where they're no longer visible on the screen but
+  // still registered"): a page hiding any slot grows an "Off screen" shelf in
+  // edit mode naming each one — tapping a chip flows the widget back into the
+  // free space, shrinking it if that's what it takes.
+  function refreshHiddenShelf(page, placements) {
+    const pageEl = pageEls.get(page);
+    if (!pageEl) return;
+    let shelf = pageEl.querySelector('.hidden-shelf');
+    const defs = page.slots || [];
+    const hidden = defs.filter((d, i) => placements[i] === null);
+    if (!hidden.length) {
+      if (shelf) shelf.remove();
+      return;
+    }
+    if (!shelf) {
+      shelf = document.createElement('div');
+      shelf.className = 'hidden-shelf';
+      pageEl.appendChild(shelf);
+    }
+    shelf.textContent = '';
+    const label = document.createElement('span');
+    label.className = 'hs-label';
+    label.textContent = 'Off screen:';
+    shelf.appendChild(label);
+    for (const def of hidden) {
+      const widget = widgetsById.get(def.widgetId);
+      const chip = document.createElement('button');
+      chip.className = 'hs-chip';
+      chip.textContent = widget ? widget.name : def.widgetId;
+      chip.title = 'Registered but no room to render — tap to place it back (shrinks if needed)';
+      chip.addEventListener('click', () => restoreHiddenSlot(page, def, chip));
+      shelf.appendChild(chip);
+    }
+  }
+
+  // Smallest change that gets a hidden widget back on screen: keep its size if
+  // room opened up, else walk narrower widths in its band, then the other
+  // bands. Probes run without its column pin — a hidden slot's pin points at
+  // space someone else now owns.
+  function findRestoreSize(page, def) {
+    const defs = page.slots || [];
+    if (!defs.includes(def)) return null;
+    const savedCol = def.col;
+    delete def.col;
+    try {
+      const { width, band } = sizeParts(def.size);
+      const widths = allowedWidths(widgetsById.get(def.widgetId));
+      const widthList = [width].concat(widths.slice(0, Math.max(0, widths.indexOf(width))).reverse());
+      const bandList = [band].concat(['full', 'upper', 'lower'].filter((b) => b !== band));
+      for (const b of bandList) for (const w of widthList) {
+        if (fitsWithSize(page, def, makeSize(w, b))) return makeSize(w, b);
+      }
+      return null;
+    } finally {
+      if (savedCol !== undefined) def.col = savedCol;
+    }
+  }
+
+  function restoreHiddenSlot(page, def, chip) {
+    if (!findRestoreSize(page, def)) {
+      // Genuinely no room even at the smallest allowed size — say so in place.
+      const old = chip.textContent;
+      chip.classList.add('no-room');
+      chip.textContent = 'No room — remove a widget';
+      setTimeout(() => { chip.classList.remove('no-room'); chip.textContent = old; }, 1800);
+      return;
+    }
+    mutate(() => {
+      // Re-check inside the mutation step: queued view transitions may have
+      // changed the page since the tap was validated.
+      const size = findRestoreSize(page, def);
+      if (!size) return;
+      delete def.col;
+      def.size = size;
+      relayoutPage(page);
+      const rec = slots.find((s) => s.def === def);
+      if (rec && rec.syncLabels) rec.syncLabels();
+    });
   }
 
   function positionAddZone(page, placements) {
@@ -1874,7 +1956,7 @@
       // hijack the state (that would orphan the first drag's ghost forever).
       if (!editing || drag || ev.target.closest('button')) return;
       overlay.setPointerCapture(ev.pointerId);
-      drag = { record, pointerId: ev.pointerId, startX: ev.clientX, startY: ev.clientY, active: false, ghost: null, raf: 0, last: null, targetSlot: null, targetEdge: null, targetCell: null, hint: null, canLeft: false, canRight: false };
+      drag = { record, pointerId: ev.pointerId, startX: ev.clientX, startY: ev.clientY, active: false, ghost: null, raf: 0, last: null, targetSlot: null, targetEdge: null, targetCell: null, hint: null, canLeft: false, canRight: false, availEls: null, swapOk: null };
     });
     overlay.addEventListener('pointermove', (ev) => {
       if (!drag || drag.record !== record || ev.pointerId !== drag.pointerId) return;
@@ -1964,6 +2046,36 @@
     const i = layoutData.pages.indexOf(record.page);
     drag.canLeft = i > 0 && pageFits(layoutData.pages[i - 1], record.def);
     drag.canRight = i >= 0 && i < layoutData.pages.length - 1 && pageFits(layoutData.pages[i + 1], record.def);
+    // EVERY valid landing lights for the whole gesture (field report: "in some
+    // situations it does not highlight all available locations"): free cells
+    // that can take this widget glow, swap targets get a quiet ring, and page
+    // edges that fit it stay lit while the rest dim. The spot under the
+    // pointer keeps the strong hint on top (trackDrag). The page cannot change
+    // mid-drag (one pointer, and a re-init cancels the drag), so once is enough.
+    const pageEl = pageEls.get(record.page);
+    drag.availEls = [];
+    if (pageEl) {
+      const avail = availableCells(record);
+      for (let r = 0; r < 2; r++) for (let c = 0; c < 4; c++) {
+        if (!avail[r][c]) continue;
+        const cell = document.createElement('div');
+        cell.className = 'cell-avail';
+        cell.style.gridColumn = String(c + 1);
+        cell.style.gridRow = String(r + 1);
+        pageEl.appendChild(cell);
+        drag.availEls.push(cell);
+      }
+    }
+    drag.swapOk = new Set();
+    for (const s of slots) {
+      if (s.page !== record.page || s === record || s.el.style.display === 'none') continue;
+      if (slotDropFits(record.page, record.def, s.def)) {
+        drag.swapOk.add(s.def);
+        s.el.classList.add('drop-ok');
+      }
+    }
+    edgeLeft.classList.toggle('drop-page-ok', drag.canLeft);
+    edgeRight.classList.toggle('drop-page-ok', drag.canRight);
   }
 
   function clearDropHighlights() {
@@ -1971,6 +2083,65 @@
     edgeLeft.classList.remove('drop-page');
     edgeRight.classList.remove('drop-page');
     if (drag && drag.hint) drag.hint.style.display = 'none';
+  }
+
+  // Drop-feasibility state for the dragged widget's page, shared by the live
+  // landing probe (cellTargetAt) and the whole-gesture availability lights.
+  // The user aims at the hole they can SEE: a drop may only claim cells that
+  // are currently free (the dragged tile's own footprint counts as free —
+  // shrinking or sliding within it is fine). Probe feasibility alone is too
+  // loose: a full-height candidate can "fit" by RELOCATING another visible
+  // tile — the field video's 7-12s gesture kept the full-height CPU full on
+  // the bottom-left hole and teleported the GPU across the screen instead of
+  // shrinking into the hole the user pointed at. Probes run against peers
+  // PINNED where they render — the commit pins them the same way, so the
+  // probe and the landing agree, and a peer can never flow into the footprint
+  // the drag vacates. Visible-before slots must keep placing; hidden legacy
+  // slots never veto (and stay unpinned, so merely removing the dragged
+  // widget can't hand them a visible tile's spot).
+  function dropContext(rec) {
+    const defs = rec.page.slots || [];
+    const fullPlaces = placeSlots(defs);
+    const othersOccupied = [new Array(4).fill(false), new Array(4).fill(false)];
+    const rest = [];
+    const restWasPlaced = [];
+    defs.forEach((d, i) => {
+      if (d === rec.def) return;
+      const p = fullPlaces[i];
+      if (p) {
+        const rows = p.band === 'full' ? [0, 1] : p.band === 'upper' ? [0] : [1];
+        for (const r of rows) for (let k = 0; k < p.w; k++) othersOccupied[r][p.col + k] = true;
+      }
+      rest.push(p ? { size: d.size, col: p.col + 1 } : { size: d.size, col: d.col });
+      restWasPlaced.push(p !== null);
+    });
+    const cellsFree = (band, a, w) => {
+      const rows = band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1];
+      for (const r of rows) for (let k = 0; k < w; k++) if (othersOccupied[r][a + k]) return false;
+      return true;
+    };
+    // The dragged widget at `size` anchored at column `a`: its placement when it
+    // lands exactly there and every visible peer keeps its spot, else null.
+    const landingOk = (size, a) => {
+      const probe = rest.slice();
+      // placeSlots only reads .size/.col — never mutate the live def.
+      probe.push({ size, col: a + 1 });
+      const places = placeSlots(probe);
+      const own = places[probe.length - 1];
+      if (own === null || own.col !== a) return null; // anchor cell blocked
+      if (!probe.every((d, k) => k === probe.length - 1 || !restWasPlaced[k] || places[k] !== null)) return null;
+      return own;
+    };
+    return { cellsFree, landingOk };
+  }
+
+  // Widths a drag may land at: the current width, then narrower ones — a drop
+  // never grows a widget; only a genuinely tighter hole resizes it.
+  function dragWidths(rec) {
+    const parts = sizeParts(rec.def.size);
+    const widths = allowedWidths(widgetsById.get(rec.def.widgetId));
+    const startW = Math.max(0, widths.indexOf(parts.width));
+    return { parts, widthList: [parts.width].concat(widths.slice(0, startW).reverse()) };
   }
 
   // Maps a pointer position over the dragged widget's own page to a landing spot in
@@ -1990,11 +2161,8 @@
     if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) return null;
     const col = Math.max(0, Math.min(3, Math.floor(((x - rect.left) / Math.max(1, rect.width)) * 4)));
     const row = (y - rect.top) < rect.height / 2 ? 0 : 1;
-    const parts = sizeParts(rec.def.size);
     const rowBand = row === 0 ? 'upper' : 'lower';
-    const widths = allowedWidths(widgetsById.get(rec.def.widgetId));
-    const startW = Math.max(0, widths.indexOf(parts.width));
-    const widthList = [parts.width].concat(widths.slice(0, startW).reverse()); // current, then narrower
+    const { parts, widthList } = dragWidths(rec);
     const bandList = parts.band === 'full' ? ['full', rowBand] : [rowBand];
     const candidates = [];
     for (const band of bandList) {
@@ -2004,39 +2172,7 @@
       }
     }
     candidates.sort((a, b) => b.area - a.area); // biggest footprint first
-    // The user aims at the hole they can SEE: a drop may only claim cells that
-    // are currently free (the dragged tile's own footprint counts as free —
-    // shrinking or sliding within it is fine). Probe feasibility alone is too
-    // loose: a full-height candidate can "fit" by RELOCATING another visible
-    // tile — the field video's 7-12s gesture kept the full-height CPU full on
-    // the bottom-left hole and teleported the GPU across the screen instead of
-    // shrinking into the hole the user pointed at.
-    const fullPlaces = placeSlots(rec.page.slots || []);
-    const othersOccupied = [new Array(4).fill(false), new Array(4).fill(false)];
-    (rec.page.slots || []).forEach((d, i) => {
-      if (d === rec.def) return;
-      const p = fullPlaces[i];
-      if (!p) return;
-      const rows = p.band === 'full' ? [0, 1] : p.band === 'upper' ? [0] : [1];
-      for (const r of rows) for (let k = 0; k < p.w; k++) othersOccupied[r][p.col + k] = true;
-    });
-    // Probe against peers PINNED where they render — the commit pins them the
-    // same way, so the probe and the landing agree, and a peer can never flow
-    // into the footprint the drag vacates. Visible-before slots must keep
-    // placing; hidden legacy slots never veto (and stay unpinned, so merely
-    // removing the dragged widget can't hand them a visible tile's spot).
-    const rest = [];
-    const restWasPlaced = [];
-    (rec.page.slots || []).forEach((d, i) => {
-      if (d === rec.def) return;
-      rest.push(fullPlaces[i] ? { size: d.size, col: fullPlaces[i].col + 1 } : { size: d.size, col: d.col });
-      restWasPlaced.push(fullPlaces[i] !== null);
-    });
-    const cellsFree = (band, a, w) => {
-      const rows = band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1];
-      for (const r of rows) for (let k = 0; k < w; k++) if (othersOccupied[r][a + k]) return false;
-      return true;
-    };
+    const ctx = dropContext(rec);
     let best = null;
     for (let c = 0; c < candidates.length; c++) {
       const cand = candidates[c];
@@ -2050,19 +2186,65 @@
       anchors.sort((a, b) =>
         Math.abs(a + (w - 1) / 2 - col) - Math.abs(b + (w - 1) / 2 - col) || a - b);
       for (const a of anchors) {
-        if (!cellsFree(band, a, w)) continue; // claims another visible tile's cells
-        const probe = rest.slice();
-        // placeSlots only reads .size/.col — never mutate the live def.
-        probe.push({ size: cand.size, col: a + 1 });
-        const places = placeSlots(probe);
-        const own = places[probe.length - 1];
-        if (own === null || own.col !== a) continue; // anchor cell blocked
-        if (!probe.every((d, k) => k === probe.length - 1 || !restWasPlaced[k] || places[k] !== null)) continue;
+        if (!ctx.cellsFree(band, a, w)) continue; // claims another visible tile's cells
+        const own = ctx.landingOk(cand.size, a);
+        if (!own) continue;
         if (!best || c < best.rank) best = { size: cand.size, col: a + 1, place: own, rank: c };
         break; // nearest fitting anchor for this candidate size
       }
     }
     return best;
+  }
+
+  // Every cell that belongs to at least one valid landing of the dragged widget
+  // (field report: "in some situations it does not highlight all available
+  // locations for a widget"). Mirrors cellTargetAt exactly: a cell lights up
+  // iff pointing at it would produce a landing hint.
+  function availableCells(rec) {
+    const ctx = dropContext(rec);
+    const { parts, widthList } = dragWidths(rec);
+    const avail = [new Array(4).fill(false), new Array(4).fill(false)];
+    for (let row = 0; row < 2; row++) {
+      const rowBand = row === 0 ? 'upper' : 'lower';
+      const bandList = parts.band === 'full' ? ['full', rowBand] : [rowBand];
+      for (const band of bandList) {
+        const rows = band === 'full' ? [0, 1] : [row];
+        for (const width of widthList) {
+          const w = parseSize(makeSize(width, band)).w;
+          for (let a = 0; a + w <= 4; a++) {
+            if (!ctx.cellsFree(band, a, w)) continue;
+            if (!ctx.landingOk(makeSize(width, band), a)) continue;
+            for (const r of rows) for (let k = 0; k < w; k++) avail[r][a + k] = true;
+          }
+        }
+      }
+    }
+    return avail;
+  }
+
+  // Would dropping `srcDef` ONTO `tgtDef` (the reorder-and-adopt-band gesture)
+  // commit, or would finishDrag revert it? Mirrors the targetSlot commit: band
+  // adoption across half-height rows, both pins dissolved, order re-spliced —
+  // valid iff every def that places today still places after.
+  function slotDropFits(page, srcDef, tgtDef) {
+    const defs = page.slots || [];
+    const srcIdx = defs.indexOf(srcDef);
+    const tgtIdx = defs.indexOf(tgtDef);
+    if (srcIdx < 0 || tgtIdx < 0 || srcDef === tgtDef) return false;
+    const srcParts = sizeParts(srcDef.size);
+    const tgtParts = sizeParts(tgtDef.size);
+    const size = (srcParts.band !== 'full' && tgtParts.band !== 'full' && srcParts.band !== tgtParts.band)
+      ? makeSize(srcParts.width, tgtParts.band) : srcDef.size;
+    const beforePlaced = placedSet(defs);
+    const probe = defs.map((d) => ({
+      ref: d,
+      size: d === srcDef ? size : d.size,
+      col: (d === srcDef || d === tgtDef) ? undefined : d.col,
+    }));
+    const moved = probe.splice(srcIdx, 1)[0];
+    probe.splice(probe.findIndex((p) => p.ref === tgtDef) + (srcIdx < tgtIdx ? 1 : 0), 0, moved);
+    const places = placeSlots(probe);
+    return probe.every((p, k) => !beforePlaced.has(p.ref) || places[k] !== null);
   }
 
   function showCellHint(place) {
@@ -2090,7 +2272,11 @@
       if (!slotHit && el.classList && el.classList.contains('slot') && el !== drag.record.el) slotHit = el;
       if (!edgeHit && el.classList && el.classList.contains('edge')) edgeHit = el;
     }
-    const slotRec = slotHit && slots.find((s) => s.el === slotHit && s.page === drag.record.page);
+    // Only swaps that would actually COMMIT light up under the pointer — a
+    // hover glow on a tile whose drop would revert reads as a broken promise
+    // (the pre-validated set from beginDrag keeps hover and commit agreeing).
+    const slotRec = slotHit && slots.find((s) => s.el === slotHit && s.page === drag.record.page &&
+      drag.swapOk && drag.swapOk.has(s.def));
     const edgeOk = edgeHit && ((edgeHit === edgeLeft && drag.canLeft) || (edgeHit === edgeRight && drag.canRight));
 
     clearDropHighlights();
@@ -2128,6 +2314,10 @@
     }
     d.ghost.remove();
     if (d.hint) d.hint.remove();
+    if (d.availEls) for (const el of d.availEls) el.remove();
+    for (const s of slots) s.el.classList.remove('drop-ok');
+    edgeLeft.classList.remove('drop-page-ok');
+    edgeRight.classList.remove('drop-page-ok');
     d.record.el.classList.remove('drag-src');
     document.body.classList.remove('dragging');
     clearDropHighlights();

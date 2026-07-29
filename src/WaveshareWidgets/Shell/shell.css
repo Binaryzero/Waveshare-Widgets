@@ -73,6 +73,7 @@ html, body {
 .page {
   flex: 0 0 100%;
   height: 100%;
+  position: relative; /* anchors the off-screen shelf */
   scroll-snap-align: start;
   scroll-snap-stop: always;
   display: grid;
@@ -302,6 +303,72 @@ body.editing .edge.drop-page {
 }
 body.editing .edge.right.drop-page {
   background: linear-gradient(to left, color-mix(in srgb, var(--accent, #4cc2ff) 30%, transparent), transparent);
+}
+
+/* Every landing the dragged widget could take stays lit for the whole gesture;
+ * the pointer's landing spot keeps the strong dashed .cell-hint above (z 5). */
+.page .cell-avail {
+  border: 1px dashed color-mix(in srgb, var(--accent, #4cc2ff) 45%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent, #4cc2ff) 6%, transparent);
+  margin: 4px;
+  pointer-events: none;
+  z-index: 4;
+}
+/* Valid swap targets carry a quiet ring; the hovered one gets the full glow. */
+.slot.drop-ok .edit-overlay {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent, #4cc2ff) 40%, transparent);
+}
+/* Page edges that can take the widget stay bright; the rest dim to "not here". */
+body.editing.dragging .edge.drop-page-ok {
+  color: color-mix(in srgb, var(--accent, #4cc2ff) 75%, #eaf6ff);
+}
+body.editing.dragging .edge:not(.drop-page-ok) { opacity: 0.2; }
+
+/* "Off screen" shelf: registered widgets with no room to render are named on
+ * the page instead of silently hidden; tapping a chip flows one back in. */
+.hidden-shelf {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  max-width: 92%;
+  overflow-x: auto;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--warn, #ffb454) 55%, transparent);
+  background: color-mix(in srgb, #05070b 84%, transparent);
+  backdrop-filter: blur(6px);
+}
+body.editing .hidden-shelf { display: flex; }
+.hidden-shelf .hs-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--warn, #ffb454);
+  white-space: nowrap;
+}
+.hidden-shelf .hs-chip {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent, #4cc2ff) 45%, transparent);
+  background: color-mix(in srgb, var(--accent, #4cc2ff) 12%, transparent);
+  color: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+  white-space: nowrap;
+}
+.hidden-shelf .hs-chip.no-room {
+  border-color: var(--err, #ff5d5d);
+  color: var(--err, #ff5d5d);
+  background: color-mix(in srgb, var(--err, #ff5d5d) 12%, transparent);
 }
 
 /* Palette full-page notice: spans the grid, reads as a state, not an error. */

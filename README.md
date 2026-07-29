@@ -45,7 +45,10 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   the dashboard in place — drag tiles to reorder, tap the width/band buttons to
   resize through sizes that fit, drop a tile on a glowing edge to move it to the
   next page, tap the dashed **+** to add widgets from a palette, and manage pages
-  from the floating bar. Everything saves as you go; **Done** just exits.
+  from the floating bar. While a tile is in flight, every place it could land
+  stays lit — free cells, swap targets, page edges — and a widget that has no
+  room to render is named on an "Off screen" shelf (tap it to flow it back in).
+  Everything saves as you go; **Done** just exits.
 - **Settings UI**: tray → **Settings…** opens a visual editor for pages, slots, and
   every widget's declared properties (colors, sliders, sensor pickers, structured
   lists) — no JSON editing required — plus the Theme panel with a live preview.
