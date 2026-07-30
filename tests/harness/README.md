@@ -35,6 +35,14 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   hand-deleting the characters must reach the host as a removal, while a never-set
   secret still sends `""`. Also covers the failed-protection banner, which is the
   panel's only way to contradict its own optimistic re-render. Port used: 8952.
+- `restvalue-run.js` — the REST Value widget's data path (issue #16), which the widget
+  harness cannot reach because it aborts every network call. Drives the real widget
+  against a rescriptable fixture endpoint: JSON Pointer and dotted-path resolution,
+  threshold colouring in both directions, non-2xx / unreachable / non-JSON / null /
+  pointer-miss states, the Stale path (a failure after a good read keeps the number),
+  no stacked pollers across repeated inits, and that a configured auth header reaches
+  the request while appearing nowhere in the DOM. Also writes the populated
+  `restvalue-*.png` screenshots. Routes are fulfilled in-process — no ports.
 - `icuefetch-run.js` — the fetch-escalation contract shared by `widget-api.js`
   (`WW.fetch`) and the iCUE compat shim (issue #37): headers of every
   `HeadersInit` shape surviving the proxy hop (repeats combining like native
