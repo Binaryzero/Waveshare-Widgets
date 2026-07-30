@@ -43,6 +43,16 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   no stacked pollers across repeated inits, and that a configured auth header reaches
   the request while appearing nowhere in the DOM. Also writes the populated
   `restvalue-*.png` screenshots. Routes are fulfilled in-process — no ports.
+- `widgetfit-run.js` — that widget text fits the SLOT rather than one axis of it
+  (issue #76). A widget's iframe is sized to its slot, so `vh`/`vw` do measure the
+  tile — but a rule written against one axis says nothing about the other, and the
+  clock's `34vh` asked for 136px glyphs across a 320px quarter, clipping a digit off
+  each end. Drives the real clock at every slot geometry including the half-height
+  bands, with the longest and shortest strings its own settings can produce (12-hour
+  plus seconds versus 24-hour without), and checks the opposite failure too: text
+  that fits by being tiny is not a fit. Also covers re-fitting when the slot resizes
+  with no settings change, and that the size sliders can only shrink. Routes are
+  fulfilled in-process — no ports.
 - `icuefetch-run.js` — the fetch-escalation contract shared by `widget-api.js`
   (`WW.fetch`) and the iCUE compat shim (issue #37): headers of every
   `HeadersInit` shape surviving the proxy hop (repeats combining like native

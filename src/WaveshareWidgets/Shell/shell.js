@@ -1276,7 +1276,21 @@
           return;
         }
       }
+      // Nothing applied. Absorbing the tap is the worst answer on a touch strip: the
+      // user cannot tell whether it registered, whether the app is busy, or whether
+      // they missed (#77). The two reasons need different words, because only one of
+      // them is something they can do anything about.
+      explainNoSize(widget, order.length <= 1);
     });
+  }
+
+  /** Why a size change did nothing. `onlyOne` distinguishes "this widget has no other
+   * size" from "no room right now" — the first is permanent and the second is not. */
+  function explainNoSize(widget, onlyOne) {
+    const name = (widget && widget.name) || 'This widget';
+    showPanelNotice(onlyOne
+      ? name + ' has only one size.'
+      : 'No room on this page for another size — move or remove a widget first.');
   }
 
   function cycleBand(record, syncLabels) {
@@ -1291,6 +1305,9 @@
           return;
         }
       }
+      // Same rule as cycleWidth: a band change that cannot happen says so. There is
+      // always more than one band, so the only reason to be here is room.
+      explainNoSize(widgetsById.get(record.def.widgetId), false);
     });
   }
 
