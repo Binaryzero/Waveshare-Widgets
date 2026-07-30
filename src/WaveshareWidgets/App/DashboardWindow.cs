@@ -743,8 +743,14 @@ public sealed class DashboardWindow : Form
     }
 
     /// <summary>Manifest lookup for the secret pipeline (which properties are credentials).</summary>
+    /// <summary>ORDINAL, the library's own notion of widget identity: Rescan resolves
+    /// duplicates with an ordinal compare, so 'Foo' and 'foo' are two distinct widgets that
+    /// both load. A case-insensitive lookup answers a question the library never asked and
+    /// hands one widget the other's secret classification. The settings window was fixed in
+    /// #61 round six; this is the same pair in the second window, which I missed then —
+    /// leaving the two disagreeing about identity is the drift those fixes exist to stop.</summary>
     private WidgetManifest? ManifestFor(string widgetId) =>
-        _library.Widgets.FirstOrDefault(w => string.Equals(w.Manifest.Id, widgetId, StringComparison.OrdinalIgnoreCase))?.Manifest;
+        _library.Widgets.FirstOrDefault(w => string.Equals(w.Manifest.Id, widgetId, StringComparison.Ordinal))?.Manifest;
 
     private JsonObject BuildInitPayload()
     {
@@ -752,7 +758,21 @@ public sealed class DashboardWindow : Form
         // The dashboard's widget iframes need real credentials, so secrets are decrypted
         // for THIS payload only — layout.json keeps the DPAPI ciphertext.
         SnapshotManifests();
-        SecretPolicy.Reveal(layout, ManifestRevealedWith);
+        // A property retyped `secret` → `text` still holds ciphertext, which Reveal cannot
+        // decrypt through a manifest that no longer calls it a secret — so it blanks it
+        // rather than hand a widget "dpapi:v1:…". The shell then round-trips that blank
+        // back through save-layout, and Seal would skip a property the snapshot calls
+        // ordinary, writing the blank over the stored value. Keeping those names classified
+        // as secret for SAVING purposes is what makes the blank recoverable: Seal walks
+        // them, sees an untouched empty field, and restores the ciphertext — exactly the
+        // masked-field carry-over the settings window relies on.
+        var scrubbed = SecretPolicy.Reveal(layout, ManifestRevealedWith);
+        foreach (var group in scrubbed.GroupBy(s => s.WidgetId, StringComparer.Ordinal))
+        {
+            if (ManifestRevealedWith(group.Key) is not { } current)
+                continue;
+            _revealedManifests![group.Key] = current.WithSecretsForced(group.Select(s => s.Name));
+        }
         var widgets = _library.Widgets.Select(w => new
         {
             id = w.Manifest.Id,
@@ -877,7 +897,9 @@ public sealed class DashboardWindow : Form
 
     private void SnapshotManifests()
     {
-        var snapshot = new Dictionary<string, WidgetManifest>(StringComparer.OrdinalIgnoreCase);
+        // Ordinal — see ManifestFor. Collapsing case here would let one widget's manifest
+        // decide what to decrypt for another.
+        var snapshot = new Dictionary<string, WidgetManifest>(StringComparer.Ordinal);
         foreach (var w in _library.Widgets)
             snapshot[w.Manifest.Id] = w.Manifest;
         _revealedManifests = snapshot;

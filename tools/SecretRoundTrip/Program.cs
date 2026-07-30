@@ -651,6 +651,61 @@ SecretPolicy.Reveal(recovered, Lookup);
 Check("P28h2 and a later reinstall still reveals the original credential",
     Value(recovered, "apiToken") == Token, Value(recovered, "apiToken"));
 
+// ---- P29 · #65 r2: the shell ROUND-TRIPS what Reveal gives it -------------------------
+// The claim I made for P28 — "refusing on the reveal side costs a blank field for one
+// render" — was false. The dashboard shell holds the revealed layout and saves it back
+// wholesale through save-layout, so a blank Reveal writes is a blank that reaches disk
+// unless the save path knows to restore it. That is what Reveal's return value is for.
+var p29Stored = LayoutWith(new JsonObject { ["apiToken"] = Token, ["repo"] = "owner/name" });
+SecretPolicy.Seal(p29Stored, null, Lookup);
+var p29Cipher = Value(p29Stored, "apiToken");
+
+// The demoted manifest, as the dashboard would see it after a rescan.
+var p29Demoted = new WidgetManifest
+{
+    Id = "test.widget",
+    Name = "Test",
+    Properties =
+    [
+        new WidgetProperty { Name = "apiToken", Label = "API token", Type = "text" },
+        new WidgetProperty { Name = "repo", Label = "Repo", Type = "text" },
+    ],
+};
+var p29Snapshot = new Dictionary<string, WidgetManifest>(StringComparer.Ordinal)
+{
+    ["test.widget"] = p29Demoted,
+};
+WidgetManifest? P29Lookup(string id) => p29Snapshot.TryGetValue(id, out var m) ? m : null;
+
+var p29Shell = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p29Stored))!;
+var p29Scrubbed = SecretPolicy.Reveal(p29Shell, P29Lookup);
+Check("P29 Reveal REPORTS what it blanked, so the caller can protect it",
+    p29Scrubbed.Count == 1 && p29Scrubbed[0].WidgetId == "test.widget" && p29Scrubbed[0].Name == "apiToken",
+    string.Join(", ", p29Scrubbed.Select(x => x.WidgetId + "." + x.Name)));
+Check("P29b the shell still receives no ciphertext", Value(p29Shell, "apiToken") == "");
+
+// What DashboardWindow does with the report: fold the names back into the snapshot it
+// seals with, so Seal walks them and treats the untouched blank as carry-over.
+foreach (var g in p29Scrubbed.GroupBy(x => x.WidgetId, StringComparer.Ordinal))
+    p29Snapshot[g.Key] = p29Snapshot[g.Key].WithSecretsForced(g.Select(x => x.Name));
+
+// The user drags a tile; the shell saves the whole layout back, blank included.
+var p29Saved = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p29Shell))!;
+SecretPolicy.Seal(p29Saved, p29Stored, P29Lookup);
+Check("P29c an unrelated on-panel save does NOT overwrite the stored ciphertext",
+    Value(p29Saved, "apiToken") == p29Cipher, Value(p29Saved, "apiToken"));
+Check("P29d and the rest of the layout still saves normally",
+    Value(p29Saved, "repo") == "owner/name");
+
+// The falsification arm, kept in the probe: without the fold-back the blank wins.
+var p29Naive = new Dictionary<string, WidgetManifest>(StringComparer.Ordinal) { ["test.widget"] = p29Demoted };
+WidgetManifest? P29Naive(string id) => p29Naive.TryGetValue(id, out var m) ? m : null;
+var p29Lost = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p29Shell))!;
+SecretPolicy.Seal(p29Lost, p29Stored, P29Naive);
+Check("P29e without the fold-back the blank reaches disk — this is the bug being fixed",
+    Value(p29Lost, "apiToken") != p29Cipher,
+    "if this ever fails, Seal grew its own protection and P29c proves less");
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 
