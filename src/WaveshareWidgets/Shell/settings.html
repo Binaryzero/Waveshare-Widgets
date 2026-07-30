@@ -65,7 +65,7 @@
         <div id="widgetGallery"></div>
       </section>
 
-      <!-- Column 2+: whatever is selected. Docked, so it never covers the canvas it
+      <!-- Column 2: whatever is selected. Docked, so it never covers the canvas it
            is configuring — the preview above shrinks to make room instead. -->
       <section id="contextPanel" aria-label="Inspector">
       <div id="panelHead">
@@ -107,6 +107,15 @@
           <div id="globalBg" class="bg-editor"></div>
         </section>
       </div>
+      </section>
+
+      <!-- Column 3: how the selected widget LOOKS. Configuring a widget and
+           personalising it are different jobs, so they are separate panels side by
+           side rather than two tabs sharing one box — the reference splits them the
+           same way ("Launch App" beside "Widget Personalization"). -->
+      <section id="stylePanel" aria-label="Appearance" hidden>
+        <div id="styleHead"><span class="panel-title">Appearance</span></div>
+        <div id="styleBody"></div>
       </section>
     </div>
   </main>

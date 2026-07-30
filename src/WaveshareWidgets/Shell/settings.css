@@ -158,25 +158,44 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
 /* Add-widget gallery: settings-side picker (#45) — the replica's modal palette
  * covered the scaled layout being edited. */
+/* A GRID of small square tiles, not a list of full-width rows. Twenty-four widgets
+ * as stacked cards is a scrolling column that dominates the dock and still shows
+ * about four at a time; as tiles they fit at a glance, which is the whole point of a
+ * permanent shelf. Three across is what the reference uses and what keeps the label
+ * readable at this width. */
 #widgetGallery {
-  margin-top: 12px;
+  margin-top: 10px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
 }
 #widgetGallery[hidden] { display: none; }
 #widgetGallery .gallery-item {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  text-align: left;
-  padding: 10px 12px;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  text-align: center;
+  padding: 9px 4px 7px;
+  min-height: 66px;
 }
-#widgetGallery .gallery-item:disabled { opacity: 0.55; cursor: default; }
+#widgetGallery .gallery-item:disabled { opacity: 0.45; cursor: default; }
 #widgetGallery .gallery-item:disabled:hover { border-color: var(--line); }
-#widgetGallery .g-name { font-weight: 600; }
-#widgetGallery .g-by { color: var(--muted); font-size: 11px; }
+#widgetGallery .g-icon { font-size: 19px; line-height: 1; }
+/* Two lines, then ellipsis: "Notifications" and "Weather Radar" must not force the
+ * column wider than the grid it defines. */
+#widgetGallery .g-name {
+  font-size: 11px;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+#widgetGallery .g-why { color: var(--muted); font-size: 9px; letter-spacing: 0.04em; }
+#widgetGallery .g-full { grid-column: 1 / -1; margin: 0 0 4px; }
 
 /* Compact slot chips: click to configure, ✕ to remove. */
 #slotList { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -584,7 +603,9 @@ header h1 #appVersion {
 }
 #dockPalette {
   flex: 0 0 auto;
-  width: 232px;
+  /* Wide enough for three tiles that can hold a two-word name. At 232px the columns
+   * came out ~60px and "Countdown" broke mid-word. */
+  width: 288px;
   min-width: 0;
   padding: 12px 14px 14px;
   border-right: 1px solid var(--line);
@@ -592,16 +613,23 @@ header h1 #appVersion {
 }
 #dockPalette .panel-title { margin-bottom: 8px; }
 
-/* Settings | Appearance. What a widget DOES is configured far more often than how it
- * looks, and the theme overrides are an escape hatch from the global theme rather
- * than part of setting a widget up — inline above the properties they pushed the
- * controls people came for below the fold. */
-.slot-tabs { display: inline-flex; gap: 4px; margin: 2px 0 12px; padding: 3px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 9px; }
-.slot-tab { border: 0; background: transparent; color: var(--muted);
-  padding: 5px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; }
-.slot-tab:hover { color: var(--text); }
-.slot-tab.on { background: var(--accent); color: #04121a; font-weight: 600; }
+/* Appearance is its own COLUMN, not a tab. Configuring a widget and personalising it
+ * are different jobs; as two tabs in one box each hid the other and the pair read as
+ * halves of a single form. Side by side, both are visible at once and the widget's
+ * own settings keep the wide column they need. */
+#stylePanel {
+  flex: 0 0 auto;
+  width: 300px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  overflow: auto;
+}
+#stylePanel[hidden] { display: none; }
+#styleHead { padding: 12px 16px 0; }
+#styleBody { padding: 8px 16px 16px; min-height: 0; }
+#styleBody .section-title { margin-top: 0; }
 /* The replica's "+" zone still asks for "the gallery". It is already on screen, so
  * the answer is a nudge rather than a reveal — silence would read as a dead tap,
  * which is the same failure #77 was about. */

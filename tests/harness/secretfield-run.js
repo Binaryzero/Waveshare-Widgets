@@ -357,6 +357,41 @@ const layout = {
   check('E15g exactly one pane is visible at a time',
     dock.panesShown === 1, `${dock.panesShown} panes`);
 
+  // ---- E20/E21 · the palette is a GRID, and appearance is its own panel -------------
+  // Field feedback on the first cut of the dock: the widget shelf was "a massive scroll
+  // list", and configuring a widget and restyling it were "the same window". Both are
+  // measurable, so both are pinned rather than left to the next screenshot.
+  const shape = await page.evaluate(() => {
+    const tiles = [...document.querySelectorAll('#widgetGallery .gallery-item')]
+      .map((t) => t.getBoundingClientRect());
+    const style = document.getElementById('stylePanel');
+    const ctx = document.getElementById('contextPanel');
+    const sr = style && !style.hidden ? style.getBoundingClientRect() : null;
+    const cr = ctx ? ctx.getBoundingClientRect() : null;
+    return {
+      tiles: tiles.length,
+      // The resolved track list is the direct statement of "grid, not list", and it
+      // does not depend on how many widgets the fixture's catalog happens to hold —
+      // by this point in the run it is down to one, so a same-row check would be
+      // measuring a constant.
+      tracks: getComputedStyle(document.getElementById('widgetGallery'))
+        .gridTemplateColumns.trim().split(/\s+/).length,
+      tileWidth: tiles.length ? Math.round(tiles[0].width) : 0,
+      styleShown: !!sr,
+      // Separate panels, not one box: distinct elements, and no shared pixels.
+      styleIsOwnPanel: !!style && !!ctx && !ctx.contains(style),
+      overlap: sr && cr ? Math.round(Math.max(0, Math.min(sr.right, cr.right) - Math.max(sr.left, cr.left))) : -1,
+      // The tabs that used to hide one half behind the other are gone.
+      subTabs: document.querySelectorAll('.slot-tabs .slot-tab').length,
+    };
+  });
+  check('E20 the widget shelf lays out as a grid, not a single-file list',
+    shape.tracks >= 3 && shape.tileWidth > 0 && shape.tileWidth < 140,
+    `${shape.tracks} columns, tile ${shape.tileWidth}px`);
+  check('E21 appearance is its OWN panel beside the settings, not a tab inside them',
+    shape.styleShown && shape.styleIsOwnPanel && shape.overlap === 0 && shape.subTabs === 0,
+    JSON.stringify(shape));
+
   // ---- E16 · the supported 780×480 minimum ------------------------------------------
   // Both regions are flex:none inside an overflow:hidden body, so nothing can scroll
   // the window: anything past the bottom edge is simply unreachable. At the smallest
