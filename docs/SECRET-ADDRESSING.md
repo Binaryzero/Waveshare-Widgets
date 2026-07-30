@@ -37,9 +37,28 @@ identity — so they are designed together and implemented identity-first.
 | #66 | property demoted `secret` → `text`, stored value still ciphertext | manifest classification carries **read and write** semantics inseparably; three fixes in PR #65 each traded the display bug for data loss or an uneditable field |
 | #67 | two folders declare the same widget id, one refused | one snapshot entry cannot represent two widgets; every merge rule was wrong in some direction |
 
-The recurring shape: the host **knows** exactly which slot and which key holds the
-credential. Expressing that knowledge through a per-widget artifact is what manufactures
-the ambiguity.
+The recurring shape: what the host needs to say is "*this value*, at this address, gets
+this treatment". A per-widget artifact cannot say it, so today the host fabricates
+manifests that approximate it — and the approximation is what breaks.
+
+**One thing the plan does not fix, and must not claim to.** In #67's duplicate-id case the
+host cannot tell which folder produced a given slot: `LayoutSlot` persists `widgetId` and
+`instanceId` only, both duplicates share the first, and the second identifies an instance
+rather than a manifest. So if the loaded and refused manifests both declare `apiToken` —
+one as `text`, one as `secret` — no per-slot key resolves which one this slot's value
+belongs to. Address alone is not provenance.
+
+The answer is not to invent provenance but to **refuse the ambiguity in the safe
+direction**: intents from every manifest sharing an id are unioned, most-protective wins.
+The value is then masked and re-encrypted even when the loaded widget considers it
+ordinary. That is the existing secret-wins collision rule, applied where it already
+belongs, and it needs no new persisted state.
+
+It has a real cost, stated so nobody discovers it as a bug: a loaded widget's ordinary
+setting that happens to share a name with a shadowing refused widget's credential becomes
+redacted in the editor. Narrow — it needs two folders with an ordinally identical id, one
+of each kind, and a colliding property name — and the alternative is leaking a credential
+to a WebView that hosts real widget iframes.
 
 ### The vehicle
 
@@ -52,9 +71,9 @@ readonly record struct SecretAddress(
 
 enum SecretIntent
 {
-    Protect,             // today's `secret`: mask, encrypt on save, decrypt for the dashboard
-    RedactOnly,          // mask and restore, never encrypt, never decrypt
-    RestoreIfUntouched,  // blank on the way out; put back only if it came back unchanged
+    Protect,               // today's `secret`: mask, encrypt on save, decrypt for the dashboard
+    ProtectWithoutReveal,  // mask and encrypt exactly as Protect; never decrypt into a payload
+    RestoreIfUntouched,    // blank on the way out; put back only if it came back untouched
 }
 
 sealed record SecretPlanEntry(SecretAddress Address, SecretIntent Intent);
@@ -75,21 +94,35 @@ whole change; the intents below are what the three current problems each need.
 
 **`Protect`** is today's behaviour, unchanged, from `Properties[type == "secret"]`.
 
-**`RedactOnly`** is for a value the host must keep out of the editor but has no manifest
-authority over: a refused widget's credential (#62, #67). Mask blanks it, Seal restores it
-verbatim, and nothing ever encrypts or decrypts it — the host does not know it is a
-credential, only that a refused manifest *claimed* it was. Crucially the entry is keyed by
-`(slot, property)`, so a shadowed duplicate's names apply to that duplicate's slots and
-nowhere else. That is precisely the thing #67 proves a manifest cannot express.
+**`ProtectWithoutReveal`** is for a refused widget's credential (#62, #67). It masks and
+**encrypts exactly like `Protect`** — that matters, because a refused widget's credential
+is typically legacy plaintext and today's redaction stand-in already encrypts it on the
+next save. `P27e`/`P27f` assert precisely that ("it is now encrypted at rest, which the
+refusal alone never achieved"), so an intent that restored the value verbatim without
+encrypting would leave a readable credential on disk indefinitely and regress a shipped
+guarantee. The only thing it withholds is the reveal: a refused widget is not loaded, so
+nothing legitimate is waiting to receive the plaintext, and putting it in a dashboard
+payload would be handing it out for no purpose.
 
-**`RestoreIfUntouched`** is #66's demoted secret, and it is the intent that exists to
-*separate read semantics from write semantics*. Blank on the way out; on the way in, if
-the value is exactly the blank the host wrote, restore the stored node — otherwise take
-the user's input verbatim, as ordinary text, with no encryption. That is the property
-PR #65 could not get through the manifest: the field stays editable and clearable, because
-nothing on the write side treats it as a secret.
+What the plan actually buys here is not a weaker intent — it is being able to carry the
+entry **at all**, per address, without fabricating a manifest to say it.
 
-Two constraints from probing, both non-obvious:
+**`RestoreIfUntouched`** is #66's demoted secret, and it exists to *separate read
+semantics from write semantics*: blank on the way out, restore on the way in if untouched,
+otherwise save the user's text verbatim with no encryption.
+
+"Untouched" cannot be inferred from the value. `EditorPlaceholder` is `""`, and a demoted
+property renders as an ordinary text input, which also sends `""` when the user clears it.
+Comparing against the blank alone would restore the old ciphertext over a deliberate
+clear, making the field impossible to empty — which is the *same* "permanently uneditable
+field" failure this document cites PR #65 for hitting. So the intent needs an explicit
+signal, and the machinery already exists: `Mask` lists these addresses in a
+projection-only marker beside `secretsSet`, the editor emits `SecretStore.ClearMarker` for
+them exactly as the secret editor does, and `Seal` reads three distinct cases — `""` is
+untouched (restore), `ClearMarker` is cleared (remove), anything else is new text (save
+verbatim).
+
+Two further constraints from probing, both non-obvious:
 
 - **Decryptability, not shape.** `dpapi:v1:YWJj` is a legitimate setting value that
   matches `LooksLikeEnvelope`. Only `CanUnprotect` answers "did *we* write this?"
@@ -169,18 +202,34 @@ correlation token that issue asks for, with no new bookkeeping threaded through
 
 ### The trust question, stated rather than buried
 
-`prior` is a claim the host cannot verify. It is worth being explicit that this is
-acceptable here and why:
+`prior` is a claim the host cannot verify, and the whole design rests on only the shell
+being able to make it. An installed widget is third-party code, so "only the shell can
+post `save-layout`" has to be an established fact rather than an assumption. What the
+source actually shows, as three independent barriers:
 
-- the client is our own WebView, not third-party content;
-- the claim is still subject to every existing check — the `widgetId` must match, and
-  ambiguous cases still refuse;
-- so the worst a wrong claim can do is move a credential between slots of the *same
-  widget* within the same layout, which is the blast radius that already exists today.
+1. **Widget frames are cross-origin with the shell.** Every widget is mapped to its own
+   virtual host (`{slug}.widgets.wsw` in `WidgetLibrary`), while the shell runs on
+   `app.wsw`. The `allow-same-origin` in the frame sandbox preserves the *widget's* own
+   origin — it does not make it the shell's — so `parent.chrome.webview` is blocked by
+   same-origin policy.
+2. **`DashboardWindow` subscribes to `CoreWebView2.WebMessageReceived`,** which WebView2
+   documents as raised for the **top-level document**. Frame messages surface on
+   `CoreWebView2Frame.WebMessageReceived`, which requires a `FrameCreated` subscription.
+3. **There is no `FrameCreated` handler anywhere in the app,** so even the frame-level
+   channel has nothing listening.
 
-It would **not** be acceptable if widget iframes could forge it. They cannot reach the
-save channel; if that ever changes, this decision has to be revisited, which is the reason
-it is written down here rather than assumed.
+Three barriers is comfortable, but note what is missing: `OnWebMessageReceived` dispatches
+on the payload's `type` and never inspects `e.Source`. Every barrier above is a property
+of the *hosting configuration*, so any of them could be relaxed by a future change — a
+shared virtual host for widget assets, a `FrameCreated` subscription added for some other
+feature — without anyone noticing that this design's trust boundary moved with it.
+
+Checking `e.Source` costs nothing and would make the boundary explicit at the point that
+depends on it. It is filed rather than done here because it changes the dashboard's only
+message channel, and this environment cannot exercise WebView2 to prove a mistaken origin
+check does not silently mute the whole shell. **That hardening should land before the
+identity protocol does**, so `prior` is trusted for a checked reason rather than a
+configurational accident.
 
 ### Also required
 
@@ -196,10 +245,12 @@ is the same channel — once identity flows both ways, both halves are the same 
    it through `Mask`/`Seal`/`Reveal`. Zero behaviour change — proven by every existing
    probe passing unmodified. This is the load-bearing refactor; everything else is a small
    addition on top of it.
-2. **Identity protocol** (Part B) — closes #68, #70, #56 items 1 and 3.
-3. **`RedactOnly`** — closes #67, and #62's classification half.
-4. **`RestoreIfUntouched`** — closes #66.
-5. **Row addressing** — closes #62's remaining half.
+2. **Verify the save channel** — check `e.Source` in the dashboard's message handler, so
+   step 3 rests on a check rather than on three configurational barriers.
+3. **Identity protocol** (Part B) — closes #68, #70, #56 items 1 and 3.
+4. **`ProtectWithoutReveal`** — closes #67, and #62's classification half.
+5. **`RestoreIfUntouched`** — closes #66.
+6. **Row addressing** — closes #62's remaining half.
 
 Identity comes before the intents because addresses are keyed by slot identity, and
 because two PRs have now failed on exactly that ordering being implicit.
