@@ -890,6 +890,39 @@ Census("migrating legacy plaintext", StoredIdless("legacy-plaintext-token"), "")
 Census("restoring a stored non-string", StoredIdless(new JsonArray { "x" }), "");
 Census("keeping the prior value when encryption fails", p31Stored, "replacement", breakCrypto: true);
 
+// ---- P33 · a plan is resolved once and frozen for the whole operation ----------------
+// Seal walks TWICE: once over the stored layout to index it, once over the incoming one.
+// The plan caches per widget id so both walks see the same classification. Without that
+// freeze, a manifest edit landing between the two walks makes the second decide the
+// property is ordinary `text` — so nothing seals it and the plaintext the user just typed
+// goes straight to layout.json. WidgetLibrary rescans on a file watcher, so "between two
+// walks" is a window that exists rather than a thought experiment.
+var p33Calls = 0;
+WidgetManifest? FlakyLookup(string id)
+{
+    p33Calls++;
+    return new WidgetManifest
+    {
+        Id = "test.widget", Name = "Test",
+        Properties =
+        [
+            // `secret` on the first resolution, ordinary text on every one after it.
+            new WidgetProperty
+            {
+                Name = "apiToken", Label = "API token",
+                Type = p33Calls == 1 ? "secret" : "text",
+            },
+        ],
+    };
+}
+var p33Stored = LayoutWith(new JsonObject { ["apiToken"] = "" });
+var p33Layout = LayoutWith(new JsonObject { ["apiToken"] = "typed-right-now" });
+SecretPolicy.Seal(p33Layout, p33Stored, FlakyLookup);
+Check("P33 a manifest changing mid-save cannot leak the plaintext past the second walk",
+    SecretStore.CanUnprotect(Value(p33Layout, "apiToken")), Value(p33Layout, "apiToken"));
+Check("P33b the classification was resolved exactly once for the widget",
+    p33Calls == 1, p33Calls.ToString());
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 
