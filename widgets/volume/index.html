@@ -125,7 +125,7 @@
   <div id="mixer">
     <div id="masterRow" class="row card master">
       <span class="glyph" id="masterGlyph">🔊</span>
-      <button class="mute btn" id="masterMute" title="Mute master">🔊</button>
+      <button class="mute btn" id="masterMute" title="Mute master" aria-label="Mute master">🔊</button>
       <input id="masterSlider" type="range" min="0" max="100" step="1" value="50" />
       <span class="pct" id="masterPct">--</span>
     </div>
@@ -274,6 +274,7 @@
       const mute = document.createElement('button');
       mute.className = 'mute btn';
       mute.title = 'Mute ' + displayName(s.name);
+      mute.setAttribute('aria-label', 'Mute ' + displayName(s.name));
       const input = document.createElement('input');
       input.type = 'range';
       input.min = '0'; input.max = '100'; input.step = '1';

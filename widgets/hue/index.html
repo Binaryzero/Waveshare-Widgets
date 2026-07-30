@@ -427,6 +427,7 @@
       const minus = document.createElement('button');
       minus.className = 'pressable';
       minus.textContent = '−';
+      minus.setAttribute('aria-label', 'Decrease brightness');
       minus.addEventListener('click', () => stepBrightness(ui, -1));
       const bar = document.createElement('div');
       bar.className = 'bar meter';
@@ -437,6 +438,7 @@
       const plus = document.createElement('button');
       plus.className = 'pressable';
       plus.textContent = '+';
+      plus.setAttribute('aria-label', 'Increase brightness');
       plus.addEventListener('click', () => stepBrightness(ui, +1));
       briRow.append(minus, bar, plus);
       card.appendChild(briRow);
