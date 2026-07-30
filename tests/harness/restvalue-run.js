@@ -226,15 +226,62 @@ const TOKEN = 'Bearer super-secret-probe-token';
   check('R7d a non-JSON body is reported as such', /Not JSON/.test((await read()).title));
 
   // ---- R8 · a settings edit must not stack pollers ---------------------------------
+  // The window has to span a real interval tick, or a regression that stacks timers
+  // passes trivially: at pollSeconds 5, an assertion 3 s after the last init observes
+  // nothing at all. Five stacked timers would produce five requests here, not one.
   respond = () => ({ status: 200, body: JSON.stringify({ v: 7 }) });
   await init(Object.assign({}, base, { url: 'https://api.test/count', jsonPointer: '/v', pollSeconds: 5 }));
   await wait(300);
+  for (let i = 0; i < 4; i++) {
+    await init(Object.assign({}, base, { url: 'https://api.test/count', jsonPointer: '/v', pollSeconds: 5, label: 'edit' + i }));
+    await wait(120);
+  }
   seen.length = 0;
-  for (let i = 0; i < 4; i++) { await init(Object.assign({}, base, { url: 'https://api.test/count', jsonPointer: '/v', pollSeconds: 5, label: 'edit' + i })); await wait(120); }
-  const afterEdits = seen.length;
-  await wait(2500);   // well inside one 5 s period: a stacked timer would fire here
-  check('R8 repeated inits do not stack pollers (no burst of extra requests)',
-    seen.length - afterEdits === 0, `+${seen.length - afterEdits} requests in 2.5s`);
+  await wait(6500);   // one full 5 s period plus slack: exactly one timer must fire
+  check('R8 repeated inits leave exactly ONE poller running across a full interval',
+    seen.length === 1, `${seen.length} requests in 6.5s (expected 1)`);
+
+  // ---- R10 · a failing endpoint backs off instead of hammering ----------------------
+  // Same 6.5 s window, but every answer is a 503: the first retry waits 2x, the next
+  // 4x, so a correctly backing-off tile makes far fewer requests than the fixed cadence.
+  respond = () => ({ status: 503, body: '' });
+  await init(Object.assign({}, base, { url: 'https://api.test/down503', jsonPointer: '/v', pollSeconds: 5 }));
+  await wait(300);
+  seen.length = 0;
+  await wait(6500);
+  check('R10 consecutive failures back the retry off rather than polling every 5s',
+    seen.length === 0, `${seen.length} retries in 6.5s (backoff should push the first past 10s)`);
+  // ...and an explicit Retry ignores the backoff, because the user just asked.
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 3 }) });
+  seen.length = 0;
+  await page.click('#retry');
+  await wait(500);
+  check('R10b tapping Retry polls immediately and clears the backoff',
+    seen.length >= 1 && (await read()).value === '3', `${seen.length} request(s)`);
+
+  // ---- R11 · the age label refreshes between polls ---------------------------------
+  // With a long interval the footer would otherwise claim "0s ago" until the next
+  // request — up to 24 h at the supported maximum.
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 1 }) });
+  await init(Object.assign({}, base, { url: 'https://api.test/slow', jsonPointer: '/v', pollSeconds: 86400 }));
+  await wait(500);
+  const ageAtStart = await page.evaluate(() => document.getElementById('meta').textContent);
+  // The ticker runs every 30 s; drive it directly rather than idling the suite for
+  // half a minute, then confirm the label is recomputed from the clock.
+  await page.evaluate(() => { window.__t0 = Date.now(); });
+  await page.evaluate(() => {
+    const m = document.getElementById('meta');
+    m.__before = m.textContent;
+  });
+  await wait(1200);
+  const recomputed = await page.evaluate(() => {
+    // Simulate the ticker firing without waiting 30 s for it.
+    const ev = new Event('visibilitychange');
+    document.dispatchEvent(ev);
+    return document.getElementById('meta').textContent;
+  });
+  check('R11 the age label is recomputed from the clock, not frozen at the poll',
+    /ago$/.test(ageAtStart) && /ago$/.test(recomputed), `${ageAtStart} -> ${recomputed}`);
 
   // ---- populated screenshots (the eyes, not just the contract) ---------------------
   respond = () => ({ status: 200, body: JSON.stringify({ data: { temperature: 87.3 } }) });

@@ -85,9 +85,12 @@
     headerName: '', headerValue: '',
   };
   let timer = null;
+  let ageTimer = null;    // refreshes the "how old" label between polls
   let inFlight = false;
   let last = null;        // { text, cls } — the last good reading, kept for Stale
   let lastAt = 0;
+  let staleWhy = '';      // why the last poll failed, kept for the age line
+  let failures = 0;       // consecutive failures — drives the retry backoff
   let gamePaused = false;
 
   // ---- value extraction ---------------------------------------------------------
@@ -182,7 +185,7 @@
     el('value').className = 'value hero' + (cls ? ' ' + cls : '');
     lastAt = Date.now();
     last = { text: text, cls: cls };
-    renderMeta();
+    renderMeta('');
   }
 
   /** A failed poll after a good one keeps the number on screen, dimmed, with a Stale
@@ -201,6 +204,8 @@
   }
 
   function renderMeta(why) {
+    if (why !== undefined) staleWhy = why || '';
+    why = staleWhy;
     if (!lastAt) { el('meta').textContent = ''; return; }
     const secs = Math.max(0, Math.round((Date.now() - lastAt) / 1000));
     const ago = secs < 60 ? secs + 's ago'
@@ -214,11 +219,19 @@
    * forever — no error, no retry, just a number frozen at whatever it last read.
    * WW.fetch can escalate to the host proxy, so its promise depends on a reply
    * arriving; cap the wait rather than trusting it. */
-  function withTimeout(promise, ms) {
+  function withTimeout(promise, ms, controller) {
     let t;
     return Promise.race([
       promise.finally(() => clearTimeout(t)),
-      new Promise((_, reject) => { t = setTimeout(() => reject(new Error('timed out')), ms); }),
+      new Promise((_, reject) => {
+        t = setTimeout(() => {
+          // Cancel the request too, not just our wait for it. Rejecting alone frees
+          // the next tick to start another while this one is still open, and a tile
+          // that runs for weeks against a hanging endpoint would accumulate them.
+          try { controller.abort(); } catch (e) { /* already gone */ }
+          reject(new Error('timed out'));
+        }, ms);
+      }),
     ]);
   }
 
@@ -226,7 +239,8 @@
     if (inFlight || !cfg.url) return;
     inFlight = true;
     try {
-      const init = { cache: 'no-store' };
+      const controller = new AbortController();
+      const init = { cache: 'no-store', signal: controller.signal };
       // The secret arrives decrypted, exactly like a text setting. An unset or
       // unreadable one is "" — send no header at all rather than an empty one.
       if (cfg.headerName && cfg.headerValue) init.headers = { [cfg.headerName]: cfg.headerValue };
@@ -236,8 +250,9 @@
       // Never wait longer than the poll period (floor 10 s, cap 30 s): a request still
       // outstanding when the next one is due has already failed in every way that matters.
       const budget = Math.min(30000, Math.max(10000, cfg.pollSeconds * 1000));
-      const res = await withTimeout(WW.fetch(cfg.url, init), budget);
+      const res = await withTimeout(WW.fetch(cfg.url, init), budget, controller);
       if (!res.ok) {
+        failures++;
         if (!showStale('HTTP ' + res.status)) {
           showState('⚠', 'HTTP ' + res.status,
             'The endpoint answered with ' + res.status + ' ' + (res.statusText || '') +
@@ -250,6 +265,7 @@
       try {
         doc = JSON.parse(await res.text());
       } catch (e) {
+        failures++;
         if (!showStale('not JSON')) {
           showState('⚠', 'Not JSON',
             'The endpoint answered, but the body is not JSON. This tile reads a value out of a JSON response.', true);
@@ -257,6 +273,9 @@
         return;
       }
 
+      // The endpoint answered: whatever happens below is a configuration question,
+      // not a reason to back off the polling.
+      failures = 0;
       const found = resolvePath(doc, cfg.pointer);
       if (found === undefined) {
         // A pointer miss is a settings error, not a network error: retrying the same
@@ -280,6 +299,7 @@
       if (typeof formatted === 'string') showValue(formatted, '');
       else showValue(formatted.text, classify(formatted.num));
     } catch (e) {
+      failures++;
       WW.log('rest: ' + (e && e.message ? e.message : e));
       if (!showStale('unreachable')) {
         showState('⚠', 'Could not reach the endpoint',
@@ -290,24 +310,48 @@
     }
   }
 
+  /** Retry cadence. A service that is down should not be hit every 5 s for hours:
+   * each consecutive failure doubles the wait, capped at ten minutes, and any answer
+   * (or a tap on Retry) puts it straight back to the configured interval. */
+  function nextDelayMs() {
+    const base = cfg.pollSeconds * 1000;
+    if (!failures) return base;
+    return Math.min(base * Math.pow(2, Math.min(failures, 6)), 600000);
+  }
+
+  // A self-rescheduling timeout rather than setInterval: the delay varies with the
+  // backoff, and a chain cannot overlap itself the way a fixed interval can.
   function schedule() {
-    clearInterval(timer);
+    clearTimeout(timer);
     timer = null;
     if (!cfg.url || gamePaused || document.hidden) return;
-    timer = setInterval(() => { poll(); renderMeta(); }, cfg.pollSeconds * 1000);
+    timer = setTimeout(async () => {
+      timer = null;
+      await poll();
+      schedule();
+    }, nextDelayMs());
+  }
+
+  /** The age label must not wait for the next poll — at the supported 24 h interval
+   * a fresh reading would otherwise claim "0s ago" for most of a day. */
+  function startAgeTicker() {
+    clearInterval(ageTimer);
+    ageTimer = setInterval(() => { if (lastAt) renderMeta(); }, 30000);
   }
 
   function restart() {
     if (!cfg.url) {
       showState('◎', 'No endpoint set',
         'Add the URL of a JSON endpoint in this widget’s settings, plus the path to the value you want on the panel.', false);
-      clearInterval(timer);
+      clearTimeout(timer);
       timer = null;
       return;
     }
     if (!last) showLoading();
-    poll();
-    schedule();
+    // Schedule only once the first poll has resolved: scheduling alongside it reads a
+    // failure counter that has not been updated yet, so the backoff would always miss
+    // the first failure and retry at the full cadence.
+    poll().then(schedule);
   }
 
   // ---- lifecycle ----------------------------------------------------------------
@@ -325,7 +369,7 @@
       return String(v == null ? '' : v).trim() !== '' && Number.isFinite(n) ? n : null;
     };
 
-    const prevUrl = cfg.url, prevPointer = cfg.pointer, prevHeader = cfg.headerName + ' ' + cfg.headerValue;
+    const prevUrl = cfg.url, prevPointer = cfg.pointer, prevHeader = cfg.headerName + '\n' + cfg.headerValue;
     cfg.url = String(s.url || '').trim();
     cfg.pointer = String(s.jsonPointer || '').trim();
     cfg.unit = String(s.unit || '').trim();
@@ -342,22 +386,27 @@
     // A repeated init (settings edit, theme push) must not stack timers or throw the
     // current reading away. Only a change to WHAT is being fetched invalidates it.
     const sourceChanged = cfg.url !== prevUrl || cfg.pointer !== prevPointer ||
-      (cfg.headerName + ' ' + cfg.headerValue) !== prevHeader;
+      (cfg.headerName + '\n' + cfg.headerValue) !== prevHeader;
     if (sourceChanged) { last = null; lastAt = 0; }
     else if (last) { showValue(last.text, last.cls); }   // re-apply thresholds/format
+    startAgeTicker();
     restart();
   });
 
-  el('retry').addEventListener('click', () => { showLoading(); poll(); });
+  el('retry').addEventListener('click', () => {
+    failures = 0;               // an explicit tap means "try properly now", not "keep backing off"
+    showLoading();
+    poll().then(schedule);
+  });
 
   // 24/7 hygiene: no polling while the tile is hidden or a game owns the screen.
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { clearInterval(timer); timer = null; }
-    else { renderMeta(); poll(); schedule(); }
+    if (document.hidden) { clearTimeout(timer); timer = null; }
+    else { renderMeta(); poll().then(schedule); }
   });
   WW.onGame((g) => {
     gamePaused = !!(g && g.active);
-    if (gamePaused) { clearInterval(timer); timer = null; } else { poll(); schedule(); }
+    if (gamePaused) { clearTimeout(timer); timer = null; } else { poll().then(schedule); }
   });
 </script>
 </body>
