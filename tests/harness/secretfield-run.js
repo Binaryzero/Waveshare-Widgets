@@ -383,6 +383,131 @@ const layout = {
   check('E16c and the panel still does not cover the canvas at that size',
     tiny.overlap === 0, `overlap ${tiny.overlap}px`);
 
+  // ---- E17 · the DOCK's height is an input to the fit, so it has to be watched ------
+  // The dock changes height with no window, toolbar or stage change at all: the palette
+  // fills on settings-init, and switching widgets swaps inspector content of a different
+  // height. Both regions are flex:none inside an overflow:hidden body, so a stale dock
+  // height in the calculation leaves the dock's lower controls clipped until some
+  // unrelated resize happens to refit. Driven here by moving the dock body's own cap —
+  // #dockPalette is overflow:auto, so adding content to it scrolls the column instead of
+  // resizing the dock and would prove nothing.
+  // Wide and short ON PURPOSE. The stage takes the smaller of the width fit and the
+  // height fit, and at the harness's default 1100×820 the WIDTH is what binds — the
+  // dock could change freely and the stage would not move, so the probe would be
+  // measuring a constant. 1400px of width takes the width term out of the running.
+  await page.setViewportSize({ width: 1400, height: 700 });
+  await page.waitForTimeout(500);
+  const grew0 = await page.evaluate(() => ({
+    dockH: Math.round(document.getElementById('dock').getBoundingClientRect().height),
+    stageH: Math.round(document.getElementById('previewStage').getBoundingClientRect().height),
+  }));
+  await page.evaluate(() => {
+    const s = document.createElement('style');
+    s.id = 'wwProbeDockCap';
+    s.textContent = '#dockBody { max-height: 170px !important; }';
+    document.head.appendChild(s);
+  });
+  await page.waitForTimeout(500);
+  const grew1 = await page.evaluate(() => ({
+    dockH: Math.round(document.getElementById('dock').getBoundingClientRect().height),
+    stageH: Math.round(document.getElementById('previewStage').getBoundingClientRect().height),
+  }));
+  // Guard FIRST: if the setup did not actually move the dock there is no stimulus, and
+  // the height comparison below would pass on a stage that simply never had to change.
+  const dockDelta = grew0.dockH - grew1.dockH;
+  check('E17 the probe actually changed the dock height (stimulus guard)',
+    dockDelta > 40, `dock ${grew0.dockH} → ${grew1.dockH}`);
+  check('E17b the canvas refits when the DOCK changes, with no window resize',
+    grew1.stageH - grew0.stageH > 20,
+    `stage ${grew0.stageH} → ${grew1.stageH} for a ${dockDelta}px dock change`);
+  await page.evaluate(() => document.getElementById('wwProbeDockCap').remove());
+  await page.waitForTimeout(400);
+
+  // ---- E18 · the palette follows the page the "+" tap came from --------------------
+  // The shelf's buttons close over the page they were rendered for. An add-widget
+  // message can name a different page — tapping the old page's "+" during the preview's
+  // page transition moves selectedPage — and a shelf still bound to the previous page
+  // adds the widget THERE, then opens details for an unrelated slot on the new page.
+  const counts = () => saved.length
+    ? saved[saved.length - 1].pages.map((p) => (p.slots || []).length) : null;
+  await page.locator('#addPage').click();
+  await page.waitForTimeout(250);
+  await page.locator('#pageList li').first().click();          // back to page 0
+  await page.waitForTimeout(250);
+  await page.locator('#save').click();                         // baseline, AFTER the setup
+  await page.waitForTimeout(350);
+  const before18 = counts();
+  const gen = await page.evaluate(() => {
+    // The init message is {type:'init', data:{gen, layout, …}} — the generation the
+    // replica must echo back lives on data, and a message tagged with anything else is
+    // dropped by the staleness guard before it can reach openGallery.
+    try { return ((JSON.parse(window.__wwLastReplicaInit || '{}').data || {}).gen | 0); } catch (e) { return -1; }
+  });
+  const replica = page.frames().find((f) => /index\.html/.test(f.url()));
+  const selected0 = await page.evaluate(() =>
+    [...document.querySelectorAll('#pageList li')].findIndex((li) => li.classList.contains('active')));
+  check('E18 setup: two pages, page 0 selected, and a live replica to speak for the "+" tap',
+    !!before18 && before18.length === 2 && selected0 === 0 && !!replica && gen > 0,
+    `pages ${JSON.stringify(before18)} selected ${selected0} gen ${gen} frame ${!!replica}`);
+  if (replica && before18) {
+    await replica.evaluate((g) => parent.postMessage(
+      { type: 'ww-shell', message: { type: 'add-widget', index: 1, gen: g } }, '*'), gen);
+    await page.waitForTimeout(400);
+    await page.locator('#widgetGallery .gallery-item:not(:disabled)').first().click();
+    await page.waitForTimeout(300);
+    await page.locator('#save').click();
+    await page.waitForTimeout(350);
+    const after18 = counts();
+    check('E18b the widget lands on the page the message named, not the one the shelf was built for',
+      !!after18 && after18[1] === before18[1] + 1 && after18[0] === before18[0],
+      `${JSON.stringify(before18)} → ${JSON.stringify(after18)}`);
+  }
+
+  // ---- E19 · the dock's caps must be bounded by the viewport, not by each other ----
+  // The toolbar's 38vh and the dock body's 46vh are independent allowances. Enough page
+  // chips to wrap the toolbar to its cap, plus a dock body with a populated inspector,
+  // is 84vh of fixed-height region before the header and preview bar are counted — at
+  // 480px that overflows the window on its own, and E16's floor fix cannot recover it:
+  // shrinking the canvas to zero still leaves the dock too tall. Nothing scrolls the
+  // document, so those controls are simply unreachable.
+  for (let i = 0; i < 28; i++) await page.locator('#addPage').click();
+  await page.locator('#pageList li').first().click();          // a page that HAS a slot
+  await page.waitForTimeout(250);
+  await page.locator('#slotList .slot-chip .chip-main').first().click();  // fill the inspector
+  await page.setViewportSize({ width: 780, height: 480 });
+  await page.waitForTimeout(700);
+  const packed = await page.evaluate(() => {
+    const g = (id) => document.getElementById(id);
+    const d = g('dock');
+    // What the dock WANTS, measured with the cap lifted. Without this the assertion
+    // below could pass on a dock that was never too tall in the first place — the
+    // hollow-probe failure mode this suite has hit six times.
+    const prev = d.style.maxHeight;
+    d.style.maxHeight = 'none';
+    const natural = Math.round(d.getBoundingClientRect().height);
+    d.style.maxHeight = prev;
+    return {
+      natural,
+      dockBottom: Math.round(d.getBoundingClientRect().bottom),
+      stageTop: Math.round(g('previewStage').getBoundingClientRect().top),
+      win: window.innerHeight,
+      // Clipping is the actual harm, so every column has to be able to reach the
+      // overflow the cap hides rather than losing it past the window's edge.
+      scrollable: ['toolbar', 'dockPalette', 'contextBody'].every((id) => {
+        const e = g(id); if (!e) return false;
+        const o = getComputedStyle(e).overflowY;
+        return o === 'auto' || o === 'scroll';
+      }),
+    };
+  });
+  check('E19 the dock genuinely wants more than the window has (stimulus guard)',
+    packed.natural + packed.stageTop > packed.win,
+    `dock wants ${packed.natural}px under ${packed.stageTop}px of chrome, window ${packed.win}px`);
+  check('E19b it still stays inside the window when both of its caps are saturated',
+    packed.dockBottom <= packed.win + 1, `dock bottom ${packed.dockBottom} vs window ${packed.win}`);
+  check('E19c and every column can scroll to what the cap hid',
+    packed.scrollable);
+
   await browser.close();
   shellSrv.close();
   console.log(failures ? `${failures} FAILURES` : 'ALL PASS');

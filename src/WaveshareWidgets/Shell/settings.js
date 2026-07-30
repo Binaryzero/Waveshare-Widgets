@@ -664,9 +664,28 @@
     // the canvas or let the dock push it off the top. Everything above the stage
     // plus the whole dock is subtracted; the floor keeps the strip usable if the
     // dock ever grows past the window.
-    const dockH = (el('dock') && el('dock').getBoundingClientRect().height) || 0;
+    const dockEl = el('dock');
+    // Everything the canvas and the dock have to share. stageTop is the header, the
+    // rejected-widgets banner and the preview bar — none of which move when either of
+    // those two heights changes, so this is a stable input rather than a term that
+    // shifts under the arithmetic below.
     const stageTop = previewStage.getBoundingClientRect().top;
-    const room = Math.round(window.innerHeight - stageTop - dockH - 12);
+    const available = Math.max(0, Math.round(window.innerHeight - stageTop - 12));
+    if (dockEl) {
+      // ONE viewport-derived cap for the whole dock. The toolbar's 38vh and the dock
+      // body's 46vh are independent allowances that ADD UP: enough page and widget
+      // chips to fill the toolbar, plus a dock body with a populated inspector, is
+      // 84vh of fixed-height region before the header and preview bar are counted at
+      // all. At 480px that overflows the window on its own, and shrinking the canvas
+      // cannot recover it — there is nothing left to give. Bounded here, the columns
+      // scroll internally (every one of them is overflow:auto already) instead of
+      // hanging past the bottom edge of a document that cannot scroll.
+      // No circularity: `available` does not depend on the dock's height, so setting
+      // this cap cannot move the number that produced it.
+      dockEl.style.maxHeight = Math.max(0, available - Math.min(60, available)) + 'px';
+    }
+    const dockH = dockEl ? dockEl.getBoundingClientRect().height : 0;
+    const room = available - Math.round(dockH);
     const ceiling = editMode ? 430 : 320;
     // The floor yields to the room. An unconditional 160 forces a stage taller than
     // what is left at the supported 780x480 minimum, where the toolbar plus the dock's
