@@ -208,12 +208,16 @@ const widgets = [{
   check('N10 the shell mints before saving, so the host never has to (why #70 is dormant)',
     everySavedSlotHasId, `${saves.length} saves inspected`);
 
-  // Tolerance only, and worth being honest about what it does NOT prove. While N10 holds,
-  // every def already carries an id by the time any ack could arrive, so the adoption
-  // branch is unreachable and its widgetId guard cannot be exercised from here — a probe
-  // claiming to test the guard would pass with the guard deleted. What this does check is
-  // that an ack the shell cannot apply is ignored rather than throwing or re-branding a
-  // slot that already has an identity, which is the state N10's invariant guarantees.
+  // An ack for a slot that already has an identity must not re-brand it. While N10 holds
+  // that is every slot, so this is the reachable half of the handler; the widgetId guard
+  // itself cannot be exercised from here, and a probe claiming to test it would pass with
+  // the guard deleted.
+  //
+  // The id is compared ACROSS the ack, and a real mutation is forced afterwards so the
+  // comparison sees a save taken after it. Asserting against `saves` alone proved nothing:
+  // selecting a slot does not call persistLayout, so the newest snapshot still predated
+  // the message and the check passed however the handler behaved.
+  const idBefore = (lastSave() || {}).pages?.[0]?.slots?.[0]?.instanceId;
   await page.evaluate(() => window.__hostPush(JSON.stringify({
     type: 'minted-ids',
     data: [{ page: 0, slot: 0, widgetId: 'test.gh', instanceId: 's-from-host' },
@@ -221,13 +225,18 @@ const widgets = [{
            { page: 9, slot: 9, widgetId: 'test.gh', instanceId: 's-out-of-range' }],
   })));
   await wait(250);
-  await page.locator('.slot').first().click();
-  await wait(400);
-  check('N10b an ack it cannot apply is ignored, not thrown on or written through',
-    await page.locator('.slot').count() > 0 &&
-    !JSON.stringify(saves).includes('s-from-host') &&
-    !JSON.stringify(saves).includes('s-wrong-widget') &&
-    !JSON.stringify(saves).includes('s-out-of-range'));
+  const savesBeforeMutation = saves.length;
+  await rows.nth(0).locator('input').fill('forces-a-save-after-the-ack');
+  await wait(900);
+  const idAfter = (lastSave() || {}).pages?.[0]?.slots?.[0]?.instanceId;
+  check('N10b the mutation really persisted, so the comparison sees a post-ack save',
+    saves.length > savesBeforeMutation, `${savesBeforeMutation} -> ${saves.length}`);
+  check('N10c an ack for an already-identified slot leaves its identity alone',
+    !!idBefore && idAfter === idBefore, `${idBefore} -> ${idAfter}`);
+  check('N10d and none of the injected ids reached the layout',
+    !JSON.stringify(lastSave()).includes('s-from-host') &&
+    !JSON.stringify(lastSave()).includes('s-wrong-widget') &&
+    !JSON.stringify(lastSave()).includes('s-out-of-range'));
 
   await browser.close();
   srv.close();
