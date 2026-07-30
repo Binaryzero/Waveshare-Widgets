@@ -49,7 +49,11 @@ internal static class DeckAction
         }
         catch (Exception ex)
         {
-            Log.Warn($"Deck action '{kind}' ({target}) failed: {ex.Message}");
+            // A "url" target can itself be the credential (a webhook or signed link), so it
+            // is described rather than printed. Other kinds are paths and key combos —
+            // not secrets, and the actual value is what makes the failure diagnosable.
+            var shown = kind == "url" ? SafeUrl.Describe(target) : target;
+            Log.Warn($"Deck action '{kind}' ({shown}) failed: {ex.Message}");
         }
     }
 

@@ -89,7 +89,7 @@ public sealed class BrowserFetcher : IDisposable
                 catch { finalOrigin = ""; }
                 if (!string.Equals(finalOrigin, origin, StringComparison.OrdinalIgnoreCase))
                 {
-                    Log.Warn($"browser fetch skipped ({url}): origin bootstrap redirected to '{finalOrigin}' — not running the request from a foreign origin");
+                    Log.Warn($"browser fetch skipped ({SafeUrl.Describe(url)}): origin bootstrap redirected to '{SafeUrl.Describe(finalOrigin)}' — not running the request from a foreign origin");
                     return null;
                 }
 
@@ -131,7 +131,7 @@ public sealed class BrowserFetcher : IDisposable
                     var root = payload.RootElement;
                     if (root.TryGetProperty("error", out var err))
                     {
-                        Log.Warn($"browser fetch script error ({url}): {err.GetString()}");
+                        Log.Warn($"browser fetch script error ({SafeUrl.Describe(url)}): {err.GetString()}");
                         return null;
                     }
                     var status = root.TryGetProperty("status", out var s) ? s.GetInt32() : 0;
@@ -142,7 +142,7 @@ public sealed class BrowserFetcher : IDisposable
                     catch (FormatException) { bodyBytes = Array.Empty<byte>(); }
                     return (status == 0 ? 200 : status, contentType, bodyBytes);
                 }
-                Log.Warn($"browser fetch timed out ({url})");
+                Log.Warn($"browser fetch timed out ({SafeUrl.Describe(url)})");
                 return null;
             }
             finally
@@ -153,7 +153,7 @@ public sealed class BrowserFetcher : IDisposable
         }
         catch (Exception ex)
         {
-            Log.Warn($"browser fetch failed ({url}): {ex.Message}");
+            Log.Warn($"browser fetch failed ({SafeUrl.Describe(url)}): {ex.Message}");
             return null;
         }
         finally
