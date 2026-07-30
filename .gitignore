@@ -18,3 +18,4 @@ packages/
 # OS cruft
 Thumbs.db
 .DS_Store
+tests/harness/*.png

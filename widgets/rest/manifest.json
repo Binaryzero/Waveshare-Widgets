@@ -1,0 +1,91 @@
+{
+  "id": "ws.stock.rest",
+  "name": "REST Value",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Any JSON endpoint, one number on the panel: give it a URL and a path to the value. Polls on its own schedule, colors itself against warn/crit thresholds, and can send a static auth header.",
+  "min_api_version": 1,
+  "supported_slots": ["quarter", "half", "full"],
+  "properties": [
+    {
+      "name": "url",
+      "label": "Endpoint",
+      "type": "text",
+      "default": "",
+      "placeholder": "https://api.example.com/v1/status"
+    },
+    {
+      "name": "jsonPointer",
+      "label": "Path to the value",
+      "type": "text",
+      "default": "",
+      "placeholder": "/data/temperature   (or data.temperature)"
+    },
+    {
+      "name": "label",
+      "label": "Title",
+      "type": "text",
+      "default": "",
+      "placeholder": "Living room"
+    },
+    {
+      "name": "unit",
+      "label": "Unit",
+      "type": "text",
+      "default": "",
+      "placeholder": "°C"
+    },
+    {
+      "name": "decimals",
+      "label": "Decimal places",
+      "type": "slider",
+      "min": 0,
+      "max": 4,
+      "step": 1,
+      "default": 0
+    },
+    {
+      "name": "pollSeconds",
+      "label": "Refresh every",
+      "type": "number",
+      "min": 5,
+      "max": 86400,
+      "step": 5,
+      "default": 60
+    },
+    {
+      "name": "warn",
+      "label": "Warn at",
+      "type": "text",
+      "default": "",
+      "placeholder": "80   (leave empty for no threshold)"
+    },
+    {
+      "name": "crit",
+      "label": "Critical at",
+      "type": "text",
+      "default": "",
+      "placeholder": "90   (below Warn means lower is worse)"
+    },
+    {
+      "name": "headerName",
+      "label": "Auth header name",
+      "type": "text",
+      "default": "",
+      "placeholder": "Authorization"
+    },
+    {
+      "name": "headerValue",
+      "label": "Auth header value",
+      "type": "secret",
+      "placeholder": "Bearer eyJhbGciOi…"
+    },
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": ["solid", "glass", "transparent"],
+      "default": "solid"
+    }
+  ]
+}

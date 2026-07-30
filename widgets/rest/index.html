@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>REST Value</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Layout only — every color is a token from widget-base.css, so the tile follows
+   * the global theme and any per-slot style override with no code of its own. */
+  body { display: flex; flex-direction: column; padding: 10px 12px; gap: 4px; }
+  header { display: flex; align-items: center; gap: 8px; flex: none; }
+  header .kicker {
+    flex: 1; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-size: calc(clamp(9px, 3vh, 13px) * var(--label-scale, 1));
+  }
+  /* One value, centred: on a wide slot a left-aligned number strands two thirds of
+   * the tile in empty black. The whole tile IS the readout. */
+  #body {
+    flex: 1;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    min-height: 0;
+  }
+  /* Baseline-aligned number + unit: the unit must never ride above the digits. */
+  .readout { display: flex; align-items: baseline; gap: 6px; max-width: 100%; }
+  #value {
+    /* Bounded by BOTH axes: height keeps it inside a 200px band, width keeps it from
+     * looking lost on a 640/960px slot. */
+    font-size: calc(clamp(26px, min(24vh, 20vw), 132px) * var(--value-scale, 1));
+    line-height: 1.05;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Threshold colouring. Normal deliberately keeps --text rather than the accent:
+   * on a wall of tiles, "fine" should be quiet and only warn/crit should pull the eye. */
+  #value.warn { color: var(--warn); }
+  #value.crit { color: var(--err); }
+  #unit { font-size: calc(clamp(11px, min(6vh, 5vw), 34px) * var(--label-scale, 1)); }
+  footer {
+    flex: none;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: calc(clamp(8px, 2.4vh, 11px) * var(--label-scale, 1));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Stale: the last good number stays readable but visibly demoted — on a glanceable
+   * panel old data beats no data, as long as it admits to being old. */
+  #body.stale { opacity: 0.55; }
+  #state { position: absolute; inset: 0; }
+  /* The quarter slot is the hard case: drop the footer rather than crush the number. */
+  @media (max-width: 360px) { footer { display: none; } }
+</style>
+</head>
+<body class="bg-solid">
+  <header>
+    <span class="kicker" id="title">REST</span>
+    <span class="pill muted" id="pill" hidden>Stale</span>
+  </header>
+
+  <main id="body" hidden>
+    <div class="readout">
+      <span class="value hero" id="value">--</span>
+      <span class="unit" id="unit"></span>
+    </div>
+  </main>
+
+  <footer id="meta"></footer>
+
+  <div class="state-card" id="state">
+    <div class="spinner" id="spin"></div>
+    <div class="state-icon" id="stateIcon" hidden>◎</div>
+    <div class="state-title" id="stateTitle" hidden></div>
+    <div class="state-body" id="stateBody" hidden></div>
+    <button class="btn" id="retry" hidden>Retry</button>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+
+  const el = (id) => document.getElementById(id);
+  const cfg = {
+    url: '', pointer: '', unit: '', decimals: 0,
+    pollSeconds: 60, warn: null, crit: null,
+    headerName: '', headerValue: '',
+  };
+  let timer = null;
+  let ageTimer = null;    // refreshes the "how old" label between polls
+  let inFlight = false;
+  let last = null;        // { text, cls } — the last good reading, kept for Stale
+  let lastAt = 0;
+  let staleWhy = '';      // why the last poll failed, kept for the age line
+  let stale = false;      // is the number on screen a survivor of a failed poll?
+  let failures = 0;       // consecutive failures — drives the retry backoff
+  let gamePaused = false;
+  let generation = 0;     // bumped when the source changes; older answers are discarded
+  let activeController = null;
+
+  // ---- value extraction ---------------------------------------------------------
+  /** RFC 6901 JSON Pointer ("/a/b/0"), or a friendlier dotted path ("a.b.0").
+   * Both are offered because users reach for the dotted form and being strict about
+   * it buys nothing. Returns undefined for any miss — the caller renders "no value
+   * at that path" rather than guessing. */
+  function resolvePath(doc, path) {
+    // Leading whitespace is never part of either syntax, and stripping it is what
+    // decides WHICH syntax this is — " /a/b" pasted with a stray space would otherwise
+    // be read as a dotted path and miss for a reason the user cannot see.
+    const raw = String(path == null ? '' : path).replace(/^\s+/, '');
+    if (!raw.trim()) return doc;                // empty path = the whole document
+    const parts = raw.startsWith('/')
+      // RFC 6901 is literal after the first '/': `/temperature ` selects the key
+      // "temperature ", so trailing whitespace has to survive. Trimming it here would
+      // silently resolve a different key, or miss one that exists.
+      ? raw.slice(1).split('/').map((p) => p.replace(/~1/g, '/').replace(/~0/g, '~'))
+      // The dotted form is ours rather than a standard, so it stays forgiving.
+      : raw.trim().replace(/\[(\d+)\]/g, '.$1').split('.').filter((p) => p !== '');
+    let cur = doc;
+    for (const part of parts) {
+      if (cur === null || typeof cur !== 'object') return undefined;
+      if (Array.isArray(cur)) {
+        if (!/^\d+$/.test(part)) return undefined;
+        cur = cur[Number(part)];
+      } else if (Object.prototype.hasOwnProperty.call(cur, part)) {
+        cur = cur[part];
+      } else {
+        return undefined;
+      }
+    }
+    return cur;
+  }
+
+  /** A tile shows one value. Objects and arrays are a configuration mistake (the
+   * pointer stopped short), not something to stringify onto the panel. */
+  function formatValue(v) {
+    if (v === null || v === undefined) return null;
+    if (typeof v === 'boolean') return v ? 'yes' : 'no';
+    if (typeof v === 'number') {
+      if (!Number.isFinite(v)) return null;
+      return { num: v, text: v.toFixed(cfg.decimals) };
+    }
+    if (typeof v === 'string') {
+      const t = v.trim();
+      if (!t) return null;
+      // A numeric string is still a number for threshold purposes.
+      const n = Number(t);
+      return Number.isFinite(n) && t !== '' ? { num: n, text: n.toFixed(cfg.decimals) } : t;
+    }
+    return undefined;   // object/array: pointer didn't reach a scalar
+  }
+
+  /** Thresholds carry their own direction: warn 80 / crit 90 means high is bad,
+   * warn 20 / crit 10 means low is bad. Ordering the two numbers is something the
+   * user already does naturally, so it needs no extra setting. */
+  function classify(num) {
+    if (num == null || (cfg.warn == null && cfg.crit == null)) return '';
+    // Direction is inferred from the ORDER of the two numbers, so it needs both. With
+    // only one set there is nothing to infer and the default (high is worse) applies —
+    // the manifest offers the fields independently and marks neither as required, so
+    // "Critical at 90" alone has to colour at 90 rather than silently do nothing.
+    const lowerIsWorse = cfg.warn != null && cfg.crit != null && cfg.crit < cfg.warn;
+    if (lowerIsWorse) {
+      if (num <= cfg.crit) return 'crit';
+      if (num <= cfg.warn) return 'warn';
+      return '';
+    }
+    if (cfg.crit != null && num >= cfg.crit) return 'crit';
+    if (cfg.warn != null && num >= cfg.warn) return 'warn';
+    return '';
+  }
+
+  // ---- rendering ----------------------------------------------------------------
+  function showState(icon, title, body, retry) {
+    el('body').hidden = true;
+    el('state').hidden = false;
+    el('spin').hidden = true;
+    el('state').classList.toggle('err', !!retry);
+    for (const [id, text] of [['stateIcon', icon], ['stateTitle', title], ['stateBody', body]]) {
+      el(id).textContent = text;
+      el(id).hidden = !text;
+    }
+    el('retry').hidden = !retry;
+    el('pill').hidden = true;
+  }
+
+  function showLoading() {
+    el('body').hidden = true;
+    el('state').hidden = false;
+    el('state').classList.remove('err');
+    el('spin').hidden = false;
+    for (const id of ['stateIcon', 'stateTitle', 'stateBody', 'retry']) el(id).hidden = true;
+  }
+
+  /** Paints the number and nothing else. Split out from showValue because a repeated
+   * init has to redraw the tile WITHOUT claiming the reading just arrived. */
+  function paintValue(text, cls) {
+    el('state').hidden = true;
+    el('body').hidden = false;
+    el('value').textContent = text;
+    el('value').className = 'value hero' + (cls ? ' ' + cls : '');
+  }
+
+  /** A reading that genuinely just arrived: this is the only thing allowed to move
+   * `lastAt`, because that timestamp is the tile's claim about how fresh the number is. */
+  function showValue(text, cls) {
+    paintValue(text, cls);
+    el('body').classList.remove('stale');
+    el('pill').hidden = true;
+    stale = false;
+    lastAt = Date.now();
+    last = { text: text, cls: cls };
+    renderMeta('');
+  }
+
+  /** A failed poll after a good one keeps the number on screen, dimmed, with a Stale
+   * pill — the panel is glanceable, and a value from two minutes ago is far more
+   * useful than an error card that hides it. */
+  function showStale(why) {
+    if (!last) return false;
+    paintValue(last.text, last.cls);
+    stale = true;
+    el('body').classList.add('stale');
+    el('pill').hidden = false;
+    el('pill').className = 'pill muted';
+    el('pill').textContent = 'Stale';
+    renderMeta(why);
+    return true;
+  }
+
+  function renderMeta(why) {
+    if (why !== undefined) staleWhy = why || '';
+    why = staleWhy;
+    if (!lastAt) { el('meta').textContent = ''; return; }
+    const secs = Math.max(0, Math.round((Date.now() - lastAt) / 1000));
+    const ago = secs < 60 ? secs + 's ago'
+      : secs < 3600 ? Math.round(secs / 60) + 'm ago'
+      : Math.round(secs / 3600) + 'h ago';
+    el('meta').textContent = why ? ago + ' · ' + why : ago;
+  }
+
+  // ---- polling ------------------------------------------------------------------
+  /** A request that never settles would pin `inFlight` and silently stop the tile
+   * forever — no error, no retry, just a number frozen at whatever it last read.
+   * WW.fetch can escalate to the host proxy, so its promise depends on a reply
+   * arriving; cap the wait rather than trusting it. */
+  /* The deadline covers the WHOLE exchange, headers AND body. A resolved `WW.fetch`
+   * only means the headers arrived: an endpoint that then stalls mid-body would leave
+   * `res.text()` hanging with no timer left running — the same permanent freeze this
+   * guard exists to prevent, just moved one await later. */
+  function withDeadline(ms, controller, run) {
+    let t;
+    return Promise.race([
+      run().finally(() => clearTimeout(t)),
+      new Promise((_, reject) => {
+        t = setTimeout(() => {
+          // Cancel the request too, not just our wait for it. Rejecting alone frees
+          // the next tick to start another while this one is still open, and a tile
+          // that runs for weeks against a hanging endpoint would accumulate them.
+          try { controller.abort(); } catch (e) { /* already gone */ }
+          reject(new Error('timed out'));
+        }, ms);
+      }),
+    ]);
+  }
+
+  async function poll() {
+    if (inFlight || !cfg.url) return;
+    inFlight = true;
+    // Everything below belongs to the source as it was when the request left. If the
+    // user retargets the tile mid-flight, this answer describes the OLD endpoint and
+    // must not be rendered — least of all under the new pointer and thresholds.
+    const gen = generation;
+    const superseded = () => gen !== generation;
+    const controller = new AbortController();
+    activeController = controller;
+    try {
+      const init = { cache: 'no-store', signal: controller.signal };
+      // The secret arrives decrypted, exactly like a text setting. An unset or
+      // unreadable one is "" — send no header at all rather than an empty one.
+      if (cfg.headerName && cfg.headerValue) init.headers = { [cfg.headerName]: cfg.headerValue };
+
+      // WW.fetch, not fetch: it escalates through the host when the browser hits
+      // CORS or a bot wall, so the same settings work on either path.
+      // Never wait longer than the poll period (floor 10 s, cap 30 s): a request still
+      // outstanding when the next one is due has already failed in every way that matters.
+      const budget = Math.min(30000, Math.max(10000, cfg.pollSeconds * 1000));
+      const url = cfg.url;
+      const answer = await withDeadline(budget, controller, async () => {
+        const res = await WW.fetch(url, init);
+        // Read the body inside the deadline; a non-2xx has nothing worth reading — but
+        // "not reading it" is not the same as "done with it". An unread body leaves the
+        // response open, so an endpoint that returns error headers and then dribbles or
+        // stalls its body accumulates one live stream per poll, forever. Cancel it.
+        if (!res.ok) {
+          try { if (res.body && !res.body.locked) await res.body.cancel(); } catch (e) { /* already gone */ }
+          return { ok: false, status: res.status, statusText: res.statusText, text: '' };
+        }
+        return { ok: true, status: res.status, statusText: res.statusText, text: await res.text() };
+      });
+      if (superseded()) return;
+      if (!answer.ok) {
+        failures++;
+        if (!showStale('HTTP ' + answer.status)) {
+          showState('⚠', 'HTTP ' + answer.status,
+            'The endpoint answered with ' + answer.status + ' ' + (answer.statusText || '') +
+            '. Check the URL and the auth header in settings.', true);
+        }
+        return;
+      }
+
+      // A 2xx clears the backoff HERE, before the body is looked at. Every branch below
+      // is a configuration question about a service that is demonstrably answering, and
+      // each one of them returns early — leaving the reset further down means a tile
+      // that recovers into a non-JSON body keeps retrying on the old failure cadence.
+      failures = 0;
+
+      let doc;
+      try {
+        doc = JSON.parse(answer.text);
+      } catch (e) {
+        if (!showStale('not JSON')) {
+          // Retry stays here, unlike the pointer-miss card: a non-JSON body is a claim
+          // about what the endpoint is returning RIGHT NOW, and a captive portal, a
+          // maintenance page or a mid-deploy upstream all clear on their own. The
+          // wording keeps both readings open rather than blaming the settings.
+          showState('⚠', 'Not JSON',
+            'The endpoint answered, but the body is not JSON — check the URL, or the service may be returning an error page right now.', true);
+        }
+        return;
+      }
+
+      const found = resolvePath(doc, cfg.pointer);
+      if (found === undefined) {
+        // A pointer miss is a settings error, not a network error: retrying the same
+        // request cannot fix it, so no Retry button — name the path instead.
+        showState('◎', 'No value at that path',
+          'The response has nothing at "' + (cfg.pointer || '/') + '". Check the path in settings.', false);
+        return;
+      }
+
+      const formatted = formatValue(found);
+      if (formatted === undefined) {
+        showState('◎', 'That path is not a single value',
+          'It points at a list or an object. This tile shows one number or word — point it deeper.', false);
+        return;
+      }
+      if (formatted === null) {
+        // A real null from the source: the endpoint is fine, the reading is missing.
+        if (!showStale('no reading')) showValue('--', '');
+        return;
+      }
+      if (typeof formatted === 'string') showValue(formatted, '');
+      else showValue(formatted.text, classify(formatted.num));
+    } catch (e) {
+      // An abort we caused by retargeting the tile is not an endpoint failure, and the
+      // state it would paint describes a source the user has already moved off.
+      if (superseded()) return;
+      failures++;
+      WW.log('rest: ' + (e && e.message ? e.message : e));
+      if (!showStale('unreachable')) {
+        showState('⚠', 'Could not reach the endpoint',
+          'The request failed. Check the URL, and that this PC can reach it.', true);
+      }
+    } finally {
+      // A superseded request must not clear the flag: the re-init already reset it, and
+      // a late unwind would otherwise unlock a poll that is legitimately in flight.
+      if (!superseded()) {
+        inFlight = false;
+        if (activeController === controller) activeController = null;
+      }
+    }
+  }
+
+  /** Retry cadence. A service that is down should not be hit every 5 s for hours:
+   * each consecutive failure doubles the wait, capped at ten minutes, and any answer
+   * (or a tap on Retry) puts it straight back to the configured interval. */
+  function nextDelayMs() {
+    const base = cfg.pollSeconds * 1000;
+    if (!failures) return base;
+    // The ten-minute cap bounds the EXTRA wait, never the total. Capping the total
+    // inverts the whole point above 600 s: a tile set to poll once a day would answer
+    // its first failure by switching to every ten minutes — 144x the traffic, from the
+    // code meant to reduce it. Backoff can only ever slow this tile down.
+    const grown = base * Math.pow(2, Math.min(failures, 6));
+    return Math.min(grown, base + 600000);
+  }
+
+  // A self-rescheduling timeout rather than setInterval: the delay varies with the
+  // backoff, and a chain cannot overlap itself the way a fixed interval can.
+  function schedule() {
+    clearTimeout(timer);
+    timer = null;
+    if (!cfg.url || gamePaused || document.hidden) return;
+    timer = setTimeout(async () => {
+      timer = null;
+      await poll();
+      schedule();
+    }, nextDelayMs());
+  }
+
+  /** The age label must not wait for the next poll — at the supported 24 h interval
+   * a fresh reading would otherwise claim "0s ago" for most of a day. */
+  function startAgeTicker() {
+    clearInterval(ageTimer);
+    ageTimer = setInterval(() => { if (lastAt) renderMeta(); }, 30000);
+  }
+
+  function restart() {
+    if (!cfg.url) {
+      showState('◎', 'No endpoint set',
+        'Add the URL of a JSON endpoint in this widget’s settings, plus the path to the value you want on the panel.', false);
+      clearTimeout(timer);
+      timer = null;
+      return;
+    }
+    if (!last) showLoading();
+    // A hidden panel gets no opening request. The shell answers `ww-ready` whether or
+    // not the WebView is visible, so every cold start or reload while minimised would
+    // otherwise fetch once for nobody; `visibilitychange` polls the moment it is worth
+    // looking at. Deliberately `document.hidden` and not `paused()` — a fullscreen game
+    // does not hide this panel, it is a second screen, so a tile that loads during one
+    // is still being looked at and still earns its first reading.
+    if (document.hidden) return;
+    // Schedule only once the first poll has resolved: scheduling alongside it reads a
+    // failure counter that has not been updated yet, so the backoff would always miss
+    // the first failure and retry at the full cadence.
+    poll().then(schedule);
+  }
+
+  // ---- lifecycle ----------------------------------------------------------------
+  WW.onInit((state) => {
+    const s = state.settings || {};
+    // onGame reports TRANSITIONS only, so a tile that boots (or reloads) while a game
+    // already owns the screen never hears about it. ww-init carries the current state:
+    // seed from it, or this widget is the one thing still polling during a game.
+    gamePaused = !!(state.game && state.game.active);
+    // Anything not explicitly glass/transparent renders solid — matching unset AND
+    // out-of-spec values, exactly like the stock clock.
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+
+    const num = (v) => {
+      const n = Number(String(v == null ? '' : v).trim());
+      return String(v == null ? '' : v).trim() !== '' && Number.isFinite(n) ? n : null;
+    };
+
+    const prevUrl = cfg.url, prevPointer = cfg.pointer, prevHeader = cfg.headerName + '\n' + cfg.headerValue;
+    cfg.url = String(s.url || '').trim();
+    // NOT trimmed: a JSON Pointer's trailing whitespace can be part of the key name.
+    // resolvePath strips the leading side, which is the only end that is never meaningful.
+    cfg.pointer = String(s.jsonPointer || '');
+    cfg.unit = String(s.unit || '').trim();
+    cfg.decimals = Math.min(4, Math.max(0, Number(s.decimals) || 0));
+    cfg.pollSeconds = Math.min(86400, Math.max(5, Number(s.pollSeconds) || 60));
+    cfg.warn = num(s.warn);
+    cfg.crit = num(s.crit);
+    cfg.headerName = String(s.headerName || '').trim();
+    cfg.headerValue = String(s.headerValue || '');
+
+    el('title').textContent = String(s.label || '').trim() || 'REST';
+    el('unit').textContent = cfg.unit;
+
+    // A repeated init (settings edit, theme push) must not stack timers or throw the
+    // current reading away. Only a change to WHAT is being fetched invalidates it.
+    const sourceChanged = cfg.url !== prevUrl || cfg.pointer !== prevPointer ||
+      (cfg.headerName + '\n' + cfg.headerValue) !== prevHeader;
+    if (sourceChanged) {
+      last = null;
+      lastAt = 0;
+      // Clear the RENDERED footer too, not just the timestamp behind it. Dropping
+      // `lastAt` alone leaves "4m ago · unreachable" on screen describing an endpoint
+      // this tile no longer points at — and the setup and error cards both keep the
+      // footer visible, so it would sit under them until a new reading replaced it.
+      renderMeta('');
+      // Retire any request still out against the OLD source. Without this the pending
+      // answer arrives after cfg has been rewritten and gets read with the new pointer
+      // and thresholds — the previous endpoint's payload, displayed as if it were the
+      // new one — while `inFlight` blocks the poll that would have corrected it.
+      generation++;
+      failures = 0;
+      if (activeController) { try { activeController.abort(); } catch (e) { /* already gone */ } }
+      activeController = null;
+      inFlight = false;
+      stale = false;
+    } else if (last) {
+      // Redraw the cached reading, but `showValue` would be a lie here: it stamps
+      // `lastAt = now`, drops the Stale pill and clears the failure reason. Renaming a
+      // tile would turn an hour-old survivor of a dead endpoint into "0s ago", live.
+      // Presentation edits must not change what the tile claims about its data.
+      if (stale) showStale(staleWhy);
+      else { paintValue(last.text, last.cls); renderMeta(); }
+    }
+    startAgeTicker();
+    restart();
+  });
+
+  el('retry').addEventListener('click', () => {
+    failures = 0;               // an explicit tap means "try properly now", not "keep backing off"
+    showLoading();
+    poll().then(schedule);
+  });
+
+  // 24/7 hygiene: no polling while the tile is hidden or a game owns the screen.
+  // Both conditions gate BOTH handlers. Checking only its own reason lets each one
+  // fire a request while the other reason still holds — becoming visible mid-game, or
+  // a game ending while the tile is hidden. `schedule()` then correctly refuses to arm
+  // a timer, which hides the bug: the tile stays quiet afterwards, but the request
+  // that should never have left has already gone.
+  function paused() { return document.hidden || gamePaused; }
+  function resume() {
+    if (paused()) { clearTimeout(timer); timer = null; return; }
+    poll().then(schedule);
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    renderMeta();          // the age is worth refreshing even when we will not poll
+    resume();
+  });
+  WW.onGame((g) => {
+    gamePaused = !!(g && g.active);
+    resume();
+  });
+</script>
+</body>
+</html>
