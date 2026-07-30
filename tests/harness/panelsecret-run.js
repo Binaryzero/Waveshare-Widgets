@@ -68,7 +68,10 @@ const widgets = [{
   // The dashboard is handed DECRYPTED secrets — that is the whole reason the panel
   // field can be prefilled and the reason emptying it has to be disambiguated.
   const layout = { pages: [{ name: 'P', slots: [{
-    widgetId: 'test.gh', size: 'half', instanceId: 'gh1',
+    // Deliberately ID-LESS: a layout written before instance ids existed. It is the case
+    // #68 and #70 are both about, and it is what lets N10 tell whether the shell really
+    // mints before saving — with an id already present, that check passes either way.
+    widgetId: 'test.gh', size: 'half',
     settings: { token: STORED_TOKEN, fresh: '', repo: 'binaryzero/waveshare-widgets' },
   }] }] };
 
@@ -189,6 +192,51 @@ const widgets = [{
     await notice.count() === 1 && await notice.isVisible() &&
     /Could not save the credential/i.test(await notice.textContent() || ''),
     await notice.textContent().catch(() => '(absent)'));
+
+  // ---- N10 · identity flows back from the host, and why it is dormant (#70) ----------
+  // SettingsWindow has handed minted instance ids back to its client since #15;
+  // DashboardWindow dropped them, so host and shell could disagree about which slot is
+  // which. The handler now exists on both sides — but the reason it has never bitten is
+  // an INVARIANT nothing stated: persistLayout mints an id for every id-less def before
+  // posting, so the host's Stamp has nothing left to mint on this path.
+  //
+  // That invariant is what these two checks pin. If a future change stops the shell
+  // minting first, N10 fails here rather than in the field, and the adoption path N10b
+  // covers stops being dormant at exactly that moment.
+  const everySavedSlotHasId = saves.length > 0 && saves.every((s) =>
+    (s.pages || []).every((p) => (p.slots || []).every((slot) => !!slot.instanceId)));
+  check('N10 the shell mints before saving, so the host never has to (why #70 is dormant)',
+    everySavedSlotHasId, `${saves.length} saves inspected`);
+
+  // An ack for a slot that already has an identity must not re-brand it. While N10 holds
+  // that is every slot, so this is the reachable half of the handler; the widgetId guard
+  // itself cannot be exercised from here, and a probe claiming to test it would pass with
+  // the guard deleted.
+  //
+  // The id is compared ACROSS the ack, and a real mutation is forced afterwards so the
+  // comparison sees a save taken after it. Asserting against `saves` alone proved nothing:
+  // selecting a slot does not call persistLayout, so the newest snapshot still predated
+  // the message and the check passed however the handler behaved.
+  const idBefore = (lastSave() || {}).pages?.[0]?.slots?.[0]?.instanceId;
+  await page.evaluate(() => window.__hostPush(JSON.stringify({
+    type: 'minted-ids',
+    data: [{ page: 0, slot: 0, widgetId: 'test.gh', instanceId: 's-from-host' },
+           { page: 0, slot: 0, widgetId: 'other.widget', instanceId: 's-wrong-widget' },
+           { page: 9, slot: 9, widgetId: 'test.gh', instanceId: 's-out-of-range' }],
+  })));
+  await wait(250);
+  const savesBeforeMutation = saves.length;
+  await rows.nth(0).locator('input').fill('forces-a-save-after-the-ack');
+  await wait(900);
+  const idAfter = (lastSave() || {}).pages?.[0]?.slots?.[0]?.instanceId;
+  check('N10b the mutation really persisted, so the comparison sees a post-ack save',
+    saves.length > savesBeforeMutation, `${savesBeforeMutation} -> ${saves.length}`);
+  check('N10c an ack for an already-identified slot leaves its identity alone',
+    !!idBefore && idAfter === idBefore, `${idBefore} -> ${idAfter}`);
+  check('N10d and none of the injected ids reached the layout',
+    !JSON.stringify(lastSave()).includes('s-from-host') &&
+    !JSON.stringify(lastSave()).includes('s-wrong-widget') &&
+    !JSON.stringify(lastSave()).includes('s-out-of-range'));
 
   await browser.close();
   srv.close();

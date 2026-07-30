@@ -98,6 +98,28 @@
         if (p) openPalette(p);
       }
     }
+    else if (msg.type === 'minted-ids') {
+      // The host stamps a stable instanceId on any credentialed slot that arrived
+      // without one — but on ITS copy of the layout, so this shell still holds the
+      // id-less def it sent. Adopt the identities, or host and shell disagree about
+      // which slot is which for every subsequent save (#70).
+      //
+      // Addressed by the position WE submitted, with a widgetId guard so an ack that
+      // arrives after the user has replaced that tile cannot brand the newcomer. A
+      // def that has since acquired an id of its own is left alone: persistLayout
+      // adopts the tag the iframe is already running under, and overwriting that
+      // would move the widget's local-storage keys out from under it.
+      for (const m of (Array.isArray(msg.data) ? msg.data : [])) {
+        const page = (layoutData.pages || [])[m.page];
+        const def = page && (page.slots || [])[m.slot];
+        if (!def || def.instanceId || def.widgetId !== m.widgetId) continue;
+        // Only the persisted identity. The running iframe keeps the `tag` it was
+        // initialised under, because that tag is its widget-local storage namespace
+        // and swapping it here would orphan the widget's own state — the hazard
+        // recorded as #56 item 3, which is a separate decision from this one.
+        def.instanceId = m.instanceId;
+      }
+    }
     else if (msg.type === 'secrets-failed') {
       // The panel already re-rendered as if the save were clean, but the host could not
       // protect a credential and refuses to write one in the clear. Say so on glass —
