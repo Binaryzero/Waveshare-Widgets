@@ -648,9 +648,24 @@ header h1 #appVersion {
  * scrolls, so the extra row costs canvas height rather than reachability. */
 @media (max-width: 1040px) {
   #dockBody { flex-wrap: wrap; }
+  /* Wrapping alone is not enough: a flex LINE takes its cross size from its content,
+   * and #dockBody only has a max-height, so the first row grew to its content height
+   * and pushed the second row past the bottom of a document that cannot scroll. At
+   * 780x480 that put the Appearance panel's top at 987px in a 480px window — not
+   * clipped, simply gone. overflow:auto on the panel cannot help a box that was never
+   * given a height to overflow.
+   *
+   * Both rows are bounded, AND the dock body scrolls. The bounds alone are a guess —
+   * they cannot know how tall the toolbar wrapped to on this window — and a 15px
+   * miss is still a row the user cannot reach. The scroll is what makes it correct
+   * rather than approximately correct; the bounds are what keep the second row from
+   * needing a scroll in the common case. */
+  #dockBody { overflow-y: auto; }
+  #dockPalette, #contextPanel { max-height: 28vh; }
   #stylePanel {
     flex: 1 0 100%;
     width: auto;
+    max-height: 18vh;
     border-left: 0;
     border-top: 1px solid var(--line);
   }

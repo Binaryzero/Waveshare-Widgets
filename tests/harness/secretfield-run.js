@@ -452,6 +452,30 @@ const layout = {
   check('E23c and the widget/size controls stay readable rather than collapsing',
     controls.widget >= 180 && controls.size >= 150,
     `widget ${controls.widget}px, size ${controls.size}px`);
+  // E23d · the WRAPPED row must be reachable, which is a VERTICAL question. Below
+  // 1040px Appearance wraps to its own flex line, and a flex line takes its cross size
+  // from its content: the first row grew to fit a populated inspector and pushed the
+  // second row past the bottom of a document that cannot scroll. At 780x480 that put
+  // the panel's top at 987px in a 480px window — not clipped, gone. E23/E23b measure
+  // horizontal bounds and the dock box, and both passed throughout.
+  await page.setViewportSize({ width: 780, height: 480 });
+  await page.waitForTimeout(600);
+  const wrapped = await page.evaluate(() => {
+    const body = document.getElementById('dockBody');
+    if (body) body.scrollTop = body.scrollHeight;   // scroll to the end before judging
+    const sty = document.getElementById('stylePanel');
+    const r = sty && !sty.hidden ? sty.getBoundingClientRect() : null;
+    return {
+      shown: !!r,
+      top: r ? Math.round(r.top) : null,
+      bottom: r ? Math.round(r.bottom) : null,
+      win: window.innerHeight,
+    };
+  });
+  check('E23d at 780×480 the wrapped Appearance row is reachable, not below the window',
+    wrapped.shown && wrapped.top >= 0 && wrapped.bottom <= wrapped.win + 1,
+    JSON.stringify(wrapped));
+
   await page.setViewportSize({ width: 1100, height: 820 });
   await page.waitForTimeout(400);
 
