@@ -82,10 +82,15 @@ public sealed class SettingsWindow : Form
             await core.AddScriptToExecuteOnDocumentCreatedAsync(shim);
             _hub.SensorsUpdated += OnSensorsUpdated;
             _hub.MediaUpdated += OnMediaUpdated;
+            // Fires on the watcher's thread; OnLibraryChanged marshals before touching
+            // the WebView. Unsubscribed below — this window is opened and closed
+            // repeatedly, and a surviving handler would post into a dead WebView.
+            _library.Changed += OnLibraryChanged;
             FormClosed += (_, _) =>
             {
                 _hub.SensorsUpdated -= OnSensorsUpdated;
                 _hub.MediaUpdated -= OnMediaUpdated;
+                _library.Changed -= OnLibraryChanged;
             };
             core.Navigate($"https://{ShellHost}/settings.html");
         }
@@ -249,9 +254,16 @@ public sealed class SettingsWindow : Form
         catch (ObjectDisposedException) { /* window closed */ }
     }
 
-    /// <summary>Manifest lookup for the secret pipeline (which properties are credentials).</summary>
+    /// <summary>Manifest lookup for the secret pipeline (which properties are credentials).
+    ///
+    /// ORDINAL, because that is the identity the library itself uses: <c>Rescan</c> resolves
+    /// duplicates with an ordinal compare, so 'Foo' and 'foo' are two distinct widgets that
+    /// both load. A case-insensitive lookup here answers a question the library never asked —
+    /// it hands a refused 'Foo' the manifest of an unrelated 'foo', and Mask then blanks that
+    /// widget's secret names instead of this one's, posting the credential 'Foo' was refused
+    /// over to the editor untouched.</summary>
     private WidgetManifest? ManifestFor(string widgetId) =>
-        _library.Widgets.FirstOrDefault(w => string.Equals(w.Manifest.Id, widgetId, StringComparison.OrdinalIgnoreCase))?.Manifest;
+        _library.Widgets.FirstOrDefault(w => string.Equals(w.Manifest.Id, widgetId, StringComparison.Ordinal))?.Manifest;
 
     /// <summary>The manifests that produced the CURRENTLY masked payload. Save must seal
     /// against these, not against whatever the library holds by then: if a widget is
@@ -268,26 +280,216 @@ public sealed class SettingsWindow : Form
         return ManifestFor(widgetId);
     }
 
+    /// <summary>Rebuilds the baseline from the current library. Only legitimate when the
+    /// layout is (re)masked in the same breath — the snapshot's job is to describe the
+    /// manifests that produced the MASKED LAYOUT the editor is holding, not the palette.</summary>
     private void SnapshotManifests()
     {
-        var snapshot = new Dictionary<string, WidgetManifest>(StringComparer.OrdinalIgnoreCase);
+        // Ordinal — the library's own notion of widget identity. See ManifestFor.
+        var snapshot = new Dictionary<string, WidgetManifest>(StringComparer.Ordinal);
         foreach (var w in _library.Widgets)
             snapshot[w.Manifest.Id] = w.Manifest;
+        AddRedactionManifests(snapshot);
         _maskedManifests = snapshot;
+    }
+
+    /// <summary>Stands a redaction-only manifest in for every REFUSED widget.
+    ///
+    /// A refusal removes the widget from the library, so <see cref="ManifestAsMasked"/>
+    /// returns null for its slots, <see cref="SecretPolicy.Mask"/> skips them, and the
+    /// plaintext credential the widget was refused over is posted to the editor in the
+    /// clear — the refusal creating the exposure it exists to prevent. The stand-in keeps
+    /// those names on the secret pipeline, so Mask blanks them and Seal restores or
+    /// encrypts them instead of the editor's blank overwriting the stored value.</summary>
+    private void AddRedactionManifests(Dictionary<string, WidgetManifest> snapshot)
+    {
+        foreach (var r in _library.Rejected)
+        {
+            if (string.IsNullOrEmpty(r.Id) || r.RedactNames.Count == 0)
+                continue;
+            // MERGE into an existing entry, never replace it and never skip it.
+            //
+            // Replacing loses every OTHER secret the old manifest declared — that entry is
+            // what masked the layout the editor is holding, so Seal would blank them. But
+            // skipping is just as wrong, and that is what a bare TryAdd did: a widget can
+            // be refused by the same folder edit that RETYPED one of its properties, and
+            // the stale entry still calls that property `text`. A credential typed into
+            // the field before the rescan then goes to layout.json in the clear — the very
+            // hole the redaction metadata exists to close, reopened by the order of events.
+            //
+            // Secret wins, exactly as in the property union above.
+            snapshot[r.Id] = snapshot.TryGetValue(r.Id, out var existing)
+                ? existing.WithSecretsForced(r.RedactNames)
+                : WidgetManifest.RedactionOnly(r.Id, r.Name, r.RedactNames);
+        }
+    }
+
+    /// <summary>Adds newly-seen manifests to the baseline WITHOUT dropping any.
+    ///
+    /// Used when the library changes under an editor that is still holding a layout
+    /// masked with the old manifests. Replacing the snapshot there loses credentials: if
+    /// a credentialed widget is removed, refused, or becomes briefly unparseable, its
+    /// manifest disappears from the baseline, <see cref="SecretPolicy.Seal"/> stops
+    /// walking that widget's secret fields on the next save, and the masked empty string
+    /// is written straight over the stored ciphertext.
+    ///
+    /// A manifest that once masked the layout has to stay reachable until the layout
+    /// itself is remasked, which only happens in <see cref="PostInit"/>. Stale entries
+    /// are harmless — Seal consults them by widget id for slots that already exist.</summary>
+    private void MergeManifestSnapshot()
+    {
+        if (_maskedManifests is null) { SnapshotManifests(); return; }
+        foreach (var w in _library.Widgets)
+        {
+            if (!_maskedManifests.TryGetValue(w.Manifest.Id, out var masked))
+            {
+                _maskedManifests[w.Manifest.Id] = w.Manifest;
+                continue;
+            }
+
+            // UNION the property lists — neither manifest alone is sufficient, and
+            // getting this wrong loses a credential in one direction or the other:
+            //
+            //   keep only the OLD  -> a secret ADDED by the reload is unknown to Seal, so
+            //                         a credential the user types into the new field is
+            //                         written to layout.json as plaintext.
+            //   keep only the NEW  -> a secret the reload REMOVED or retyped is unknown,
+            //                         so the editor's masked blank overwrites the stored
+            //                         ciphertext.
+            //
+            // Old definitions win on a name collision: they are the ones that classified
+            // the layout the editor is currently holding, and that layout is what the
+            // next save writes.
+            // Name-collision rule: SECRET WINS, from whichever side declares it. A pure
+            // "old wins" union quietly loses the retype case — a property that was
+            // `text` and is now `secret` (a feed URL that became private) would keep the
+            // old non-secret definition, so the editor renders a masked field while Seal
+            // treats it as ordinary text and writes the credential out in the clear.
+            // Erring toward secret is the safe direction: the worst case is carrying a
+            // value through the cipher that did not need it.
+            //
+            // ORDINAL, matching the only comparer that decides anything downstream: setting
+            // keys are JSON object keys and SecretPolicy.SecretNames is an ordinal set. A
+            // case-insensitive index collapses `apiToken` and `ApiToken` into one entry, so a
+            // reload that renames a secret by case alone leaves the NEW name out of the union
+            // — the editor renders and accepts it while Seal, walking ordinal names, seals
+            // only the old one and writes the credential to layout.json in the clear.
+            var union = new List<WidgetProperty>(masked.Properties);
+            var byName = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (var i = 0; i < union.Count; i++)
+                if (!string.IsNullOrEmpty(union[i].Name)) byName[union[i].Name] = i;
+            foreach (var p in w.Manifest.Properties)
+            {
+                // A nameless property cannot be addressed by anything — not the editor, not
+                // a settings key, not Seal. `"name": null` in a third-party manifest used to
+                // reach the index and throw ArgumentNullException from inside the invoked UI
+                // delegate, where the BeginInvoke catch cannot see it and the whole settings
+                // window goes down. There is nothing to merge, so there is nothing to do.
+                if (string.IsNullOrEmpty(p.Name)) continue;
+                if (!byName.TryGetValue(p.Name, out var at)) { byName[p.Name] = union.Count; union.Add(p); continue; }
+                if (p.Type == "secret" && union[at].Type != "secret") union[at] = p;
+            }
+
+            _maskedManifests[w.Manifest.Id] = new WidgetManifest
+            {
+                Id = w.Manifest.Id,
+                Name = w.Manifest.Name,
+                Author = w.Manifest.Author,
+                Version = w.Manifest.Version,
+                Description = w.Manifest.Description,
+                MinApiVersion = w.Manifest.MinApiVersion,
+                PreviewIcon = w.Manifest.PreviewIcon,
+                SupportedSlots = w.Manifest.SupportedSlots,
+                Properties = union,
+            };
+        }
+
+        // A widget can also be refused BETWEEN init and save — or appear already-refused
+        // in a folder that was empty at init. TryAdd leaves any real manifest alone (that
+        // is the one that masked the layout the editor holds); it only fills the gap where
+        // there is nothing at all, so the next save seals the slot instead of writing the
+        // credential back out in the clear.
+        AddRedactionManifests(_maskedManifests);
+    }
+
+    /// <summary>The widget palette as the editor sees it. Shared by the initial payload
+    /// and the live refresh, so the two can never describe the library differently.</summary>
+    private object WidgetCatalog() => _library.Widgets.Select(w => new
+    {
+        id = w.Manifest.Id,
+        name = w.Manifest.Name,
+        author = w.Manifest.Author,
+        version = w.Manifest.Version,
+        url = $"https://{w.VirtualHost}/index.html",
+        supportedSlots = w.Manifest.SupportedSlots,
+        properties = w.Manifest.Properties,
+    });
+
+    /// <summary>Widgets on disk that the library refused to load. Without this the
+    /// refusal is a line in app.log and, to the user, a tile that stopped existing.</summary>
+    private object RejectedCatalog() => _library.Rejected.Select(r => new
+    {
+        id = r.Id,
+        name = r.Name,
+        folder = r.Folder,
+        reason = r.Reason,
+    });
+
+    /// <summary>Re-sends the palette and the refusal list after the watcher rescans.
+    ///
+    /// Fixing an offending widget in the widgets folder is the documented workflow, and
+    /// the folder is watched — but <see cref="WidgetLibrary.Changed"/> only reloaded the
+    /// dashboard, so the settings window kept showing "not loaded" for a widget the user
+    /// had already repaired, until they closed and reopened the whole window.
+    ///
+    /// Deliberately NOT a full settings-init: that would re-seed the layout from disk and
+    /// throw away unsaved edits. Only the catalog and the banner move.</summary>
+    private void OnLibraryChanged()
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        try
+        {
+            BeginInvoke(() =>
+            {
+                if (IsDisposed || _webView.CoreWebView2 is null) return;
+
+                // A widget added or repaired since the window opened has a virtual host
+                // this WebView has never been told about, so its preview iframe would not
+                // resolve until Settings was reopened. InitializeAsync maps only what
+                // existed at open; remap the WHOLE library, as the install path does.
+                foreach (var w in _library.Widgets)
+                    _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                        w.VirtualHost, w.Folder, CoreWebView2HostResourceAccessKind.Allow);
+
+                // MERGE, never replace: the editor is still holding a layout masked with
+                // the previous manifests, and dropping one would make Seal skip its
+                // secret fields and overwrite the stored ciphertext with a masked blank.
+                MergeManifestSnapshot();
+
+                Post(new JsonObject
+                {
+                    ["type"] = "widgets-changed",
+                    ["widgets"] = JsonSerializer.SerializeToNode(WidgetCatalog(), BridgeJson),
+                    ["rejectedWidgets"] = JsonSerializer.SerializeToNode(RejectedCatalog(), BridgeJson),
+                });
+            });
+        }
+        catch (ObjectDisposedException)
+        {
+            // The rescan lands on a background timer thread, so the window can be torn
+            // down between the checks above and the invoke. Unhandled here it would come
+            // off the timer callback with no catch above it and take the app down.
+        }
+        catch (InvalidOperationException)
+        {
+            // Handle destroyed after the IsHandleCreated check — same race, same answer.
+        }
     }
 
     private void PostInit()
     {
-        var widgets = _library.Widgets.Select(w => new
-        {
-            id = w.Manifest.Id,
-            name = w.Manifest.Name,
-            author = w.Manifest.Author,
-            version = w.Manifest.Version,
-            url = $"https://{w.VirtualHost}/index.html",
-            supportedSlots = w.Manifest.SupportedSlots,
-            properties = w.Manifest.Properties,
-        });
+        var widgets = WidgetCatalog();
+        var rejected = RejectedCatalog();
 
         // The editor never receives a credential: secret values are blanked and replaced
         // by a per-slot "secretsSet" hint, so the field can show a saved state while the
@@ -303,6 +505,7 @@ public sealed class SettingsWindow : Form
             {
                 ["layout"] = layoutNode,
                 ["widgets"] = JsonSerializer.SerializeToNode(widgets, BridgeJson),
+                ["rejectedWidgets"] = JsonSerializer.SerializeToNode(rejected, BridgeJson),
                 ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
                 // Seed the replica's now-playing state: MediaUpdated only fires on
                 // change, so without this an already-playing track never appears.

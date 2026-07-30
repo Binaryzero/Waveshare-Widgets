@@ -20,7 +20,11 @@ const KNOWN_TYPES = new Set(['text', 'number', 'slider', 'color', 'select', 'swi
 // are the COMMON spellings, so the name is split at case boundaries before matching.
 // The compound keywords tolerate the break the splitter introduces: "OAuthAPIKey"
 // becomes "O Auth API Key", and "API Key" is still an api key.
-const CREDENTIAL_WORD = /(^|[^a-z0-9])(token|secret|password|passwd|api ?key|bearer|pat|credential|private ?key|access ?key)([^a-z0-9]|$)/i;
+// The trailing `s?` matters: `credential` was flagged and `credentials` was not, which
+// the shared fixture caught. It cannot swallow the boundary cases — `passwordless`,
+// `secretary` and `tokenizer` still fail, because after the optional s the next
+// character must end the word.
+const CREDENTIAL_WORD = /(^|[^a-z0-9])(token|secret|password|passwd|api ?key|bearer|pat|credential|private ?key|access ?key|authorization|auth ?header|jwt|pass ?phrase)s?([^a-z0-9]|$)/i;
 // Credential-equivalent URLs (WIDGET-STANDARD: "a private ICS or webhook link"). A
 // webhook URL IS the credential — anyone holding it can post. So is a private calendar
 // address. But most url properties are public (the iframe and youtube widgets both
@@ -42,6 +46,16 @@ const COMPOUND = /(api|client|access|auth|refresh|session|bearer|private|user|ad
 const URL_VALUE = /(url|uri|link|endpoint|address|feed)$/i;
 const URLISH = /(^|[^a-z0-9])(url|uri|link|endpoint|address|feed)([^a-z0-9]|$)/i;
 const SECRET_QUALIFIER = /(^|[^a-z0-9])(private|secret|signed|personal|sas)([^a-z0-9]|$)/i;
+// A name ENDING in one of these describes something ABOUT a credential rather than
+// holding one: `tokenEndpoint` is a public OAuth URL, `tokenExpiry` a duration,
+// `accessTokenType` a string like "Bearer". Without this an ordinary OAuth widget is
+// refused outright unless it declares a public URL as `secret`, which would be a lie.
+// Only the credential-WORD rules are waived — the webhook and signed-URL rules still
+// run below, because `webhookEndpoint` genuinely IS the credential.
+// Deliberately tight: every entry must be a word that cannot itself hold the secret.
+// `value`, `url` and `name` are absent for that reason — `tokenValue` and `secretUrl`
+// stay flagged.
+const METADATA_TAIL = /(^|[^a-z0-9])(endpoints?|expiry|expires|expiration|ttl|lifetime|type|label|format|algorithm|issuer|scopes?|count|prefix|enabled)$/i;
 const looksLikeCredential = (name) => {
   // Two case boundaries, because initialisms are everywhere in this domain:
   //   acronym->word  "APIToken" -> "API Token", "JWTToken" -> "JWT Token"
@@ -55,9 +69,12 @@ const looksLikeCredential = (name) => {
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/[_\-.]+/g, ' ');
   const squashed = spaced.replace(/\s+/g, '');
-  if (CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(squashed)) return true;
-  if (COMPOUND.test(squashed)) return true;
   const trimmed = spaced.trim();
+  // Metadata about a credential is not the credential; see METADATA_TAIL.
+  if (!METADATA_TAIL.test(trimmed)) {
+    if (CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(squashed)) return true;
+    if (COMPOUND.test(squashed)) return true;
+  }
   if (WEBHOOK.test(spaced) && (URLISH.test(spaced) || WEBHOOK_VALUE.test(trimmed))) return true;
   return URLISH.test(spaced) && SECRET_QUALIFIER.test(spaced) && URL_VALUE.test(trimmed);
 };
@@ -228,6 +245,27 @@ function human(report) {
 const args = process.argv.slice(2);
 const asJson = args.includes('--json');
 const all = args.includes('--all');
+
+// --self-test runs the shared fixture through looksLikeCredential. The same file is
+// read by the C# port at the install boundary (issue #57), and CI runs both: that is
+// the only thing stopping the two from drifting into "the validator refuses this
+// widget but the host installs it anyway".
+if (args.includes('--self-test')) {
+  const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'credential-names.json'), 'utf8'));
+  let bad = 0;
+  for (const name of fixture.credential) {
+    if (!looksLikeCredential(name)) { console.log(`  FAIL credential "${name}" was NOT flagged`); bad++; }
+  }
+  for (const name of fixture.innocent) {
+    if (looksLikeCredential(name)) { console.log(`  FAIL innocent "${name}" WAS flagged`); bad++; }
+  }
+  const total = fixture.credential.length + fixture.innocent.length;
+  console.log(bad
+    ? `${bad} of ${total} disagree with tools/credential-names.json`
+    : `credential rule agrees with the fixture on all ${total} names`);
+  process.exit(bad ? 1 : 0);
+}
+
 const targets = args.filter((a) => !a.startsWith('--'));
 if (!targets.length) {
   console.error('usage: validate-widget.js [--json] <widget-folder>  |  [--json] --all <widgets-dir>');

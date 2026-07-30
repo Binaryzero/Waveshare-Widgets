@@ -11,6 +11,20 @@ namespace WaveshareWidgets.Widgets;
 /// the dashboard serves it from (one host per widget = one browser origin per widget).</summary>
 public sealed record InstalledWidget(WidgetManifest Manifest, string Folder, string VirtualHost);
 
+/// <summary>A widget on disk that the library refused to load, and why (issue #57).
+///
+/// Refusing is the whole point of the credential rule, but a refusal that only reaches
+/// app.log means the user's first symptom is a tile that quietly stopped existing. The
+/// settings window reads this list so the reason is visible where the widget isn't.
+///
+/// <paramref name="RedactNames"/> is redaction metadata, not display data: a refused
+/// widget has no manifest in the library, so nothing downstream can tell which of its
+/// stored settings are credentials. Carrying the names here keeps those slots on the
+/// secret pipeline (see <see cref="WidgetManifest.RedactionOnly"/>) instead of having the
+/// refusal itself publish the plaintext it was raised over.</summary>
+public sealed record RejectedWidget(
+    string Id, string Name, string Folder, string Reason, IReadOnlyList<string> RedactNames);
+
 /// <summary>
 /// Manages the user's widgets folder: seeds stock widgets on first run, scans installed
 /// widget folders, installs .wswidget packages (zip of manifest.json + index.html), and
@@ -22,6 +36,11 @@ public sealed partial class WidgetLibrary : IDisposable
     private System.Threading.Timer? _debounce;
 
     public IReadOnlyList<InstalledWidget> Widgets { get; private set; } = [];
+
+    /// <summary>Widgets found on disk but refused, with the reason. Rebuilt by every
+    /// <see cref="Rescan"/>; surfaced in the settings window so a refusal is not a
+    /// silently missing tile.</summary>
+    public IReadOnlyList<RejectedWidget> Rejected { get; private set; } = [];
 
     /// <summary>Raised (on a background thread) when widget files change on disk.</summary>
     public event Action? Changed;
@@ -285,6 +304,7 @@ public sealed partial class WidgetLibrary : IDisposable
         // distinct ids can collide and version-resolving across the collision
         // silently uninstalled a different widget).
         var resolved = new List<(WidgetManifest Manifest, string Folder)>();
+        var rejected = new List<RejectedWidget>();
         foreach (var folder in Directory.GetDirectories(AppPaths.WidgetsDir))
         {
             var manifestPath = Path.Combine(folder, "manifest.json");
@@ -309,6 +329,20 @@ public sealed partial class WidgetLibrary : IDisposable
                 // iCUE-style widgets declare settings in index.html meta tags, not the manifest.
                 if (manifest.Properties.Count == 0)
                     manifest.Properties = IcueManifestReader.ParseProperties(indexPath);
+
+                // AFTER the iCUE parse, not before: at IsValid time an iCUE widget has no
+                // properties at all, so checking there would exempt exactly the widgets
+                // least likely to have met the build-time validator (issue #57).
+                if (!manifest.CredentialsAreTyped(out var credentialError))
+                {
+                    Log.Warn($"Refusing widget '{manifest.Id}' in '{folder}': {credentialError}");
+                    // The names travel with the refusal: this manifest is about to stop
+                    // existing as far as the rest of the app is concerned, and it is the
+                    // only thing that knows which of the slot's settings are credentials.
+                    rejected.Add(new RejectedWidget(manifest.Id, manifest.Name, folder, credentialError,
+                        manifest.CredentialPropertyNames()));
+                    continue;
+                }
 
                 var duplicate = resolved.FindIndex(w => w.Manifest.Id == manifest.Id);
                 if (duplicate >= 0)
@@ -369,7 +403,22 @@ public sealed partial class WidgetLibrary : IDisposable
             SaveHostMap(hostMap);
 
         Widgets = widgets.OrderBy(w => w.Manifest.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        Log.Info($"Widget library: {Widgets.Count} widget(s) installed");
+
+        // Drop rejections for ids that ended up loading anyway. Refusals are recorded
+        // during the scan, before duplicate resolution, so a stale copy of a widget that
+        // violates the rule would otherwise report "not loaded — unavailable" while the
+        // good copy of the same id sits in the palette working fine. The log line stays
+        // (that folder IS being refused); only the user-facing claim is withdrawn.
+        // ORDINAL, matching the duplicate resolution above (`w.Manifest.Id == manifest.Id`).
+        // Ids differing only in case are two distinct widgets to that check, so both load —
+        // meaning a rejected "Foo" really is unavailable even while "foo" works, and
+        // suppressing its warning would leave a layout referencing "Foo" with an
+        // unexplained empty tile. The suppression must use the same notion of identity
+        // that decided what loaded, or it answers a different question than it asks.
+        var loadedIds = new HashSet<string>(widgets.Select(w => w.Manifest.Id), StringComparer.Ordinal);
+        Rejected = rejected.Where(r => !loadedIds.Contains(r.Id)).ToList();
+        Log.Info($"Widget library: {Widgets.Count} widget(s) installed"
+               + (Rejected.Count > 0 ? $", {Rejected.Count} refused" : ""));
     }
 
     /// <summary>Compares SemVer-ish manifest versions ("1.2.3", "2.0.0-beta.1",
@@ -492,11 +541,99 @@ public sealed partial class WidgetLibrary : IDisposable
             throw new InvalidDataException("Package has no index.html at its root.");
 
         var targetDir = Path.Combine(AppPaths.WidgetsDir, Slug(manifest.Id));
-        if (Directory.Exists(targetDir))
-            Directory.Delete(targetDir, recursive: true);
 
-        // ExtractToDirectory guards against zip-slip path traversal.
-        archive.ExtractToDirectory(targetDir);
+        // Stage into a sibling temp folder and validate THERE before touching what is
+        // already installed. The old order deleted the target first, so a package that
+        // failed any check afterwards took the working widget with it — and adding the
+        // credential refusal below makes failing a great deal more likely (issue #57).
+        // Staged in DataDir, NOT inside WidgetsDir: the FileSystemWatcher watches the
+        // widgets folder, so a staging copy there would be picked up as a real widget by
+        // any rescan that fired mid-install. Same volume, so the Move below stays atomic.
+        var stageDir = Path.Combine(AppPaths.DataDir, ".installing-" + Slug(manifest.Id));
+        var backupDir = Path.Combine(AppPaths.DataDir, ".replacing-" + Slug(manifest.Id));
+        var swapped = false;   // is SOMETHING installed at targetDir? gates deleting the backup
+        if (Directory.Exists(stageDir))
+            DeleteTree(stageDir);
+        try
+        {
+            // ExtractToDirectory guards against zip-slip path traversal.
+            archive.ExtractToDirectory(stageDir);
+
+            // iCUE-style packages declare their settings in index.html, so the property
+            // list only exists once the archive is on disk — which is why this check
+            // lives here rather than beside IsValid above.
+            if (manifest.Properties.Count == 0)
+                manifest.Properties = IcueManifestReader.ParseProperties(Path.Combine(stageDir, "index.html"));
+            if (!manifest.CredentialsAreTyped(out var credentialError))
+                throw new InvalidDataException(
+                    $"Refusing to install '{manifest.Name}': {credentialError}");
+
+            // Move the old copy ASIDE rather than deleting it, so the swap is reversible.
+            // Deleting first and then moving leaves nothing installed if the move fails —
+            // and it can, transiently: antivirus or an open handle on the staged folder is
+            // enough. Losing a working widget to a failed UPGRADE is worse than the failed
+            // upgrade itself.
+            // A backup already sitting here means a PREVIOUS attempt failed its move AND
+            // its rollback, so this folder is the only surviving copy of the user's
+            // widget. Deleting it to make room — which is what this used to do — turns a
+            // recoverable failure into a permanent one on the retry, and the retry is
+            // exactly what someone does next. Recover it instead.
+            if (Directory.Exists(backupDir) && !Directory.Exists(targetDir))
+            {
+                Log.Warn($"Recovering '{manifest.Id}' from a previous failed install at '{backupDir}'");
+                Directory.Move(backupDir, targetDir);
+            }
+            else if (Directory.Exists(backupDir))
+            {
+                // Both present: the target is installed and working, so the backup is a
+                // stale leftover with nothing to protect.
+                DeleteTree(backupDir);
+            }
+
+            var hadPrevious = Directory.Exists(targetDir);
+            if (hadPrevious)
+                Directory.Move(targetDir, backupDir);
+            try
+            {
+                Directory.Move(stageDir, targetDir);
+                swapped = true;
+            }
+            catch
+            {
+                if (hadPrevious && !Directory.Exists(targetDir))
+                {
+                    try
+                    {
+                        Directory.Move(backupDir, targetDir);   // put the working copy back
+                        swapped = true;                         // the old copy is home again
+                    }
+                    catch (Exception restoreEx)
+                    {
+                        // Rollback failed too. The backup is now the ONLY copy of a widget
+                        // the user had working, so it must survive — `swapped` stays false
+                        // and the finally below leaves it alone. Name the path: recovery is
+                        // a manual folder rename, and nobody can do that without it.
+                        Log.Error($"Could not restore '{manifest.Id}' after a failed install; "
+                                + $"the previous copy is kept at '{backupDir}' — rename it back to "
+                                + $"'{targetDir}' to recover it ({restoreEx.Message})");
+                    }
+                }
+                throw;
+            }
+        }
+        finally
+        {
+            // A refused or half-extracted package must not leave a staging folder behind
+            // for the next Rescan to trip over.
+            if (Directory.Exists(stageDir))
+                DeleteTree(stageDir);
+            // The backup goes ONLY once something is definitely installed at the target —
+            // either the new copy or the restored old one. Deleting it unconditionally
+            // meant a failed move followed by a failed restore destroyed the last copy,
+            // which is the very outcome the backup exists to prevent.
+            if (swapped && Directory.Exists(backupDir))
+                DeleteTree(backupDir);
+        }
         Log.Info($"Installed widget '{manifest.Id}' v{manifest.Version} from {Path.GetFileName(packagePath)}");
 
         Rescan();

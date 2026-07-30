@@ -267,6 +267,49 @@ const layout = {
   check('E10b and it offers no Clear for a credential it never had',
     await swapped.locator('button.danger').evaluate((n) => n.hidden) === true);
 
+  // ---- E14 · a full settings-init RESETS the secret-name union
+  // The union exists so a hot-reload that drops a secret property cannot un-blank a
+  // credential the layout still holds. But a full init is the one moment it must be
+  // dropped: the host has remasked the layout against the CURRENT manifests, so no
+  // unsaved plaintext from the old catalog survives for the old names to protect —
+  // and a property retyped `secret` → `text` (a feed URL that stopped being private)
+  // would otherwise stay blanked in the preview for the life of the window, with no
+  // edit that could clear it (Codex #61 r5, P2).
+  await page.evaluate((payload) => window.__hostPush(payload), JSON.stringify({
+    type: 'settings-init',
+    data: {
+      widgets: [{
+        id: 'test.gh', name: 'GitHub Queue', supportedSlots: ['half'],
+        properties: [
+          { name: 'token', label: 'Personal access token', type: 'secret' },
+          // Was `secret` in the first init; now an ordinary setting.
+          { name: 'fresh', label: 'Public feed', type: 'text' },
+        ],
+      }],
+      layout: { pages: [{ name: 'Main', slots: [{
+        widgetId: 'test.gh', size: 'half', instanceId: 'gh1',
+        settings: { token: '', fresh: 'now-a-public-value' },
+      }] }] },
+      sensors: [], backgroundHost: 'backgrounds.wsw',
+      status: { elevated: false, version: 'v0.2.0 (probe)' },
+    },
+  }));
+  await page.waitForTimeout(400);
+  const afterReinit = await page.evaluate(() =>
+    (window.__wwReplicaLayout ? window.__wwReplicaLayout().pages[0].slots[0].settings : null));
+  check('E14 a property retyped to ordinary text reaches the preview after a re-init',
+    afterReinit && afterReinit.fresh === 'now-a-public-value', JSON.stringify(afterReinit));
+  // The reset must not cost the protection it replaced: a name the NEW catalog still
+  // calls secret is blanked exactly as before.
+  await page.locator('#slotList .slot-chip .chip-main').first().click();
+  await page.waitForTimeout(200);
+  await page.locator('#slotDetail .secret-wrap input').first().fill('ghp_AFTER_REINIT');
+  await page.waitForTimeout(150);
+  const afterTyped = await page.evaluate(() =>
+    JSON.stringify(window.__wwReplicaLayout ? window.__wwReplicaLayout() : null));
+  check('E14b and a still-secret property is still kept out of the preview',
+    !afterTyped.includes('ghp_AFTER_REINIT'), afterTyped.slice(0, 200));
+
   await browser.close();
   shellSrv.close();
   console.log(failures ? `${failures} FAILURES` : 'ALL PASS');

@@ -18,6 +18,11 @@
     </div>
   </header>
 
+  <!-- Widgets found on disk but refused (issue #57 — a credential declared as plaintext).
+       Without this the refusal reaches app.log and nowhere else, so the user's only
+       symptom is a widget that stopped existing. Populated by renderRejectedWidgets. -->
+  <section id="rejectedWidgets" hidden></section>
+
   <!-- WYSIWYG surface: the real dashboard shell at native 1280×400, scaled to fit.
        With "Edit layout" on (the default) it runs the shell's own on-panel edit
        mode — drag to rearrange, corner buttons to resize, ✕ to remove, + to add,

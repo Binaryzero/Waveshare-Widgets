@@ -34,6 +34,16 @@ jobs:
       - name: Secret pipeline guard
         run: dotnet run --project tools/SecretRoundTrip
 
+      # The credential-name rule exists twice — build time (Node) and install time (C#).
+      # Both are checked against tools/credential-names.json, and BOTH steps have to run:
+      # if only one did, the pair could drift into "the validator refuses this widget but
+      # the host installs it anyway", which is the gap issue #57 was filed for.
+      - name: Credential rule agrees with the fixture (C#)
+        run: dotnet run --project tools/CredentialRule
+
+      - name: Credential rule agrees with the fixture (validator)
+        run: node tools/validate-widget.js --self-test
+
       - name: Publish
         run: dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained false -o publish
 

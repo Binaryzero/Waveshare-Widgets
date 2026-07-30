@@ -466,6 +466,82 @@ Check("P25 a failed replacement keeps the legacy plaintext that still worked",
 Check("P25b and the failure is still reported, so the save is not called clean",
     r5Result.Failures.Count == 1);
 
+// ---- P26 · #61 r2: a manifest lookup that FORGETS a widget destroys its secret -------
+// Pins the hazard behind SettingsWindow's masked-manifest snapshot. Seal identifies
+// secret fields through the manifest; if the widget is no longer in the lookup, Seal
+// cannot tell "" from an emptied secret and simply writes the masked blank through.
+//
+// That is not hypothetical: the settings window rebuilt its snapshot from the live
+// library whenever the widgets folder changed, so removing or refusing a credentialed
+// widget while Settings was open armed exactly this on the next save. The fix is that
+// the snapshot MERGES rather than replaces — a manifest that masked the layout stays
+// reachable until the layout is remasked. This probe is why that rule exists.
+var r2Stored = LayoutWith(new JsonObject { ["apiToken"] = Token });
+SecretPolicy.Seal(r2Stored, null, Lookup);
+var r2Sealed = Value(r2Stored, "apiToken");
+Check("P26 setup: the credential is stored encrypted", r2Sealed is not null && r2Sealed != Token);
+
+// The editor's masked copy: the credential blanked, exactly what Mask produces.
+var r2Masked = LayoutWith(new JsonObject { ["apiToken"] = "" });
+SecretPolicy.Seal(r2Masked, r2Stored, _ => null);   // lookup has forgotten the widget
+Check("P26 a forgotten manifest lets a masked save wipe the stored credential",
+    Value(r2Masked, "apiToken") != r2Sealed,
+    "if this ever PASSES as equal, Seal grew its own protection and this probe is obsolete");
+
+// ...and with the manifest retained — what MergeManifestSnapshot guarantees — the same
+// masked save is correctly understood as "untouched" and the ciphertext survives.
+var r2Kept = LayoutWith(new JsonObject { ["apiToken"] = "" });
+SecretPolicy.Seal(r2Kept, r2Stored, Lookup);
+Check("P26b retaining the manifest keeps the credential through a masked save",
+    Value(r2Kept, "apiToken") == r2Sealed, Value(r2Kept, "apiToken"));
+
+// ---- P27 · #61 r5: refusing a widget must not publish the credential it refused ------
+// The install boundary (#57) removes a widget that declares a credential as plaintext.
+// But the layout may ALREADY hold that credential — written before the rule existed, or
+// by hand — and a refused widget has no manifest in the library, so the lookup returns
+// null, Mask walks straight past the slot, and settings-init posts the plaintext to the
+// editor. The refusal creates the exposure it exists to prevent.
+var refusedManifest = new WidgetManifest
+{
+    Id = "test.widget",
+    Name = "Refused",
+    Properties = [new WidgetProperty { Name = "apiToken", Label = "API token", Type = "text" }],
+};
+Check("P27 setup: this manifest is refused by the install rule",
+    !refusedManifest.CredentialsAreTyped(out _));
+
+// What the layout holds: the credential in the clear, because nothing ever encrypted it.
+var refusedStored = LayoutWith(new JsonObject { ["apiToken"] = Token });
+
+// The old behaviour, kept in the probe so it can still fail: with no manifest, Mask has
+// nothing to walk and the plaintext goes straight out to the editor.
+var unmasked = JsonSerializer.SerializeToNode(refusedStored);
+SecretPolicy.Mask(unmasked, _ => null);
+Check("P27b without redaction metadata the plaintext IS in the editor payload",
+    unmasked!.ToJsonString().Contains(Token),
+    "if this stops holding, Mask learned to redact unknown widgets and P27c proves less");
+
+// With the stand-in manifest the library now carries for every refusal.
+var standIn = WidgetManifest.RedactionOnly(
+    refusedManifest.Id, refusedManifest.Name, refusedManifest.CredentialPropertyNames());
+WidgetManifest? RedactedLookup(string id) => id == "test.widget" ? standIn : null;
+var refusedMasked = JsonSerializer.SerializeToNode(refusedStored);
+SecretPolicy.Mask(refusedMasked, RedactedLookup);
+Check("P27c the stand-in keeps the refused widget's credential out of the editor payload",
+    !refusedMasked!.ToJsonString().Contains(Token), refusedMasked.ToJsonString());
+Check("P27d and the editor is still told a value exists",
+    refusedMasked["pages"]![0]!["slots"]![0]!["secretsSet"] is JsonArray s27 && s27.Count == 1);
+
+// Redacting must not cost the user their data: the masked blank saved back has to restore
+// the stored value — and, since it was legacy plaintext, encrypt it on the way past.
+var refusedResave = JsonSerializer.Deserialize<DashboardLayout>(refusedMasked.ToJsonString())!;
+SecretPolicy.Seal(refusedResave, refusedStored, RedactedLookup);
+var refusedAfter = Value(refusedResave, "apiToken");
+Check("P27e saving the masked layout keeps the credential rather than blanking it",
+    SecretStore.Unprotect(refusedAfter) == Token, refusedAfter);
+Check("P27f and it is now encrypted at rest, which the refusal alone never achieved",
+    refusedAfter != Token && SecretStore.HasMarker(refusedAfter));
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 
