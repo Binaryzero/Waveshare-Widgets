@@ -602,3 +602,22 @@ header h1 #appVersion {
   white-space: nowrap;
 }
 .secret-state.set { color: var(--ok, #57d38c); }
+
+/* Widgets refused at load (issue #57). Sits directly under the header, above the
+ * preview, because it explains something the user will otherwise experience as a
+ * widget that vanished — it has to be seen before they go looking in the palette.
+ * Styled as a warning rather than an error: nothing is broken, something was
+ * deliberately not loaded. */
+#rejectedWidgets {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--warn, #f0b84f);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warn, #f0b84f) 8%, transparent);
+}
+#rejectedWidgets h2 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+#rejectedWidgets p { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+#rejectedWidgets ul { margin: 0; padding-left: 18px; font-size: 12px; }
+#rejectedWidgets li + li { margin-top: 6px; }
+#rejectedWidgets .muted { color: var(--muted); font-size: 11px; word-break: break-all; }

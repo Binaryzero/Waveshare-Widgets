@@ -11,6 +11,13 @@ namespace WaveshareWidgets.Widgets;
 /// the dashboard serves it from (one host per widget = one browser origin per widget).</summary>
 public sealed record InstalledWidget(WidgetManifest Manifest, string Folder, string VirtualHost);
 
+/// <summary>A widget on disk that the library refused to load, and why (issue #57).
+///
+/// Refusing is the whole point of the credential rule, but a refusal that only reaches
+/// app.log means the user's first symptom is a tile that quietly stopped existing. The
+/// settings window reads this list so the reason is visible where the widget isn't.</summary>
+public sealed record RejectedWidget(string Id, string Name, string Folder, string Reason);
+
 /// <summary>
 /// Manages the user's widgets folder: seeds stock widgets on first run, scans installed
 /// widget folders, installs .wswidget packages (zip of manifest.json + index.html), and
@@ -22,6 +29,11 @@ public sealed partial class WidgetLibrary : IDisposable
     private System.Threading.Timer? _debounce;
 
     public IReadOnlyList<InstalledWidget> Widgets { get; private set; } = [];
+
+    /// <summary>Widgets found on disk but refused, with the reason. Rebuilt by every
+    /// <see cref="Rescan"/>; surfaced in the settings window so a refusal is not a
+    /// silently missing tile.</summary>
+    public IReadOnlyList<RejectedWidget> Rejected { get; private set; } = [];
 
     /// <summary>Raised (on a background thread) when widget files change on disk.</summary>
     public event Action? Changed;
@@ -285,6 +297,7 @@ public sealed partial class WidgetLibrary : IDisposable
         // distinct ids can collide and version-resolving across the collision
         // silently uninstalled a different widget).
         var resolved = new List<(WidgetManifest Manifest, string Folder)>();
+        var rejected = new List<RejectedWidget>();
         foreach (var folder in Directory.GetDirectories(AppPaths.WidgetsDir))
         {
             var manifestPath = Path.Combine(folder, "manifest.json");
@@ -309,6 +322,16 @@ public sealed partial class WidgetLibrary : IDisposable
                 // iCUE-style widgets declare settings in index.html meta tags, not the manifest.
                 if (manifest.Properties.Count == 0)
                     manifest.Properties = IcueManifestReader.ParseProperties(indexPath);
+
+                // AFTER the iCUE parse, not before: at IsValid time an iCUE widget has no
+                // properties at all, so checking there would exempt exactly the widgets
+                // least likely to have met the build-time validator (issue #57).
+                if (!manifest.CredentialsAreTyped(out var credentialError))
+                {
+                    Log.Warn($"Refusing widget '{manifest.Id}' in '{folder}': {credentialError}");
+                    rejected.Add(new RejectedWidget(manifest.Id, manifest.Name, folder, credentialError));
+                    continue;
+                }
 
                 var duplicate = resolved.FindIndex(w => w.Manifest.Id == manifest.Id);
                 if (duplicate >= 0)
@@ -369,7 +392,9 @@ public sealed partial class WidgetLibrary : IDisposable
             SaveHostMap(hostMap);
 
         Widgets = widgets.OrderBy(w => w.Manifest.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        Log.Info($"Widget library: {Widgets.Count} widget(s) installed");
+        Rejected = rejected;
+        Log.Info($"Widget library: {Widgets.Count} widget(s) installed"
+               + (rejected.Count > 0 ? $", {rejected.Count} refused" : ""));
     }
 
     /// <summary>Compares SemVer-ish manifest versions ("1.2.3", "2.0.0-beta.1",
@@ -492,11 +517,42 @@ public sealed partial class WidgetLibrary : IDisposable
             throw new InvalidDataException("Package has no index.html at its root.");
 
         var targetDir = Path.Combine(AppPaths.WidgetsDir, Slug(manifest.Id));
-        if (Directory.Exists(targetDir))
-            Directory.Delete(targetDir, recursive: true);
 
-        // ExtractToDirectory guards against zip-slip path traversal.
-        archive.ExtractToDirectory(targetDir);
+        // Stage into a sibling temp folder and validate THERE before touching what is
+        // already installed. The old order deleted the target first, so a package that
+        // failed any check afterwards took the working widget with it — and adding the
+        // credential refusal below makes failing a great deal more likely (issue #57).
+        // Staged in DataDir, NOT inside WidgetsDir: the FileSystemWatcher watches the
+        // widgets folder, so a staging copy there would be picked up as a real widget by
+        // any rescan that fired mid-install. Same volume, so the Move below stays atomic.
+        var stageDir = Path.Combine(AppPaths.DataDir, ".installing-" + Slug(manifest.Id));
+        if (Directory.Exists(stageDir))
+            Directory.Delete(stageDir, recursive: true);
+        try
+        {
+            // ExtractToDirectory guards against zip-slip path traversal.
+            archive.ExtractToDirectory(stageDir);
+
+            // iCUE-style packages declare their settings in index.html, so the property
+            // list only exists once the archive is on disk — which is why this check
+            // lives here rather than beside IsValid above.
+            if (manifest.Properties.Count == 0)
+                manifest.Properties = IcueManifestReader.ParseProperties(Path.Combine(stageDir, "index.html"));
+            if (!manifest.CredentialsAreTyped(out var credentialError))
+                throw new InvalidDataException(
+                    $"Refusing to install '{manifest.Name}': {credentialError}");
+
+            if (Directory.Exists(targetDir))
+                Directory.Delete(targetDir, recursive: true);
+            Directory.Move(stageDir, targetDir);
+        }
+        finally
+        {
+            // A refused or half-extracted package must not leave a staging folder behind
+            // for the next Rescan to trip over.
+            if (Directory.Exists(stageDir))
+                Directory.Delete(stageDir, recursive: true);
+        }
         Log.Info($"Installed widget '{manifest.Id}' v{manifest.Version} from {Path.GetFileName(packagePath)}");
 
         Rescan();

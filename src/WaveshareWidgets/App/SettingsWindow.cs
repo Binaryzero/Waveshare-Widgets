@@ -289,6 +289,16 @@ public sealed class SettingsWindow : Form
             properties = w.Manifest.Properties,
         });
 
+        // Widgets on disk that the library refused to load. Without this the refusal is
+        // a line in app.log and, to the user, a tile that simply stopped existing.
+        var rejected = _library.Rejected.Select(r => new
+        {
+            id = r.Id,
+            name = r.Name,
+            folder = r.Folder,
+            reason = r.Reason,
+        });
+
         // The editor never receives a credential: secret values are blanked and replaced
         // by a per-slot "secretsSet" hint, so the field can show a saved state while the
         // stored ciphertext stays in layout.json (restored on save if left untouched).
@@ -303,6 +313,7 @@ public sealed class SettingsWindow : Form
             {
                 ["layout"] = layoutNode,
                 ["widgets"] = JsonSerializer.SerializeToNode(widgets, BridgeJson),
+                ["rejectedWidgets"] = JsonSerializer.SerializeToNode(rejected, BridgeJson),
                 ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
                 // Seed the replica's now-playing state: MediaUpdated only fires on
                 // change, so without this an already-playing track never appears.

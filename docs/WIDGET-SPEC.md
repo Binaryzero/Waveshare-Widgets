@@ -77,6 +77,15 @@ Install via tray → **Install widget…**, or unzip the folder directly into
     "placeholder": "Paste the token from the service's settings page" }
   ```
 
+  **This is enforced at install, not just at build.** The host applies the same rule
+  when it installs a package and when it rescans the widgets folder: a manifest that
+  declares a credential-looking property as anything but `secret` is **refused** — the
+  widget does not load, and the settings window says which property and why. iCUE-style
+  widgets are checked after their `index.html` meta tags are parsed, so declaring
+  settings there is not a way around it. The rule lives twice (`tools/validate-widget.js`
+  and `CredentialNames.cs`) and both are held to `tools/credential-names.json` in CI, so
+  the validator and the host cannot disagree about what counts.
+
   Declare no `default` for a secret. Two consequences of DPAPI worth knowing: the
   ciphertext is bound to **this Windows user on this machine**, so a `layout.json`
   copied elsewhere loses its secrets (they must be re-entered — everything else in the

@@ -23,6 +23,51 @@ public sealed class WidgetManifest
         error = "";
         return true;
     }
+
+    /// <summary>Refuses a manifest that would store a credential in the clear (issue #57).
+    ///
+    /// Kept SEPARATE from <see cref="IsValid"/> deliberately: iCUE-style widgets declare
+    /// their settings in index.html meta tags, so at the point <c>IsValid</c> runs their
+    /// property list is still empty. This has to be called once the properties are
+    /// actually resolved, or the whole rule is skipped by exactly the widgets least
+    /// likely to have been near the build-time validator.
+    ///
+    /// The check is on the TYPE, not the author: a property named like a credential and
+    /// declared as anything but <c>secret</c> never reaches SecretPolicy, so its value is
+    /// written to layout.json as plaintext with no signal to the user.</summary>
+    public bool CredentialsAreTyped(out string error)
+    {
+        foreach (var p in Properties)
+        {
+            if (!string.Equals(p.Type, "secret", StringComparison.OrdinalIgnoreCase)
+                && CredentialNames.LooksLikeCredential(p.Name))
+            {
+                error = $"property '{p.Name}' looks like a credential but is declared as "
+                      + $"'{p.Type}'. Credentials must use type \"secret\" so the host can "
+                      + "encrypt them; any other type is written to layout.json in plaintext.";
+                return false;
+            }
+
+            // List rows are NEVER encrypted — SecretPolicy walks top-level properties
+            // only — so a credential-looking key inside one has no safe type at all.
+            if (p.Fields is JsonArray fields)
+            {
+                foreach (var field in fields)
+                {
+                    var key = field?["key"]?.GetValue<string>();
+                    if (key is not null && CredentialNames.LooksLikeCredential(key))
+                    {
+                        error = $"list property '{p.Name}' has a field '{key}' that looks like a "
+                              + "credential. List rows are never encrypted — declare a top-level "
+                              + "\"secret\" property instead.";
+                        return false;
+                    }
+                }
+            }
+        }
+        error = "";
+        return true;
+    }
 }
 
 /// <summary>A user-configurable widget setting, declared in the manifest and rendered by the host.

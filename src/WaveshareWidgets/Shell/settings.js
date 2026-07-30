@@ -158,6 +158,7 @@
       renderAll();
       initializing = false;
       clearDirty(); // freshly loaded state IS the saved state
+      renderRejectedWidgets(state.rejectedWidgets);
     } else if (msg.type === 'saved') {
       // Each ack names the save it answers (the host echoes our seq). Clear the
       // marker only when nothing changed since THAT snapshot was posted — an edit
@@ -689,6 +690,52 @@
     selectedSlot = null;
     renderAll();
   });
+
+  /** Widgets the host found on disk and refused to load (issue #57).
+   *
+   * A refusal is the correct outcome for a widget that would write a credential in
+   * plaintext, but it is invisible by nature: the widget is simply absent from the
+   * palette, and if a slot referenced it that tile is now empty. The reason belongs
+   * where the user is looking for the missing widget, not only in app.log.
+   *
+   * Reason strings come from the host and name a third-party manifest, so they are
+   * rendered with textContent — never innerHTML. */
+  function renderRejectedWidgets(list) {
+    const box = el('rejectedWidgets');
+    if (!box) return;
+    box.textContent = '';
+    const items = Array.isArray(list) ? list : [];
+    box.hidden = items.length === 0;
+    if (!items.length) return;
+
+    const title = document.createElement('h2');
+    title.textContent = items.length === 1
+      ? '1 widget was not loaded'
+      : `${items.length} widgets were not loaded`;
+    box.appendChild(title);
+
+    const intro = document.createElement('p');
+    intro.textContent = 'These are installed but refused, because loading them would store '
+      + 'a credential in plain text. Fix the manifest or remove the folder — the widget '
+      + 'stays unavailable until then, and any tile using it will be empty.';
+    box.appendChild(intro);
+
+    const ul = document.createElement('ul');
+    for (const item of items) {
+      const li = document.createElement('li');
+      const name = document.createElement('strong');
+      name.textContent = item.name || item.id || 'unknown widget';
+      li.append(name, document.createTextNode(' — ' + (item.reason || 'refused')));
+      if (item.folder) {
+        const where = document.createElement('div');
+        where.className = 'muted';
+        where.textContent = item.folder;
+        li.appendChild(where);
+      }
+      ul.appendChild(li);
+    }
+    box.appendChild(ul);
+  }
 
   // ---- page panel ----------------------------------------------------------------
 

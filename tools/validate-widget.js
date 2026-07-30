@@ -20,7 +20,11 @@ const KNOWN_TYPES = new Set(['text', 'number', 'slider', 'color', 'select', 'swi
 // are the COMMON spellings, so the name is split at case boundaries before matching.
 // The compound keywords tolerate the break the splitter introduces: "OAuthAPIKey"
 // becomes "O Auth API Key", and "API Key" is still an api key.
-const CREDENTIAL_WORD = /(^|[^a-z0-9])(token|secret|password|passwd|api ?key|bearer|pat|credential|private ?key|access ?key)([^a-z0-9]|$)/i;
+// The trailing `s?` matters: `credential` was flagged and `credentials` was not, which
+// the shared fixture caught. It cannot swallow the boundary cases — `passwordless`,
+// `secretary` and `tokenizer` still fail, because after the optional s the next
+// character must end the word.
+const CREDENTIAL_WORD = /(^|[^a-z0-9])(token|secret|password|passwd|api ?key|bearer|pat|credential|private ?key|access ?key)s?([^a-z0-9]|$)/i;
 // Credential-equivalent URLs (WIDGET-STANDARD: "a private ICS or webhook link"). A
 // webhook URL IS the credential — anyone holding it can post. So is a private calendar
 // address. But most url properties are public (the iframe and youtube widgets both
@@ -228,6 +232,27 @@ function human(report) {
 const args = process.argv.slice(2);
 const asJson = args.includes('--json');
 const all = args.includes('--all');
+
+// --self-test runs the shared fixture through looksLikeCredential. The same file is
+// read by the C# port at the install boundary (issue #57), and CI runs both: that is
+// the only thing stopping the two from drifting into "the validator refuses this
+// widget but the host installs it anyway".
+if (args.includes('--self-test')) {
+  const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'credential-names.json'), 'utf8'));
+  let bad = 0;
+  for (const name of fixture.credential) {
+    if (!looksLikeCredential(name)) { console.log(`  FAIL credential "${name}" was NOT flagged`); bad++; }
+  }
+  for (const name of fixture.innocent) {
+    if (looksLikeCredential(name)) { console.log(`  FAIL innocent "${name}" WAS flagged`); bad++; }
+  }
+  const total = fixture.credential.length + fixture.innocent.length;
+  console.log(bad
+    ? `${bad} of ${total} disagree with tools/credential-names.json`
+    : `credential rule agrees with the fixture on all ${total} names`);
+  process.exit(bad ? 1 : 0);
+}
+
 const targets = args.filter((a) => !a.startsWith('--'));
 if (!targets.length) {
   console.error('usage: validate-widget.js [--json] <widget-folder>  |  [--json] --all <widgets-dir>');
