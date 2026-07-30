@@ -125,6 +125,23 @@ WW.findSensor({                   // heuristic lookup -> SensorReading | null
   nameIncludes,                   //   [] substring fallback
 })
 
+// Layout
+WW.fitText(el, { width, height, scale?, min?, max? })  // -> px size applied
+// Scales el's font-size so its text fits a box in BOTH axes. Viewport units size on
+// the axis you name and clip on the other: the stock clock's `34vh` asked for 136px
+// glyphs across a 320px quarter slot, losing a digit at each end (#76). Text scales
+// linearly with font-size, so one measured pass gives the exact ratio.
+//   width/height  the box to fit, in px — the CALLER supplies it, because only the
+//                 widget knows its own layout (the clock leaves room for the date).
+//   scale         optional fraction of the fitted size, for a user "size" setting.
+//                 Applied AFTER max, so the control still works where the raw fit
+//                 exceeds the cap. Values above 1 are honoured but will overflow.
+//   min/max       px bounds on the result (default 6 / 400).
+// `el` must be shrink-to-fit: a block that stretches measures the container, not the
+// text, and every ratio comes out 1. A flex item under `align-items: center` works.
+// Call it whenever the text or the slot changes — a ResizeObserver on document.body
+// covers a slot resized under a running widget, which no settings change reports.
+
 // Actions
 WW.mediaControl('toggle' | 'next' | 'prev')   // transport control
 WW.log(message)                                // writes to the host app.log

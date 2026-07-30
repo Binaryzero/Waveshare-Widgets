@@ -50,8 +50,11 @@ Install via tray → **Install widget…**, or unzip the folder directly into
 - `supported_slots` — which widths the widget looks good in: `quarter` (320px), `half`
   (640px), `full` (1280px). Widgets declaring `half` or `full` are also offered at
   `three-quarter` (960px), and every width can be placed full-height (400px) or in the
-  top/bottom 200px band (`-upper`/`-lower`). Design fluidly (vh units); the iframe
-  fills the slot.
+  top/bottom 200px band (`-upper`/`-lower`). The iframe fills the slot, so design
+  fluidly — and size any dominant text with `WW.fitText` rather than viewport units,
+  which measure only the axis you name (see the design guidance below). Declare only
+  the widths the widget genuinely reads well in: an offered size the widget cannot use
+  is a control the user taps and nothing happens.
 - `properties` — user-configurable settings. The host merges `default`s with the
   per-instance `settings` from `layout.json` and injects the result. Types: `text`,
   `number`, `slider`, `color`, `select`, `secret` (below), `sensor` (a sensor id string),
@@ -283,7 +286,15 @@ compliance checklist — is [WIDGET-STANDARD.md](WIDGET-STANDARD.md).
 ## Design guidance for the 1280×400 strip
 
 - The panel is ~170 PPI; keep touch targets ≥ 64 px and body text ≥ 12 px.
-- Use viewport-relative sizes (`vh`/`clamp()`) so the widget scales across slot sizes.
+- **Fit dominant text with `WW.fitText`, not viewport units.** `vh`/`vw` do measure the
+  slot — the iframe is the tile — but a rule written against one axis says nothing about
+  the other, and that is a clipping bug rather than a cosmetic one. The stock clock sized
+  its time on `34vh` alone: correct at full width, and in a 320×400 quarter it asked for
+  136px glyphs across 320px of tile, so `09:11:52` rendered as `9:11:5` with a digit lost
+  at each end (#76). A `vw` term instead is no better when the string length depends on a
+  setting. Viewport units remain fine for padding, gaps and secondary chrome.
+- Prefer a `min()` of both axes over a single-axis `clamp()` where you do size in
+  viewport units, so a narrow slot cannot be sized purely by height.
 - Dark backgrounds (`#0b0e14`-ish) match the stock widgets and the OLED-like bezel.
 - Data updates arrive at the host's poll cadence (~2 s); animate transitions in CSS
   rather than polling faster. The panel's real refresh rate may be ~50 Hz — avoid
