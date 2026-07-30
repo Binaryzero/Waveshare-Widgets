@@ -52,6 +52,17 @@ public static partial class CredentialNames
     [GeneratedRegex(@"(^|[^a-z0-9])(private|secret|signed|personal|sas)([^a-z0-9]|$)", RegexOptions.IgnoreCase)]
     private static partial Regex SecretQualifier();
 
+    // A name ENDING in one of these describes something ABOUT a credential rather than
+    // holding one: `tokenEndpoint` is a public OAuth URL, `tokenExpiry` a duration,
+    // `accessTokenType` a string like "Bearer". Without this an ordinary OAuth widget is
+    // refused at install unless it declares a public URL as `secret`, which would be a
+    // lie. Only the credential-WORD rules are waived; the webhook and signed-URL rules
+    // still run, because `webhookEndpoint` genuinely IS the credential.
+    // Deliberately tight: every entry must be a word that cannot itself hold the secret.
+    // `value`, `url` and `name` are absent for that reason.
+    [GeneratedRegex(@"(^|[^a-z0-9])(endpoints?|expiry|expires|expiration|ttl|lifetime|type|label|format|algorithm|issuer|scopes?|count|prefix|enabled)$", RegexOptions.IgnoreCase)]
+    private static partial Regex MetadataTail();
+
     [GeneratedRegex(@"([A-Z]+)([A-Z][a-z])")] private static partial Regex AcronymThenWord();
     [GeneratedRegex(@"([a-z0-9])([A-Z])")] private static partial Regex WordThenWord();
     [GeneratedRegex(@"[_\-.]+")] private static partial Regex Separators();
@@ -72,9 +83,13 @@ public static partial class CredentialNames
         spaced = Separators().Replace(spaced, " ");
         var squashed = Whitespace().Replace(spaced, "");
 
-        if (CredentialWord().IsMatch(spaced) || CredentialWord().IsMatch(squashed)) return true;
-        if (Compound().IsMatch(squashed)) return true;
         var trimmed = spaced.Trim();
+        // Metadata about a credential is not the credential; see MetadataTail.
+        if (!MetadataTail().IsMatch(trimmed))
+        {
+            if (CredentialWord().IsMatch(spaced) || CredentialWord().IsMatch(squashed)) return true;
+            if (Compound().IsMatch(squashed)) return true;
+        }
         if (Webhook().IsMatch(spaced) && (Urlish().IsMatch(spaced) || WebhookValue().IsMatch(trimmed))) return true;
         return Urlish().IsMatch(spaced) && SecretQualifier().IsMatch(spaced) && UrlValue().IsMatch(trimmed);
     }

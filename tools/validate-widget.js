@@ -46,6 +46,16 @@ const COMPOUND = /(api|client|access|auth|refresh|session|bearer|private|user|ad
 const URL_VALUE = /(url|uri|link|endpoint|address|feed)$/i;
 const URLISH = /(^|[^a-z0-9])(url|uri|link|endpoint|address|feed)([^a-z0-9]|$)/i;
 const SECRET_QUALIFIER = /(^|[^a-z0-9])(private|secret|signed|personal|sas)([^a-z0-9]|$)/i;
+// A name ENDING in one of these describes something ABOUT a credential rather than
+// holding one: `tokenEndpoint` is a public OAuth URL, `tokenExpiry` a duration,
+// `accessTokenType` a string like "Bearer". Without this an ordinary OAuth widget is
+// refused outright unless it declares a public URL as `secret`, which would be a lie.
+// Only the credential-WORD rules are waived — the webhook and signed-URL rules still
+// run below, because `webhookEndpoint` genuinely IS the credential.
+// Deliberately tight: every entry must be a word that cannot itself hold the secret.
+// `value`, `url` and `name` are absent for that reason — `tokenValue` and `secretUrl`
+// stay flagged.
+const METADATA_TAIL = /(^|[^a-z0-9])(endpoints?|expiry|expires|expiration|ttl|lifetime|type|label|format|algorithm|issuer|scopes?|count|prefix|enabled)$/i;
 const looksLikeCredential = (name) => {
   // Two case boundaries, because initialisms are everywhere in this domain:
   //   acronym->word  "APIToken" -> "API Token", "JWTToken" -> "JWT Token"
@@ -59,9 +69,12 @@ const looksLikeCredential = (name) => {
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/[_\-.]+/g, ' ');
   const squashed = spaced.replace(/\s+/g, '');
-  if (CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(squashed)) return true;
-  if (COMPOUND.test(squashed)) return true;
   const trimmed = spaced.trim();
+  // Metadata about a credential is not the credential; see METADATA_TAIL.
+  if (!METADATA_TAIL.test(trimmed)) {
+    if (CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(squashed)) return true;
+    if (COMPOUND.test(squashed)) return true;
+  }
   if (WEBHOOK.test(spaced) && (URLISH.test(spaced) || WEBHOOK_VALUE.test(trimmed))) return true;
   return URLISH.test(spaced) && SECRET_QUALIFIER.test(spaced) && URL_VALUE.test(trimmed);
 };

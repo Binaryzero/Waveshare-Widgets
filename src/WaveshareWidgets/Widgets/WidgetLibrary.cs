@@ -562,8 +562,23 @@ public sealed partial class WidgetLibrary : IDisposable
             // and it can, transiently: antivirus or an open handle on the staged folder is
             // enough. Losing a working widget to a failed UPGRADE is worse than the failed
             // upgrade itself.
-            if (Directory.Exists(backupDir))
+            // A backup already sitting here means a PREVIOUS attempt failed its move AND
+            // its rollback, so this folder is the only surviving copy of the user's
+            // widget. Deleting it to make room — which is what this used to do — turns a
+            // recoverable failure into a permanent one on the retry, and the retry is
+            // exactly what someone does next. Recover it instead.
+            if (Directory.Exists(backupDir) && !Directory.Exists(targetDir))
+            {
+                Log.Warn($"Recovering '{manifest.Id}' from a previous failed install at '{backupDir}'");
+                Directory.Move(backupDir, targetDir);
+            }
+            else if (Directory.Exists(backupDir))
+            {
+                // Both present: the target is installed and working, so the backup is a
+                // stale leftover with nothing to protect.
                 Directory.Delete(backupDir, recursive: true);
+            }
+
             var hadPrevious = Directory.Exists(targetDir);
             if (hadPrevious)
                 Directory.Move(targetDir, backupDir);

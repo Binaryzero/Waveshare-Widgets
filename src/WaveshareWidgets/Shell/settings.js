@@ -173,6 +173,14 @@
       initializing = false;
       if (!wasDirty) clearDirty();   // a repaint is not an edit
       renderRejectedWidgets(state.rejectedWidgets);
+      // Force the replica to take a fresh init. The catalog changed but the LAYOUT did
+      // not, and refreshReplica short-circuits an unchanged layout to a page-selection
+      // message — so a repaired widget the layout already references would stay blank in
+      // the preview until some unrelated structural edit happened to force a reload.
+      // Clearing the replica's snapshot (not lastWorkingLayout, which is the dirty
+      // baseline) makes the comparison miss and re-arms the init.
+      lastReplicaLayout = '';
+      refreshReplica('layout');
     } else if (msg.type === 'saved') {
       // Each ack names the save it answers (the host echoes our seq). Clear the
       // marker only when nothing changed since THAT snapshot was posted — an edit

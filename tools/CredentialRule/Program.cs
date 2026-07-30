@@ -155,6 +155,24 @@ Check("C6e a non-secret property may still ship a default",
     ManifestWith(new WidgetProperty { Name = "label", Type = "text", Default = JsonValue.Create("Living room") })
         .CredentialsAreTyped(out _));
 
+// ---- C7 · metadata ABOUT a credential is not a credential ----------------------------
+// An OAuth widget legitimately exposes tokenEndpoint (a public URL), tokenExpiry (a
+// duration) and accessTokenType ("Bearer"). Flagging those refused the whole widget
+// unless the author declared a public URL as `secret`, which would be a lie about what
+// the field holds. The exemption is a TAIL match and deliberately narrow.
+foreach (var metadata in new[] { "tokenEndpoint", "tokenExpiry", "accessTokenType", "secretScope", "apiKeyFormat" })
+    Check($"C7 metadata name '{metadata}' is not treated as a credential",
+        !CredentialNames.LooksLikeCredential(metadata));
+// The boundary in the other direction is what keeps the exemption honest: these end in
+// words that CAN hold the secret, so they must still be refused.
+foreach (var real in new[] { "tokenValue", "secretUrl", "apiToken", "apiKeyName" })
+    Check($"C7b '{real}' still counts as a credential", CredentialNames.LooksLikeCredential(real));
+// The webhook rule is independent of the exemption — a webhook endpoint IS the secret.
+Check("C7c webhookEndpoint stays flagged despite ending in a metadata word",
+    CredentialNames.LooksLikeCredential("webhookEndpoint"));
+Check("C7d and a refused metadata property no longer blocks the install",
+    ManifestWith(new WidgetProperty { Name = "tokenEndpoint", Type = "text" }).CredentialsAreTyped(out _));
+
 // ---- C4 · the identity checks still work --------------------------------------------
 // CredentialsAreTyped is deliberately separate from IsValid (iCUE widgets have no
 // properties at IsValid time), so confirm neither swallowed the other's job.

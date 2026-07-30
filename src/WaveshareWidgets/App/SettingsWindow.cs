@@ -300,7 +300,17 @@ public sealed class SettingsWindow : Form
     {
         if (_maskedManifests is null) { SnapshotManifests(); return; }
         foreach (var w in _library.Widgets)
-            _maskedManifests[w.Manifest.Id] = w.Manifest;
+        {
+            // ADD ONLY — an id already in the snapshot keeps its original manifest.
+            // Overwriting is the same credential-loss bug as dropping, reached a
+            // different way: edit a widget in place so a secret property is removed or
+            // retyped, and the replacement manifest no longer describes the field that
+            // masked the layout. Seal would then skip it and write the masked blank over
+            // the ciphertext. The editor's masked copy was produced by the OLD manifest,
+            // so the old manifest is the only one that can interpret it.
+            if (!_maskedManifests.ContainsKey(w.Manifest.Id))
+                _maskedManifests[w.Manifest.Id] = w.Manifest;
+        }
     }
 
     /// <summary>The widget palette as the editor sees it. Shared by the initial payload
