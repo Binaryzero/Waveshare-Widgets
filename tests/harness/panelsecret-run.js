@@ -193,6 +193,25 @@ const widgets = [{
     /Could not save the credential/i.test(await notice.textContent() || ''),
     await notice.textContent().catch(() => '(absent)'));
 
+  // N7b · the notice must not eat the taps it is telling the user to make. It rides at
+  // z-index 90 for six seconds, bottom-centre — right where a tile's size and band chips
+  // are — over an edit overlay at z-index 3. It carries no controls, so it is inert;
+  // without that, the one banner that says "move or remove a widget first" is also the
+  // thing blocking you from doing it.
+  const hitTest = await page.evaluate(() => {
+    const el = document.getElementById('panelNotice');
+    if (!el) return { ok: false, why: 'no notice' };
+    const r = el.getBoundingClientRect();
+    const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return {
+      ok: at !== el && !el.contains(at),
+      why: at ? (at.id || at.className || at.tagName) : 'nothing',
+      visible: r.width > 0 && r.height > 0,
+    };
+  });
+  check('N7b the notice is visible but not hit-testable, so it cannot swallow the next tap',
+    hitTest.ok && hitTest.visible, `point resolves to: ${hitTest.why}`);
+
   // ---- N10 · identity flows back from the host, and why it is dormant (#70) ----------
   // SettingsWindow has handed minted instance ids back to its client since #15;
   // DashboardWindow dropped them, so host and shell could disagree about which slot is

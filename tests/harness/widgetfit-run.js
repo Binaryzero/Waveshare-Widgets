@@ -54,9 +54,31 @@ const SLOTS = [
   const shim = fs.readFileSync(path.join(SHELL, 'widget-api.js'), 'utf8');
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
 
+  // Freeze the clock at 12:34:56, which is the WIDEST string the widget can produce:
+  // in 12-hour mode the hour is two digits and the suffix is present. Left on the wall
+  // clock, any run between 1am and 9am (or 1pm-9pm) draws a one-digit hour instead —
+  // so a regression that clips only two-digit 12-hour strings would pass most of the
+  // day. The probes assert the rendered text as well, so a freeze that stops working
+  // fails loudly rather than quietly testing something narrower.
+  const FROZEN_ISO = '2026-07-30T12:34:56';
+  const LONGEST_TEXT = '12:34:56 PM';
+  const SHORTEST_TEXT = '12:34';
+
   async function open(size) {
     const page = await browser.newPage({ viewport: { width: size.width, height: size.height } });
     page.on('pageerror', (e) => { failures++; console.log('[pageerror]', String(e).slice(0, 300)); });
+    await page.addInitScript((iso) => {
+      const Real = Date;
+      const FIXED = new Real(iso).getTime();   // computed before Date is replaced
+      function Frozen(...args) {
+        return args.length ? new Real(...args) : new Real(FIXED);
+      }
+      Frozen.prototype = Real.prototype;
+      Frozen.now = () => FIXED;
+      Frozen.parse = Real.parse;
+      Frozen.UTC = Real.UTC;
+      window.Date = Frozen;
+    }, FROZEN_ISO);
     await page.route('https://app.wsw/**', (route) => {
       const file = path.join(SHELL, new URL(route.request().url()).pathname);
       if (fs.existsSync(file)) return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
@@ -112,6 +134,10 @@ const SLOTS = [
       await init(page, settings);
       await wait(400);
       const m = await overflow(page);
+      // The claim "widest string" has to be checked, not assumed — see FROZEN_ISO.
+      const want = label === 'longest' ? LONGEST_TEXT : SHORTEST_TEXT;
+      check(`F2 clock ${slot.name} (${label}) — the string under test really is "${want}"`,
+        m.time.text === want, JSON.stringify(m.time.text));
       const fitsW = m.time.w <= m.body.w + 1;
       const fitsH = m.time.h + m.date.h <= m.body.h + 1;
       const noScroll = m.body.scrollW <= m.body.w + 1 && m.body.scrollH <= m.body.h + 1;
@@ -167,6 +193,25 @@ const SLOTS = [
     small.time.font < big.time.font * 0.75,
     `${Math.round(big.time.font)}px @200 -> ${Math.round(small.time.font)}px @50`);
   await sp.close();
+
+  // ---- F7 · the DATE slider works too, which is where the cap hid it ------------------
+  // The date carries a 26px cap and a tall slot fits it well above that, so scaling
+  // before the cap clamped every fraction back to 26 and the control did nothing. F6
+  // could not see it: the time's cap is 220px and its fit is far below, so the ordering
+  // never showed there. A capped element is the only place this is visible.
+  const dp = await open({ width: 1280, height: 400 });
+  await init(dp, Object.assign({ dateSize: 100 }, SHORTEST));
+  await wait(400);
+  const dateFull = await overflow(dp);
+  await init(dp, Object.assign({ dateSize: 50 }, SHORTEST));
+  await wait(400);
+  const dateHalf = await overflow(dp);
+  check('F7 the date size slider changes the date, even where the fit exceeds its cap',
+    dateHalf.date.font < dateFull.date.font * 0.75,
+    `${Math.round(dateFull.date.font)}px @100 -> ${Math.round(dateHalf.date.font)}px @50`);
+  check('F7b and 100% still honours the cap rather than running away with the tile',
+    dateFull.date.font <= 26 + 0.5, `${dateFull.date.font}px`);
+  await dp.close();
 
   await browser.close();
   console.log(failures ? `${failures} FAILURES` : 'ALL PASS');

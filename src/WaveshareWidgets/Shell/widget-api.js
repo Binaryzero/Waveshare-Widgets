@@ -277,9 +277,16 @@
     const rect = el.getBoundingClientRect();
     if (!rect.width || !rect.height) { el.style.fontSize = prev; return 0; }
     const scale = Number(o.scale);
-    let size = REF * Math.min(maxW / rect.width, maxH / rect.height) *
-      (Number.isFinite(scale) && scale > 0 ? scale : 1);
-    size = Math.max(Number(o.min) || 6, Math.min(Number(o.max) || 400, size));
+    const min = Number(o.min) || 6;
+    const max = Number(o.max) || 400;
+    // Cap the FIT first, then take the user's fraction of it. Scaling before the cap
+    // makes the slider inert wherever the raw fit exceeds `max`: a 400px-high slot fits
+    // the clock's date well above its 26px cap, so every fraction from 0.5 to 1 clamped
+    // back to 26 and the Date size control did nothing. Which is the exact complaint
+    // this widget's own size sliders are being fixed for.
+    const fitted = Math.min(max, REF * Math.min(maxW / rect.width, maxH / rect.height));
+    let size = fitted * (Number.isFinite(scale) && scale > 0 ? scale : 1);
+    size = Math.max(min, Math.min(max, size));
     el.style.fontSize = size + 'px';
     return size;
   }
