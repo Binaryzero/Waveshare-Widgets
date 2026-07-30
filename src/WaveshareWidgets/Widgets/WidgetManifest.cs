@@ -79,13 +79,36 @@ public sealed class WidgetManifest
                     // `key` makes GetValue<string>() throw. Either one escaped to Rescan's
                     // outer catch, which skips the widget WITHOUT recording a rejection —
                     // so it vanished from the palette and from the banner that exists to
-                    // explain exactly that. A third-party manifest is not obliged to be
-                    // well-formed; refusing to parse it must not be indistinguishable
-                    // from refusing to admit it.
-                    if (field is not JsonObject fieldObject) continue;
-                    var key = fieldObject["key"] is JsonValue keyValue &&
-                        keyValue.TryGetValue<string>(out var keyText) ? keyText : null;
-                    if (key is not null && CredentialNames.LooksLikeCredential(key))
+                    // explain exactly that.
+                    //
+                    // REFUSED, not skipped. Tolerating it here only moved the crash: the
+                    // malformed array still installs and still reaches settings.js and
+                    // shell.js, which iterate every member and read field.type/field.key —
+                    // a null member throws while rendering the list or on Add, and a
+                    // scalar member writes settings under an `undefined` key. Silently
+                    // dropping the member instead would be the #24 mistake again, where
+                    // quietly stripping list keys produced settings sheets that did not
+                    // match what the widget expected and whole panels vanished in the
+                    // field. A field definition the editor cannot render is a broken
+                    // manifest, and the author is the only one who can fix it — so say so,
+                    // in the banner, by name.
+                    if (field is not JsonObject fieldObject)
+                    {
+                        error = $"list property '{p.Name}' has a malformed entry in 'fields' "
+                              + "(every entry must be an object with a string \"key\"). The "
+                              + "settings editor reads each entry's key and type directly, so "
+                              + "this would break the list control rather than degrade it.";
+                        return false;
+                    }
+                    var keyNode = fieldObject["key"];
+                    if (keyNode is not JsonValue keyValue || !keyValue.TryGetValue<string>(out var key))
+                    {
+                        error = $"list property '{p.Name}' has a field whose \"key\" is missing or "
+                              + "not a string. Row values are stored under that key, so without "
+                              + "one the editor writes settings nothing can read back.";
+                        return false;
+                    }
+                    if (CredentialNames.LooksLikeCredential(key))
                     {
                         error = $"list property '{p.Name}' has a field '{key}' that looks like a "
                               + "credential. List rows are never encrypted — declare a top-level "

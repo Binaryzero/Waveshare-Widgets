@@ -357,27 +357,24 @@ public sealed class SettingsWindow : Form
             //                         so the editor's masked blank overwrites the stored
             //                         ciphertext.
             //
-            // Name-collision rule: THE NEW DEFINITION WINS, for a property the new
-            // manifest still declares. Absent properties keep their old definition purely
-            // by never colliding — which is the case the union exists for, since a removed
-            // or briefly-unparseable manifest says nothing about a property that may still
-            // hold a live credential.
+            // Name-collision rule: SECRET WINS, from whichever side declares it.
             //
-            // This replaces the "secret wins" rule I wrote in #61 round five. That rule
-            // was a heuristic standing in for this one, and it was right in only one
-            // direction:
+            // This snapshot answers exactly one question — how was the layout the editor
+            // is HOLDING masked — because that layout is what the next save writes. A
+            // property that was `secret` at masking time left a blank in the editor, and
+            // only a lookup that still calls it secret makes Seal restore the stored
+            // ciphertext instead of writing that blank over it.
             //
-            //   text -> secret   both rules seal the value. Correct.
-            //   secret -> text   secret-wins seals a value the CURRENT manifest calls
-            //                    ordinary — and SecretPolicy.Reveal consults that current
-            //                    manifest, so it never decrypts, and the widget is handed
-            //                    the literal "dpapi:v1:…" string.
+            // So the new manifest does NOT get to demote a property here, however fresh
+            // its statement is. I briefly made it "new wins" to stop Seal encrypting a
+            // value the current manifest calls ordinary, and that traded a display bug for
+            // permanent data loss: an unrelated edit saved while the editor still held the
+            // masked blank destroyed the credential. The demotion is real and does need
+            // handling — but on the REVEAL side, where a widget can simply be refused the
+            // ciphertext, not here, where the value itself is at stake.
             //
-            // Sealing and revealing have to agree about which manifest is authoritative.
-            // Reveal cannot use this snapshot (it runs on the dashboard, against the live
-            // library), so the snapshot must not out-vote it about a property the author
-            // has just made a fresh statement about. Erring toward secret sounded safe
-            // and was not: it produced a value nothing could ever read back.
+            // Erring toward secret costs a value a trip through a cipher it did not need.
+            // Erring the other way costs the value.
             //
             // ORDINAL, matching the only comparer that decides anything downstream: setting
             // keys are JSON object keys and SecretPolicy.SecretNames is an ordinal set. A
@@ -398,7 +395,7 @@ public sealed class SettingsWindow : Form
                 // window goes down. There is nothing to merge, so there is nothing to do.
                 if (string.IsNullOrEmpty(p.Name)) continue;
                 if (!byName.TryGetValue(p.Name, out var at)) { byName[p.Name] = union.Count; union.Add(p); continue; }
-                union[at] = p;
+                if (p.Type == "secret" && union[at].Type != "secret") union[at] = p;
             }
 
             _maskedManifests[w.Manifest.Id] = new WidgetManifest

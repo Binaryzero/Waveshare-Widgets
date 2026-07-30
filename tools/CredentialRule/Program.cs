@@ -137,20 +137,30 @@ try
 }
 catch (Exception ex) { survived = false; Console.WriteLine("    threw: " + ex.GetType().Name + ": " + ex.Message); }
 Check("C3d no malformed `fields` shape throws — array, member or key", survived);
-// Malformed members are skipped, not treated as a refusal: a manifest we cannot parse
-// must not be indistinguishable from one we refuse to admit.
-Check("C3e a malformed member is skipped, and the widget still installs",
-    listScalarMember.CredentialsAreTyped(out _) && listNumericKey.CredentialsAreTyped(out _)
-    && listNullMember.CredentialsAreTyped(out _));
-// ...and skipping members must not blind the check to a real credential beside them.
+// A malformed MEMBER is refused, not skipped. Skipping it here only moved the crash:
+// the array still installs and still reaches settings.js and shell.js, which read
+// field.key/field.type on every entry — a null throws during list rendering, a scalar
+// writes settings under an `undefined` key. Silently dropping the member would repeat
+// #24, where quietly stripped list keys made whole settings panels vanish in the field.
+Check("C3e a scalar member is refused, with a reason naming the property",
+    !listScalarMember.CredentialsAreTyped(out var c3eError) && c3eError.Contains("hosts"), c3eError);
+Check("C3e2 a non-string key is refused too — rows are stored under it",
+    !listNumericKey.CredentialsAreTyped(out var c3e2Error) && c3e2Error.Contains("key"), c3e2Error);
+Check("C3e3 a null member is refused", !listNullMember.CredentialsAreTyped(out _));
+// A `fields` that is not an array at all stays TOLERATED: nothing iterates it, so it
+// cannot break the editor, and refusing over a key nobody reads is the install-stricter-
+// than-build divergence round seven removed.
+Check("C3e4 a non-array `fields` is still tolerated — nothing iterates it",
+    listOddFields.CredentialsAreTyped(out _) && listNoFields.CredentialsAreTyped(out _));
+// The credential rule must still fire for a well-formed list beside all of that.
 var listMixed = ManifestWith(new WidgetProperty
 {
     Name = "endpoints",
     Type = "list",
-    Fields = JsonNode.Parse("""[1,{"key":"apiKey"},null]"""),
+    Fields = JsonNode.Parse("""[{"key":"label"},{"key":"apiKey"}]"""),
 });
-Check("C3f a real credential key is still caught next to malformed members",
-    !listMixed.CredentialsAreTyped(out var c3fError), c3fError);
+Check("C3f a real credential key is still caught",
+    !listMixed.CredentialsAreTyped(out var c3fError) && c3fError.Contains("apiKey"), c3fError);
 
 // ---- C5 · the declared type is canonicalized ----------------------------------------
 // SecretPolicy matches the type with OrdinalIgnoreCase, but settings.js compares

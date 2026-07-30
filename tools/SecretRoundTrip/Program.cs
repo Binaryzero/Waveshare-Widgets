@@ -15,10 +15,20 @@ void Check(string name, bool ok, string? detail = null)
 
 // A reversible stand-in for DPAPI: CI runs on Linux, where ProtectedData throws. The
 // bytes are transformed (not merely copied) so "encrypted" is observably not plaintext.
-static byte[] Flip(byte[] input)
+//
+// It also AUTHENTICATES, because the code under test depends on that. Real DPAPI throws
+// for any blob it did not produce, which is what lets CanUnprotect answer "did WE write
+// this?" — the question the reveal-side scrub and Seal's idempotent-resave branch both
+// ask. An earlier stand-in happily "decrypted" any untagged bytes, so every marker-shaped
+// string looked like our own ciphertext and two probes drew the wrong conclusion from it.
+// A stand-in that is more permissive than the real thing does not merely weaken a probe;
+// it silently changes which branch is under test.
+byte[] Magic = [0x57, 0x57];   // "WW"
+byte[] Flip(byte[] input)
 {
-    var output = new byte[input.Length];
-    for (var i = 0; i < input.Length; i++) output[i] = (byte)(input[i] ^ 0x5A);
+    var output = new byte[input.Length + Magic.Length];
+    Magic.CopyTo(output, 0);
+    for (var i = 0; i < input.Length; i++) output[i + Magic.Length] = (byte)(input[i] ^ 0x5A);
     return output;
 }
 SecretStore.EncryptOverride = Flip;
@@ -27,10 +37,18 @@ SecretStore.EncryptOverride = Flip;
 // throws for a foreign key; the stand-in throws for a tagged prefix, so the probe can
 // tell a foreign envelope apart from legacy plaintext that merely starts with the
 // marker — which is exactly the distinction Seal now makes.
-static byte[] TaggedDecrypt(byte[] b) =>
-    b.Length >= 2 && b[0] == 0xFE && b[1] == 0xED
-        ? throw new CryptographicException("that key belongs to another user")
-        : Flip(b);
+byte[] TaggedDecrypt(byte[] b)
+{
+    if (b.Length >= 2 && b[0] == 0xFE && b[1] == 0xED)
+        throw new CryptographicException("that key belongs to another user");
+    // Not ours: no magic prefix. Real DPAPI raises exactly here for a blob it did not
+    // produce, and several branches under test turn on that distinction.
+    if (b.Length < Magic.Length || b[0] != Magic[0] || b[1] != Magic[1])
+        throw new CryptographicException("not produced by this cipher");
+    var output = new byte[b.Length - Magic.Length];
+    for (var i = 0; i < output.Length; i++) output[i] = (byte)(b[i + Magic.Length] ^ 0x5A);
+    return output;
+}
 SecretStore.DecryptOverride = TaggedDecrypt;
 // marker + valid base64, first bytes tagged so decryption refuses it.
 var ForeignEnvelope = "dpapi:v1:" + Convert.ToBase64String([0xFE, 0xED, 0x01, 0x02, 0x03]);
@@ -585,20 +603,53 @@ SecretPolicy.Reveal(revealed28e, Lookup);
 Check("P28e a properly declared secret still reveals to its plaintext",
     Value(revealed28e, "apiToken") == Token, Value(revealed28e, "apiToken"));
 
-// Legacy plaintext that merely STARTS with the marker is a real value — it is not base64
-// after the prefix, so it is not an envelope. Destroying it to tidy up would be the same
-// mistake as the migration branch in Seal deliberately avoids.
-var markerish = LayoutWith(new JsonObject { ["apiToken"] = "dpapi:v1:this-is-actually-my-password" });
+// DECRYPTABILITY, not shape. My first draft scrubbed on LooksLikeEnvelope and probed it
+// with "dpapi:v1:this-is-actually-my-password" — which is NOT valid base64, so it was
+// never a candidate and the probe passed while proving nothing. These two are valid
+// base64 after the marker, so they are exactly what a shape test destroys.
+const string MarkerShaped = "dpapi:v1:YWJj";           // "abc" — a real setting value
+var markerish = LayoutWith(new JsonObject { ["apiToken"] = MarkerShaped });
 SecretPolicy.Reveal(markerish, DemotedLookup);
-Check("P28f legacy plaintext that only looks like a marker survives the scrub",
-    Value(markerish, "apiToken") == "dpapi:v1:this-is-actually-my-password", Value(markerish, "apiToken"));
+Check("P28f marker-SHAPED plaintext survives — we cannot open it, so it is not ours",
+    Value(markerish, "apiToken") == MarkerShaped, Value(markerish, "apiToken"));
+var markerishLegacy = LayoutWith(new JsonObject { ["apiToken"] = "dpapi:v1:this-is-actually-my-password" });
+SecretPolicy.Reveal(markerishLegacy, DemotedLookup);
+Check("P28f2 and so does the non-base64 spelling",
+    Value(markerishLegacy, "apiToken") == "dpapi:v1:this-is-actually-my-password");
+
+// The absurd case a shape test produced: a properly declared secret whose PLAINTEXT is
+// marker-shaped. Reveal decrypts it correctly, and a shape-based scrub then wiped the
+// value one line later.
+var wrapped = LayoutWith(new JsonObject { ["apiToken"] = MarkerShaped });
+SecretPolicy.Seal(wrapped, null, Lookup);
+var wrappedRevealed = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(wrapped))!;
+SecretPolicy.Reveal(wrappedRevealed, Lookup);
+Check("P28f3 a secret whose plaintext is marker-shaped survives its own reveal",
+    Value(wrappedRevealed, "apiToken") == MarkerShaped, Value(wrappedRevealed, "apiToken"));
 
 // A foreign envelope under a still-secret property already read as empty via Unprotect;
 // the scrub must not change that, and must not resurrect it either.
 var foreign28 = LayoutWith(new JsonObject { ["apiToken"] = ForeignEnvelope });
 SecretPolicy.Reveal(foreign28, Lookup);
-Check("P28g an unopenable envelope reads as empty under either manifest",
+Check("P28g an unopenable envelope reads as empty under a secret property",
     Value(foreign28, "apiToken") == "", Value(foreign28, "apiToken"));
+
+// A slot whose manifest is MISSING is left completely alone. No widget is loaded to
+// receive anything, so there is nothing to protect against — while blanking would put an
+// empty string in front of the on-panel editor, and the next unrelated save writes that
+// over the ciphertext for good. A missing manifest must never destroy what it described.
+var orphan = LayoutWith(new JsonObject { ["apiToken"] = Token });
+SecretPolicy.Seal(orphan, null, Lookup);
+var orphanCipher = Value(orphan, "apiToken");
+var orphanRevealed = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(orphan))!;
+SecretPolicy.Reveal(orphanRevealed, _ => null);   // widget uninstalled, or manifest unparseable
+Check("P28h an uninstalled widget's ciphertext is left intact, not blanked",
+    Value(orphanRevealed, "apiToken") == orphanCipher, Value(orphanRevealed, "apiToken"));
+// ...and it really is recoverable: reinstall the widget and it reveals as before.
+var recovered = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(orphanRevealed))!;
+SecretPolicy.Reveal(recovered, Lookup);
+Check("P28h2 and a later reinstall still reveals the original credential",
+    Value(recovered, "apiToken") == Token, Value(recovered, "apiToken"));
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;

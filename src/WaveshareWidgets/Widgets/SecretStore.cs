@@ -210,17 +210,33 @@ public static class SecretPolicy
         ScrubUnrevealedEnvelopes(layout, lookup);
     }
 
-    /// <summary>Blanks any ciphertext that <see cref="Reveal"/> did not walk.
+    /// <summary>Blanks OUR ciphertext where <see cref="Reveal"/> could not walk it.
     ///
     /// Reveal only visits properties the CURRENT manifest calls `secret`. A property
-    /// retyped `secret` → `text` therefore keeps whatever is stored — and what is stored
-    /// is an envelope, which was handed to the widget verbatim as the literal string
-    /// "dpapi:v1:…". The widget cannot tell that from a value and shows or transmits it.
+    /// retyped `secret` → `text` therefore keeps whatever is stored — an envelope, handed
+    /// to the widget verbatim as the literal string "dpapi:v1:…", which it cannot tell
+    /// from a value and will happily render or transmit. A widget must never receive
+    /// ciphertext, and this is where that is enforced: on the way OUT to the widget,
+    /// where refusing costs nothing, rather than in the settings window's snapshot, where
+    /// the stored value itself is at stake.
     ///
-    /// The invariant is worth stating independently of how it was reached: a widget must
-    /// never receive ciphertext. Whatever combination of manifest edits, hand-editing and
-    /// half-applied rescans produced it, an unrevealed envelope is not a value, and an
-    /// empty field is the honest rendering of one the host cannot open.</summary>
+    /// Two limits, both deliberate, both learned by getting them wrong first:
+    ///
+    /// DECRYPTABILITY, not shape. <see cref="SecretStore.LooksLikeEnvelope"/> is a shape
+    /// test, and "dpapi:v1:YWJj" is a perfectly good setting value that happens to match
+    /// it. Blanking on shape destroyed real data — including, absurdly, a properly
+    /// declared secret whose plaintext looked like a marker, which Reveal decrypted
+    /// correctly one line earlier only for this pass to wipe. If we can open it, we wrote
+    /// it, and it is certainly not the user's plaintext. If we cannot, the ambiguity is
+    /// unresolvable and the value gets the benefit of the doubt: a foreign envelope
+    /// reaching a widget is a display wart, while blanking someone's data is not.
+    ///
+    /// KNOWN WIDGETS only. A slot whose manifest is missing — uninstalled, or a
+    /// manifest that momentarily failed to parse — is skipped entirely. No widget is
+    /// loaded to receive anything, so there is nothing to protect against; meanwhile
+    /// blanking it here would put an empty string in front of the on-panel editor, and
+    /// the next unrelated save writes that over the ciphertext for good. A missing
+    /// manifest must never be a reason to destroy what it described.</summary>
     private static void ScrubUnrevealedEnvelopes(DashboardLayout layout, Func<string, WidgetManifest?> lookup)
     {
         foreach (var page in layout.Pages ?? [])
@@ -229,14 +245,11 @@ public static class SecretPolicy
             {
                 if (string.IsNullOrEmpty(slot.WidgetId) || slot.Settings is null)
                     continue;
-                // Declared secrets were just revealed in place; anything still shaped like
-                // an envelope there failed to decrypt and is equally unusable.
+                if (lookup(slot.WidgetId) is null)
+                    continue;
                 foreach (var (key, node) in slot.Settings.ToList())
                 {
-                    // Shape, not just the prefix — legacy plaintext that happens to start
-                    // with the marker is not base64 after it, and destroying a working
-                    // credential to tidy up would be the worse trade.
-                    if (AsString(node) is { } text && SecretStore.LooksLikeEnvelope(text))
+                    if (AsString(node) is { } text && SecretStore.CanUnprotect(text))
                         slot.Settings[key] = "";
                 }
             }
