@@ -98,20 +98,16 @@
     const widget = slot && widgetsById.get(slot.widgetId);
     return widget ? widget.name : 'Widget';
   }
-  // Float in the EMPTY region below the toolbar — never over the preview or the
-  // chip row. Clamped: at the 780×480 minimum a wrapped toolbar can reach the
-  // viewport bottom, and then the card overlaps chrome rather than leaving its
-  // controls unreachable below an overflow:hidden document. Re-run on every
-  // resize and toolbar reflow: a window shrink or a page with more chips must
-  // not leave a stale top under a grown toolbar.
+  // Keep the canvas and the dock in agreement about who has what height. Runs on
+  // every resize and toolbar reflow, because a window shrink or a page with more
+  // chips changes the dock's height and the preview has to give way or take up
+  // the slack.
   function positionPanel() {
-    const panel = el('contextPanel');
-    if (!panel.classList.contains('open')) return;
-    const top = Math.min(
-      Math.round(el('toolbar').getBoundingClientRect().bottom + 10),
-      Math.max(56, window.innerHeight - 220));
-    panel.style.top = top + 'px';
-    panel.style.maxHeight = 'calc(100vh - ' + (top + 16) + 'px)';
+    // The panel is docked (#79) — it no longer floats, so it has no top to place
+    // and no viewport-relative height to cap. What DOES need recomputing is the
+    // preview above it, because opening or closing the panel changes the dock's
+    // height and therefore the room the canvas has.
+    fitReplica();
   }
   window.addEventListener('resize', positionPanel);
   if (typeof ResizeObserver !== 'undefined')
@@ -658,9 +654,17 @@
   // the same clamp logic, just a taller ceiling (#32).
   function fitReplica() {
     const width = previewStage.clientWidth || 1;
-    const maxH = editMode
-      ? Math.max(200, Math.min(430, Math.round(window.innerHeight * 0.45)))
-      : Math.max(160, Math.min(320, Math.round(window.innerHeight * 0.3)));
+    // Measure what is actually LEFT, rather than guessing a share of the window.
+    // The dock is docked (#79): it takes the height it needs and the preview gets
+    // the remainder, so a percentage-of-window cap would either leave a gap under
+    // the canvas or let the dock push it off the top. Everything above the stage
+    // plus the whole dock is subtracted; the floor keeps the strip usable if the
+    // dock ever grows past the window.
+    const dockH = (el('dock') && el('dock').getBoundingClientRect().height) || 0;
+    const stageTop = previewStage.getBoundingClientRect().top;
+    const room = Math.round(window.innerHeight - stageTop - dockH - 12);
+    const ceiling = editMode ? 430 : 320;
+    const maxH = Math.max(160, Math.min(ceiling, room));
     const scale = Math.min(width / 1280, maxH / 400, 1);
     previewFrame.style.transform = 'scale(' + scale + ')';
     previewFrame.style.marginLeft = Math.max(0, Math.round((width - 1280 * scale) / 2)) + 'px';
@@ -931,7 +935,11 @@
     const hasPage = !!page;
     el('editorEmpty').hidden = hasPage;
     el('pageHeader').style.display = hasPage ? 'flex' : 'none';
-    el('addSlot').style.display = hasPage ? 'block' : 'none';
+    // The palette shelf replaced this opener (#79) — the widget set is permanently
+    // on screen, so a button whose job was to reveal it has nothing left to do.
+    // Setting `display` here rather than `hidden` is why an earlier `hidden = true`
+    // did not stick: this runs on every panel render and put it straight back.
+    el('addSlot').style.display = 'none';
     el('pageBgWrap').style.display = hasPage ? 'block' : 'none';
     el('slotList').textContent = '';
     el('slotDetail').textContent = '';
@@ -1000,13 +1008,22 @@
   // "+ Add widget" button (toggle: second click closes) or from the replica's
   // "+" zone (the shell bounces that tap up as an add-widget message).
 
+  // The palette is permanently on the shelf now (#79), so "open the gallery" no
+  // longer means reveal it — there is nothing to reveal. It means DRAW ATTENTION
+  // to it, because the request still arrives from the replica's "+" zone and that
+  // tap has to land somewhere the user can see. galleryOpen stays false so the
+  // detail pane is never displaced by a picker that is already on screen.
   function openGallery() {
-    galleryOpen = true;
-    openPanel('widget');
-    renderEditorPanel();
+    const shelf = el('dockPalette');
+    if (!shelf) return;
+    shelf.scrollIntoView({ block: 'nearest' });
+    shelf.classList.remove('flash');
+    void shelf.offsetWidth;              // restart the animation on repeat taps
+    shelf.classList.add('flash');
   }
 
   function closeGallery() {
+    if (!galleryOpen) return;
     galleryOpen = false;
     renderEditorPanel();
   }
@@ -1036,11 +1053,13 @@
 
   function renderWidgetGallery(page) {
     const wrap = el('widgetGallery');
-    const open = galleryOpen && !!page;
+    // The palette is a permanent shelf now (#79): it lives in its own dock column
+    // and is drawn whenever there is a page to add to, rather than being toggled
+    // behind "+ Add widget". Seeing what exists is how you find out what exists —
+    // it was the one thing in the iCUE reference that is never hidden.
+    const open = !!page;
     wrap.hidden = !open;
-    el('addSlot').classList.toggle('open', open);
-    el('addSlot').textContent = open ? '✕ Close' : '+ Add widget';
-    el('slotDetail').style.display = open ? 'none' : '';
+    el('slotDetail').style.display = '';
     wrap.textContent = '';
     if (!open) return;
     for (const widget of state.widgets) {

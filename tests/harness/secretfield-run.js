@@ -310,6 +310,53 @@ const layout = {
   check('E14b and a still-secret property is still kept out of the preview',
     !afterTyped.includes('ghp_AFTER_REINIT'), afterTyped.slice(0, 200));
 
+  // ---- E15 · the dock is DOCKED, not floating (#79) ----------------------------------
+  // The complaint that opened #79 was a config card sitting on top of the layout it
+  // configures. "Docked" is not a look — it is the measurable claim that the canvas and
+  // the panel never occupy the same pixels, and that the canvas keeps its full height.
+  const dock = await page.evaluate(() => {
+    const r = (id) => { const e = document.getElementById(id); return e ? e.getBoundingClientRect() : null; };
+    const stage = r('previewStage'), d = r('dock'), pal = r('dockPalette'), panel = r('contextPanel');
+    const vis = (id) => { const e = document.getElementById(id); if (!e) return false;
+      const s = getComputedStyle(e); return s.display !== 'none' && s.visibility !== 'hidden'; };
+    return {
+      // Measured against the PANEL, not the dock container. Floating the panel takes
+      // it out of flow, so the dock shrinks to the palette and a dock-vs-canvas check
+      // still reads zero overlap while the card sits squarely on the layout — which is
+      // precisely the bug #79 exists to fix, passing its own probe.
+      overlap: stage && panel ? Math.round(Math.max(0, stage.bottom - panel.top)) : -1,
+      panelInFlow: panel ? getComputedStyle(document.getElementById('contextPanel')).position === 'static' : false,
+      stageH: stage ? Math.round(stage.height) : 0,
+      dockBottom: d ? Math.round(d.bottom) : 0,
+      win: window.innerHeight,
+      paletteVisible: vis('dockPalette') && !!pal && pal.width > 0,
+      paletteItems: document.querySelectorAll('#widgetGallery .gallery-item').length,
+      panelBesidePalette: !!(pal && panel) && panel.left >= pal.right - 1,
+      openerGone: getComputedStyle(document.getElementById('addSlot')).display === 'none',
+      panesShown: [...document.querySelectorAll('#contextBody .pane')]
+        .filter((p) => getComputedStyle(p).display !== 'none').length,
+    };
+  });
+  check('E15 the panel never overlaps the canvas it is configuring',
+    dock.overlap === 0, `overlap ${dock.overlap}px`);
+  check('E15a and it is in normal flow, so the canvas can claim the space it leaves',
+    dock.panelInFlow);
+  check('E15b the canvas keeps a usable height rather than being squeezed out',
+    dock.stageH >= 150, `${dock.stageH}px`);
+  check('E15c the dock fits the window instead of pushing content off-screen',
+    dock.dockBottom <= dock.win + 1, `${dock.dockBottom} vs ${dock.win}`);
+  // The palette is the one thing the iCUE reference never hides.
+  check('E15d the widget palette is permanently visible, not behind a button',
+    dock.paletteVisible && dock.paletteItems > 0, `${dock.paletteItems} items`);
+  check('E15e and its opener is gone, so there is no button that reveals what is already shown',
+    dock.openerGone);
+  check('E15f the panel sits BESIDE the palette — columns, not a stack',
+    dock.panelBesidePalette);
+  // A pane that stays visible because a display rule outranked [hidden] puts the page's
+  // controls under the selected widget's. Exactly one pane may be showing.
+  check('E15g exactly one pane is visible at a time',
+    dock.panesShown === 1, `${dock.panesShown} panes`);
+
   await browser.close();
   shellSrv.close();
   console.log(failures ? `${failures} FAILURES` : 'ALL PASS');
