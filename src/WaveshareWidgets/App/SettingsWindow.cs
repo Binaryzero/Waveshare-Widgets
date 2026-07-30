@@ -317,9 +317,19 @@ public sealed class SettingsWindow : Form
             // the field before the rescan then goes to layout.json in the clear — the very
             // hole the redaction metadata exists to close, reopened by the order of events.
             //
-            // Secret wins, exactly as in the property union above.
+            // Secret wins, exactly as in the property union above — but ONLY when the entry
+            // describes this same widget. If the id is also LOADED, the entry belongs to a
+            // different widget that happens to share the id (Rescan resolves duplicates
+            // ordinally, and the refusal list keeps shadowed entries so their redaction
+            // metadata survives). Forcing a refused copy's names onto a loaded manifest is
+            // a category error and a destructive one: a name the loaded copy declares as a
+            // `list` gets masked to a placeholder, BuildStoredIndex cannot index a
+            // non-string to restore it, and Seal's empty branch REMOVES the property — an
+            // unrelated edit deletes the user's list for good. Names it does declare are
+            // its own; only the ones it has no opinion about can be the orphaned credential.
+            var loaded = _library.Widgets.Any(w => string.Equals(w.Manifest.Id, r.Id, StringComparison.Ordinal));
             snapshot[r.Id] = snapshot.TryGetValue(r.Id, out var existing)
-                ? existing.WithSecretsForced(r.RedactNames)
+                ? (loaded ? existing.WithSecretsAdded(r.RedactNames) : existing.WithSecretsForced(r.RedactNames))
                 : WidgetManifest.RedactionOnly(r.Id, r.Name, r.RedactNames);
         }
     }
