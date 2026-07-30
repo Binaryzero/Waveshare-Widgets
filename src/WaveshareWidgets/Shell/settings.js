@@ -180,7 +180,18 @@
       for (const m of (Array.isArray(msg.mintedIds) ? msg.mintedIds : [])) {
         const target = (((state.layout || {}).pages || [])[m.page] || {}).slots || [];
         const slot = target[m.slot];
-        if (slot && !slot.instanceId && slot.widgetId === m.widgetId) slot.instanceId = m.instanceId;
+        if (!slot || slot.instanceId || slot.widgetId !== m.widgetId) continue;
+        // secretsTypedHere is keyed by slot identity, and adopting the id CHANGES that
+        // key. Migrate the entries first or the session record is orphaned: the rebuilt
+        // control reads "not set", and deleting the value sends "" — which the host
+        // honours by restoring the ciphertext this very save just wrote.
+        for (const key of [...secretsTypedHere]) {
+          const bar = key.lastIndexOf('|');
+          if (bar < 0 || !key.startsWith('p:' + m.widgetId + '@' + m.page + ':' + m.slot + '|')) continue;
+          secretsTypedHere.delete(key);
+          secretsTypedHere.add('i:' + m.instanceId + key.slice(bar));
+        }
+        slot.instanceId = m.instanceId;
       }
       // The layout saved, but a credential may not have: the host refuses to write one
       // in the clear when Windows protection is unavailable. "Saved" alone would tell
@@ -1604,6 +1615,11 @@
           input.value = '';
           cleared = true;
           secretsTypedHere.delete(typedKey);
+          // secretsSet is the host's init snapshot. Leaving the name in it means a later
+          // rebuild reconstructs `stored` as true and reports the just-deleted credential
+          // as "saved · encrypted (hidden)".
+          if (Array.isArray(slot.secretsSet))
+            slot.secretsSet = slot.secretsSet.filter((n) => n !== prop.name);
           // A distinct marker, NOT an empty string: empty is what an untouched masked
           // field sends back, and that must KEEP the stored credential. Only this word
           // means "delete it" (SecretStore.ClearMarker on the host).
