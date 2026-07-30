@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CI guard for URL redaction in the log (issue #59). WIDGET-SPEC treats a private
+       ICS or webhook link as credential-equivalent — the URL IS the credential — and
+       app.log is plaintext, outside the DPAPI work in #15, and the first file a user
+       attaches to a bug report.
+
+       The probe covers both halves of the claim "this is safe to log": that SafeUrl
+       itself discloses nothing, and that the EXCEPTION MESSAGES logged beside it do not
+       carry the URL either. The second half is the one that would otherwise be assumed. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>UrlRedaction</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/WaveshareWidgets/SafeUrl.cs" />
+  </ItemGroup>
+</Project>

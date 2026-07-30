@@ -593,7 +593,7 @@ public sealed class DashboardWindow : Form
             result["statusText"] = response.ReasonPhrase ?? "";
             result["contentType"] = response.Content.Headers.ContentType?.ToString();
             result["bodyBase64"] = Convert.ToBase64String(bytes);
-            Log.Info($"proxy fetch {uri.Host} -> {(int)response.StatusCode} ({bytes.Length} bytes)");
+            Log.Info($"proxy fetch {SafeUrl.Describe(uri)} -> {(int)response.StatusCode} ({bytes.Length} bytes)");
 
             // TLS-fingerprinting bot walls (Reddit) 403 every .NET client; retry those
             // through a real Chromium navigation, which they do trust.
@@ -607,7 +607,7 @@ public sealed class DashboardWindow : Form
                     result["statusText"] = "";
                     result["contentType"] = browser.ContentType;
                     result["bodyBase64"] = Convert.ToBase64String(browser.Body);
-                    Log.Info($"browser fetch {uri.Host} -> {browser.Status} ({browser.Body.Length} bytes)");
+                    Log.Info($"browser fetch {SafeUrl.Describe(uri)} -> {browser.Status} ({browser.Body.Length} bytes)");
                 }
                 else if (alt is { } blocked)
                 {
@@ -618,14 +618,14 @@ public sealed class DashboardWindow : Form
                     var hint = blocked.Status is 401 or 403
                         ? "likely authorization (missing credentials or a private resource), not TLS fingerprinting"
                         : "the site's own answer, not TLS fingerprinting";
-                    Log.Warn($"browser fetch {uri.Host} -> {blocked.Status}; {hint}");
+                    Log.Warn($"browser fetch {SafeUrl.Describe(uri)} -> {blocked.Status}; {hint}");
                 }
             }
         }
         catch (Exception ex)
         {
             result["error"] = ex.Message;
-            Log.Warn($"proxy fetch failed ({message["url"]?.GetValue<string>()}): {ex.Message}");
+            Log.Warn($"proxy fetch failed ({SafeUrl.Describe(message["url"]?.GetValue<string>())}): {ex.Message}");
         }
 
         if (reply is not null)
