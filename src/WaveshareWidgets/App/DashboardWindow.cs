@@ -758,21 +758,7 @@ public sealed class DashboardWindow : Form
         // The dashboard's widget iframes need real credentials, so secrets are decrypted
         // for THIS payload only — layout.json keeps the DPAPI ciphertext.
         SnapshotManifests();
-        // A property retyped `secret` → `text` still holds ciphertext, which Reveal cannot
-        // decrypt through a manifest that no longer calls it a secret — so it blanks it
-        // rather than hand a widget "dpapi:v1:…". The shell then round-trips that blank
-        // back through save-layout, and Seal would skip a property the snapshot calls
-        // ordinary, writing the blank over the stored value. Keeping those names classified
-        // as secret for SAVING purposes is what makes the blank recoverable: Seal walks
-        // them, sees an untouched empty field, and restores the ciphertext — exactly the
-        // masked-field carry-over the settings window relies on.
-        var scrubbed = SecretPolicy.Reveal(layout, ManifestRevealedWith);
-        foreach (var group in scrubbed.GroupBy(s => s.WidgetId, StringComparer.Ordinal))
-        {
-            if (ManifestRevealedWith(group.Key) is not { } current)
-                continue;
-            _revealedManifests![group.Key] = current.WithSecretsForced(group.Select(s => s.Name));
-        }
+        SecretPolicy.Reveal(layout, ManifestRevealedWith);
         var widgets = _library.Widgets.Select(w => new
         {
             id = w.Manifest.Id,

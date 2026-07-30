@@ -560,22 +560,19 @@ Check("P27e saving the masked layout keeps the credential rather than blanking i
 Check("P27f and it is now encrypted at rest, which the refusal alone never achieved",
     refusedAfter != Token && SecretStore.HasMarker(refusedAfter));
 
-// ---- P28 · #63 r8: a widget must never be handed ciphertext ---------------------------
-// Reveal walks only what the CURRENT manifest calls `secret`. A property retyped
-// `secret` -> `text` therefore keeps whatever is stored — and what is stored is an
-// envelope, delivered to the widget as the literal string "dpapi:v1:…". The widget
-// cannot tell that from a value: it renders it, or sends it somewhere.
-//
-// The invariant is worth holding independently of how it was reached, because manifest
-// edits, hand-editing and half-applied rescans can all produce it: an unrevealed envelope
-// is not a value, and an empty field is the honest rendering of one nothing can open.
+// ---- P28 · #66: a demoted secret is handed to the widget as ciphertext ----------------
+// This pins a KNOWN GAP rather than a fix. When a manifest retypes a property
+// `secret` -> `text`, the stored envelope is not walked by Reveal and reaches the widget
+// verbatim. Three fixes were attempted in PR #65 and every one was worse than the bug —
+// the constraints are written up in issue #66. Asserting the current behaviour keeps the
+// gap honest: whoever changes it has to change this probe deliberately, and will find the
+// issue from here.
 var demotedStored = LayoutWith(new JsonObject { ["apiToken"] = Token, ["repo"] = "owner/name" });
 SecretPolicy.Seal(demotedStored, null, Lookup);
 var demotedCipher = Value(demotedStored, "apiToken");
 Check("P28 setup: the credential is stored encrypted",
     demotedCipher is not null && SecretStore.HasMarker(demotedCipher));
 
-// The author has since retyped the property. This is the manifest the DASHBOARD sees.
 var demotedManifest = new WidgetManifest
 {
     Id = "test.widget",
@@ -590,121 +587,50 @@ WidgetManifest? DemotedLookup(string id) => id == "test.widget" ? demotedManifes
 
 var revealed28 = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(demotedStored))!;
 SecretPolicy.Reveal(revealed28, DemotedLookup);
-Check("P28b a retyped property does not hand the widget the envelope",
-    Value(revealed28, "apiToken") == "", Value(revealed28, "apiToken"));
-Check("P28c and it is emptied, not left as some other ciphertext",
-    !SecretStore.HasMarker(Value(revealed28, "apiToken")), Value(revealed28, "apiToken"));
+Check("P28b KNOWN GAP (#66): a demoted secret still reaches the widget as ciphertext",
+    Value(revealed28, "apiToken") == demotedCipher, Value(revealed28, "apiToken"));
+// The property that makes the gap tolerable, and that any fix must preserve: the stored
+// value is INTACT, so the user can retype the field and it saves as ordinary text.
+Check("P28c but the stored value is intact, so the situation self-heals on the next edit",
+    SecretStore.Unprotect(Value(revealed28, "apiToken")) == Token);
 Check("P28d an ordinary setting beside it is untouched",
     Value(revealed28, "repo") == "owner/name", Value(revealed28, "repo"));
 
-// The scrub must not undo Reveal's actual job.
+// Reveal's real job is unaffected by any of the above.
 var revealed28e = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(demotedStored))!;
 SecretPolicy.Reveal(revealed28e, Lookup);
 Check("P28e a properly declared secret still reveals to its plaintext",
     Value(revealed28e, "apiToken") == Token, Value(revealed28e, "apiToken"));
 
-// DECRYPTABILITY, not shape. My first draft scrubbed on LooksLikeEnvelope and probed it
-// with "dpapi:v1:this-is-actually-my-password" — which is NOT valid base64, so it was
-// never a candidate and the probe passed while proving nothing. These two are valid
-// base64 after the marker, so they are exactly what a shape test destroys.
-const string MarkerShaped = "dpapi:v1:YWJj";           // "abc" — a real setting value
-var markerish = LayoutWith(new JsonObject { ["apiToken"] = MarkerShaped });
-SecretPolicy.Reveal(markerish, DemotedLookup);
-Check("P28f marker-SHAPED plaintext survives — we cannot open it, so it is not ours",
-    Value(markerish, "apiToken") == MarkerShaped, Value(markerish, "apiToken"));
-var markerishLegacy = LayoutWith(new JsonObject { ["apiToken"] = "dpapi:v1:this-is-actually-my-password" });
-SecretPolicy.Reveal(markerishLegacy, DemotedLookup);
-Check("P28f2 and so does the non-base64 spelling",
-    Value(markerishLegacy, "apiToken") == "dpapi:v1:this-is-actually-my-password");
-
-// The absurd case a shape test produced: a properly declared secret whose PLAINTEXT is
-// marker-shaped. Reveal decrypts it correctly, and a shape-based scrub then wiped the
-// value one line later.
+// A secret whose PLAINTEXT is itself a valid envelope must survive its own reveal. Any
+// future scrub has to skip names the manifest already declares secret, or it blanks this
+// one line after decrypting it correctly (#66).
+const string MarkerShaped = "dpapi:v1:YWJj";
 var wrapped = LayoutWith(new JsonObject { ["apiToken"] = MarkerShaped });
 SecretPolicy.Seal(wrapped, null, Lookup);
 var wrappedRevealed = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(wrapped))!;
 SecretPolicy.Reveal(wrappedRevealed, Lookup);
-Check("P28f3 a secret whose plaintext is marker-shaped survives its own reveal",
+Check("P28f a secret whose plaintext is marker-shaped survives its own reveal",
     Value(wrappedRevealed, "apiToken") == MarkerShaped, Value(wrappedRevealed, "apiToken"));
 
-// A foreign envelope under a still-secret property already read as empty via Unprotect;
-// the scrub must not change that, and must not resurrect it either.
 var foreign28 = LayoutWith(new JsonObject { ["apiToken"] = ForeignEnvelope });
 SecretPolicy.Reveal(foreign28, Lookup);
 Check("P28g an unopenable envelope reads as empty under a secret property",
     Value(foreign28, "apiToken") == "", Value(foreign28, "apiToken"));
 
-// A slot whose manifest is MISSING is left completely alone. No widget is loaded to
-// receive anything, so there is nothing to protect against — while blanking would put an
-// empty string in front of the on-panel editor, and the next unrelated save writes that
-// over the ciphertext for good. A missing manifest must never destroy what it described.
+// An uninstalled widget's ciphertext must survive a reveal untouched and stay recoverable.
+// Nothing blanks it today; the probe exists so a future scrub cannot quietly start.
 var orphan = LayoutWith(new JsonObject { ["apiToken"] = Token });
 SecretPolicy.Seal(orphan, null, Lookup);
 var orphanCipher = Value(orphan, "apiToken");
 var orphanRevealed = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(orphan))!;
-SecretPolicy.Reveal(orphanRevealed, _ => null);   // widget uninstalled, or manifest unparseable
-Check("P28h an uninstalled widget's ciphertext is left intact, not blanked",
+SecretPolicy.Reveal(orphanRevealed, _ => null);
+Check("P28h an uninstalled widget's ciphertext is left intact",
     Value(orphanRevealed, "apiToken") == orphanCipher, Value(orphanRevealed, "apiToken"));
-// ...and it really is recoverable: reinstall the widget and it reveals as before.
 var recovered = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(orphanRevealed))!;
 SecretPolicy.Reveal(recovered, Lookup);
 Check("P28h2 and a later reinstall still reveals the original credential",
     Value(recovered, "apiToken") == Token, Value(recovered, "apiToken"));
-
-// ---- P29 · #65 r2: the shell ROUND-TRIPS what Reveal gives it -------------------------
-// The claim I made for P28 — "refusing on the reveal side costs a blank field for one
-// render" — was false. The dashboard shell holds the revealed layout and saves it back
-// wholesale through save-layout, so a blank Reveal writes is a blank that reaches disk
-// unless the save path knows to restore it. That is what Reveal's return value is for.
-var p29Stored = LayoutWith(new JsonObject { ["apiToken"] = Token, ["repo"] = "owner/name" });
-SecretPolicy.Seal(p29Stored, null, Lookup);
-var p29Cipher = Value(p29Stored, "apiToken");
-
-// The demoted manifest, as the dashboard would see it after a rescan.
-var p29Demoted = new WidgetManifest
-{
-    Id = "test.widget",
-    Name = "Test",
-    Properties =
-    [
-        new WidgetProperty { Name = "apiToken", Label = "API token", Type = "text" },
-        new WidgetProperty { Name = "repo", Label = "Repo", Type = "text" },
-    ],
-};
-var p29Snapshot = new Dictionary<string, WidgetManifest>(StringComparer.Ordinal)
-{
-    ["test.widget"] = p29Demoted,
-};
-WidgetManifest? P29Lookup(string id) => p29Snapshot.TryGetValue(id, out var m) ? m : null;
-
-var p29Shell = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p29Stored))!;
-var p29Scrubbed = SecretPolicy.Reveal(p29Shell, P29Lookup);
-Check("P29 Reveal REPORTS what it blanked, so the caller can protect it",
-    p29Scrubbed.Count == 1 && p29Scrubbed[0].WidgetId == "test.widget" && p29Scrubbed[0].Name == "apiToken",
-    string.Join(", ", p29Scrubbed.Select(x => x.WidgetId + "." + x.Name)));
-Check("P29b the shell still receives no ciphertext", Value(p29Shell, "apiToken") == "");
-
-// What DashboardWindow does with the report: fold the names back into the snapshot it
-// seals with, so Seal walks them and treats the untouched blank as carry-over.
-foreach (var g in p29Scrubbed.GroupBy(x => x.WidgetId, StringComparer.Ordinal))
-    p29Snapshot[g.Key] = p29Snapshot[g.Key].WithSecretsForced(g.Select(x => x.Name));
-
-// The user drags a tile; the shell saves the whole layout back, blank included.
-var p29Saved = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p29Shell))!;
-SecretPolicy.Seal(p29Saved, p29Stored, P29Lookup);
-Check("P29c an unrelated on-panel save does NOT overwrite the stored ciphertext",
-    Value(p29Saved, "apiToken") == p29Cipher, Value(p29Saved, "apiToken"));
-Check("P29d and the rest of the layout still saves normally",
-    Value(p29Saved, "repo") == "owner/name");
-
-// The falsification arm, kept in the probe: without the fold-back the blank wins.
-var p29Naive = new Dictionary<string, WidgetManifest>(StringComparer.Ordinal) { ["test.widget"] = p29Demoted };
-WidgetManifest? P29Naive(string id) => p29Naive.TryGetValue(id, out var m) ? m : null;
-var p29Lost = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p29Shell))!;
-SecretPolicy.Seal(p29Lost, p29Stored, P29Naive);
-Check("P29e without the fold-back the blank reaches disk — this is the bug being fixed",
-    Value(p29Lost, "apiToken") != p29Cipher,
-    "if this ever fails, Seal grew its own protection and P29c proves less");
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;

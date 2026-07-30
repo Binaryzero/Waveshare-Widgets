@@ -191,15 +191,17 @@ public static class SecretPolicy
 
     /// <summary>Decrypts every secret in place — for the dashboard's init payload only.
     ///
-    /// Returns the (widget id, property name) pairs whose ciphertext was BLANKED rather
-    /// than decrypted, because the current manifest no longer calls them secret. The
-    /// caller must fold these into the manifest snapshot it seals with — see
-    /// <see cref="WidgetManifest.WithSecretsForced"/> — or the shell will round-trip the
-    /// blank straight over the stored value. This is not advisory: the shell holds the
-    /// layout it was given and saves it back, so a blank we put there is a blank that
-    /// reaches disk unless something at save time knows to restore it.</summary>
-    public static IReadOnlyList<(string WidgetId, string Name)> Reveal(
-        DashboardLayout layout, Func<string, WidgetManifest?> lookup)
+    /// KNOWN GAP (issue #66): a property retyped `secret` → `text` still holds ciphertext,
+    /// and this walks only what the CURRENT manifest calls secret — so the widget receives
+    /// the literal "dpapi:v1:…" string. Blanking it here looks like a two-line fix and is
+    /// not: the shell round-trips this exact layout back through save-layout, so a blank
+    /// written here reaches disk unless the save path is taught to restore it, and teaching
+    /// it through the manifest classification also imposes secret WRITE semantics, which
+    /// makes the demoted field permanently uneditable. The real fix needs per-address
+    /// restore with slot identity — the same machinery #62 needs — and is tracked there
+    /// rather than guessed at here. Leaving it alone at least self-heals: the user retypes
+    /// the value and it saves as ordinary text, which is what the manifest now says.</summary>
+    public static void Reveal(DashboardLayout layout, Func<string, WidgetManifest?> lookup)
     {
         Walk(layout, lookup, (slot, name) =>
         {
@@ -216,66 +218,6 @@ public static class SecretPolicy
             // Legacy plaintext (a property that used to be `text`) already reads as
             // itself; it gets encrypted the next time the layout is saved.
         });
-        return ScrubUnrevealedEnvelopes(layout, lookup);
-    }
-
-    /// <summary>Blanks OUR ciphertext where <see cref="Reveal"/> could not walk it.
-    ///
-    /// Reveal only visits properties the CURRENT manifest calls `secret`. A property
-    /// retyped `secret` → `text` therefore keeps whatever is stored — an envelope, handed
-    /// to the widget verbatim as the literal string "dpapi:v1:…", which it cannot tell
-    /// from a value and will happily render or transmit. A widget must never receive
-    /// ciphertext, and this is where that is enforced: on the way OUT to the widget,
-    /// where refusing costs nothing, rather than in the settings window's snapshot, where
-    /// the stored value itself is at stake.
-    ///
-    /// Two limits, both deliberate, both learned by getting them wrong first:
-    ///
-    /// DECRYPTABILITY, not shape. <see cref="SecretStore.LooksLikeEnvelope"/> is a shape
-    /// test, and "dpapi:v1:YWJj" is a perfectly good setting value that happens to match
-    /// it. Blanking on shape destroyed real data — including, absurdly, a properly
-    /// declared secret whose plaintext looked like a marker, which Reveal decrypted
-    /// correctly one line earlier only for this pass to wipe. If we can open it, we wrote
-    /// it, and it is certainly not the user's plaintext. If we cannot, the ambiguity is
-    /// unresolvable and the value gets the benefit of the doubt: a foreign envelope
-    /// reaching a widget is a display wart, while blanking someone's data is not.
-    ///
-    /// KNOWN WIDGETS only. A slot whose manifest is missing — uninstalled, or a
-    /// manifest that momentarily failed to parse — is skipped entirely. No widget is
-    /// loaded to receive anything, so there is nothing to protect against; meanwhile
-    /// blanking it here would put an empty string in front of the on-panel editor, and
-    /// the next unrelated save writes that over the ciphertext for good. A missing
-    /// manifest must never be a reason to destroy what it described.
-    ///
-    /// BLANKING IS NOT FREE, which is the thing I got wrong twice. The shell holds the
-    /// layout it is given and saves it back wholesale, so a blank here reaches disk unless
-    /// the save path is told to restore it. That is what the returned list is for, and it
-    /// is the same shape as the settings window's masked flow: blank the value, keep a
-    /// classification that still calls it secret, and let Seal put the stored ciphertext
-    /// back when the untouched blank comes home.</summary>
-    private static IReadOnlyList<(string WidgetId, string Name)> ScrubUnrevealedEnvelopes(
-        DashboardLayout layout, Func<string, WidgetManifest?> lookup)
-    {
-        var scrubbed = new List<(string, string)>();
-        foreach (var page in layout.Pages ?? [])
-        {
-            foreach (var slot in page.Slots ?? [])
-            {
-                if (string.IsNullOrEmpty(slot.WidgetId) || slot.Settings is null)
-                    continue;
-                if (lookup(slot.WidgetId) is null)
-                    continue;
-                foreach (var (key, node) in slot.Settings.ToList())
-                {
-                    if (AsString(node) is { } text && SecretStore.CanUnprotect(text))
-                    {
-                        slot.Settings[key] = "";
-                        scrubbed.Add((slot.WidgetId, key));
-                    }
-                }
-            }
-        }
-        return scrubbed;
     }
 
     /// <summary>Blanks every secret and records which ones are set AND readable here.
