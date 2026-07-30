@@ -15,8 +15,15 @@ public sealed record InstalledWidget(WidgetManifest Manifest, string Folder, str
 ///
 /// Refusing is the whole point of the credential rule, but a refusal that only reaches
 /// app.log means the user's first symptom is a tile that quietly stopped existing. The
-/// settings window reads this list so the reason is visible where the widget isn't.</summary>
-public sealed record RejectedWidget(string Id, string Name, string Folder, string Reason);
+/// settings window reads this list so the reason is visible where the widget isn't.
+///
+/// <paramref name="RedactNames"/> is redaction metadata, not display data: a refused
+/// widget has no manifest in the library, so nothing downstream can tell which of its
+/// stored settings are credentials. Carrying the names here keeps those slots on the
+/// secret pipeline (see <see cref="WidgetManifest.RedactionOnly"/>) instead of having the
+/// refusal itself publish the plaintext it was raised over.</summary>
+public sealed record RejectedWidget(
+    string Id, string Name, string Folder, string Reason, IReadOnlyList<string> RedactNames);
 
 /// <summary>
 /// Manages the user's widgets folder: seeds stock widgets on first run, scans installed
@@ -329,7 +336,11 @@ public sealed partial class WidgetLibrary : IDisposable
                 if (!manifest.CredentialsAreTyped(out var credentialError))
                 {
                     Log.Warn($"Refusing widget '{manifest.Id}' in '{folder}': {credentialError}");
-                    rejected.Add(new RejectedWidget(manifest.Id, manifest.Name, folder, credentialError));
+                    // The names travel with the refusal: this manifest is about to stop
+                    // existing as far as the rest of the app is concerned, and it is the
+                    // only thing that knows which of the slot's settings are credentials.
+                    rejected.Add(new RejectedWidget(manifest.Id, manifest.Name, folder, credentialError,
+                        manifest.CredentialPropertyNames()));
                     continue;
                 }
 

@@ -81,6 +81,51 @@ public sealed class WidgetManifest
         error = "";
         return true;
     }
+
+    /// <summary>The property names whose stored values must not be handed to the settings
+    /// editor in the clear — every top-level property that is declared <c>secret</c> OR
+    /// merely looks like a credential.
+    ///
+    /// This is the wider net that <see cref="CredentialsAreTyped"/> refuses on, and it is
+    /// wider on purpose: it is asked about a manifest that has ALREADY been refused, where
+    /// the declared type is exactly the thing not to be trusted.
+    ///
+    /// List properties are excluded. SecretPolicy walks top-level properties only, and a
+    /// list VALUE cannot survive its round-trip — Mask would replace the array with a
+    /// placeholder and Seal, finding no stored string to restore, would delete the whole
+    /// list. Refusing to redact is the lesser harm; a credential inside a list row is
+    /// tracked in issue #62.</summary>
+    public List<string> CredentialPropertyNames()
+    {
+        var names = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var p in Properties)
+        {
+            if (string.IsNullOrEmpty(p.Name) || p.Type == "list")
+                continue;
+            if ((p.Type == "secret" || CredentialNames.LooksLikeCredential(p.Name)) && seen.Add(p.Name))
+                names.Add(p.Name);
+        }
+        return names;
+    }
+
+    /// <summary>A manifest that exists ONLY to keep a set of property names on the secret
+    /// pipeline. Used for widgets the library refused: they are absent from
+    /// <c>WidgetLibrary.Widgets</c>, so a manifest lookup for their slots returns null,
+    /// <c>SecretPolicy.Mask</c> skips them, and every setting they hold — including the
+    /// plaintext credential the refusal was about — is posted to the editor untouched.
+    /// The refusal would then be the thing that created the exposure it exists to prevent.
+    ///
+    /// Declaring the names <c>secret</c> puts those slots back on the pipeline they fell
+    /// off, which also makes the round-trip safe: Mask blanks the values and Seal restores
+    /// or encrypts them on the next save, rather than the editor's blank overwriting
+    /// them.</summary>
+    public static WidgetManifest RedactionOnly(string id, string name, IEnumerable<string> secretNames) => new()
+    {
+        Id = id,
+        Name = name,
+        Properties = [.. secretNames.Select(n => new WidgetProperty { Name = n, Type = "secret" })],
+    };
 }
 
 /// <summary>A user-configurable widget setting, declared in the manifest and rendered by the host.

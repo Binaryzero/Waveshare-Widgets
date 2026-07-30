@@ -149,6 +149,14 @@
       if (!state.layout || !Array.isArray(state.layout.pages)) state.layout = { pages: [] };
       backgroundHost = state.backgroundHost || backgroundHost;
       widgetsById = new Map((state.widgets || []).map((w) => [w.id, w]));
+      // A full init is the one moment the union may be dropped: this layout was
+      // masked by the host against the CURRENT manifests, so no unsaved plaintext
+      // from the previous catalog survives in it for the old names to protect.
+      // Carrying them over would outlive their purpose — a property retyped from
+      // `secret` to ordinary text (a feed URL that stopped being private) would stay
+      // permanently blank in the preview for the life of the window, with no edit that
+      // could clear it. Everything after this point unions, per rememberSecretNames.
+      secretNamesById.clear();
       rememberSecretNames(state.widgets);
       // Build stamp in the header: "which version am I running" answered on sight.
       el('appVersion').textContent = (state.status && state.status.version) || '';

@@ -281,7 +281,32 @@ public sealed class SettingsWindow : Form
         var snapshot = new Dictionary<string, WidgetManifest>(StringComparer.OrdinalIgnoreCase);
         foreach (var w in _library.Widgets)
             snapshot[w.Manifest.Id] = w.Manifest;
+        AddRedactionManifests(snapshot);
         _maskedManifests = snapshot;
+    }
+
+    /// <summary>Stands a redaction-only manifest in for every REFUSED widget.
+    ///
+    /// A refusal removes the widget from the library, so <see cref="ManifestAsMasked"/>
+    /// returns null for its slots, <see cref="SecretPolicy.Mask"/> skips them, and the
+    /// plaintext credential the widget was refused over is posted to the editor in the
+    /// clear — the refusal creating the exposure it exists to prevent. The stand-in keeps
+    /// those names on the secret pipeline, so Mask blanks them and Seal restores or
+    /// encrypts them instead of the editor's blank overwriting the stored value.</summary>
+    private void AddRedactionManifests(Dictionary<string, WidgetManifest> snapshot)
+    {
+        foreach (var r in _library.Rejected)
+        {
+            if (string.IsNullOrEmpty(r.Id) || r.RedactNames.Count == 0)
+                continue;
+            // TryAdd, never overwrite. Two ids differing only in case are two distinct
+            // widgets to the library (Rescan resolves duplicates with an ordinal compare),
+            // so a rejected 'Foo' can coexist with a loaded 'foo' — while this dictionary
+            // is OrdinalIgnoreCase. A plain assignment would let the refused widget's
+            // stand-in displace the real manifest of the one that loaded, which would
+            // unmask its secrets on the way out AND blank them on the way back in.
+            snapshot.TryAdd(r.Id, WidgetManifest.RedactionOnly(r.Id, r.Name, r.RedactNames));
+        }
     }
 
     /// <summary>Adds newly-seen manifests to the baseline WITHOUT dropping any.
@@ -320,10 +345,21 @@ public sealed class SettingsWindow : Form
             // Old definitions win on a name collision: they are the ones that classified
             // the layout the editor is currently holding, and that layout is what the
             // next save writes.
+            // Name-collision rule: SECRET WINS, from whichever side declares it. A pure
+            // "old wins" union quietly loses the retype case — a property that was
+            // `text` and is now `secret` (a feed URL that became private) would keep the
+            // old non-secret definition, so the editor renders a masked field while Seal
+            // treats it as ordinary text and writes the credential out in the clear.
+            // Erring toward secret is the safe direction: the worst case is carrying a
+            // value through the cipher that did not need it.
             var union = new List<WidgetProperty>(masked.Properties);
-            var known = new HashSet<string>(union.Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
+            var byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < union.Count; i++) byName[union[i].Name] = i;
             foreach (var p in w.Manifest.Properties)
-                if (known.Add(p.Name)) union.Add(p);
+            {
+                if (!byName.TryGetValue(p.Name, out var at)) { byName[p.Name] = union.Count; union.Add(p); continue; }
+                if (p.Type == "secret" && union[at].Type != "secret") union[at] = p;
+            }
 
             _maskedManifests[w.Manifest.Id] = new WidgetManifest
             {
@@ -338,6 +374,13 @@ public sealed class SettingsWindow : Form
                 Properties = union,
             };
         }
+
+        // A widget can also be refused BETWEEN init and save — or appear already-refused
+        // in a folder that was empty at init. TryAdd leaves any real manifest alone (that
+        // is the one that masked the layout the editor holds); it only fills the gap where
+        // there is nothing at all, so the next save seals the slot instead of writing the
+        // credential back out in the clear.
+        AddRedactionManifests(_maskedManifests);
     }
 
     /// <summary>The widget palette as the editor sees it. Shared by the initial payload

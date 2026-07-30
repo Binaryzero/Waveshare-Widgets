@@ -183,6 +183,51 @@ foreach (var name in new[] { "authorizationHeader", "authHeader", "authorization
 foreach (var name in new[] { "authMode", "authType", "authScheme", "headerName", "authorizationType" })
     Check($"C8b '{name}' is left alone", !CredentialNames.LooksLikeCredential(name));
 
+// ---- C9 · the refusal must not publish what it refused -------------------------------
+// A refused widget leaves the library, so nothing downstream knows which of its stored
+// settings are credentials — SecretPolicy skips the slot and the settings window posts
+// the plaintext apiToken to the editor untouched. CredentialPropertyNames is the metadata
+// that keeps those slots on the pipeline; the round-trip itself is probed in
+// tools/SecretRoundTrip (P27).
+var refused = ManifestWith(
+    new WidgetProperty { Name = "apiToken", Type = "text" },
+    new WidgetProperty { Name = "clientSecret", Type = "secret" },
+    new WidgetProperty { Name = "feedUrl", Type = "text" },
+    new WidgetProperty { Name = "pollSeconds", Type = "number" });
+var redact = refused.CredentialPropertyNames();
+Check("C9 the refused plaintext credential is named for redaction",
+    redact.Contains("apiToken"), string.Join(", ", redact));
+Check("C9b a properly-typed secret in the same manifest is named too — it is still not the editor's",
+    redact.Contains("clientSecret"), string.Join(", ", redact));
+Check("C9c ordinary settings are NOT redacted, or the user's config vanishes from the editor",
+    !redact.Contains("feedUrl") && !redact.Contains("pollSeconds"), string.Join(", ", redact));
+
+// Lists are deliberately excluded: Mask would replace the array with a placeholder and
+// Seal, finding no stored STRING to restore, would delete the whole list. Redacting it
+// would destroy the user's data to protect it.
+var refusedList = ManifestWith(new WidgetProperty
+{
+    Name = "endpoints",
+    Type = "list",
+    Fields = JsonNode.Parse("""[{"key":"apiKey","type":"text"}]"""),
+});
+Check("C9d a list property is left off the redaction set", refusedList.CredentialPropertyNames().Count == 0,
+    string.Join(", ", refusedList.CredentialPropertyNames()));
+// The stand-in manifest is what actually re-enters the pipeline, so it has to declare
+// every name as `secret` — any other type and SecretPolicy walks straight past it.
+var standIn = WidgetManifest.RedactionOnly("com.example.refused", "Refused", redact);
+Check("C9e the stand-in declares every redacted name as a secret",
+    standIn.Properties.Count == redact.Count && standIn.Properties.All(p => p.Type == "secret"),
+    string.Join(", ", standIn.Properties.Select(p => $"{p.Name}:{p.Type}")));
+Check("C9f and it keeps the widget's identity, or the lookup never finds it",
+    standIn.Id == "com.example.refused");
+// A duplicate name would make Mask walk the same field twice; harmless today, but the
+// set is the contract.
+var dupes = ManifestWith(
+    new WidgetProperty { Name = "apiToken", Type = "text" },
+    new WidgetProperty { Name = "apiToken", Type = "secret" });
+Check("C9g repeated names collapse", dupes.CredentialPropertyNames().Count == 1);
+
 // ---- C4 · the identity checks still work --------------------------------------------
 // CredentialsAreTyped is deliberately separate from IsValid (iCUE widgets have no
 // properties at IsValid time), so confirm neither swallowed the other's job.
