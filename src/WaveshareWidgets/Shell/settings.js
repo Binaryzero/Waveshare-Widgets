@@ -25,6 +25,24 @@
   }
 
   let state = { layout: { pages: [] }, widgets: [], sensors: [] };
+  // Secrets committed during THIS window session, as "<slotKey>|<prop>". secretsSet is
+  // the host's snapshot from init and is never refreshed, and renderEditor() destroys
+  // and rebuilds every control — so without this, a credential typed and saved reads as
+  // "not set" again after any page/slot action, and emptying the field would send "",
+  // which the host honours by restoring what it just stored.
+  const secretsTypedHere = new Set();
+  const secretKey = (slot, name) => {
+    if (slot.instanceId) return 'i:' + slot.instanceId + '|' + name;
+    // No id: the key must name the SLOT, not just the widget — two id-less instances of
+    // one widget on a page would otherwise share a key, and typing a secret for one
+    // would make the other's empty field claim "saved · encrypted".
+    let at = 'orphan';
+    ((state.layout || {}).pages || []).forEach((pg, pi) => {
+      const si = (pg.slots || []).indexOf(slot);
+      if (si >= 0) at = pi + ':' + si;
+    });
+    return 'p:' + slot.widgetId + '@' + at + '|' + name;
+  };
   let widgetsById = new Map();
   let selectedPage = 0;
   let selectedSlot = null;     // slot index (within the selected page) the detail panel shows
@@ -149,8 +167,43 @@
       const acked = msg.seq != null ? pendingSaves.get(msg.seq)
         : (pendingSaves.size ? [...pendingSaves.values()].pop() : undefined);
       if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
-      if (acked !== undefined && editSeq === acked) clearDirty();
-      toast('Saved — dashboard updated');
+      // Dirty is cleared only for a FULLY successful save. A credential the host could
+      // not protect exists solely in this working copy; marking the editor clean would
+      // let the user close the window and lose it, with no visible sign anything failed.
+      const secretsLost = Array.isArray(msg.secretsFailed) && msg.secretsFailed.length > 0;
+      if (acked !== undefined && editSeq === acked && !secretsLost) clearDirty();
+      // The host stamps a stable instanceId on any credentialed slot that lacked one —
+      // but on ITS copy, so this editor still holds the id-less slot it sent. Adopt the
+      // identities or the next save can't find its own ciphertext and deletes it. The
+      // address is the position in the layout WE submitted; the widgetId guard keeps a
+      // stale ack from branding a slot the user has since replaced.
+      for (const m of (Array.isArray(msg.mintedIds) ? msg.mintedIds : [])) {
+        const target = (((state.layout || {}).pages || [])[m.page] || {}).slots || [];
+        const slot = target[m.slot];
+        if (!slot || slot.instanceId || slot.widgetId !== m.widgetId) continue;
+        // secretsTypedHere is keyed by slot identity, and adopting the id CHANGES that
+        // key. Migrate the entries first or the session record is orphaned: the rebuilt
+        // control reads "not set", and deleting the value sends "" — which the host
+        // honours by restoring the ciphertext this very save just wrote.
+        for (const key of [...secretsTypedHere]) {
+          const bar = key.lastIndexOf('|');
+          if (bar < 0 || !key.startsWith('p:' + m.widgetId + '@' + m.page + ':' + m.slot + '|')) continue;
+          secretsTypedHere.delete(key);
+          secretsTypedHere.add('i:' + m.instanceId + key.slice(bar));
+        }
+        slot.instanceId = m.instanceId;
+      }
+      // The layout saved, but a credential may not have: the host refuses to write one
+      // in the clear when Windows protection is unavailable. "Saved" alone would tell
+      // the user a token is active when it isn't.
+      const failed = Array.isArray(msg.secretsFailed) ? msg.secretsFailed : [];
+      if (failed.length) {
+        toast(failed.length === 1
+          ? 'Layout saved, but the credential could NOT be encrypted and was not stored. Re-enter it and save again.'
+          : `Layout saved, but ${failed.length} credentials could NOT be encrypted and were not stored.`, true);
+      } else {
+        toast('Saved — dashboard updated');
+      }
     } else if (msg.type === 'save-failed') {
       if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
       toast('Save failed: ' + msg.message, true);
@@ -210,9 +263,71 @@
                               // comparing against it re-marked a saved layout dirty on a
                               // mere page selection after editing with the preview hidden.
 
-  const replicaLayoutJson = () => JSON.stringify(Object.assign({}, state.layout, { theme: null }));
+  /** The layout the PREVIEW may see. A typed credential lives in state.layout until
+   * Save, and the replica hosts real widget iframes — so without this the widget holds
+   * (and could transmit) a credential the user has not committed, in a surface the spec
+   * says always shows an empty secret. Blanked per manifest, on a copy. */
+  function replicaLayout() {
+    const secretsOf = (widgetId) => {
+      const w = (state.widgets || []).find((x) => x.id === widgetId);
+      return (w && w.properties || []).filter((pr) => pr.type === 'secret').map((pr) => pr.name);
+    };
+    const copy = { pages: ((state.layout || {}).pages || []).map((page) => Object.assign({}, page, {
+      slots: (page.slots || []).map((slot) => {
+        const names = secretsOf(slot.widgetId);
+        if (!names.length || !slot.settings) return slot;
+        const settings = Object.assign({}, slot.settings);
+        for (const n of names) if (n in settings) settings[n] = '';
+        return Object.assign({}, slot, { settings });
+      }),
+    })) };
+    return Object.assign({}, state.layout, copy, { theme: null });
+  }
+  const replicaLayoutJson = () => JSON.stringify(replicaLayout());
+
+  /** Fold a replica capture back into the authoritative layout. Everything the replica
+   * can legitimately change (slot set, order, size, page) comes from the capture;
+   * secrets and the global theme are settings-side authority and are restored from the
+   * working copy, matched by instanceId (falling back to position for id-less slots). */
+  function mergeReplicaCapture(captured) {
+    const mine = new Map();
+    ((state.layout || {}).pages || []).forEach((page, pi) => {
+      (page.slots || []).forEach((slot, si) => {
+        mine.set(slot.instanceId ? 'i:' + slot.instanceId : 'p:' + pi + ':' + si, slot);
+      });
+    });
+    const secretsOf = (widgetId) => {
+      const w = (state.widgets || []).find((x) => x.id === widgetId);
+      return (w && w.properties || []).filter((pr) => pr.type === 'secret').map((pr) => pr.name);
+    };
+    const pages = (captured.pages || []).map((page, pi) => Object.assign({}, page, {
+      slots: (page.slots || []).map((slot, si) => {
+        const names = secretsOf(slot.widgetId);
+        if (!names.length) return slot;
+        // By id first, then by position: the replica MINTS an instanceId for legacy
+        // id-less slots on its first mutation, so an id-keyed lookup alone would miss
+        // exactly the slot whose secret we are trying to preserve.
+        const prior = (slot.instanceId && mine.get('i:' + slot.instanceId)) || mine.get('p:' + pi + ':' + si);
+        if (!prior || prior.widgetId !== slot.widgetId) return slot;
+        const settings = Object.assign({}, slot.settings);
+        for (const n of names) {
+          if (prior.settings && n in prior.settings) settings[n] = prior.settings[n];
+          else delete settings[n];
+        }
+        const merged = Object.assign({}, slot, { settings });
+        if (prior.secretsSet) merged.secretsSet = prior.secretsSet;
+        return merged;
+      }),
+    }));
+    // theme is never sent to the replica, so the capture's null is absence, not intent.
+    return Object.assign({}, captured, { pages, theme: (state.layout || {}).theme ?? null });
+  }
+  // Test seam: the headless probes assert that nothing credential-shaped reaches the
+  // preview. Reading a projection is harmless; it exposes no state the page lacks.
+  window.__wwReplicaLayout = replicaLayout;
 
   function replicaPost(message) {
+    if (message && message.type === 'init') window.__wwLastReplicaInit = JSON.stringify(message);
     if (!replicaReady) return;
     try { previewFrame.contentWindow.postMessage({ type: 'ww-host', message }, '*'); } catch (e) { /* not loaded */ }
   }
@@ -233,7 +348,7 @@
       type: 'init',
       data: {
         gen: initGen,
-        layout: state.layout,
+        layout: replicaLayout(),
         widgets: state.widgets,
         sensors: state.sensors,
         media: state.media || null,
@@ -395,7 +510,12 @@
     // imminent re-init repaints the replica from the settings truth, visibly
     // superseding the replica gesture instead of corrupting the working copy.
     if (replicaTimer) return;
-    state.layout = layout;
+    // The replica is sent a SCRUBBED projection (no credentials, no theme), so its
+    // capture is authoritative for STRUCTURE only — which slots exist, where, at what
+    // size. Adopting it wholesale would write those blanks back over the working copy:
+    // a drag would wipe the configured theme and discard a credential the user typed
+    // but has not saved. Take the structure, keep the settings-side values.
+    state.layout = mergeReplicaCapture(layout);
     lastReplicaLayout = replicaLayoutJson();
     lastWorkingLayout = lastReplicaLayout; // replica edits advance the edit baseline too
     selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
@@ -1011,6 +1131,12 @@
     widgetSelect.onchange = () => {
       slot.widgetId = widgetSelect.value;
       slot.settings = {};
+      // secretsSet describes the OUTGOING widget's stored credentials. The host scopes
+      // carry-over by widget id, so the new widget will correctly inherit nothing —
+      // but leaving the marker here would have the editor report a same-named secret
+      // (`token` is the obvious collision) as "saved · encrypted" for a widget that has
+      // never had one.
+      delete slot.secretsSet;
       const w = widgetsById.get(slot.widgetId);
       const widths = offeredWidths(w);
       const current = parseSize(slot.size);
@@ -1440,6 +1566,88 @@
         });
 
         wrap.append(input, results, chosen);
+        return wrap;
+      }
+      case 'secret': {
+        // Credentials (bearer tokens, PATs, client secrets, private ICS URLs). The host
+        // encrypts these with DPAPI before layout.json is written and NEVER sends a
+        // stored value back here — the editor only learns that one exists, via the
+        // slot's secretsSet list. So: masked input, a reveal toggle for what you type
+        // in this session, and a Clear that removes the stored value on the next save.
+        const wrap = document.createElement('div');
+        wrap.className = 'secret-wrap';
+        const input = document.createElement('input');
+        input.type = 'password';
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        input.placeholder = prop.placeholder || 'Paste the token or key';
+        // The clear marker is a host protocol word, never something to show or re-send
+        // as if the user had typed it.
+        input.value = (typeof current === 'string' && current !== '__ww_secret_cleared__')
+          ? (current.startsWith('__ww_secret_lit_') ? current.slice('__ww_secret_lit_'.length) : current)
+          : '';
+        // Whether a credential EXISTS on disk for this field. `secretsSet` is only the
+        // state at init: the host does not refresh it on save and this control is not
+        // rebuilt, so once the user types and saves, a credential exists that the
+        // snapshot still denies. Tracked live, or emptying the field afterwards would
+        // send "" — which the host reads as an untouched masked field, restoring the
+        // value that save had just stored, while the row claims "not set".
+        const typedKey = secretKey(slot, prop.name);
+        let stored = (Array.isArray(slot.secretsSet) && slot.secretsSet.includes(prop.name))
+          || secretsTypedHere.has(typedKey);
+        let cleared = false; // Clear was pressed: the save will DROP the stored value
+        const state = document.createElement('span');
+        state.className = 'secret-state';
+        const sync = () => {
+          const typed = input.value.length > 0;
+          // Each state says what the next save will do — "saved" must never linger
+          // after the user asked for the credential to be removed.
+          state.textContent = typed ? 'will be encrypted on save'
+            : cleared && stored ? 'will be removed on save'
+            : stored ? 'saved · encrypted (hidden)' : 'not set';
+          state.classList.toggle('set', typed || (stored && !cleared));
+          clear.hidden = !(typed || (stored && !cleared));
+        };
+        const reveal = iconButton('👁', 'Show what you typed', () => {
+          input.type = input.type === 'password' ? 'text' : 'password';
+        });
+        const clear = iconButton('✕', 'Remove the stored credential on the next save', () => {
+          input.value = '';
+          cleared = true;
+          secretsTypedHere.delete(typedKey);
+          // secretsSet is the host's init snapshot. Leaving the name in it means a later
+          // rebuild reconstructs `stored` as true and reports the just-deleted credential
+          // as "saved · encrypted (hidden)".
+          if (Array.isArray(slot.secretsSet))
+            slot.secretsSet = slot.secretsSet.filter((n) => n !== prop.name);
+          // A distinct marker, NOT an empty string: empty is what an untouched masked
+          // field sends back, and that must KEEP the stored credential. Only this word
+          // means "delete it" (SecretStore.ClearMarker on the host).
+          set('__ww_secret_cleared__');
+          sync();
+        }, true);
+        input.addEventListener('input', () => {
+          if (input.value.length > 0) {
+            // On its way to disk, so a later empty field means "remove it", not
+            // "leave the masked value alone".
+            stored = true;
+            secretsTypedHere.add(typedKey);   // survives the next renderEditor()
+            cleared = false;
+            // Credentials are arbitrary strings, so one of them can BE the clear marker.
+            // Anything in the reserved __ww_secret_ namespace travels escaped; the host
+            // strips exactly one prefix (SecretStore.LiteralPrefix).
+            set(input.value.startsWith('__ww_secret_') ? '__ww_secret_lit_' + input.value : input.value);
+          } else if (stored) {
+            cleared = true;
+            set('__ww_secret_cleared__');
+          } else {
+            cleared = false;
+            set('');
+          }
+          sync();
+        });
+        sync();
+        wrap.append(input, reveal, clear, state);
         return wrap;
       }
       case 'color': {

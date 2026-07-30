@@ -238,8 +238,29 @@ public sealed class DashboardWindow : Form
                             throw new InvalidDataException("Layout has no pages.");
                         foreach (var page in edited.Pages)
                             page.Slots.RemoveAll(s => string.IsNullOrWhiteSpace(s.WidgetId));
+                        // The shell round-trips the DECRYPTED layout it was given, so
+                        // seal before writing: plaintext credentials never hit disk.
+                        // Seal with the manifests that REVEALED this shell's layout. The
+                        // shell is holding decrypted values; if a manifest went missing or
+                        // unparsable since then, a live lookup would stop calling the
+                        // property a secret, Seal would skip it, and the plaintext the
+                        // shell is round-tripping would be written straight to disk.
+                        var secretFailures = SecretPolicy.Seal(edited, LayoutStore.Load(), ManifestRevealedWith).Failures;
                         LayoutStore.Save(edited);
                         Log.Info("layout saved from on-panel editor");
+                        if (secretFailures.Count > 0)
+                        {
+                            // The panel re-rendered itself as if the save were clean. Tell
+                            // it otherwise, or the user walks away believing a credential
+                            // is stored when protection refused it.
+                            var names = new JsonArray();
+                            foreach (var f in secretFailures)
+                            {
+                                names.Add($"{f.WidgetId}.{f.Property}");
+                                Log.Warn($"Secret not saved (protection unavailable): {f.WidgetId}.{f.Property}");
+                            }
+                            PostToShell("secrets-failed", names);
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -721,9 +742,17 @@ public sealed class DashboardWindow : Form
         return buffer.ToArray();
     }
 
+    /// <summary>Manifest lookup for the secret pipeline (which properties are credentials).</summary>
+    private WidgetManifest? ManifestFor(string widgetId) =>
+        _library.Widgets.FirstOrDefault(w => string.Equals(w.Manifest.Id, widgetId, StringComparison.OrdinalIgnoreCase))?.Manifest;
+
     private JsonObject BuildInitPayload()
     {
         var layout = LayoutStore.Load();
+        // The dashboard's widget iframes need real credentials, so secrets are decrypted
+        // for THIS payload only — layout.json keeps the DPAPI ciphertext.
+        SnapshotManifests();
+        SecretPolicy.Reveal(layout, ManifestRevealedWith);
         var widgets = _library.Widgets.Select(w => new
         {
             id = w.Manifest.Id,
@@ -833,6 +862,26 @@ public sealed class DashboardWindow : Form
 
     private void OnMediaUpdated(MediaState media) =>
         PostToShellThreadSafe("media", JsonSerializer.SerializeToNode(media, BridgeJson));
+
+    /// <summary>The manifests that produced the shell's REVEALED layout. That shell holds
+    /// decrypted credentials, so its saves must be classified by the same manifests that
+    /// decided what to decrypt — not by a library that may have changed since.</summary>
+    private Dictionary<string, WidgetManifest>? _revealedManifests;
+
+    private WidgetManifest? ManifestRevealedWith(string widgetId)
+    {
+        if (_revealedManifests is not null && _revealedManifests.TryGetValue(widgetId, out var snapshot))
+            return snapshot;
+        return ManifestFor(widgetId);
+    }
+
+    private void SnapshotManifests()
+    {
+        var snapshot = new Dictionary<string, WidgetManifest>(StringComparer.OrdinalIgnoreCase);
+        foreach (var w in _library.Widgets)
+            snapshot[w.Manifest.Id] = w.Manifest;
+        _revealedManifests = snapshot;
+    }
 
     private void PostToShellThreadSafe(string type, JsonNode? data)
     {

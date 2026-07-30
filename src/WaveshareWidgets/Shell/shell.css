@@ -653,3 +653,42 @@ input.toggle-check::after {
 }
 input.toggle-check:checked { background: var(--accent, #4cc2ff); }
 input.toggle-check:checked::after { transform: translateX(22px); }
+
+/* On-panel credential row: masked by default (a desk-height strip is readable from
+ * across the room), with a tap-to-show for checking a pasted token. */
+.ps-secret { display: flex; align-items: center; gap: 6px; }
+.ps-secret input { flex: 1 1 auto; min-width: 0; font-family: ui-monospace, Consolas, monospace; }
+.ps-eye {
+  flex: 0 0 auto;
+  min-width: 40px;
+  padding: 6px 8px;
+  border-radius: var(--radius-control, 8px);
+  border: 1px solid color-mix(in srgb, var(--text, #e8ecf2) 22%, transparent);
+  background: color-mix(in srgb, var(--surface, #12161d) 80%, transparent);
+  color: inherit;
+  font-size: 15px;
+  touch-action: manipulation;
+}
+/* Removing a credential is destructive and irreversible from the panel — colour it
+ * like the other destructive controls so it never reads as a second reveal button. */
+.ps-clear { color: var(--danger, #ff6b6b); }
+
+/* Host-side failure banner. Nothing else on the strip can report one: the panel saves
+ * optimistically, so a silent failure would read as success. */
+.panel-notice {
+  position: fixed;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 90;
+  max-width: 78vw;
+  padding: 9px 16px;
+  border-radius: var(--radius-control, 8px);
+  border: 1px solid color-mix(in srgb, var(--danger, #ff6b6b) 55%, transparent);
+  background: color-mix(in srgb, var(--surface, #12161d) 92%, transparent);
+  color: var(--text, #e8ecf2);
+  font-size: 14px;
+  text-align: center;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+.panel-notice[hidden] { display: none; }

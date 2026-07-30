@@ -7,6 +7,14 @@
   const dotsEl = document.getElementById('dots');
   const emptyEl = document.getElementById('empty');
 
+  // Host protocol: "the user cleared this secret", as distinct from "" which means the
+  // masked field came back untouched and the stored credential must survive the save.
+  // Must match SecretStore.ClearMarker.
+  const SECRET_CLEARED = '__ww_secret_cleared__';
+  // Escape for a credential that lives in the reserved namespace (it could BE the marker
+  // above). Must match SecretStore.LiteralPrefix.
+  const SECRET_LITERAL = '__ww_secret_lit_';
+
   /** @type {{frame: HTMLIFrameElement, el: HTMLElement, settings: object, initialized: boolean, retries: number}[]} */
   let slots = [];
   let latestSensors = [];
@@ -89,6 +97,15 @@
         const p = layoutData.pages[Math.max(0, Math.min(layoutData.pages.length - 1, msg.index | 0))];
         if (p) openPalette(p);
       }
+    }
+    else if (msg.type === 'secrets-failed') {
+      // The panel already re-rendered as if the save were clean, but the host could not
+      // protect a credential and refuses to write one in the clear. Say so on glass —
+      // silence here means the user walks away thinking the token is stored.
+      const items = Array.isArray(msg.data) ? msg.data : [];
+      showPanelNotice(items.length === 1
+        ? 'Could not save the credential — Windows protection unavailable. Try again.'
+        : `Could not save ${items.length} credentials — Windows protection unavailable.`);
     }
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
@@ -241,6 +258,25 @@
       if (slot.def && slot.def.hideInGame)
         slot.el.style.visibility = (gameState.active && !editing) ? 'hidden' : '';
     }
+  }
+
+  let panelNoticeTimer = null;
+
+  /** Transient banner for host-side failures the panel can't otherwise show. The strip
+   * has no dialogs and no room for one, so this rides above everything and clears
+   * itself; it is deliberately the only such surface. */
+  function showPanelNotice(text) {
+    let node = document.getElementById('panelNotice');
+    if (!node) {
+      node = document.createElement('div');
+      node.id = 'panelNotice';
+      node.className = 'panel-notice';
+      document.body.appendChild(node);
+    }
+    node.textContent = text;
+    node.hidden = false;
+    clearTimeout(panelNoticeTimer);
+    panelNoticeTimer = setTimeout(() => { node.hidden = true; }, 6000);
   }
 
   function sendToSlot(slot, message) {
@@ -664,6 +700,16 @@
       if (prop.name) settings[prop.name] = prop.default;
     }
     Object.assign(settings, slotDef.settings || {});
+    // Secret-protocol words belong in the save payload and nowhere else. A widget handed
+    // the clear marker would read a non-empty string as a live credential and sit in a
+    // configured/retrying state until the next full dashboard reload — the opposite of
+    // what the user just asked for. An escaped literal must arrive as what was typed.
+    for (const prop of widget.properties || []) {
+      const v = prop.name ? settings[prop.name] : undefined;
+      if (typeof v !== 'string') continue;
+      if (v === SECRET_CLEARED) settings[prop.name] = '';
+      else if (v.startsWith(SECRET_LITERAL)) settings[prop.name] = v.slice(SECRET_LITERAL.length);
+    }
     return settings;
   }
 
@@ -1544,6 +1590,63 @@
   function psControl(prop, cur, set) {
     const current = cur(prop);
     switch (prop.type) {
+      case 'secret': {
+        // On-device the value IS the real credential (the host decrypts for the
+        // dashboard), so mask it on glass — shoulder-surfing a desk-height strip
+        // is trivial — with a tap-to-show for typo checking. The host re-encrypts
+        // on save; plaintext never reaches layout.json.
+        const wrap = document.createElement('div');
+        wrap.className = 'ps-secret';
+        const input = document.createElement('input');
+        input.type = 'password';
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        input.placeholder = prop.placeholder || 'Paste the token or key';
+        // `current` is the STORED value, which for a credential in the reserved
+        // namespace is its escaped transport form (the host seals only its own copy, so
+        // reopening the sheet sees what we last sent). Show what the user typed, or the
+        // field displays the protocol prefix and editing escapes it a second time.
+        const raw = (typeof current === 'string' && current !== SECRET_CLEARED) ? current : '';
+        const stored = raw.startsWith(SECRET_LITERAL) ? raw.slice(SECRET_LITERAL.length) : raw;
+        input.value = stored;
+        // Whether a credential EXISTS on disk for this field — which changes while the
+        // sheet is open, since edits persist on a debounce. A snapshot taken at render
+        // time goes stale the moment the user types into an empty field: deleting it
+        // again would send "", the host would read that as "the masked desktop field
+        // came back untouched", and it would restore the credential it had just saved —
+        // leaving a field that looks empty over a token that is still live.
+        let exists = stored.length > 0;
+        const commit = () => {
+          const typed = input.value.length > 0;
+          if (typed) exists = true;   // this keystroke is on its way to disk
+          // A credential can BE the clear marker, so anything in the reserved
+          // __ww_secret_ namespace travels escaped and the host unwraps one prefix.
+          const literal = input.value.startsWith('__ww_secret_') ? SECRET_LITERAL + input.value : input.value;
+          set(prop, typed ? literal : (exists ? SECRET_CLEARED : ''));
+          clear.hidden = !exists;
+        };
+        input.addEventListener('input', commit);
+        const eye = document.createElement('button');
+        eye.type = 'button';
+        eye.className = 'ps-eye';
+        eye.textContent = '👁';
+        eye.title = 'Show/hide';
+        eye.addEventListener('click', () => {
+          input.type = input.type === 'password' ? 'text' : 'password';
+        });
+        // Removal needs to be one deliberate tap on glass, not "select all, delete".
+        // Built unconditionally and revealed by `commit`, so it appears as soon as a
+        // credential exists — including one typed during this same sheet session.
+        const clear = document.createElement('button');
+        clear.type = 'button';
+        clear.className = 'ps-eye ps-clear';
+        clear.textContent = '✕';
+        clear.title = 'Remove the stored credential on save';
+        clear.hidden = !exists;
+        clear.addEventListener('click', () => { input.value = ''; commit(); });
+        wrap.append(input, eye, clear);
+        return wrap;
+      }
       case 'select': {
         // Short static lists show every choice as a tappable segment (dropdowns
         // are miserable on the strip anyway); dynamic lists keep the dropdown.

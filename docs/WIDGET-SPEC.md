@@ -54,13 +54,41 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   fills the slot.
 - `properties` — user-configurable settings. The host merges `default`s with the
   per-instance `settings` from `layout.json` and injects the result. Types: `text`,
-  `number`, `slider`, `color`, `select`, `sensor` (a sensor id string),
+  `number`, `slider`, `color`, `select`, `secret` (below), `sensor` (a sensor id string),
   `sensors-factory` (an add/remove list of sensors, optionally filtered by
   `sensor_type`; the value is `[{sensorId, color}]`),
   `location`
   (rendered as a city-search picker; the value is either a raw string the widget should
   best-match itself, or a picked `{label, latitude, longitude}` object — handle both,
   like the stock weather widget), and `list` (below).
+
+  **Credentials MUST use `type: "secret"`** — bearer tokens, PATs, client secrets, API
+  keys, and credential-equivalent URLs (a private ICS or webhook link — the URL *is*
+  the credential, since anyone holding it can read or post). The host
+  encrypts those values with Windows DPAPI (CurrentUser scope) before `layout.json` is
+  written, so the file carries no usable credential; the settings editor renders a
+  masked field and never receives a stored value back (it shows only that one is saved).
+  Your widget's side is unchanged: the decrypted string arrives in `WW.settings` /
+  the injected global exactly like a `text` property, and an unset or unreadable secret
+  arrives as `""` — render your "not configured" state for that, never a spinner.
+
+  ```json
+  { "name": "apiToken", "label": "API token", "type": "secret",
+    "placeholder": "Paste the token from the service's settings page" }
+  ```
+
+  Declare no `default` for a secret. Two consequences of DPAPI worth knowing: the
+  ciphertext is bound to **this Windows user on this machine**, so a `layout.json`
+  copied elsewhere loses its secrets (they must be re-entered — everything else in the
+  file still travels), and a widget previewed in the settings window sees an empty
+  secret, so its unauthenticated state is what the preview shows. Widgets that used
+  `text` for a credential should switch: the validator now fails
+  credential-looking names on any other type (`prop-secret`), and an existing plaintext
+  value is encrypted the first time it is saved after the switch. That check catches
+  the obvious spellings — token, secret, password, api key, PAT — plus `webhook…` and a
+  url/link/endpoint qualified as private, signed, or personal. It cannot judge a name
+  like `icsUrl` or `feedUrl`, which may be a public feed or a secret address; if yours
+  is secret, declare it `secret` regardless of what the validator says.
 
   **`color` properties are reserved for data colors** — colors that are *content*, such
   as a per-series line color, where two instances legitimately differ as data. Never
