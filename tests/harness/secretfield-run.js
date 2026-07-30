@@ -436,6 +436,22 @@ const layout = {
     narrow.ctx >= 320, `settings ${narrow.ctx}px (palette ${narrow.pal}, appearance ${narrow.sty})`);
   check('E23b and the dock still fits the window width',
     narrow.rightmost <= narrow.win + 1, `${narrow.rightmost} vs ${narrow.win}`);
+  // E23c measures what was actually BROKEN. E23 checks the column, and the column
+  // reaching its floor says nothing about whether its CONTENTS are usable: at 320px
+  // the widget picker rendered as a bare chevron, the size select as the single letter
+  // "H", and the deck's button fields as two characters each. That passed E23. It took
+  // a screenshot to see it, so the assertion moved to the controls themselves.
+  const controls = await page.evaluate(() => {
+    const w = document.querySelector('#slotDetail .slot-row select.widget');
+    const z = document.querySelector('#slotDetail .slot-row select.size');
+    return {
+      widget: w ? Math.round(w.getBoundingClientRect().width) : 0,
+      size: z ? Math.round(z.getBoundingClientRect().width) : 0,
+    };
+  });
+  check('E23c and the widget/size controls stay readable rather than collapsing',
+    controls.widget >= 180 && controls.size >= 150,
+    `widget ${controls.widget}px, size ${controls.size}px`);
   await page.setViewportSize({ width: 1100, height: 820 });
   await page.waitForTimeout(400);
 

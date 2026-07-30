@@ -242,9 +242,12 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   padding: 12px 14px;
   margin-bottom: 10px;
 }
-.slot-row { display: flex; align-items: center; gap: 10px; }
-.slot-row select.widget { flex: 1; }
-.slot-row select.size { width: 190px; }
+/* Wraps rather than crushing. Every control here has a floor, because a widget
+ * picker squeezed to a bare chevron and a size select reading "H" are not a narrower
+ * version of this row — they are an unusable one. */
+.slot-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.slot-row select.widget { flex: 1 1 220px; min-width: 180px; }
+.slot-row select.size { flex: 0 1 190px; width: 190px; min-width: 150px; }
 
 /* Settings sit ON SCREEN: compact fields packed two-up (label above control),
  * not a scrolling label/input form (field report: "wall of text"). */
@@ -633,6 +636,26 @@ header h1 #appVersion {
 #styleHead { padding: 12px 16px 0; }
 #styleBody { padding: 8px 16px 16px; min-height: 0; }
 #styleBody .section-title { margin-top: 0; }
+/* Below roughly 1040px there is not enough width for three columns: the inspector
+ * hits its floor and its CONTENTS become the sliver instead — the widget picker
+ * collapses to a bare chevron, the size select to one letter, and the deck's button
+ * fields to two characters each. Shrinking the side columns cannot fix that; there
+ * simply is not 900px of room.
+ *
+ * Appearance wraps to its own full-width row rather than folding back into the
+ * inspector. It stays a separate panel — which is the point of it — and the inspector
+ * gets the whole width of the first row. The dock is height-capped and every column
+ * scrolls, so the extra row costs canvas height rather than reachability. */
+@media (max-width: 1040px) {
+  #dockBody { flex-wrap: wrap; }
+  #stylePanel {
+    flex: 1 0 100%;
+    width: auto;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+}
+
 /* The replica's "+" zone still asks for "the gallery". It is already on screen, so
  * the answer is a nudge rather than a reveal — silence would read as a dead tap,
  * which is the same failure #77 was about. */
