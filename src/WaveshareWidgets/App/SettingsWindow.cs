@@ -249,6 +249,33 @@ public sealed class SettingsWindow : Form
         catch (ObjectDisposedException) { /* window closed */ }
     }
 
+    /// <summary>Manifest lookup for the secret pipeline (which properties are credentials).</summary>
+    private WidgetManifest? ManifestFor(string widgetId) =>
+        _library.Widgets.FirstOrDefault(w => string.Equals(w.Manifest.Id, widgetId, StringComparison.OrdinalIgnoreCase))?.Manifest;
+
+    /// <summary>The manifests that produced the CURRENTLY masked payload. Save must seal
+    /// against these, not against whatever the library holds by then: if a widget is
+    /// uninstalled — or its manifest briefly fails to parse — between init and Save, a
+    /// live lookup stops calling the property a secret, Seal never walks it, and the
+    /// blank the editor is holding overwrites the stored ciphertext. This window is not
+    /// rebuilt on library changes, so the snapshot is the only honest lookup.</summary>
+    private Dictionary<string, WidgetManifest>? _maskedManifests;
+
+    private WidgetManifest? ManifestAsMasked(string widgetId)
+    {
+        if (_maskedManifests is not null && _maskedManifests.TryGetValue(widgetId, out var snapshot))
+            return snapshot;
+        return ManifestFor(widgetId);
+    }
+
+    private void SnapshotManifests()
+    {
+        var snapshot = new Dictionary<string, WidgetManifest>(StringComparer.OrdinalIgnoreCase);
+        foreach (var w in _library.Widgets)
+            snapshot[w.Manifest.Id] = w.Manifest;
+        _maskedManifests = snapshot;
+    }
+
     private void PostInit()
     {
         var widgets = _library.Widgets.Select(w => new
@@ -262,12 +289,19 @@ public sealed class SettingsWindow : Form
             properties = w.Manifest.Properties,
         });
 
+        // The editor never receives a credential: secret values are blanked and replaced
+        // by a per-slot "secretsSet" hint, so the field can show a saved state while the
+        // stored ciphertext stays in layout.json (restored on save if left untouched).
+        var layoutNode = JsonSerializer.SerializeToNode(LayoutStore.Load());
+        SnapshotManifests();
+        SecretPolicy.Mask(layoutNode, ManifestAsMasked);
+
         Post(new JsonObject
         {
             ["type"] = "settings-init",
             ["data"] = new JsonObject
             {
-                ["layout"] = JsonSerializer.SerializeToNode(LayoutStore.Load()),
+                ["layout"] = layoutNode,
                 ["widgets"] = JsonSerializer.SerializeToNode(widgets, BridgeJson),
                 ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
                 // Seed the replica's now-playing state: MediaUpdated only fires on
@@ -294,10 +328,42 @@ public sealed class SettingsWindow : Form
             foreach (var page in layout.Pages)
                 page.Slots.RemoveAll(s => string.IsNullOrWhiteSpace(s.WidgetId));
 
+            // Newly typed secrets get encrypted; masked ones the user didn't retype keep
+            // the ciphertext already on disk instead of being wiped.
+            var secrets = SecretPolicy.Seal(layout, LayoutStore.Load(), ManifestAsMasked);
+            var secretFailures = secrets.Failures;
             LayoutStore.Save(layout);
             LayoutSaved?.Invoke();
             var ok = new JsonObject { ["type"] = "saved" };
             if (seq is not null) ok["seq"] = seq.Value;
+            if (secrets.Minted.Count > 0)
+            {
+                // Ids were stamped onto the host's copy; the editor still holds the
+                // id-less slots it sent. Hand the identities back, addressed by the
+                // position IT used, or its next save can't find its own credentials.
+                var ids = new JsonArray();
+                foreach (var m in secrets.Minted)
+                    ids.Add(new JsonObject
+                    {
+                        ["page"] = m.Page,
+                        ["slot"] = m.Slot,
+                        ["widgetId"] = m.WidgetId,
+                        ["instanceId"] = m.InstanceId,
+                    });
+                ok["mintedIds"] = ids;
+            }
+            if (secretFailures.Count > 0)
+            {
+                // The rest of the layout saved, but a credential did not: reporting a
+                // plain "Saved" would tell the user a token is active when it is not.
+                var names = new JsonArray();
+                foreach (var f in secretFailures)
+                {
+                    names.Add($"{f.WidgetId}.{f.Property}");
+                    Log.Warn($"Secret not saved (protection unavailable): {f.WidgetId}.{f.Property}");
+                }
+                ok["secretsFailed"] = names;
+            }
             Post(ok);
         }
         catch (Exception ex)

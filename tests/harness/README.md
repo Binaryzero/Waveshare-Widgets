@@ -22,6 +22,19 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
 
 ## Suites
 
+- `secretfield-run.js` — the settings-editor half of the `secret` property contract
+  (issue #15): a credential renders masked, a stored one reads as
+  "saved · encrypted (hidden)" with no value in the DOM, typing/clearing say what the
+  next save will do, the saved layout carries the explicit clear marker for a cleared
+  secret (an empty string means "keep it"), and a save the host could not protect
+  warns instead of reading as success. The encryption pipeline itself is guarded in
+  CI by `dotnet run --project tools/SecretRoundTrip`. Port used: 8951.
+- `panelsecret-run.js` — the ON-PANEL half of the same contract. The dashboard is
+  handed decrypted values, so the field really holds the credential and "the user
+  emptied it" is ambiguous unless the shell says which it meant: both the ✕ Clear and
+  hand-deleting the characters must reach the host as a removal, while a never-set
+  secret still sends `""`. Also covers the failed-protection banner, which is the
+  panel's only way to contradict its own optimistic re-render. Port used: 8952.
 - `icuefetch-run.js` — the fetch-escalation contract shared by `widget-api.js`
   (`WW.fetch`) and the iCUE compat shim (issue #37): headers of every
   `HeadersInit` shape surviving the proxy hop (repeats combining like native

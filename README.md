@@ -177,6 +177,16 @@ the on-panel edit mode writes it continuously as you rearrange things on the scr
 the JSON stays hand-editable for scripting or syncing between machines. The dashboard
 also hot-reloads whenever widget files change on disk.
 
+**Credentials are encrypted, not synced.** A widget setting declared `type: "secret"`
+(API tokens, PATs, client secrets, private calendar URLs) is encrypted with Windows
+DPAPI under your user account before it is written, so `layout.json` never holds a
+usable credential and the Settings window can't read one back — it shows a masked field
+and a "saved" marker, and typing replaces the stored value. Because DPAPI keys belong to
+one Windows user on one machine, copying `layout.json` to another PC carries everything
+*except* secrets: re-enter those there. Widget authors: see
+[docs/WIDGET-SPEC.md](docs/WIDGET-SPEC.md) — credentials must use `secret`, and the
+widget validator fails a credential-looking property declared as plain text.
+
 ## Building widgets
 
 A widget is a folder with a `manifest.json` and an `index.html`, zipped into a

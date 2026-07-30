@@ -13,7 +13,54 @@ const fs = require('fs');
 const path = require('path');
 
 const KNOWN_TYPES = new Set(['text', 'number', 'slider', 'color', 'select', 'switch',
-  'sensor', 'sensors-factory', 'location', 'list', 'media-selector']);
+  'secret', 'sensor', 'sensors-factory', 'location', 'list', 'media-selector']);
+// Names that look like credentials: declaring them as free text writes a plaintext
+// secret into layout.json, so the validator flags the type, not the widget author.
+// camelCase and PascalCase count — `apiToken`, `clientSecret`, `githubPAT`, `APIToken`
+// are the COMMON spellings, so the name is split at case boundaries before matching.
+// The compound keywords tolerate the break the splitter introduces: "OAuthAPIKey"
+// becomes "O Auth API Key", and "API Key" is still an api key.
+const CREDENTIAL_WORD = /(^|[^a-z0-9])(token|secret|password|passwd|api ?key|bearer|pat|credential|private ?key|access ?key)([^a-z0-9]|$)/i;
+// Credential-equivalent URLs (WIDGET-STANDARD: "a private ICS or webhook link"). A
+// webhook URL IS the credential — anyone holding it can post. So is a private calendar
+// address. But most url properties are public (the iframe and youtube widgets both
+// ship one), so a bare url/link/endpoint is never enough on its own: it takes a
+// secrecy qualifier, or webhook in a form that names the VALUE rather than
+// configuration about it — `webhookUrl` and `slackWebhook` hold the secret;
+// `webhookEnabled` and `webhookMethod` are a switch and a verb.
+const WEBHOOK = /(^|[^a-z0-9])web ?hook([^a-z0-9]|$)/i;
+const WEBHOOK_VALUE = /web ?hook$/i;
+// All-lowercase compounds have no case boundary to split on and no word boundary to
+// match, so `apitoken` and `clientsecret` slipped through the boundary-based rules
+// entirely. These pairs are credential-bearing with no plausible innocent reading.
+// Anchored at the END: unanchored, `userKeyboardLayout` squashes to
+// `userkeyboardlayout` and matches `userkey`, failing a keyboard-layout select.
+const COMPOUND = /(api|client|access|auth|refresh|session|bearer|private|user|admin|service|oauth)(token|secret|key|password|passwd)s?$/i;
+// A url/link/endpoint is the credential only when the name denotes the VALUE. Same
+// distinction the webhook rule makes: `privateIcsUrl` holds it, `signedUrlExpiry`
+// holds a duration and `personalLinkLabel` holds a caption.
+const URL_VALUE = /(url|uri|link|endpoint|address|feed)$/i;
+const URLISH = /(^|[^a-z0-9])(url|uri|link|endpoint|address|feed)([^a-z0-9]|$)/i;
+const SECRET_QUALIFIER = /(^|[^a-z0-9])(private|secret|signed|personal|sas)([^a-z0-9]|$)/i;
+const looksLikeCredential = (name) => {
+  // Two case boundaries, because initialisms are everywhere in this domain:
+  //   acronym->word  "APIToken" -> "API Token", "JWTToken" -> "JWT Token"
+  //   word->Word     "apiToken" -> "api Token", "githubPAT" -> "github PAT"
+  // Separators join in ("access_key" -> "access key"), and the squashed form is tried
+  // too so a two-word spelling of a one-word keyword ("access key" -> "accesskey")
+  // still matches. Word boundaries keep the squashed pass honest: "compatMode" ->
+  // "compatmode" does NOT match "pat", and "PATH" -> "path" does not either.
+  const spaced = String(name || '')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_\-.]+/g, ' ');
+  const squashed = spaced.replace(/\s+/g, '');
+  if (CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(squashed)) return true;
+  if (COMPOUND.test(squashed)) return true;
+  const trimmed = spaced.trim();
+  if (WEBHOOK.test(spaced) && (URLISH.test(spaced) || WEBHOOK_VALUE.test(trimmed))) return true;
+  return URLISH.test(spaced) && SECRET_QUALIFIER.test(spaced) && URL_VALUE.test(trimmed);
+};
 const KNOWN_SLOTS = new Set(['quarter', 'half', 'three-quarter', 'full']);
 const LIST_FIELD_TYPES = new Set(['text', 'color']);
 // Labels must never teach a syntax — structured values use the list type.
@@ -56,6 +103,13 @@ function validate(folder) {
     if (!KNOWN_TYPES.has(type)) err('prop-type', `${where}: unknown type "${type}"`);
     if (SYNTAX_IN_LABEL.test(prop.label || ''))
       err('prop-label-syntax', `${where}: label "${prop.label}" teaches a syntax — use type "list" (or a better label); users never type delimited data`);
+    // Credentials MUST be type "secret": that is the only type the host encrypts
+    // (DPAPI, CurrentUser) before writing layout.json. As "text" the token sits on
+    // disk in the clear and rides any layout copy off the machine.
+    if (type !== 'secret' && looksLikeCredential(prop.name))
+      err('prop-secret', `${where}: a credential must use type "secret" (the host encrypts those with DPAPI); "${type}" stores it as plaintext in layout.json`);
+    if (type === 'secret' && prop.default != null && String(prop.default) !== '')
+      err('prop-secret-default', `${where}: a secret must not ship a default value`);
     if (type === 'select' && !Array.isArray(prop.options) && !prop.optionsSource)
       err('prop-select', `${where}: select needs "options" or "optionsSource"`);
     if (type === 'slider' && (typeof prop.min !== 'number' || typeof prop.max !== 'number'))
@@ -65,6 +119,11 @@ function validate(folder) {
         err('prop-list', `${where}: list needs a "fields" array`);
       else for (const f of prop.fields) {
         if (!f.key) err('prop-list', `${where}: a list field is missing "key"`);
+        // There is no encrypted list field: the host seals only top-level `secret`
+        // properties, so a credential inside a list row lands in layout.json as
+        // plaintext no matter what the outer property is called.
+        if (f.key && looksLikeCredential(f.key))
+          err('prop-secret', `${where}: list field "${f.key}" looks like a credential, and list rows are NEVER encrypted — give the widget a top-level "secret" property instead`);
         if (!LIST_FIELD_TYPES.has(f.type || 'text'))
           err('prop-list', `${where}: list field type "${f.type}" not supported (text | color)`);
       }

@@ -29,6 +29,11 @@ jobs:
       - name: Manifest round-trip guard
         run: dotnet run --project tools/ManifestRoundTrip
 
+      # Credentials must never reach layout.json in the clear: this asserts the seal /
+      # mask / reveal contract, the masked-save carry-over, and the no-DPAPI fail-safe.
+      - name: Secret pipeline guard
+        run: dotnet run --project tools/SecretRoundTrip
+
       - name: Publish
         run: dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained false -o publish
 
