@@ -466,6 +466,35 @@ Check("P25 a failed replacement keeps the legacy plaintext that still worked",
 Check("P25b and the failure is still reported, so the save is not called clean",
     r5Result.Failures.Count == 1);
 
+// ---- P26 · #61 r2: a manifest lookup that FORGETS a widget destroys its secret -------
+// Pins the hazard behind SettingsWindow's masked-manifest snapshot. Seal identifies
+// secret fields through the manifest; if the widget is no longer in the lookup, Seal
+// cannot tell "" from an emptied secret and simply writes the masked blank through.
+//
+// That is not hypothetical: the settings window rebuilt its snapshot from the live
+// library whenever the widgets folder changed, so removing or refusing a credentialed
+// widget while Settings was open armed exactly this on the next save. The fix is that
+// the snapshot MERGES rather than replaces — a manifest that masked the layout stays
+// reachable until the layout is remasked. This probe is why that rule exists.
+var r2Stored = LayoutWith(new JsonObject { ["apiToken"] = Token });
+SecretPolicy.Seal(r2Stored, null, Lookup);
+var r2Sealed = Value(r2Stored, "apiToken");
+Check("P26 setup: the credential is stored encrypted", r2Sealed is not null && r2Sealed != Token);
+
+// The editor's masked copy: the credential blanked, exactly what Mask produces.
+var r2Masked = LayoutWith(new JsonObject { ["apiToken"] = "" });
+SecretPolicy.Seal(r2Masked, r2Stored, _ => null);   // lookup has forgotten the widget
+Check("P26 a forgotten manifest lets a masked save wipe the stored credential",
+    Value(r2Masked, "apiToken") != r2Sealed,
+    "if this ever PASSES as equal, Seal grew its own protection and this probe is obsolete");
+
+// ...and with the manifest retained — what MergeManifestSnapshot guarantees — the same
+// masked save is correctly understood as "untouched" and the ciphertext survives.
+var r2Kept = LayoutWith(new JsonObject { ["apiToken"] = "" });
+SecretPolicy.Seal(r2Kept, r2Stored, Lookup);
+Check("P26b retaining the manifest keeps the credential through a masked save",
+    Value(r2Kept, "apiToken") == r2Sealed, Value(r2Kept, "apiToken"));
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 

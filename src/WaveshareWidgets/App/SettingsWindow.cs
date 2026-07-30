@@ -273,12 +273,34 @@ public sealed class SettingsWindow : Form
         return ManifestFor(widgetId);
     }
 
+    /// <summary>Rebuilds the baseline from the current library. Only legitimate when the
+    /// layout is (re)masked in the same breath — the snapshot's job is to describe the
+    /// manifests that produced the MASKED LAYOUT the editor is holding, not the palette.</summary>
     private void SnapshotManifests()
     {
         var snapshot = new Dictionary<string, WidgetManifest>(StringComparer.OrdinalIgnoreCase);
         foreach (var w in _library.Widgets)
             snapshot[w.Manifest.Id] = w.Manifest;
         _maskedManifests = snapshot;
+    }
+
+    /// <summary>Adds newly-seen manifests to the baseline WITHOUT dropping any.
+    ///
+    /// Used when the library changes under an editor that is still holding a layout
+    /// masked with the old manifests. Replacing the snapshot there loses credentials: if
+    /// a credentialed widget is removed, refused, or becomes briefly unparseable, its
+    /// manifest disappears from the baseline, <see cref="SecretPolicy.Seal"/> stops
+    /// walking that widget's secret fields on the next save, and the masked empty string
+    /// is written straight over the stored ciphertext.
+    ///
+    /// A manifest that once masked the layout has to stay reachable until the layout
+    /// itself is remasked, which only happens in <see cref="PostInit"/>. Stale entries
+    /// are harmless — Seal consults them by widget id for slots that already exist.</summary>
+    private void MergeManifestSnapshot()
+    {
+        if (_maskedManifests is null) { SnapshotManifests(); return; }
+        foreach (var w in _library.Widgets)
+            _maskedManifests[w.Manifest.Id] = w.Manifest;
     }
 
     /// <summary>The widget palette as the editor sees it. Shared by the initial payload
@@ -316,17 +338,43 @@ public sealed class SettingsWindow : Form
     private void OnLibraryChanged()
     {
         if (IsDisposed || !IsHandleCreated) return;
-        BeginInvoke(() =>
+        try
         {
-            if (IsDisposed) return;
-            SnapshotManifests();   // the masked-manifest baseline has to track the palette
-            Post(new JsonObject
+            BeginInvoke(() =>
             {
-                ["type"] = "widgets-changed",
-                ["widgets"] = JsonSerializer.SerializeToNode(WidgetCatalog(), BridgeJson),
-                ["rejectedWidgets"] = JsonSerializer.SerializeToNode(RejectedCatalog(), BridgeJson),
+                if (IsDisposed || _webView.CoreWebView2 is null) return;
+
+                // A widget added or repaired since the window opened has a virtual host
+                // this WebView has never been told about, so its preview iframe would not
+                // resolve until Settings was reopened. InitializeAsync maps only what
+                // existed at open; remap the WHOLE library, as the install path does.
+                foreach (var w in _library.Widgets)
+                    _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                        w.VirtualHost, w.Folder, CoreWebView2HostResourceAccessKind.Allow);
+
+                // MERGE, never replace: the editor is still holding a layout masked with
+                // the previous manifests, and dropping one would make Seal skip its
+                // secret fields and overwrite the stored ciphertext with a masked blank.
+                MergeManifestSnapshot();
+
+                Post(new JsonObject
+                {
+                    ["type"] = "widgets-changed",
+                    ["widgets"] = JsonSerializer.SerializeToNode(WidgetCatalog(), BridgeJson),
+                    ["rejectedWidgets"] = JsonSerializer.SerializeToNode(RejectedCatalog(), BridgeJson),
+                });
             });
-        });
+        }
+        catch (ObjectDisposedException)
+        {
+            // The rescan lands on a background timer thread, so the window can be torn
+            // down between the checks above and the invoke. Unhandled here it would come
+            // off the timer callback with no catch above it and take the app down.
+        }
+        catch (InvalidOperationException)
+        {
+            // Handle destroyed after the IsHandleCreated check — same race, same answer.
+        }
     }
 
     private void PostInit()

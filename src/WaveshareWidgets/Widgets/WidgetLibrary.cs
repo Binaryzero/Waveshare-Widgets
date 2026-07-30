@@ -398,7 +398,13 @@ public sealed partial class WidgetLibrary : IDisposable
         // violates the rule would otherwise report "not loaded — unavailable" while the
         // good copy of the same id sits in the palette working fine. The log line stays
         // (that folder IS being refused); only the user-facing claim is withdrawn.
-        var loadedIds = new HashSet<string>(widgets.Select(w => w.Manifest.Id), StringComparer.OrdinalIgnoreCase);
+        // ORDINAL, matching the duplicate resolution above (`w.Manifest.Id == manifest.Id`).
+        // Ids differing only in case are two distinct widgets to that check, so both load —
+        // meaning a rejected "Foo" really is unavailable even while "foo" works, and
+        // suppressing its warning would leave a layout referencing "Foo" with an
+        // unexplained empty tile. The suppression must use the same notion of identity
+        // that decided what loaded, or it answers a different question than it asks.
+        var loadedIds = new HashSet<string>(widgets.Select(w => w.Manifest.Id), StringComparer.Ordinal);
         Rejected = rejected.Where(r => !loadedIds.Contains(r.Id)).ToList();
         Log.Info($"Widget library: {Widgets.Count} widget(s) installed"
                + (Rejected.Count > 0 ? $", {Rejected.Count} refused" : ""));
@@ -534,6 +540,7 @@ public sealed partial class WidgetLibrary : IDisposable
         // any rescan that fired mid-install. Same volume, so the Move below stays atomic.
         var stageDir = Path.Combine(AppPaths.DataDir, ".installing-" + Slug(manifest.Id));
         var backupDir = Path.Combine(AppPaths.DataDir, ".replacing-" + Slug(manifest.Id));
+        var swapped = false;   // is SOMETHING installed at targetDir? gates deleting the backup
         if (Directory.Exists(stageDir))
             Directory.Delete(stageDir, recursive: true);
         try
@@ -563,22 +570,42 @@ public sealed partial class WidgetLibrary : IDisposable
             try
             {
                 Directory.Move(stageDir, targetDir);
+                swapped = true;
             }
             catch
             {
                 if (hadPrevious && !Directory.Exists(targetDir))
-                    Directory.Move(backupDir, targetDir);   // put the working copy back
+                {
+                    try
+                    {
+                        Directory.Move(backupDir, targetDir);   // put the working copy back
+                        swapped = true;                         // the old copy is home again
+                    }
+                    catch (Exception restoreEx)
+                    {
+                        // Rollback failed too. The backup is now the ONLY copy of a widget
+                        // the user had working, so it must survive — `swapped` stays false
+                        // and the finally below leaves it alone. Name the path: recovery is
+                        // a manual folder rename, and nobody can do that without it.
+                        Log.Error($"Could not restore '{manifest.Id}' after a failed install; "
+                                + $"the previous copy is kept at '{backupDir}' — rename it back to "
+                                + $"'{targetDir}' to recover it ({restoreEx.Message})");
+                    }
+                }
                 throw;
             }
         }
         finally
         {
             // A refused or half-extracted package must not leave a staging folder behind
-            // for the next Rescan to trip over, and a successful swap must not leave the
-            // old copy sitting in DataDir forever.
+            // for the next Rescan to trip over.
             if (Directory.Exists(stageDir))
                 Directory.Delete(stageDir, recursive: true);
-            if (Directory.Exists(backupDir))
+            // The backup goes ONLY once something is definitely installed at the target —
+            // either the new copy or the restored old one. Deleting it unconditionally
+            // meant a failed move followed by a failed restore destroyed the last copy,
+            // which is the very outcome the backup exists to prevent.
+            if (swapped && Directory.Exists(backupDir))
                 Directory.Delete(backupDir, recursive: true);
         }
         Log.Info($"Installed widget '{manifest.Id}' v{manifest.Version} from {Path.GetFileName(packagePath)}");
