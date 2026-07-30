@@ -406,10 +406,14 @@ public static class SecretPolicy
             // a decryptable envelope here would delete a still-working plaintext credential
             // just because its replacement could not be encrypted, which is the same loss
             // the migration branch above deliberately avoids.
-            var fallback = key is not null && previous.TryGetValue((key, name), out var priorNode)
-                && AsString(priorNode) is { Length: > 0 } prior ? prior : null;
-            if (fallback is not null)
-                slot.Settings![name] = fallback;
+            // Whatever was stored, of WHATEVER type. My first pass filtered this through
+            // AsString, which rejected a stored list/object and sent it down the remove
+            // path — destroying the old value because its string REPLACEMENT could not be
+            // encrypted, in the one branch whose whole purpose is not to destroy anything.
+            // BuildStoredIndex never indexes an empty string, so a hit here is always a
+            // value worth keeping.
+            if (key is not null && previous.TryGetValue((key, name), out var priorNode) && priorNode is not null)
+                slot.Settings![name] = priorNode.DeepClone();
             else
                 slot.Settings!.Remove(name);
             failures.Add(new SecretSealFailure(slot.WidgetId, name));

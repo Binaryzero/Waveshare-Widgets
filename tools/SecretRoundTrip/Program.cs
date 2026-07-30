@@ -329,6 +329,24 @@ var p30gStored = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Seri
 var p30gAgain = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p30gResaved))!;
 Slot(p30gAgain).Settings!["apiToken"] = "";
 SecretPolicy.Seal(p30gAgain, p30gStored, Lookup);
+// The protection-failure path must keep a stored NON-STRING too. Its whole purpose is
+// to avoid destroying anything when the replacement cannot be encrypted, and filtering
+// the fallback through AsString sent a stored list down the remove path instead.
+var noCryptoStored = LayoutWith(new JsonObject { ["apiToken"] = new JsonArray { "keepme" } });
+var noCryptoTyped = LayoutWith(new JsonObject { ["apiToken"] = "a-new-plaintext-value" });
+var savedEncrypt = SecretStore.EncryptOverride;
+SecretStore.EncryptOverride = _ => throw new PlatformNotSupportedException("no DPAPI here");
+var noCryptoResult = SecretPolicy.Seal(noCryptoTyped, noCryptoStored, Lookup);
+SecretStore.EncryptOverride = savedEncrypt;
+Check("P30h a failed encryption keeps the stored NON-STRING rather than removing it",
+    Slot(noCryptoTyped).Settings?["apiToken"] is JsonArray h30 && h30.Count == 1
+        && h30[0]!.GetValue<string>() == "keepme",
+    Slot(noCryptoTyped).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+Check("P30h2 and the failure is still reported, so the save is not called clean",
+    noCryptoResult.Failures.Count == 1);
+Check("P30h3 the plaintext the user typed is NOT what got written",
+    Value(noCryptoTyped, "apiToken") is null);
+
 Check("P30g3 so a later id-keyed save still restores it rather than dropping it",
     Slot(p30gAgain).Settings?["apiToken"] is JsonArray g3 && g3.Count == 1,
     Slot(p30gAgain).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
