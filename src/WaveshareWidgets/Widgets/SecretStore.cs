@@ -245,6 +245,17 @@ public static class SecretPolicy
                     var node = slot["settings"]?[name];
                     if (node is null)
                         continue;
+                    // A NON-STRING value is not a credential this pipeline can express —
+                    // it is a list, a number, or an object that something else owns. Left
+                    // alone it is harmless; masked it becomes a placeholder string, and
+                    // then BuildStoredIndex (which indexes strings only) has nothing to
+                    // restore it from, so Seal's empty branch deletes it on the next save.
+                    // That is reachable whenever a name is treated as secret by one
+                    // manifest while the value belongs to another — a shadowed duplicate
+                    // id, or a property a newer manifest stopped declaring while the
+                    // editor kept its stored value.
+                    if (node is not JsonValue maybeString || !maybeString.TryGetValue<string>(out _))
+                        continue;
                     var value = AsString(node);
                     // "Saved" must mean "usable": a blob from another machine/user
                     // decrypts to nothing, so reporting it as saved would hide the very
@@ -330,7 +341,12 @@ public static class SecretPolicy
                 // Untouched masked field (or non-string junk): keep what is stored.
                 if (key is null || !previous.TryGetValue((key, name), out var kept))
                 {
-                    if (node is not null)
+                    // Remove ONLY a genuine empty string. A non-string here is not an
+                    // emptied field — it is a value this pipeline cannot represent, and
+                    // BuildStoredIndex could not index it either, so "nothing stored"
+                    // says nothing about whether it matters. Deleting on that basis is
+                    // how a list survived masking and then vanished on an unrelated save.
+                    if (node is JsonValue emptied && emptied.TryGetValue<string>(out _))
                         slot.Settings!.Remove(name);
                     return;
                 }

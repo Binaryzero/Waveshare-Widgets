@@ -266,6 +266,41 @@ try { SecretPolicy.Seal(junk2, typed, Lookup); } catch { sealThrew = true; }
 Check("P15 a hand-edited non-string secret reads as unset instead of throwing",
     !revealThrew && !maskThrew && !sealThrew && Value(junk, "apiToken") == "");
 
+// ---- P30 · #65 r5: the pipeline never DELETES a value it cannot represent -------------
+// Mask/Seal handle strings. A list, number or object under a name something calls secret
+// is owned by someone else — a shadowed duplicate id, or a property a newer manifest
+// stopped declaring while the editor kept its stored value (settings.js preserves
+// undeclared keys). Masking it turned it into a placeholder string, BuildStoredIndex
+// could not index the original to restore it, and Seal's empty branch removed the key.
+// An unrelated edit deleted the user's list.
+var listSetting = new JsonObject { ["apiToken"] = new JsonArray { "a", "b" }, ["repo"] = "owner/name" };
+var listLayout = LayoutWith(listSetting);
+var listMasked = JsonSerializer.SerializeToNode(listLayout);
+SecretPolicy.Mask(listMasked, Lookup);
+var listMaskedSlot = listMasked!["pages"]![0]!["slots"]![0]!;
+Check("P30 Mask leaves a non-string value alone rather than placeholdering it",
+    listMaskedSlot["settings"]!["apiToken"] is JsonArray,
+    listMaskedSlot["settings"]!["apiToken"]?.ToJsonString());
+Check("P30b and does not claim it is a stored secret",
+    listMaskedSlot["secretsSet"] is null || !listMaskedSlot["secretsSet"]!.AsArray()
+        .Any(n => n!.GetValue<string>() == "apiToken"));
+
+// The save round trip: the editor hands the array straight back, and NOTHING is stored
+// for that key, which is exactly the state that used to trigger the delete.
+var listResaved = JsonSerializer.Deserialize<DashboardLayout>(listMasked.ToJsonString())!;
+SecretPolicy.Seal(listResaved, null, Lookup);
+Check("P30c an unrelated save does not delete it",
+    Slot(listResaved).Settings?["apiToken"] is JsonArray kept30 && kept30.Count == 2,
+    Slot(listResaved).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+Check("P30d and the ordinary setting beside it still saves",
+    Value(listResaved, "repo") == "owner/name");
+// A genuine empty string is still an emptied field with nothing stored, so it is removed —
+// the behaviour P5d depends on must not be softened by the guard.
+var trulyEmpty = LayoutWith(new JsonObject { ["apiToken"] = "" });
+SecretPolicy.Seal(trulyEmpty, null, Lookup);
+Check("P30e a genuine empty string with nothing stored is still removed",
+    Slot(trulyEmpty).Settings?["apiToken"] is null);
+
 // ---- P16 · Codex r2: an unreadable envelope is DROPPED, never re-wrapped -------------
 // Re-encrypting a foreign blob would produce an envelope this machine CAN open, so
 // Reveal would hand the widget the foreign ciphertext as if it were the credential and
