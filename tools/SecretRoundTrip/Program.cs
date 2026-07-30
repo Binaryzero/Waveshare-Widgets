@@ -15,10 +15,20 @@ void Check(string name, bool ok, string? detail = null)
 
 // A reversible stand-in for DPAPI: CI runs on Linux, where ProtectedData throws. The
 // bytes are transformed (not merely copied) so "encrypted" is observably not plaintext.
-static byte[] Flip(byte[] input)
+//
+// It also AUTHENTICATES, because the code under test depends on that. Real DPAPI throws
+// for any blob it did not produce, which is what lets CanUnprotect answer "did WE write
+// this?" — the question the reveal-side scrub and Seal's idempotent-resave branch both
+// ask. An earlier stand-in happily "decrypted" any untagged bytes, so every marker-shaped
+// string looked like our own ciphertext and two probes drew the wrong conclusion from it.
+// A stand-in that is more permissive than the real thing does not merely weaken a probe;
+// it silently changes which branch is under test.
+byte[] Magic = [0x57, 0x57];   // "WW"
+byte[] Flip(byte[] input)
 {
-    var output = new byte[input.Length];
-    for (var i = 0; i < input.Length; i++) output[i] = (byte)(input[i] ^ 0x5A);
+    var output = new byte[input.Length + Magic.Length];
+    Magic.CopyTo(output, 0);
+    for (var i = 0; i < input.Length; i++) output[i + Magic.Length] = (byte)(input[i] ^ 0x5A);
     return output;
 }
 SecretStore.EncryptOverride = Flip;
@@ -27,10 +37,18 @@ SecretStore.EncryptOverride = Flip;
 // throws for a foreign key; the stand-in throws for a tagged prefix, so the probe can
 // tell a foreign envelope apart from legacy plaintext that merely starts with the
 // marker — which is exactly the distinction Seal now makes.
-static byte[] TaggedDecrypt(byte[] b) =>
-    b.Length >= 2 && b[0] == 0xFE && b[1] == 0xED
-        ? throw new CryptographicException("that key belongs to another user")
-        : Flip(b);
+byte[] TaggedDecrypt(byte[] b)
+{
+    if (b.Length >= 2 && b[0] == 0xFE && b[1] == 0xED)
+        throw new CryptographicException("that key belongs to another user");
+    // Not ours: no magic prefix. Real DPAPI raises exactly here for a blob it did not
+    // produce, and several branches under test turn on that distinction.
+    if (b.Length < Magic.Length || b[0] != Magic[0] || b[1] != Magic[1])
+        throw new CryptographicException("not produced by this cipher");
+    var output = new byte[b.Length - Magic.Length];
+    for (var i = 0; i < output.Length; i++) output[i] = (byte)(b[i + Magic.Length] ^ 0x5A);
+    return output;
+}
 SecretStore.DecryptOverride = TaggedDecrypt;
 // marker + valid base64, first bytes tagged so decryption refuses it.
 var ForeignEnvelope = "dpapi:v1:" + Convert.ToBase64String([0xFE, 0xED, 0x01, 0x02, 0x03]);
@@ -248,6 +266,91 @@ try { SecretPolicy.Seal(junk2, typed, Lookup); } catch { sealThrew = true; }
 Check("P15 a hand-edited non-string secret reads as unset instead of throwing",
     !revealThrew && !maskThrew && !sealThrew && Value(junk, "apiToken") == "");
 
+// ---- P30 · #65 r5: the pipeline never DELETES a value it cannot represent -------------
+// Mask/Seal handle strings. A list, number or object under a name something calls secret
+// is owned by someone else — a shadowed duplicate id, or a property a newer manifest
+// stopped declaring while the editor kept its stored value (settings.js preserves
+// undeclared keys). Masking it turned it into a placeholder string, BuildStoredIndex
+// could not index the original to restore it, and Seal's empty branch removed the key.
+// An unrelated edit deleted the user's list.
+var listSetting = new JsonObject { ["apiToken"] = new JsonArray { "a", "b" }, ["repo"] = "owner/name" };
+var listLayout = LayoutWith(listSetting);
+var listMasked = JsonSerializer.SerializeToNode(listLayout);
+SecretPolicy.Mask(listMasked, Lookup);
+var listMaskedSlot = listMasked!["pages"]![0]!["slots"]![0]!;
+Check("P30 Mask REDACTS a non-string value — it may hold nested credential material",
+    listMaskedSlot["settings"]!["apiToken"] is JsonValue,
+    listMaskedSlot["settings"]!["apiToken"]?.ToJsonString());
+Check("P30b nothing of the original survives into the editor payload",
+    !listMasked.ToJsonString().Contains("\"a\"") || !listMasked.ToJsonString().Contains("apiToken"),
+    listMaskedSlot["settings"]!.ToJsonString());
+
+// The save round trip: the editor hands the redaction back, and the stored NODE — not a
+// stringified shadow of it — is what gets restored. Redacting and restoring used to be
+// incompatible: whichever was honoured, the other broke.
+var listResaved = JsonSerializer.Deserialize<DashboardLayout>(listMasked.ToJsonString())!;
+SecretPolicy.Seal(listResaved, listLayout, Lookup);
+Check("P30c an unrelated save restores the array exactly, rather than deleting it",
+    Slot(listResaved).Settings?["apiToken"] is JsonArray kept30 && kept30.Count == 2
+        && kept30[0]!.GetValue<string>() == "a",
+    Slot(listResaved).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+Check("P30d and the ordinary setting beside it still saves",
+    Value(listResaved, "repo") == "owner/name");
+// A genuine empty string with nothing stored is still an emptied field, so it is removed —
+// the behaviour P5d depends on.
+var trulyEmpty = LayoutWith(new JsonObject { ["apiToken"] = "" });
+SecretPolicy.Seal(trulyEmpty, null, Lookup);
+Check("P30e a genuine empty string with nothing stored is still removed",
+    Slot(trulyEmpty).Settings?["apiToken"] is null);
+// And a non-string with nothing stored is removed too — there is no value to protect, and
+// leaving it would put the pipeline back to guessing from the incoming type.
+var orphanArray = LayoutWith(new JsonObject { ["apiToken"] = new JsonArray { 1 } });
+SecretPolicy.Seal(orphanArray, null, Lookup);
+Check("P30f a non-string with nothing stored is removed, not guessed at",
+    Slot(orphanArray).Settings?["apiToken"] is null,
+    Slot(orphanArray).Settings?["apiToken"]?.ToJsonString());
+
+// An ID-LESS legacy slot must come out of the restore STAMPED, exactly as the string
+// paths do. Otherwise it stays addressable only by position: the dashboard shell mints an
+// instanceId on its first on-panel edit, and the next Seal looks the value up under
+// "|i:..." while it was indexed under "|w:0" — removing what Settings just preserved.
+var p30gList = LayoutWith(new JsonObject { ["apiToken"] = new JsonArray { "x" } }, instanceId: null);
+var p30gMasked = JsonSerializer.SerializeToNode(p30gList);
+SecretPolicy.Mask(p30gMasked, Lookup);
+var p30gResaved = JsonSerializer.Deserialize<DashboardLayout>(p30gMasked!.ToJsonString())!;
+SecretPolicy.Seal(p30gResaved, p30gList, Lookup);
+Check("P30g restoring a non-string into an id-less slot mints a stable identity",
+    !string.IsNullOrEmpty(Slot(p30gResaved).InstanceId), Slot(p30gResaved).InstanceId ?? "(none)");
+Check("P30g2 and the value itself survived that save",
+    Slot(p30gResaved).Settings?["apiToken"] is JsonArray g2 && g2.Count == 1,
+    Slot(p30gResaved).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+// The point of the stamp: the NEXT save, now id-bearing on both sides, still finds it.
+var p30gStored = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p30gResaved))!;
+var p30gAgain = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p30gResaved))!;
+Slot(p30gAgain).Settings!["apiToken"] = "";
+SecretPolicy.Seal(p30gAgain, p30gStored, Lookup);
+// The protection-failure path must keep a stored NON-STRING too. Its whole purpose is
+// to avoid destroying anything when the replacement cannot be encrypted, and filtering
+// the fallback through AsString sent a stored list down the remove path instead.
+var noCryptoStored = LayoutWith(new JsonObject { ["apiToken"] = new JsonArray { "keepme" } });
+var noCryptoTyped = LayoutWith(new JsonObject { ["apiToken"] = "a-new-plaintext-value" });
+var savedEncrypt = SecretStore.EncryptOverride;
+SecretStore.EncryptOverride = _ => throw new PlatformNotSupportedException("no DPAPI here");
+var noCryptoResult = SecretPolicy.Seal(noCryptoTyped, noCryptoStored, Lookup);
+SecretStore.EncryptOverride = savedEncrypt;
+Check("P30h a failed encryption keeps the stored NON-STRING rather than removing it",
+    Slot(noCryptoTyped).Settings?["apiToken"] is JsonArray h30 && h30.Count == 1
+        && h30[0]!.GetValue<string>() == "keepme",
+    Slot(noCryptoTyped).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+Check("P30h2 and the failure is still reported, so the save is not called clean",
+    noCryptoResult.Failures.Count == 1);
+Check("P30h3 the plaintext the user typed is NOT what got written",
+    Value(noCryptoTyped, "apiToken") is null);
+
+Check("P30g3 so a later id-keyed save still restores it rather than dropping it",
+    Slot(p30gAgain).Settings?["apiToken"] is JsonArray g3 && g3.Count == 1,
+    Slot(p30gAgain).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+
 // ---- P16 · Codex r2: an unreadable envelope is DROPPED, never re-wrapped -------------
 // Re-encrypting a foreign blob would produce an envelope this machine CAN open, so
 // Reveal would hand the widget the foreign ciphertext as if it were the credential and
@@ -266,9 +369,9 @@ Check("P16b nothing was re-wrapped: no envelope survives for Reveal to hand the 
 // ---- P17 · Codex r2: a legacy carry-over mints an id too, or it stays positional -----
 // Without this the migrated slot keeps matching by position; adding a second instance of
 // the same widget later makes the count ambiguous and its credential is dropped.
-var legacyStored2 = LayoutWith(new JsonObject { ["apiToken"] = "legacy-plaintext" }, instanceId: null);
+var p30gStored2 = LayoutWith(new JsonObject { ["apiToken"] = "legacy-plaintext" }, instanceId: null);
 var legacyEdit2 = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
-SecretPolicy.Seal(legacyEdit2, legacyStored2, Lookup);
+SecretPolicy.Seal(legacyEdit2, p30gStored2, Lookup);
 var mintedId = Slot(legacyEdit2).InstanceId;
 Check("P17 migrating a legacy secret through the masked field also mints a stable id",
     !string.IsNullOrEmpty(mintedId) && SecretStore.CanUnprotect(Value(legacyEdit2, "apiToken")), mintedId);
@@ -541,6 +644,78 @@ Check("P27e saving the masked layout keeps the credential rather than blanking i
     SecretStore.Unprotect(refusedAfter) == Token, refusedAfter);
 Check("P27f and it is now encrypted at rest, which the refusal alone never achieved",
     refusedAfter != Token && SecretStore.HasMarker(refusedAfter));
+
+// ---- P28 · #66: a demoted secret is handed to the widget as ciphertext ----------------
+// This pins a KNOWN GAP rather than a fix. When a manifest retypes a property
+// `secret` -> `text`, the stored envelope is not walked by Reveal and reaches the widget
+// verbatim. Three fixes were attempted in PR #65 and every one was worse than the bug —
+// the constraints are written up in issue #66. Asserting the current behaviour keeps the
+// gap honest: whoever changes it has to change this probe deliberately, and will find the
+// issue from here.
+var demotedStored = LayoutWith(new JsonObject { ["apiToken"] = Token, ["repo"] = "owner/name" });
+SecretPolicy.Seal(demotedStored, null, Lookup);
+var demotedCipher = Value(demotedStored, "apiToken");
+Check("P28 setup: the credential is stored encrypted",
+    demotedCipher is not null && SecretStore.HasMarker(demotedCipher));
+
+var demotedManifest = new WidgetManifest
+{
+    Id = "test.widget",
+    Name = "Test",
+    Properties =
+    [
+        new WidgetProperty { Name = "apiToken", Label = "API token", Type = "text" },
+        new WidgetProperty { Name = "repo", Label = "Repo", Type = "text" },
+    ],
+};
+WidgetManifest? DemotedLookup(string id) => id == "test.widget" ? demotedManifest : null;
+
+var revealed28 = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(demotedStored))!;
+SecretPolicy.Reveal(revealed28, DemotedLookup);
+Check("P28b KNOWN GAP (#66): a demoted secret still reaches the widget as ciphertext",
+    Value(revealed28, "apiToken") == demotedCipher, Value(revealed28, "apiToken"));
+// The property that makes the gap tolerable, and that any fix must preserve: the stored
+// value is INTACT, so the user can retype the field and it saves as ordinary text.
+Check("P28c but the stored value is intact, so the situation self-heals on the next edit",
+    SecretStore.Unprotect(Value(revealed28, "apiToken")) == Token);
+Check("P28d an ordinary setting beside it is untouched",
+    Value(revealed28, "repo") == "owner/name", Value(revealed28, "repo"));
+
+// Reveal's real job is unaffected by any of the above.
+var revealed28e = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(demotedStored))!;
+SecretPolicy.Reveal(revealed28e, Lookup);
+Check("P28e a properly declared secret still reveals to its plaintext",
+    Value(revealed28e, "apiToken") == Token, Value(revealed28e, "apiToken"));
+
+// A secret whose PLAINTEXT is itself a valid envelope must survive its own reveal. Any
+// future scrub has to skip names the manifest already declares secret, or it blanks this
+// one line after decrypting it correctly (#66).
+const string MarkerShaped = "dpapi:v1:YWJj";
+var wrapped = LayoutWith(new JsonObject { ["apiToken"] = MarkerShaped });
+SecretPolicy.Seal(wrapped, null, Lookup);
+var wrappedRevealed = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(wrapped))!;
+SecretPolicy.Reveal(wrappedRevealed, Lookup);
+Check("P28f a secret whose plaintext is marker-shaped survives its own reveal",
+    Value(wrappedRevealed, "apiToken") == MarkerShaped, Value(wrappedRevealed, "apiToken"));
+
+var foreign28 = LayoutWith(new JsonObject { ["apiToken"] = ForeignEnvelope });
+SecretPolicy.Reveal(foreign28, Lookup);
+Check("P28g an unopenable envelope reads as empty under a secret property",
+    Value(foreign28, "apiToken") == "", Value(foreign28, "apiToken"));
+
+// An uninstalled widget's ciphertext must survive a reveal untouched and stay recoverable.
+// Nothing blanks it today; the probe exists so a future scrub cannot quietly start.
+var orphan = LayoutWith(new JsonObject { ["apiToken"] = Token });
+SecretPolicy.Seal(orphan, null, Lookup);
+var orphanCipher = Value(orphan, "apiToken");
+var orphanRevealed = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(orphan))!;
+SecretPolicy.Reveal(orphanRevealed, _ => null);
+Check("P28h an uninstalled widget's ciphertext is left intact",
+    Value(orphanRevealed, "apiToken") == orphanCipher, Value(orphanRevealed, "apiToken"));
+var recovered = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(orphanRevealed))!;
+SecretPolicy.Reveal(recovered, Lookup);
+Check("P28h2 and a later reinstall still reveals the original credential",
+    Value(recovered, "apiToken") == Token, Value(recovered, "apiToken"));
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;

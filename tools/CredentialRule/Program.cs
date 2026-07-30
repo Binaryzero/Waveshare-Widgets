@@ -101,10 +101,66 @@ var listOddFields = ManifestWith(new WidgetProperty
     Type = "list",
     Fields = JsonNode.Parse("""{"not":"an array"}"""),
 });
+// The MEMBERS matter as much as the array. `fields: [1]` makes field["key"] throw (you
+// cannot index a JsonValue) and a numeric `key` throws from GetValue<string>(). Either
+// one escaped to Rescan's outer catch, which skips the widget WITHOUT recording a
+// rejection — so it vanished from the palette AND from the banner that exists to explain
+// exactly that. The original C3d only covered a non-array `fields`, and its name claimed
+// the general case; a probe whose name overstates its coverage stops the next reader
+// looking, which is how this survived (#63 item 3).
+var listScalarMember = ManifestWith(new WidgetProperty
+{
+    Name = "hosts",
+    Type = "list",
+    Fields = JsonNode.Parse("""[1]"""),
+});
+var listNumericKey = ManifestWith(new WidgetProperty
+{
+    Name = "hosts",
+    Type = "list",
+    Fields = JsonNode.Parse("""[{"key":5,"type":"text"}]"""),
+});
+var listNullMember = ManifestWith(new WidgetProperty
+{
+    Name = "hosts",
+    Type = "list",
+    Fields = JsonNode.Parse("""[null,{"key":"label"}]"""),
+});
 var survived = true;
-try { listNoFields.CredentialsAreTyped(out _); listOddFields.CredentialsAreTyped(out _); }
-catch (Exception ex) { survived = false; Console.WriteLine("    threw: " + ex.Message); }
-Check("C3d a malformed list property does not throw", survived);
+try
+{
+    listNoFields.CredentialsAreTyped(out _);
+    listOddFields.CredentialsAreTyped(out _);
+    listScalarMember.CredentialsAreTyped(out _);
+    listNumericKey.CredentialsAreTyped(out _);
+    listNullMember.CredentialsAreTyped(out _);
+}
+catch (Exception ex) { survived = false; Console.WriteLine("    threw: " + ex.GetType().Name + ": " + ex.Message); }
+Check("C3d no malformed `fields` shape throws — array, member or key", survived);
+// A malformed MEMBER is refused, not skipped. Skipping it here only moved the crash:
+// the array still installs and still reaches settings.js and shell.js, which read
+// field.key/field.type on every entry — a null throws during list rendering, a scalar
+// writes settings under an `undefined` key. Silently dropping the member would repeat
+// #24, where quietly stripped list keys made whole settings panels vanish in the field.
+Check("C3e a scalar member is refused, with a reason naming the property",
+    !listScalarMember.CredentialsAreTyped(out var c3eError) && c3eError.Contains("hosts"), c3eError);
+Check("C3e2 a non-string key is refused too — rows are stored under it",
+    !listNumericKey.CredentialsAreTyped(out var c3e2Error) && c3e2Error.Contains("key"), c3e2Error);
+Check("C3e3 a null member is refused", !listNullMember.CredentialsAreTyped(out _));
+// A `fields` that is not an array at all stays TOLERATED: nothing iterates it, so it
+// cannot break the editor, and refusing over a key nobody reads is the install-stricter-
+// than-build divergence round seven removed.
+Check("C3e4 a non-array `fields` is still tolerated — nothing iterates it",
+    listOddFields.CredentialsAreTyped(out _) && listNoFields.CredentialsAreTyped(out _));
+// The credential rule must still fire for a well-formed list beside all of that.
+var listMixed = ManifestWith(new WidgetProperty
+{
+    Name = "endpoints",
+    Type = "list",
+    Fields = JsonNode.Parse("""[{"key":"label"},{"key":"apiKey"}]"""),
+});
+Check("C3f a real credential key is still caught",
+    !listMixed.CredentialsAreTyped(out var c3fError) && c3fError.Contains("apiKey"), c3fError);
 
 // ---- C5 · the declared type is canonicalized ----------------------------------------
 // SecretPolicy matches the type with OrdinalIgnoreCase, but settings.js compares

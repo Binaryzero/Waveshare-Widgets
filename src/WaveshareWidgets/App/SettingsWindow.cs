@@ -317,7 +317,10 @@ public sealed class SettingsWindow : Form
             // the field before the rescan then goes to layout.json in the clear — the very
             // hole the redaction metadata exists to close, reopened by the order of events.
             //
-            // Secret wins, exactly as in the property union above.
+            // Secret wins, exactly as in the property union above. WidgetLibrary.Rejected
+            // never contains an id that also loaded, so `existing` here can only be this
+            // same widget's own older manifest — the case round seven was written for,
+            // where a folder edit both retyped a property and refused the manifest.
             snapshot[r.Id] = snapshot.TryGetValue(r.Id, out var existing)
                 ? existing.WithSecretsForced(r.RedactNames)
                 : WidgetManifest.RedactionOnly(r.Id, r.Name, r.RedactNames);
@@ -357,16 +360,24 @@ public sealed class SettingsWindow : Form
             //                         so the editor's masked blank overwrites the stored
             //                         ciphertext.
             //
-            // Old definitions win on a name collision: they are the ones that classified
-            // the layout the editor is currently holding, and that layout is what the
-            // next save writes.
-            // Name-collision rule: SECRET WINS, from whichever side declares it. A pure
-            // "old wins" union quietly loses the retype case — a property that was
-            // `text` and is now `secret` (a feed URL that became private) would keep the
-            // old non-secret definition, so the editor renders a masked field while Seal
-            // treats it as ordinary text and writes the credential out in the clear.
-            // Erring toward secret is the safe direction: the worst case is carrying a
-            // value through the cipher that did not need it.
+            // Name-collision rule: SECRET WINS, from whichever side declares it.
+            //
+            // This snapshot answers exactly one question — how was the layout the editor
+            // is HOLDING masked — because that layout is what the next save writes. A
+            // property that was `secret` at masking time left a blank in the editor, and
+            // only a lookup that still calls it secret makes Seal restore the stored
+            // ciphertext instead of writing that blank over it.
+            //
+            // So the new manifest does NOT get to demote a property here, however fresh
+            // its statement is. I briefly made it "new wins" to stop Seal encrypting a
+            // value the current manifest calls ordinary, and that traded a display bug for
+            // permanent data loss: an unrelated edit saved while the editor still held the
+            // masked blank destroyed the credential. The demotion is real and does need
+            // handling — but on the REVEAL side, where a widget can simply be refused the
+            // ciphertext, not here, where the value itself is at stake.
+            //
+            // Erring toward secret costs a value a trip through a cipher it did not need.
+            // Erring the other way costs the value.
             //
             // ORDINAL, matching the only comparer that decides anything downstream: setting
             // keys are JSON object keys and SecretPolicy.SecretNames is an ordinal set. A

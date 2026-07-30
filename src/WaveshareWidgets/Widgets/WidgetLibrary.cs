@@ -407,14 +407,18 @@ public sealed partial class WidgetLibrary : IDisposable
         // Drop rejections for ids that ended up loading anyway. Refusals are recorded
         // during the scan, before duplicate resolution, so a stale copy of a widget that
         // violates the rule would otherwise report "not loaded — unavailable" while the
-        // good copy of the same id sits in the palette working fine. The log line stays
-        // (that folder IS being refused); only the user-facing claim is withdrawn.
-        // ORDINAL, matching the duplicate resolution above (`w.Manifest.Id == manifest.Id`).
-        // Ids differing only in case are two distinct widgets to that check, so both load —
-        // meaning a rejected "Foo" really is unavailable even while "foo" works, and
-        // suppressing its warning would leave a layout referencing "Foo" with an
-        // unexplained empty tile. The suppression must use the same notion of identity
-        // that decided what loaded, or it answers a different question than it asks.
+        // good copy of the same id sits in the palette working fine.
+        //
+        // ORDINAL, matching the duplicate resolution above: ids differing only in case are
+        // two distinct widgets to that check, so a rejected "Foo" really is unavailable
+        // even while "foo" works.
+        //
+        // KNOWN GAP (#67): dropping the record also drops its RedactNames, so a layout
+        // holding the refused copy's credential under a key the LOADED copy does not
+        // declare goes unmasked. Retaining shadowed rejections to fix that was tried in
+        // PR #65 and reverted — one snapshot entry cannot represent two different widgets,
+        // and every rule for merging them was wrong in some direction. The fix belongs
+        // with per-(slot, key) redaction metadata, not with manifests.
         var loadedIds = new HashSet<string>(widgets.Select(w => w.Manifest.Id), StringComparer.Ordinal);
         Rejected = rejected.Where(r => !loadedIds.Contains(r.Id)).ToList();
         Log.Info($"Widget library: {Widgets.Count} widget(s) installed"

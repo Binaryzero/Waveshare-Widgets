@@ -189,7 +189,18 @@ public static class SecretPolicy
         return names;
     }
 
-    /// <summary>Decrypts every secret in place — for the dashboard's init payload only.</summary>
+    /// <summary>Decrypts every secret in place — for the dashboard's init payload only.
+    ///
+    /// KNOWN GAP (issue #66): a property retyped `secret` → `text` still holds ciphertext,
+    /// and this walks only what the CURRENT manifest calls secret — so the widget receives
+    /// the literal "dpapi:v1:…" string. Blanking it here looks like a two-line fix and is
+    /// not: the shell round-trips this exact layout back through save-layout, so a blank
+    /// written here reaches disk unless the save path is taught to restore it, and teaching
+    /// it through the manifest classification also imposes secret WRITE semantics, which
+    /// makes the demoted field permanently uneditable. The real fix needs per-address
+    /// restore with slot identity — the same machinery #62 needs — and is tracked there
+    /// rather than guessed at here. Leaving it alone at least self-heals: the user retypes
+    /// the value and it saves as ordinary text, which is what the manifest now says.</summary>
     public static void Reveal(DashboardLayout layout, Func<string, WidgetManifest?> lookup)
     {
         Walk(layout, lookup, (slot, name) =>
@@ -234,6 +245,11 @@ public static class SecretPolicy
                     var node = slot["settings"]?[name];
                     if (node is null)
                         continue;
+                    // EVERYTHING is redacted, including a non-string. A list or object
+                    // under a `secret` name may hold nested credential material, so
+                    // leaving it in the editor payload to avoid losing it was trading a
+                    // disclosure for a deletion. BuildStoredIndex carries the raw node
+                    // now, so Seal can put a non-string back and neither trade is needed.
                     var value = AsString(node);
                     // "Saved" must mean "usable": a blob from another machine/user
                     // decrypts to nothing, so reporting it as saved would hide the very
@@ -317,10 +333,24 @@ public static class SecretPolicy
             if (string.IsNullOrEmpty(value))
             {
                 // Untouched masked field (or non-string junk): keep what is stored.
-                if (key is null || !previous.TryGetValue((key, name), out var kept))
+                if (key is null || !previous.TryGetValue((key, name), out var keptNode))
                 {
-                    if (node is not null)
-                        slot.Settings!.Remove(name);
+                    slot.Settings!.Remove(name);
+                    return;
+                }
+                // A stored NON-STRING is restored exactly as it was. It was redacted for
+                // the editor like any other secret, so the blank coming back means
+                // "untouched" — and none of the cipher branches below can express it.
+                if (keptNode is not JsonValue keptValue || !keptValue.TryGetValue<string>(out var kept))
+                {
+                    slot.Settings![name] = keptNode?.DeepClone();
+                    // Stamp for the same reason the string paths do: a slot that carries a
+                    // value only this pipeline can restore must be addressable by id, not
+                    // by position. Without it an id-less legacy slot stays id-less, the
+                    // shell mints an id on its first on-panel edit, and the next Seal looks
+                    // the value up under "|i:…" while it was indexed under "|w:0" — so the
+                    // value Settings just preserved is removed one save later.
+                    Stamp(slot);
                     return;
                 }
                 if (SecretStore.CanUnprotect(kept))
@@ -376,10 +406,14 @@ public static class SecretPolicy
             // a decryptable envelope here would delete a still-working plaintext credential
             // just because its replacement could not be encrypted, which is the same loss
             // the migration branch above deliberately avoids.
-            var fallback = key is not null && previous.TryGetValue((key, name), out var prior)
-                && !string.IsNullOrEmpty(prior) ? prior : null;
-            if (fallback is not null)
-                slot.Settings![name] = fallback;
+            // Whatever was stored, of WHATEVER type. My first pass filtered this through
+            // AsString, which rejected a stored list/object and sent it down the remove
+            // path — destroying the old value because its string REPLACEMENT could not be
+            // encrypted, in the one branch whose whole purpose is not to destroy anything.
+            // BuildStoredIndex never indexes an empty string, so a hit here is always a
+            // value worth keeping.
+            if (key is not null && previous.TryGetValue((key, name), out var priorNode) && priorNode is not null)
+                slot.Settings![name] = priorNode.DeepClone();
             else
                 slot.Settings!.Remove(name);
             failures.Add(new SecretSealFailure(slot.WidgetId, name));
@@ -411,12 +445,18 @@ public static class SecretPolicy
 
     /// <summary>Indexes stored secret values — protected AND legacy plaintext, since a
     /// `text` → `secret` upgrade must be encrypted on the next save, not discarded.</summary>
-    private static Dictionary<(string Slot, string Name), string> BuildStoredIndex(
+    /// The index carries the raw NODE, not a string. A layout can hold a list, object or
+    /// number under a name the manifest calls `secret` — legacy data, a hand edit, or a
+    /// property whose meaning changed — and Mask must still redact it (it may contain
+    /// nested credential material) while Seal must still put it back. Indexing only
+    /// strings made those two requirements incompatible: whichever one was honoured, the
+    /// other broke. Storing the node satisfies both.
+    private static Dictionary<(string Slot, string Name), JsonNode?> BuildStoredIndex(
         DashboardLayout? stored, Func<string, WidgetManifest?> lookup,
         Dictionary<string, int> incomingCounts, out Dictionary<string, int> counts)
     {
         counts = CountWidgets(stored);
-        var index = new Dictionary<(string, string), string>();
+        var index = new Dictionary<(string, string), JsonNode?>();
         if (stored is null)
             return index;
         var storedCounts = counts;
@@ -435,12 +475,14 @@ public static class SecretPolicy
             // twin's credential in the index for BOTH slots to inherit.
             if (key is not null && !seen.Add((key, name)))
                 poisoned.Add((key, name));
-            var value = AsString(slot.Settings?[name]);
-            if (string.IsNullOrEmpty(value))
+            var storedNode = slot.Settings?[name];
+            // A genuinely empty string is "unset" and carries nothing. Anything else —
+            // including a non-string — is a value worth being able to restore.
+            if (storedNode is null || (AsString(storedNode) is { Length: 0 }))
                 return;
             if (key is not null)
             {
-                if (!index.TryAdd((key, name), value!))
+                if (!index.TryAdd((key, name), storedNode.DeepClone()))
                     poisoned.Add((key, name));
             }
             // A slot whose id was minted by a PREVIOUS Seal is also reachable
@@ -454,7 +496,7 @@ public static class SecretPolicy
                 storedCounts.TryGetValue(slot.WidgetId, out var before);
                 incomingCounts.TryGetValue(slot.WidgetId, out var after);
                 if (before == 1 && after == 1)
-                    index.TryAdd((slot.WidgetId + "|w:0", name), value!);
+                    index.TryAdd((slot.WidgetId + "|w:0", name), storedNode.DeepClone());
             }
         });
         foreach (var key in poisoned)
