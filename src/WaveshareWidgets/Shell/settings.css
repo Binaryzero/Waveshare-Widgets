@@ -609,6 +609,14 @@ header h1 #appVersion {
  * Styled as a warning rather than an error: nothing is broken, something was
  * deliberately not loaded. */
 #rejectedWidgets {
+  /* Bounded and self-scrolling. `body` is a fixed-height flex column with
+   * overflow:hidden, so an unbounded banner pushes the preview and the toolbar off the
+   * bottom with no page scrollbar — the settings window would become unusable exactly
+   * when several widgets need fixing, which is the worst possible moment. flex:none
+   * stops it stealing height from the preview as entries accumulate. */
+  flex: none;
+  max-height: 22vh;
+  overflow-y: auto;
   margin: 0 0 14px;
   padding: 12px 14px;
   border: 1px solid var(--warn, #f0b84f);

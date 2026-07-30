@@ -159,6 +159,20 @@
       initializing = false;
       clearDirty(); // freshly loaded state IS the saved state
       renderRejectedWidgets(state.rejectedWidgets);
+    } else if (msg.type === 'widgets-changed') {
+      // The widgets folder changed under us (the documented way to fix a refused
+      // widget). Refresh the palette and the banner ONLY — re-seeding the layout here
+      // would silently discard unsaved edits, and the user may well be mid-edit, since
+      // repairing a widget is something they do with this window open.
+      state.widgets = msg.widgets || [];
+      state.rejectedWidgets = msg.rejectedWidgets || [];
+      widgetsById = new Map(state.widgets.map((w) => [w.id, w]));
+      const wasDirty = dirty;
+      initializing = true;
+      renderAll();
+      initializing = false;
+      if (!wasDirty) clearDirty();   // a repaint is not an edit
+      renderRejectedWidgets(state.rejectedWidgets);
     } else if (msg.type === 'saved') {
       // Each ack names the save it answers (the host echoes our seq). Clear the
       // marker only when nothing changed since THAT snapshot was posted — an edit

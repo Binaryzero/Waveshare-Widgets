@@ -392,9 +392,16 @@ public sealed partial class WidgetLibrary : IDisposable
             SaveHostMap(hostMap);
 
         Widgets = widgets.OrderBy(w => w.Manifest.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        Rejected = rejected;
+
+        // Drop rejections for ids that ended up loading anyway. Refusals are recorded
+        // during the scan, before duplicate resolution, so a stale copy of a widget that
+        // violates the rule would otherwise report "not loaded — unavailable" while the
+        // good copy of the same id sits in the palette working fine. The log line stays
+        // (that folder IS being refused); only the user-facing claim is withdrawn.
+        var loadedIds = new HashSet<string>(widgets.Select(w => w.Manifest.Id), StringComparer.OrdinalIgnoreCase);
+        Rejected = rejected.Where(r => !loadedIds.Contains(r.Id)).ToList();
         Log.Info($"Widget library: {Widgets.Count} widget(s) installed"
-               + (rejected.Count > 0 ? $", {rejected.Count} refused" : ""));
+               + (Rejected.Count > 0 ? $", {Rejected.Count} refused" : ""));
     }
 
     /// <summary>Compares SemVer-ish manifest versions ("1.2.3", "2.0.0-beta.1",
@@ -526,6 +533,7 @@ public sealed partial class WidgetLibrary : IDisposable
         // widgets folder, so a staging copy there would be picked up as a real widget by
         // any rescan that fired mid-install. Same volume, so the Move below stays atomic.
         var stageDir = Path.Combine(AppPaths.DataDir, ".installing-" + Slug(manifest.Id));
+        var backupDir = Path.Combine(AppPaths.DataDir, ".replacing-" + Slug(manifest.Id));
         if (Directory.Exists(stageDir))
             Directory.Delete(stageDir, recursive: true);
         try
@@ -542,16 +550,36 @@ public sealed partial class WidgetLibrary : IDisposable
                 throw new InvalidDataException(
                     $"Refusing to install '{manifest.Name}': {credentialError}");
 
-            if (Directory.Exists(targetDir))
-                Directory.Delete(targetDir, recursive: true);
-            Directory.Move(stageDir, targetDir);
+            // Move the old copy ASIDE rather than deleting it, so the swap is reversible.
+            // Deleting first and then moving leaves nothing installed if the move fails —
+            // and it can, transiently: antivirus or an open handle on the staged folder is
+            // enough. Losing a working widget to a failed UPGRADE is worse than the failed
+            // upgrade itself.
+            if (Directory.Exists(backupDir))
+                Directory.Delete(backupDir, recursive: true);
+            var hadPrevious = Directory.Exists(targetDir);
+            if (hadPrevious)
+                Directory.Move(targetDir, backupDir);
+            try
+            {
+                Directory.Move(stageDir, targetDir);
+            }
+            catch
+            {
+                if (hadPrevious && !Directory.Exists(targetDir))
+                    Directory.Move(backupDir, targetDir);   // put the working copy back
+                throw;
+            }
         }
         finally
         {
             // A refused or half-extracted package must not leave a staging folder behind
-            // for the next Rescan to trip over.
+            // for the next Rescan to trip over, and a successful swap must not leave the
+            // old copy sitting in DataDir forever.
             if (Directory.Exists(stageDir))
                 Directory.Delete(stageDir, recursive: true);
+            if (Directory.Exists(backupDir))
+                Directory.Delete(backupDir, recursive: true);
         }
         Log.Info($"Installed widget '{manifest.Id}' v{manifest.Version} from {Path.GetFileName(packagePath)}");
 

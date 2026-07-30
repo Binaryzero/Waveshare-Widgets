@@ -106,6 +106,55 @@ try { listNoFields.CredentialsAreTyped(out _); listOddFields.CredentialsAreTyped
 catch (Exception ex) { survived = false; Console.WriteLine("    threw: " + ex.Message); }
 Check("C3d a malformed list property does not throw", survived);
 
+// ---- C5 · the declared type is canonicalized ----------------------------------------
+// SecretPolicy matches the type with OrdinalIgnoreCase, but settings.js compares
+// `pr.type === 'secret'` exactly. A manifest declaring "Secret" was therefore encrypted
+// at rest AND rendered as an ordinary text field — which drops it from the replica's
+// redaction list and lets a freshly typed credential into the preview. Normalizing on
+// the way in is what makes the two agree.
+var shouty = new WidgetProperty { Name = "apiToken", Type = "SECRET" };
+Check("C5 an upper-case type is normalized to the canonical spelling",
+    shouty.Type == "secret", shouty.Type);
+Check("C5b whitespace and mixed case too",
+    new WidgetProperty { Type = "  Secret " }.Type == "secret");
+Check("C5c an empty type still falls back to text",
+    new WidgetProperty { Type = "" }.Type == "text" && new WidgetProperty { Type = null! }.Type == "text");
+Check("C5d a 'Secret' credential is accepted, not refused — it is valid, just shouty",
+    ManifestWith(shouty).CredentialsAreTyped(out _));
+// Round-tripping the manifest must hand the client the canonical value, since that is
+// the whole point: the editor's exact-match comparison has to see 'secret'.
+var roundTripped = JsonSerializer.Deserialize<WidgetProperty>(
+    """{"name":"apiToken","type":"Secret"}""")!;
+Check("C5e deserializing a manifest normalizes it, so the editor sees 'secret'",
+    roundTripped.Type == "secret", roundTripped.Type);
+
+// ---- C6 · a secret must not ship a default ------------------------------------------
+// Defaults are merged AFTER SecretPolicy.Reveal, so a default on a secret is delivered
+// to the widget and the preview as plaintext, never having been protected. The Node
+// validator has refused this since #15; the install path did not.
+var defaulted = ManifestWith(new WidgetProperty
+{
+    Name = "apiToken",
+    Type = "secret",
+    Default = JsonValue.Create("hunter2"),
+});
+Check("C6 a secret carrying a default is refused", !defaulted.CredentialsAreTyped(out var c6Error), c6Error);
+Check("C6b the refusal explains why a default is never protected",
+    c6Error.Contains("apiToken") && c6Error.Contains("plaintext"), c6Error);
+var emptyDefault = ManifestWith(new WidgetProperty
+{
+    Name = "apiToken",
+    Type = "secret",
+    Default = JsonValue.Create(""),
+});
+Check("C6c an empty default is harmless and accepted", emptyDefault.CredentialsAreTyped(out var c6cError), c6cError);
+Check("C6d no default at all is accepted",
+    ManifestWith(new WidgetProperty { Name = "apiToken", Type = "secret" }).CredentialsAreTyped(out _));
+// A default on an ordinary property is normal and must stay allowed.
+Check("C6e a non-secret property may still ship a default",
+    ManifestWith(new WidgetProperty { Name = "label", Type = "text", Default = JsonValue.Create("Living room") })
+        .CredentialsAreTyped(out _));
+
 // ---- C4 · the identity checks still work --------------------------------------------
 // CredentialsAreTyped is deliberately separate from IsValid (iCUE widgets have no
 // properties at IsValid time), so confirm neither swallowed the other's job.

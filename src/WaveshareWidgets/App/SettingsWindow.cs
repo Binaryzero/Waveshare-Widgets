@@ -82,10 +82,15 @@ public sealed class SettingsWindow : Form
             await core.AddScriptToExecuteOnDocumentCreatedAsync(shim);
             _hub.SensorsUpdated += OnSensorsUpdated;
             _hub.MediaUpdated += OnMediaUpdated;
+            // Fires on the watcher's thread; OnLibraryChanged marshals before touching
+            // the WebView. Unsubscribed below — this window is opened and closed
+            // repeatedly, and a surviving handler would post into a dead WebView.
+            _library.Changed += OnLibraryChanged;
             FormClosed += (_, _) =>
             {
                 _hub.SensorsUpdated -= OnSensorsUpdated;
                 _hub.MediaUpdated -= OnMediaUpdated;
+                _library.Changed -= OnLibraryChanged;
             };
             core.Navigate($"https://{ShellHost}/settings.html");
         }
@@ -276,28 +281,58 @@ public sealed class SettingsWindow : Form
         _maskedManifests = snapshot;
     }
 
+    /// <summary>The widget palette as the editor sees it. Shared by the initial payload
+    /// and the live refresh, so the two can never describe the library differently.</summary>
+    private object WidgetCatalog() => _library.Widgets.Select(w => new
+    {
+        id = w.Manifest.Id,
+        name = w.Manifest.Name,
+        author = w.Manifest.Author,
+        version = w.Manifest.Version,
+        url = $"https://{w.VirtualHost}/index.html",
+        supportedSlots = w.Manifest.SupportedSlots,
+        properties = w.Manifest.Properties,
+    });
+
+    /// <summary>Widgets on disk that the library refused to load. Without this the
+    /// refusal is a line in app.log and, to the user, a tile that stopped existing.</summary>
+    private object RejectedCatalog() => _library.Rejected.Select(r => new
+    {
+        id = r.Id,
+        name = r.Name,
+        folder = r.Folder,
+        reason = r.Reason,
+    });
+
+    /// <summary>Re-sends the palette and the refusal list after the watcher rescans.
+    ///
+    /// Fixing an offending widget in the widgets folder is the documented workflow, and
+    /// the folder is watched — but <see cref="WidgetLibrary.Changed"/> only reloaded the
+    /// dashboard, so the settings window kept showing "not loaded" for a widget the user
+    /// had already repaired, until they closed and reopened the whole window.
+    ///
+    /// Deliberately NOT a full settings-init: that would re-seed the layout from disk and
+    /// throw away unsaved edits. Only the catalog and the banner move.</summary>
+    private void OnLibraryChanged()
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        BeginInvoke(() =>
+        {
+            if (IsDisposed) return;
+            SnapshotManifests();   // the masked-manifest baseline has to track the palette
+            Post(new JsonObject
+            {
+                ["type"] = "widgets-changed",
+                ["widgets"] = JsonSerializer.SerializeToNode(WidgetCatalog(), BridgeJson),
+                ["rejectedWidgets"] = JsonSerializer.SerializeToNode(RejectedCatalog(), BridgeJson),
+            });
+        });
+    }
+
     private void PostInit()
     {
-        var widgets = _library.Widgets.Select(w => new
-        {
-            id = w.Manifest.Id,
-            name = w.Manifest.Name,
-            author = w.Manifest.Author,
-            version = w.Manifest.Version,
-            url = $"https://{w.VirtualHost}/index.html",
-            supportedSlots = w.Manifest.SupportedSlots,
-            properties = w.Manifest.Properties,
-        });
-
-        // Widgets on disk that the library refused to load. Without this the refusal is
-        // a line in app.log and, to the user, a tile that simply stopped existing.
-        var rejected = _library.Rejected.Select(r => new
-        {
-            id = r.Id,
-            name = r.Name,
-            folder = r.Folder,
-            reason = r.Reason,
-        });
+        var widgets = WidgetCatalog();
+        var rejected = RejectedCatalog();
 
         // The editor never receives a credential: secret values are blanked and replaced
         // by a per-slot "secretsSet" hint, so the field can show a saved state while the

@@ -39,8 +39,21 @@ public sealed class WidgetManifest
     {
         foreach (var p in Properties)
         {
-            if (!string.Equals(p.Type, "secret", StringComparison.OrdinalIgnoreCase)
-                && CredentialNames.LooksLikeCredential(p.Name))
+            // A secret must not ship a value. Defaults are merged by the shell AFTER
+            // SecretPolicy.Reveal, so a default here is handed straight to the widget and
+            // to the settings preview as plaintext, having never been protected at all —
+            // declaring `secret` would buy the credential nothing. The Node validator has
+            // refused this since #15 (prop-secret-default); the install path did not.
+            if (p.Type == "secret" && p.Default is not null
+                && p.Default.ToString() is { Length: > 0 })
+            {
+                error = $"property '{p.Name}' is a secret with a default value. Secrets are "
+                      + "revealed before defaults are merged, so a default is delivered as "
+                      + "plaintext and is never encrypted; ship no default for a secret.";
+                return false;
+            }
+
+            if (p.Type != "secret" && CredentialNames.LooksLikeCredential(p.Name))
             {
                 error = $"property '{p.Name}' looks like a credential but is declared as "
                       + $"'{p.Type}'. Credentials must use type \"secret\" so the host can "
@@ -84,7 +97,25 @@ public sealed class WidgetProperty
 {
     [JsonPropertyName("name")] public string Name { get; set; } = "";
     [JsonPropertyName("label")] public string Label { get; set; } = "";
-    [JsonPropertyName("type")] public string Type { get; set; } = "text";
+
+    /// <summary>Normalized to lowercase on the way in, because the host and the settings
+    /// client disagreed about what counts. SecretPolicy matches the type with
+    /// OrdinalIgnoreCase, but settings.js compares <c>pr.type === 'secret'</c> exactly —
+    /// so a manifest declaring <c>"Secret"</c> was encrypted at rest AND rendered as an
+    /// ordinary text field, which left it out of the replica's redaction list and pushed
+    /// a freshly typed credential into the preview. Canonicalizing here removes the
+    /// divergence at the source rather than teaching one more consumer to be lenient.</summary>
+    [JsonPropertyName("type")]
+    public string Type
+    {
+        get => _type;
+        set
+        {
+            var normalized = (value ?? "").Trim().ToLowerInvariant();
+            _type = normalized.Length == 0 ? "text" : normalized;
+        }
+    }
+    private string _type = "text";
     [JsonPropertyName("default")] public JsonNode? Default { get; set; }
     [JsonPropertyName("min")] public double? Min { get; set; }
     [JsonPropertyName("max")] public double? Max { get; set; }
