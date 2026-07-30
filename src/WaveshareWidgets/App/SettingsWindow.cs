@@ -103,8 +103,22 @@ public sealed class SettingsWindow : Form
         }
     }
 
+    /// <summary>Origins already reported as rejected, so a frame that could reach this
+    /// handler cannot bury the explanation under an unbounded identical warning. One line
+    /// per distinct origin diagnoses it just as well.</summary>
+    private readonly HashSet<string> _rejectedOrigins = new(StringComparer.OrdinalIgnoreCase);
+
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
+        // Who sent this, before what it says (#72). This window matters as much as the
+        // dashboard: its preview replica hosts REAL widget iframes, and its handler saves
+        // layouts and installs packages.
+        if (!MessageOrigin.IsShell(e.Source, ShellHost))
+        {
+            if (_rejectedOrigins.Add(e.Source ?? ""))
+                Log.Warn($"Ignored a settings message from an unexpected origin: {SafeUrl.Describe(e.Source)}");
+            return;
+        }
         try
         {
             var message = JsonNode.Parse(e.WebMessageAsJson);

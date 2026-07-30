@@ -224,12 +224,16 @@ of the *hosting configuration*, so any of them could be relaxed by a future chan
 shared virtual host for widget assets, a `FrameCreated` subscription added for some other
 feature — without anyone noticing that this design's trust boundary moved with it.
 
-Checking `e.Source` costs nothing and would make the boundary explicit at the point that
-depends on it. It is filed rather than done here because it changes the dashboard's only
-message channel, and this environment cannot exercise WebView2 to prove a mistaken origin
-check does not silently mute the whole shell. **That hardening should land before the
-identity protocol does**, so `prior` is trusted for a checked reason rather than a
-configurational accident.
+**Done (#72).** `MessageOrigin.IsShell` now gates both message handlers, so the boundary
+is a check rather than an inference. It compares scheme and host only: the host is what
+separates the shell from widget frames, which live on different hosts entirely, while
+requiring a specific path or port would fail *closed* if the shell ever gained a query
+string — dropping every message and leaving the app looking dead, in an environment that
+cannot run WebView2 to notice. The predicate is a pure function so `tools/MessageOrigin`
+can cover both directions exhaustively; only the one-line wiring rests on inspection.
+
+`prior` is therefore trusted for a checked reason rather than a configurational accident,
+which is what the rest of Part B depends on.
 
 ### Also required
 
@@ -241,12 +245,13 @@ is the same channel — once identity flows both ways, both halves are the same 
 
 ## Sequencing
 
-1. **The plan as a pure vehicle.** Introduce `SecretPlan` with only `Protect`, and thread
-   it through `Mask`/`Seal`/`Reveal`. Zero behaviour change — proven by every existing
-   probe passing unmodified. This is the load-bearing refactor; everything else is a small
+1. ~~**The plan as a pure vehicle.**~~ **Done.** `SecretPlan` with only `Protect`, threaded
+   through `Mask`/`Seal`/`Reveal`. Zero behaviour change, proven by every existing probe
+   passing unmodified. This is the load-bearing refactor; everything else is a small
    addition on top of it.
-2. **Verify the save channel** — check `e.Source` in the dashboard's message handler, so
-   step 3 rests on a check rather than on three configurational barriers.
+2. ~~**Verify the save channel.**~~ **Done (#72).** `MessageOrigin.IsShell` gates both
+   message handlers, so step 3 rests on a check rather than on three configurational
+   barriers.
 3. **Identity protocol** (Part B) — closes #68, #70, #56 items 1 and 3.
 4. **`ProtectWithoutReveal`** — closes #67, and #62's classification half.
 5. **`RestoreIfUntouched`** — closes #66.

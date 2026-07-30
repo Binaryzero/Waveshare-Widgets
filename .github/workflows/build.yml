@@ -51,6 +51,15 @@ jobs:
       - name: URLs are redacted in the log
         run: dotnet run --project tools/UrlRedaction
 
+      # The web-message handlers act on what they receive — save-layout writes
+      # layout.json, open-url launches a browser, action runs configured actions — so they
+      # check WHO sent it. Getting that predicate wrong in the permissive direction lets
+      # an installed widget drive them; getting it wrong in the strict direction drops
+      # every message and leaves the app looking dead, with no way to notice here or on
+      # the maintainer's device. Both directions are covered.
+      - name: Web messages are accepted only from the shell
+        run: dotnet run --project tools/MessageOrigin
+
       - name: Publish
         run: dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained false -o publish
 

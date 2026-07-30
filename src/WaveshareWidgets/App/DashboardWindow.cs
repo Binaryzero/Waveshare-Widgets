@@ -210,8 +210,23 @@ public sealed class DashboardWindow : Form
         _webView.CoreWebView2.Reload();
     }
 
+    /// <summary>Origins already reported as rejected. A frame that could reach this
+    /// handler could also spin in it, and an unbounded identical warning would bury the
+    /// one line that explains the problem in the log a user attaches to a bug report.
+    /// One line per distinct origin diagnoses it just as well.</summary>
+    private readonly HashSet<string> _rejectedOrigins = new(StringComparer.OrdinalIgnoreCase);
+
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
+        // Who sent this, before what it says (#72). Everything below acts on the payload:
+        // save-layout writes layout.json, open-url launches a browser, action runs a
+        // configured action.
+        if (!MessageOrigin.IsShell(e.Source, ShellHost))
+        {
+            if (_rejectedOrigins.Add(e.Source ?? ""))
+                Log.Warn($"Ignored a dashboard message from an unexpected origin: {SafeUrl.Describe(e.Source)}");
+            return;
+        }
         try
         {
             var message = JsonNode.Parse(e.WebMessageAsJson);
