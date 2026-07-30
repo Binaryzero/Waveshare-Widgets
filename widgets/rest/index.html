@@ -291,8 +291,12 @@
         // No backoff here: the endpoint ANSWERED. Slowing the poll would neither make
         // the body parse nor spare a service that is working fine.
         if (!showStale('not JSON')) {
+          // Retry stays here, unlike the pointer-miss card: a non-JSON body is a claim
+          // about what the endpoint is returning RIGHT NOW, and a captive portal, a
+          // maintenance page or a mid-deploy upstream all clear on their own. The
+          // wording keeps both readings open rather than blaming the settings.
           showState('⚠', 'Not JSON',
-            'The endpoint answered, but the body is not JSON. This tile reads a value out of a JSON response.', true);
+            'The endpoint answered, but the body is not JSON — check the URL, or the service may be returning an error page right now.', true);
         }
         return;
       }
