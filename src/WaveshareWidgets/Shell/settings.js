@@ -1099,7 +1099,18 @@
    *  place and page-wide sizing in the other is what left half-width widgets enabled
    *  against a one-column hole, where clicking them did nothing at all. */
   function activeAddTarget(page) {
-    return (pendingAddTarget && pendingAddTarget.page === page) ? pendingAddTarget.region : null;
+    if (!pendingAddTarget || pendingAddTarget.page !== page) return null;
+    // REVALIDATED, not merely remembered. Between the tap and the pick the user can
+    // resize or move a slot into the named cells — the shelf would still be answering
+    // for a rectangle that no longer exists, and the anchor would land in an occupied
+    // cell and flow somewhere else. Enumerating every interaction that could do that is
+    // a list to keep up to date; checking the cells is a fact.
+    const region = pendingAddTarget.region;
+    const { occupied } = occupancyOf(page.slots || []);
+    for (let r = region.row; r < region.row + region.h; r++)
+      for (let c = region.col; c < region.col + region.w; c++)
+        if (r > 1 || c > 3 || occupied[r][c]) { pendingAddTarget = null; return null; }
+    return region;
   }
 
   /** The size a widget takes in a specific free region: widest offered width that
@@ -1238,7 +1249,9 @@
   // `col` pins would let the gallery offer sizes the real placement then hides
   // (a pinned tile the simulation flowed left can block the columns the shell
   // actually keeps free) — so simulate the real 4x2 placement and count drops.
-  function countUnplaced(slots) {
+  /** Which cells the page's slots occupy, by the same rules placeSlots uses. Shared
+   *  with countUnplaced so "is this cell free" has one answer, not two. */
+  function occupancyOf(slots) {
     const occupied = [new Array(4).fill(false), new Array(4).fill(false)]; // [row][col]
     const placed = new Array(slots.length).fill(false);
     const geo = (s) => {
@@ -1253,15 +1266,12 @@
     const take = (rows, col, w) => {
       for (const r of rows) for (let i = 0; i < w; i++) occupied[r][col + i] = true;
     };
-    // Pass A — anchored slots (1-based col) claim their column; a blocked
-    // anchor falls through to the flow pass, exactly like the shell.
     slots.forEach((s, i) => {
       const anchor = (s.col >= 1 && s.col <= 4) ? s.col - 1 : null;
       if (anchor === null) return;
       const { w, rows } = geo(s);
       if (free(rows, anchor, w)) { take(rows, anchor, w); placed[i] = true; }
     });
-    // Pass B — everything else flows first-fit in array order.
     let dropped = 0;
     slots.forEach((s, i) => {
       if (placed[i]) return;
@@ -1270,8 +1280,13 @@
       for (let c = 0; c + w <= 4; c++) if (free(rows, c, w)) { col = c; break; }
       if (col >= 0) take(rows, col, w); else dropped++;
     });
-    return dropped;
+    return { occupied, dropped };
   }
+
+  function countUnplaced(slots) {
+    return occupancyOf(slots).dropped;
+  }
+
 
   function renderCapacity(page) {
     const slots = page.slots || [];
