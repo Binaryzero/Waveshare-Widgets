@@ -176,12 +176,15 @@ WW.onNotifications((n) => { ... })             // fires when the mirrored list c
 WW.dismissNotification(id)                     // dismiss one toast by id
 
 WW.game                                        // {active, process} — a fullscreen game is foreground
-WW.onGame((g) => { ... })                      // pause your own timers/streams while g.active
+WW.onGame((g) => { ... })                      // fires on TRANSITIONS only — seed from WW.game at init
 ```
 
 Game mode also stamps `html[data-game="on"|"off"]` in every widget, and
 `widget-base.css` pauses ALL CSS animation while on — JS work is yours to gate via
-`WW.onGame`. Notification strings are untrusted external text: render them with
+`WW.onGame`. Seed your paused flag from `WW.game.active` (or `state.game`, which
+`ww-init` carries) inside `onInit`: `onGame` reports later flips, not the state you
+started in, so a widget that only listens polls straight through a game that was
+already running when it loaded. Notification strings are untrusted external text: render them with
 `textContent`, never `innerHTML`. Windows only grants the notification listener to
 apps with **package identity** (MSIX-installed); on the portable zip install expect
 `state` to come back `denied` or `unavailable`, and design for it — the stock

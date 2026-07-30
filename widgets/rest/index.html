@@ -92,6 +92,8 @@
   let staleWhy = '';      // why the last poll failed, kept for the age line
   let failures = 0;       // consecutive failures — drives the retry backoff
   let gamePaused = false;
+  let generation = 0;     // bumped when the source changes; older answers are discarded
+  let activeController = null;
 
   // ---- value extraction ---------------------------------------------------------
   /** RFC 6901 JSON Pointer ("/a/b/0"), or a friendlier dotted path ("a.b.0").
@@ -142,15 +144,19 @@
    * warn 20 / crit 10 means low is bad. Ordering the two numbers is something the
    * user already does naturally, so it needs no extra setting. */
   function classify(num) {
-    if (num == null || cfg.warn == null) return '';
-    const lowerIsWorse = cfg.crit != null && cfg.crit < cfg.warn;
+    if (num == null || (cfg.warn == null && cfg.crit == null)) return '';
+    // Direction is inferred from the ORDER of the two numbers, so it needs both. With
+    // only one set there is nothing to infer and the default (high is worse) applies —
+    // the manifest offers the fields independently and marks neither as required, so
+    // "Critical at 90" alone has to colour at 90 rather than silently do nothing.
+    const lowerIsWorse = cfg.warn != null && cfg.crit != null && cfg.crit < cfg.warn;
     if (lowerIsWorse) {
       if (num <= cfg.crit) return 'crit';
       if (num <= cfg.warn) return 'warn';
       return '';
     }
     if (cfg.crit != null && num >= cfg.crit) return 'crit';
-    if (num >= cfg.warn) return 'warn';
+    if (cfg.warn != null && num >= cfg.warn) return 'warn';
     return '';
   }
 
@@ -219,10 +225,14 @@
    * forever — no error, no retry, just a number frozen at whatever it last read.
    * WW.fetch can escalate to the host proxy, so its promise depends on a reply
    * arriving; cap the wait rather than trusting it. */
-  function withTimeout(promise, ms, controller) {
+  /* The deadline covers the WHOLE exchange, headers AND body. A resolved `WW.fetch`
+   * only means the headers arrived: an endpoint that then stalls mid-body would leave
+   * `res.text()` hanging with no timer left running — the same permanent freeze this
+   * guard exists to prevent, just moved one await later. */
+  function withDeadline(ms, controller, run) {
     let t;
     return Promise.race([
-      promise.finally(() => clearTimeout(t)),
+      run().finally(() => clearTimeout(t)),
       new Promise((_, reject) => {
         t = setTimeout(() => {
           // Cancel the request too, not just our wait for it. Rejecting alone frees
@@ -238,8 +248,14 @@
   async function poll() {
     if (inFlight || !cfg.url) return;
     inFlight = true;
+    // Everything below belongs to the source as it was when the request left. If the
+    // user retargets the tile mid-flight, this answer describes the OLD endpoint and
+    // must not be rendered — least of all under the new pointer and thresholds.
+    const gen = generation;
+    const superseded = () => gen !== generation;
+    const controller = new AbortController();
+    activeController = controller;
     try {
-      const controller = new AbortController();
       const init = { cache: 'no-store', signal: controller.signal };
       // The secret arrives decrypted, exactly like a text setting. An unset or
       // unreadable one is "" — send no header at all rather than an empty one.
@@ -250,12 +266,19 @@
       // Never wait longer than the poll period (floor 10 s, cap 30 s): a request still
       // outstanding when the next one is due has already failed in every way that matters.
       const budget = Math.min(30000, Math.max(10000, cfg.pollSeconds * 1000));
-      const res = await withTimeout(WW.fetch(cfg.url, init), budget, controller);
-      if (!res.ok) {
+      const url = cfg.url;
+      const answer = await withDeadline(budget, controller, async () => {
+        const res = await WW.fetch(url, init);
+        // Read the body inside the deadline; a non-2xx has nothing worth reading.
+        return { ok: res.ok, status: res.status, statusText: res.statusText,
+          text: res.ok ? await res.text() : '' };
+      });
+      if (superseded()) return;
+      if (!answer.ok) {
         failures++;
-        if (!showStale('HTTP ' + res.status)) {
-          showState('⚠', 'HTTP ' + res.status,
-            'The endpoint answered with ' + res.status + ' ' + (res.statusText || '') +
+        if (!showStale('HTTP ' + answer.status)) {
+          showState('⚠', 'HTTP ' + answer.status,
+            'The endpoint answered with ' + answer.status + ' ' + (answer.statusText || '') +
             '. Check the URL and the auth header in settings.', true);
         }
         return;
@@ -263,9 +286,10 @@
 
       let doc;
       try {
-        doc = JSON.parse(await res.text());
+        doc = JSON.parse(answer.text);
       } catch (e) {
-        failures++;
+        // No backoff here: the endpoint ANSWERED. Slowing the poll would neither make
+        // the body parse nor spare a service that is working fine.
         if (!showStale('not JSON')) {
           showState('⚠', 'Not JSON',
             'The endpoint answered, but the body is not JSON. This tile reads a value out of a JSON response.', true);
@@ -299,6 +323,9 @@
       if (typeof formatted === 'string') showValue(formatted, '');
       else showValue(formatted.text, classify(formatted.num));
     } catch (e) {
+      // An abort we caused by retargeting the tile is not an endpoint failure, and the
+      // state it would paint describes a source the user has already moved off.
+      if (superseded()) return;
       failures++;
       WW.log('rest: ' + (e && e.message ? e.message : e));
       if (!showStale('unreachable')) {
@@ -306,7 +333,12 @@
           'The request failed. Check the URL, and that this PC can reach it.', true);
       }
     } finally {
-      inFlight = false;
+      // A superseded request must not clear the flag: the re-init already reset it, and
+      // a late unwind would otherwise unlock a poll that is legitimately in flight.
+      if (!superseded()) {
+        inFlight = false;
+        if (activeController === controller) activeController = null;
+      }
     }
   }
 
@@ -316,7 +348,12 @@
   function nextDelayMs() {
     const base = cfg.pollSeconds * 1000;
     if (!failures) return base;
-    return Math.min(base * Math.pow(2, Math.min(failures, 6)), 600000);
+    // The ten-minute cap bounds the EXTRA wait, never the total. Capping the total
+    // inverts the whole point above 600 s: a tile set to poll once a day would answer
+    // its first failure by switching to every ten minutes — 144x the traffic, from the
+    // code meant to reduce it. Backoff can only ever slow this tile down.
+    const grown = base * Math.pow(2, Math.min(failures, 6));
+    return Math.min(grown, base + 600000);
   }
 
   // A self-rescheduling timeout rather than setInterval: the delay varies with the
@@ -357,6 +394,10 @@
   // ---- lifecycle ----------------------------------------------------------------
   WW.onInit((state) => {
     const s = state.settings || {};
+    // onGame reports TRANSITIONS only, so a tile that boots (or reloads) while a game
+    // already owns the screen never hears about it. ww-init carries the current state:
+    // seed from it, or this widget is the one thing still polling during a game.
+    gamePaused = !!(state.game && state.game.active);
     // Anything not explicitly glass/transparent renders solid — matching unset AND
     // out-of-spec values, exactly like the stock clock.
     const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
@@ -387,7 +428,19 @@
     // current reading away. Only a change to WHAT is being fetched invalidates it.
     const sourceChanged = cfg.url !== prevUrl || cfg.pointer !== prevPointer ||
       (cfg.headerName + '\n' + cfg.headerValue) !== prevHeader;
-    if (sourceChanged) { last = null; lastAt = 0; }
+    if (sourceChanged) {
+      last = null;
+      lastAt = 0;
+      // Retire any request still out against the OLD source. Without this the pending
+      // answer arrives after cfg has been rewritten and gets read with the new pointer
+      // and thresholds — the previous endpoint's payload, displayed as if it were the
+      // new one — while `inFlight` blocks the poll that would have corrected it.
+      generation++;
+      failures = 0;
+      if (activeController) { try { activeController.abort(); } catch (e) { /* already gone */ } }
+      activeController = null;
+      inFlight = false;
+    }
     else if (last) { showValue(last.text, last.cls); }   // re-apply thresholds/format
     startAgeTicker();
     restart();

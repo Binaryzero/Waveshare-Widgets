@@ -10,6 +10,9 @@
 //   R6 · a failure AFTER a good read keeps the value, dimmed, with a Stale pill
 //   R7 · a real null reading, a pointer miss and a non-scalar each say what to fix
 //   R8 · a repeated ww-init (settings edit) does not stack pollers
+//   R10 · a failing endpoint backs off; an explicit Retry overrides the backoff
+//   R11 · the age label is recomputed from the clock, not frozen until the next poll
+//   R12 · a tile that BOOTS during a game reads that state out of ww-init and stays quiet
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -60,9 +63,12 @@ const TOKEN = 'Bearer super-secret-probe-token';
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   });
-  await page.route('https://api.test/**', (route) => {
-    seen.push({ url: route.request().url(), headers: route.request().headers() });
-    const r = respond();
+  await page.route('https://api.test/**', async (route) => {
+    const url = route.request().url();
+    seen.push({ url: url, headers: route.request().headers() });
+    const r = respond(url);
+    // A slow endpoint, so a probe can retarget the tile while a request is still out.
+    if (r.delayMs) await wait(r.delayMs);
     if (r.abort) return route.abort();
     return route.fulfill({ status: r.status, contentType: r.contentType || 'application/json', body: r.body });
   });
@@ -80,10 +86,17 @@ const TOKEN = 'Bearer super-secret-probe-token';
   });
   await page.goto('https://widget.test/index.html');
 
-  const init = (settings) => page.evaluate((s) => {
+  // `game` mirrors what the host puts in a real ww-init: the CURRENT game state, not
+  // a transition. A widget that ignores it only learns about game mode on the next flip.
+  const init = (settings, game) => page.evaluate(([s, g]) => {
     window.postMessage({ type: 'ww-init', settings: s, sensors: [], media: null, theme: null,
+      game: g || { active: false, process: '' },
       status: { elevated: false, apiVersion: 1 } }, '*');
-  }, settings);
+  }, [settings, game]);
+
+  const gameEvent = (active) => page.evaluate((a) => {
+    window.postMessage({ type: 'ww-game', game: { active: a, process: a ? 'game.exe' : '' } }, '*');
+  }, active);
 
   const read = () => page.evaluate(() => ({
     value: document.getElementById('value').textContent,
@@ -282,6 +295,76 @@ const TOKEN = 'Bearer super-secret-probe-token';
   });
   check('R11 the age label is recomputed from the clock, not frozen at the poll',
     /ago$/.test(ageAtStart) && /ago$/.test(recomputed), `${ageAtStart} -> ${recomputed}`);
+
+  // ---- R12 · a tile that BOOTS during a game must not poll through it ---------------
+  // onGame fires on transitions only, so the initial state has to be read out of
+  // ww-init. Getting this wrong is invisible in normal use — it only shows up when the
+  // app starts, or the tile reloads, while a game is already fullscreen.
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 7 }) });
+  await init(Object.assign({}, base, { url: 'https://api.test/ingame', jsonPointer: '/v' }),
+    { active: true, process: 'game.exe' });
+  await wait(700);
+  seen.length = 0;
+  await wait(6500);                        // one full 5 s period plus slack
+  check('R12 a widget initialised during a game schedules no polls', seen.length === 0,
+    `${seen.length} requests`);
+  // The single read at init is deliberate and NOT what this guards: a tile that painted
+  // a spinner for the whole session, then a number when the game ended, would be worse
+  // than one request. What must not happen is the 5 s cadence continuing underneath.
+  check('R12b it still painted a value rather than spinning for the whole session',
+    (await read()).value === '7');
+
+  await gameEvent(false);
+  await wait(600);
+  check('R12c and polling resumes once the game exits', seen.length > 0, `${seen.length} requests`);
+
+  // ---- R13 · a Critical threshold works on its own ---------------------------------
+  // The manifest offers Warn and Critical independently and marks neither required, so
+  // "Critical at 90" with no Warn has to colour — not silently disable colouring.
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 96 }) });
+  await init({ url: 'https://api.test/critonly', jsonPointer: '/v', crit: '90', pollSeconds: 60 });
+  await wait(500);
+  check('R13 a Critical threshold with no Warn still colours the value',
+    /\bcrit\b/.test((await read()).cls), (await read()).cls);
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 12 }) });
+  await init({ url: 'https://api.test/critonly2', jsonPointer: '/v', crit: '90', pollSeconds: 60 });
+  await wait(500);
+  check('R13b and a value under it stays uncoloured', !/\b(crit|warn)\b/.test((await read()).cls));
+
+  // ---- R14 · backoff may only ever SLOW the tile down -------------------------------
+  // Capping the total rather than the extra inverts the feature above 600 s: a daily
+  // tile would answer one failure by polling every ten minutes.
+  const delays = await page.evaluate(() => {
+    const out = [];
+    for (const [seconds, fails] of [[86400, 1], [86400, 6], [700, 1], [5, 1], [5, 6]]) {
+      cfg.pollSeconds = seconds;
+      failures = fails;
+      out.push({ seconds: seconds, fails: fails, base: seconds * 1000, delay: nextDelayMs() });
+    }
+    failures = 0;
+    return out;
+  });
+  check('R14 backoff never schedules sooner than the configured interval',
+    delays.every((d) => d.delay >= d.base),
+    delays.map((d) => `${d.seconds}s/${d.fails}f=${Math.round(d.delay / 1000)}s`).join(' '));
+  check('R14b and it still grows on a short interval rather than doing nothing',
+    delays[3].delay === 10000 && delays[4].delay === 320000);
+
+  // ---- R15 · retargeting mid-flight must not paint the OLD endpoint's answer --------
+  // The in-flight request outlives the settings change; when it lands, cfg already
+  // describes a different source, so its payload would be read with the new pointer.
+  respond = (url) => /slowsrc/.test(url)
+    ? { status: 200, body: JSON.stringify({ old: 111 }), delayMs: 2000 }
+    : { status: 200, body: JSON.stringify({ fresh: 222 }) };
+  await init({ url: 'https://api.test/slowsrc', jsonPointer: '/old', pollSeconds: 60 });
+  await wait(400);                       // request is out, nothing back yet
+  await init({ url: 'https://api.test/newsrc', jsonPointer: '/fresh', pollSeconds: 60 });
+  await wait(3000);                      // long enough for the OLD request to land too
+  const after = await read();
+  check('R15 the tile shows the new source, not the answer to the retired request',
+    after.value === '222', after.value);
+  check('R15b and the retired request did not leave the tile stuck loading',
+    after.stateHidden === true && after.bodyHidden === false);
 
   // ---- populated screenshots (the eyes, not just the contract) ---------------------
   respond = () => ({ status: 200, body: JSON.stringify({ data: { temperature: 87.3 } }) });
