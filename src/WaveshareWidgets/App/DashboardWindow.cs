@@ -210,10 +210,14 @@ public sealed class DashboardWindow : Form
         _webView.CoreWebView2.Reload();
     }
 
-    /// <summary>Origins already reported as rejected. A frame that could reach this
-    /// handler could also spin in it, and an unbounded identical warning would bury the
-    /// one line that explains the problem in the log a user attaches to a bug report.
-    /// One line per distinct origin diagnoses it just as well.</summary>
+    /// <summary>Origins already reported as rejected, so an unbounded identical warning
+    /// cannot bury the one line that explains the problem in the log a user attaches to a
+    /// bug report. Keyed on the REDACTED form — the same string the warning prints —
+    /// because that is the only key that makes a duplicate line impossible. Keying on the
+    /// raw source looked equivalent and was not: a document can vary its own path or query
+    /// between posts (`history.replaceState`), which produces a fresh key and a fresh
+    /// warning every time while the logged text stays identical, growing both the set and
+    /// the log without bound.</summary>
     private readonly HashSet<string> _rejectedOrigins = new(StringComparer.OrdinalIgnoreCase);
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -223,8 +227,9 @@ public sealed class DashboardWindow : Form
         // configured action.
         if (!MessageOrigin.IsShell(e.Source, ShellHost))
         {
-            if (_rejectedOrigins.Add(e.Source ?? ""))
-                Log.Warn($"Ignored a dashboard message from an unexpected origin: {SafeUrl.Describe(e.Source)}");
+            var origin = SafeUrl.Describe(e.Source);
+            if (_rejectedOrigins.Add(origin))
+                Log.Warn($"Ignored a dashboard message from an unexpected origin: {origin}");
             return;
         }
         try

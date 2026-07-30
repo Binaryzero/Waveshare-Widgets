@@ -103,9 +103,10 @@ public sealed class SettingsWindow : Form
         }
     }
 
-    /// <summary>Origins already reported as rejected, so a frame that could reach this
-    /// handler cannot bury the explanation under an unbounded identical warning. One line
-    /// per distinct origin diagnoses it just as well.</summary>
+    /// <summary>Origins already reported as rejected, keyed on the REDACTED form — the
+    /// same string the warning prints, which is the only key that makes a duplicate line
+    /// impossible. See the matching field on DashboardWindow for why the raw source is
+    /// not equivalent.</summary>
     private readonly HashSet<string> _rejectedOrigins = new(StringComparer.OrdinalIgnoreCase);
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -115,8 +116,9 @@ public sealed class SettingsWindow : Form
         // layouts and installs packages.
         if (!MessageOrigin.IsShell(e.Source, ShellHost))
         {
-            if (_rejectedOrigins.Add(e.Source ?? ""))
-                Log.Warn($"Ignored a settings message from an unexpected origin: {SafeUrl.Describe(e.Source)}");
+            var origin = SafeUrl.Describe(e.Source);
+            if (_rejectedOrigins.Add(origin))
+                Log.Warn($"Ignored a settings message from an unexpected origin: {origin}");
             return;
         }
         try

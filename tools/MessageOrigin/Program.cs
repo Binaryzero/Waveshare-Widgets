@@ -95,5 +95,39 @@ Check("M5b no query, path or credential survives into the log",
 Check("M5c a null origin logs a placeholder rather than throwing",
     SafeUrl.Describe((string?)null) == "(no url)");
 
+// ---- M6 · the rejection log key collapses everything but the origin --------------------
+// Both handlers dedupe rejections on the REDACTED string rather than the raw source, so a
+// duplicate log line is impossible by construction. That only holds if the redaction
+// really does collapse path and query: a document can rewrite its own path between posts
+// (history.replaceState) and each variant would otherwise be a fresh key and a fresh
+// warning, while the printed text stayed identical — growing the set and the log without
+// bound, which is the opposite of what the dedupe is for.
+var sameOrigin = new[]
+{
+    "https://evil.test/a",
+    "https://evil.test/b",
+    "https://evil.test/a?x=1",
+    "https://evil.test/a#frag",
+    "https://evil.test/",
+};
+var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+foreach (var url in sameOrigin) keys.Add(SafeUrl.Describe(url));
+Check("M6 documents differing only by path, query or fragment share one log key",
+    keys.Count == 1, string.Join(" | ", keys));
+// A different host is a genuinely different thing and still earns its own line.
+Check("M6b a different host is still reported separately",
+    SafeUrl.Describe("https://other.test/a") != SafeUrl.Describe("https://evil.test/a"));
+// A non-default port is part of the origin, so it is not collapsed either.
+Check("M6c a different port is not collapsed into the default-port origin",
+    SafeUrl.Describe("https://evil.test:8443/a") != SafeUrl.Describe("https://evil.test/a"),
+    SafeUrl.Describe("https://evil.test:8443/a"));
+// Degenerate sources collapse to one key each rather than one key per malformed string.
+var junk = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    SafeUrl.Describe("not a uri"), SafeUrl.Describe("also not a uri"), SafeUrl.Describe("///"),
+};
+Check("M6d unparseable sources share a single key rather than one each",
+    junk.Count == 1, string.Join(" | ", junk));
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
