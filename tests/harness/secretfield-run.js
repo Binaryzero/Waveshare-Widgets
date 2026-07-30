@@ -583,6 +583,73 @@ const layout = {
     check('E18b the widget lands on the page the message named, not the one the shelf was built for',
       !!after18 && after18[1] === before18[1] + 1 && after18[0] === before18[0],
       `${JSON.stringify(before18)} → ${JSON.stringify(after18)}`);
+
+    // ---- E24 · the shelf answers for the hole that was TAPPED ---------------------
+    // The panel's add zones are per-hole (#84) and carry the region in the message.
+    // The shelf's enabled state has to come from the same region the add does: sizing
+    // the buttons against the page while the click sizes against the region leaves
+    // half-width widgets enabled over a one-column hole, where clicking does nothing
+    // at all — a control that is offered and inert. Both fixture widgets are half-only,
+    // so a 1x1 target can take neither.
+    // The generation moved when the add above re-initialised the replica, and a
+    // message tagged with the old one is dropped by the staleness guard before it can
+    // reach any of this. Re-read it rather than reusing the captured value.
+    const gen2 = await page.evaluate(() => {
+      try { return ((JSON.parse(window.__wwLastReplicaInit || '{}').data || {}).gen | 0); } catch (e) { return -1; }
+    });
+    const here = await page.evaluate(() =>
+      [...document.querySelectorAll('#pageList li')].findIndex((li) => li.classList.contains('active')));
+    await replica.evaluate((a) => parent.postMessage({ type: 'ww-shell', message: {
+      type: 'add-widget', index: a.i, target: { col: 3, row: 1, w: 1, h: 1 }, gen: a.g } }, '*'),
+      { i: here, g: gen2 });
+    await page.waitForTimeout(450);
+    const shelf = await page.evaluate(() => ({
+      items: [...document.querySelectorAll('#widgetGallery .gallery-item')].length,
+      enabled: [...document.querySelectorAll('#widgetGallery .gallery-item')].filter((b) => !b.disabled).length,
+      why: [...document.querySelectorAll('#widgetGallery .g-why')].map((e) => e.textContent),
+    }));
+    check('E24 a half-only widget is not offered against a one-column hole',
+      shelf.items > 0 && shelf.enabled === 0 && shelf.why.every((w) => /too big/i.test(w)),
+      JSON.stringify(shelf));
+
+    // E24b · offered implies completable. The reason text above proves the shelf is
+    // reading the region, but not that what it OFFERS can finish: the reported harm was
+    // an entry left enabled that does nothing when clicked. With a target the widget
+    // does fit, the click must actually add — the only check that rules that out.
+    const fitTarget = await page.evaluate(() => {
+      try { return ((JSON.parse(window.__wwLastReplicaInit || '{}').data || {}).gen | 0); } catch (e) { return -1; }
+    });
+    await replica.evaluate((a) => parent.postMessage({ type: 'ww-shell', message: {
+      type: 'add-widget', index: a.i, target: { col: 2, row: 0, w: 2, h: 2 }, gen: a.g } }, '*'),
+      { i: here, g: fitTarget });
+    await page.waitForTimeout(450);
+    const offered = await page.evaluate(() =>
+      [...document.querySelectorAll('#widgetGallery .gallery-item')].filter((b) => !b.disabled).length);
+    await page.locator('#save').click();
+    await page.waitForTimeout(350);
+    const preClick = counts();
+    await page.locator('#widgetGallery .gallery-item:not(:disabled)').first().click();
+    await page.waitForTimeout(300);
+    await page.locator('#save').click();
+    await page.waitForTimeout(350);
+    const postClick = counts();
+    check('E24b an entry the shelf offers against a target actually completes the add',
+      offered > 0 && !!preClick && !!postClick
+        && postClick.reduce((a, b) => a + b, 0) === preClick.reduce((a, b) => a + b, 0) + 1,
+      `${offered} offered, ${JSON.stringify(preClick)} → ${JSON.stringify(postClick)}`);
+
+    // ---- E25 · the target belongs to the page it was tapped on --------------------
+    // page-changed follows the replica (edge drop, capsule arrows) without touching
+    // the target, so coordinates alone would anchor a later pick into a cell chosen on
+    // a different page. Navigate after the tap, then add: the target must not apply.
+    await replica.evaluate((a) => parent.postMessage({ type: 'ww-shell', message: {
+      type: 'page-changed', index: a.other, gen: a.g } }, '*'), { other: here === 0 ? 1 : 0, g: gen2 });
+    await page.waitForTimeout(400);
+    const shelf2 = await page.evaluate(() => ({
+      enabled: [...document.querySelectorAll('#widgetGallery .gallery-item')].filter((b) => !b.disabled).length,
+    }));
+    check('E25 after the replica changes page, the old page\'s target no longer applies',
+      shelf2.enabled > 0, JSON.stringify(shelf2));
   }
 
   // ---- E19 · the dock's caps must be bounded by the viewport, not by each other ----

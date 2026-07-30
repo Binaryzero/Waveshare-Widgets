@@ -62,7 +62,12 @@
   // The free region a replica "+" tap named, if any (#84). The panel's add zones are
   // per-hole now, so the tap says WHERE — and the pick that follows has to honour it,
   // or the settings side quietly fills a different hole from the one touched.
-  let pendingAddTarget = null;
+  //
+  // Bound to the PAGE it was tapped on, not just the coordinates. The replica can
+  // navigate between the tap and the pick (page-changed follows an edge drop or the
+  // capsule arrows), and coordinates alone would then anchor into a cell chosen on a
+  // different page — landing in an occupied spot, or flowing into an unrelated hole.
+  let pendingAddTarget = null;   // { region, page } | null
 
   const el = (id) => document.getElementById(id);
 
@@ -525,8 +530,10 @@
       // Region the tap landed in. Null for an older shell, which simply keeps the
       // page-wide sizing it always had.
       const t = m.target;
-      pendingAddTarget = (t && t.w >= 1 && t.h >= 1 && t.col >= 0 && t.row >= 0) ? t : null;
       const idx = m.index | 0;
+      const tPage = (idx >= 0 && idx < state.layout.pages.length) ? state.layout.pages[idx] : null;
+      pendingAddTarget = (t && tPage && t.w >= 1 && t.h >= 1 && t.col >= 0 && t.row >= 0)
+        ? { region: t, page: tPage } : null;
       if (idx !== selectedPage && idx >= 0 && idx < state.layout.pages.length) {
         selectedPage = idx;
         selectedSlot = null;
@@ -1087,6 +1094,14 @@
   // already fail to place (over-full pages hide them) — they must not veto adds
   // into the free space that IS visible (field bug: every gallery entry said
   // "No room" while half the page sat empty).
+  /** The tapped region, but only for the page it was tapped on. Both the shelf's
+   *  enabled state and the add itself go through this — reading the target in one
+   *  place and page-wide sizing in the other is what left half-width widgets enabled
+   *  against a one-column hole, where clicking them did nothing at all. */
+  function activeAddTarget(page) {
+    return (pendingAddTarget && pendingAddTarget.page === page) ? pendingAddTarget.region : null;
+  }
+
   /** The size a widget takes in a specific free region: widest offered width that
    *  fits its columns, banded to its rows. Mirrors the shell's sizeInRegion — the two
    *  answer the same question for the same tap, on either surface. */
@@ -1143,11 +1158,14 @@
     el('slotDetail').style.display = '';
     wrap.textContent = '';
     if (!open) return;
+    // When a replica "+" named a hole, the shelf answers for THAT hole: a widget the
+    // region cannot take is offered as unavailable rather than enabled-and-inert.
+    const region = activeAddTarget(page);
     for (const widget of state.widgets) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'gallery-item';
-      const size = defaultSizeFor(page, widget);
+      const size = region ? sizeInRegion(widget, region) : defaultSizeFor(page, widget);
       const glyph = document.createElement('span');
       glyph.className = 'g-icon';
       glyph.textContent = paletteGlyph(widget.id);
@@ -1161,10 +1179,11 @@
       if (!size) {
         const why = document.createElement('span');
         why.className = 'g-why';
-        why.textContent = 'no room';
+        why.textContent = region ? 'too big' : 'no room';
         btn.appendChild(why);
       }
-      btn.title = size ? (widget.author || widget.name) : 'No room on this page';
+      btn.title = size ? (widget.author || widget.name)
+        : (region ? 'Too big for the space you tapped' : 'No room on this page');
       btn.disabled = !size;
       btn.addEventListener('click', () => addWidgetToPage(page, widget));
       wrap.appendChild(btn);
@@ -1173,7 +1192,9 @@
     if (![...wrap.children].some((b) => !b.disabled)) {
       const note = document.createElement('p');
       note.className = 'g-full panel-hint';
-      note.textContent = 'This page is full — remove a widget or add a page.';
+      note.textContent = region
+        ? 'Nothing installed fits the space you tapped — try a larger one.'
+        : 'This page is full — remove a widget or add a page.';
       wrap.prepend(note);
     }
   }
@@ -1181,7 +1202,7 @@
   function addWidgetToPage(page, widget) {
     // A tap on a specific hole in the replica sizes and anchors to THAT hole; the
     // shelf's own "+" has no target and keeps the page-wide behaviour.
-    const region = pendingAddTarget;
+    const region = activeAddTarget(page);
     const size = region ? sizeInRegion(widget, region) : defaultSizeFor(page, widget);
     if (!size) return;
     pendingAddTarget = null;   // one tap, one add
