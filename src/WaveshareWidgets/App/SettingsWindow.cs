@@ -357,16 +357,27 @@ public sealed class SettingsWindow : Form
             //                         so the editor's masked blank overwrites the stored
             //                         ciphertext.
             //
-            // Old definitions win on a name collision: they are the ones that classified
-            // the layout the editor is currently holding, and that layout is what the
-            // next save writes.
-            // Name-collision rule: SECRET WINS, from whichever side declares it. A pure
-            // "old wins" union quietly loses the retype case — a property that was
-            // `text` and is now `secret` (a feed URL that became private) would keep the
-            // old non-secret definition, so the editor renders a masked field while Seal
-            // treats it as ordinary text and writes the credential out in the clear.
-            // Erring toward secret is the safe direction: the worst case is carrying a
-            // value through the cipher that did not need it.
+            // Name-collision rule: THE NEW DEFINITION WINS, for a property the new
+            // manifest still declares. Absent properties keep their old definition purely
+            // by never colliding — which is the case the union exists for, since a removed
+            // or briefly-unparseable manifest says nothing about a property that may still
+            // hold a live credential.
+            //
+            // This replaces the "secret wins" rule I wrote in #61 round five. That rule
+            // was a heuristic standing in for this one, and it was right in only one
+            // direction:
+            //
+            //   text -> secret   both rules seal the value. Correct.
+            //   secret -> text   secret-wins seals a value the CURRENT manifest calls
+            //                    ordinary — and SecretPolicy.Reveal consults that current
+            //                    manifest, so it never decrypts, and the widget is handed
+            //                    the literal "dpapi:v1:…" string.
+            //
+            // Sealing and revealing have to agree about which manifest is authoritative.
+            // Reveal cannot use this snapshot (it runs on the dashboard, against the live
+            // library), so the snapshot must not out-vote it about a property the author
+            // has just made a fresh statement about. Erring toward secret sounded safe
+            // and was not: it produced a value nothing could ever read back.
             //
             // ORDINAL, matching the only comparer that decides anything downstream: setting
             // keys are JSON object keys and SecretPolicy.SecretNames is an ordinal set. A
@@ -387,7 +398,7 @@ public sealed class SettingsWindow : Form
                 // window goes down. There is nothing to merge, so there is nothing to do.
                 if (string.IsNullOrEmpty(p.Name)) continue;
                 if (!byName.TryGetValue(p.Name, out var at)) { byName[p.Name] = union.Count; union.Add(p); continue; }
-                if (p.Type == "secret" && union[at].Type != "secret") union[at] = p;
+                union[at] = p;
             }
 
             _maskedManifests[w.Manifest.Id] = new WidgetManifest
@@ -426,14 +437,30 @@ public sealed class SettingsWindow : Form
     });
 
     /// <summary>Widgets on disk that the library refused to load. Without this the
-    /// refusal is a line in app.log and, to the user, a tile that stopped existing.</summary>
-    private object RejectedCatalog() => _library.Rejected.Select(r => new
+    /// refusal is a line in app.log and, to the user, a tile that stopped existing.
+    ///
+    /// A refusal whose id loaded from ANOTHER folder is suppressed here, and only here.
+    /// The widget is present, so warning that it is unavailable sends the user hunting
+    /// for a problem they do not have — but the refusal record itself must survive, because
+    /// <see cref="AddRedactionManifests"/> reads the same list for its RedactNames and the
+    /// layout can still hold a plaintext credential written while the refused copy was
+    /// active. Suppressing at the source destroyed that metadata along with the warning.
+    ///
+    /// ORDINAL, matching the identity that decided what loaded: ids differing only in case
+    /// are two distinct widgets to <c>Rescan</c>, so a rejected "Foo" really is unavailable
+    /// even while "foo" works, and hiding its warning would leave a layout referencing
+    /// "Foo" with an unexplained empty tile.</summary>
+    private object RejectedCatalog()
     {
-        id = r.Id,
-        name = r.Name,
-        folder = r.Folder,
-        reason = r.Reason,
-    });
+        var loaded = new HashSet<string>(_library.Widgets.Select(w => w.Manifest.Id), StringComparer.Ordinal);
+        return _library.Rejected.Where(r => !loaded.Contains(r.Id)).Select(r => new
+        {
+            id = r.Id,
+            name = r.Name,
+            folder = r.Folder,
+            reason = r.Reason,
+        });
+    }
 
     /// <summary>Re-sends the palette and the refusal list after the watcher rescans.
     ///

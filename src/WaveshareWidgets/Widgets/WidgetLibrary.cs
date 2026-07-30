@@ -404,19 +404,26 @@ public sealed partial class WidgetLibrary : IDisposable
 
         Widgets = widgets.OrderBy(w => w.Manifest.Name, StringComparer.OrdinalIgnoreCase).ToList();
 
-        // Drop rejections for ids that ended up loading anyway. Refusals are recorded
-        // during the scan, before duplicate resolution, so a stale copy of a widget that
-        // violates the rule would otherwise report "not loaded — unavailable" while the
-        // good copy of the same id sits in the palette working fine. The log line stays
-        // (that folder IS being refused); only the user-facing claim is withdrawn.
-        // ORDINAL, matching the duplicate resolution above (`w.Manifest.Id == manifest.Id`).
-        // Ids differing only in case are two distinct widgets to that check, so both load —
-        // meaning a rejected "Foo" really is unavailable even while "foo" works, and
-        // suppressing its warning would leave a layout referencing "Foo" with an
-        // unexplained empty tile. The suppression must use the same notion of identity
-        // that decided what loaded, or it answers a different question than it asks.
-        var loadedIds = new HashSet<string>(widgets.Select(w => w.Manifest.Id), StringComparer.Ordinal);
-        Rejected = rejected.Where(r => !loadedIds.Contains(r.Id)).ToList();
+        // EVERY refusal is kept, including one whose id ended up loading from another
+        // folder. This list has two consumers and they need different things:
+        //
+        //   the banner  — must NOT warn about an id that is present anyway, or it sends
+        //                 the user hunting for a problem they do not have. That
+        //                 suppression is a presentation concern and now lives in
+        //                 SettingsWindow.RejectedCatalog, where it can be applied without
+        //                 destroying anything.
+        //   redaction   — needs the RedactNames of every refusal, precisely INCLUDING the
+        //                 shadowed ones. A layout can still hold a plaintext credential
+        //                 written while the refused copy was the active one, under a
+        //                 property name the accepted manifest does not call `secret`;
+        //                 dropping the record dropped the only metadata that would have
+        //                 masked it, and the settings window posted it to the WebView.
+        //
+        // Filtering here served the first and silently broke the second — one collection
+        // doing two jobs under the filter that suits only one of them.
+        Rejected = rejected;
+        // The count reports what the SCAN did, which is what a log line is for. The
+        // banner's suppressed subset is a UI question, not a fact about the folder.
         Log.Info($"Widget library: {Widgets.Count} widget(s) installed"
                + (Rejected.Count > 0 ? $", {Rejected.Count} refused" : ""));
     }

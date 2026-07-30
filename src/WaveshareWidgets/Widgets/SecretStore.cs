@@ -207,6 +207,40 @@ public static class SecretPolicy
             // Legacy plaintext (a property that used to be `text`) already reads as
             // itself; it gets encrypted the next time the layout is saved.
         });
+        ScrubUnrevealedEnvelopes(layout, lookup);
+    }
+
+    /// <summary>Blanks any ciphertext that <see cref="Reveal"/> did not walk.
+    ///
+    /// Reveal only visits properties the CURRENT manifest calls `secret`. A property
+    /// retyped `secret` → `text` therefore keeps whatever is stored — and what is stored
+    /// is an envelope, which was handed to the widget verbatim as the literal string
+    /// "dpapi:v1:…". The widget cannot tell that from a value and shows or transmits it.
+    ///
+    /// The invariant is worth stating independently of how it was reached: a widget must
+    /// never receive ciphertext. Whatever combination of manifest edits, hand-editing and
+    /// half-applied rescans produced it, an unrevealed envelope is not a value, and an
+    /// empty field is the honest rendering of one the host cannot open.</summary>
+    private static void ScrubUnrevealedEnvelopes(DashboardLayout layout, Func<string, WidgetManifest?> lookup)
+    {
+        foreach (var page in layout.Pages ?? [])
+        {
+            foreach (var slot in page.Slots ?? [])
+            {
+                if (string.IsNullOrEmpty(slot.WidgetId) || slot.Settings is null)
+                    continue;
+                // Declared secrets were just revealed in place; anything still shaped like
+                // an envelope there failed to decrypt and is equally unusable.
+                foreach (var (key, node) in slot.Settings.ToList())
+                {
+                    // Shape, not just the prefix — legacy plaintext that happens to start
+                    // with the marker is not base64 after it, and destroying a working
+                    // credential to tidy up would be the worse trade.
+                    if (AsString(node) is { } text && SecretStore.LooksLikeEnvelope(text))
+                        slot.Settings[key] = "";
+                }
+            }
+        }
     }
 
     /// <summary>Blanks every secret and records which ones are set AND readable here.

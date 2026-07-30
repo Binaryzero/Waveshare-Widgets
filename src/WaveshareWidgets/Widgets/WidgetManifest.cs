@@ -74,7 +74,17 @@ public sealed class WidgetManifest
             {
                 foreach (var field in fields)
                 {
-                    var key = field?["key"]?.GetValue<string>();
+                    // Pattern-match the MEMBER, not just the array. `fields: [1]` makes
+                    // `field["key"]` throw (you cannot index a JsonValue), and a numeric
+                    // `key` makes GetValue<string>() throw. Either one escaped to Rescan's
+                    // outer catch, which skips the widget WITHOUT recording a rejection —
+                    // so it vanished from the palette and from the banner that exists to
+                    // explain exactly that. A third-party manifest is not obliged to be
+                    // well-formed; refusing to parse it must not be indistinguishable
+                    // from refusing to admit it.
+                    if (field is not JsonObject fieldObject) continue;
+                    var key = fieldObject["key"] is JsonValue keyValue &&
+                        keyValue.TryGetValue<string>(out var keyText) ? keyText : null;
                     if (key is not null && CredentialNames.LooksLikeCredential(key))
                     {
                         error = $"list property '{p.Name}' has a field '{key}' that looks like a "

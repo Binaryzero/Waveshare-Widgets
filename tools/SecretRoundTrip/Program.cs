@@ -542,6 +542,64 @@ Check("P27e saving the masked layout keeps the credential rather than blanking i
 Check("P27f and it is now encrypted at rest, which the refusal alone never achieved",
     refusedAfter != Token && SecretStore.HasMarker(refusedAfter));
 
+// ---- P28 · #63 r8: a widget must never be handed ciphertext ---------------------------
+// Reveal walks only what the CURRENT manifest calls `secret`. A property retyped
+// `secret` -> `text` therefore keeps whatever is stored — and what is stored is an
+// envelope, delivered to the widget as the literal string "dpapi:v1:…". The widget
+// cannot tell that from a value: it renders it, or sends it somewhere.
+//
+// The invariant is worth holding independently of how it was reached, because manifest
+// edits, hand-editing and half-applied rescans can all produce it: an unrevealed envelope
+// is not a value, and an empty field is the honest rendering of one nothing can open.
+var demotedStored = LayoutWith(new JsonObject { ["apiToken"] = Token, ["repo"] = "owner/name" });
+SecretPolicy.Seal(demotedStored, null, Lookup);
+var demotedCipher = Value(demotedStored, "apiToken");
+Check("P28 setup: the credential is stored encrypted",
+    demotedCipher is not null && SecretStore.HasMarker(demotedCipher));
+
+// The author has since retyped the property. This is the manifest the DASHBOARD sees.
+var demotedManifest = new WidgetManifest
+{
+    Id = "test.widget",
+    Name = "Test",
+    Properties =
+    [
+        new WidgetProperty { Name = "apiToken", Label = "API token", Type = "text" },
+        new WidgetProperty { Name = "repo", Label = "Repo", Type = "text" },
+    ],
+};
+WidgetManifest? DemotedLookup(string id) => id == "test.widget" ? demotedManifest : null;
+
+var revealed28 = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(demotedStored))!;
+SecretPolicy.Reveal(revealed28, DemotedLookup);
+Check("P28b a retyped property does not hand the widget the envelope",
+    Value(revealed28, "apiToken") == "", Value(revealed28, "apiToken"));
+Check("P28c and it is emptied, not left as some other ciphertext",
+    !SecretStore.HasMarker(Value(revealed28, "apiToken")), Value(revealed28, "apiToken"));
+Check("P28d an ordinary setting beside it is untouched",
+    Value(revealed28, "repo") == "owner/name", Value(revealed28, "repo"));
+
+// The scrub must not undo Reveal's actual job.
+var revealed28e = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(demotedStored))!;
+SecretPolicy.Reveal(revealed28e, Lookup);
+Check("P28e a properly declared secret still reveals to its plaintext",
+    Value(revealed28e, "apiToken") == Token, Value(revealed28e, "apiToken"));
+
+// Legacy plaintext that merely STARTS with the marker is a real value — it is not base64
+// after the prefix, so it is not an envelope. Destroying it to tidy up would be the same
+// mistake as the migration branch in Seal deliberately avoids.
+var markerish = LayoutWith(new JsonObject { ["apiToken"] = "dpapi:v1:this-is-actually-my-password" });
+SecretPolicy.Reveal(markerish, DemotedLookup);
+Check("P28f legacy plaintext that only looks like a marker survives the scrub",
+    Value(markerish, "apiToken") == "dpapi:v1:this-is-actually-my-password", Value(markerish, "apiToken"));
+
+// A foreign envelope under a still-secret property already read as empty via Unprotect;
+// the scrub must not change that, and must not resurrect it either.
+var foreign28 = LayoutWith(new JsonObject { ["apiToken"] = ForeignEnvelope });
+SecretPolicy.Reveal(foreign28, Lookup);
+Check("P28g an unopenable envelope reads as empty under either manifest",
+    Value(foreign28, "apiToken") == "", Value(foreign28, "apiToken"));
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 
