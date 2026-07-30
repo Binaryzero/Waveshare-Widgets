@@ -246,6 +246,51 @@
     });
   }
 
+  /** Scales `el`'s font-size so its text fits a box, and returns the size used.
+   *
+   * Widgets run in an iframe sized to their slot, so `vh`/`vw` look like they measure
+   * the tile — but a rule written against ONE axis silently clips on the other. The
+   * clock sized its time on `34vh` alone: correct at full width, and in a 320x400
+   * quarter it asked for 136px glyphs across 320px of tile, so "09:11:52" came out as
+   * "9:11:5" with both ends cut off (#76). A fixed `vw` term is not the fix either,
+   * because the string length is a setting — 12/24-hour and seconds on/off swing it
+   * between five and ten characters — so any static guess is wrong for most of them.
+   *
+   * Measure instead. Text scales linearly with font-size, so one pass at a reference
+   * size gives the exact ratio. The caller supplies the box because only the widget
+   * knows its own layout (the clock must leave room for the date beneath).
+   *
+   * `el` must be shrink-to-fit — a block that stretches measures the container, not
+   * the text, and every ratio comes out as 1. A flex item under `align-items: center`
+   * qualifies; a plain `div` does not.
+   */
+  function fitText(el, opts) {
+    const o = opts || {};
+    const maxW = Math.max(0, Number(o.width) || 0);
+    const maxH = Math.max(0, Number(o.height) || 0);
+    if (!el || !maxW || !maxH || !el.textContent) return 0;
+    const REF = 100;
+    const prev = el.style.fontSize;
+    el.style.fontSize = REF + 'px';
+    // Sub-pixel: scrollWidth rounds to an integer, which at small sizes is a
+    // several-percent error and reads as a stray clipped pixel.
+    const rect = el.getBoundingClientRect();
+    if (!rect.width || !rect.height) { el.style.fontSize = prev; return 0; }
+    const scale = Number(o.scale);
+    const min = Number(o.min) || 6;
+    const max = Number(o.max) || 400;
+    // Cap the FIT first, then take the user's fraction of it. Scaling before the cap
+    // makes the slider inert wherever the raw fit exceeds `max`: a 400px-high slot fits
+    // the clock's date well above its 26px cap, so every fraction from 0.5 to 1 clamped
+    // back to 26 and the Date size control did nothing. Which is the exact complaint
+    // this widget's own size sliders are being fixed for.
+    const fitted = Math.min(max, REF * Math.min(maxW / rect.width, maxH / rect.height));
+    let size = fitted * (Number.isFinite(scale) && scale > 0 ? scale : 1);
+    size = Math.max(min, Math.min(max, size));
+    el.style.fontSize = size + 'px';
+    return size;
+  }
+
   const WW = {
     /** Injected values of the properties declared in manifest.json. */
     get settings() { return state.settings; },
@@ -257,6 +302,11 @@
     get status() { return state.status; },
     /** Design-token map ({'--surface': '#111314', ...}); applied to :root automatically. */
     get theme() { return state.theme; },
+
+    /** Scale an element's font-size to fit a box: WW.fitText(el, {width, height,
+     * scale, min, max}). Returns the px size applied. See the note above the
+     * implementation for why one-axis viewport units clip (#76). */
+    fitText,
 
     /** cb(state) — fires once settings/sensors are first delivered. */
     onInit(cb) { listeners.init.push(cb); if (state.ready) cb(state); },

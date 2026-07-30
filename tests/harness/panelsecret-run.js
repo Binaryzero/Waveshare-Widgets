@@ -57,6 +57,13 @@ const widgets = [{
     { name: 'fresh', label: 'Other token', type: 'secret' },
     { name: 'repo', label: 'Repository', type: 'text', default: 'owner/name' },
   ],
+}, {
+  // Declares half+full only, while N11's slot is STORED as quarter — a manifest that
+  // narrowed under an existing layout, which is what weather did in #77.
+  id: 'test.narrow', name: 'Narrow Only', author: 'WW',
+  url: `http://127.0.0.1:${PORT}/widgets/clock/index.html`,
+  supportedSlots: ['half', 'full'],
+  properties: [],
 }];
 
 (async () => {
@@ -67,13 +74,21 @@ const widgets = [{
 
   // The dashboard is handed DECRYPTED secrets — that is the whole reason the panel
   // field can be prefilled and the reason emptying it has to be disambiguated.
+  // A second tile whose STORED size its widget no longer allows — the state weather
+  // entered when it dropped `quarter` (#77). Its widget is declared in `widgets` below.
+  const narrowSlot = {
+    widgetId: 'test.narrow', size: 'quarter', instanceId: 'nar1', settings: {},
+  };
   const layout = { pages: [{ name: 'P', slots: [{
     // Deliberately ID-LESS: a layout written before instance ids existed. It is the case
     // #68 and #70 are both about, and it is what lets N10 tell whether the shell really
     // mints before saving — with an id already present, that check passes either way.
-    widgetId: 'test.gh', size: 'half',
+    // A QUARTER, so the page keeps room for the narrow tile to reach either half or
+    // three-quarter. With both reachable, N11 is decided by cycle ORDER; if only one
+    // fitted, the probe would pass whichever order the cycler used.
+    widgetId: 'test.gh', size: 'quarter',
     settings: { token: STORED_TOKEN, fresh: '', repo: 'binaryzero/waveshare-widgets' },
-  }] }] };
+  }, narrowSlot] }] };
 
   const saves = [];
   await page.exposeFunction('__hostRecv', async (json) => {
@@ -193,6 +208,25 @@ const widgets = [{
     /Could not save the credential/i.test(await notice.textContent() || ''),
     await notice.textContent().catch(() => '(absent)'));
 
+  // N7b · the notice must not eat the taps it is telling the user to make. It rides at
+  // z-index 90 for six seconds, bottom-centre — right where a tile's size and band chips
+  // are — over an edit overlay at z-index 3. It carries no controls, so it is inert;
+  // without that, the one banner that says "move or remove a widget first" is also the
+  // thing blocking you from doing it.
+  const hitTest = await page.evaluate(() => {
+    const el = document.getElementById('panelNotice');
+    if (!el) return { ok: false, why: 'no notice' };
+    const r = el.getBoundingClientRect();
+    const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return {
+      ok: at !== el && !el.contains(at),
+      why: at ? (at.id || at.className || at.tagName) : 'nothing',
+      visible: r.width > 0 && r.height > 0,
+    };
+  });
+  check('N7b the notice is visible but not hit-testable, so it cannot swallow the next tap',
+    hitTest.ok && hitTest.visible, `point resolves to: ${hitTest.why}`);
+
   // ---- N10 · identity flows back from the host, and why it is dormant (#70) ----------
   // SettingsWindow has handed minted instance ids back to its client since #15;
   // DashboardWindow dropped them, so host and shell could disagree about which slot is
@@ -237,6 +271,27 @@ const widgets = [{
     !JSON.stringify(lastSave()).includes('s-from-host') &&
     !JSON.stringify(lastSave()).includes('s-wrong-widget') &&
     !JSON.stringify(lastSave()).includes('s-out-of-range'));
+
+  // ---- N11 · cycling from a size the widget no longer allows (#77) -------------------
+  // `test.narrow` allows [half, full] — so allowedWidths gives [half, three-quarter,
+  // full] — while its slot is STORED as quarter. indexOf returns -1 for that, and
+  // clamping it to 0 made the first candidate whatever sat at index 0: three-quarter,
+  // vaulting past the adjacent half. Every size stayed reachable by cycling, so this is
+  // an ordering defect rather than the unreachability it first looked like.
+  //
+  // The page is a quarter plus this quarter, so BOTH half and three-quarter fit. That
+  // is what makes the probe discriminate: if only one fitted, either order would land
+  // on it and the check would pass regardless.
+  const narrowTile = page.locator('.slot').nth(1);
+  const beforeSizes = (lastSave() || {}).pages?.[0]?.slots?.map((s) => s.size);
+  await narrowTile.locator('.edit-overlay .size').click();
+  await wait(900);
+  const afterSizes = (lastSave() || {}).pages?.[0]?.slots?.map((s) => s.size);
+  check('N11 the tap changed the stored size, so there is something to judge',
+    JSON.stringify(beforeSizes) !== JSON.stringify(afterSizes) || beforeSizes === undefined,
+    `${JSON.stringify(beforeSizes)} -> ${JSON.stringify(afterSizes)}`);
+  check('N11b an unsupported stored size cycles to the NEXT size up, not past it',
+    afterSizes && afterSizes[1] === 'half', JSON.stringify(afterSizes));
 
   await browser.close();
   srv.close();

@@ -681,6 +681,12 @@ input.toggle-check:checked::after { transform: translateX(22px); }
   bottom: 14px;
   transform: translateX(-50%);
   z-index: 90;
+  /* Text only, and it rides above everything for six seconds — so it must not be
+   * hit-testable. It sits bottom-centre, exactly where a tile's size and band chips
+   * are, and the edit overlay is z-index 3: it would swallow the next tap precisely
+   * while telling the user to move a widget. It has no interactive children, so
+   * nothing is lost by making it inert. */
+  pointer-events: none;
   max-width: 78vw;
   padding: 9px 16px;
   border-radius: var(--radius-control, 8px);

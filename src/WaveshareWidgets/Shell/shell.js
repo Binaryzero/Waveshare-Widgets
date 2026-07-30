@@ -1259,6 +1259,29 @@
     return selfPlaced && othersKeep;
   }
 
+  /** Where to begin cycling, given the widths a widget allows and the one it is
+   * currently at. Normally that is simply the current width's index.
+   *
+   * A stored size can be one the widget no longer allows — a manifest narrows under an
+   * existing layout, which is exactly what weather did in dropping `quarter` (#77).
+   * `indexOf` returns -1 for those, and clamping that to 0 made the first candidate
+   * whatever happened to sit at index 0: from a stored `quarter` against
+   * [half, three-quarter, full] the first tap jumped to THREE-QUARTER, skipping past
+   * the adjacent half. Every size was still reachable by cycling — half came round
+   * last — but one tap on "next size" should not vault two sizes up.
+   *
+   * So an unsupported width starts where it WOULD sort, and the next candidate is the
+   * next size up from it. Returns -1 for a width below everything allowed, which the
+   * caller's `(start + k)` arithmetic handles because k begins at 1. */
+  function cycleStart(order, width) {
+    const here = order.indexOf(width);
+    if (here >= 0) return here;
+    const rank = WIDTH_ORDER.indexOf(width);
+    let i = 0;
+    while (i < order.length && WIDTH_ORDER.indexOf(order[i]) < rank) i++;
+    return i - 1;
+  }
+
   // The fit checks run INSIDE the mutation step: view transitions run steps
   // asynchronously, so a decision taken at tap time could be validated against a
   // page state an earlier queued mutation is about to change.
@@ -1267,7 +1290,7 @@
       const widget = widgetsById.get(record.def.widgetId);
       const { width, band } = sizeParts(record.def.size);
       const order = allowedWidths(widget);
-      const start = Math.max(0, order.indexOf(width));
+      const start = cycleStart(order, width);
       for (let k = 1; k <= order.length; k++) {
         const cand = order[(start + k) % order.length];
         if (cand === width) break;
@@ -1276,7 +1299,21 @@
           return;
         }
       }
+      // Nothing applied. Absorbing the tap is the worst answer on a touch strip: the
+      // user cannot tell whether it registered, whether the app is busy, or whether
+      // they missed (#77). The two reasons need different words, because only one of
+      // them is something they can do anything about.
+      explainNoSize(widget, order.length <= 1);
     });
+  }
+
+  /** Why a size change did nothing. `onlyOne` distinguishes "this widget has no other
+   * size" from "no room right now" — the first is permanent and the second is not. */
+  function explainNoSize(widget, onlyOne) {
+    const name = (widget && widget.name) || 'This widget';
+    showPanelNotice(onlyOne
+      ? name + ' has only one size.'
+      : 'No room on this page for another size — move or remove a widget first.');
   }
 
   function cycleBand(record, syncLabels) {
@@ -1291,6 +1328,9 @@
           return;
         }
       }
+      // Same rule as cycleWidth: a band change that cannot happen says so. There is
+      // always more than one band, so the only reason to be here is room.
+      explainNoSize(widgetsById.get(record.def.widgetId), false);
     });
   }
 

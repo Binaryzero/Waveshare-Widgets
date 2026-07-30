@@ -14,21 +14,27 @@
     justify-content: center;
     gap: 2vh;
   }
+  /* Both sizes are set by WW.fitText from script — the values here are only what
+   * shows for the frame before the first fit runs. Sizing either one in `vh` alone
+   * is what clipped the time in narrow slots (#76): height says nothing about how
+   * much width eight tabular digits need. */
   #time {
     color: var(--text);
-    font-size: calc(clamp(40px, 34vh, 160px) * var(--time-scale, 1));
+    font-size: 40px;
     font-weight: 200;
     line-height: 1;
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.02em;
+    white-space: nowrap;
   }
   #time small { font-size: 40%; color: var(--text-muted); font-weight: 200; }
   #date {
     color: var(--text-muted);
-    font-size: calc(clamp(12px, 6vh, 26px) * var(--date-scale, 1));
+    font-size: 12px;
     font-weight: 400;
     letter-spacing: 0.08em;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 </style>
 </head>
@@ -41,6 +47,14 @@
   'use strict';
   let hour12 = false;
   let showSeconds = true;
+  // Fractions of the fitted size, so 100% means "as large as the tile allows" and the
+  // slider can only make it smaller. The old sliders multiplied a viewport guess and
+  // could push the text straight back out of the tile, which is half of what #76 was.
+  // Anything stored above 100 clamps: someone who set 200 wanted it as big as possible,
+  // and that is what 100 now means.
+  let timeScale = 1;
+  let dateScale = 1;
+  const asFraction = (v) => Math.max(0.1, Math.min(1, (Number(v) || 100) / 100));
 
   WW.onInit((state) => {
     const s = state.settings;
@@ -52,8 +66,8 @@
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
     // Appearance comes from the theme tokens (global theme or the per-slot style
     // override) — legacy color keys in old layouts are deliberately ignored.
-    document.body.style.setProperty('--time-scale', (Number(s.timeSize) || 100) / 100);
-    document.body.style.setProperty('--date-scale', (Number(s.dateSize) || 100) / 100);
+    timeScale = asFraction(s.timeSize);
+    dateScale = asFraction(s.dateSize);
     hour12 = s.hour12 === 'on';
     showSeconds = s.showSeconds !== 'off';
     render();
@@ -80,10 +94,43 @@
     document.getElementById('date').textContent = now.toLocaleDateString(undefined, {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
     });
+    fit();
+  }
+
+  /* Fit both lines to the tile. The date goes first because it claims a share of the
+   * height and the time takes what is left — the other order lets a long weekday name
+   * ("Wednesday, September 30, 2026") shrink the time twice as the string changes.
+   * Called on every render because the widths move under us: seconds tick 09:59:59 to
+   * 10:00:00, and the date is a full word longer on some days than others. */
+  function fit() {
+    const timeEl = document.getElementById('time');
+    const dateEl = document.getElementById('date');
+    const box = document.body.getBoundingClientRect();
+    const styles = getComputedStyle(document.body);
+    const padX = parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight);
+    const padY = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+    const gap = parseFloat(styles.rowGap) || 0;
+    // A hair under the full width: tabular glyphs sit right up against the edge
+    // otherwise, and letter-spacing adds a trailing gap the measurement includes.
+    const availW = Math.max(0, box.width - padX) * 0.96;
+    const availH = Math.max(0, box.height - padY);
+    // The date gets at most a fifth of the height, so the time keeps the tile even in
+    // a short slot; on a wide one it is width that binds and this never applies.
+    WW.fitText(dateEl, { width: availW, height: availH * 0.2, scale: dateScale, max: 26 });
+    const dateH = dateEl.textContent ? dateEl.getBoundingClientRect().height : 0;
+    WW.fitText(timeEl, {
+      width: availW,
+      height: Math.max(0, availH - dateH - (dateH ? gap : 0)),
+      scale: timeScale,
+      max: 220,
+    });
   }
 
   render();
   setInterval(render, 250);
+  // The slot can be resized under a running widget (drag, or a size change on the
+  // panel) without the settings changing, so nothing else would re-fit.
+  if (window.ResizeObserver) new ResizeObserver(() => fit()).observe(document.body);
 </script>
 </body>
 </html>
