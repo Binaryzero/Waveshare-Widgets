@@ -68,7 +68,10 @@ const widgets = [{
   // The dashboard is handed DECRYPTED secrets — that is the whole reason the panel
   // field can be prefilled and the reason emptying it has to be disambiguated.
   const layout = { pages: [{ name: 'P', slots: [{
-    widgetId: 'test.gh', size: 'half', instanceId: 'gh1',
+    // Deliberately ID-LESS: a layout written before instance ids existed. It is the case
+    // #68 and #70 are both about, and it is what lets N10 tell whether the shell really
+    // mints before saving — with an id already present, that check passes either way.
+    widgetId: 'test.gh', size: 'half',
     settings: { token: STORED_TOKEN, fresh: '', repo: 'binaryzero/waveshare-widgets' },
   }] }] };
 
@@ -189,6 +192,42 @@ const widgets = [{
     await notice.count() === 1 && await notice.isVisible() &&
     /Could not save the credential/i.test(await notice.textContent() || ''),
     await notice.textContent().catch(() => '(absent)'));
+
+  // ---- N10 · identity flows back from the host, and why it is dormant (#70) ----------
+  // SettingsWindow has handed minted instance ids back to its client since #15;
+  // DashboardWindow dropped them, so host and shell could disagree about which slot is
+  // which. The handler now exists on both sides — but the reason it has never bitten is
+  // an INVARIANT nothing stated: persistLayout mints an id for every id-less def before
+  // posting, so the host's Stamp has nothing left to mint on this path.
+  //
+  // That invariant is what these two checks pin. If a future change stops the shell
+  // minting first, N10 fails here rather than in the field, and the adoption path N10b
+  // covers stops being dormant at exactly that moment.
+  const everySavedSlotHasId = saves.length > 0 && saves.every((s) =>
+    (s.pages || []).every((p) => (p.slots || []).every((slot) => !!slot.instanceId)));
+  check('N10 the shell mints before saving, so the host never has to (why #70 is dormant)',
+    everySavedSlotHasId, `${saves.length} saves inspected`);
+
+  // Tolerance only, and worth being honest about what it does NOT prove. While N10 holds,
+  // every def already carries an id by the time any ack could arrive, so the adoption
+  // branch is unreachable and its widgetId guard cannot be exercised from here — a probe
+  // claiming to test the guard would pass with the guard deleted. What this does check is
+  // that an ack the shell cannot apply is ignored rather than throwing or re-branding a
+  // slot that already has an identity, which is the state N10's invariant guarantees.
+  await page.evaluate(() => window.__hostPush(JSON.stringify({
+    type: 'minted-ids',
+    data: [{ page: 0, slot: 0, widgetId: 'test.gh', instanceId: 's-from-host' },
+           { page: 0, slot: 0, widgetId: 'other.widget', instanceId: 's-wrong-widget' },
+           { page: 9, slot: 9, widgetId: 'test.gh', instanceId: 's-out-of-range' }],
+  })));
+  await wait(250);
+  await page.locator('.slot').first().click();
+  await wait(400);
+  check('N10b an ack it cannot apply is ignored, not thrown on or written through',
+    await page.locator('.slot').count() > 0 &&
+    !JSON.stringify(saves).includes('s-from-host') &&
+    !JSON.stringify(saves).includes('s-wrong-widget') &&
+    !JSON.stringify(saves).includes('s-out-of-range'));
 
   await browser.close();
   srv.close();
