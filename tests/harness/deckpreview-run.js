@@ -18,7 +18,8 @@
 //        paints on a timer whether or not ww-init ever arrives, so a tile full of
 //        clock proves nothing about delivery
 //   D4 · every size the settings UI can select — widths AND bands — with and
-//        without a persisted instanceId
+//        without a persisted instanceId, checked at the SLOT as well as the widget:
+//        a hidden slot keeps a live iframe with all its keys
 //   D5 · a widget with no host at all still says so, so a delivery failure can
 //        never present as a blank tile
 'use strict';
@@ -198,11 +199,39 @@ const readDeck = (frame) => frame.evaluate(() => {
     /\d/.test(clockText), JSON.stringify(clockText));
 
   // ---- D4 · the matrix -------------------------------------------------------------
+  // The widget's key count alone is not enough. A slot the shell HIDES — relayoutPage
+  // hides anything that no longer fits — keeps its already-built iframe, which stays
+  // initialized and keeps all four keys. The widget would report a healthy tile while
+  // that size is absent from the preview entirely. So the shell-side slot is measured
+  // too: it must be displayed, and at the geometry its size token asks for.
+  const SLOT_W = { quarter: 320, half: 640, 'three-quarter': 960, full: 1280 };
+  const slotBoxes = await replica.evaluate(() => {
+    const out = {};
+    for (const el of document.querySelectorAll('.slot')) {
+      const f = el.querySelector('iframe');
+      const tag = f ? ((f.src.match(/ww-slot=([^&]*)/) || [])[1]) : null;
+      if (!tag) continue;
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      out[tag] = {
+        w: Math.round(r.width), h: Math.round(r.height),
+        shown: cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 0 && r.height > 0,
+      };
+    }
+    return out;
+  });
   let bad = [];
   MATRIX.forEach((c, i) => {
     const tag = c.withId ? 'm' + i : 'p' + (i + 1) + 's0';   // id-less slots tag by position
     const st = byTag.get(tag);
-    if (!st || st.keys !== 4) bad.push(`${c.size}/${c.withId ? 'id' : 'no-id'}=${st ? st.keys : 'missing'}`);
+    const box = slotBoxes[tag];
+    const label = `${c.size}/${c.withId ? 'id' : 'no-id'}`;
+    const width = SLOT_W[c.size.replace(/-(upper|lower)$/, '')];
+    const height = /-(upper|lower)$/.test(c.size) ? 200 : 400;
+    if (!st || st.keys !== 4) bad.push(`${label} keys=${st ? st.keys : 'missing'}`);
+    else if (!box || !box.shown) bad.push(`${label} slot-hidden`);
+    else if (Math.abs(box.w - width) > 2 || Math.abs(box.h - height) > 2)
+      bad.push(`${label} ${box.w}x${box.h} want ${width}x${height}`);
   });
   check('D4 the deck renders at every size the settings UI offers — widths, bands, '
       + 'and both with and without an instanceId',
