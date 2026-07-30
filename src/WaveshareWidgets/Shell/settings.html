@@ -38,11 +38,13 @@
     <div id="previewStage" class="interactive"><iframe id="previewFrame" title="Panel preview"></iframe></div>
   </section>
 
-  <main>
-    <!-- The WHOLE desktop chrome outside the preview is this one slim row: page
-         chips, this page's widget chips (selection fallback + hidden-widget
-         surface), and the three popover openers. Everything else happens ON the
-         preview or in the floating card it opens. -->
+  <!-- The DOCK (#79). Everything below the preview lives in one region that the
+       preview shrinks to make room for — it never floats over the canvas it is
+       configuring. Inside it, work reads left to right: the palette of widgets you
+       can add, then whatever is selected, then that thing's settings. -->
+  <main id="dock">
+    <!-- Page chips, this page's widget chips (selection fallback + hidden-widget
+         surface), and the theme/wallpaper openers. -->
     <nav id="toolbar" aria-label="Pages and widgets">
       <ul id="pageList"></ul>
       <button id="addPage" class="ghost chip-add">+ Add page</button>
@@ -54,10 +56,18 @@
       <button id="wallpaperBtn" class="ghost chip-add" title="Background behind widgets on every page">🖼 Wallpaper</button>
     </nav>
 
-    <!-- ONE floating card, opened by taps on the preview (widget config), the
-         replica's + zone (gallery) or the toolbar buttons. Never a permanent
-         panel: the preview is the interface, this is its transient inspector. -->
-    <section id="contextPanel" aria-label="Inspector">
+    <div id="dockBody">
+      <!-- Column 1: always present. The widget set is what you can put on the panel,
+           so it is a permanent shelf rather than something behind a button — you can
+           see what exists without going looking (#79). -->
+      <section id="dockPalette" aria-label="Widgets you can add">
+        <div class="panel-title">Widgets</div>
+        <div id="widgetGallery"></div>
+      </section>
+
+      <!-- Column 2+: whatever is selected. Docked, so it never covers the canvas it
+           is configuring — the preview above shrinks to make room instead. -->
+      <section id="contextPanel" aria-label="Inspector">
       <div id="panelHead">
         <span id="panelTitle"></span>
         <button id="panelClose" class="ghost" title="Close (Esc)">✕</button>
@@ -86,7 +96,6 @@
           </div>
         </section>
         <section id="paneWidget" class="pane" hidden>
-          <div id="widgetGallery" hidden></div>
           <div id="slotDetail"></div>
         </section>
         <section id="paneTheme" class="pane" hidden>
@@ -98,7 +107,8 @@
           <div id="globalBg" class="bg-editor"></div>
         </section>
       </div>
-    </section>
+      </section>
+    </div>
   </main>
 
   <div id="toast" hidden></div>

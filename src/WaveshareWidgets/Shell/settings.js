@@ -58,6 +58,10 @@
   let pendingBgPick = null;    // callback(source, kind) for the in-flight file dialog
   let sdProfileWaiters = [];   // callbacks awaiting an sd-profiles-result
   let galleryOpen = false;     // settings-side add-widget gallery (Widget tab)
+  // Which half of the widget inspector is showing. Module-level so it survives the
+  // re-render every edit triggers — resetting to Settings on each keystroke would
+  // throw the user out of Appearance mid-adjustment.
+  let slotSubTab = 'settings';
   let instanceSeq = 0;         // suffix for minted instanceIds (gallery adds)
 
   const el = (id) => document.getElementById(id);
@@ -98,20 +102,16 @@
     const widget = slot && widgetsById.get(slot.widgetId);
     return widget ? widget.name : 'Widget';
   }
-  // Float in the EMPTY region below the toolbar — never over the preview or the
-  // chip row. Clamped: at the 780×480 minimum a wrapped toolbar can reach the
-  // viewport bottom, and then the card overlaps chrome rather than leaving its
-  // controls unreachable below an overflow:hidden document. Re-run on every
-  // resize and toolbar reflow: a window shrink or a page with more chips must
-  // not leave a stale top under a grown toolbar.
+  // Keep the canvas and the dock in agreement about who has what height. Runs on
+  // every resize and toolbar reflow, because a window shrink or a page with more
+  // chips changes the dock's height and the preview has to give way or take up
+  // the slack.
   function positionPanel() {
-    const panel = el('contextPanel');
-    if (!panel.classList.contains('open')) return;
-    const top = Math.min(
-      Math.round(el('toolbar').getBoundingClientRect().bottom + 10),
-      Math.max(56, window.innerHeight - 220));
-    panel.style.top = top + 'px';
-    panel.style.maxHeight = 'calc(100vh - ' + (top + 16) + 'px)';
+    // The panel is docked (#79) — it no longer floats, so it has no top to place
+    // and no viewport-relative height to cap. What DOES need recomputing is the
+    // preview above it, because opening or closing the panel changes the dock's
+    // height and therefore the room the canvas has.
+    fitReplica();
   }
   window.addEventListener('resize', positionPanel);
   if (typeof ResizeObserver !== 'undefined')
@@ -658,9 +658,42 @@
   // the same clamp logic, just a taller ceiling (#32).
   function fitReplica() {
     const width = previewStage.clientWidth || 1;
-    const maxH = editMode
-      ? Math.max(200, Math.min(430, Math.round(window.innerHeight * 0.45)))
-      : Math.max(160, Math.min(320, Math.round(window.innerHeight * 0.3)));
+    // Measure what is actually LEFT, rather than guessing a share of the window.
+    // The dock is docked (#79): it takes the height it needs and the preview gets
+    // the remainder, so a percentage-of-window cap would either leave a gap under
+    // the canvas or let the dock push it off the top. Everything above the stage
+    // plus the whole dock is subtracted; the floor keeps the strip usable if the
+    // dock ever grows past the window.
+    const dockEl = el('dock');
+    // Everything the canvas and the dock have to share. stageTop is the header, the
+    // rejected-widgets banner and the preview bar — none of which move when either of
+    // those two heights changes, so this is a stable input rather than a term that
+    // shifts under the arithmetic below.
+    const stageTop = previewStage.getBoundingClientRect().top;
+    const available = Math.max(0, Math.round(window.innerHeight - stageTop - 12));
+    if (dockEl) {
+      // ONE viewport-derived cap for the whole dock. The toolbar's 38vh and the dock
+      // body's 46vh are independent allowances that ADD UP: enough page and widget
+      // chips to fill the toolbar, plus a dock body with a populated inspector, is
+      // 84vh of fixed-height region before the header and preview bar are counted at
+      // all. At 480px that overflows the window on its own, and shrinking the canvas
+      // cannot recover it — there is nothing left to give. Bounded here, the columns
+      // scroll internally (every one of them is overflow:auto already) instead of
+      // hanging past the bottom edge of a document that cannot scroll.
+      // No circularity: `available` does not depend on the dock's height, so setting
+      // this cap cannot move the number that produced it.
+      dockEl.style.maxHeight = Math.max(0, available - Math.min(60, available)) + 'px';
+    }
+    const dockH = dockEl ? dockEl.getBoundingClientRect().height : 0;
+    const room = available - Math.round(dockH);
+    const ceiling = editMode ? 430 : 320;
+    // The floor yields to the room. An unconditional 160 forces a stage taller than
+    // what is left at the supported 780x480 minimum, where the toolbar plus the dock's
+    // allowance can leave less than that — and since both regions are flex:none in an
+    // overflow:hidden body, the dock is pushed past the viewport and its lower controls
+    // are unreachable. A cramped canvas is recoverable by resizing the window; controls
+    // clipped off the bottom of a document that cannot scroll are not.
+    const maxH = Math.max(Math.min(160, Math.max(0, room)), Math.min(ceiling, room));
     const scale = Math.min(width / 1280, maxH / 400, 1);
     previewFrame.style.transform = 'scale(' + scale + ')';
     previewFrame.style.marginLeft = Math.max(0, Math.round((width - 1280 * scale) / 2)) + 'px';
@@ -668,6 +701,14 @@
   }
   new ResizeObserver(fitReplica).observe(previewStage);
   window.addEventListener('resize', fitReplica); // stage width alone misses height-only resizes
+  // The DOCK's height is now an input to the fit, so it has to be watched too. It grows
+  // without the window, the toolbar or the stage changing at all: settings-init fills
+  // the palette, and switching widgets swaps inspector content of a different height.
+  // Watching only the stage left the old dock height in the calculation, and with both
+  // regions flex:none inside an overflow:hidden body the dock's lower controls stayed
+  // clipped until some unrelated resize happened to refit.
+  if (typeof ResizeObserver !== 'undefined' && el('dock'))
+    new ResizeObserver(fitReplica).observe(el('dock'));
 
   // A dead preview must say so, not sit there as a black slab: if the shell never
   // reports ready, surface it where the user is looking (#27 companion diagnostic).
@@ -931,7 +972,11 @@
     const hasPage = !!page;
     el('editorEmpty').hidden = hasPage;
     el('pageHeader').style.display = hasPage ? 'flex' : 'none';
-    el('addSlot').style.display = hasPage ? 'block' : 'none';
+    // The palette shelf replaced this opener (#79) — the widget set is permanently
+    // on screen, so a button whose job was to reveal it has nothing left to do.
+    // Setting `display` here rather than `hidden` is why an earlier `hidden = true`
+    // did not stick: this runs on every panel render and put it straight back.
+    el('addSlot').style.display = 'none';
     el('pageBgWrap').style.display = hasPage ? 'block' : 'none';
     el('slotList').textContent = '';
     el('slotDetail').textContent = '';
@@ -1000,13 +1045,28 @@
   // "+ Add widget" button (toggle: second click closes) or from the replica's
   // "+" zone (the shell bounces that tap up as an add-widget message).
 
+  // The palette is permanently on the shelf now (#79), so "open the gallery" no
+  // longer means reveal it — there is nothing to reveal. It means DRAW ATTENTION
+  // to it, because the request still arrives from the replica's "+" zone and that
+  // tap has to land somewhere the user can see. galleryOpen stays false so the
+  // detail pane is never displaced by a picker that is already on screen.
   function openGallery() {
-    galleryOpen = true;
-    openPanel('widget');
+    const shelf = el('dockPalette');
+    if (!shelf) return;
+    // Re-render BEFORE flashing. The shelf's buttons close over the page they were
+    // built for, and an add-widget message can name a different one — tapping the old
+    // page's "+" during the preview's page transition moves selectedPage, and a shelf
+    // still bound to the previous page would add the widget there and then open details
+    // for an unrelated slot. Flashing something stale is worse than not flashing.
     renderEditorPanel();
+    shelf.scrollIntoView({ block: 'nearest' });
+    shelf.classList.remove('flash');
+    void shelf.offsetWidth;              // restart the animation on repeat taps
+    shelf.classList.add('flash');
   }
 
   function closeGallery() {
+    if (!galleryOpen) return;
     galleryOpen = false;
     renderEditorPanel();
   }
@@ -1036,11 +1096,13 @@
 
   function renderWidgetGallery(page) {
     const wrap = el('widgetGallery');
-    const open = galleryOpen && !!page;
+    // The palette is a permanent shelf now (#79): it lives in its own dock column
+    // and is drawn whenever there is a page to add to, rather than being toggled
+    // behind "+ Add widget". Seeing what exists is how you find out what exists —
+    // it was the one thing in the iCUE reference that is never hidden.
+    const open = !!page;
     wrap.hidden = !open;
-    el('addSlot').classList.toggle('open', open);
-    el('addSlot').textContent = open ? '✕ Close' : '+ Add widget';
-    el('slotDetail').style.display = open ? 'none' : '';
+    el('slotDetail').style.display = '';
     wrap.textContent = '';
     if (!open) return;
     for (const widget of state.widgets) {
@@ -1277,7 +1339,32 @@
       iconButton('✕', 'Remove', () => removeSlotAt(page, index), true));
     card.appendChild(row);
 
-    card.appendChild(renderSlotStyle(slot));
+    // Two tabs, settings FIRST. What a widget DOES is configured far more often than
+    // how it looks, and the theme overrides are an escape hatch from the global theme
+    // rather than part of setting the widget up — they were sitting above the controls
+    // people actually came for, pushing them below the fold.
+    const tabs = document.createElement('div');
+    tabs.className = 'slot-tabs';
+    const propsWrap = document.createElement('div');
+    const styleWrap = document.createElement('div');
+    const syncSubTab = () => {
+      propsWrap.hidden = slotSubTab !== 'settings';
+      styleWrap.hidden = slotSubTab !== 'appearance';
+      [...tabs.children].forEach((b) => b.classList.toggle('on', b.dataset.tab === slotSubTab));
+    };
+    for (const [key, label] of [['settings', 'Settings'], ['appearance', 'Appearance']]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'slot-tab';
+      b.dataset.tab = key;
+      b.textContent = label;
+      b.onclick = () => { slotSubTab = key; syncSubTab(); };
+      tabs.appendChild(b);
+    }
+    card.appendChild(tabs);
+    card.appendChild(propsWrap);
+    card.appendChild(styleWrap);
+    styleWrap.appendChild(renderSlotStyle(slot));
 
     // property editors, sectioned by group where the widget declares them
     if (widget && widget.properties && widget.properties.length) {
@@ -1313,8 +1400,15 @@
         field.append(label, editor);
         grid.appendChild(field);
       }
-      card.appendChild(grid);
+      propsWrap.appendChild(grid);
     }
+    if (!propsWrap.childNodes.length) {
+      const none = document.createElement('p');
+      none.className = 'panel-hint';
+      none.textContent = 'This widget has no settings of its own — use Appearance to restyle it.';
+      propsWrap.appendChild(none);
+    }
+    syncSubTab();
     return card;
   }
 

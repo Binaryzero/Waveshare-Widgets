@@ -557,22 +557,75 @@ header h1 #appVersion {
 #toolbar #slotList { display: flex; gap: 6px; flex-wrap: wrap; }
 #tabBar { display: none !important; }
 
+/* ---- the dock (#79) ----------------------------------------------------------
+ * The config region is DOCKED across the bottom, not floated over the canvas. The
+ * preview above is the flexible row and shrinks to make room, so the thing being
+ * configured is never hidden by the thing configuring it — the complaint that
+ * opened #79, and the reason this is a layout change rather than a restyle.
+ *
+ * Work reads left to right: the palette of widgets you can add, then whatever is
+ * selected, then that thing's settings. */
+#dock {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--line);
+  background: var(--surface, #14171c);
+}
+#dockBody {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-height: 0;
+  /* The dock owns a bounded share of the window. Past this the columns scroll
+   * internally rather than pushing the preview off the top. */
+  max-height: min(46vh, 460px);
+}
+#dockPalette {
+  flex: 0 0 auto;
+  width: 232px;
+  min-width: 0;
+  padding: 12px 14px 14px;
+  border-right: 1px solid var(--line);
+  overflow: auto;
+}
+#dockPalette .panel-title { margin-bottom: 8px; }
+
+/* Settings | Appearance. What a widget DOES is configured far more often than how it
+ * looks, and the theme overrides are an escape hatch from the global theme rather
+ * than part of setting a widget up — inline above the properties they pushed the
+ * controls people came for below the fold. */
+.slot-tabs { display: inline-flex; gap: 4px; margin: 2px 0 12px; padding: 3px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 9px; }
+.slot-tab { border: 0; background: transparent; color: var(--muted);
+  padding: 5px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.slot-tab:hover { color: var(--text); }
+.slot-tab.on { background: var(--accent); color: #04121a; font-weight: 600; }
+/* The replica's "+" zone still asks for "the gallery". It is already on screen, so
+ * the answer is a nudge rather than a reveal — silence would read as a dead tap,
+ * which is the same failure #77 was about. */
+#dockPalette.flash { animation: shelf-flash 620ms ease-out; }
+@keyframes shelf-flash {
+  0% { background: color-mix(in srgb, var(--accent, #00d4ff) 26%, transparent); }
+  100% { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #dockPalette.flash { animation: none; outline: 2px solid var(--accent, #00d4ff); }
+}
+
 #contextPanel {
   display: none;
-  position: fixed;
-  right: 24px;
-  width: min(600px, calc(100vw - 48px));
-  max-height: min(74vh, 760px);
-  z-index: 40;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
   padding: 0;
-  background: var(--surface, #14171c);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 14px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
-  overflow: hidden;
   flex-direction: column;
 }
 #contextPanel.open { display: flex; }
+/* Nothing selected: the palette still stands on its own, so the dock does not
+ * collapse to a bare strip and the widget set stays visible. */
+#contextPanel:not(.open) + #dockEmpty { display: block; }
 #panelHead {
   display: flex;
   align-items: center;
@@ -585,8 +638,29 @@ header h1 #appVersion {
 #panelTitle { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; }
 #contextBody { overflow: auto; padding: 12px 16px 16px; min-height: 0; }
 
-/* Toasts outrank the floating inspector (z 40): save failures and operation
- * results must never hide behind an open card. */
+/* Columns, not one tall scrolling box. The panes lay their groups out across the
+ * dock's width so a widget's settings, its appearance and its background sit side
+ * by side — the clipped inner scrollbar in #79's screenshot was a symptom of
+ * queueing them vertically inside a fixed-height card. Groups keep their own
+ * width and wrap; only the dock scrolls, and only when it genuinely overflows. */
+#contextBody .pane:not([hidden]) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0 26px;
+}
+/* `:not([hidden])` is load-bearing, not decoration. A bare `.pane { display:flex }`
+ * outranks the UA sheet's `[hidden] { display:none }`, so every pane renders at
+ * once and the page's controls stack under the selected widget's. */
+#contextBody .pane[hidden] { display: none; }
+#contextBody .pane > * { flex: 1 1 260px; min-width: 0; }
+/* Full-width rows inside a pane: a header spanning the columns reads as a header,
+ * not as a first column. */
+#contextBody #pageHeader,
+#contextBody .pane > .panel-hint { flex: 1 1 100%; }
+
+/* Toasts outrank everything in the dock: save failures and operation results must
+ * never hide behind it. */
 #toast { z-index: 60; }
 
 /* Secret (credential) field: masked input + reveal/clear + a state word that tells
