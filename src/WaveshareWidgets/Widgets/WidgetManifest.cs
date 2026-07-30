@@ -140,7 +140,22 @@ public sealed class WidgetManifest
 /// through untouched, and tools/ManifestRoundTrip in CI fails the build on any loss.</summary>
 public sealed class WidgetProperty
 {
-    [JsonPropertyName("name")] public string Name { get; set; } = "";
+    /// <summary>Never null, whatever the manifest says. A third-party manifest may contain
+    /// <c>"name": null</c> — the property is declared as non-nullable, but the deserializer
+    /// does not enforce that, so the null reaches every consumer that assumed otherwise. It
+    /// used to be keyed into the settings window's property index and throw
+    /// <see cref="ArgumentNullException"/> from inside an invoked UI delegate, where the
+    /// surrounding catch cannot see it and the whole window goes down with it. A nameless
+    /// property is meaningless — nothing can address it — so it becomes the empty name and
+    /// is skipped by everything that walks the list, rather than being a landmine.</summary>
+    [JsonPropertyName("name")]
+    public string Name
+    {
+        get => _name;
+        set => _name = value ?? "";
+    }
+    private string _name = "";
+
     [JsonPropertyName("label")] public string Label { get; set; } = "";
 
     /// <summary>Normalized to lowercase on the way in, because the host and the settings

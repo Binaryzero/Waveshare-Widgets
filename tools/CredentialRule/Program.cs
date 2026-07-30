@@ -228,6 +228,36 @@ var dupes = ManifestWith(
     new WidgetProperty { Name = "apiToken", Type = "secret" });
 Check("C9g repeated names collapse", dupes.CredentialPropertyNames().Count == 1);
 
+// ---- C10 · a nameless property is inert, not a landmine ------------------------------
+// `"name": null` is legal JSON against a non-nullable property — the deserializer does not
+// enforce the annotation. The null then reaches every consumer that assumed otherwise; in
+// the settings window it was keyed into a Dictionary and threw ArgumentNullException from
+// inside an invoked UI delegate, taking the window down. Normalizing at the source is what
+// stops each consumer having to remember.
+var nulled = JsonSerializer.Deserialize<WidgetProperty>("""{"name":null,"type":"text"}""")!;
+Check("C10 a null name deserializes to the empty name, never to null", nulled.Name == "", nulled.Name ?? "(null)");
+Check("C10b assigning null directly is normalized too",
+    new WidgetProperty { Name = null! }.Name == "");
+var namelessManifest = ManifestWith(
+    new WidgetProperty { Name = null!, Type = "text" },
+    new WidgetProperty { Name = "apiToken", Type = "secret" });
+Check("C10c a nameless property does not break the credential check",
+    namelessManifest.CredentialsAreTyped(out var c10Error), c10Error);
+Check("C10d and is left out of the redaction set — nothing can address it",
+    namelessManifest.CredentialPropertyNames() is ["apiToken"],
+    string.Join(", ", namelessManifest.CredentialPropertyNames()));
+
+// ---- C11 · property names are ORDINAL, like the settings keys they address ------------
+// SecretPolicy.SecretNames is an ordinal set and settings are JSON object keys, so
+// `apiToken` and `ApiToken` are two different settings. Anything that folds them together
+// loses one of the two — and the one it loses is a credential.
+var caseDistinct = ManifestWith(
+    new WidgetProperty { Name = "apiToken", Type = "secret" },
+    new WidgetProperty { Name = "ApiToken", Type = "secret" });
+Check("C11 two names differing only in case are two properties, not one",
+    caseDistinct.CredentialPropertyNames().Count == 2,
+    string.Join(", ", caseDistinct.CredentialPropertyNames()));
+
 // ---- C4 · the identity checks still work --------------------------------------------
 // CredentialsAreTyped is deliberately separate from IsValid (iCUE widgets have no
 // properties at IsValid time), so confirm neither swallowed the other's job.

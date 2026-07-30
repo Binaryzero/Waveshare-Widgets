@@ -254,9 +254,16 @@ public sealed class SettingsWindow : Form
         catch (ObjectDisposedException) { /* window closed */ }
     }
 
-    /// <summary>Manifest lookup for the secret pipeline (which properties are credentials).</summary>
+    /// <summary>Manifest lookup for the secret pipeline (which properties are credentials).
+    ///
+    /// ORDINAL, because that is the identity the library itself uses: <c>Rescan</c> resolves
+    /// duplicates with an ordinal compare, so 'Foo' and 'foo' are two distinct widgets that
+    /// both load. A case-insensitive lookup here answers a question the library never asked —
+    /// it hands a refused 'Foo' the manifest of an unrelated 'foo', and Mask then blanks that
+    /// widget's secret names instead of this one's, posting the credential 'Foo' was refused
+    /// over to the editor untouched.</summary>
     private WidgetManifest? ManifestFor(string widgetId) =>
-        _library.Widgets.FirstOrDefault(w => string.Equals(w.Manifest.Id, widgetId, StringComparison.OrdinalIgnoreCase))?.Manifest;
+        _library.Widgets.FirstOrDefault(w => string.Equals(w.Manifest.Id, widgetId, StringComparison.Ordinal))?.Manifest;
 
     /// <summary>The manifests that produced the CURRENTLY masked payload. Save must seal
     /// against these, not against whatever the library holds by then: if a widget is
@@ -278,7 +285,8 @@ public sealed class SettingsWindow : Form
     /// manifests that produced the MASKED LAYOUT the editor is holding, not the palette.</summary>
     private void SnapshotManifests()
     {
-        var snapshot = new Dictionary<string, WidgetManifest>(StringComparer.OrdinalIgnoreCase);
+        // Ordinal — the library's own notion of widget identity. See ManifestFor.
+        var snapshot = new Dictionary<string, WidgetManifest>(StringComparer.Ordinal);
         foreach (var w in _library.Widgets)
             snapshot[w.Manifest.Id] = w.Manifest;
         AddRedactionManifests(snapshot);
@@ -299,12 +307,13 @@ public sealed class SettingsWindow : Form
         {
             if (string.IsNullOrEmpty(r.Id) || r.RedactNames.Count == 0)
                 continue;
-            // TryAdd, never overwrite. Two ids differing only in case are two distinct
-            // widgets to the library (Rescan resolves duplicates with an ordinal compare),
-            // so a rejected 'Foo' can coexist with a loaded 'foo' — while this dictionary
-            // is OrdinalIgnoreCase. A plain assignment would let the refused widget's
-            // stand-in displace the real manifest of the one that loaded, which would
-            // unmask its secrets on the way out AND blank them on the way back in.
+            // TryAdd, never overwrite: a real manifest always outranks a stand-in built
+            // from a refusal. With the snapshot keyed ordinally this can no longer collide
+            // by case — a rejected 'Foo' and a loaded 'foo' are separate entries, which is
+            // the whole point, since they are separate widgets to the library. The guard
+            // stays because the ordering here (real manifests first, stand-ins second) is
+            // the only thing that makes overwriting impossible, and that is a property of
+            // the caller, not of this loop.
             snapshot.TryAdd(r.Id, WidgetManifest.RedactionOnly(r.Id, r.Name, r.RedactNames));
         }
     }
@@ -352,11 +361,25 @@ public sealed class SettingsWindow : Form
             // treats it as ordinary text and writes the credential out in the clear.
             // Erring toward secret is the safe direction: the worst case is carrying a
             // value through the cipher that did not need it.
+            //
+            // ORDINAL, matching the only comparer that decides anything downstream: setting
+            // keys are JSON object keys and SecretPolicy.SecretNames is an ordinal set. A
+            // case-insensitive index collapses `apiToken` and `ApiToken` into one entry, so a
+            // reload that renames a secret by case alone leaves the NEW name out of the union
+            // — the editor renders and accepts it while Seal, walking ordinal names, seals
+            // only the old one and writes the credential to layout.json in the clear.
             var union = new List<WidgetProperty>(masked.Properties);
-            var byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            for (var i = 0; i < union.Count; i++) byName[union[i].Name] = i;
+            var byName = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (var i = 0; i < union.Count; i++)
+                if (!string.IsNullOrEmpty(union[i].Name)) byName[union[i].Name] = i;
             foreach (var p in w.Manifest.Properties)
             {
+                // A nameless property cannot be addressed by anything — not the editor, not
+                // a settings key, not Seal. `"name": null` in a third-party manifest used to
+                // reach the index and throw ArgumentNullException from inside the invoked UI
+                // delegate, where the BeginInvoke catch cannot see it and the whole settings
+                // window goes down. There is nothing to merge, so there is nothing to do.
+                if (string.IsNullOrEmpty(p.Name)) continue;
                 if (!byName.TryGetValue(p.Name, out var at)) { byName[p.Name] = union.Count; union.Add(p); continue; }
                 if (p.Type == "secret" && union[at].Type != "secret") union[at] = p;
             }
