@@ -53,6 +53,19 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   that fits by being tiny is not a fit. Also covers re-fitting when the slot resizes
   with no settings change, and that the size sliders can only shrink. Routes are
   fulfilled in-process — no ports.
+- `deckpreview-run.js` — the settings LIVE PREVIEW, which nothing else here reaches
+  (issue #78, the third time the Control Deck has come back empty after #43 and #49).
+  Every other suite drives the shell directly with a stubbed `chrome.webview`; the
+  preview replica is a second shell instance inside an iframe of the settings page,
+  relaying over `window.parent.postMessage`. This one boots the real `settings.html`,
+  lets it drive the real replica, and serves each widget from its own virtual host —
+  cross-origin to the shell, as the WebView2 mapping does — so a widget that fails
+  only in the preview is visible. The deck is the probe subject because it paints
+  ONLY from `ww-init`: the clock paints on a 250 ms timer regardless, so a preview
+  full of clock says nothing about whether delivery works. Covers every supported
+  size with and without a persisted `instanceId`, and pins the waiting stamp
+  (`html[data-ww-waiting]` → "waiting for panel data…"), which is the only thing
+  keeping a delivery failure from presenting as a blank tile. Port used: 8954.
 - `icuefetch-run.js` — the fetch-escalation contract shared by `widget-api.js`
   (`WW.fetch`) and the iCUE compat shim (issue #37): headers of every
   `HeadersInit` shape surviving the proxy hop (repeats combining like native
