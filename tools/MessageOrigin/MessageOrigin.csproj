@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CI guard for the web-message origin check (issue #72).
+
+       The check is one line at each of two call sites, and the interesting part is the
+       predicate: it has to reject every widget frame while never rejecting the shell.
+       Getting it wrong in the second direction fails CLOSED and SILENTLY — every message
+       dropped, the app apparently dead, nothing in the log but one warning — and WebView2
+       cannot be exercised on the Linux CI host or on the maintainer's device. So the
+       predicate is a pure function and this probe covers it exhaustively; only the
+       wiring is left to inspection. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>MessageOriginProbe</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/WaveshareWidgets/MessageOrigin.cs" />
+    <!-- The rejection is logged through SafeUrl, so the probe checks that too: a
+         rejected origin must not put a full URL into app.log (#59). -->
+    <Compile Include="../../src/WaveshareWidgets/SafeUrl.cs" />
+  </ItemGroup>
+</Project>

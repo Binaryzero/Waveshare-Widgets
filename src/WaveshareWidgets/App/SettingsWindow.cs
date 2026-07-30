@@ -103,8 +103,24 @@ public sealed class SettingsWindow : Form
         }
     }
 
+    /// <summary>Origins already reported as rejected, keyed on the REDACTED form — the
+    /// same string the warning prints, which is the only key that makes a duplicate line
+    /// impossible. See the matching field on DashboardWindow for why the raw source is
+    /// not equivalent.</summary>
+    private readonly HashSet<string> _rejectedOrigins = new(StringComparer.OrdinalIgnoreCase);
+
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
+        // Who sent this, before what it says (#72). This window matters as much as the
+        // dashboard: its preview replica hosts REAL widget iframes, and its handler saves
+        // layouts and installs packages.
+        if (!MessageOrigin.IsShell(e.Source, ShellHost))
+        {
+            var origin = SafeUrl.Describe(e.Source);
+            if (_rejectedOrigins.Add(origin))
+                Log.Warn($"Ignored a settings message from an unexpected origin: {origin}");
+            return;
+        }
         try
         {
             var message = JsonNode.Parse(e.WebMessageAsJson);
