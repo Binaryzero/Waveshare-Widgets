@@ -51,39 +51,44 @@ const TOKEN = 'Bearer super-secret-probe-token';
   let respond = () => ({ status: 200, body: '{}' });
   const seen = [];
 
-  await page.route('https://app.wsw/**', (route) => {
-    const file = path.join(SHELL, new URL(route.request().url()).pathname);
-    if (fs.existsSync(file)) return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
-    return route.fulfill({ status: 404, body: '' });
-  });
-  await page.route('https://widget.test/**', (route) => {
-    const rel = decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\//, '') || 'index.html';
-    const file = path.join(WIDGET, rel);
-    if (file.startsWith(WIDGET) && fs.existsSync(file) && fs.statSync(file).isFile())
-      return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
-    return route.fulfill({ status: 404, body: '' });
-  });
-  await page.route('https://api.test/**', async (route) => {
-    const url = route.request().url();
-    seen.push({ url: url, headers: route.request().headers() });
-    const r = respond(url);
-    // A slow endpoint, so a probe can retarget the tile while a request is still out.
-    if (r.delayMs) await wait(r.delayMs);
-    if (r.abort) return route.abort();
-    return route.fulfill({ status: r.status, contentType: r.contentType || 'application/json', body: r.body });
-  });
-  await page.route(/https?:\/\/(?!app\.wsw|widget\.test|api\.test).*/, (route) => route.abort());
-
-  await page.addInitScript(shim);
-  // WW.fetch escalates to the host proxy when the browser request fails. Without a
-  // host answering that message the promise never settles — which is exactly how the
-  // first run of this suite wedged the widget, and why it now has a timeout.
-  await page.addInitScript(() => {
-    window.addEventListener('message', (ev) => {
-      const m = ev.data || {};
-      if (m.type === 'ww-fetch') window.postMessage({ type: 'ww-fetch-result', id: m.id, error: 'host offline in probe' }, '*');
+  // Shared by every page the suite opens — R11 needs a second one with a fake clock.
+  async function prepare(p) {
+    await p.route('https://app.wsw/**', (route) => {
+      const file = path.join(SHELL, new URL(route.request().url()).pathname);
+      if (fs.existsSync(file)) return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
+      return route.fulfill({ status: 404, body: '' });
     });
-  });
+    await p.route('https://widget.test/**', (route) => {
+      const rel = decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\//, '') || 'index.html';
+      const file = path.join(WIDGET, rel);
+      if (file.startsWith(WIDGET) && fs.existsSync(file) && fs.statSync(file).isFile())
+        return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
+      return route.fulfill({ status: 404, body: '' });
+    });
+    await p.route('https://api.test/**', async (route) => {
+      const url = route.request().url();
+      seen.push({ url: url, headers: route.request().headers() });
+      const r = respond(url);
+      // A slow endpoint, so a probe can retarget the tile while a request is still out.
+      if (r.delayMs) await wait(r.delayMs);
+      if (r.abort) return route.abort();
+      return route.fulfill({ status: r.status, contentType: r.contentType || 'application/json', body: r.body });
+    });
+    await p.route(/https?:\/\/(?!app\.wsw|widget\.test|api\.test).*/, (route) => route.abort());
+
+    await p.addInitScript(shim);
+    // WW.fetch escalates to the host proxy when the browser request fails. Without a
+    // host answering that message the promise never settles — which is exactly how the
+    // first run of this suite wedged the widget, and why it now has a timeout.
+    await p.addInitScript(() => {
+      window.addEventListener('message', (ev) => {
+        const m = ev.data || {};
+        if (m.type === 'ww-fetch') window.postMessage({ type: 'ww-fetch-result', id: m.id, error: 'host offline in probe' }, '*');
+      });
+    });
+  }
+
+  await prepare(page);
   await page.goto('https://widget.test/index.html');
 
   // `game` mirrors what the host puts in a real ww-init: the CURRENT game state, not
@@ -272,29 +277,38 @@ const TOKEN = 'Bearer super-secret-probe-token';
   check('R10b tapping Retry polls immediately and clears the backoff',
     seen.length >= 1 && (await read()).value === '3', `${seen.length} request(s)`);
 
-  // ---- R11 · the age label refreshes between polls ---------------------------------
-  // With a long interval the footer would otherwise claim "0s ago" until the next
-  // request — up to 24 h at the supported maximum.
+  // ---- R11 · the age label ADVANCES between polls -----------------------------------
+  // Needs a controlled clock. The ticker runs every 30 s against a 24 h poll interval,
+  // so real time cannot show the difference inside a test — and the previous version of
+  // this probe fired `visibilitychange`, which starts a poll, so it re-rendered from a
+  // fresh reading rather than exercising the ticker at all. It also only asserted that
+  // both strings ended in "ago", which a permanently frozen "0s ago" satisfies.
+  // Own page: a fake clock would break every real-time wait elsewhere in the suite.
+  const clockPage = await browser.newPage({ viewport: { width: 640, height: 400 } });
+  clockPage.on('pageerror', (e) => { failures++; console.log('[pageerror:clock]', String(e).slice(0, 300)); });
+  await clockPage.clock.install();
+  await prepare(clockPage);
+  await clockPage.goto('https://widget.test/index.html');
+
   respond = () => ({ status: 200, body: JSON.stringify({ v: 1 }) });
-  await init(Object.assign({}, base, { url: 'https://api.test/slow', jsonPointer: '/v', pollSeconds: 86400 }));
-  await wait(500);
-  const ageAtStart = await page.evaluate(() => document.getElementById('meta').textContent);
-  // The ticker runs every 30 s; drive it directly rather than idling the suite for
-  // half a minute, then confirm the label is recomputed from the clock.
-  await page.evaluate(() => { window.__t0 = Date.now(); });
-  await page.evaluate(() => {
-    const m = document.getElementById('meta');
-    m.__before = m.textContent;
-  });
-  await wait(1200);
-  const recomputed = await page.evaluate(() => {
-    // Simulate the ticker firing without waiting 30 s for it.
-    const ev = new Event('visibilitychange');
-    document.dispatchEvent(ev);
-    return document.getElementById('meta').textContent;
-  });
-  check('R11 the age label is recomputed from the clock, not frozen at the poll',
-    /ago$/.test(ageAtStart) && /ago$/.test(recomputed), `${ageAtStart} -> ${recomputed}`);
+  await clockPage.evaluate((s) => {
+    window.postMessage({ type: 'ww-init', settings: s, sensors: [], media: null, theme: null,
+      game: { active: false, process: '' }, status: { elevated: false, apiVersion: 1 } }, '*');
+  }, Object.assign({}, base, { url: 'https://api.test/aged', jsonPointer: '/v', pollSeconds: 86400 }));
+  // Real time, not clock time: the fixture round-trip is genuine async work and the
+  // fake clock does not advance while it happens.
+  await wait(600);
+  const ageAtStart = await clockPage.evaluate(() => document.getElementById('meta').textContent);
+  seen.length = 0;
+  // Past the 30 s ticker, but nowhere near the 24 h poll — so any change to the label
+  // is the ticker's doing and nothing else's.
+  await clockPage.clock.runFor(125000);
+  const ageLater = await clockPage.evaluate(() => document.getElementById('meta').textContent);
+  check('R11 the age label advances between polls, driven by its own ticker',
+    /^0s ago/.test(ageAtStart) && /^2m ago/.test(ageLater), `${ageAtStart} -> ${ageLater}`);
+  check('R11b and it advanced without issuing another request', seen.length === 0,
+    `${seen.length} requests`);
+  await clockPage.close();
 
   // ---- R12 · a tile that BOOTS during a game must not poll through it ---------------
   // onGame fires on transitions only, so the initial state has to be read out of
@@ -365,6 +379,37 @@ const TOKEN = 'Bearer super-secret-probe-token';
     after.value === '222', after.value);
   check('R15b and the retired request did not leave the tile stuck loading',
     after.stateHidden === true && after.bodyHidden === false);
+
+  // ---- R16 · a 2xx clears the backoff even if the BODY is unusable ------------------
+  // Removing the failure increment from the non-JSON branch was not enough: that branch
+  // returns early, so a reset placed after the parse never ran and the tile kept
+  // retrying on the cadence earned by the earlier outage.
+  respond = () => ({ status: 503, body: 'down' });
+  await init({ url: 'https://api.test/recover', jsonPointer: '/v', pollSeconds: 5 });
+  await wait(600);
+  const failedCount = await page.evaluate(() => failures);
+  respond = () => ({ status: 200, contentType: 'text/html', body: '<html>maintenance</html>' });
+  // NOT the Retry button: its handler zeroes `failures` itself, so driving the probe
+  // that way passes against the unfixed code and proves nothing. Trigger an ordinary
+  // poll through the visibility path, which touches no counters of its own.
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await wait(600);
+  const afterNonJson = await page.evaluate(() => failures);
+  check('R16 a 200 with an unusable body still clears the failure backoff',
+    failedCount > 0 && afterNonJson === 0, `${failedCount} -> ${afterNonJson}`);
+
+  // ---- R17 · retargeting clears the footer, not just the timestamp ------------------
+  // The setup and error cards both leave the footer visible, so a stale "4m ago ·
+  // unreachable" would sit under them describing an endpoint the tile no longer uses.
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 5 }) });
+  await init({ url: 'https://api.test/hadvalue', jsonPointer: '/v', pollSeconds: 60 });
+  await wait(500);
+  const footerBefore = await page.evaluate(() => document.getElementById('meta').textContent);
+  await init({ url: '', jsonPointer: '/v', pollSeconds: 60 });     // endpoint removed
+  await wait(300);
+  const footerAfter = await page.evaluate(() => document.getElementById('meta').textContent);
+  check('R17 removing the endpoint clears the age footer belonging to the old source',
+    /ago/.test(footerBefore) && footerAfter === '', `"${footerBefore}" -> "${footerAfter}"`);
 
   // ---- populated screenshots (the eyes, not just the contract) ---------------------
   respond = () => ({ status: 200, body: JSON.stringify({ data: { temperature: 87.3 } }) });

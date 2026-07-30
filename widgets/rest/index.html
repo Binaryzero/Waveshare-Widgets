@@ -284,12 +284,16 @@
         return;
       }
 
+      // A 2xx clears the backoff HERE, before the body is looked at. Every branch below
+      // is a configuration question about a service that is demonstrably answering, and
+      // each one of them returns early — leaving the reset further down means a tile
+      // that recovers into a non-JSON body keeps retrying on the old failure cadence.
+      failures = 0;
+
       let doc;
       try {
         doc = JSON.parse(answer.text);
       } catch (e) {
-        // No backoff here: the endpoint ANSWERED. Slowing the poll would neither make
-        // the body parse nor spare a service that is working fine.
         if (!showStale('not JSON')) {
           // Retry stays here, unlike the pointer-miss card: a non-JSON body is a claim
           // about what the endpoint is returning RIGHT NOW, and a captive portal, a
@@ -301,9 +305,6 @@
         return;
       }
 
-      // The endpoint answered: whatever happens below is a configuration question,
-      // not a reason to back off the polling.
-      failures = 0;
       const found = resolvePath(doc, cfg.pointer);
       if (found === undefined) {
         // A pointer miss is a settings error, not a network error: retrying the same
@@ -435,6 +436,11 @@
     if (sourceChanged) {
       last = null;
       lastAt = 0;
+      // Clear the RENDERED footer too, not just the timestamp behind it. Dropping
+      // `lastAt` alone leaves "4m ago · unreachable" on screen describing an endpoint
+      // this tile no longer points at — and the setup and error cards both keep the
+      // footer visible, so it would sit under them until a new reading replaced it.
+      renderMeta('');
       // Retire any request still out against the OLD source. Without this the pending
       // answer arrives after cfg has been rewritten and gets read with the new pointer
       // and thresholds — the previous endpoint's payload, displayed as if it were the
