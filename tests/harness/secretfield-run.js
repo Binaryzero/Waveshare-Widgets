@@ -713,6 +713,259 @@ const layout = {
     check('E25c and the old page\'s target does not follow it',
       shelf2.why.length > 0 && !shelf2.why.some((w) => /too big/i.test(w)),
       JSON.stringify(shelf2));
+
+    // ---- E26 · the target belongs to a PAGE, isolated from the revalidation -------
+    // E25 above proves a target does not follow a navigation, but it cannot say WHICH
+    // rule stopped it: its rectangle is on another page AND occupied on the one it
+    // lands on, so deleting either the page binding or the revalidation leaves it
+    // passing. This probe removes the second reason. It navigates to a page that is
+    // EMPTY, where the stale rectangle revalidates perfectly clean — the only fact
+    // left that can reject it is the page it was tapped on. Reason strings again:
+    // "too big" means the old page's 1x1 rectangle is still being judged; an entry
+    // offered with no reason at all means the shelf is sizing against the page it is
+    // actually on.
+    await page.locator('#addPage').click();
+    await page.waitForTimeout(600);   // past refreshReplica's 350ms debounce, so the
+                                      // generation below is the one the tap must echo
+    // Both the source page and the rectangle are DERIVED. Page 0 is full by now and
+    // page 1 holds a three-quarter, so a hardcoded pair is a rectangle that is already
+    // occupied at tap time: correctly revalidated away before the navigation, leaving
+    // the probe measuring a shelf nobody ever armed.
+    const spot = await page.evaluate(() => {
+      const l = window.__wwReplicaLayout ? window.__wwReplicaLayout() : null;
+      if (!l) return null;
+      const W = { quarter: 1, half: 2, 'three-quarter': 3, full: 4 };
+      // Both of occupancyOf's passes: `col` anchors claim their cells first, then
+      // everything else first-fits in order. A single-pass mirror disagrees with the
+      // real placement exactly where E24b's anchored add landed.
+      const occOf = (slots) => {
+        const occ = [[0, 0, 0, 0], [0, 0, 0, 0]];
+        const geo = (s) => {
+          let t = String(s.size || 'quarter'), band = 'full';
+          if (t.endsWith('-upper')) { band = 'upper'; t = t.slice(0, -6); }
+          else if (t.endsWith('-lower')) { band = 'lower'; t = t.slice(0, -6); }
+          return { w: W[t] || 1, rows: band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1] };
+        };
+        const free = (rows, c, w) => c >= 0 && c + w <= 4
+          && rows.every((r) => { for (let i = 0; i < w; i++) if (occ[r][c + i]) return false; return true; });
+        const take = (rows, c, w) => rows.forEach((r) => { for (let i = 0; i < w; i++) occ[r][c + i] = 1; });
+        const placed = slots.map(() => false);
+        slots.forEach((s, i) => {
+          const a = (s.col >= 1 && s.col <= 4) ? s.col - 1 : null;
+          if (a === null) return;
+          const g = geo(s);
+          if (free(g.rows, a, g.w)) { take(g.rows, a, g.w); placed[i] = true; }
+        });
+        slots.forEach((s, i) => {
+          if (placed[i]) return;
+          const g = geo(s);
+          for (let c = 0; c + g.w <= 4; c++) if (free(g.rows, c, g.w)) { take(g.rows, c, g.w); break; }
+        });
+        return occ;
+      };
+      const to = l.pages.length - 1;                      // the page #addPage just made
+      const dest = occOf(l.pages[to].slots || []);
+      for (let from = 0; from < to; from++) {
+        const src = occOf(l.pages[from].slots || []);
+        for (let r = 0; r < 2; r++) for (let c = 0; c < 4; c++)
+          if (!src[r][c] && !dest[r][c])
+            return { from, to, target: { col: c, row: r, w: 1, h: 1 },
+              toSlots: (l.pages[to].slots || []).length };
+      }
+      return null;
+    });
+    // One column wide is load-bearing: the catalog offers half and three-quarter, so a
+    // 1x1 hole takes nothing and the region verdict is visible as "too big". A 2-wide
+    // rectangle sizes to 'half' in both worlds and the probe would measure nothing.
+    check('E26 setup: a 1x1 hole free on the tapped page AND on a still-empty destination',
+      !!spot && spot.from !== spot.to && spot.toSlots === 0
+        && spot.target.w === 1 && spot.target.h === 1,
+      JSON.stringify(spot));
+    if (spot) {
+      const gen4 = await page.evaluate(() => {
+        try { return ((JSON.parse(window.__wwLastReplicaInit || '{}').data || {}).gen | 0); } catch (e) { return -1; }
+      });
+      await replica.evaluate((a) => parent.postMessage({ type: 'ww-shell', message: {
+        type: 'add-widget', index: a.i, target: a.t, gen: a.g } }, '*'),
+        { i: spot.from, t: spot.target, g: gen4 });
+      await page.waitForTimeout(400);
+      const armedA = await page.evaluate(() => ({
+        selected: [...document.querySelectorAll('#pageList li')].findIndex((li) => li.classList.contains('active')),
+        items: [...document.querySelectorAll('#widgetGallery .gallery-item')].length,
+        enabled: [...document.querySelectorAll('#widgetGallery .gallery-item')].filter((b) => !b.disabled).length,
+        why: [...document.querySelectorAll('#widgetGallery .g-why')].map((e) => e.textContent),
+      }));
+      // Stimulus guard, and load-bearing rather than decorative: a tap dropped by the
+      // staleness gate leaves no target at all, and E26c would then pass with the
+      // binding deleted, for a reason that has nothing to do with the binding.
+      check('E26a setup: the target is live on the page it was tapped on, and nothing fits it',
+        armedA.selected === spot.from && armedA.items > 0 && armedA.enabled === 0
+          && armedA.why.length > 0 && armedA.why.every((w) => /too big/i.test(w)),
+        JSON.stringify(armedA));
+
+      const gen5 = await page.evaluate(() => {
+        try { return ((JSON.parse(window.__wwLastReplicaInit || '{}').data || {}).gen | 0); } catch (e) { return -1; }
+      });
+      // page-changed, NOT a page chip: the chip's own handler drops the target outright,
+      // so a chip click would make E26c pass with the binding deleted. This is also the
+      // real path the binding exists for — edge drop, capsule arrows.
+      await replica.evaluate((a) => parent.postMessage({ type: 'ww-shell', message: {
+        type: 'page-changed', index: a.to, gen: a.g } }, '*'), { to: spot.to, g: gen5 });
+      await page.waitForTimeout(400);
+      const landed = await page.evaluate((to) => ({
+        selected: [...document.querySelectorAll('#pageList li')].findIndex((li) => li.classList.contains('active')),
+        items: [...document.querySelectorAll('#widgetGallery .gallery-item')].length,
+        enabled: [...document.querySelectorAll('#widgetGallery .gallery-item')].filter((b) => !b.disabled).length,
+        why: [...document.querySelectorAll('#widgetGallery .g-why')].map((e) => e.textContent),
+        destSlots: ((window.__wwReplicaLayout().pages[to] || {}).slots || []).length,
+      }), spot.to);
+      check('E26b the navigation happened and the destination really is empty',
+        landed.selected === spot.to && landed.destSlots === 0, JSON.stringify(landed));
+      // The destination has room for everything, so a shelf judging the PAGE offers the
+      // widget with no reason at all, while a shelf still judging the old page's 1x1
+      // rectangle says "too big". The revalidation cannot be what separates them: every
+      // cell that rectangle names is free here, which E26b just asserted.
+      check('E26c a target tapped on another page does not survive the navigation',
+        landed.items > 0 && landed.enabled === landed.items
+          && !landed.why.some((w) => /too big/i.test(w)),
+        JSON.stringify(landed));
+    }
+
+    // ---- E27 · the target is REVALIDATED, isolated from the page binding ----------
+    // The other half of E25's ambiguity. Everything here happens on ONE page, so the
+    // binding never has anything to reject and cannot be what answers: between the tap
+    // and the pick a slot is resized over the very cells the tap named, and the shelf
+    // must stop answering for a rectangle that no longer exists. "no room" means the
+    // page was judged (the target was dropped); "too big" means the dead rectangle is
+    // still being judged.
+    // E26 left its target armed — guard A rejects without clearing — and on a fresh
+    // empty page that rectangle revalidates clean, which would disable the whole shelf
+    // and hang the builder clicks below. A page chip is the one control that drops a
+    // target outright. Click the chip's NAME, not the chip: the active chip carries the
+    // reorder arrows, and chipMove stops propagation before the chip's own handler runs.
+    await page.locator('#pageList li').first().locator('span').first().click();
+    await page.waitForTimeout(250);
+    await page.locator('#addPage').click();
+    await page.waitForTimeout(300);
+    const fixPage = await page.evaluate(() =>
+      [...document.querySelectorAll('#pageList li')].findIndex((li) => li.classList.contains('active')));
+    // One 4x2 placement mirror, used both to derive the target and to prove the
+    // stimulus. `grow` re-runs the same placement with one slot resized, so the target
+    // can be chosen as "free now, taken after the resize" rather than hardcoded.
+    await page.evaluate(() => {
+      window.__wwProbeOcc = (idx, grow) => {
+        const W = { quarter: 1, half: 2, 'three-quarter': 3, full: 4 };
+        const pg = (window.__wwReplicaLayout().pages || [])[idx];
+        const slots = ((pg && pg.slots) || []).map((s, i) =>
+          (grow && i === grow.i) ? { size: grow.size, col: s.col } : { size: s.size, col: s.col });
+        const occ = [[0, 0, 0, 0], [0, 0, 0, 0]];
+        const geo = (s) => {
+          let t = String(s.size || 'quarter'), band = 'full';
+          if (t.endsWith('-upper')) { band = 'upper'; t = t.slice(0, -6); }
+          else if (t.endsWith('-lower')) { band = 'lower'; t = t.slice(0, -6); }
+          return { w: W[t] || 1, rows: band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1] };
+        };
+        const free = (rows, c, w) => c >= 0 && c + w <= 4
+          && rows.every((r) => { for (let i = 0; i < w; i++) if (occ[r][c + i]) return false; return true; });
+        const take = (rows, c, w) => rows.forEach((r) => { for (let i = 0; i < w; i++) occ[r][c + i] = 1; });
+        const placed = slots.map(() => false);
+        slots.forEach((s, i) => {
+          const a = (s.col >= 1 && s.col <= 4) ? s.col - 1 : null;
+          if (a === null) return;
+          const g = geo(s);
+          if (free(g.rows, a, g.w)) { take(g.rows, a, g.w); placed[i] = true; }
+        });
+        slots.forEach((s, i) => {
+          if (placed[i]) return;
+          const g = geo(s);
+          for (let c = 0; c + g.w <= 4; c++) if (free(g.rows, c, g.w)) { take(g.rows, c, g.w); break; }
+        });
+        return occ;
+      };
+    });
+    // Two slots, packed so that exactly one 2-wide band stays free and one resize can
+    // consume it. The sizes are set explicitly rather than assumed: the first add takes
+    // THREE-QUARTER, not half — offeredWidths adds three-quarter for anything declaring
+    // half, and defaultSizeFor picks widest-first.
+    const setSize = (v) => page.evaluate((val) => {
+      const s = document.querySelector('#slotDetail .slot-row select.size');
+      if (!s) return false;
+      s.value = val;
+      s.dispatchEvent(new Event('change'));
+      return true;
+    }, v);
+    await page.locator('#widgetGallery .gallery-item:not(:disabled)').first().click();
+    await page.waitForTimeout(250);
+    const s1 = await setSize('half');                    // cols 0-1, both rows
+    await page.locator('#widgetGallery .gallery-item:not(:disabled)').first().click();
+    await page.waitForTimeout(250);
+    const s2 = await setSize('half-upper');              // cols 2-3, top row only
+    await page.waitForTimeout(500);                      // past the 350ms debounce again
+    const plan = await page.evaluate((idx) => {
+      const pg = window.__wwReplicaLayout().pages[idx];
+      const last = (pg.slots || []).length - 1;
+      const before = window.__wwProbeOcc(idx);
+      const after = window.__wwProbeOcc(idx, { i: last, size: 'half' });
+      let cell = null;
+      for (let r = 0; r < 2 && !cell; r++) for (let c = 0; c < 4 && !cell; c++)
+        if (!before[r][c] && after[r][c]) cell = { col: c, row: r, w: 1, h: 1 };
+      // No 2-wide run left afterwards, in either band: "no room" is then the CORRECT
+      // page-wide answer, and the reason strings genuinely differ between the two worlds.
+      const roomAfter = [0, 1].some((r) => {
+        for (let c = 0; c + 2 <= 4; c++) if (!after[r][c] && !after[r][c + 1]) return true;
+        return false;
+      });
+      return { cell, roomAfter, before, after, sizes: (pg.slots || []).map((s) => s.size), last };
+    }, fixPage);
+    check('E27 setup: a free 1x1 cell that the planned resize will fill, on an otherwise packed page',
+      s1 && s2 && !!plan.cell && !plan.roomAfter && plan.sizes.length === 2,
+      JSON.stringify(plan));
+    if (plan.cell) {
+      const gen6 = await page.evaluate(() => {
+        try { return ((JSON.parse(window.__wwLastReplicaInit || '{}').data || {}).gen | 0); } catch (e) { return -1; }
+      });
+      // The tap names the page we are already on, so the handler's page-follow branch
+      // never runs, the inspector keeps its selection, and pendingAddTarget.page is the
+      // very object every later render passes to activeAddTarget.
+      await replica.evaluate((a) => parent.postMessage({ type: 'ww-shell', message: {
+        type: 'add-widget', index: a.i, target: a.t, gen: a.g } }, '*'),
+        { i: fixPage, t: plan.cell, g: gen6 });
+      await page.waitForTimeout(400);
+      // Read the armed shelf, take the cells, and read the shelf again in ONE
+      // synchronous turn. The size select's onchange sets the size and re-renders
+      // inline, so nothing — no debounced re-init, no replica capture rebuilding the
+      // page objects — can slip between the two reads and reject the target for the
+      // other reason.
+      const iso = await page.evaluate((a) => {
+        const why = () => [...document.querySelectorAll('#widgetGallery .g-why')].map((e) => e.textContent);
+        const enabled = () => [...document.querySelectorAll('#widgetGallery .gallery-item')].filter((b) => !b.disabled).length;
+        const sel = () => [...document.querySelectorAll('#pageList li')].findIndex((li) => li.classList.contains('active'));
+        const before = { why: why(), enabled: enabled(), page: sel() };
+        const size = document.querySelector('#slotDetail .slot-row select.size');
+        const had = size ? size.value : null;
+        if (size) { size.value = 'half'; size.dispatchEvent(new Event('change')); }
+        const occ = window.__wwProbeOcc(a.i);
+        return { before, had, after: { why: why(), enabled: enabled(), page: sel() },
+          cellNowTaken: !!occ[a.t.row][a.t.col], occ };
+      }, { i: fixPage, t: plan.cell });
+      // Stimulus guard, load-bearing for the same reason E26a is: page-wide sizing at
+      // this moment returns 'half-lower' (row 1 still has a 2-wide run), so an unarmed
+      // target shows an ENABLED entry with no reason at all — this cannot pass by
+      // accident, and if it fails the run below is void rather than informative.
+      check('E27a setup: the target is live and REGION-judged before the cells fill',
+        iso.before.why.length > 0 && iso.before.why.every((w) => /too big/i.test(w))
+          && iso.before.enabled === 0 && iso.before.page === fixPage && iso.had === 'half-upper',
+        JSON.stringify(iso.before) + ' size=' + iso.had);
+      check('E27b the resize actually took the tapped cell (stimulus guard)',
+        iso.cellNowTaken, JSON.stringify({ target: plan.cell, occ: iso.occ }));
+      // Nothing about the page changed except the cells. Same page index, same page
+      // object, same render — so "too big" here can only mean a rectangle that no
+      // longer exists is still being answered for.
+      check('E27c the target does not survive the cells it named being taken',
+        iso.after.why.length > 0 && iso.after.why.every((w) => /no room/i.test(w))
+          && !iso.after.why.some((w) => /too big/i.test(w)) && iso.after.page === fixPage,
+        JSON.stringify(iso.after));
+    }
   }
 
   // ---- E19 · the dock's caps must be bounded by the viewport, not by each other ----
