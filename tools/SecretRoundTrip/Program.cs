@@ -310,6 +310,29 @@ Check("P30f a non-string with nothing stored is removed, not guessed at",
     Slot(orphanArray).Settings?["apiToken"] is null,
     Slot(orphanArray).Settings?["apiToken"]?.ToJsonString());
 
+// An ID-LESS legacy slot must come out of the restore STAMPED, exactly as the string
+// paths do. Otherwise it stays addressable only by position: the dashboard shell mints an
+// instanceId on its first on-panel edit, and the next Seal looks the value up under
+// "|i:..." while it was indexed under "|w:0" — removing what Settings just preserved.
+var p30gList = LayoutWith(new JsonObject { ["apiToken"] = new JsonArray { "x" } }, instanceId: null);
+var p30gMasked = JsonSerializer.SerializeToNode(p30gList);
+SecretPolicy.Mask(p30gMasked, Lookup);
+var p30gResaved = JsonSerializer.Deserialize<DashboardLayout>(p30gMasked!.ToJsonString())!;
+SecretPolicy.Seal(p30gResaved, p30gList, Lookup);
+Check("P30g restoring a non-string into an id-less slot mints a stable identity",
+    !string.IsNullOrEmpty(Slot(p30gResaved).InstanceId), Slot(p30gResaved).InstanceId ?? "(none)");
+Check("P30g2 and the value itself survived that save",
+    Slot(p30gResaved).Settings?["apiToken"] is JsonArray g2 && g2.Count == 1,
+    Slot(p30gResaved).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+// The point of the stamp: the NEXT save, now id-bearing on both sides, still finds it.
+var p30gStored = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p30gResaved))!;
+var p30gAgain = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p30gResaved))!;
+Slot(p30gAgain).Settings!["apiToken"] = "";
+SecretPolicy.Seal(p30gAgain, p30gStored, Lookup);
+Check("P30g3 so a later id-keyed save still restores it rather than dropping it",
+    Slot(p30gAgain).Settings?["apiToken"] is JsonArray g3 && g3.Count == 1,
+    Slot(p30gAgain).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+
 // ---- P16 · Codex r2: an unreadable envelope is DROPPED, never re-wrapped -------------
 // Re-encrypting a foreign blob would produce an envelope this machine CAN open, so
 // Reveal would hand the widget the foreign ciphertext as if it were the credential and
@@ -328,9 +351,9 @@ Check("P16b nothing was re-wrapped: no envelope survives for Reveal to hand the 
 // ---- P17 · Codex r2: a legacy carry-over mints an id too, or it stays positional -----
 // Without this the migrated slot keeps matching by position; adding a second instance of
 // the same widget later makes the count ambiguous and its credential is dropped.
-var legacyStored2 = LayoutWith(new JsonObject { ["apiToken"] = "legacy-plaintext" }, instanceId: null);
+var p30gStored2 = LayoutWith(new JsonObject { ["apiToken"] = "legacy-plaintext" }, instanceId: null);
 var legacyEdit2 = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
-SecretPolicy.Seal(legacyEdit2, legacyStored2, Lookup);
+SecretPolicy.Seal(legacyEdit2, p30gStored2, Lookup);
 var mintedId = Slot(legacyEdit2).InstanceId;
 Check("P17 migrating a legacy secret through the masked field also mints a stable id",
     !string.IsNullOrEmpty(mintedId) && SecretStore.CanUnprotect(Value(legacyEdit2, "apiToken")), mintedId);

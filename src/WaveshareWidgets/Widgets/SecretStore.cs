@@ -344,6 +344,13 @@ public static class SecretPolicy
                 if (keptNode is not JsonValue keptValue || !keptValue.TryGetValue<string>(out var kept))
                 {
                     slot.Settings![name] = keptNode?.DeepClone();
+                    // Stamp for the same reason the string paths do: a slot that carries a
+                    // value only this pipeline can restore must be addressable by id, not
+                    // by position. Without it an id-less legacy slot stays id-less, the
+                    // shell mints an id on its first on-panel edit, and the next Seal looks
+                    // the value up under "|i:…" while it was indexed under "|w:0" — so the
+                    // value Settings just preserved is removed one save later.
+                    Stamp(slot);
                     return;
                 }
                 if (SecretStore.CanUnprotect(kept))
