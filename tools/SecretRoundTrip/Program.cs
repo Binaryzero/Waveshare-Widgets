@@ -717,17 +717,19 @@ SecretPolicy.Reveal(recovered, Lookup);
 Check("P28h2 and a later reinstall still reveals the original credential",
     Value(recovered, "apiToken") == Token, Value(recovered, "apiToken"));
 
-// ---- P31 · #68: the shell minting an id must not orphan the stored credential --------
-// shell.js's persistLayout mints an instanceId for any legacy slot on its first on-panel
-// edit, so the NEXT save arrives id-BEARING while layout.json still holds the value
-// id-LESS. BuildStoredIndex covers the opposite direction (the host minted, a still-open
-// editor has not caught up) by aliasing an id-bearing stored slot to "|w:0"; this
-// direction cannot be pre-indexed, because the id does not exist until the client invents
-// it. P6/P6b cover neither side having an id and P30g3 covers both sides having one —
-// this is the asymmetric transition in between, and it deleted the credential.
+// ---- P31 · #68: an id-less slot does NOT carry over once the client mints an id -------
+// This documents a REFUSAL and the cost of it, not a fix. shell.js's persistLayout mints
+// an instanceId for any legacy slot on its first on-panel edit, so the next save arrives
+// id-BEARING while layout.json still holds the value id-LESS, the id-keyed lookup misses,
+// and an edit unrelated to the credential deletes it. That is #68, and it is real.
 //
-// Sealing and then clearing the id is how layout.json genuinely looks before the shell
-// catches up: the value is a real envelope, the slot has never been stamped.
+// It is left standing because no retry can serve it safely. P32/P32b below are the same
+// situation byte for byte — stored id-less with a credential, incoming id-bearing, one
+// instance on each side — and there they mean a DELETED instance handing its credential
+// to a replacement tile. Two rounds of review found that hazard from two directions. A
+// lookup cannot separate the cases without the client saying which slot it minted the id
+// for, so the ambiguity resolves against carry-over: retyping a credential is
+// recoverable, transmitting an old one to a new endpoint is not.
 DashboardLayout StoredIdless(JsonNode? value) =>
     LayoutWith(new JsonObject { ["apiToken"] = value }, instanceId: null);
 var p31Stored = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
@@ -736,20 +738,21 @@ Slot(p31Stored).InstanceId = null;
 var p31Sealed = Value(p31Stored, "apiToken");
 var p31Incoming = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "s-minted-by-shell");
 SecretPolicy.Seal(p31Incoming, p31Stored, Lookup);
-Check("P31 a client-minted instanceId still finds the credential stored positionally",
-    Value(p31Incoming, "apiToken") == p31Sealed, Value(p31Incoming, "apiToken") ?? "(removed)");
-Check("P31b and the client's own id is kept rather than replaced with a second one",
-    Slot(p31Incoming).InstanceId == "s-minted-by-shell", Slot(p31Incoming).InstanceId);
+Check("P31 a client-minted instanceId does NOT inherit an id-less stored credential",
+    Slot(p31Incoming).Settings?["apiToken"] is null,
+    Slot(p31Incoming).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+Check("P31b nothing leaks either: no envelope survives for Reveal to hand the widget",
+    !JsonSerializer.Serialize(p31Incoming).Contains("dpapi:v1:"),
+    JsonSerializer.Serialize(p31Incoming));
 var p31List = StoredIdless(new JsonArray { "row-secret" });
 var p31ListIncoming = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "s-minted-2");
 SecretPolicy.Seal(p31ListIncoming, p31List, Lookup);
-Check("P31c the same transition restores a stored NON-STRING too",
-    Slot(p31ListIncoming).Settings?["apiToken"] is JsonArray p31c && p31c.Count == 1
-        && p31c[0]!.GetValue<string>() == "row-secret",
+Check("P31c a stored NON-STRING is refused across the same transition",
+    Slot(p31ListIncoming).Settings?["apiToken"] is null,
     Slot(p31ListIncoming).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
 
-// Ambiguity still refuses. Two incoming instances of the widget against one id-less
-// stored credential: a positional retry would have to guess which instance owns it, so
+// Ambiguity refuses for the older reason too. Two incoming instances of the widget
+// against one id-less stored credential: position cannot say which instance owns it, so
 // nobody inherits and the user re-enters — the answer SlotKey gives by returning null.
 var p31Ambiguous = new DashboardLayout
 {
@@ -811,16 +814,17 @@ Check("P31i so a later ID-KEYED save restores it rather than dropping it",
     Value(p31iAgain, "apiToken") == p31Sealed && !string.IsNullOrEmpty(p31iCarried),
     $"id={p31iCarried ?? "(none)"} value={Value(p31iAgain, "apiToken") ?? "(removed)"}");
 
-// ---- P32 · the positional retry must not inherit from a DIFFERENT instance -----------
-// Codex r1 on #68. "|w:0" holds two different things: a genuinely id-less stored slot,
-// and the alias BuildStoredIndex adds for an id-BEARING one so a client that has not yet
-// adopted the host's mint can still find it. Only the first is a slot whose identity the
-// client is about to invent, and the retry must tell them apart.
+// ---- P32 · cross-instance isolation: a replacement tile inherits nothing -------------
+// Both review rounds on #68. Delete the sole credentialed instance in the editor, add a
+// fresh one of the same widget, save. Both counts are still one and the new instanceId
+// misses, so any positional retry hands the deleted instance's credential to a tile the
+// user believes is unconfigured — which then transmits an old token to whatever endpoint
+// the new tile points at.
 //
-// Delete the sole credentialed instance in the editor, add a fresh one of the same
-// widget, save: both counts are still one, the new id misses, and retrying against the
-// alias hands the deleted instance's credential to a tile the user believes is
-// unconfigured. My first cut of the fix did exactly that.
+// Round one raised it for an id-BEARING stored slot; I gated the retry on provenance,
+// which fixed only that half. Round two raised the same thing for an id-LESS one, where
+// no provenance exists to gate on. Both cases are covered here because they are the same
+// case, and because whatever eventually closes #68 has to keep passing them.
 var p32Stored = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: "the-deleted-one");
 SecretPolicy.Seal(p32Stored, null, Lookup);
 var p32Replacement = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "a-brand-new-tile");
@@ -838,12 +842,28 @@ SecretStore.EncryptOverride = savedEncrypt32;
 Check("P32b nor when a failed encryption sends it looking for a previous value",
     Slot(p32Typed).Settings?["apiToken"] is null,
     Slot(p32Typed).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
-// The alias itself still does its job: the client that has NOT minted an id — a still-open
-// editor holding the id-less slot it submitted — matches positionally and keeps the value.
-// That is the direction the alias exists for, and narrowing the retry must not break it.
+// Round two's case: the deleted instance was a LEGACY id-less slot, so there is no
+// provenance to distinguish it from the #68 transition. This is the probe that ended the
+// retry — a gate cannot pass it and P31 at the same time.
+var p32Legacy = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
+SecretPolicy.Seal(p32Legacy, null, Lookup);
+Slot(p32Legacy).InstanceId = null;
+var p32LegacyReplacement = LayoutWith(
+    new JsonObject { ["apiToken"] = "" }, instanceId: "a-brand-new-tile");
+SecretPolicy.Seal(p32LegacyReplacement, p32Legacy, Lookup);
+Check("P32c replacing a LEGACY id-less instance inherits nothing either",
+    Slot(p32LegacyReplacement).Settings?["apiToken"] is null,
+    Slot(p32LegacyReplacement).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+Check("P32c2 and no envelope survives for Reveal to hand the replacement widget",
+    !JsonSerializer.Serialize(p32LegacyReplacement).Contains("dpapi:v1:"),
+    JsonSerializer.Serialize(p32LegacyReplacement));
+// The "|w:0" alias itself still does its job, and this is the reason it is not collateral
+// damage: a still-open editor holding the id-less slot it submitted, whose id the HOST
+// minted, matches positionally and keeps its value. Nothing in it depends on guessing an
+// identity — the host already assigned one and the client simply has not seen it yet.
 var p32Idless = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
 SecretPolicy.Seal(p32Idless, p32Stored, Lookup);
-Check("P32c but a client that has not adopted the host's mint still matches positionally",
+Check("P32d a client that has not adopted the host's mint still matches positionally",
     Value(p32Idless, "apiToken") == Value(p32Stored, "apiToken"),
     Value(p32Idless, "apiToken") ?? "(removed)");
 

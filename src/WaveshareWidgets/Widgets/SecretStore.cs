@@ -293,8 +293,7 @@ public static class SecretPolicy
         DashboardLayout layout, DashboardLayout? stored, Func<string, WidgetManifest?> lookup)
     {
         var incomingCounts = CountWidgets(layout);
-        var previous = BuildStoredIndex(
-            stored, lookup, incomingCounts, out var storedCounts, out var aliased);
+        var previous = BuildStoredIndex(stored, lookup, incomingCounts, out var storedCounts);
         var failures = new List<SecretSealFailure>();
         var minted = new List<SecretSlotIdentity>();
         // Position in the layout AS SUBMITTED, so the client can find the same slot.
@@ -430,51 +429,33 @@ public static class SecretPolicy
 
         return new SecretSealResult(failures, minted);
 
-        // Looks up what is stored for this slot, tolerating the ONE-WAY transition from a
-        // positional identity to a freshly minted one.
+        // Looks up what is stored for this slot. Identity only — there is deliberately NO
+        // positional retry when the id-keyed lookup misses, and that is the whole content
+        // of this comment, because two review rounds argued otherwise and both were right.
         //
-        // BuildStoredIndex already covers stored-has-id -> incoming-has-none: the client
-        // that triggered a previous save still holds the slot without the id the host
-        // minted, so those are indexed both ways. The reverse cannot be pre-indexed,
-        // because the id does not exist until the client mints it — and shell.js's
-        // persistLayout mints one on the first on-panel edit of any legacy slot. Without
-        // this retry the stored value is indexed under "|w:0", the incoming slot resolves
-        // to "|i:p…", the lookup misses, and the credential is deleted by an edit that had
-        // nothing to do with it.
+        // The tempting case is real (#68). shell.js's persistLayout mints an instanceId for
+        // any id-less slot on its first on-panel edit, so a legacy slot's next save arrives
+        // id-BEARING while layout.json still holds the value id-LESS. The lookup misses and
+        // an edit that had nothing to do with the credential deletes it.
         //
-        // Gated by the SAME unambiguity test SlotKey applies: exactly one instance of this
-        // widget on each side. With several, a positional retry would hand one instance
-        // another's credential, which is the hazard SlotKey returns null to prevent.
+        // The reason a retry cannot fix it: the payload contains no evidence that would
+        // separate that case from its dangerous twin. Open a legacy layout holding one
+        // credentialed widget, delete it, add a fresh instance of the same widget, save.
+        // Stored is id-less with a credential, incoming is id-bearing, both counts are one
+        // — byte for byte the same situation. A retry that serves the first necessarily
+        // hands the deleted instance's credential to a tile the user believes is
+        // unconfigured, which then transmits an old token to whatever endpoint the new
+        // tile points at. Losing a credential is recoverable by retyping it; sending one
+        // somewhere new is not, so the ambiguity resolves against the retry.
         //
-        // And gated on PROVENANCE, or it inherits from the wrong instance. "|w:0" holds
-        // two different things: a genuinely id-less stored slot, and the ALIAS
-        // BuildStoredIndex adds for an id-bearing one. Only the first is a slot whose
-        // identity the client is about to invent. Delete the sole credentialed instance in
-        // the editor, add a fresh one of the same widget, save: both counts are still one,
-        // the new id misses, and retrying against the alias hands the deleted instance's
-        // credential to a tile the user believes is unconfigured. Two different instance
-        // ids are two different instances — that refuses, and the user re-enters.
-        //
-        // The same refusal costs a credential when shell.js re-mints an id to heal a
-        // DUPLICATE: stored and incoming ids differ for what is really one instance. That
-        // path round-trips the decrypted value and re-encrypts it, so nothing is lost in
-        // practice, and where identity genuinely cannot be established this pipeline
-        // already prefers re-entry over a guess.
+        // Closing #68 properly needs the client to say which slot it minted an id FOR,
+        // which is the same host/client identity channel #70 needs. Until that exists,
+        // a legacy slot loses its secret on first on-panel edit and the user re-enters it
+        // — the answer SlotKey already gives wherever identity cannot be established.
         bool TryPrevious(string? key, LayoutSlot slot, string name, out JsonNode? found)
         {
             found = null;
-            if (key is not null && previous.TryGetValue((key, name), out found))
-                return true;
-            if (string.IsNullOrEmpty(slot.InstanceId) || string.IsNullOrEmpty(slot.WidgetId))
-                return false;
-            storedCounts.TryGetValue(slot.WidgetId, out var before);
-            incomingCounts.TryGetValue(slot.WidgetId, out var after);
-            if (before != 1 || after != 1)
-                return false;
-            var positional = (slot.WidgetId + "|w:0", name);
-            if (aliased.Contains(positional))
-                return false;
-            return previous.TryGetValue(positional, out found);
+            return key is not null && previous.TryGetValue((key, name), out found);
         }
 
         // A slot that stores a credential gets a stable identity, so the next save
@@ -507,21 +488,14 @@ public static class SecretPolicy
     /// nested credential material) while Seal must still put it back. Indexing only
     /// strings made those two requirements incompatible: whichever one was honoured, the
     /// other broke. Storing the node satisfies both.
-    /// <param name="aliased">The "|w:0" keys that are an ALIAS for an id-bearing stored
-    /// slot rather than a genuinely id-less one. A caller matching by position needs to
-    /// tell the two apart: an alias belongs to an instance that already has an identity,
-    /// so a slot arriving with a DIFFERENT one is a different instance.</param>
     private static Dictionary<(string Slot, string Name), JsonNode?> BuildStoredIndex(
         DashboardLayout? stored, Func<string, WidgetManifest?> lookup,
-        Dictionary<string, int> incomingCounts, out Dictionary<string, int> counts,
-        out HashSet<(string Slot, string Name)> aliased)
+        Dictionary<string, int> incomingCounts, out Dictionary<string, int> counts)
     {
         counts = CountWidgets(stored);
         var index = new Dictionary<(string, string), JsonNode?>();
-        aliased = new HashSet<(string, string)>();
         if (stored is null)
             return index;
-        var aliasedKeys = aliased;
         var storedCounts = counts;
         // Two stored slots resolving the same key means the layout has duplicate
         // instanceIds (shell.js detects and heals those, but the editor can save before
@@ -559,12 +533,7 @@ public static class SecretPolicy
                 storedCounts.TryGetValue(slot.WidgetId, out var before);
                 incomingCounts.TryGetValue(slot.WidgetId, out var after);
                 if (before == 1 && after == 1)
-                {
-                    // Recorded as an alias whether or not the add wins: either way this
-                    // position is spoken for by a slot that already has an identity.
                     index.TryAdd((slot.WidgetId + "|w:0", name), storedNode.DeepClone());
-                    aliasedKeys.Add((slot.WidgetId + "|w:0", name));
-                }
             }
         });
         foreach (var key in poisoned)
