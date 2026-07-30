@@ -159,6 +159,74 @@ public sealed record SecretSealResult(
 ///     field the editor sent back untouched and honoring an explicit clear.</item>
 ///   </list>
 /// </summary>
+/// <summary>What the pipeline may do with the value at one address.</summary>
+public enum SecretIntent
+{
+    /// <summary>A property the manifest declares `secret`: blanked for the editor,
+    /// encrypted on its way to disk, decrypted for the dashboard. The only intent that
+    /// exists today; the others in docs/SECRET-ADDRESSING.md are what #62, #66 and #67
+    /// each need, and they are additions here rather than rewrites.</summary>
+    Protect,
+}
+
+/// <summary>Which values the secret pipeline acts on, and what it may do with each.
+///
+/// This replaces asking a manifest "is this property typed `secret`?" at every step. The
+/// question the pipeline actually needs answered is per-VALUE and carries an intent —
+/// three open issues are each a case a manifest cannot express: a credential inside a
+/// list row (#62), a property demoted to `text` whose stored value is still ciphertext
+/// and must be restored without acquiring write-side secret semantics (#66), and two
+/// folders declaring the same widget id where one entry cannot represent both (#67).
+/// Naming the value directly is what makes those tractable; see docs/SECRET-ADDRESSING.md
+/// for the design and for why the per-slot key arrives with the identity protocol rather
+/// than before it.
+///
+/// A plan is resolved ONCE per operation and caches per widget id, so a single Mask, Seal
+/// or Reveal sees one consistent classification even if the library rescans underneath it.
+/// Build one at the call site rather than holding it across operations.</summary>
+public sealed class SecretPlan
+{
+    private static readonly IReadOnlyDictionary<string, SecretIntent> Nothing =
+        new Dictionary<string, SecretIntent>(StringComparer.Ordinal);
+
+    private readonly Func<string, IReadOnlyDictionary<string, SecretIntent>> _classify;
+    private readonly Dictionary<string, IReadOnlyDictionary<string, SecretIntent>> _cache =
+        new(StringComparer.Ordinal);
+
+    private SecretPlan(Func<string, IReadOnlyDictionary<string, SecretIntent>> classify) =>
+        _classify = classify;
+
+    /// <summary>The plan every caller builds today: whatever the manifest calls `secret`
+    /// is protected, and nothing else is touched.</summary>
+    public static SecretPlan FromManifests(Func<string, WidgetManifest?> lookup) =>
+        new(id => Classify(lookup(id)));
+
+    /// <summary>The intents that apply to a widget's properties, keyed by property name.
+    /// Ordinal, like every other identity comparison in this pipeline — `Rescan` resolves
+    /// duplicate ids ordinally, so a consumer that disagreed would silently classify a
+    /// different widget's properties.</summary>
+    public IReadOnlyDictionary<string, SecretIntent> For(string? widgetId)
+    {
+        if (string.IsNullOrEmpty(widgetId))
+            return Nothing;
+        if (!_cache.TryGetValue(widgetId, out var intents))
+            _cache[widgetId] = intents = _classify(widgetId);
+        return intents;
+    }
+
+    private static IReadOnlyDictionary<string, SecretIntent> Classify(WidgetManifest? manifest)
+    {
+        var intents = new Dictionary<string, SecretIntent>(StringComparer.Ordinal);
+        foreach (var prop in manifest?.Properties ?? [])
+        {
+            if (!string.IsNullOrEmpty(prop.Name) &&
+                string.Equals(prop.Type, "secret", StringComparison.OrdinalIgnoreCase))
+                intents[prop.Name] = SecretIntent.Protect;
+        }
+        return intents;
+    }
+}
+
 public static class SecretPolicy
 {
     /// <summary>Transient projection key listing the secret property names that have a
@@ -177,17 +245,6 @@ public static class SecretPolicy
         return value.TryGetValue<string>(out var text) ? text : null;
     }
 
-    private static HashSet<string> SecretNames(WidgetManifest? manifest)
-    {
-        var names = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var prop in manifest?.Properties ?? [])
-        {
-            if (!string.IsNullOrEmpty(prop.Name) &&
-                string.Equals(prop.Type, "secret", StringComparison.OrdinalIgnoreCase))
-                names.Add(prop.Name);
-        }
-        return names;
-    }
 
     /// <summary>Decrypts every secret in place — for the dashboard's init payload only.
     ///
@@ -201,10 +258,28 @@ public static class SecretPolicy
     /// restore with slot identity — the same machinery #62 needs — and is tracked there
     /// rather than guessed at here. Leaving it alone at least self-heals: the user retypes
     /// the value and it saves as ordinary text, which is what the manifest now says.</summary>
-    public static void Reveal(DashboardLayout layout, Func<string, WidgetManifest?> lookup)
+    /// <summary>Shorthand for "protect exactly what these manifests declare" — the plan
+    /// every caller wanted before intents existed. Kept because it is genuinely the common
+    /// case, not to spare callers the migration: anything needing a non-default intent
+    /// builds its own <see cref="SecretPlan"/>.</summary>
+    public static void Reveal(DashboardLayout layout, Func<string, WidgetManifest?> lookup) =>
+        Reveal(layout, SecretPlan.FromManifests(lookup));
+
+    /// <inheritdoc cref="Reveal(DashboardLayout, Func{string, WidgetManifest})"/>
+    public static void Mask(JsonNode? layoutNode, Func<string, WidgetManifest?> lookup) =>
+        Mask(layoutNode, SecretPlan.FromManifests(lookup));
+
+    /// <inheritdoc cref="Reveal(DashboardLayout, Func{string, WidgetManifest})"/>
+    public static SecretSealResult Seal(
+        DashboardLayout layout, DashboardLayout? stored, Func<string, WidgetManifest?> lookup) =>
+        Seal(layout, stored, SecretPlan.FromManifests(lookup));
+
+    public static void Reveal(DashboardLayout layout, SecretPlan plan)
     {
-        Walk(layout, lookup, (slot, name) =>
+        Walk(layout, plan, (slot, name, intent) =>
         {
+            if (intent is not SecretIntent.Protect)
+                return;
             var stored = AsString(slot.Settings?[name]);
             if (stored is null)
             {
@@ -223,7 +298,7 @@ public static class SecretPolicy
     /// <summary>Blanks every secret and records which ones are set AND readable here.
     /// Mutates the JSON projection (not the model) because <c>secretsSet</c> is
     /// projection-only.</summary>
-    public static void Mask(JsonNode? layoutNode, Func<string, WidgetManifest?> lookup)
+    public static void Mask(JsonNode? layoutNode, SecretPlan plan)
     {
         if (layoutNode?["pages"] is not JsonArray pages)
             return;
@@ -236,12 +311,14 @@ public static class SecretPolicy
                 var widgetId = AsString(slot?["widgetId"]);
                 if (widgetId is null || slot is null)
                     continue;
-                var secrets = SecretNames(lookup(widgetId));
+                var secrets = plan.For(widgetId);
                 if (secrets.Count == 0)
                     continue;
                 var set = new JsonArray();
-                foreach (var name in secrets)
+                foreach (var (name, intent) in secrets)
                 {
+                    if (intent is not SecretIntent.Protect)
+                        continue;
                     var node = slot["settings"]?[name];
                     if (node is null)
                         continue;
@@ -290,10 +367,10 @@ public static class SecretPolicy
     /// acknowledging a clean save), plus any instance ids minted here, which the caller
     /// must hand back to the client that submitted the layout.</returns>
     public static SecretSealResult Seal(
-        DashboardLayout layout, DashboardLayout? stored, Func<string, WidgetManifest?> lookup)
+        DashboardLayout layout, DashboardLayout? stored, SecretPlan plan)
     {
         var incomingCounts = CountWidgets(layout);
-        var previous = BuildStoredIndex(stored, lookup, incomingCounts, out var storedCounts);
+        var previous = BuildStoredIndex(stored, plan, incomingCounts, out var storedCounts);
         var failures = new List<SecretSealFailure>();
         var minted = new List<SecretSlotIdentity>();
         // Position in the layout AS SUBMITTED, so the client can find the same slot.
@@ -306,8 +383,10 @@ public static class SecretPolicy
         // each slot's key once, before anything can mint.
         var keyOf = new Dictionary<LayoutSlot, string?>(ReferenceEqualityComparer.Instance);
 
-        Walk(layout, lookup, (slot, name) =>
+        Walk(layout, plan, (slot, name, intent) =>
         {
+            if (intent is not SecretIntent.Protect)
+                return;
             if (!keyOf.TryGetValue(slot, out var key))
                 keyOf[slot] = key = SlotKey(slot, storedCounts, incomingCounts);
             var node = slot.Settings?[name];
@@ -489,7 +568,7 @@ public static class SecretPolicy
     /// strings made those two requirements incompatible: whichever one was honoured, the
     /// other broke. Storing the node satisfies both.
     private static Dictionary<(string Slot, string Name), JsonNode?> BuildStoredIndex(
-        DashboardLayout? stored, Func<string, WidgetManifest?> lookup,
+        DashboardLayout? stored, SecretPlan plan,
         Dictionary<string, int> incomingCounts, out Dictionary<string, int> counts)
     {
         counts = CountWidgets(stored);
@@ -504,8 +583,10 @@ public static class SecretPolicy
         // inherits, and the user re-enters — the same refusal ambiguous positions get.
         var poisoned = new HashSet<(string, string)>();
         var seen = new HashSet<(string, string)>();
-        Walk(stored, lookup, (slot, name) =>
+        Walk(stored, plan, (slot, name, intent) =>
         {
+            if (intent is not SecretIntent.Protect)
+                return;
             var key = SlotKey(slot, storedCounts, incomingCounts);
             // Register the identity BEFORE the value check: a colliding slot whose secret
             // is unset still proves the key is ambiguous. Returning early would leave the
@@ -558,10 +639,11 @@ public static class SecretPolicy
         return null;
     }
 
-    /// <summary>Visits every (slot, secret-property-name) pair of a layout. The visitor
-    /// runs once per declared secret, whether or not the slot carries a value.</summary>
-    private static void Walk(DashboardLayout layout, Func<string, WidgetManifest?> lookup,
-        Action<LayoutSlot, string> visit)
+    /// <summary>Visits every planned (slot, property) pair of a layout, with the intent
+    /// that applies. The visitor runs once per planned property, whether or not the slot
+    /// carries a value — an absent value is itself a case several branches handle.</summary>
+    private static void Walk(DashboardLayout layout, SecretPlan plan,
+        Action<LayoutSlot, string, SecretIntent> visit)
     {
         foreach (var page in layout.Pages ?? [])
         {
@@ -569,12 +651,12 @@ public static class SecretPolicy
             {
                 if (string.IsNullOrEmpty(slot.WidgetId))
                     continue;
-                var secrets = SecretNames(lookup(slot.WidgetId));
-                if (secrets.Count == 0)
+                var planned = plan.For(slot.WidgetId);
+                if (planned.Count == 0)
                     continue;
                 slot.Settings ??= new JsonObject();
-                foreach (var name in secrets)
-                    visit(slot, name);
+                foreach (var (name, intent) in planned)
+                    visit(slot, name, intent);
             }
         }
     }
