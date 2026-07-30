@@ -811,6 +811,42 @@ Check("P31i so a later ID-KEYED save restores it rather than dropping it",
     Value(p31iAgain, "apiToken") == p31Sealed && !string.IsNullOrEmpty(p31iCarried),
     $"id={p31iCarried ?? "(none)"} value={Value(p31iAgain, "apiToken") ?? "(removed)"}");
 
+// ---- P32 · the positional retry must not inherit from a DIFFERENT instance -----------
+// Codex r1 on #68. "|w:0" holds two different things: a genuinely id-less stored slot,
+// and the alias BuildStoredIndex adds for an id-BEARING one so a client that has not yet
+// adopted the host's mint can still find it. Only the first is a slot whose identity the
+// client is about to invent, and the retry must tell them apart.
+//
+// Delete the sole credentialed instance in the editor, add a fresh one of the same
+// widget, save: both counts are still one, the new id misses, and retrying against the
+// alias hands the deleted instance's credential to a tile the user believes is
+// unconfigured. My first cut of the fix did exactly that.
+var p32Stored = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: "the-deleted-one");
+SecretPolicy.Seal(p32Stored, null, Lookup);
+var p32Replacement = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "a-brand-new-tile");
+SecretPolicy.Seal(p32Replacement, p32Stored, Lookup);
+Check("P32 a replacement instance does NOT inherit the deleted instance's credential",
+    Slot(p32Replacement).Settings?["apiToken"] is null,
+    Slot(p32Replacement).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+// Same refusal on the protection-failure path, which reaches the lookup by its own route.
+var p32Typed = LayoutWith(new JsonObject { ["apiToken"] = "typed-into-the-new-tile" },
+    instanceId: "a-brand-new-tile");
+var savedEncrypt32 = SecretStore.EncryptOverride;
+SecretStore.EncryptOverride = _ => throw new PlatformNotSupportedException("no DPAPI here");
+SecretPolicy.Seal(p32Typed, p32Stored, Lookup);
+SecretStore.EncryptOverride = savedEncrypt32;
+Check("P32b nor when a failed encryption sends it looking for a previous value",
+    Slot(p32Typed).Settings?["apiToken"] is null,
+    Slot(p32Typed).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+// The alias itself still does its job: the client that has NOT minted an id — a still-open
+// editor holding the id-less slot it submitted — matches positionally and keeps the value.
+// That is the direction the alias exists for, and narrowing the retry must not break it.
+var p32Idless = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
+SecretPolicy.Seal(p32Idless, p32Stored, Lookup);
+Check("P32c but a client that has not adopted the host's mint still matches positionally",
+    Value(p32Idless, "apiToken") == Value(p32Stored, "apiToken"),
+    Value(p32Idless, "apiToken") ?? "(removed)");
+
 // ---- P31j · census: every branch that writes a value stamps the slot -----------------
 // The omission fixed in #68 was the second time a branch was written beside Stamp without
 // calling it, so this names each one. A sixth branch added without a stamp fails here,

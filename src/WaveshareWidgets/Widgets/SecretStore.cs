@@ -293,7 +293,8 @@ public static class SecretPolicy
         DashboardLayout layout, DashboardLayout? stored, Func<string, WidgetManifest?> lookup)
     {
         var incomingCounts = CountWidgets(layout);
-        var previous = BuildStoredIndex(stored, lookup, incomingCounts, out var storedCounts);
+        var previous = BuildStoredIndex(
+            stored, lookup, incomingCounts, out var storedCounts, out var aliased);
         var failures = new List<SecretSealFailure>();
         var minted = new List<SecretSlotIdentity>();
         // Position in the layout AS SUBMITTED, so the client can find the same slot.
@@ -444,6 +445,21 @@ public static class SecretPolicy
         // Gated by the SAME unambiguity test SlotKey applies: exactly one instance of this
         // widget on each side. With several, a positional retry would hand one instance
         // another's credential, which is the hazard SlotKey returns null to prevent.
+        //
+        // And gated on PROVENANCE, or it inherits from the wrong instance. "|w:0" holds
+        // two different things: a genuinely id-less stored slot, and the ALIAS
+        // BuildStoredIndex adds for an id-bearing one. Only the first is a slot whose
+        // identity the client is about to invent. Delete the sole credentialed instance in
+        // the editor, add a fresh one of the same widget, save: both counts are still one,
+        // the new id misses, and retrying against the alias hands the deleted instance's
+        // credential to a tile the user believes is unconfigured. Two different instance
+        // ids are two different instances — that refuses, and the user re-enters.
+        //
+        // The same refusal costs a credential when shell.js re-mints an id to heal a
+        // DUPLICATE: stored and incoming ids differ for what is really one instance. That
+        // path round-trips the decrypted value and re-encrypts it, so nothing is lost in
+        // practice, and where identity genuinely cannot be established this pipeline
+        // already prefers re-entry over a guess.
         bool TryPrevious(string? key, LayoutSlot slot, string name, out JsonNode? found)
         {
             found = null;
@@ -455,7 +471,10 @@ public static class SecretPolicy
             incomingCounts.TryGetValue(slot.WidgetId, out var after);
             if (before != 1 || after != 1)
                 return false;
-            return previous.TryGetValue((slot.WidgetId + "|w:0", name), out found);
+            var positional = (slot.WidgetId + "|w:0", name);
+            if (aliased.Contains(positional))
+                return false;
+            return previous.TryGetValue(positional, out found);
         }
 
         // A slot that stores a credential gets a stable identity, so the next save
@@ -488,14 +507,21 @@ public static class SecretPolicy
     /// nested credential material) while Seal must still put it back. Indexing only
     /// strings made those two requirements incompatible: whichever one was honoured, the
     /// other broke. Storing the node satisfies both.
+    /// <param name="aliased">The "|w:0" keys that are an ALIAS for an id-bearing stored
+    /// slot rather than a genuinely id-less one. A caller matching by position needs to
+    /// tell the two apart: an alias belongs to an instance that already has an identity,
+    /// so a slot arriving with a DIFFERENT one is a different instance.</param>
     private static Dictionary<(string Slot, string Name), JsonNode?> BuildStoredIndex(
         DashboardLayout? stored, Func<string, WidgetManifest?> lookup,
-        Dictionary<string, int> incomingCounts, out Dictionary<string, int> counts)
+        Dictionary<string, int> incomingCounts, out Dictionary<string, int> counts,
+        out HashSet<(string Slot, string Name)> aliased)
     {
         counts = CountWidgets(stored);
         var index = new Dictionary<(string, string), JsonNode?>();
+        aliased = new HashSet<(string, string)>();
         if (stored is null)
             return index;
+        var aliasedKeys = aliased;
         var storedCounts = counts;
         // Two stored slots resolving the same key means the layout has duplicate
         // instanceIds (shell.js detects and heals those, but the editor can save before
@@ -533,7 +559,12 @@ public static class SecretPolicy
                 storedCounts.TryGetValue(slot.WidgetId, out var before);
                 incomingCounts.TryGetValue(slot.WidgetId, out var after);
                 if (before == 1 && after == 1)
+                {
+                    // Recorded as an alias whether or not the add wins: either way this
+                    // position is spoken for by a slot that already has an identity.
                     index.TryAdd((slot.WidgetId + "|w:0", name), storedNode.DeepClone());
+                    aliasedKeys.Add((slot.WidgetId + "|w:0", name));
+                }
             }
         });
         foreach (var key in poisoned)
