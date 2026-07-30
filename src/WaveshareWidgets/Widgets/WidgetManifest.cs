@@ -179,25 +179,6 @@ public sealed class WidgetManifest
     ///
     /// Merging, with secret winning, is the only answer that loses nothing in either
     /// direction — the same rule the settings window's property union follows.</summary>
-    /// <summary>Like <see cref="WithSecretsForced"/>, but it only ADDS names this manifest
-    /// does not already declare. A property the manifest declares is left exactly as it is.
-    ///
-    /// Used when redaction names from a REFUSED folder have to be applied to a DIFFERENT
-    /// widget that loaded under the same id. Forcing them there is a category error and a
-    /// destructive one: if the loaded copy declares that name as a `list` (or any
-    /// non-string type), Mask replaces its value with a placeholder while BuildStoredIndex
-    /// cannot index a non-string to restore — so Seal's empty branch finds nothing stored
-    /// and REMOVES the property. An unrelated edit then deletes the user's list for good.
-    ///
-    /// A name the loaded widget declares belongs to the loaded widget. Only the names it
-    /// has no opinion about can be the refused copy's orphaned credential.</summary>
-    public WidgetManifest WithSecretsAdded(IEnumerable<string> secretNames)
-    {
-        var declared = new HashSet<string>(
-            Properties.Where(p => !string.IsNullOrEmpty(p.Name)).Select(p => p.Name), StringComparer.Ordinal);
-        return WithSecretsForced(secretNames.Where(n => !declared.Contains(n)));
-    }
-
     public WidgetManifest WithSecretsForced(IEnumerable<string> secretNames)
     {
         var props = new List<WidgetProperty>(Properties);

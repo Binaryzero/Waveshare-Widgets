@@ -352,30 +352,6 @@ Check("C13e the manifest's identity is preserved, or the lookup stops finding it
 Check("C13f the original is not mutated — the snapshot decides what to keep",
     wasLoaded.Properties.Single(p => p.Name == "feedUrl").Type == "text");
 
-// ---- C14 · a SHADOWED refusal must not force names onto a different widget ------------
-// Two folders, same id, ordinally equal: one refused, one loaded. The refusal's redaction
-// names have to survive (that is the #63 P1) but they describe the REFUSED copy. Forcing
-// them onto the loaded manifest is destructive where the loaded copy declares that name as
-// something Mask/Seal cannot round-trip: Mask writes a placeholder, BuildStoredIndex
-// cannot index a non-string to restore, and Seal's empty branch REMOVES the property.
-var loadedCopy = ManifestWith(
-    new WidgetProperty { Name = "endpoints", Label = "Endpoints", Type = "list" },
-    new WidgetProperty { Name = "pollSeconds", Type = "number" });
-var added = loadedCopy.WithSecretsAdded(["endpoints", "pollSeconds", "apiToken"]);
-Check("C14 a list the loaded widget declares is left alone, not forced to secret",
-    added.Properties.Single(p => p.Name == "endpoints").Type == "list",
-    added.Properties.Single(p => p.Name == "endpoints").Type);
-Check("C14b nor is any other declared property",
-    added.Properties.Single(p => p.Name == "pollSeconds").Type == "number");
-Check("C14c but a name the loaded widget never declares IS added as a secret — that is the leak",
-    added.Properties.Any(p => p.Name == "apiToken" && p.Type == "secret"));
-Check("C14d and its label survives, so the entry still renders",
-    added.Properties.Single(p => p.Name == "endpoints").Label == "Endpoints");
-// The forcing variant still forces — it is right when the entry IS this widget's own older
-// manifest (a property retyped by the same folder edit that refused it).
-Check("C14e WithSecretsForced still overrides a declared property, for the same-widget case",
-    loadedCopy.WithSecretsForced(["endpoints"]).Properties.Single(p => p.Name == "endpoints").Type == "secret");
-
 // ---- C4 · the identity checks still work --------------------------------------------
 // CredentialsAreTyped is deliberately separate from IsValid (iCUE widgets have no
 // properties at IsValid time), so confirm neither swallowed the other's job.

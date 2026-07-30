@@ -317,19 +317,12 @@ public sealed class SettingsWindow : Form
             // the field before the rescan then goes to layout.json in the clear — the very
             // hole the redaction metadata exists to close, reopened by the order of events.
             //
-            // Secret wins, exactly as in the property union above — but ONLY when the entry
-            // describes this same widget. If the id is also LOADED, the entry belongs to a
-            // different widget that happens to share the id (Rescan resolves duplicates
-            // ordinally, and the refusal list keeps shadowed entries so their redaction
-            // metadata survives). Forcing a refused copy's names onto a loaded manifest is
-            // a category error and a destructive one: a name the loaded copy declares as a
-            // `list` gets masked to a placeholder, BuildStoredIndex cannot index a
-            // non-string to restore it, and Seal's empty branch REMOVES the property — an
-            // unrelated edit deletes the user's list for good. Names it does declare are
-            // its own; only the ones it has no opinion about can be the orphaned credential.
-            var loaded = _library.Widgets.Any(w => string.Equals(w.Manifest.Id, r.Id, StringComparison.Ordinal));
+            // Secret wins, exactly as in the property union above. WidgetLibrary.Rejected
+            // never contains an id that also loaded, so `existing` here can only be this
+            // same widget's own older manifest — the case round seven was written for,
+            // where a folder edit both retyped a property and refused the manifest.
             snapshot[r.Id] = snapshot.TryGetValue(r.Id, out var existing)
-                ? (loaded ? existing.WithSecretsAdded(r.RedactNames) : existing.WithSecretsForced(r.RedactNames))
+                ? existing.WithSecretsForced(r.RedactNames)
                 : WidgetManifest.RedactionOnly(r.Id, r.Name, r.RedactNames);
         }
     }
@@ -444,30 +437,14 @@ public sealed class SettingsWindow : Form
     });
 
     /// <summary>Widgets on disk that the library refused to load. Without this the
-    /// refusal is a line in app.log and, to the user, a tile that stopped existing.
-    ///
-    /// A refusal whose id loaded from ANOTHER folder is suppressed here, and only here.
-    /// The widget is present, so warning that it is unavailable sends the user hunting
-    /// for a problem they do not have — but the refusal record itself must survive, because
-    /// <see cref="AddRedactionManifests"/> reads the same list for its RedactNames and the
-    /// layout can still hold a plaintext credential written while the refused copy was
-    /// active. Suppressing at the source destroyed that metadata along with the warning.
-    ///
-    /// ORDINAL, matching the identity that decided what loaded: ids differing only in case
-    /// are two distinct widgets to <c>Rescan</c>, so a rejected "Foo" really is unavailable
-    /// even while "foo" works, and hiding its warning would leave a layout referencing
-    /// "Foo" with an unexplained empty tile.</summary>
-    private object RejectedCatalog()
+    /// refusal is a line in app.log and, to the user, a tile that stopped existing.</summary>
+    private object RejectedCatalog() => _library.Rejected.Select(r => new
     {
-        var loaded = new HashSet<string>(_library.Widgets.Select(w => w.Manifest.Id), StringComparer.Ordinal);
-        return _library.Rejected.Where(r => !loaded.Contains(r.Id)).Select(r => new
-        {
-            id = r.Id,
-            name = r.Name,
-            folder = r.Folder,
-            reason = r.Reason,
-        });
-    }
+        id = r.Id,
+        name = r.Name,
+        folder = r.Folder,
+        reason = r.Reason,
+    });
 
     /// <summary>Re-sends the palette and the refusal list after the watcher rescans.
     ///

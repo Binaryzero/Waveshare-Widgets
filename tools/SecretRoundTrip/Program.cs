@@ -278,28 +278,37 @@ var listLayout = LayoutWith(listSetting);
 var listMasked = JsonSerializer.SerializeToNode(listLayout);
 SecretPolicy.Mask(listMasked, Lookup);
 var listMaskedSlot = listMasked!["pages"]![0]!["slots"]![0]!;
-Check("P30 Mask leaves a non-string value alone rather than placeholdering it",
-    listMaskedSlot["settings"]!["apiToken"] is JsonArray,
+Check("P30 Mask REDACTS a non-string value — it may hold nested credential material",
+    listMaskedSlot["settings"]!["apiToken"] is JsonValue,
     listMaskedSlot["settings"]!["apiToken"]?.ToJsonString());
-Check("P30b and does not claim it is a stored secret",
-    listMaskedSlot["secretsSet"] is null || !listMaskedSlot["secretsSet"]!.AsArray()
-        .Any(n => n!.GetValue<string>() == "apiToken"));
+Check("P30b nothing of the original survives into the editor payload",
+    !listMasked.ToJsonString().Contains("\"a\"") || !listMasked.ToJsonString().Contains("apiToken"),
+    listMaskedSlot["settings"]!.ToJsonString());
 
-// The save round trip: the editor hands the array straight back, and NOTHING is stored
-// for that key, which is exactly the state that used to trigger the delete.
+// The save round trip: the editor hands the redaction back, and the stored NODE — not a
+// stringified shadow of it — is what gets restored. Redacting and restoring used to be
+// incompatible: whichever was honoured, the other broke.
 var listResaved = JsonSerializer.Deserialize<DashboardLayout>(listMasked.ToJsonString())!;
-SecretPolicy.Seal(listResaved, null, Lookup);
-Check("P30c an unrelated save does not delete it",
-    Slot(listResaved).Settings?["apiToken"] is JsonArray kept30 && kept30.Count == 2,
+SecretPolicy.Seal(listResaved, listLayout, Lookup);
+Check("P30c an unrelated save restores the array exactly, rather than deleting it",
+    Slot(listResaved).Settings?["apiToken"] is JsonArray kept30 && kept30.Count == 2
+        && kept30[0]!.GetValue<string>() == "a",
     Slot(listResaved).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
 Check("P30d and the ordinary setting beside it still saves",
     Value(listResaved, "repo") == "owner/name");
-// A genuine empty string is still an emptied field with nothing stored, so it is removed —
-// the behaviour P5d depends on must not be softened by the guard.
+// A genuine empty string with nothing stored is still an emptied field, so it is removed —
+// the behaviour P5d depends on.
 var trulyEmpty = LayoutWith(new JsonObject { ["apiToken"] = "" });
 SecretPolicy.Seal(trulyEmpty, null, Lookup);
 Check("P30e a genuine empty string with nothing stored is still removed",
     Slot(trulyEmpty).Settings?["apiToken"] is null);
+// And a non-string with nothing stored is removed too — there is no value to protect, and
+// leaving it would put the pipeline back to guessing from the incoming type.
+var orphanArray = LayoutWith(new JsonObject { ["apiToken"] = new JsonArray { 1 } });
+SecretPolicy.Seal(orphanArray, null, Lookup);
+Check("P30f a non-string with nothing stored is removed, not guessed at",
+    Slot(orphanArray).Settings?["apiToken"] is null,
+    Slot(orphanArray).Settings?["apiToken"]?.ToJsonString());
 
 // ---- P16 · Codex r2: an unreadable envelope is DROPPED, never re-wrapped -------------
 // Re-encrypting a foreign blob would produce an envelope this machine CAN open, so
