@@ -542,7 +542,7 @@ public sealed partial class WidgetLibrary : IDisposable
         var backupDir = Path.Combine(AppPaths.DataDir, ".replacing-" + Slug(manifest.Id));
         var swapped = false;   // is SOMETHING installed at targetDir? gates deleting the backup
         if (Directory.Exists(stageDir))
-            Directory.Delete(stageDir, recursive: true);
+            DeleteTree(stageDir);
         try
         {
             // ExtractToDirectory guards against zip-slip path traversal.
@@ -576,7 +576,7 @@ public sealed partial class WidgetLibrary : IDisposable
             {
                 // Both present: the target is installed and working, so the backup is a
                 // stale leftover with nothing to protect.
-                Directory.Delete(backupDir, recursive: true);
+                DeleteTree(backupDir);
             }
 
             var hadPrevious = Directory.Exists(targetDir);
@@ -615,13 +615,13 @@ public sealed partial class WidgetLibrary : IDisposable
             // A refused or half-extracted package must not leave a staging folder behind
             // for the next Rescan to trip over.
             if (Directory.Exists(stageDir))
-                Directory.Delete(stageDir, recursive: true);
+                DeleteTree(stageDir);
             // The backup goes ONLY once something is definitely installed at the target —
             // either the new copy or the restored old one. Deleting it unconditionally
             // meant a failed move followed by a failed restore destroyed the last copy,
             // which is the very outcome the backup exists to prevent.
             if (swapped && Directory.Exists(backupDir))
-                Directory.Delete(backupDir, recursive: true);
+                DeleteTree(backupDir);
         }
         Log.Info($"Installed widget '{manifest.Id}' v{manifest.Version} from {Path.GetFileName(packagePath)}");
 

@@ -149,6 +149,7 @@
       if (!state.layout || !Array.isArray(state.layout.pages)) state.layout = { pages: [] };
       backgroundHost = state.backgroundHost || backgroundHost;
       widgetsById = new Map((state.widgets || []).map((w) => [w.id, w]));
+      rememberSecretNames(state.widgets);
       // Build stamp in the header: "which version am I running" answered on sight.
       el('appVersion').textContent = (state.status && state.status.version) || '';
       selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
@@ -167,6 +168,7 @@
       state.widgets = msg.widgets || [];
       state.rejectedWidgets = msg.rejectedWidgets || [];
       widgetsById = new Map(state.widgets.map((w) => [w.id, w]));
+      rememberSecretNames(state.widgets);
       const wasDirty = dirty;
       initializing = true;
       renderAll();
@@ -286,15 +288,36 @@
                               // comparing against it re-marked a saved layout dirty on a
                               // mere page selection after editing with the preview hidden.
 
+  /** Secret property names per widget id, UNIONED over every catalog this session has
+   * seen — never just the current one.
+   *
+   * These names are the only thing that stops a typed-but-unsaved credential reaching
+   * the replica, and the replica hosts real widget iframes whose `mergedSettings` copies
+   * every slot setting straight in. Recomputing from the live catalog means a hot-reload
+   * that removes or renames a secret property silently drops it from the scrub list
+   * while the plaintext is still sitting in `state.layout` — and the very next replica
+   * init hands it to the widget. The union is the client-side twin of the host's
+   * masked-manifest snapshot, and holds until the layout is remasked by a settings-init.
+   *
+   * Erring wide is safe here: an extra name only blanks a field the preview should not
+   * have shown anyway. */
+  const secretNamesById = new Map();
+  function rememberSecretNames(widgets) {
+    for (const w of widgets || []) {
+      if (!w || !w.id) continue;
+      const seen = secretNamesById.get(w.id) || new Set();
+      for (const pr of w.properties || []) if (pr && pr.type === 'secret') seen.add(pr.name);
+      secretNamesById.set(w.id, seen);
+    }
+  }
+  const knownSecretNames = (widgetId) => [...(secretNamesById.get(widgetId) || [])];
+
   /** The layout the PREVIEW may see. A typed credential lives in state.layout until
    * Save, and the replica hosts real widget iframes — so without this the widget holds
    * (and could transmit) a credential the user has not committed, in a surface the spec
    * says always shows an empty secret. Blanked per manifest, on a copy. */
   function replicaLayout() {
-    const secretsOf = (widgetId) => {
-      const w = (state.widgets || []).find((x) => x.id === widgetId);
-      return (w && w.properties || []).filter((pr) => pr.type === 'secret').map((pr) => pr.name);
-    };
+    const secretsOf = (widgetId) => knownSecretNames(widgetId);
     const copy = { pages: ((state.layout || {}).pages || []).map((page) => Object.assign({}, page, {
       slots: (page.slots || []).map((slot) => {
         const names = secretsOf(slot.widgetId);
@@ -319,10 +342,9 @@
         mine.set(slot.instanceId ? 'i:' + slot.instanceId : 'p:' + pi + ':' + si, slot);
       });
     });
-    const secretsOf = (widgetId) => {
-      const w = (state.widgets || []).find((x) => x.id === widgetId);
-      return (w && w.properties || []).filter((pr) => pr.type === 'secret').map((pr) => pr.name);
-    };
+    // Same union as the replica scrub — a capture must restore every secret this
+    // session has ever known about, not only those the current catalog still declares.
+    const secretsOf = (widgetId) => knownSecretNames(widgetId);
     const pages = (captured.pages || []).map((page, pi) => Object.assign({}, page, {
       slots: (page.slots || []).map((slot, si) => {
         const names = secretsOf(slot.widgetId);

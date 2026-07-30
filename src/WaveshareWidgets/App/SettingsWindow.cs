@@ -301,15 +301,42 @@ public sealed class SettingsWindow : Form
         if (_maskedManifests is null) { SnapshotManifests(); return; }
         foreach (var w in _library.Widgets)
         {
-            // ADD ONLY — an id already in the snapshot keeps its original manifest.
-            // Overwriting is the same credential-loss bug as dropping, reached a
-            // different way: edit a widget in place so a secret property is removed or
-            // retyped, and the replacement manifest no longer describes the field that
-            // masked the layout. Seal would then skip it and write the masked blank over
-            // the ciphertext. The editor's masked copy was produced by the OLD manifest,
-            // so the old manifest is the only one that can interpret it.
-            if (!_maskedManifests.ContainsKey(w.Manifest.Id))
+            if (!_maskedManifests.TryGetValue(w.Manifest.Id, out var masked))
+            {
                 _maskedManifests[w.Manifest.Id] = w.Manifest;
+                continue;
+            }
+
+            // UNION the property lists — neither manifest alone is sufficient, and
+            // getting this wrong loses a credential in one direction or the other:
+            //
+            //   keep only the OLD  -> a secret ADDED by the reload is unknown to Seal, so
+            //                         a credential the user types into the new field is
+            //                         written to layout.json as plaintext.
+            //   keep only the NEW  -> a secret the reload REMOVED or retyped is unknown,
+            //                         so the editor's masked blank overwrites the stored
+            //                         ciphertext.
+            //
+            // Old definitions win on a name collision: they are the ones that classified
+            // the layout the editor is currently holding, and that layout is what the
+            // next save writes.
+            var union = new List<WidgetProperty>(masked.Properties);
+            var known = new HashSet<string>(union.Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
+            foreach (var p in w.Manifest.Properties)
+                if (known.Add(p.Name)) union.Add(p);
+
+            _maskedManifests[w.Manifest.Id] = new WidgetManifest
+            {
+                Id = w.Manifest.Id,
+                Name = w.Manifest.Name,
+                Author = w.Manifest.Author,
+                Version = w.Manifest.Version,
+                Description = w.Manifest.Description,
+                MinApiVersion = w.Manifest.MinApiVersion,
+                PreviewIcon = w.Manifest.PreviewIcon,
+                SupportedSlots = w.Manifest.SupportedSlots,
+                Properties = union,
+            };
         }
     }
 

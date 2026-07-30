@@ -173,6 +173,16 @@ Check("C7c webhookEndpoint stays flagged despite ending in a metadata word",
 Check("C7d and a refused metadata property no longer blocks the install",
     ManifestWith(new WidgetProperty { Name = "tokenEndpoint", Type = "text" }).CredentialsAreTyped(out _));
 
+// ---- C8 · an authorization header holds the whole credential -------------------------
+// `authorizationHeader` typed as text carries "Bearer eyJ…" verbatim into layout.json.
+// None of the credential words matched it: "auth" alone is far too broad (authMode,
+// authType), so the spellings are named explicitly.
+foreach (var name in new[] { "authorizationHeader", "authHeader", "authorization", "auth_header" })
+    Check($"C8 '{name}' is recognised as a credential", CredentialNames.LooksLikeCredential(name));
+// The neighbours that must stay innocent, or every widget configuring auth breaks.
+foreach (var name in new[] { "authMode", "authType", "authScheme", "headerName", "authorizationType" })
+    Check($"C8b '{name}' is left alone", !CredentialNames.LooksLikeCredential(name));
+
 // ---- C4 · the identity checks still work --------------------------------------------
 // CredentialsAreTyped is deliberately separate from IsValid (iCUE widgets have no
 // properties at IsValid time), so confirm neither swallowed the other's job.
