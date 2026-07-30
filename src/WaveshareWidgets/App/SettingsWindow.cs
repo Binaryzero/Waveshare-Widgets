@@ -307,14 +307,20 @@ public sealed class SettingsWindow : Form
         {
             if (string.IsNullOrEmpty(r.Id) || r.RedactNames.Count == 0)
                 continue;
-            // TryAdd, never overwrite: a real manifest always outranks a stand-in built
-            // from a refusal. With the snapshot keyed ordinally this can no longer collide
-            // by case — a rejected 'Foo' and a loaded 'foo' are separate entries, which is
-            // the whole point, since they are separate widgets to the library. The guard
-            // stays because the ordering here (real manifests first, stand-ins second) is
-            // the only thing that makes overwriting impossible, and that is a property of
-            // the caller, not of this loop.
-            snapshot.TryAdd(r.Id, WidgetManifest.RedactionOnly(r.Id, r.Name, r.RedactNames));
+            // MERGE into an existing entry, never replace it and never skip it.
+            //
+            // Replacing loses every OTHER secret the old manifest declared — that entry is
+            // what masked the layout the editor is holding, so Seal would blank them. But
+            // skipping is just as wrong, and that is what a bare TryAdd did: a widget can
+            // be refused by the same folder edit that RETYPED one of its properties, and
+            // the stale entry still calls that property `text`. A credential typed into
+            // the field before the rescan then goes to layout.json in the clear — the very
+            // hole the redaction metadata exists to close, reopened by the order of events.
+            //
+            // Secret wins, exactly as in the property union above.
+            snapshot[r.Id] = snapshot.TryGetValue(r.Id, out var existing)
+                ? existing.WithSecretsForced(r.RedactNames)
+                : WidgetManifest.RedactionOnly(r.Id, r.Name, r.RedactNames);
         }
     }
 

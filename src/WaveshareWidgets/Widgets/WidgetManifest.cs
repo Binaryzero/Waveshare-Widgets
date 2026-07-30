@@ -63,7 +63,14 @@ public sealed class WidgetManifest
 
             // List rows are NEVER encrypted — SecretPolicy walks top-level properties
             // only — so a credential-looking key inside one has no safe type at all.
-            if (p.Fields is JsonArray fields)
+            //
+            // Gated on the LIST type, matching the Node validator, which only reads
+            // `fields` for `type: "list"`. Scanning it unconditionally refused a widget
+            // over dormant metadata that nothing reads — a property demoted from `list`
+            // to `text` and left with its old field definitions — which is precisely the
+            // build-passes-install-refuses divergence this whole change exists to prevent,
+            // just pointing the other way.
+            if (p.Type == "list" && p.Fields is JsonArray fields)
             {
                 foreach (var field in fields)
                 {
@@ -126,6 +133,50 @@ public sealed class WidgetManifest
         Name = name,
         Properties = [.. secretNames.Select(n => new WidgetProperty { Name = n, Type = "secret" })],
     };
+
+    /// <summary>A copy of this manifest with <paramref name="secretNames"/> forced to
+    /// <c>secret</c> — present ones upgraded, absent ones added.
+    ///
+    /// Needed when a widget the snapshot ALREADY holds becomes refused. A stand-in cannot
+    /// simply take its place (the existing entry is what masked the layout the editor is
+    /// holding, and dropping it makes Seal blank every other secret that widget declares),
+    /// but leaving the entry untouched is just as wrong: the refusal is often the moment a
+    /// property was retyped, and the old entry still calls it <c>text</c>, so a credential
+    /// typed into that field before the rescan is written out in the clear.
+    ///
+    /// Merging, with secret winning, is the only answer that loses nothing in either
+    /// direction — the same rule the settings window's property union follows.</summary>
+    public WidgetManifest WithSecretsForced(IEnumerable<string> secretNames)
+    {
+        var props = new List<WidgetProperty>(Properties);
+        var byName = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < props.Count; i++)
+            if (!string.IsNullOrEmpty(props[i].Name)) byName[props[i].Name] = i;
+        foreach (var name in secretNames)
+        {
+            if (string.IsNullOrEmpty(name)) continue;
+            if (byName.TryGetValue(name, out var at))
+            {
+                if (props[at].Type != "secret")
+                    props[at] = new WidgetProperty { Name = name, Label = props[at].Label, Type = "secret" };
+                continue;
+            }
+            byName[name] = props.Count;
+            props.Add(new WidgetProperty { Name = name, Type = "secret" });
+        }
+        return new WidgetManifest
+        {
+            Id = Id,
+            Name = Name,
+            Author = Author,
+            Version = Version,
+            Description = Description,
+            MinApiVersion = MinApiVersion,
+            PreviewIcon = PreviewIcon,
+            SupportedSlots = SupportedSlots,
+            Properties = props,
+        };
+    }
 }
 
 /// <summary>A user-configurable widget setting, declared in the manifest and rendered by the host.

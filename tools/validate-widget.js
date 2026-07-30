@@ -24,7 +24,7 @@ const KNOWN_TYPES = new Set(['text', 'number', 'slider', 'color', 'select', 'swi
 // the shared fixture caught. It cannot swallow the boundary cases — `passwordless`,
 // `secretary` and `tokenizer` still fail, because after the optional s the next
 // character must end the word.
-const CREDENTIAL_WORD = /(^|[^a-z0-9])(token|secret|password|passwd|api ?key|bearer|pat|credential|private ?key|access ?key|authorization|auth ?header|jwt)s?([^a-z0-9]|$)/i;
+const CREDENTIAL_WORD = /(^|[^a-z0-9])(token|secret|password|passwd|api ?key|bearer|pat|credential|private ?key|access ?key|authorization|auth ?header|jwt|pass ?phrase)s?([^a-z0-9]|$)/i;
 // Credential-equivalent URLs (WIDGET-STANDARD: "a private ICS or webhook link"). A
 // webhook URL IS the credential — anyone holding it can post. So is a private calendar
 // address. But most url properties are public (the iframe and youtube widgets both

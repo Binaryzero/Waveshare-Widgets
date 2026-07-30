@@ -258,6 +258,44 @@ Check("C11 two names differing only in case are two properties, not one",
     caseDistinct.CredentialPropertyNames().Count == 2,
     string.Join(", ", caseDistinct.CredentialPropertyNames()));
 
+// ---- C12 · `fields` belongs to lists, and only to lists -------------------------------
+// The Node validator reads `fields` only for `type: "list"`, and only list editors consume
+// those definitions. Scanning it on every property refused a widget over dormant metadata
+// nothing reads — a property demoted from `list` to `text` that kept its old field list.
+// That is the build-passes/install-refuses divergence this PR exists to prevent, aimed the
+// other way, and it is worse than the reverse: the widget simply disappears.
+var dormantFields = ManifestWith(new WidgetProperty
+{
+    Name = "endpoint",
+    Type = "text",
+    Fields = JsonNode.Parse("""[{"key":"apiKey","type":"text"}]"""),
+});
+Check("C12 a non-list property's leftover fields do not refuse the widget",
+    dormantFields.CredentialsAreTyped(out var c12Error), c12Error);
+Check("C12b but a real list is still scanned", !listWithSecret.CredentialsAreTyped(out _));
+
+// ---- C13 · a refused widget already in the snapshot is MERGED, not replaced -----------
+// A folder edit can retype a property AND refuse the manifest in the same breath. The
+// settings window is holding the old entry, so a stand-in cannot replace it (that blanks
+// every other secret it declares) and cannot be skipped either (the stale entry still
+// calls the retyped property `text`, and Seal writes the credential out in the clear).
+var wasLoaded = ManifestWith(
+    new WidgetProperty { Name = "feedUrl", Label = "Feed", Type = "text" },
+    new WidgetProperty { Name = "clientSecret", Label = "Client secret", Type = "secret" });
+var merged = wasLoaded.WithSecretsForced(["feedUrl", "apiToken"]);
+Check("C13 a retyped property is upgraded to secret in place",
+    merged.Properties.Single(p => p.Name == "feedUrl").Type == "secret");
+Check("C13b its label survives the upgrade — this manifest still renders the editor",
+    merged.Properties.Single(p => p.Name == "feedUrl").Label == "Feed");
+Check("C13c a name the old manifest never had is added",
+    merged.Properties.Any(p => p.Name == "apiToken" && p.Type == "secret"));
+Check("C13d and every other secret it already declared survives",
+    merged.Properties.Any(p => p.Name == "clientSecret" && p.Type == "secret"));
+Check("C13e the manifest's identity is preserved, or the lookup stops finding it",
+    merged.Id == wasLoaded.Id && merged.Properties.Count == 3);
+Check("C13f the original is not mutated — the snapshot decides what to keep",
+    wasLoaded.Properties.Single(p => p.Name == "feedUrl").Type == "text");
+
 // ---- C4 · the identity checks still work --------------------------------------------
 // CredentialsAreTyped is deliberately separate from IsValid (iCUE widgets have no
 // properties at IsValid time), so confirm neither swallowed the other's job.

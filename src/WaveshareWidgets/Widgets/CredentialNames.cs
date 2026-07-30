@@ -22,7 +22,7 @@ public static partial class CredentialNames
     // `credentials` did not; it cannot swallow the boundary cases, since the character
     // after the optional s must still end the word (`passwordless`, `secretary`,
     // `tokenizer` all stay innocent).
-    [GeneratedRegex(@"(^|[^a-z0-9])(token|secret|password|passwd|api ?key|bearer|pat|credential|private ?key|access ?key|authorization|auth ?header|jwt)s?([^a-z0-9]|$)", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"(^|[^a-z0-9])(token|secret|password|passwd|api ?key|bearer|pat|credential|private ?key|access ?key|authorization|auth ?header|jwt|pass ?phrase)s?([^a-z0-9]|$)", RegexOptions.IgnoreCase)]
     private static partial Regex CredentialWord();
 
     // Credential-equivalent URLs (WIDGET-SPEC: "a private ICS or webhook link"). A
