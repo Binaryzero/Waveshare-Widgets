@@ -591,6 +591,17 @@ header h1 #appVersion {
   overflow: auto;
 }
 #dockPalette .panel-title { margin-bottom: 8px; }
+
+/* Settings | Appearance. What a widget DOES is configured far more often than how it
+ * looks, and the theme overrides are an escape hatch from the global theme rather
+ * than part of setting a widget up — inline above the properties they pushed the
+ * controls people came for below the fold. */
+.slot-tabs { display: inline-flex; gap: 4px; margin: 2px 0 12px; padding: 3px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 9px; }
+.slot-tab { border: 0; background: transparent; color: var(--muted);
+  padding: 5px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.slot-tab:hover { color: var(--text); }
+.slot-tab.on { background: var(--accent); color: #04121a; font-weight: 600; }
 /* The replica's "+" zone still asks for "the gallery". It is already on screen, so
  * the answer is a nudge rather than a reveal — silence would read as a dead tap,
  * which is the same failure #77 was about. */

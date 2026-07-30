@@ -357,6 +357,32 @@ const layout = {
   check('E15g exactly one pane is visible at a time',
     dock.panesShown === 1, `${dock.panesShown} panes`);
 
+  // ---- E16 · the supported 780×480 minimum ------------------------------------------
+  // Both regions are flex:none inside an overflow:hidden body, so nothing can scroll
+  // the window: anything past the bottom edge is simply unreachable. At the smallest
+  // supported size the toolbar plus the dock can leave less room than the canvas's
+  // preferred floor, and an unconditional floor spends room the dock needs. A cramped
+  // canvas is recoverable by resizing; controls clipped off a document that cannot
+  // scroll are not.
+  await page.setViewportSize({ width: 780, height: 480 });
+  await page.waitForTimeout(500);
+  const tiny = await page.evaluate(() => {
+    const r = (id) => { const e = document.getElementById(id); return e ? e.getBoundingClientRect() : null; };
+    const stage = r('previewStage'), d = r('dock'), panel = r('contextPanel');
+    return {
+      dockBottom: d ? Math.round(d.bottom) : 0,
+      win: window.innerHeight,
+      stageH: stage ? Math.round(stage.height) : 0,
+      overlap: stage && panel ? Math.round(Math.max(0, stage.bottom - panel.top)) : -1,
+    };
+  });
+  check('E16 at 780×480 the dock still fits inside the window',
+    tiny.dockBottom <= tiny.win + 1, `dock bottom ${tiny.dockBottom} vs window ${tiny.win}`);
+  check('E16b the canvas gives up height rather than pushing the dock off-screen',
+    tiny.stageH > 0 && tiny.stageH <= 160, `${tiny.stageH}px`);
+  check('E16c and the panel still does not cover the canvas at that size',
+    tiny.overlap === 0, `overlap ${tiny.overlap}px`);
+
   await browser.close();
   shellSrv.close();
   console.log(failures ? `${failures} FAILURES` : 'ALL PASS');

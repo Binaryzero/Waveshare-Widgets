@@ -58,6 +58,10 @@
   let pendingBgPick = null;    // callback(source, kind) for the in-flight file dialog
   let sdProfileWaiters = [];   // callbacks awaiting an sd-profiles-result
   let galleryOpen = false;     // settings-side add-widget gallery (Widget tab)
+  // Which half of the widget inspector is showing. Module-level so it survives the
+  // re-render every edit triggers — resetting to Settings on each keystroke would
+  // throw the user out of Appearance mid-adjustment.
+  let slotSubTab = 'settings';
   let instanceSeq = 0;         // suffix for minted instanceIds (gallery adds)
 
   const el = (id) => document.getElementById(id);
@@ -664,7 +668,13 @@
     const stageTop = previewStage.getBoundingClientRect().top;
     const room = Math.round(window.innerHeight - stageTop - dockH - 12);
     const ceiling = editMode ? 430 : 320;
-    const maxH = Math.max(160, Math.min(ceiling, room));
+    // The floor yields to the room. An unconditional 160 forces a stage taller than
+    // what is left at the supported 780x480 minimum, where the toolbar plus the dock's
+    // allowance can leave less than that — and since both regions are flex:none in an
+    // overflow:hidden body, the dock is pushed past the viewport and its lower controls
+    // are unreachable. A cramped canvas is recoverable by resizing the window; controls
+    // clipped off the bottom of a document that cannot scroll are not.
+    const maxH = Math.max(Math.min(160, Math.max(0, room)), Math.min(ceiling, room));
     const scale = Math.min(width / 1280, maxH / 400, 1);
     previewFrame.style.transform = 'scale(' + scale + ')';
     previewFrame.style.marginLeft = Math.max(0, Math.round((width - 1280 * scale) / 2)) + 'px';
@@ -672,6 +682,14 @@
   }
   new ResizeObserver(fitReplica).observe(previewStage);
   window.addEventListener('resize', fitReplica); // stage width alone misses height-only resizes
+  // The DOCK's height is now an input to the fit, so it has to be watched too. It grows
+  // without the window, the toolbar or the stage changing at all: settings-init fills
+  // the palette, and switching widgets swaps inspector content of a different height.
+  // Watching only the stage left the old dock height in the calculation, and with both
+  // regions flex:none inside an overflow:hidden body the dock's lower controls stayed
+  // clipped until some unrelated resize happened to refit.
+  if (typeof ResizeObserver !== 'undefined' && el('dock'))
+    new ResizeObserver(fitReplica).observe(el('dock'));
 
   // A dead preview must say so, not sit there as a black slab: if the shell never
   // reports ready, surface it where the user is looking (#27 companion diagnostic).
@@ -1016,6 +1034,12 @@
   function openGallery() {
     const shelf = el('dockPalette');
     if (!shelf) return;
+    // Re-render BEFORE flashing. The shelf's buttons close over the page they were
+    // built for, and an add-widget message can name a different one — tapping the old
+    // page's "+" during the preview's page transition moves selectedPage, and a shelf
+    // still bound to the previous page would add the widget there and then open details
+    // for an unrelated slot. Flashing something stale is worse than not flashing.
+    renderEditorPanel();
     shelf.scrollIntoView({ block: 'nearest' });
     shelf.classList.remove('flash');
     void shelf.offsetWidth;              // restart the animation on repeat taps
@@ -1296,7 +1320,32 @@
       iconButton('✕', 'Remove', () => removeSlotAt(page, index), true));
     card.appendChild(row);
 
-    card.appendChild(renderSlotStyle(slot));
+    // Two tabs, settings FIRST. What a widget DOES is configured far more often than
+    // how it looks, and the theme overrides are an escape hatch from the global theme
+    // rather than part of setting the widget up — they were sitting above the controls
+    // people actually came for, pushing them below the fold.
+    const tabs = document.createElement('div');
+    tabs.className = 'slot-tabs';
+    const propsWrap = document.createElement('div');
+    const styleWrap = document.createElement('div');
+    const syncSubTab = () => {
+      propsWrap.hidden = slotSubTab !== 'settings';
+      styleWrap.hidden = slotSubTab !== 'appearance';
+      [...tabs.children].forEach((b) => b.classList.toggle('on', b.dataset.tab === slotSubTab));
+    };
+    for (const [key, label] of [['settings', 'Settings'], ['appearance', 'Appearance']]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'slot-tab';
+      b.dataset.tab = key;
+      b.textContent = label;
+      b.onclick = () => { slotSubTab = key; syncSubTab(); };
+      tabs.appendChild(b);
+    }
+    card.appendChild(tabs);
+    card.appendChild(propsWrap);
+    card.appendChild(styleWrap);
+    styleWrap.appendChild(renderSlotStyle(slot));
 
     // property editors, sectioned by group where the widget declares them
     if (widget && widget.properties && widget.properties.length) {
@@ -1332,8 +1381,15 @@
         field.append(label, editor);
         grid.appendChild(field);
       }
-      card.appendChild(grid);
+      propsWrap.appendChild(grid);
     }
+    if (!propsWrap.childNodes.length) {
+      const none = document.createElement('p');
+      none.className = 'panel-hint';
+      none.textContent = 'This widget has no settings of its own — use Appearance to restyle it.';
+      propsWrap.appendChild(none);
+    }
+    syncSubTab();
     return card;
   }
 
