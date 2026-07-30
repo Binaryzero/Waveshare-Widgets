@@ -411,6 +411,54 @@ const TOKEN = 'Bearer super-secret-probe-token';
   check('R17 removing the endpoint clears the age footer belonging to the old source',
     /ago/.test(footerBefore) && footerAfter === '', `"${footerBefore}" -> "${footerAfter}"`);
 
+  // ---- R18 · a presentation-only edit must not fake freshness -----------------------
+  // Renaming a tile is not a reading. Re-running showValue on the cached number stamps
+  // lastAt = now and drops the Stale pill, so an hour-old survivor of a dead endpoint
+  // would redraw as a live "0s ago" because the user changed its title.
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 77 }) });
+  await init({ url: 'https://api.test/fresh', jsonPointer: '/v', pollSeconds: 60, label: 'Before' });
+  await wait(500);
+  respond = () => ({ status: 500, body: '' });
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await wait(600);
+  const wentStale = await read();
+  // Age the reading so a reset to "now" is unmistakable, then edit the label only.
+  await page.evaluate(() => { lastAt -= 300000; renderMeta(); });
+  const agedLabel = await page.evaluate(() => document.getElementById('meta').textContent);
+  // Stall the poll that the re-init kicks off. Without this it lands before the
+  // assertions and repaints the Stale pill itself, so the pill checks below pass
+  // against the unfixed code and prove nothing — only the timestamp discriminates.
+  // With the endpoint hanging, what we read is exactly what the re-init rendered.
+  respond = () => ({ status: 500, body: '', delayMs: 5000 });
+  await init({ url: 'https://api.test/fresh', jsonPointer: '/v', pollSeconds: 60, label: 'After' });
+  await wait(300);
+  const afterEdit = await read();
+  const afterLabel = await page.evaluate(() => document.getElementById('meta').textContent);
+  check('R18 a label-only edit keeps the Stale pill rather than passing old data off as live',
+    wentStale.pill === 'Stale' && afterEdit.pill === 'Stale' && afterEdit.stale === true,
+    `${wentStale.pill} -> ${afterEdit.pill} stale=${afterEdit.stale}`);
+  check('R18b and it does not reset the age to "0s ago"',
+    /5m ago/.test(agedLabel) && /5m ago/.test(afterLabel), `${agedLabel} -> ${afterLabel}`);
+  check('R18c the failure reason survives the edit too', /unreachable|HTTP/.test(afterLabel), afterLabel);
+
+  // ---- R19 · resuming checks BOTH pause reasons -------------------------------------
+  // Each handler used to check only its own reason, so becoming visible during a game
+  // (or a game ending while hidden) fired a request that schedule() then declined to
+  // repeat — quiet afterwards, but the request had already gone.
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 9 }) });
+  await init({ url: 'https://api.test/paused', jsonPointer: '/v', pollSeconds: 60 },
+    { active: true, process: 'game.exe' });
+  await wait(600);
+  seen.length = 0;
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await wait(600);
+  check('R19 becoming visible while a game is running issues no request',
+    seen.length === 0, `${seen.length} requests`);
+  await gameEvent(false);
+  await wait(600);
+  check('R19b and once the game exits, polling resumes normally',
+    seen.length > 0, `${seen.length} requests`);
+
   // ---- populated screenshots (the eyes, not just the contract) ---------------------
   respond = () => ({ status: 200, body: JSON.stringify({ data: { temperature: 87.3 } }) });
   for (const [w, h, name] of [[320, 400, 'quarter'], [640, 400, 'half'], [640, 200, 'half-upper']]) {

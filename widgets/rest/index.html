@@ -90,6 +90,7 @@
   let last = null;        // { text, cls } — the last good reading, kept for Stale
   let lastAt = 0;
   let staleWhy = '';      // why the last poll failed, kept for the age line
+  let stale = false;      // is the number on screen a survivor of a failed poll?
   let failures = 0;       // consecutive failures — drives the retry backoff
   let gamePaused = false;
   let generation = 0;     // bumped when the source changes; older answers are discarded
@@ -182,13 +183,22 @@
     for (const id of ['stateIcon', 'stateTitle', 'stateBody', 'retry']) el(id).hidden = true;
   }
 
-  function showValue(text, cls) {
+  /** Paints the number and nothing else. Split out from showValue because a repeated
+   * init has to redraw the tile WITHOUT claiming the reading just arrived. */
+  function paintValue(text, cls) {
     el('state').hidden = true;
     el('body').hidden = false;
-    el('body').classList.remove('stale');
-    el('pill').hidden = true;
     el('value').textContent = text;
     el('value').className = 'value hero' + (cls ? ' ' + cls : '');
+  }
+
+  /** A reading that genuinely just arrived: this is the only thing allowed to move
+   * `lastAt`, because that timestamp is the tile's claim about how fresh the number is. */
+  function showValue(text, cls) {
+    paintValue(text, cls);
+    el('body').classList.remove('stale');
+    el('pill').hidden = true;
+    stale = false;
     lastAt = Date.now();
     last = { text: text, cls: cls };
     renderMeta('');
@@ -199,8 +209,8 @@
    * useful than an error card that hides it. */
   function showStale(why) {
     if (!last) return false;
-    el('state').hidden = true;
-    el('body').hidden = false;
+    paintValue(last.text, last.cls);
+    stale = true;
     el('body').classList.add('stale');
     el('pill').hidden = false;
     el('pill').className = 'pill muted';
@@ -269,9 +279,15 @@
       const url = cfg.url;
       const answer = await withDeadline(budget, controller, async () => {
         const res = await WW.fetch(url, init);
-        // Read the body inside the deadline; a non-2xx has nothing worth reading.
-        return { ok: res.ok, status: res.status, statusText: res.statusText,
-          text: res.ok ? await res.text() : '' };
+        // Read the body inside the deadline; a non-2xx has nothing worth reading — but
+        // "not reading it" is not the same as "done with it". An unread body leaves the
+        // response open, so an endpoint that returns error headers and then dribbles or
+        // stalls its body accumulates one live stream per poll, forever. Cancel it.
+        if (!res.ok) {
+          try { if (res.body && !res.body.locked) await res.body.cancel(); } catch (e) { /* already gone */ }
+          return { ok: false, status: res.status, statusText: res.statusText, text: '' };
+        }
+        return { ok: true, status: res.status, statusText: res.statusText, text: await res.text() };
       });
       if (superseded()) return;
       if (!answer.ok) {
@@ -450,8 +466,15 @@
       if (activeController) { try { activeController.abort(); } catch (e) { /* already gone */ } }
       activeController = null;
       inFlight = false;
+      stale = false;
+    } else if (last) {
+      // Redraw the cached reading, but `showValue` would be a lie here: it stamps
+      // `lastAt = now`, drops the Stale pill and clears the failure reason. Renaming a
+      // tile would turn an hour-old survivor of a dead endpoint into "0s ago", live.
+      // Presentation edits must not change what the tile claims about its data.
+      if (stale) showStale(staleWhy);
+      else { paintValue(last.text, last.cls); renderMeta(); }
     }
-    else if (last) { showValue(last.text, last.cls); }   // re-apply thresholds/format
     startAgeTicker();
     restart();
   });
@@ -463,13 +486,24 @@
   });
 
   // 24/7 hygiene: no polling while the tile is hidden or a game owns the screen.
+  // Both conditions gate BOTH handlers. Checking only its own reason lets each one
+  // fire a request while the other reason still holds — becoming visible mid-game, or
+  // a game ending while the tile is hidden. `schedule()` then correctly refuses to arm
+  // a timer, which hides the bug: the tile stays quiet afterwards, but the request
+  // that should never have left has already gone.
+  function paused() { return document.hidden || gamePaused; }
+  function resume() {
+    if (paused()) { clearTimeout(timer); timer = null; return; }
+    poll().then(schedule);
+  }
+
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { clearTimeout(timer); timer = null; }
-    else { renderMeta(); poll().then(schedule); }
+    renderMeta();          // the age is worth refreshing even when we will not poll
+    resume();
   });
   WW.onGame((g) => {
     gamePaused = !!(g && g.active);
-    if (gamePaused) { clearTimeout(timer); timer = null; } else { poll().then(schedule); }
+    resume();
   });
 </script>
 </body>
