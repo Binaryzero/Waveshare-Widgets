@@ -357,6 +357,128 @@ const layout = {
   check('E15g exactly one pane is visible at a time',
     dock.panesShown === 1, `${dock.panesShown} panes`);
 
+  // ---- E20/E21 · the palette is a GRID, and appearance is its own panel -------------
+  // Field feedback on the first cut of the dock: the widget shelf was "a massive scroll
+  // list", and configuring a widget and restyling it were "the same window". Both are
+  // measurable, so both are pinned rather than left to the next screenshot.
+  const shape = await page.evaluate(() => {
+    const tiles = [...document.querySelectorAll('#widgetGallery .gallery-item')]
+      .map((t) => t.getBoundingClientRect());
+    const style = document.getElementById('stylePanel');
+    const ctx = document.getElementById('contextPanel');
+    const sr = style && !style.hidden ? style.getBoundingClientRect() : null;
+    const cr = ctx ? ctx.getBoundingClientRect() : null;
+    return {
+      tiles: tiles.length,
+      // The resolved track list is the direct statement of "grid, not list", and it
+      // does not depend on how many widgets the fixture's catalog happens to hold —
+      // by this point in the run it is down to one, so a same-row check would be
+      // measuring a constant.
+      tracks: getComputedStyle(document.getElementById('widgetGallery'))
+        .gridTemplateColumns.trim().split(/\s+/).length,
+      tileWidth: tiles.length ? Math.round(tiles[0].width) : 0,
+      styleShown: !!sr,
+      // Separate panels, not one box: distinct elements, and no shared pixels.
+      styleIsOwnPanel: !!style && !!ctx && !ctx.contains(style),
+      overlap: sr && cr ? Math.round(Math.max(0, Math.min(sr.right, cr.right) - Math.max(sr.left, cr.left))) : -1,
+      // The tabs that used to hide one half behind the other are gone.
+      subTabs: document.querySelectorAll('.slot-tabs .slot-tab').length,
+    };
+  });
+  check('E20 the widget shelf lays out as a grid, not a single-file list',
+    shape.tracks >= 3 && shape.tileWidth > 0 && shape.tileWidth < 140,
+    `${shape.tracks} columns, tile ${shape.tileWidth}px`);
+  check('E21 appearance is its OWN panel beside the settings, not a tab inside them',
+    shape.styleShown && shape.styleIsOwnPanel && shape.overlap === 0 && shape.subTabs === 0,
+    JSON.stringify(shape));
+
+  // E22 · closing the inspector closes its Appearance column too. closePanel only drops
+  // the card's `open` class — the selection and the tab survive it — so a visibility
+  // rule reading those alone leaves a 300px column of controls for a card the user just
+  // dismissed.
+  await page.locator('#panelClose').click();
+  await page.waitForTimeout(250);
+  const afterClose = await page.evaluate(() => {
+    const s = document.getElementById('stylePanel');
+    return { styleHidden: !!s && s.hidden, cardOpen: document.getElementById('contextPanel').classList.contains('open') };
+  });
+  check('E22 closing the inspector also closes the Appearance column',
+    afterClose.styleHidden && !afterClose.cardOpen, JSON.stringify(afterClose));
+  // Reselecting takes TWO clicks: closePanel leaves the slot selected, so the first
+  // click on its chip toggles the selection off. The later probes expect an open
+  // inspector, so this restores the state as well as proving the column comes back.
+  await page.locator('#slotList .slot-chip .chip-main').first().click();
+  await page.waitForTimeout(200);
+  await page.locator('#slotList .slot-chip .chip-main').first().click();
+  await page.waitForTimeout(300);
+  check('E22b and reselecting the widget brings the column back',
+    await page.evaluate(() => !document.getElementById('stylePanel').hidden
+      && document.getElementById('contextPanel').classList.contains('open')));
+
+  // E23 · at the supported 780px minimum, two fixed side columns (288 + 300) would
+  // leave 192px for the widget's own settings — narrower than a single property track.
+  // The panels beside the inspector must yield to it, not the other way round.
+  await page.setViewportSize({ width: 780, height: 700 });
+  await page.waitForTimeout(500);
+  const narrow = await page.evaluate(() => {
+    const r = (id) => { const e = document.getElementById(id); return e && !e.hidden ? e.getBoundingClientRect() : null; };
+    const ctx = r('contextPanel'), pal = r('dockPalette'), sty = r('stylePanel');
+    return {
+      ctx: ctx ? Math.round(ctx.width) : 0,
+      pal: pal ? Math.round(pal.width) : 0,
+      sty: sty ? Math.round(sty.width) : 0,
+      // Nothing may hang off the right edge of a document that cannot scroll sideways.
+      rightmost: Math.round(Math.max(ctx ? ctx.right : 0, sty ? sty.right : 0)),
+      win: window.innerWidth,
+    };
+  });
+  check('E23 at 780px the widget settings keep a usable column',
+    narrow.ctx >= 320, `settings ${narrow.ctx}px (palette ${narrow.pal}, appearance ${narrow.sty})`);
+  check('E23b and the dock still fits the window width',
+    narrow.rightmost <= narrow.win + 1, `${narrow.rightmost} vs ${narrow.win}`);
+  // E23c measures what was actually BROKEN. E23 checks the column, and the column
+  // reaching its floor says nothing about whether its CONTENTS are usable: at 320px
+  // the widget picker rendered as a bare chevron, the size select as the single letter
+  // "H", and the deck's button fields as two characters each. That passed E23. It took
+  // a screenshot to see it, so the assertion moved to the controls themselves.
+  const controls = await page.evaluate(() => {
+    const w = document.querySelector('#slotDetail .slot-row select.widget');
+    const z = document.querySelector('#slotDetail .slot-row select.size');
+    return {
+      widget: w ? Math.round(w.getBoundingClientRect().width) : 0,
+      size: z ? Math.round(z.getBoundingClientRect().width) : 0,
+    };
+  });
+  check('E23c and the widget/size controls stay readable rather than collapsing',
+    controls.widget >= 180 && controls.size >= 150,
+    `widget ${controls.widget}px, size ${controls.size}px`);
+  // E23d · the WRAPPED row must be reachable, which is a VERTICAL question. Below
+  // 1040px Appearance wraps to its own flex line, and a flex line takes its cross size
+  // from its content: the first row grew to fit a populated inspector and pushed the
+  // second row past the bottom of a document that cannot scroll. At 780x480 that put
+  // the panel's top at 987px in a 480px window — not clipped, gone. E23/E23b measure
+  // horizontal bounds and the dock box, and both passed throughout.
+  await page.setViewportSize({ width: 780, height: 480 });
+  await page.waitForTimeout(600);
+  const wrapped = await page.evaluate(() => {
+    const body = document.getElementById('dockBody');
+    if (body) body.scrollTop = body.scrollHeight;   // scroll to the end before judging
+    const sty = document.getElementById('stylePanel');
+    const r = sty && !sty.hidden ? sty.getBoundingClientRect() : null;
+    return {
+      shown: !!r,
+      top: r ? Math.round(r.top) : null,
+      bottom: r ? Math.round(r.bottom) : null,
+      win: window.innerHeight,
+    };
+  });
+  check('E23d at 780×480 the wrapped Appearance row is reachable, not below the window',
+    wrapped.shown && wrapped.top >= 0 && wrapped.bottom <= wrapped.win + 1,
+    JSON.stringify(wrapped));
+
+  await page.setViewportSize({ width: 1100, height: 820 });
+  await page.waitForTimeout(400);
+
   // ---- E16 · the supported 780×480 minimum ------------------------------------------
   // Both regions are flex:none inside an overflow:hidden body, so nothing can scroll
   // the window: anything past the bottom edge is simply unreachable. At the smallest

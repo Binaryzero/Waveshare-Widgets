@@ -58,10 +58,6 @@
   let pendingBgPick = null;    // callback(source, kind) for the in-flight file dialog
   let sdProfileWaiters = [];   // callbacks awaiting an sd-profiles-result
   let galleryOpen = false;     // settings-side add-widget gallery (Widget tab)
-  // Which half of the widget inspector is showing. Module-level so it survives the
-  // re-render every edit triggers — resetting to Settings on each keystroke would
-  // throw the user out of Appearance mid-adjustment.
-  let slotSubTab = 'settings';
   let instanceSeq = 0;         // suffix for minted instanceIds (gallery adds)
 
   const el = (id) => document.getElementById(id);
@@ -120,6 +116,7 @@
     setTab(name);
     el('panelTitle').textContent = panelTitleFor(name);
     el('contextPanel').classList.add('open');
+    renderSlotStylePanel();   // tab-dependent, and the tab changes after the render
     positionPanel();
   }
   function closePanel() {
@@ -127,6 +124,7 @@
     // A gallery left "open" behind a closed card strands the toolbar button on
     // "✕ Close" and can resurface stale gallery content on the next open.
     if (galleryOpen) { galleryOpen = false; renderEditorPanel(); }
+    renderSlotStylePanel();   // the Appearance column belongs to the closed card
     // A body-appended emoji popover must die with the card, or it floats over
     // the preview mutating a hidden input.
     closeEmojiPop();
@@ -1035,6 +1033,7 @@
     if (selectedSlot !== null && !page.slots[selectedSlot]) selectedSlot = null; // stale index
     renderSlotStrip(page);
     renderSlotDetail(page);
+    renderSlotStylePanel();
     renderWidgetGallery(page);
     renderCapacity(page);
   }
@@ -1094,6 +1093,23 @@
     return found;
   }
 
+  // A glyph per stock widget so the palette can be a compact grid rather than a list
+  // of full-width rows. Presentation only, and settings-side only: manifests carry no
+  // icon, so putting this in the shell would mean inventing one field to serve one
+  // panel. Anything unrecognised — every third-party widget — gets the neutral tile,
+  // which is a plain look rather than a broken one.
+  const PALETTE_GLYPHS = {
+    'ws.stock.battery': '🔋', 'ws.stock.clock': '🕒', 'ws.stock.countdown': '⏳',
+    'ws.stock.cpu': '🧠', 'ws.stock.deck': '🎛️', 'ws.stock.forecast7': '📅',
+    'ws.stock.gallery': '🖼️', 'ws.stock.gpu': '🎮', 'ws.stock.hue': '💡',
+    'ws.stock.iframe': '🌐', 'ws.stock.launcher': '🚀', 'ws.stock.media': '🎵',
+    'ws.stock.notifications': '🔔', 'ws.stock.ping': '📡', 'ws.stock.radar': '🌧️',
+    'ws.stock.reddit': '👽', 'ws.stock.rest': '🔢', 'ws.stock.sensorchart': '📈',
+    'ws.stock.streamdeck': '🎚️', 'ws.stock.twitch': '💬', 'ws.stock.vitals': '❤️',
+    'ws.stock.volume': '🔊', 'ws.stock.weather': '⛅', 'ws.stock.youtube': '▶️',
+  };
+  const paletteGlyph = (id) => PALETTE_GLYPHS[id] || '▦';
+
   function renderWidgetGallery(page) {
     const wrap = el('widgetGallery');
     // The palette is a permanent shelf now (#79): it lives in its own dock column
@@ -1110,13 +1126,23 @@
       btn.type = 'button';
       btn.className = 'gallery-item';
       const size = defaultSizeFor(page, widget);
+      const glyph = document.createElement('span');
+      glyph.className = 'g-icon';
+      glyph.textContent = paletteGlyph(widget.id);
       const name = document.createElement('span');
       name.className = 'g-name';
       name.textContent = widget.name;
-      const by = document.createElement('span');
-      by.className = 'g-by';
-      by.textContent = size ? (widget.author || '') : 'No room on this page';
-      btn.append(name, by);
+      btn.append(glyph, name);
+      // Unavailable WITH a reason (#77) — but in two words, because a full sentence
+      // per tile was what turned this shelf into a wall of text. The banner above
+      // carries the long form once instead of twenty-four times.
+      if (!size) {
+        const why = document.createElement('span');
+        why.className = 'g-why';
+        why.textContent = 'no room';
+        btn.appendChild(why);
+      }
+      btn.title = size ? (widget.author || widget.name) : 'No room on this page';
       btn.disabled = !size;
       btn.addEventListener('click', () => addWidgetToPage(page, widget));
       wrap.appendChild(btn);
@@ -1339,32 +1365,13 @@
       iconButton('✕', 'Remove', () => removeSlotAt(page, index), true));
     card.appendChild(row);
 
-    // Two tabs, settings FIRST. What a widget DOES is configured far more often than
-    // how it looks, and the theme overrides are an escape hatch from the global theme
-    // rather than part of setting the widget up — they were sitting above the controls
-    // people actually came for, pushing them below the fold.
-    const tabs = document.createElement('div');
-    tabs.className = 'slot-tabs';
+    // Configuring a widget and personalising it are DIFFERENT JOBS, so they are
+    // different panels rather than two tabs sharing one box. Tabs made them look like
+    // two halves of one form and hid whichever half you were not on; side by side,
+    // both are visible and neither pushes the other below the fold. The appearance
+    // panel is filled by renderSlotStylePanel, in its own dock column.
     const propsWrap = document.createElement('div');
-    const styleWrap = document.createElement('div');
-    const syncSubTab = () => {
-      propsWrap.hidden = slotSubTab !== 'settings';
-      styleWrap.hidden = slotSubTab !== 'appearance';
-      [...tabs.children].forEach((b) => b.classList.toggle('on', b.dataset.tab === slotSubTab));
-    };
-    for (const [key, label] of [['settings', 'Settings'], ['appearance', 'Appearance']]) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'slot-tab';
-      b.dataset.tab = key;
-      b.textContent = label;
-      b.onclick = () => { slotSubTab = key; syncSubTab(); };
-      tabs.appendChild(b);
-    }
-    card.appendChild(tabs);
     card.appendChild(propsWrap);
-    card.appendChild(styleWrap);
-    styleWrap.appendChild(renderSlotStyle(slot));
 
     // property editors, sectioned by group where the widget declares them
     if (widget && widget.properties && widget.properties.length) {
@@ -1405,11 +1412,32 @@
     if (!propsWrap.childNodes.length) {
       const none = document.createElement('p');
       none.className = 'panel-hint';
-      none.textContent = 'This widget has no settings of its own — use Appearance to restyle it.';
+      none.textContent = 'This widget has no settings of its own — the Appearance panel restyles it.';
       propsWrap.appendChild(none);
     }
-    syncSubTab();
     return card;
+  }
+
+  /** Fills the Appearance column for the current selection, and hides the whole panel
+   *  when there is nothing selected — an empty bordered card sitting beside the
+   *  inspector would read as a control that stopped working. */
+  function renderSlotStylePanel() {
+    const panel = el('stylePanel');
+    const body = el('styleBody');
+    if (!panel || !body) return;
+    // Reads its own inputs rather than taking a page argument. selectSlot renders the
+    // editor BEFORE it opens the Widget tab, so a version handed the page at render
+    // time saw the previous tab and hid itself on every selection.
+    const page = (state.layout.pages || [])[selectedPage] || null;
+    const slot = (page && selectedSlot !== null) ? (page.slots || [])[selectedSlot] : null;
+    body.textContent = '';
+    // The inspector's OPEN state is part of this, not just the selection: closePanel
+    // only drops the card's `open` class, so a predicate reading selection and tab
+    // alone re-shows Appearance the moment the user closes the inspector — and it
+    // keeps a 300px column of the dock for a card that is gone.
+    panel.hidden = !slot || activeTab !== 'widget' || !panelOpen();
+    if (panel.hidden) return;
+    body.appendChild(renderSlotStyle(slot));
   }
 
   // Per-slot appearance overrides — THE appearance control for a widget (#42), the
@@ -1419,10 +1447,13 @@
   function renderSlotStyle(slot) {
     const wrap = document.createElement('div');
     wrap.className = 'slot-style';
-    const title = document.createElement('div');
-    title.className = 'section-title';
-    title.textContent = 'Appearance — overrides the theme for this widget only';
-    wrap.appendChild(title);
+    // No title here: the column header above already says Appearance. What the user
+    // needs at this point is what these controls DO to the global theme.
+    const hint = document.createElement('p');
+    hint.className = 'panel-hint';
+    hint.textContent = 'Checked keys override the theme for this widget only; '
+      + 'anything unchecked keeps following the global theme.';
+    wrap.appendChild(hint);
 
     const setStyleKey = (key, value) => {
       const s = slot.style || (slot.style = {});
