@@ -717,6 +717,179 @@ SecretPolicy.Reveal(recovered, Lookup);
 Check("P28h2 and a later reinstall still reveals the original credential",
     Value(recovered, "apiToken") == Token, Value(recovered, "apiToken"));
 
+// ---- P31 · #68: an id-less slot does NOT carry over once the client mints an id -------
+// This documents a REFUSAL and the cost of it, not a fix. shell.js's persistLayout mints
+// an instanceId for any legacy slot on its first on-panel edit, so the next save arrives
+// id-BEARING while layout.json still holds the value id-LESS, the id-keyed lookup misses,
+// and an edit unrelated to the credential deletes it. That is #68, and it is real.
+//
+// It is left standing because no retry can serve it safely. P32/P32b below are the same
+// situation byte for byte — stored id-less with a credential, incoming id-bearing, one
+// instance on each side — and there they mean a DELETED instance handing its credential
+// to a replacement tile. Two rounds of review found that hazard from two directions. A
+// lookup cannot separate the cases without the client saying which slot it minted the id
+// for, so the ambiguity resolves against carry-over: retyping a credential is
+// recoverable, transmitting an old one to a new endpoint is not.
+DashboardLayout StoredIdless(JsonNode? value) =>
+    LayoutWith(new JsonObject { ["apiToken"] = value }, instanceId: null);
+var p31Stored = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
+SecretPolicy.Seal(p31Stored, null, Lookup);
+Slot(p31Stored).InstanceId = null;
+var p31Sealed = Value(p31Stored, "apiToken");
+var p31Incoming = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "s-minted-by-shell");
+SecretPolicy.Seal(p31Incoming, p31Stored, Lookup);
+Check("P31 a client-minted instanceId does NOT inherit an id-less stored credential",
+    Slot(p31Incoming).Settings?["apiToken"] is null,
+    Slot(p31Incoming).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+Check("P31b nothing leaks either: no envelope survives for Reveal to hand the widget",
+    !JsonSerializer.Serialize(p31Incoming).Contains("dpapi:v1:"),
+    JsonSerializer.Serialize(p31Incoming));
+var p31List = StoredIdless(new JsonArray { "row-secret" });
+var p31ListIncoming = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "s-minted-2");
+SecretPolicy.Seal(p31ListIncoming, p31List, Lookup);
+Check("P31c a stored NON-STRING is refused across the same transition",
+    Slot(p31ListIncoming).Settings?["apiToken"] is null,
+    Slot(p31ListIncoming).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+
+// Ambiguity refuses for the older reason too. Two incoming instances of the widget
+// against one id-less stored credential: position cannot say which instance owns it, so
+// nobody inherits and the user re-enters — the answer SlotKey gives by returning null.
+var p31Ambiguous = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "s-minted-3", Size = "half",
+            Settings = new JsonObject { ["apiToken"] = "" } },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "s-minted-4", Size = "half",
+            Settings = new JsonObject { ["apiToken"] = "" } },
+    ] }],
+};
+SecretPolicy.Seal(p31Ambiguous, p31Stored, Lookup);
+Check("P31d two incoming instances make position ambiguous: neither inherits",
+    p31Ambiguous.Pages[0].Slots.All(s => s.Settings?["apiToken"] is null),
+    string.Join(" | ", p31Ambiguous.Pages[0].Slots
+        .Select(s => s.Settings?["apiToken"]?.ToJsonString() ?? "(removed)")));
+// A DIFFERENT widget in the slot must not inherit either, id or no id: the positional
+// retry is keyed on the incoming slot's own widgetId, so there is nothing to find.
+var p31Other = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [new LayoutSlot
+    {
+        WidgetId = "other.widget", InstanceId = "s-minted-5", Size = "half",
+        Settings = new JsonObject { ["apiToken"] = "" },
+    }] }],
+};
+SecretPolicy.Seal(p31Other, p31Stored, id => id == "other.widget" ? otherManifest : Lookup(id));
+Check("P31e swapping the widget in the slot inherits nothing across the transition",
+    p31Other.Pages[0].Slots[0].Settings?["apiToken"] is null,
+    p31Other.Pages[0].Slots[0].Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+
+// ---- P31f · the protection-failure fallback owes an id like every other restore ------
+// It restores a stored value exactly as the untouched paths do, leaving the slot holding
+// something only this pipeline can put back. Without the stamp the slot stays positional,
+// and the transition above then deletes it on the next save.
+var p31fEdit = LayoutWith(
+    new JsonObject { ["apiToken"] = "a-replacement-we-cannot-encrypt" }, instanceId: null);
+var savedEncrypt31 = SecretStore.EncryptOverride;
+SecretStore.EncryptOverride = _ => throw new PlatformNotSupportedException("no DPAPI here");
+var p31fResult = SecretPolicy.Seal(p31fEdit, p31Stored, Lookup);
+SecretStore.EncryptOverride = savedEncrypt31;
+Check("P31f a failed encryption keeps the stored value (P7) …",
+    Value(p31fEdit, "apiToken") == p31Sealed, Value(p31fEdit, "apiToken") ?? "(removed)");
+Check("P31g … and stamps the slot, so what it restored is addressable by id",
+    !string.IsNullOrEmpty(Slot(p31fEdit).InstanceId), Slot(p31fEdit).InstanceId ?? "(none)");
+Check("P31h the minted id is reported back to the client that submitted the layout",
+    p31fResult.Minted.Count == 1 && p31fResult.Minted[0].InstanceId == Slot(p31fEdit).InstanceId
+        && p31fResult.Minted[0].Page == 0 && p31fResult.Minted[0].Slot == 0);
+Check("P31h2 and the save is still reported as not clean",
+    p31fResult.Failures.Count == 1);
+var p31iStored = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p31fEdit))!;
+var p31iAgain = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p31fEdit))!;
+Slot(p31iAgain).Settings!["apiToken"] = "";
+// Captured BEFORE the save: the id has to be one the fallback carried in, not one this
+// save mints on its way past. Asserting it afterwards proves nothing — the untouched
+// branch stamps the slot itself, so the probe passed with the fallback's stamp removed.
+var p31iCarried = Slot(p31iAgain).InstanceId;
+SecretPolicy.Seal(p31iAgain, p31iStored, Lookup);
+Check("P31i so a later ID-KEYED save restores it rather than dropping it",
+    Value(p31iAgain, "apiToken") == p31Sealed && !string.IsNullOrEmpty(p31iCarried),
+    $"id={p31iCarried ?? "(none)"} value={Value(p31iAgain, "apiToken") ?? "(removed)"}");
+
+// ---- P32 · cross-instance isolation: a replacement tile inherits nothing -------------
+// Both review rounds on #68. Delete the sole credentialed instance in the editor, add a
+// fresh one of the same widget, save. Both counts are still one and the new instanceId
+// misses, so any positional retry hands the deleted instance's credential to a tile the
+// user believes is unconfigured — which then transmits an old token to whatever endpoint
+// the new tile points at.
+//
+// Round one raised it for an id-BEARING stored slot; I gated the retry on provenance,
+// which fixed only that half. Round two raised the same thing for an id-LESS one, where
+// no provenance exists to gate on. Both cases are covered here because they are the same
+// case, and because whatever eventually closes #68 has to keep passing them.
+var p32Stored = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: "the-deleted-one");
+SecretPolicy.Seal(p32Stored, null, Lookup);
+var p32Replacement = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "a-brand-new-tile");
+SecretPolicy.Seal(p32Replacement, p32Stored, Lookup);
+Check("P32 a replacement instance does NOT inherit the deleted instance's credential",
+    Slot(p32Replacement).Settings?["apiToken"] is null,
+    Slot(p32Replacement).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+// Same refusal on the protection-failure path, which reaches the lookup by its own route.
+var p32Typed = LayoutWith(new JsonObject { ["apiToken"] = "typed-into-the-new-tile" },
+    instanceId: "a-brand-new-tile");
+var savedEncrypt32 = SecretStore.EncryptOverride;
+SecretStore.EncryptOverride = _ => throw new PlatformNotSupportedException("no DPAPI here");
+SecretPolicy.Seal(p32Typed, p32Stored, Lookup);
+SecretStore.EncryptOverride = savedEncrypt32;
+Check("P32b nor when a failed encryption sends it looking for a previous value",
+    Slot(p32Typed).Settings?["apiToken"] is null,
+    Slot(p32Typed).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+// Round two's case: the deleted instance was a LEGACY id-less slot, so there is no
+// provenance to distinguish it from the #68 transition. This is the probe that ended the
+// retry — a gate cannot pass it and P31 at the same time.
+var p32Legacy = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
+SecretPolicy.Seal(p32Legacy, null, Lookup);
+Slot(p32Legacy).InstanceId = null;
+var p32LegacyReplacement = LayoutWith(
+    new JsonObject { ["apiToken"] = "" }, instanceId: "a-brand-new-tile");
+SecretPolicy.Seal(p32LegacyReplacement, p32Legacy, Lookup);
+Check("P32c replacing a LEGACY id-less instance inherits nothing either",
+    Slot(p32LegacyReplacement).Settings?["apiToken"] is null,
+    Slot(p32LegacyReplacement).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
+Check("P32c2 and no envelope survives for Reveal to hand the replacement widget",
+    !JsonSerializer.Serialize(p32LegacyReplacement).Contains("dpapi:v1:"),
+    JsonSerializer.Serialize(p32LegacyReplacement));
+// The "|w:0" alias itself still does its job, and this is the reason it is not collateral
+// damage: a still-open editor holding the id-less slot it submitted, whose id the HOST
+// minted, matches positionally and keeps its value. Nothing in it depends on guessing an
+// identity — the host already assigned one and the client simply has not seen it yet.
+var p32Idless = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
+SecretPolicy.Seal(p32Idless, p32Stored, Lookup);
+Check("P32d a client that has not adopted the host's mint still matches positionally",
+    Value(p32Idless, "apiToken") == Value(p32Stored, "apiToken"),
+    Value(p32Idless, "apiToken") ?? "(removed)");
+
+// ---- P31j · census: every branch that writes a value stamps the slot -----------------
+// The omission fixed in #68 was the second time a branch was written beside Stamp without
+// calling it, so this names each one. A sixth branch added without a stamp fails here,
+// rather than in the field two saves later when the value it wrote is deleted.
+void Census(string branch, DashboardLayout? storedFor, JsonNode? incoming, bool breakCrypto = false)
+{
+    var layout = LayoutWith(new JsonObject { ["apiToken"] = incoming }, instanceId: null);
+    var restore = SecretStore.EncryptOverride;
+    if (breakCrypto)
+        SecretStore.EncryptOverride = _ => throw new PlatformNotSupportedException("no DPAPI here");
+    SecretPolicy.Seal(layout, storedFor, Lookup);
+    SecretStore.EncryptOverride = restore;
+    var held = Slot(layout).Settings?["apiToken"];
+    Check($"P31j {branch} leaves a value AND a stable id",
+        held is not null && !string.IsNullOrEmpty(Slot(layout).InstanceId),
+        $"id={Slot(layout).InstanceId ?? "(none)"} value={held?.ToJsonString() ?? "(removed)"}");
+}
+Census("encrypting a freshly typed secret", null, Token);
+Census("restoring a stored envelope", p31Stored, "");
+Census("migrating legacy plaintext", StoredIdless("legacy-plaintext-token"), "");
+Census("restoring a stored non-string", StoredIdless(new JsonArray { "x" }), "");
+Census("keeping the prior value when encryption fails", p31Stored, "replacement", breakCrypto: true);
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 

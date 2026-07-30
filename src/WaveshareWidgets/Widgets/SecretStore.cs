@@ -333,7 +333,7 @@ public static class SecretPolicy
             if (string.IsNullOrEmpty(value))
             {
                 // Untouched masked field (or non-string junk): keep what is stored.
-                if (key is null || !previous.TryGetValue((key, name), out var keptNode))
+                if (!TryPrevious(key, slot, name, out var keptNode))
                 {
                     slot.Settings!.Remove(name);
                     return;
@@ -412,14 +412,51 @@ public static class SecretPolicy
             // encrypted, in the one branch whose whole purpose is not to destroy anything.
             // BuildStoredIndex never indexes an empty string, so a hit here is always a
             // value worth keeping.
-            if (key is not null && previous.TryGetValue((key, name), out var priorNode) && priorNode is not null)
+            if (TryPrevious(key, slot, name, out var priorNode) && priorNode is not null)
+            {
                 slot.Settings![name] = priorNode.DeepClone();
+                // Stamp here too. This branch restores a value exactly as the untouched
+                // paths do, so it leaves the slot in the same state and owes the same
+                // identity — an id-less slot restored without one is deleted by the very
+                // transition below on the next save. Missed once here and once on the
+                // non-string restore, which is why every restore now stamps.
+                Stamp(slot);
+            }
             else
                 slot.Settings!.Remove(name);
             failures.Add(new SecretSealFailure(slot.WidgetId, name));
         });
 
         return new SecretSealResult(failures, minted);
+
+        // Looks up what is stored for this slot. Identity only — there is deliberately NO
+        // positional retry when the id-keyed lookup misses, and that is the whole content
+        // of this comment, because two review rounds argued otherwise and both were right.
+        //
+        // The tempting case is real (#68). shell.js's persistLayout mints an instanceId for
+        // any id-less slot on its first on-panel edit, so a legacy slot's next save arrives
+        // id-BEARING while layout.json still holds the value id-LESS. The lookup misses and
+        // an edit that had nothing to do with the credential deletes it.
+        //
+        // The reason a retry cannot fix it: the payload contains no evidence that would
+        // separate that case from its dangerous twin. Open a legacy layout holding one
+        // credentialed widget, delete it, add a fresh instance of the same widget, save.
+        // Stored is id-less with a credential, incoming is id-bearing, both counts are one
+        // — byte for byte the same situation. A retry that serves the first necessarily
+        // hands the deleted instance's credential to a tile the user believes is
+        // unconfigured, which then transmits an old token to whatever endpoint the new
+        // tile points at. Losing a credential is recoverable by retyping it; sending one
+        // somewhere new is not, so the ambiguity resolves against the retry.
+        //
+        // Closing #68 properly needs the client to say which slot it minted an id FOR,
+        // which is the same host/client identity channel #70 needs. Until that exists,
+        // a legacy slot loses its secret on first on-panel edit and the user re-enters it
+        // — the answer SlotKey already gives wherever identity cannot be established.
+        bool TryPrevious(string? key, LayoutSlot slot, string name, out JsonNode? found)
+        {
+            found = null;
+            return key is not null && previous.TryGetValue((key, name), out found);
+        }
 
         // A slot that stores a credential gets a stable identity, so the next save
         // matches it by id instead of by its position on the page.
