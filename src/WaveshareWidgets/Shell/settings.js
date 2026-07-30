@@ -1431,7 +1431,11 @@
     const page = (state.layout.pages || [])[selectedPage] || null;
     const slot = (page && selectedSlot !== null) ? (page.slots || [])[selectedSlot] : null;
     body.textContent = '';
-    panel.hidden = !slot || activeTab !== 'widget';
+    // The inspector's OPEN state is part of this, not just the selection: closePanel
+    // only drops the card's `open` class, so a predicate reading selection and tab
+    // alone re-shows Appearance the moment the user closes the inspector — and it
+    // keeps a 300px column of the dock for a card that is gone.
+    panel.hidden = !slot || activeTab !== 'widget' || !panelOpen();
     if (panel.hidden) return;
     body.appendChild(renderSlotStyle(slot));
   }

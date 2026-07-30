@@ -17,7 +17,8 @@
 //   D3 · the control, and the reason the field screenshot is ambiguous: the clock
 //        paints on a timer whether or not ww-init ever arrives, so a tile full of
 //        clock proves nothing about delivery
-//   D4 · every supported size, with and without a persisted instanceId
+//   D4 · every size the settings UI can select — widths AND bands — with and
+//        without a persisted instanceId
 //   D5 · a widget with no host at all still says so, so a delivery failure can
 //        never present as a blank tile
 'use strict';
@@ -114,11 +115,16 @@ const readDeck = (frame) => frame.evaluate(() => {
   const clock = catalogEntry('clock');
 
   // Page 0 is the reported scene: a deck beside a clock, neither with saved settings.
-  // The rest is the matrix — every supported size, with and without the instanceId a
-  // slot only gains once it has been edited on the panel.
+  // The rest is the matrix — every size the SETTINGS UI can put on this widget, not just the three widths its
+  // manifest declares. settings.js synthesizes `three-quarter` for anything declaring
+  // half or full, and offers -upper/-lower bands for every width, so a matrix of the
+  // manifest widths alone would report ALL PASS while a regression confined to a
+  // three-quarter tile or a 200px-high band went unseen. Twelve tokens; the id-less
+  // half of each pair covers slots that have never been edited on the panel.
   const MATRIX = [];
-  for (const size of ['quarter', 'half', 'full'])
-    for (const withId of [true, false]) MATRIX.push({ size, withId });
+  for (const width of ['quarter', 'half', 'three-quarter', 'full'])
+    for (const band of ['', '-upper', '-lower'])
+      for (const withId of [true, false]) MATRIX.push({ size: width + band, withId });
   const layout = { pages: [
     { name: 'Reported', slots: [
       { widgetId: deck.id, size: 'half', instanceId: 'deck-main', settings: {} },
@@ -198,7 +204,8 @@ const readDeck = (frame) => frame.evaluate(() => {
     const st = byTag.get(tag);
     if (!st || st.keys !== 4) bad.push(`${c.size}/${c.withId ? 'id' : 'no-id'}=${st ? st.keys : 'missing'}`);
   });
-  check('D4 the deck renders at every supported size, with and without an instanceId',
+  check('D4 the deck renders at every size the settings UI offers — widths, bands, '
+      + 'and both with and without an instanceId',
     bad.length === 0 && byTag.size === expected - 1, bad.length ? bad.join(' ') : `${byTag.size - 0} decks`);
 
   // ---- D5 · a delivery failure must never look like a blank tile --------------------

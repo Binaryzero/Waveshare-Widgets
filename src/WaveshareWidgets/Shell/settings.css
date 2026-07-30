@@ -166,7 +166,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #widgetGallery {
   margin-top: 10px;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
   gap: 6px;
 }
 #widgetGallery[hidden] { display: none; }
@@ -602,11 +602,14 @@ header h1 #appVersion {
   max-height: min(46vh, 460px);
 }
 #dockPalette {
-  flex: 0 0 auto;
+  /* Shrinkable, with a floor. Two fixed side columns (288 + 300) leave 192px for the
+   * inspector at the supported 780px minimum — narrower than a single property track,
+   * so the widget's own settings became the sliver instead of the panels beside it. */
+  flex: 0 1 auto;
   /* Wide enough for three tiles that can hold a two-word name. At 232px the columns
    * came out ~60px and "Countdown" broke mid-word. */
   width: 288px;
-  min-width: 0;
+  min-width: 168px;
   padding: 12px 14px 14px;
   border-right: 1px solid var(--line);
   overflow: auto;
@@ -618,9 +621,9 @@ header h1 #appVersion {
  * halves of a single form. Side by side, both are visible at once and the widget's
  * own settings keep the wide column they need. */
 #stylePanel {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   width: 300px;
-  min-width: 0;
+  min-width: 196px;
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--line);
@@ -645,7 +648,12 @@ header h1 #appVersion {
 #contextPanel {
   display: none;
   flex: 1;
-  min-width: 0;
+  /* A FLOOR, not zero. `flex: 1` means basis 0, so this column only ever receives
+   * leftover space — with two fixed side columns it took whatever they left, which at
+   * the supported 780px minimum is 192px: narrower than one property track. Claiming
+   * a floor here is what makes the total overflow, and overflow is what makes the side
+   * columns (shrink 1, non-zero basis) give way instead of the widget's own settings. */
+  min-width: 320px;
   min-height: 0;
   padding: 0;
   flex-direction: column;

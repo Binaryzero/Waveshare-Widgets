@@ -392,6 +392,53 @@ const layout = {
     shape.styleShown && shape.styleIsOwnPanel && shape.overlap === 0 && shape.subTabs === 0,
     JSON.stringify(shape));
 
+  // E22 · closing the inspector closes its Appearance column too. closePanel only drops
+  // the card's `open` class — the selection and the tab survive it — so a visibility
+  // rule reading those alone leaves a 300px column of controls for a card the user just
+  // dismissed.
+  await page.locator('#panelClose').click();
+  await page.waitForTimeout(250);
+  const afterClose = await page.evaluate(() => {
+    const s = document.getElementById('stylePanel');
+    return { styleHidden: !!s && s.hidden, cardOpen: document.getElementById('contextPanel').classList.contains('open') };
+  });
+  check('E22 closing the inspector also closes the Appearance column',
+    afterClose.styleHidden && !afterClose.cardOpen, JSON.stringify(afterClose));
+  // Reselecting takes TWO clicks: closePanel leaves the slot selected, so the first
+  // click on its chip toggles the selection off. The later probes expect an open
+  // inspector, so this restores the state as well as proving the column comes back.
+  await page.locator('#slotList .slot-chip .chip-main').first().click();
+  await page.waitForTimeout(200);
+  await page.locator('#slotList .slot-chip .chip-main').first().click();
+  await page.waitForTimeout(300);
+  check('E22b and reselecting the widget brings the column back',
+    await page.evaluate(() => !document.getElementById('stylePanel').hidden
+      && document.getElementById('contextPanel').classList.contains('open')));
+
+  // E23 · at the supported 780px minimum, two fixed side columns (288 + 300) would
+  // leave 192px for the widget's own settings — narrower than a single property track.
+  // The panels beside the inspector must yield to it, not the other way round.
+  await page.setViewportSize({ width: 780, height: 700 });
+  await page.waitForTimeout(500);
+  const narrow = await page.evaluate(() => {
+    const r = (id) => { const e = document.getElementById(id); return e && !e.hidden ? e.getBoundingClientRect() : null; };
+    const ctx = r('contextPanel'), pal = r('dockPalette'), sty = r('stylePanel');
+    return {
+      ctx: ctx ? Math.round(ctx.width) : 0,
+      pal: pal ? Math.round(pal.width) : 0,
+      sty: sty ? Math.round(sty.width) : 0,
+      // Nothing may hang off the right edge of a document that cannot scroll sideways.
+      rightmost: Math.round(Math.max(ctx ? ctx.right : 0, sty ? sty.right : 0)),
+      win: window.innerWidth,
+    };
+  });
+  check('E23 at 780px the widget settings keep a usable column',
+    narrow.ctx >= 320, `settings ${narrow.ctx}px (palette ${narrow.pal}, appearance ${narrow.sty})`);
+  check('E23b and the dock still fits the window width',
+    narrow.rightmost <= narrow.win + 1, `${narrow.rightmost} vs ${narrow.win}`);
+  await page.setViewportSize({ width: 1100, height: 820 });
+  await page.waitForTimeout(400);
+
   // ---- E16 · the supported 780×480 minimum ------------------------------------------
   // Both regions are flex:none inside an overflow:hidden body, so nothing can scroll
   // the window: anything past the bottom edge is simply unreachable. At the smallest
