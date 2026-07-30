@@ -102,11 +102,18 @@
    * it buys nothing. Returns undefined for any miss — the caller renders "no value
    * at that path" rather than guessing. */
   function resolvePath(doc, path) {
-    const raw = String(path == null ? '' : path).trim();
-    if (!raw) return doc;                       // empty path = the whole document
+    // Leading whitespace is never part of either syntax, and stripping it is what
+    // decides WHICH syntax this is — " /a/b" pasted with a stray space would otherwise
+    // be read as a dotted path and miss for a reason the user cannot see.
+    const raw = String(path == null ? '' : path).replace(/^\s+/, '');
+    if (!raw.trim()) return doc;                // empty path = the whole document
     const parts = raw.startsWith('/')
+      // RFC 6901 is literal after the first '/': `/temperature ` selects the key
+      // "temperature ", so trailing whitespace has to survive. Trimming it here would
+      // silently resolve a different key, or miss one that exists.
       ? raw.slice(1).split('/').map((p) => p.replace(/~1/g, '/').replace(/~0/g, '~'))
-      : raw.replace(/\[(\d+)\]/g, '.$1').split('.').filter((p) => p !== '');
+      // The dotted form is ours rather than a standard, so it stays forgiving.
+      : raw.trim().replace(/\[(\d+)\]/g, '.$1').split('.').filter((p) => p !== '');
     let cur = doc;
     for (const part of parts) {
       if (cur === null || typeof cur !== 'object') return undefined;
@@ -406,6 +413,13 @@
       return;
     }
     if (!last) showLoading();
+    // A hidden panel gets no opening request. The shell answers `ww-ready` whether or
+    // not the WebView is visible, so every cold start or reload while minimised would
+    // otherwise fetch once for nobody; `visibilitychange` polls the moment it is worth
+    // looking at. Deliberately `document.hidden` and not `paused()` — a fullscreen game
+    // does not hide this panel, it is a second screen, so a tile that loads during one
+    // is still being looked at and still earns its first reading.
+    if (document.hidden) return;
     // Schedule only once the first poll has resolved: scheduling alongside it reads a
     // failure counter that has not been updated yet, so the backoff would always miss
     // the first failure and retry at the full cadence.
@@ -433,7 +447,9 @@
 
     const prevUrl = cfg.url, prevPointer = cfg.pointer, prevHeader = cfg.headerName + '\n' + cfg.headerValue;
     cfg.url = String(s.url || '').trim();
-    cfg.pointer = String(s.jsonPointer || '').trim();
+    // NOT trimmed: a JSON Pointer's trailing whitespace can be part of the key name.
+    // resolvePath strips the leading side, which is the only end that is never meaningful.
+    cfg.pointer = String(s.jsonPointer || '');
     cfg.unit = String(s.unit || '').trim();
     cfg.decimals = Math.min(4, Math.max(0, Number(s.decimals) || 0));
     cfg.pollSeconds = Math.min(86400, Math.max(5, Number(s.pollSeconds) || 60));

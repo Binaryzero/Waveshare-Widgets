@@ -459,6 +459,57 @@ const TOKEN = 'Bearer super-secret-probe-token';
   check('R19b and once the game exits, polling resumes normally',
     seen.length > 0, `${seen.length} requests`);
 
+  // ---- R20 · JSON Pointer tokens keep their whitespace ------------------------------
+  // RFC 6901 is literal after the first '/', so `/temperature ` selects "temperature ".
+  // Trimming the setting resolved the wrong key — and in a payload holding both spellings
+  // it reads the wrong NUMBER, which is worse than a visible miss.
+  respond = () => ({ status: 200, body: JSON.stringify({ 'temperature ': 11, temperature: 99 }) });
+  await init({ url: 'https://api.test/ws1', jsonPointer: '/temperature ', pollSeconds: 60 });
+  await wait(500);
+  check('R20 a pointer token keeps its trailing space and selects the right key',
+    (await read()).value === '11', (await read()).value);
+  await init({ url: 'https://api.test/ws2', jsonPointer: '/temperature', pollSeconds: 60 });
+  await wait(500);
+  check('R20b and the space-free spelling still selects the other one',
+    (await read()).value === '99', (await read()).value);
+  // Leading whitespace is never part of either syntax — and stripping it is what picks
+  // the RFC branch, so a pasted " /a" must not fall through to the dotted parser.
+  respond = () => ({ status: 200, body: JSON.stringify({ a: 5 }) });
+  await init({ url: 'https://api.test/ws3', jsonPointer: '  /a', pollSeconds: 60 });
+  await wait(500);
+  check('R20c a pasted pointer with leading spaces still resolves',
+    (await read()).value === '5', (await read()).value);
+
+  // ---- R21 · a cold load while hidden fetches nothing --------------------------------
+  // The shell answers ww-ready whether or not the WebView is visible, so an unconditional
+  // opening poll costs one request per cold start or reload while minimised.
+  const hiddenPage = await browser.newPage({ viewport: { width: 640, height: 400 } });
+  hiddenPage.on('pageerror', (e) => { failures++; console.log('[pageerror:hidden]', String(e).slice(0, 300)); });
+  await prepare(hiddenPage);
+  // Force document.hidden before the widget script runs, so init sees a hidden document.
+  await hiddenPage.addInitScript(() => {
+    Object.defineProperty(document, 'hidden', { get: () => window.__hidden !== false, configurable: true });
+    Object.defineProperty(document, 'visibilityState', { get: () => (window.__hidden !== false ? 'hidden' : 'visible'), configurable: true });
+  });
+  await hiddenPage.goto('https://widget.test/index.html');
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 4 }) });
+  seen.length = 0;
+  await hiddenPage.evaluate((s) => {
+    window.postMessage({ type: 'ww-init', settings: s, sensors: [], media: null, theme: null,
+      game: { active: false, process: '' }, status: { elevated: false, apiVersion: 1 } }, '*');
+  }, { url: 'https://api.test/hidden', jsonPointer: '/v', pollSeconds: 60, bgStyle: 'solid' });
+  await wait(800);
+  check('R21 a widget initialised while the panel is hidden issues no request',
+    seen.length === 0, `${seen.length} requests`);
+  // ...and the deferral is not a permanent stall: becoming visible fetches immediately.
+  await hiddenPage.evaluate(() => { window.__hidden = false; document.dispatchEvent(new Event('visibilitychange')); });
+  await wait(800);
+  check('R21b and it fetches as soon as the panel becomes visible',
+    seen.length === 1, `${seen.length} requests`);
+  check('R21c painting the value it just fetched',
+    (await hiddenPage.evaluate(() => document.getElementById('value').textContent)) === '4');
+  await hiddenPage.close();
+
   // ---- populated screenshots (the eyes, not just the contract) ---------------------
   respond = () => ({ status: 200, body: JSON.stringify({ data: { temperature: 87.3 } }) });
   for (const [w, h, name] of [[320, 400, 'quarter'], [640, 400, 'half'], [640, 200, 'half-upper']]) {
