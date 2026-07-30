@@ -59,6 +59,15 @@
   let sdProfileWaiters = [];   // callbacks awaiting an sd-profiles-result
   let galleryOpen = false;     // settings-side add-widget gallery (Widget tab)
   let instanceSeq = 0;         // suffix for minted instanceIds (gallery adds)
+  // The free region a replica "+" tap named, if any (#84). The panel's add zones are
+  // per-hole now, so the tap says WHERE — and the pick that follows has to honour it,
+  // or the settings side quietly fills a different hole from the one touched.
+  //
+  // Bound to the PAGE it was tapped on, not just the coordinates. The replica can
+  // navigate between the tap and the pick (page-changed follows an edge drop or the
+  // capsule arrows), and coordinates alone would then anchor into a cell chosen on a
+  // different page — landing in an occupied spot, or flowing into an unrelated hole.
+  let pendingAddTarget = null;   // { region, page } | null
 
   const el = (id) => document.getElementById(id);
 
@@ -518,7 +527,13 @@
       // we no longer hold — following it would open the gallery on, and add the
       // widget to, the wrong page after a reorder or deletion.
       if (replicaTimer || (m.gen | 0) !== initGen) return;
+      // Region the tap landed in. Null for an older shell, which simply keeps the
+      // page-wide sizing it always had.
+      const t = m.target;
       const idx = m.index | 0;
+      const tPage = (idx >= 0 && idx < state.layout.pages.length) ? state.layout.pages[idx] : null;
+      pendingAddTarget = (t && tPage && t.w >= 1 && t.h >= 1 && t.col >= 0 && t.row >= 0)
+        ? { region: t, page: tPage } : null;
       if (idx !== selectedPage && idx >= 0 && idx < state.layout.pages.length) {
         selectedPage = idx;
         selectedSlot = null;
@@ -926,6 +941,9 @@
       }
       item.addEventListener('click', () => {
         if (selectedPage !== i) selectedSlot = null; // selection is per page
+        // A hole named by a "+" tap belongs to the page it was tapped on. Carrying it
+        // across a page switch would anchor the next add to a cell chosen elsewhere.
+        pendingAddTarget = null;
         selectedPage = i;
         renderAll();
       });
@@ -1065,6 +1083,7 @@
   }
 
   function closeGallery() {
+    pendingAddTarget = null;   // dismissing the picker abandons the hole it was for
     if (!galleryOpen) return;
     galleryOpen = false;
     renderEditorPanel();
@@ -1075,6 +1094,35 @@
   // already fail to place (over-full pages hide them) — they must not veto adds
   // into the free space that IS visible (field bug: every gallery entry said
   // "No room" while half the page sat empty).
+  /** The tapped region, but only for the page it was tapped on. Both the shelf's
+   *  enabled state and the add itself go through this — reading the target in one
+   *  place and page-wide sizing in the other is what left half-width widgets enabled
+   *  against a one-column hole, where clicking them did nothing at all. */
+  function activeAddTarget(page) {
+    if (!pendingAddTarget || pendingAddTarget.page !== page) return null;
+    // REVALIDATED, not merely remembered. Between the tap and the pick the user can
+    // resize or move a slot into the named cells — the shelf would still be answering
+    // for a rectangle that no longer exists, and the anchor would land in an occupied
+    // cell and flow somewhere else. Enumerating every interaction that could do that is
+    // a list to keep up to date; checking the cells is a fact.
+    const region = pendingAddTarget.region;
+    const { occupied } = occupancyOf(page.slots || []);
+    for (let r = region.row; r < region.row + region.h; r++)
+      for (let c = region.col; c < region.col + region.w; c++)
+        if (r > 1 || c > 3 || occupied[r][c]) { pendingAddTarget = null; return null; }
+    return region;
+  }
+
+  /** The size a widget takes in a specific free region: widest offered width that
+   *  fits its columns, banded to its rows. Mirrors the shell's sizeInRegion — the two
+   *  answer the same question for the same tap, on either surface. */
+  function sizeInRegion(widget, region) {
+    const band = region.h === 2 ? 'full' : (region.row === 0 ? 'upper' : 'lower');
+    const widths = offeredWidths(widget).slice().reverse();
+    for (const w of widths) if (WIDTH_COLS[w] <= region.w) return w + (band === 'full' ? '' : '-' + band);
+    return null;
+  }
+
   function defaultSizeFor(page, widget) {
     const widths = offeredWidths(widget).slice().reverse(); // widest first, shrink into the hole
     const slots = (page.slots = page.slots || []);
@@ -1121,11 +1169,14 @@
     el('slotDetail').style.display = '';
     wrap.textContent = '';
     if (!open) return;
+    // When a replica "+" named a hole, the shelf answers for THAT hole: a widget the
+    // region cannot take is offered as unavailable rather than enabled-and-inert.
+    const region = activeAddTarget(page);
     for (const widget of state.widgets) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'gallery-item';
-      const size = defaultSizeFor(page, widget);
+      const size = region ? sizeInRegion(widget, region) : defaultSizeFor(page, widget);
       const glyph = document.createElement('span');
       glyph.className = 'g-icon';
       glyph.textContent = paletteGlyph(widget.id);
@@ -1139,10 +1190,11 @@
       if (!size) {
         const why = document.createElement('span');
         why.className = 'g-why';
-        why.textContent = 'no room';
+        why.textContent = region ? 'too big' : 'no room';
         btn.appendChild(why);
       }
-      btn.title = size ? (widget.author || widget.name) : 'No room on this page';
+      btn.title = size ? (widget.author || widget.name)
+        : (region ? 'Too big for the space you tapped' : 'No room on this page');
       btn.disabled = !size;
       btn.addEventListener('click', () => addWidgetToPage(page, widget));
       wrap.appendChild(btn);
@@ -1151,23 +1203,31 @@
     if (![...wrap.children].some((b) => !b.disabled)) {
       const note = document.createElement('p');
       note.className = 'g-full panel-hint';
-      note.textContent = 'This page is full — remove a widget or add a page.';
+      note.textContent = region
+        ? 'Nothing installed fits the space you tapped — try a larger one.'
+        : 'This page is full — remove a widget or add a page.';
       wrap.prepend(note);
     }
   }
 
   function addWidgetToPage(page, widget) {
-    const size = defaultSizeFor(page, widget); // sized against the page as it IS now
+    // A tap on a specific hole in the replica sizes and anchors to THAT hole; the
+    // shelf's own "+" has no target and keeps the page-wide behaviour.
+    const region = activeAddTarget(page);
+    const size = region ? sizeInRegion(widget, region) : defaultSizeFor(page, widget);
     if (!size) return;
+    pendingAddTarget = null;   // one tap, one add
     galleryOpen = false;
-    page.slots.push({
+    const def = {
       widgetId: widget.id,
       size,
       settings: {},
       // Minted like the shell does: a positional tag could collide with an
       // identity another slot froze earlier.
       instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
-    });
+    };
+    if (region) def.col = region.col + 1;   // 1-based anchor, as placeSlots reads it
+    page.slots.push(def);
     selectedSlot = page.slots.length - 1;
     openPanel('widget'); // gallery pick lands in the new widget's inspector
     renderPageList(); // the strip's widget count changed
@@ -1189,7 +1249,9 @@
   // `col` pins would let the gallery offer sizes the real placement then hides
   // (a pinned tile the simulation flowed left can block the columns the shell
   // actually keeps free) — so simulate the real 4x2 placement and count drops.
-  function countUnplaced(slots) {
+  /** Which cells the page's slots occupy, by the same rules placeSlots uses. Shared
+   *  with countUnplaced so "is this cell free" has one answer, not two. */
+  function occupancyOf(slots) {
     const occupied = [new Array(4).fill(false), new Array(4).fill(false)]; // [row][col]
     const placed = new Array(slots.length).fill(false);
     const geo = (s) => {
@@ -1204,15 +1266,12 @@
     const take = (rows, col, w) => {
       for (const r of rows) for (let i = 0; i < w; i++) occupied[r][col + i] = true;
     };
-    // Pass A — anchored slots (1-based col) claim their column; a blocked
-    // anchor falls through to the flow pass, exactly like the shell.
     slots.forEach((s, i) => {
       const anchor = (s.col >= 1 && s.col <= 4) ? s.col - 1 : null;
       if (anchor === null) return;
       const { w, rows } = geo(s);
       if (free(rows, anchor, w)) { take(rows, anchor, w); placed[i] = true; }
     });
-    // Pass B — everything else flows first-fit in array order.
     let dropped = 0;
     slots.forEach((s, i) => {
       if (placed[i]) return;
@@ -1221,8 +1280,13 @@
       for (let c = 0; c + w <= 4; c++) if (free(rows, c, w)) { col = c; break; }
       if (col >= 0) take(rows, col, w); else dropped++;
     });
-    return dropped;
+    return { occupied, dropped };
   }
+
+  function countUnplaced(slots) {
+    return occupancyOf(slots).dropped;
+  }
+
 
   function renderCapacity(page) {
     const slots = page.slots || [];

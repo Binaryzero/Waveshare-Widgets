@@ -431,6 +431,16 @@ body.editing .add-zone { display: grid; place-items: center; align-content: cent
   0%, 100% { border-color: color-mix(in srgb, var(--accent, #4cc2ff) 55%, transparent); }
   50% { border-color: color-mix(in srgb, var(--accent, #4cc2ff) 90%, transparent); }
 }
+/* A region no installed widget can occupy: shown, and saying why (#77). Silence here
+ * would be the same dead space #84 was about, just with a different cause. */
+.add-zone.full {
+  border-style: dotted;
+  border-color: color-mix(in srgb, var(--muted, #8b93a7) 45%, transparent);
+  color: var(--muted, #8b93a7);
+  cursor: default;
+  animation: none;
+}
+.add-zone.full .az-label { color: var(--muted, #8b93a7); }
 @media (prefers-reduced-motion: reduce) { .add-zone { animation: none; } }
 
 /* Widget palette modal. */

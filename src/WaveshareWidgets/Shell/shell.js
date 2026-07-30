@@ -469,23 +469,10 @@
     pageEl.className = 'page';
     pageEls.set(page, pageEl);
 
-    // "+ add widget" affordance: positioned over the page's largest free rectangle
-    // while editing (relayoutPage keeps it placed and hides it when the page is full).
-    const addZone = document.createElement('button');
-    addZone.className = 'add-zone';
-    // A bare "+" read as decoration in the field ("the palette icon is gone") —
-    // say what the zone does.
-    const plus = document.createElement('span');
-    plus.className = 'az-plus';
-    plus.textContent = '+';
-    const azLabel = document.createElement('span');
-    azLabel.className = 'az-label';
-    azLabel.textContent = 'Add widget';
-    addZone.append(plus, azLabel);
-    addZone.title = 'Add a widget to this page';
-    addZone.addEventListener('click', () => openPalette(page));
-    pageEl.appendChild(addZone);
-
+    // "+ add widget" affordances, one per free region — built by relayoutPage, which
+    // is the only place that knows what is free. A single zone over the largest hole
+    // left every OTHER hole dead: visibly empty, and no way to put anything in it
+    // (#84).
     for (const slotDef of page.slots || []) buildSlot(page, slotDef);
     relayoutPage(page);
     pagesEl.appendChild(pageEl);
@@ -636,28 +623,91 @@
     });
   }
 
-  function positionAddZone(page, placements) {
-    const pageEl = pageEls.get(page);
-    const zone = pageEl && pageEl.querySelector('.add-zone');
-    if (!zone) return;
+  /** Every free rectangle on the page, largest first, with no overlaps.
+   *
+   * One zone over the largest hole is what #84 reported: a page with two disjoint
+   * holes showed an "Add widget" in one of them and left the other visibly empty with
+   * no way to fill it. Reproduced at 1280x400 with a half-upper and a quarter-lower —
+   * the zone took the 2x2 block on the right and the free quarter at row 2 col 2 got
+   * nothing.
+   *
+   * Greedy: take the largest free rectangle, mark it used, repeat. The rectangles
+   * tile the free cells rather than enumerating every rectangle that fits in them,
+   * so no two zones ever overlap and every free cell belongs to exactly one. */
+  function freeRegions(page, placements) {
     const occupied = [new Array(4).fill(false), new Array(4).fill(false)];
     for (const place of placements || placeSlots(page.slots || [])) {
       if (!place) continue;
       const rows = place.band === 'full' ? [0, 1] : place.band === 'upper' ? [0] : [1];
       for (const r of rows) for (let i = 0; i < place.w; i++) occupied[r][place.col + i] = true;
     }
-    let best = null;
-    for (let r = 0; r < 2; r++) for (let c = 0; c < 4; c++) {
-      for (let h = 1; r + h <= 2; h++) for (let w = 1; c + w <= 4; w++) {
-        let free = true;
-        for (let i = r; i < r + h && free; i++) for (let j = c; j < c + w && free; j++) if (occupied[i][j]) free = false;
-        if (free && (!best || w * h > best.w * best.h)) best = { r, c, w, h };
+    const regions = [];
+    for (;;) {
+      let best = null;
+      for (let r = 0; r < 2; r++) for (let c = 0; c < 4; c++) {
+        for (let h = 1; r + h <= 2; h++) for (let w = 1; c + w <= 4; w++) {
+          let free = true;
+          for (let i = r; i < r + h && free; i++) for (let j = c; j < c + w && free; j++) if (occupied[i][j]) free = false;
+          if (free && (!best || w * h > best.w * best.h)) best = { r, c, w, h };
+        }
       }
+      if (!best) return regions;
+      for (let i = best.r; i < best.r + best.h; i++)
+        for (let j = best.c; j < best.c + best.w; j++) occupied[i][j] = true;
+      regions.push(best);
     }
-    if (!best) { zone.style.display = 'none'; return; }
-    zone.style.display = '';
-    zone.style.gridColumn = (best.c + 1) + ' / span ' + best.w;
-    zone.style.gridRow = best.h === 2 ? '1 / span 2' : String(best.r + 1);
+  }
+
+  /** The size a widget would take in THIS region: widest supported width that fits
+   *  the region's columns, banded to the region's rows. Null when the widget cannot
+   *  fit at all, which is what makes a zone able to say why it is unavailable (#77). */
+  function sizeInRegion(widget, region) {
+    const band = region.h === 2 ? 'full' : (region.r === 0 ? 'upper' : 'lower');
+    const widths = allowedWidths(widget).slice().reverse();   // widest first
+    // Column count comes from parseSize rather than a second width table — the two
+    // drifting apart would place widgets a column wider or narrower than the hole.
+    for (const w of widths) if (parseSize(w).w <= region.w) return makeSize(w, band);
+    return null;
+  }
+
+  function positionAddZone(page, placements) {
+    const pageEl = pageEls.get(page);
+    if (!pageEl) return;
+    const regions = freeRegions(page, placements);
+    const zones = [...pageEl.querySelectorAll('.add-zone')];
+    // Reuse what is there and trim the rest: rebuilding every zone on every relayout
+    // would restart the pulse animation on tiles the user is not touching.
+    while (zones.length > regions.length) zones.pop().remove();
+    while (zones.length < regions.length) {
+      const z = document.createElement('button');
+      z.className = 'add-zone';
+      // A bare "+" read as decoration in the field ("the palette icon is gone") —
+      // say what the zone does.
+      const plus = document.createElement('span');
+      plus.className = 'az-plus';
+      plus.textContent = '+';
+      const label = document.createElement('span');
+      label.className = 'az-label';
+      z.append(plus, label);
+      pageEl.appendChild(z);
+      zones.push(z);
+    }
+    regions.forEach((region, i) => {
+      const z = zones[i];
+      z.style.display = '';
+      z.style.gridColumn = (region.c + 1) + ' / span ' + region.w;
+      z.style.gridRow = region.h === 2 ? '1 / span 2' : String(region.r + 1);
+      // Unavailable WITH a reason (#77). A region no installed widget can occupy is
+      // rare — every stock widget takes a quarter — but silence there would be the
+      // same dead space this issue is about.
+      const fits = widgetLib.some((w) => sizeInRegion(w, region));
+      z.disabled = !fits;
+      z.classList.toggle('full', !fits);
+      z.querySelector('.az-plus').textContent = fits ? '+' : '·';
+      z.querySelector('.az-label').textContent = fits ? 'Add widget' : 'Nothing fits here';
+      z.title = fits ? 'Add a widget here' : 'No installed widget fits this space';
+      z.onclick = fits ? () => openPalette(page, region) : null;
+    });
   }
 
   // Pages are ordered with flex `order` so reordering never moves DOM nodes —
@@ -2047,15 +2097,18 @@
     return found;
   }
 
-  function openPalette(page) {
+  function openPalette(page, region) {
     cancelDrag(); // a second finger can reach the add-zone while a drag holds
     // Toggle: pressing "+" again dismisses instead of stacking a re-open (#46).
     if (!paletteEl.hidden) { closePalette(); return; }
     if (PREVIEW && editing) {
       // The replica is a small scaled strip inside the settings window — a modal
       // palette here covers the very layout being edited (#46). Hand off to the
-      // settings window's widget gallery instead.
-      postToHost({ type: 'add-widget', index: Math.max(0, layoutData.pages.indexOf(page)), gen: previewGen });
+      // settings window's widget gallery instead. The region travels with the
+      // request so the settings side can fill the hole that was actually tapped.
+      postToHost({ type: 'add-widget', index: Math.max(0, layoutData.pages.indexOf(page)),
+        target: region ? { col: region.c, row: region.r, w: region.w, h: region.h } : null,
+        gen: previewGen });
       return;
     }
     paletteGrid.textContent = '';
@@ -2066,10 +2119,15 @@
       name.textContent = widget.name;
       const by = document.createElement('span');
       by.className = 'p-by';
-      by.textContent = defaultSizeFor(page, widget) ? (widget.author || '') : 'No room on this page';
+      // Sized against the REGION the user tapped, not the page. Answering "does this
+      // fit somewhere?" while the tap said "put it HERE" is how a zone over a small
+      // hole ends up filling a different one.
+      const size = region ? sizeInRegion(widget, region) : defaultSizeFor(page, widget);
+      by.textContent = size ? (widget.author || '')
+        : (region ? 'Does not fit here' : 'No room on this page');
       btn.append(name, by);
-      btn.disabled = !defaultSizeFor(page, widget);
-      btn.addEventListener('click', () => addWidget(page, widget));
+      btn.disabled = !size;
+      btn.addEventListener('click', () => addWidget(page, widget, region));
       paletteGrid.appendChild(btn);
     }
     // A wall of disabled entries reads as "broken", not "full" — say it plainly.
@@ -2084,10 +2142,14 @@
   function closePalette() { paletteEl.hidden = true; }
   document.getElementById('paletteBackdrop').addEventListener('click', closePalette);
 
-  function addWidget(page, widget) {
+  function addWidget(page, widget, region) {
     closePalette();
     mutate(() => {
-      const size = defaultSizeFor(page, widget); // sized against the page as it IS now
+      // Region-targeted when the add came from a zone: the size is what fits THERE and
+      // `col` anchors it to that column, so the widget lands in the hole that was
+      // tapped rather than wherever first-fit would have flowed it. Without the
+      // anchor, tapping the small hole could fill the large one.
+      const size = region ? sizeInRegion(widget, region) : defaultSizeFor(page, widget);
       if (!size) return;
       // instanceId minted upfront: a positional tag here could collide with an
       // identity another slot froze earlier (e.g. a previously adopted "p0s1").
@@ -2095,6 +2157,7 @@
         widgetId: widget.id, size, settings: {},
         instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
       };
+      if (region) def.col = region.c + 1;   // 1-based anchor, as placeSlots reads it
       (page.slots = page.slots || []).push(def);
       const rec = buildSlot(page, def);
       relayoutPage(page);
