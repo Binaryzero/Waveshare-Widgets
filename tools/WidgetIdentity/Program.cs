@@ -10,17 +10,22 @@ using WaveshareWidgets.Widgets;
 var failures = 0;
 void Check(string name, bool ok, string? detail = null)
 {
+    // The reservation namespace contains NUL, and a NUL on stdout makes every tool that
+    // reads CI logs treat them as a binary file.
+    detail = detail?.Replace("\0", "\\0");
     Console.WriteLine($"  {(ok ? "PASS" : "FAIL")} {name}{(detail is null ? "" : " - " + detail)}");
     if (!ok) failures++;
 }
 
-// What the app ships, as the seeder sees it: folder name -> manifest id.
-var stock = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+// What the app ships: folder name, declared id, and the content fingerprint of the
+// shipped files. The fingerprint is the part that carries authority — see I1b.
+var stock = new List<WidgetIdentity.StockWidget>
 {
-    ["hue"] = "ws.stock.hue",
-    ["clock"] = "ws.stock.clock",
-    ["deck"] = "ws.stock.deck",
+    new("hue", "ws.stock.hue", "FINGERPRINT-HUE"),
+    new("clock", "ws.stock.clock", "FINGERPRINT-CLOCK"),
+    new("deck", "ws.stock.deck", "FINGERPRINT-DECK"),
 };
+const string ShippedHue = "FINGERPRINT-HUE";
 
 Console.WriteLine("Reserved ids (#94)");
 
@@ -28,19 +33,40 @@ Console.WriteLine("Reserved ids (#94)");
 // ws-stock-hue — because that is the only place InstallPackage writes. The seeded copy is
 // in hue/. So the question the scan asks is exactly this one.
 Check("I1 a package claiming a stock id cannot claim it from the folder it lands in",
-    !WidgetIdentity.MayClaim("ws.stock.hue", WidgetIdentity.InstallFolderName("ws.stock.hue"), stock),
+    !WidgetIdentity.MayClaim("ws.stock.hue", WidgetIdentity.InstallFolderName("ws.stock.hue"), ShippedHue, stock),
     WidgetIdentity.InstallFolderName("ws.stock.hue"));
+
+// I1b · the attack that the FOLDER NAME check missed entirely. docs/WIDGET-SPEC.md tells
+// users to unzip widgets straight into the widgets directory, and those writes hot-reload —
+// so `widgets/hue` is a name anyone who gets an archive opened can occupy, and the rescan
+// that the unzip triggers would serve it from the real Hue widget's origin. Only content
+// separates the seeded copy from something wearing its name.
+Check("I1b a hostile folder WEARING the stock name and id is still refused",
+    !WidgetIdentity.MayClaim("ws.stock.hue", "hue", "FINGERPRINT-HOSTILE", stock),
+    "right name, wrong content");
+
+// I1c · and a claim with no fingerprint at all is refused, not waved through. An
+// unreadable folder is the case a null arrives from, and "could not check" must not read
+// as "checked and fine".
+Check("I1c an unfingerprintable folder cannot claim a stock id",
+    !WidgetIdentity.MayClaim("ws.stock.hue", "hue", null, stock)
+    && !WidgetIdentity.MayClaim("ws.stock.hue", "hue", "", stock));
 
 // I2 · ...and the real stock widget still loads. A refusal that also refuses the thing it
 // is protecting is not a fix, and this is the direction a too-broad rule breaks in.
 Check("I2 the seeded stock copy still may",
-    WidgetIdentity.MayClaim("ws.stock.hue", "hue", stock));
+    WidgetIdentity.MayClaim("ws.stock.hue", "hue", ShippedHue, stock));
+
+// I2b · reservation keys are not ids. A widget answering to one would be handed the very
+// origin the reservation exists to withhold from it.
+Check("I2b nothing may claim an id in the reservation namespace",
+    !WidgetIdentity.MayClaim(WidgetIdentity.ReservationPrefix + "anything", "whatever", null, stock));
 
 // I3 · a stock id from ANY other folder is refused, including one a user hand-copied to a
 // plausible name. Folder names carry no authority; only the shipped set does.
 Check("I3 a stock id from any other folder is refused",
-    !WidgetIdentity.MayClaim("ws.stock.hue", "hue-copy", stock)
-    && !WidgetIdentity.MayClaim("ws.stock.hue", "clock", stock));
+    !WidgetIdentity.MayClaim("ws.stock.hue", "hue-copy", ShippedHue, stock)
+    && !WidgetIdentity.MayClaim("ws.stock.hue", "clock", ShippedHue, stock));
 
 // I4 · case. "WS.Stock.Hue" is the same reserved namespace, and a case-sensitive prefix
 // test would wave it straight through to the clean origin.
@@ -50,20 +76,20 @@ Check("I4 the namespace check is case-insensitive",
 // I5 · a reserved id the app ships NOTHING by belongs to nobody. Retiring a stock widget
 // (fans, for its elevation requirement) must not turn its name into a vacancy.
 Check("I5 a reserved id with no shipped widget is refused everywhere",
-    !WidgetIdentity.MayClaim("ws.stock.fans", "fans", stock)
-    && !WidgetIdentity.MayClaim("ws.stock.fans", "ws-stock-fans", stock));
+    !WidgetIdentity.MayClaim("ws.stock.fans", "fans", "FINGERPRINT-FANS", stock)
+    && !WidgetIdentity.MayClaim("ws.stock.fans", "ws-stock-fans", "FINGERPRINT-FANS", stock));
 
 // I6 · and the rule stops at the namespace: ordinary ids install from anywhere, which is
 // the entire point of installing a widget.
 Check("I6 an unreserved id may come from any folder",
-    WidgetIdentity.MayClaim("com.example.cpu", "com-example-cpu", stock)
-    && WidgetIdentity.MayClaim("com.example.cpu", "whatever", stock));
+    WidgetIdentity.MayClaim("com.example.cpu", "com-example-cpu", null, stock)
+    && WidgetIdentity.MayClaim("com.example.cpu", "whatever", null, stock));
 
 // I7 · an EMPTY shipped set refuses every reserved id rather than accepting them. This is
 // the failure direction when the stock folder cannot be read: stock widgets go missing and
 // say so, instead of the name being free for anyone to take.
 Check("I7 an unreadable shipped set refuses reserved ids, it does not open them",
-    !WidgetIdentity.MayClaim("ws.stock.hue", "hue", new Dictionary<string, string>()));
+    !WidgetIdentity.MayClaim("ws.stock.hue", "hue", ShippedHue, new List<WidgetIdentity.StockWidget>()));
 
 Console.WriteLine("Duplicate resolution (#94)");
 
@@ -88,6 +114,12 @@ Check("I9 neither canonical falls back to ordinal name, both directions",
 
 Console.WriteLine("Host assignment (#93)");
 
+// A reservation is not an assignment: it withholds an origin from everyone rather than
+// granting it to someone. Probes about who is SERVED from what must not count them.
+static Dictionary<string, string> Granted(Dictionary<string, string> assigned) =>
+    assigned.Where(kv => !kv.Key.StartsWith(WidgetIdentity.ReservationPrefix, StringComparison.Ordinal))
+            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
+
 // I10 · the attack. The map is empty — an upgrade, or a file this process could not read —
 // and two DIFFERENT ids slug to the same host. Whoever is enumerated first used to take
 // the clean origin, so a package could inherit the storage of a widget the user trusts.
@@ -95,7 +127,7 @@ var collide = WidgetIdentity.AssignHosts(
     new[] { "com.example.cpu", "com-example-cpu" }, new Dictionary<string, string>());
 var clean = "com-example-cpu" + WidgetIdentity.HostSuffix;
 Check("I10 with two claimants for one slug, NEITHER gets the clean host",
-    collide.Values.All(h => h != clean), string.Join(", ", collide.Values));
+    Granted(collide).Values.All(h => h != clean), string.Join(", ", Granted(collide).Values));
 Check("I10b ...and they are still told apart",
     collide["com.example.cpu"] != collide["com-example-cpu"]);
 
@@ -139,14 +171,14 @@ Check("I15 the same installed set assigns the same hosts every time",
 var many = WidgetIdentity.AssignHosts(
     new[] { "a.b", "a-b", "a.b.", ".a.b", "A.B", "x" }, new Dictionary<string, string>());
 Check("I16 no two ids are ever assigned the same host",
-    many.Values.Distinct(StringComparer.OrdinalIgnoreCase).Count() == many.Count,
-    string.Join(", ", many.Values));
+    Granted(many).Values.Distinct(StringComparer.OrdinalIgnoreCase).Count() == Granted(many).Count,
+    string.Join(", ", Granted(many).Values));
 
 // I17 · an id that slugs to nothing at all still gets its own origin rather than sharing
 // the fallback label with every other such id.
 var degenerate = WidgetIdentity.AssignHosts(new[] { "...", "!!!" }, new Dictionary<string, string>());
 Check("I17 ids that slug to nothing do not share an origin",
-    degenerate["..."] != degenerate["!!!"], string.Join(", ", degenerate.Values));
+    degenerate["..."] != degenerate["!!!"], string.Join(", ", Granted(degenerate).Values));
 
 // I18 · the last place order could still decide anything: two DIFFERENT ids that share a
 // slug AND the four-byte discriminator, so the suffixed hosts collide too and one of them
@@ -165,10 +197,71 @@ Check("I18 setup: the twins really do collide on slug AND discriminator",
 var twins = WidgetIdentity.AssignHosts(new[] { TwinA, TwinB }, new Dictionary<string, string>());
 var twinsReversed = WidgetIdentity.AssignHosts(new[] { TwinB, TwinA }, new Dictionary<string, string>());
 Check("I18 colliding discriminators still yield distinct origins",
-    twins[TwinA] != twins[TwinB], string.Join(", ", twins.Values));
+    twins[TwinA] != twins[TwinB], string.Join(", ", Granted(twins).Values));
 Check("I18b ...and which twin gets which does not depend on enumeration order",
     twins[TwinA] == twinsReversed[TwinA] && twins[TwinB] == twinsReversed[TwinB],
     $"{twins[TwinA]} vs {twinsReversed[TwinA]}");
+
+// I19 · a clean host withheld from a collision must stay withheld FOREVER, not just for
+// the scan that withheld it. Withholding it in the moment left an origin that no map entry
+// mentioned — and that origin may already hold the trusted widget's data from before the
+// map existed. Retire one collider, install a third id that slugs the same way, and it is
+// the sole fresh claimant of an unrecorded clean host: it takes it, and the data with it.
+// So the withholding is written down.
+var round1 = WidgetIdentity.AssignHosts(
+    new[] { "com.example.cpu", "com-example-cpu" }, new Dictionary<string, string>());
+Check("I19 a withheld clean host is recorded as reserved, not merely skipped",
+    round1.ContainsKey(WidgetIdentity.ReservationPrefix + clean)
+    && round1[WidgetIdentity.ReservationPrefix + clean] == clean,
+    string.Join(", ", round1.Keys));
+
+// The map that scan would have persisted, with the collider then uninstalled — exactly
+// the state the finding describes.
+var afterCollision = new Dictionary<string, string>(StringComparer.Ordinal)
+{
+    ["com.example.cpu"] = round1["com.example.cpu"],
+    [WidgetIdentity.ReservationPrefix + clean] = clean,
+};
+var thirdComer = WidgetIdentity.AssignHosts(new[] { "com_example_cpu" }, afterCollision);
+Check("I19b a later sole claimant of that slug cannot pick the reserved host up",
+    thirdComer["com_example_cpu"] != clean, thirdComer["com_example_cpu"]);
+
+Console.WriteLine("Shipped set and serving (#93, #94)");
+
+// I20 · a retirement enforced in one place and ignored in another. On an overwrite-style
+// upgrade the SHIPPED directory can keep a folder the app no longer ships; the seeder has
+// always treated its retirement list as authoritative for exactly that reason. Reading the
+// shipped set without the same filter re-authorized `ws.stock.fans` from a hand-dropped
+// `widgets/fans`.
+var shippedRaw = new List<WidgetIdentity.StockWidget>
+{
+    new("hue", "ws.stock.hue", "FINGERPRINT-HUE"),
+    new("fans", "ws.stock.fans", "FINGERPRINT-FANS"),
+};
+var shipped = WidgetIdentity.Shipped(shippedRaw, new[] { "fans" });
+Check("I20 a stale shipped folder for a RETIRED widget authorizes nobody",
+    !WidgetIdentity.MayClaim("ws.stock.fans", "fans", "FINGERPRINT-FANS", shipped),
+    string.Join(", ", shipped.Select(w => w.FolderName)));
+Check("I20b ...while the widgets still shipped are untouched",
+    WidgetIdentity.MayClaim("ws.stock.hue", "hue", "FINGERPRINT-HUE", shipped));
+
+// I20c · the other direction, which is easy to miss because it is not a leak. The install
+// guard refuses a package that would land ON a stock folder; with the retired folder still
+// in the set, it also refused an ordinary widget whose id merely slugs to "fans".
+Check("I20c a retired folder no longer blocks an ordinary widget that slugs onto its name",
+    !shipped.Any(w => string.Equals(w.FolderName, WidgetIdentity.InstallFolderName("fans"),
+        StringComparison.OrdinalIgnoreCase)));
+
+// I21 · a host map that could not be read is not a map with nothing in it. Widgets whose
+// origin was minted blind this scan are withheld; widgets that already had an entry are
+// served, because their origin was decided when the map could still be read.
+var minted = new Dictionary<string, string>(StringComparer.Ordinal) { ["com.example.new"] = "x" + WidgetIdentity.HostSuffix };
+Check("I21 a widget whose origin was minted without the map is not served",
+    !WidgetIdentity.MayServe("com.example.new", minted, mapIsTrustworthy: false));
+Check("I21b ...while one that already had an entry still is",
+    WidgetIdentity.MayServe("com.example.old", minted, mapIsTrustworthy: false));
+Check("I21c ...and a readable map withholds nothing",
+    WidgetIdentity.MayServe("com.example.new", minted, mapIsTrustworthy: true));
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
