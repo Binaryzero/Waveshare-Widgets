@@ -189,21 +189,37 @@
       handleHostMessage(msg.message || {});
       return;
     }
+    // ONLY a registered widget frame may drive the native bridge.
+    //
+    // postMessage reaches window.top from ANY descendant, not just a direct child, so
+    // a remote page nested inside a widget could send ww-action / ww-fetch / ww-audio-set
+    // and have the host execute them — Process.Start, injected hotkeys, and the proxy
+    // fetch used as an SSRF hop with the reply routed back to the sender. Three stock
+    // widgets frame third-party content (twitch, youtube) and one frames a URL the user
+    // types (iframe), so this is reachable without anything being "compromised" in the
+    // usual sense: embedding a page that later turns hostile is enough.
+    //
+    // The sandbox does not help — allow-scripts is what makes the widget work, and
+    // per-widget virtual hosts stop a frame READING the shell, not messaging it. Only
+    // the WindowProxy identity distinguishes the widget frame from its descendants,
+    // which is why this is an identity check and not an origin check: ev.origin of a
+    // nested Twitch frame is twitch.tv, but so would be a legitimate one's, and a
+    // widget's own origin is attacker-chosen the moment the widget is third-party.
+    const sender = slots.find((s) => s.frame && s.frame.contentWindow === ev.source);
+    if (!sender) return;
+
     if (msg.type === 'ww-media-control' && typeof msg.action === 'string') {
       postToHost({ type: 'media-control', action: msg.action });
     } else if (msg.type === 'ww-log') {
       postToHost({ type: 'log', message: String(msg.message).slice(0, 2000) });
     } else if (msg.type === 'ww-ready') {
-      const slot = slots.find((s) => s.frame && s.frame.contentWindow === ev.source);
-      if (slot) {
-        // Always answer, even for an already-initialized slot: the iframe may have
-        // crashed and reloaded (common under cold-start resource pressure), and the
-        // fresh document would otherwise run on its built-in defaults forever.
-        slot.initialized = true;
-        const stale = slot.el.querySelector('.error');
-        if (stale) stale.remove();
-        sendToSlot(slot, initMessage(slot));
-      }
+      // Always answer, even for an already-initialized slot: the iframe may have
+      // crashed and reloaded (common under cold-start resource pressure), and the
+      // fresh document would otherwise run on its built-in defaults forever.
+      sender.initialized = true;
+      const stale = sender.el.querySelector('.error');
+      if (stale) stale.remove();
+      sendToSlot(sender, initMessage(sender));
     } else if (msg.type === 'ww-open-url' && typeof msg.url === 'string') {
       postToHost({ type: 'open-url', url: msg.url });
     } else if (msg.type === 'ww-action' && typeof msg.kind === 'string') {
@@ -234,8 +250,7 @@
       // Demand is tracked per slot and only on/off TRANSITIONS reach the host —
       // otherwise nothing would ever send watch(false) when the last watching
       // widget is removed, and the host would poll notifications forever.
-      const slot = slots.find((s) => s.frame && s.frame.contentWindow === ev.source);
-      if (slot) slot.notifWatch = msg.on !== false;
+      sender.notifWatch = msg.on !== false;
       syncNotificationDemand();
     } else if (msg.type === 'ww-notification-dismiss' && msg.id != null) {
       postToHost({ type: 'notification-dismiss', id: msg.id });
