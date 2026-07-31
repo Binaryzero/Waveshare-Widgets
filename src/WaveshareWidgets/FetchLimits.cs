@@ -22,19 +22,34 @@ public static class FetchLimits
     /// tier now has to agree with it.</remarks>
     public const int MaxBodyBytes = 5 * 1024 * 1024;
 
+    /// <summary>The ceiling for one request: what the caller asked for, but never above
+    /// <see cref="MaxBodyBytes"/>.</summary>
+    /// <remarks>
+    /// A widget can LOWER its own ceiling per call (WW.fetch's init.maxBytes) and cannot
+    /// raise it — the clamp is here rather than trusted from the message because the number
+    /// arrives from the widget, and a ceiling a widget can lift is not a ceiling.
+    ///
+    /// It has to reach this tier at all, though, or "lowered" means only that the wrapper in
+    /// the page throws afterwards: the host would still have fetched, buffered, base64'd and
+    /// posted the full 5 MiB first, which is every cost the number was meant to avoid. Zero
+    /// and negative mean "unspecified" — the default, not a refusal of everything.
+    /// </remarks>
+    public static int EffectiveCap(long requested) =>
+        requested > 0 && requested < MaxBodyBytes ? (int)requested : MaxBodyBytes;
+
     /// <summary>A declared Content-Length that is already past the ceiling.</summary>
     /// <remarks>Zero and negative are NOT over: a missing or unparsed length is unknown, not
     /// large, and refusing on it would reject every chunked response. The streaming check
     /// below is what actually holds the line — this only avoids reading a body that has
     /// already announced it is too big.</remarks>
-    public static bool DeclaredTooLarge(long contentLength) => contentLength > MaxBodyBytes;
+    public static bool DeclaredTooLarge(long contentLength, int maxBytes) => contentLength > maxBytes;
 
     /// <summary>Would appending <paramref name="adding"/> bytes to <paramref name="soFar"/>
     /// cross the ceiling?</summary>
     /// <remarks>Asked BEFORE the append, so the bytes past the bound are never held. A check
     /// afterwards would have already paid for them, which on this path is the entire cost
     /// being avoided.</remarks>
-    public static bool WouldExceed(long soFar, int adding) => soFar + adding > MaxBodyBytes;
+    public static bool WouldExceed(long soFar, int adding, int maxBytes) => soFar + adding > maxBytes;
 
     /// <summary>The in-page script the browser tier runs to fetch a URL on the target's own
     /// origin, capped.</summary>

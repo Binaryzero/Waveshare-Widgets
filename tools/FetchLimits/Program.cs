@@ -21,19 +21,43 @@ Console.WriteLine("The ceiling itself");
 
 // F1 · the boundary, both sides. A cap that refuses a body of exactly the allowed size is a
 // different cap from the one documented, and off-by-one here silently shrinks the limit.
-Check("F1 a body of exactly the ceiling is allowed", !FetchLimits.DeclaredTooLarge(Max));
-Check("F1b one byte over is refused", FetchLimits.DeclaredTooLarge(Max + 1));
+Check("F1 a body of exactly the ceiling is allowed", !FetchLimits.DeclaredTooLarge(Max, Max));
+Check("F1b one byte over is refused", FetchLimits.DeclaredTooLarge(Max + 1, Max));
 
 // F2 · an UNKNOWN length is not a large one. Chunked responses declare no Content-Length,
 // so refusing on a missing value would reject the ordinary case rather than the hostile one.
 Check("F2 an absent or unparsed Content-Length is not treated as too large",
-    !FetchLimits.DeclaredTooLarge(0) && !FetchLimits.DeclaredTooLarge(-1));
+    !FetchLimits.DeclaredTooLarge(0, Max) && !FetchLimits.DeclaredTooLarge(-1, Max));
 
 // F3 · the streaming check is asked BEFORE the append. Asking afterwards means the bytes
 // past the bound have already been paid for, which on this path is the whole cost.
-Check("F3 a chunk that exactly fills the ceiling is accepted", !FetchLimits.WouldExceed(Max - 1024, 1024));
-Check("F3b the chunk that would cross it is refused", FetchLimits.WouldExceed(Max - 1024, 1025));
-Check("F3c ...and so is one that starts already full", FetchLimits.WouldExceed(Max, 1));
+Check("F3 a chunk that exactly fills the ceiling is accepted", !FetchLimits.WouldExceed(Max - 1024, 1024, Max));
+Check("F3b the chunk that would cross it is refused", FetchLimits.WouldExceed(Max - 1024, 1025, Max));
+Check("F3c ...and so is one that starts already full", FetchLimits.WouldExceed(Max, 1, Max));
+
+// F9 · the per-request ceiling. WW.fetch lets a widget LOWER its own, and until this the
+// number never left the page: the host still fetched, buffered and base64-encoded the full
+// 5 MiB, so "lowered" meant only that the wrapper threw afterwards — every byte the lower
+// number exists to avoid had already been paid for.
+Check("F9 a lower request lowers the ceiling", FetchLimits.EffectiveCap(64 * 1024) == 64 * 1024);
+// The half that has to hold: the number arrives FROM a widget, and a ceiling a widget can
+// raise is not a ceiling. Same rule as the shim's resolveCap, enforced again here because
+// this side is the one that does the downloading.
+Check("F9b a higher request cannot raise it", FetchLimits.EffectiveCap(Max * 2L) == Max);
+Check("F9c ...nor can a colossal or negative one",
+    FetchLimits.EffectiveCap(long.MaxValue) == Max && FetchLimits.EffectiveCap(-1) == Max);
+// Absent means default, not "refuse everything": an older shell posts no maxBytes at all.
+Check("F9d an unspecified request means the default", FetchLimits.EffectiveCap(0) == Max);
+Check("F9e the ceiling itself is accepted unchanged", FetchLimits.EffectiveCap(Max) == Max);
+
+// F10 · and the lowered number is USED, not merely computed — the same shape of bug as the
+// shim's, where resolveCap returned the right value and the reader ignored it.
+Check("F10 a declared length over the LOWERED ceiling is refused though under the default",
+    FetchLimits.DeclaredTooLarge(1024 * 1024, FetchLimits.EffectiveCap(64 * 1024))
+    && !FetchLimits.DeclaredTooLarge(1024 * 1024, Max));
+Check("F10b ...and so is the chunk that would cross it",
+    FetchLimits.WouldExceed(60 * 1024, 8 * 1024, FetchLimits.EffectiveCap(64 * 1024))
+    && !FetchLimits.WouldExceed(60 * 1024, 8 * 1024, Max));
 
 Console.WriteLine("Parity with the browser tier");
 

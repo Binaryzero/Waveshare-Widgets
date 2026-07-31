@@ -121,10 +121,17 @@
   ///
   /// The source is not touched until something actually reads from the returned stream, so
   /// building one costs nothing and disturbs nothing — see pull().
+  ///
+  /// `type: 'bytes'`, because a native Response.body is a readable BYTE stream: a widget may
+  /// call getReader({ mode: 'byob' }) to read into its own buffer, and an ordinary stream
+  /// refuses BYOB readers outright. Without this the wrapper breaks a valid streaming
+  /// consumer on responses of any size, including ones nowhere near the ceiling.
   function cappedStream(source, maxBytes) {
     let reader = null;
+    let pending = null;   // read from the source, not yet handed to the consumer
     let total = 0;
     return new ReadableStream({
+      type: 'bytes',
       async pull(controller) {
         // The lock is taken HERE rather than when the stream is built, because READING the
         // .body property does not disturb a native body — `if (res.body)` followed by
@@ -132,15 +139,37 @@
         // looking at .body break every reader after it, which is a stranger failure than
         // the one this wrapper exists to prevent.
         if (!reader) reader = source.getReader();
-        const { done, value } = await reader.read();
-        if (done) { controller.close(); return; }
-        if (total + value.length > maxBytes) {
-          cancelQuietly(reader);
-          controller.error(new RangeError('response too large: exceeds ' + maxBytes + ' bytes'));
-          return;
+        if (!pending || !pending.length) {
+          const { done, value } = await reader.read();
+          if (done) {
+            controller.close();
+            // A BYOB read that is waiting when the source ends has to be answered, or it
+            // never settles: close() alone leaves that reader hanging on a stream it can
+            // see is closed.
+            if (controller.byobRequest) controller.byobRequest.respond(0);
+            return;
+          }
+          if (total + value.length > maxBytes) {
+            cancelQuietly(reader);
+            controller.error(new RangeError('response too large: exceeds ' + maxBytes + ' bytes'));
+            return;
+          }
+          total += value.length;
+          pending = value;
         }
-        total += value.length;
-        controller.enqueue(value);
+        // A byte stream must SERVE a pending BYOB request by writing into the view the
+        // reader supplied — enqueue() does not answer one, and the read then waits forever.
+        // Verified in both Chromium and Node: enqueue-only + a BYOB reader hangs, which is
+        // worse than the plain stream this replaced (that one at least threw). Chunks from
+        // the source are whatever size the network gave us and the view is whatever size the
+        // caller asked for, so `pending` carries the remainder across pulls.
+        const req = controller.byobRequest;
+        if (!req) { controller.enqueue(pending); pending = null; return; }
+        const n = Math.min(req.view.byteLength, pending.length);
+        new Uint8Array(req.view.buffer, req.view.byteOffset, req.view.byteLength)
+          .set(pending.subarray(0, n));
+        pending = pending.subarray(n);
+        req.respond(n);
       },
       cancel() { cancelQuietly(reader || source); },   // never read: cancel the source itself
     });
@@ -166,56 +195,74 @@
       : MAX_BODY_BYTES;
   }
 
-  /// Wraps a Response so its body readers obey the budget, and forwards everything else.
+  /// Shadows a real Response's body readers so they obey the budget and REPORT the refusal.
   ///
-  /// A PROXY rather than a hand-written stand-in: widgets read status, ok, headers,
-  /// redirected, url, type, and whatever the platform adds next, and a copy would silently
-  /// stop matching. Property reads go to the real Response with the real Response as the
-  /// receiver — Response's getters need their internal slot, and handing them the proxy
-  /// instead throws.
-  function cappedResponse(response, maxBytes) {
+  /// Own data properties, not a subclass or a wrapper object: they hide the prototype
+  /// methods for anyone holding this response, and leave the internal slots — the only thing
+  /// a Web IDL brand check looks at — exactly as the platform made them.
+  ///
+  /// They are needed because the platform's own readers cannot report this failure. Chromium
+  /// turns ANY body-stream error into `TypeError: Failed to fetch` for text(), json(),
+  /// blob(), arrayBuffer() and formData(); only a direct stream read preserves it. Left to
+  /// the platform, a size refusal would reach every widget as an indistinguishable network
+  /// error — the same defect this round fixed on the proxy tier, everywhere at once and with
+  /// nothing a widget could do about it.
+  const nativeClone = Response.prototype.clone;
+  function shadowReaders(res, maxBytes) {
+    const define = (name, value) =>
+      Object.defineProperty(res, name, { value, writable: true, configurable: true });
     const decode = (bytes) => new TextDecoder().decode(bytes);
-    const overrides = {
-      arrayBuffer: async () => (await readCapped(response, maxBytes)).buffer,
-      text: async () => decode(await readCapped(response, maxBytes)),
-      json: async () => JSON.parse(decode(await readCapped(response, maxBytes))),
-      blob: async () => new Blob([await readCapped(response, maxBytes)],
-        { type: response.headers.get('content-type') || '' }),
-      bytes: async () => readCapped(response, maxBytes),
-      // Not a body reader itself, but it PARSES one — and parsing a multipart body the
-      // platform read for us would be exactly the unbounded materialisation this exists to
-      // stop. Read within the budget first, then let the platform parse the capped copy.
-      formData: async () => {
-        const bytes = await readCapped(response, maxBytes);
-        // Only the content-type is carried over. It is all formData() needs — the multipart
-        // boundary lives in it — while content-length and content-encoding describe the
-        // bytes ON THE WIRE, and these are the decoded ones we just read. Handing the
-        // platform headers that disagree with the body is how the encoded-length bug above
-        // got in; there is no reason to reintroduce it one function later.
-        const ct = response.headers.get('content-type');
-        return new Response(bytes, ct ? { headers: { 'Content-Type': ct } } : undefined).formData();
-      },
-      // A clone has to stay capped, or a widget could read the body through it uncapped.
-      clone: () => cappedResponse(response.clone(), maxBytes),
-    };
-    // .body is handled in the trap rather than here: it is THE gap that made every override
-    // above optional — a widget can skip all of them and pull the stream itself. Built once
-    // and remembered, because native fetch returns the SAME stream object every time the
-    // property is read, and code that compares them (or reads .body twice and expects one
-    // reader's worth of data) would break on a fresh wrapper per access.
-    let wrappedBody;
-    return new Proxy(response, {
-      get(target, prop) {
-        if (prop === 'body') {
-          if (!target.body) return null;
-          if (!wrappedBody) wrappedBody = cappedStream(target.body, maxBytes);
-          return wrappedBody;
-        }
-        if (Object.prototype.hasOwnProperty.call(overrides, prop)) return overrides[prop];
-        const value = Reflect.get(target, prop, target);
-        return typeof value === 'function' ? value.bind(target) : value;
-      },
+    define('arrayBuffer', async () => (await readCapped(res, maxBytes)).buffer);
+    define('text', async () => decode(await readCapped(res, maxBytes)));
+    define('json', async () => JSON.parse(decode(await readCapped(res, maxBytes))));
+    define('blob', async () => new Blob([await readCapped(res, maxBytes)],
+      { type: res.headers.get('content-type') || '' }));
+    define('bytes', async () => readCapped(res, maxBytes));
+    // Not a body reader itself, but it PARSES one — and parsing a multipart body the
+    // platform read for us would be exactly the unbounded materialisation this exists to
+    // stop. Read within the budget first, then let the platform parse the capped copy.
+    define('formData', async () => {
+      const bytes = await readCapped(res, maxBytes);
+      // Only the content-type is carried over. It is all formData() needs — the multipart
+      // boundary lives in it — while content-length and content-encoding describe the bytes
+      // ON THE WIRE, and these are the decoded ones just read. Handing the platform headers
+      // that disagree with the body is the encoded-length bug from earlier in this round.
+      const ct = res.headers.get('content-type');
+      return new Response(bytes, ct ? { headers: { 'Content-Type': ct } } : undefined).formData();
     });
+    // The platform's clone() tees an already-capped body, so the copy is capped whatever we
+    // do — but its readers would be the platform's again, and would report the refusal as a
+    // network error. Tee natively, then shadow the copy the same way.
+    define('clone', () => shadowReaders(nativeClone.call(res), maxBytes));
+    return res;
+  }
+
+  /// Returns a Response whose body cannot exceed the budget.
+  ///
+  /// A REAL Response built from a capped stream, not a Proxy around the original. A Proxy
+  /// forwards every property faithfully and still fails the brand check every other platform
+  /// API performs on its arguments: cache.put(request, response) rejects it outright with
+  /// "parameter 2 is not of type 'Response'" — for a value WIDGET-SPEC promises is a
+  /// Response, and which behaves like one right up until it is handed to something else.
+  /// Faithful forwarding cannot fix that; only being one can.
+  function cappedResponse(response, maxBytes) {
+    // Nothing to cap, and nothing that can be rebuilt: a body-forbidden status (204/205/304)
+    // and an opaque cross-origin response both have a null body, and the constructor refuses
+    // the status an opaque response reports (0) outright. The original is already safe.
+    if (!response.body || response.status < 200 || response.status > 599) return response;
+    const capped = new Response(cappedStream(response.body, maxBytes), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+    // url, redirected and type survive no constructor: a rebuilt Response reports url '',
+    // redirected false and type 'default' where the original had the final URL and its real
+    // type. Widgets read all three — url especially, after a redirect. Own properties shadow
+    // the prototype getters; the internal slots the brand check reads are untouched.
+    for (const [name, value] of [['url', response.url], ['redirected', response.redirected],
+      ['type', response.type]])
+      Object.defineProperty(capped, name, { value, configurable: true });
+    return shadowReaders(capped, maxBytes);
   }
 
   // <<< BODY-CAP END
@@ -433,6 +480,12 @@
       contentType: bodyContentType,
       headers,
       insecure: init.insecure === true,
+      // The ceiling has to cross the hop, not just live in the page. Without it the host
+      // fetches, buffers, base64-encodes and posts its full 5 MiB before the wrapper here
+      // can refuse a byte of it — so a lowered ceiling would cost exactly as much as no
+      // ceiling and only look different. The host clamps it (FetchLimits.EffectiveCap): the
+      // number comes from a widget, so it may only ever reduce.
+      maxBytes: resolveCap(init),
     };
   }
 

@@ -56,7 +56,19 @@ public sealed class BrowserFetcher : IDisposable
     /// caller's replayable request headers ride the in-page fetch, so an authenticated
     /// request keeps its Authorization through this tier too (#37). Returns null on failure.
     /// </summary>
-    public async Task<(int Status, string? ContentType, byte[] Body)?> FetchAsync(
+    /// <summary>
+    /// The outcome of one hidden-browser fetch. <c>TooLarge</c> is its own state rather than
+    /// a null return: this tier is entered only after the proxy tier got a 403 or 429, and
+    /// reporting "the browser could not do better either" for a size refusal makes the caller
+    /// keep that 403 — so a body whose only problem is its size is reported to the field as
+    /// an authorization failure, and the ceiling the ladder advertises goes unmentioned.
+    /// </summary>
+    public readonly record struct BrowserFetch(int Status, string? ContentType, byte[] Body, bool TooLarge)
+    {
+        public static BrowserFetch Refused(long size) => new(0, null, Array.Empty<byte>(), true);
+    }
+
+    public async Task<BrowserFetch?> FetchAsync(
         string url, IReadOnlyDictionary<string, string>? headers = null)
     {
         await _gate.WaitAsync();
@@ -129,7 +141,7 @@ public sealed class BrowserFetcher : IDisposable
                         var size = root.TryGetProperty("size", out var sz) ? sz.GetInt64() : -1;
                         Log.Warn($"browser fetch refused ({SafeUrl.Describe(url)}): response exceeds " +
                                  $"{FetchLimits.MaxBodyBytes} bytes (saw {size})");
-                        return null;
+                        return BrowserFetch.Refused(size);
                     }
                     var status = root.TryGetProperty("status", out var s) ? s.GetInt32() : 0;
                     var contentType = root.TryGetProperty("ct", out var c) ? c.GetString() : null;
@@ -137,7 +149,7 @@ public sealed class BrowserFetcher : IDisposable
                     byte[] bodyBytes;
                     try { bodyBytes = Convert.FromBase64String(b64); }
                     catch (FormatException) { bodyBytes = Array.Empty<byte>(); }
-                    return (status == 0 ? 200 : status, contentType, bodyBytes);
+                    return new BrowserFetch(status == 0 ? 200 : status, contentType, bodyBytes, false);
                 }
                 Log.Warn($"browser fetch timed out ({SafeUrl.Describe(url)})");
                 return null;
