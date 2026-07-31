@@ -1,0 +1,89 @@
+using WaveshareWidgets;
+
+// One body ceiling, two tiers (#117).
+//
+// The findings this covers are not "a comparison was missing" — the proxy tier always had
+// one. They are that a SECOND tier was added without it, on a path the remote server elects
+// by answering 403 or 429, while the host went on advertising the limit. So the probes are
+// about the number reaching both places and about the browser tier refusing before it reads
+// rather than after.
+
+var failures = 0;
+void Check(string name, bool ok, string? detail = null)
+{
+    Console.WriteLine($"  {(ok ? "PASS" : "FAIL")} {name}{(detail is null ? "" : " - " + detail)}");
+    if (!ok) failures++;
+}
+
+const int Max = FetchLimits.MaxBodyBytes;
+
+Console.WriteLine("The ceiling itself");
+
+// F1 · the boundary, both sides. A cap that refuses a body of exactly the allowed size is a
+// different cap from the one documented, and off-by-one here silently shrinks the limit.
+Check("F1 a body of exactly the ceiling is allowed", !FetchLimits.DeclaredTooLarge(Max));
+Check("F1b one byte over is refused", FetchLimits.DeclaredTooLarge(Max + 1));
+
+// F2 · an UNKNOWN length is not a large one. Chunked responses declare no Content-Length,
+// so refusing on a missing value would reject the ordinary case rather than the hostile one.
+Check("F2 an absent or unparsed Content-Length is not treated as too large",
+    !FetchLimits.DeclaredTooLarge(0) && !FetchLimits.DeclaredTooLarge(-1));
+
+// F3 · the streaming check is asked BEFORE the append. Asking afterwards means the bytes
+// past the bound have already been paid for, which on this path is the whole cost.
+Check("F3 a chunk that exactly fills the ceiling is accepted", !FetchLimits.WouldExceed(Max - 1024, 1024));
+Check("F3b the chunk that would cross it is refused", FetchLimits.WouldExceed(Max - 1024, 1025));
+Check("F3c ...and so is one that starts already full", FetchLimits.WouldExceed(Max, 1));
+
+Console.WriteLine("Parity with the browser tier");
+
+// A placeholder URL, so tests/harness/bodycap-run.js can point the SAME generated script at
+// a server of its own and actually run it. Everything below is about the script's text; the
+// harness is what checks it behaves, which text cannot.
+var script = FetchLimits.BrowserFetchScript("\"__WW_URL__\"", "{\"Accept\":\"*/*\"}");
+
+// The text assertions below are about CODE, so the comments come out first. Writing a
+// comment that mentioned arrayBuffer() was enough to fail the "does not materialise the
+// body" check a moment ago — a probe that a comment can break is measuring prose.
+var code = string.Join("\n", script.Split('\n')
+    .Select(line => line.TrimStart().StartsWith("//", StringComparison.Ordinal) ? "" : line));
+
+// F4 · THE point of this probe. The browser tier enforces the ceiling inside the page, in a
+// script built in C#, so the number has to travel there. A hardcoded literal in that script
+// is exactly how the two tiers would drift apart again, silently, on a path only reachable
+// from a Windows host with a server that answers 403.
+Check("F4 the in-page script carries the same ceiling as the proxy tier",
+    code.Contains(Max.ToString()), Max.ToString());
+
+// F5 · and it must refuse by NOT READING. arrayBuffer() was the old shape: it materialises
+// the whole body, and everything downstream — binary string, base64, the JSON hop, the
+// decode — copies that length again. A cap applied after it has already lost.
+Check("F5 the script streams with a reader instead of materialising the body",
+    code.Contains("getReader()") && !code.Contains("arrayBuffer"));
+Check("F5b ...and cancels the transfer when the budget is crossed",
+    code.Contains("reader.cancel()"));
+Check("F5c ...and reports the refusal so the caller can log it rather than see a blank body",
+    code.Contains("tooLarge"));
+
+// F7 · a response that FORBIDS a body — 204, 205 — has r.body === null, and getReader()
+// throws on it. arrayBuffer() absorbed that as an empty read; the streaming rewrite has to
+// absorb it deliberately, or a successful retry lands in the catch and the widget is left
+// holding the 403 the proxy tier got. A cap must not turn an empty answer into a failure.
+Check("F7 a null body is answered, not thrown on", code.Contains("if (!r.body)"));
+
+// F6 · the script is written out for the JS side. It is JavaScript living inside a C#
+// string: nothing in this build would notice it becoming unparseable, and on the product it
+// only ever executes on a Windows host talking to a server that answered 403 — so CI syntax-
+// checks it, and bodycap-run.js runs it against a real server with a real ReadableStream.
+//
+// Everything above is a TEXT assertion, and text cannot tell "refuse before appending" from
+// "refuse after": a mutation that moved the budget check below the push kept every string
+// these look for. That is what the harness exists for.
+if (args.Length > 0)
+{
+    File.WriteAllText(args[0], script);
+    Console.WriteLine($"  wrote the generated script to {args[0]} for a syntax check");
+}
+
+Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
+return failures == 0 ? 0 : 1;

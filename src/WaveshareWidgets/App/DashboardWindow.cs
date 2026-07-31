@@ -513,7 +513,9 @@ public sealed class DashboardWindow : Form
     // user agents, and iCUE's embedded browser sends a Chrome UA; match that behavior.
     private const string ProxyUserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-    private const int ProxyMaxBodyBytes = 5 * 1024 * 1024;
+    /// <summary>Kept as a name at this call site; the number itself lives in FetchLimits,
+    /// because the browser fallback tier has to enforce the same one (#117).</summary>
+    private const int ProxyMaxBodyBytes = FetchLimits.MaxBodyBytes;
 
     /// <summary>
     /// CORS-relief proxy for widget fetches (iCUE's runtime is CORS-relaxed; ours is not).
@@ -734,7 +736,7 @@ public sealed class DashboardWindow : Form
 
     private static async Task<byte[]> ReadCappedAsync(HttpResponseMessage response, int maxBytes)
     {
-        if (response.Content.Headers.ContentLength is > 0 and var length && length > maxBytes)
+        if (response.Content.Headers.ContentLength is { } length && FetchLimits.DeclaredTooLarge(length))
             throw new InvalidOperationException("response too large");
 
         await using var stream = await response.Content.ReadAsStreamAsync();
@@ -743,7 +745,7 @@ public sealed class DashboardWindow : Form
         int read;
         while ((read = await stream.ReadAsync(chunk)) > 0)
         {
-            if (buffer.Length + read > maxBytes)
+            if (FetchLimits.WouldExceed(buffer.Length, read))
                 throw new InvalidOperationException("response too large");
             buffer.Write(chunk, 0, read);
         }
