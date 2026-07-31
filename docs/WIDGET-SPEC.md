@@ -219,6 +219,15 @@ over HTTP/1.1 on a single serialized connection per device, since embedded TLS
 servers mishandle h2 offers and parallel handshakes. `WW.listMedia()` URLs are on
 `https://media.wsw/`, mapped to the media folder ("Open media folder" in Settings).
 
+**Body ceiling.** A `WW.fetch` response reads at most **5 MiB**. `text()`, `json()`,
+`blob()`, `arrayBuffer()`, `bytes()`, `formData()` and the `body` stream all refuse past
+it with a `RangeError` and cancel the transfer, on every tier — so a widget cannot pull
+an unbounded body into the panel, whichever path served it. `init.maxBytes` **lowers**
+the ceiling for one call (it cannot raise it: the host proxy tier enforces its own limit
+in C#, and which tier serves a call is the remote server's choice, not the widget's).
+Catch it and say so: "too large" is not "unreachable", and only the widget knows which
+of its states that should paint.
+
 Sensor `type` values follow LibreHardwareMonitor: `Temperature` (°C), `Load` (%),
 `Clock` (MHz), `Fan` (RPM), `Power` (W), `Data` (GB), `Throughput` (B/s), `Voltage` (V),
 and more. Values can be `null` when a source is unavailable — always render a placeholder.

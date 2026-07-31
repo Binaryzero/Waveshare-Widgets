@@ -15,6 +15,8 @@
 //   R12 · a tile that BOOTS during a game reads that state out of ww-init and stays quiet
 //   R22 · a response past the WW.fetch ceiling is named as such, not as unreachable —
 //         and an ordinary body still reads through the new cap
+//   R23 · the same refusal arriving from the HOST proxy tier reads the same way, by either
+//         way into the ladder, while an ordinary host failure still reads as unreachable
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -83,9 +85,13 @@ const TOKEN = 'Bearer super-secret-probe-token';
     // host answering that message the promise never settles — which is exactly how the
     // first run of this suite wedged the widget, and why it now has a timeout.
     await p.addInitScript(() => {
+      // Scriptable, because the host has more than one way to refuse. It reports every
+      // failure as a STRING — 'response too large' and 'connection refused' arrive by the
+      // same field — and the tile has to tell those apart (R23).
+      window.__probeHostError = 'host offline in probe';
       window.addEventListener('message', (ev) => {
         const m = ev.data || {};
-        if (m.type === 'ww-fetch') window.postMessage({ type: 'ww-fetch-result', id: m.id, error: 'host offline in probe' }, '*');
+        if (m.type === 'ww-fetch') window.postMessage({ type: 'ww-fetch-result', id: m.id, error: window.__probeHostError }, '*');
       });
     });
   }
@@ -356,6 +362,52 @@ const TOKEN = 'Bearer super-secret-probe-token';
   await wait(1500);
   const afterCap = await read();
   check('R22c a normal body still reads through the cap', afterCap.value === '42', afterCap.value);
+
+  // ---- R23 · the SAME refusal from the host proxy tier reads the same way -----------
+  // Which tier serves a call is the remote server's choice, not the widget's: a 403 or a
+  // CORS failure escalates to the proxy, where the ceiling is enforced in C# and comes
+  // back as a plain string. If only the browser tier's refusal were recognisable, this
+  // tile would name the failure or blame the network depending on something the user
+  // cannot see or influence — and the same target can flip between the two.
+  // The ladder has TWO ways in, and each one used to swallow the refusal differently, so
+  // both are driven — with the proxy-first memo set EXPLICITLY rather than inherited from
+  // whichever earlier probe happened to fail, which is the difference between testing a
+  // path and testing the order this file happens to be written in.
+  respond = () => ({ abort: true });   // browser tier fails, so the call escalates
+  await page.evaluate(() => {
+    window.__probeHostError = 'response too large';
+    sessionStorage.setItem('ww-proxy-first:https://api.test', '1');   // proxy-FIRST path
+  });
+  await init(Object.assign({}, base, { url: 'https://api.test/proxyhuge', jsonPointer: '/v' }));
+  await wait(2500);
+  const proxied = await read();
+  check('R23 an oversize refusal from the proxy tier is named, not blamed on the network',
+    /too large/i.test(proxied.title), `${proxied.title} — ${proxied.body}`);
+
+  // R23b · the other way in: browser tier answers 403 (a bot wall), so the call escalates,
+  // and the proxy gets past the wall only to find the body too large. Handing back the 403
+  // — which is what "keep the original answer if the retry can't do better" did — points
+  // the field at credentials for a resource whose only problem is its size.
+  respond = () => ({ status: 403, body: 'blocked' });
+  await page.evaluate(() => sessionStorage.removeItem('ww-proxy-first:https://api.test'));
+  await init(Object.assign({}, base, { url: 'https://api.test/wallhuge', jsonPointer: '/v' }));
+  await wait(2500);
+  const walled = await read();
+  check('R23b a size refusal behind a bot wall is named, not reported as the wall\'s 403',
+    /too large/i.test(walled.title), `${walled.title} — ${walled.body}`);
+
+  // ...and the discrimination is real in the other direction. Turning every host failure
+  // into "too large" would pass both of those while telling the field to shrink a response
+  // that was never sent, so an ordinary refusal has to keep saying the endpoint is
+  // unreachable.
+  respond = () => ({ abort: true });
+  await page.evaluate(() => { window.__probeHostError = 'connection refused'; });
+  await init(Object.assign({}, base, { url: 'https://api.test/proxydown', jsonPointer: '/v' }));
+  await wait(2500);
+  const down = await read();
+  check('R23c ...while an ordinary host failure still reads as unreachable',
+    /could not reach/i.test(down.title), `${down.title} — ${down.body}`);
+  await page.evaluate(() => { window.__probeHostError = 'host offline in probe'; });
 
   // ---- R13 · a Critical threshold works on its own ---------------------------------
   // The manifest offers Warn and Critical independently and marks neither required, so

@@ -64,9 +64,21 @@
   // asserts the two numbers stay equal — a widget reading gigabytes into the panel's
   // renderer is the same failure whichever path delivered them.
   //
-  // Overridable per call with init.maxBytes, because a ceiling that cannot be raised for a
-  // legitimately large download turns into widgets that bypass WW.fetch entirely.
+  // Lowerable per call with init.maxBytes, for a widget that knows its payload should be
+  // small and wants to say so. LOWERABLE ONLY — see resolveCap.
   const MAX_BODY_BYTES = 5 * 1024 * 1024;
+
+  /// Starts a cancel and does NOT wait for it. Awaiting looks tidier and deadlocks: a body
+  /// obtained from clone() is one branch of a tee, and cancelling one branch does not settle
+  /// until the other is cancelled too — so the await would never return, the RangeError would
+  /// never be thrown, and the source would go on filling the unread branch's queue. Exactly
+  /// the unbounded accumulation the budget exists to stop.
+  function cancelQuietly(cancellable) {
+    try {
+      const p = cancellable && cancellable.cancel();
+      if (p && typeof p.catch === 'function') p.catch(() => { /* already gone */ });
+    } catch (e) { /* nothing to cancel */ }
+  }
 
   /// Reads a Response body with a byte budget, refusing WITHOUT materialising the excess.
   /// The check is asked before each chunk is kept, and the transfer is cancelled rather
@@ -74,9 +86,15 @@
   /// background, which is most of what a ceiling is for.
   async function readCapped(response, maxBytes) {
     if (!response.body) return new Uint8Array(0);   // 204/205/304 have no body to read
-    const declared = Number(response.headers.get('content-length') || 0);
+    // Only when the body is not encoded. Content-Length describes the bytes on the wire,
+    // while response.body yields DECODED ones, so for a Content-Encoding response the two
+    // measure different things — and an incompressible payload can declare slightly more
+    // than it decodes to, which would refuse a body the streaming check would rightly
+    // accept. The streaming check covers this case on its own.
+    const encoded = !!response.headers.get('content-encoding');
+    const declared = encoded ? 0 : Number(response.headers.get('content-length') || 0);
     if (declared > maxBytes) {
-      try { await response.body.cancel(); } catch (e) { /* nothing to cancel */ }
+      cancelQuietly(response.body);
       throw new RangeError('response too large: ' + declared + ' bytes exceeds ' + maxBytes);
     }
     const reader = response.body.getReader();
@@ -86,7 +104,7 @@
       const { done, value } = await reader.read();
       if (done) break;
       if (total + value.length > maxBytes) {
-        try { await reader.cancel(); } catch (e) { /* already closed */ }
+        cancelQuietly(reader);
         throw new RangeError('response too large: exceeds ' + maxBytes + ' bytes');
       }
       chunks.push(value);
@@ -98,13 +116,49 @@
     return out;
   }
 
+  /// A ReadableStream that relays the response's own and ERRORS past the budget rather than
+  /// relaying more.
+  ///
+  /// Built only when a widget actually reaches for .body: getReader() locks the source, so
+  /// constructing one eagerly for every wrapped response would break text() and friends on
+  /// the far more common path where nobody touches the stream at all.
+  function cappedStream(source, maxBytes) {
+    const reader = source.getReader();
+    let total = 0;
+    return new ReadableStream({
+      async pull(controller) {
+        const { done, value } = await reader.read();
+        if (done) { controller.close(); return; }
+        if (total + value.length > maxBytes) {
+          cancelQuietly(reader);
+          controller.error(new RangeError('response too large: exceeds ' + maxBytes + ' bytes'));
+          return;
+        }
+        total += value.length;
+        controller.enqueue(value);
+      },
+      cancel() { cancelQuietly(reader); },
+    });
+  }
+
   /// The ceiling for one call: init.maxBytes when it is a usable number, else the default.
+  ///
+  /// It can only LOWER the default, never raise it. WW.fetch has five return paths across two
+  /// tiers, and the host proxy tier enforces FetchLimits.MaxBodyBytes in C# — an init field
+  /// the shim invents cannot lift it, and whether a given call takes that tier is decided by
+  /// the REMOTE server's status code, not by the widget. So a raise would work or not work
+  /// depending on whether the target happened to answer 403 that minute: an option whose
+  /// effect the caller cannot predict is worse than no option. Clamping keeps the meaning the
+  /// same on every path — "no more than this, and never more than the host's ceiling".
+  ///
   /// Inside the extracted block so the plumbing is drivable, not just the wrapper it feeds —
   /// a probe that called cappedResponse directly would test the budget and never test which
   /// budget WW.fetch actually picks.
   function resolveCap(init) {
     const asked = init && init.maxBytes;
-    return Number.isFinite(asked) && asked > 0 ? Math.floor(asked) : MAX_BODY_BYTES;
+    return Number.isFinite(asked) && asked > 0
+      ? Math.min(Math.floor(asked), MAX_BODY_BYTES)
+      : MAX_BODY_BYTES;
   }
 
   /// Wraps a Response so its body readers obey the budget, and forwards everything else.
@@ -123,11 +177,26 @@
       blob: async () => new Blob([await readCapped(response, maxBytes)],
         { type: response.headers.get('content-type') || '' }),
       bytes: async () => readCapped(response, maxBytes),
+      // Not a body reader itself, but it PARSES one — and parsing a multipart body the
+      // platform read for us would be exactly the unbounded materialisation this exists to
+      // stop. Read within the budget first, then let the platform parse the capped copy.
+      formData: async () => new Response(await readCapped(response, maxBytes),
+        { headers: response.headers }).formData(),
       // A clone has to stay capped, or a widget could read the body through it uncapped.
       clone: () => cappedResponse(response.clone(), maxBytes),
     };
+    // .body is handled in the trap rather than here: it is THE gap that made every override
+    // above optional — a widget can skip all of them and pull the stream itself — but it has
+    // to be wrapped lazily, because building it locks the source and most responses are read
+    // through text() or json() and never touch .body at all.
+    let wrappedBody;
     return new Proxy(response, {
       get(target, prop) {
+        if (prop === 'body') {
+          if (!target.body) return null;
+          if (!wrappedBody) wrappedBody = cappedStream(target.body, maxBytes);
+          return wrappedBody;
+        }
         if (Object.prototype.hasOwnProperty.call(overrides, prop)) return overrides[prop];
         const value = Reflect.get(target, prop, target);
         return typeof value === 'function' ? value.bind(target) : value;
@@ -261,7 +330,15 @@
       pendingFetches.delete(msg.id);
       if (pending.cleanup) pending.cleanup();
       if (msg.error) {
-        pending.reject(new TypeError('proxy fetch failed: ' + msg.error));
+        // The host refuses an oversized body with its own exception, and it arrives here as
+        // a STRING — so without this it would land as a TypeError while the identical refusal
+        // on the browser tier is a RangeError. A widget cannot ask which tier served it (the
+        // remote server's status code decides that), so a type that depends on the tier is a
+        // type nothing can branch on: the REST widget's "Response too large" state simply
+        // would not appear for proxied targets. One refusal, one type, either way.
+        const tooLarge = /too large/i.test(msg.error);
+        const Ctor = tooLarge ? RangeError : TypeError;
+        pending.reject(new Ctor('proxy fetch failed: ' + msg.error));
         return;
       }
       let bytes = new Uint8Array(0);
@@ -344,6 +421,19 @@
       insecure: init.insecure === true,
     };
   }
+
+  /// A body-size refusal from either tier — the browser tier throws RangeError directly,
+  /// and the proxy tier's string is turned into one where the reply is handled.
+  ///
+  /// The escalation ladder below falls back whenever a tier fails, on the reasoning that the
+  /// other tier might do better. This failure is the exception: it is a fact about the
+  /// RESOURCE, not about the transport, and no other tier is going to make the body smaller.
+  /// Falling back on it pulls the same oversized response down a second time, and then
+  /// reports whatever the fallback happened to hit — so the widget names the wrong problem
+  /// and the field checks a URL and a network that are both fine. Treated like AbortError,
+  /// which every handler here already refuses to mask, and for the same reason: it is an
+  /// answer, not a failure to get one.
+  const isTooLarge = (err) => err instanceof RangeError;
 
   // The host hop can't carry an AbortSignal — honor it locally: never start an
   // already-aborted request, and drop an in-flight one when it fires.
@@ -564,7 +654,7 @@
               return response;
             });
         }, (err) => {
-          if (init.proxy === 'always' || (err && err.name === 'AbortError')) throw err;
+          if (init.proxy === 'always' || (err && err.name === 'AbortError') || isTooLarge(err)) throw err;
           return fetch(url, init); // memory can go stale (CORS fixed upstream): last resort
         }));
       }
@@ -575,8 +665,11 @@
         if ((response.status === 403 || response.status === 429) && init.proxy !== 'never' && replayable) {
           return proxyFetch(url, snap, init.signal).catch((err) => {
             // An abort during the retry is the caller's cancellation — it must
-            // surface, never be masked by the original bot-wall response.
-            if (err && err.name === 'AbortError') throw err;
+            // surface, never be masked by the original bot-wall response. Nor may a
+            // size refusal: the proxy got PAST the wall and found the body too large,
+            // so handing back the 403 would send the field to check credentials for a
+            // resource whose only problem is its size.
+            if ((err && err.name === 'AbortError') || isTooLarge(err)) throw err;
             return response;
           });
         }

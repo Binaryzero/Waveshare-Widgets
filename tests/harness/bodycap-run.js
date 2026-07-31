@@ -197,20 +197,34 @@ function server() {
     String(refusedChunked));
   check('C8b ...and that transfer is cancelled too', (await settled('wchunked')) === 'aborted', outcome.wchunked);
 
-  // C9 · the per-call override, because a ceiling nobody can raise gets bypassed instead.
-  // Driven through resolveCap — the value WW.fetch actually passes — rather than by handing
-  // cappedResponse a number directly, which would prove the wrapper obeys a budget while
-  // saying nothing about which budget it is given.
-  check('C9 init.maxBytes chooses the ceiling for that call', shim.resolveCap({ maxBytes: MAX * 2 }) === MAX * 2,
+  // C9 · the per-call override, LOWER-ONLY. Driven through resolveCap — the value WW.fetch
+  // actually passes — rather than by handing cappedResponse a number directly, which would
+  // prove the wrapper obeys a budget while saying nothing about which budget it is given.
+  const LOW = 256 * 1024;
+  check('C9 init.maxBytes lowers the ceiling for that call', shim.resolveCap({ maxBytes: LOW }) === LOW,
+    String(shim.resolveCap({ maxBytes: LOW })));
+  // The one that has to hold, and the reason the option is not symmetric: the host proxy
+  // tier enforces its own ceiling in C#, and which tier serves a call is the remote server's
+  // choice (403/429 escalates). A raise would therefore work or not work depending on the
+  // target's mood, so it does not work at all.
+  check('C9b ...and cannot raise it above the host ceiling',
+    shim.resolveCap({ maxBytes: MAX * 2 }) === MAX && shim.resolveCap({ maxBytes: Infinity }) === MAX,
     String(shim.resolveCap({ maxBytes: MAX * 2 })));
-  check('C9b ...and anything unusable falls back to the default',
+  check('C9c ...and anything unusable falls back to the default',
     shim.resolveCap({}) === MAX && shim.resolveCap({ maxBytes: 0 }) === MAX
       && shim.resolveCap({ maxBytes: -1 }) === MAX && shim.resolveCap({ maxBytes: 'big' }) === MAX
       && shim.resolveCap(undefined) === MAX);
-  const raised = await capped(`http://127.0.0.1:${PORT}/wraised?bytes=${MAX + 65536}&declare=1`,
-    shim.resolveCap({ maxBytes: MAX * 2 }));
-  check('C9c ...and a body under the raised ceiling then reads',
-    (await raised.arrayBuffer()).byteLength === MAX + 65536);
+  // ...and that the lowered number is not merely returned but ENFORCED: this body is far
+  // under the default ceiling, so nothing refuses it except the caller's own request to.
+  const lowered = await capped(`http://127.0.0.1:${PORT}/wlowered?bytes=${LOW * 2}&declare=0`,
+    shim.resolveCap({ maxBytes: LOW }));
+  let refusedLow = null;
+  try { await lowered.arrayBuffer(); } catch (e) { refusedLow = e; }
+  check('C9d a body over the LOWERED ceiling is refused though the default would allow it',
+    refusedLow instanceof RangeError && /too large/i.test(refusedLow.message), String(refusedLow));
+  const underLow = await capped(`http://127.0.0.1:${PORT}/wunder?bytes=${LOW / 2}&declare=1`,
+    shim.resolveCap({ maxBytes: LOW }));
+  check('C9e ...and one under it still reads', (await underLow.arrayBuffer()).byteLength === LOW / 2);
 
   // C5 · a body-forbidden response is an ANSWER, not a failure. The streaming rewrite has
   // to absorb r.body === null the way arrayBuffer() did; if it throws instead, BrowserFetcher
