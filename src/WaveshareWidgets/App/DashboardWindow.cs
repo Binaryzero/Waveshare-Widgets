@@ -342,12 +342,15 @@ public sealed class DashboardWindow : Form
                                 ["h"] = capture.H,
                             };
                     }
+                    // Echoed so the shell can hand the reply to the frame that asked,
+                    // the way fetch/ping/media/audio already do (#127).
+                    sdResult["id"] = message["id"]?.GetValue<string>() ?? "";
                     PostToShell("sd-profile-result", sdResult);
                     break;
 
                 case "sd-capture":
                     _streamDeck ??= new StreamDeckBridge();
-                    HandleSdCapture();
+                    HandleSdCapture(message["id"]?.GetValue<string>() ?? "");
                     break;
 
                 case "sd-click":
@@ -815,12 +818,16 @@ public sealed class DashboardWindow : Form
     /// frame only when the pixels actually changed ({unchanged:true} otherwise), and a
     /// short throttle so several polling widgets share one PrintWindow per interval.
     /// </summary>
-    private void HandleSdCapture()
+    private void HandleSdCapture(string requestId)
     {
         var now = Environment.TickCount64;
         if (now - _lastCaptureTicks < 100 && _lastCaptureResult is { } recent)
         {
-            PostToShell("sd-capture-result", recent.DeepClone());
+            // The cached frame is shared between pollers, so the id is stamped on the
+            // COPY — caching it would send the previous asker's id to this one.
+            var replay = (JsonObject)recent.DeepClone();
+            replay["id"] = requestId;
+            PostToShell("sd-capture-result", replay);
             return;
         }
         _lastCaptureTicks = now;
@@ -847,7 +854,9 @@ public sealed class DashboardWindow : Form
         {
             result = new JsonObject { ["available"] = false };
         }
+        // Cached WITHOUT the id, for the same reason as the replay path above.
         _lastCaptureResult = (JsonObject)result.DeepClone();
+        result["id"] = requestId;
         PostToShell("sd-capture-result", result);
     }
 

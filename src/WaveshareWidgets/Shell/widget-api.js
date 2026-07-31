@@ -478,13 +478,15 @@
      * of dynamic key faces — when the host can capture it. */
     requestStreamDeck(opts) {
       opts = opts || {};
-      parent.postMessage({ type: 'ww-sd-profile', profileName: opts.profileName || '', hideWindow: opts.hideWindow !== false, live: opts.live === true }, shellTarget());
+      // The id is what lets the shell send the answer to THIS frame rather than to
+      // everyone who ever asked (#127). Callback-shaped API is unchanged.
+      parent.postMessage({ type: 'ww-sd-profile', id: reqId('sd'), profileName: opts.profileName || '', hideWindow: opts.hideWindow !== false, live: opts.live === true }, shellTarget());
     },
     /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}], capture?}. */
     onStreamDeck(cb) { listeners.streamdeck.push(cb); },
     /** Capture-only fast path for live mirroring: cheaper than requestStreamDeck (no
      * profile re-parse; the host skips the frame entirely when pixels are unchanged). */
-    requestStreamDeckCapture() { parent.postMessage({ type: 'ww-sd-capture' }, shellTarget()); },
+    requestStreamDeckCapture() { parent.postMessage({ type: 'ww-sd-capture', id: reqId('sd') }, shellTarget()); },
     /** cb(data) — {image,w,h} on a new frame, {unchanged:true}, or {available:false}. */
     onStreamDeckCapture(cb) { listeners.sdcapture.push(cb); },
     /** Trigger a Stream Deck button by its grid cell. */

@@ -23,6 +23,7 @@
 //   R6  · sd-profile reaches the asker only
 //   R7  · sd-capture reaches the asker only
 //   R8  · dropping the subscription stops delivery
+//   R11 · two Stream Deck askers each get ONLY their own answer (profile and capture)
 //   R9  · a slot subscribing while the host already polls is handed the cached payload
 //   R10 · ...but one subscribing after polling STOPPED is not handed a stale one
 //   R10c· ...nor does a re-init carry it (the cleared cache)
@@ -72,6 +73,8 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   WW.onNotifications((n) => window.__notifs.push(n));
   WW.onStreamDeck((p) => window.__decks.push(p));
   WW.onStreamDeckCapture((c) => window.__caps.push(c));
+  window.__deckNames = () => window.__decks.map((p) => (p && p.name) || '?');
+  window.__capTags = () => window.__caps.map((c) => (c && c.tag) || '?');
   window.__watch = (on) => WW.watchNotifications(on);
   window.__dismiss = (id) => WW.dismissNotification(id);
   window.__askDeck = () => WW.requestStreamDeck({ profileName: 'p' });
@@ -188,11 +191,15 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
     hostMessages.some((m) => m.type === 'notification-dismiss' && m.id === 'n1'),
     JSON.stringify(hostMessages.filter((m) => m.type === 'notification-dismiss')));
 
-  // R6 · Stream Deck profile: the keys the user configured.
+  // R6 · Stream Deck profile: the keys the user configured. The reply is addressed to
+  // the request, so the probe answers the id the shell actually sent (#127).
+  hostMessages.length = 0;
   await sub.evaluate(() => window.__askDeck());
   await page.waitForTimeout(200);
-  await page.evaluate(() => window.__push(JSON.stringify({
-    type: 'sd-profile-result', data: { available: true, rows: 3, cols: 5, buttons: [{ row: 0, col: 0, title: 'OBS' }] } })));
+  const r6Id = (hostMessages.find((m) => m.type === 'sd-profile') || {}).id;
+  check('R6 setup: the ask reached the host with an id', !!r6Id, String(r6Id));
+  await page.evaluate((id) => window.__push(JSON.stringify({
+    type: 'sd-profile-result', data: { id, available: true, rows: 3, cols: 5, buttons: [{ row: 0, col: 0, title: 'OBS' }] } })), r6Id);
   await page.waitForTimeout(400);
   const subDecks = await sub.evaluate(() => window.__decks.length);
   const bysDecks = await bys.evaluate(() => window.__decks.length);
@@ -200,10 +207,13 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
     subDecks === 1 && bysDecks === 0, `asker ${subDecks}, bystander ${bysDecks}`);
 
   // R7 · the capture is a screenshot of those keys.
+  hostMessages.length = 0;
   await sub.evaluate(() => window.__askCapture());
   await page.waitForTimeout(200);
-  await page.evaluate(() => window.__push(JSON.stringify({
-    type: 'sd-capture-result', data: { available: true, pngBase64: 'SENTINEL-PIXELS' } })));
+  const r7Id = (hostMessages.find((m) => m.type === 'sd-capture') || {}).id;
+  check('R7 setup: the capture ask reached the host with an id', !!r7Id, String(r7Id));
+  await page.evaluate((id) => window.__push(JSON.stringify({
+    type: 'sd-capture-result', data: { id, available: true, pngBase64: 'SENTINEL-PIXELS' } })), r7Id);
   await page.waitForTimeout(400);
   const subCaps = await sub.evaluate(() => window.__caps.length);
   const bysCaps = await bys.evaluate(() => JSON.stringify(window.__caps));
@@ -258,6 +268,66 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   const afterQuiet = await sub.evaluate(() => window.__notifs.length);
   check('R10 a slot subscribing after all watchers stopped is not handed the stale cache',
     afterQuiet === 0, `${afterQuiet} delivery(ies)`);
+
+  // R11 · TWO askers. R6/R7 only prove an asker gets its answer and a bystander does
+  // not, which a sticky per-slot flag satisfies just as well. The case that flag could
+  // never get right is two widgets each waiting on their OWN request: the flags stayed
+  // set for both, so every later reply went to both and two Stream Deck widgets with
+  // different profiles overwrote each other (#127).
+  hostMessages.length = 0;
+  await sub.evaluate(() => { window.__decks.length = 0; window.__askDeck(); });
+  await bys.evaluate(() => { window.__decks.length = 0; window.__askDeck(); });
+  await page.waitForTimeout(300);
+  const asks = hostMessages.filter((m) => m.type === 'sd-profile');
+  check('R11 setup: both asks reached the host, with distinct ids',
+    asks.length === 2 && asks[0].id && asks[1].id && asks[0].id !== asks[1].id,
+    JSON.stringify(asks.map((a) => a.id)));
+
+  // Answered in REVERSE order here, and in FORWARD order in R11b. That pairing is the
+  // point: a mechanism that just remembers "the most recent asker" happens to be right
+  // for one of those orderings and wrong for the other, so neither probe alone catches
+  // it. Verified — mutating the route lookup to last-asker-wins passes R11 and fails
+  // R11b.
+  await page.evaluate((ids) => {
+    window.__push(JSON.stringify({ type: 'sd-profile-result', data: { id: ids[1], available: true, name: 'PROFILE-B', rows: 3, cols: 5, buttons: [] } }));
+    window.__push(JSON.stringify({ type: 'sd-profile-result', data: { id: ids[0], available: true, name: 'PROFILE-A', rows: 3, cols: 5, buttons: [] } }));
+  }, asks.map((a) => a.id));
+  await page.waitForTimeout(400);
+  const subNames = await sub.evaluate(() => window.__deckNames());
+  const bysNames = await bys.evaluate(() => window.__deckNames());
+  check('R11 each asker receives ONLY the profile it asked for',
+    JSON.stringify(subNames) === '["PROFILE-A"]' && JSON.stringify(bysNames) === '["PROFILE-B"]',
+    `first=${JSON.stringify(subNames)} second=${JSON.stringify(bysNames)}`);
+
+  // R11b · the same for captures, which carry a screenshot rather than a key list.
+  hostMessages.length = 0;
+  await sub.evaluate(() => { window.__caps.length = 0; window.__askCapture(); });
+  await bys.evaluate(() => { window.__caps.length = 0; window.__askCapture(); });
+  await page.waitForTimeout(300);
+  const capAsks = hostMessages.filter((m) => m.type === 'sd-capture');
+  check('R11b setup: both capture asks reached the host with distinct ids',
+    capAsks.length === 2 && capAsks[0].id !== capAsks[1].id,
+    JSON.stringify(capAsks.map((a) => a.id)));
+  await page.evaluate((ids) => {
+    window.__push(JSON.stringify({ type: 'sd-capture-result', data: { id: ids[0], tag: 'PIXELS-A' } }));
+    window.__push(JSON.stringify({ type: 'sd-capture-result', data: { id: ids[1], tag: 'PIXELS-B' } }));
+  }, capAsks.map((a) => a.id));
+  await page.waitForTimeout(400);
+  const r11SubCaps = await sub.evaluate(() => window.__capTags());
+  const r11BysCaps = await bys.evaluate(() => window.__capTags());
+  check('R11b each asker receives ONLY its own capture',
+    JSON.stringify(r11SubCaps) === '["PIXELS-A"]' && JSON.stringify(r11BysCaps) === '["PIXELS-B"]',
+    `first=${JSON.stringify(r11SubCaps)} second=${JSON.stringify(r11BysCaps)}`);
+
+  // R11c · an answer for a request nobody made goes nowhere. Under the old flags an
+  // unsolicited result reached every widget that had ever asked.
+  await sub.evaluate(() => { window.__decks.length = 0; });
+  await bys.evaluate(() => { window.__decks.length = 0; });
+  await page.evaluate(() => window.__push(JSON.stringify({
+    type: 'sd-profile-result', data: { id: 'never-requested', available: true, name: 'GHOST', rows: 3, cols: 5, buttons: [] } })));
+  await page.waitForTimeout(300);
+  const ghost = (await sub.evaluate(() => window.__deckNames())).concat(await bys.evaluate(() => window.__deckNames()));
+  check('R11c an unrequested Stream Deck reply reaches nobody', ghost.length === 0, JSON.stringify(ghost));
 
   // R10c · what the CLEARED CACHE covers and the gate does not. `sub` is subscribed with
   // an empty cache; a re-init would carry whatever is cached to a watching slot, so if
