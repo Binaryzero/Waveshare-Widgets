@@ -567,29 +567,50 @@ public sealed partial class WidgetLibrary : IDisposable
                     continue;
                 }
 
-                var duplicate = resolved.FindIndex(w => w.Manifest.Id == manifest.Id);
-                if (duplicate >= 0)
-                {
-                    // Same id in two folders (e.g. a stale package install alongside a
-                    // hand-copied one). Decided by PROVENANCE — the folder the installer
-                    // itself extracts to — never by the manifest version, which the losing
-                    // side gets to choose and would simply set to 999.0.0 (#94).
-                    var kept = resolved[duplicate];
-                    var keepNew = WidgetIdentity.PreferCandidate(
-                        manifest.Id, Path.GetFileName(folder), Path.GetFileName(kept.Folder));
-                    Log.Warn($"Duplicate widget id '{manifest.Id}': keeping " +
-                             $"'{(keepNew ? folder : kept.Folder)}', " +
-                             $"shadowing '{(keepNew ? kept.Folder : folder)}' — delete one to silence this");
-                    if (keepNew)
-                        resolved[duplicate] = (manifest, folder);
-                    continue;
-                }
                 resolved.Add((manifest, folder));
             }
             catch (Exception ex)
             {
                 Log.Warn($"Skipping widget in '{folder}': {ex.Message}");
             }
+        }
+
+        // Pass 1b: an id claimed by more than one folder is served from NONE of them.
+        //
+        // There used to be a tiebreak here, and every version of it was a way to take
+        // another widget's origin. Version let the challenger pick the winning number.
+        // Preferring the folder the installer writes was better and still wrong: dropping
+        // a folder into the widgets directory is a documented install path, so anyone who
+        // can get an archive unzipped can create `com-example-cpu/`, claim the id of a
+        // widget living under any other name, and inherit its persisted host — and with it
+        // the localStorage and credentials scoped to that origin. Refusing the install path
+        // (#94 round 4) left this one wide open, because a folder drop never goes near it.
+        //
+        // There is nothing on disk that says which folder is the rightful owner. So the
+        // question is not answered — it is declined. Both copies are refused, both are
+        // named, and the user deletes the one they did not put there. An attacker who can
+        // write to the widgets folder can already delete a widget outright, so failing
+        // closed costs an availability the user never had, and buys back the only thing
+        // that mattered: the origin does not move.
+        var ambiguous = WidgetIdentity.AmbiguousIds(
+            resolved.Select(r => (r.Manifest.Id, Path.GetFileName(r.Folder))));
+        if (ambiguous.Count > 0)
+        {
+            foreach (var (manifest, folder) in resolved.Where(r => ambiguous.Contains(r.Manifest.Id)))
+            {
+                var others = resolved
+                    .Where(o => o.Manifest.Id == manifest.Id && !ReferenceEquals(o.Folder, folder))
+                    .Select(o => $"'{Path.GetFileName(o.Folder)}'");
+                Log.Warn($"Refusing widget id '{manifest.Id}': claimed by more than one folder " +
+                         $"('{Path.GetFileName(folder)}' and {string.Join(", ", others)}) — " +
+                         "delete the one you did not install, then reload");
+                rejected.Add(new RejectedWidget(manifest.Id, manifest.Name, folder,
+                    $"'{manifest.Id}' is claimed by more than one widget folder, so none of them is " +
+                    "served — the id decides which stored data a widget can read. Delete the copy " +
+                    "you did not install.",
+                    manifest.CredentialPropertyNames()));
+            }
+            resolved.RemoveAll(r => ambiguous.Contains(r.Manifest.Id));
         }
 
         // Pass 2: assign hosts from a PERSISTED id → host map, so an id keeps the

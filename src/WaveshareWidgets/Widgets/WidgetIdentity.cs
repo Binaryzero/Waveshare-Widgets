@@ -233,32 +233,37 @@ public static partial class WidgetIdentity
                                 bool mapIsTrustworthy) =>
         mapIsTrustworthy || !mintedThisScan.ContainsKey(id);
 
-    /// <summary>
-    /// Two folders declare the same id. Which one loads?
-    /// </summary>
-    /// <returns>true to prefer <paramref name="candidateFolder"/> over <paramref name="keptFolder"/>.</returns>
+    /// <summary>Ids that more than one folder claims. None of them is served.</summary>
     /// <remarks>
-    /// NOT by version. Version used to decide this, and a package ships its own: claiming
-    /// 999.0.0 was enough to shadow the copy already installed under that id and inherit
-    /// its origin. One side of that comparison was always attacker-controlled.
+    /// There is no tiebreak here any more, and that is the point. Every tiebreak tried was
+    /// a way to take another widget's origin: the manifest VERSION let the challenger pick
+    /// the winning number, and preferring the folder the installer writes still let a
+    /// hand-dropped `com-example-cpu/` claim the id of a widget living under any other
+    /// name — unzipping into the widgets directory is how the docs tell people to install,
+    /// so that folder name is not evidence of anything. Whoever won inherited the id's
+    /// persisted virtual host, and with it the storage scoped to that origin.
     ///
-    /// Provenance decides instead. The installer extracts to Slug(id) and nowhere else, so
-    /// the folder with that name is the copy the app itself wrote; anything else is a
-    /// leftover, a hand-copied folder, or a rename. Ordinal folder name breaks the
-    /// remaining tie so the answer does not depend on enumeration order.
+    /// Nothing on disk records which folder is the rightful owner, so the question is
+    /// declined rather than guessed. Both copies are refused and both are named. An
+    /// attacker able to write to the widgets folder can already delete a widget outright,
+    /// so failing closed gives up an availability the user never really had.
     ///
-    /// This does not regress what the version tiebreak was added for — a stale package
-    /// copy shadowing a fresh stock re-seed. That case cannot reach here at all now:
-    /// a reserved id from a non-stock folder is refused outright by <see cref="MayClaim"/>.
+    /// ORDINAL on the id, matching the identity the rest of the library uses: ids differing
+    /// only in case are two different widgets, and folding them together would refuse two
+    /// innocent ones. Folder names compare case-insensitively, because Windows does.
     /// </remarks>
-    public static bool PreferCandidate(string id, string candidateFolder, string keptFolder)
+    public static IReadOnlySet<string> AmbiguousIds(IEnumerable<(string Id, string Folder)> candidates)
     {
-        var canonical = InstallFolderName(id);
-        var candidateIsCanonical = string.Equals(candidateFolder, canonical, StringComparison.OrdinalIgnoreCase);
-        var keptIsCanonical = string.Equals(keptFolder, canonical, StringComparison.OrdinalIgnoreCase);
-        if (candidateIsCanonical != keptIsCanonical)
-            return candidateIsCanonical;
-        return string.CompareOrdinal(candidateFolder, keptFolder) < 0;
+        var folders = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        foreach (var (id, folder) in candidates)
+        {
+            if (!folders.TryGetValue(id, out var set))
+                folders[id] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            set.Add(folder);
+        }
+        return folders.Where(kv => kv.Value.Count > 1)
+                      .Select(kv => kv.Key)
+                      .ToHashSet(StringComparer.Ordinal);
     }
 
     /// <summary>

@@ -91,26 +91,37 @@ Check("I6 an unreserved id may come from any folder",
 Check("I7 an unreadable shipped set refuses reserved ids, it does not open them",
     !WidgetIdentity.MayClaim("ws.stock.hue", "hue", () => ShippedHue, new List<WidgetIdentity.StockWidget>()));
 
-Console.WriteLine("Duplicate resolution (#94)");
+Console.WriteLine("Duplicate ids (#94)");
 
-// I8 · the tiebreak the finding was about. Version is gone; the folder the installer
-// itself writes wins. Stated as the attack: a leftover cannot displace the installed copy
-// by claiming a bigger number, because no number is consulted.
-//
-// The leftover is named "aged-cpu-copy" on purpose — it sorts BEFORE the canonical folder.
-// A leftover that sorted after would pass this check under a plain name comparison too,
-// proving nothing, and "an old copy pinned in front of every fresh install" is exactly the
-// case the version tiebreak was introduced for. This is the one that has to hold without it.
-Check("I8 the installer's own folder wins over an earlier-sorting leftover",
-    WidgetIdentity.PreferCandidate("com.example.cpu", "com-example-cpu", "aged-cpu-copy"));
-Check("I8b ...and does not lose to one that got there first",
-    !WidgetIdentity.PreferCandidate("com.example.cpu", "aged-cpu-copy", "com-example-cpu"));
+// I8 · the tiebreak is gone, and its absence is the guard. Every version of it handed one
+// folder another folder's origin: version let the challenger pick the winning number, and
+// preferring the installer's own folder still let a hand-dropped `com-example-cpu/` take
+// the id of a widget living under any other name — unzipping into the widgets directory is
+// a documented install path, so that folder is not evidence of anything.
+var contested = WidgetIdentity.AmbiguousIds(new[]
+{
+    ("com.example.cpu", "my-cpu-widget"),      // the incumbent, installed by folder drop
+    ("com.example.cpu", "com-example-cpu"),    // the challenger, wearing the canonical name
+    ("com.example.other", "com-example-other"),
+});
+Check("I8 an id claimed by two folders is refused, not awarded",
+    contested.Contains("com.example.cpu"), string.Join(", ", contested));
+Check("I8b ...and an id only one folder claims is untouched",
+    !contested.Contains("com.example.other"));
 
-// I9 · two folders, neither canonical: ordinal name, so the answer does not depend on the
-// order the directory happened to enumerate in.
-Check("I9 neither canonical falls back to ordinal name, both directions",
-    WidgetIdentity.PreferCandidate("com.example.cpu", "aaa", "bbb")
-    && !WidgetIdentity.PreferCandidate("com.example.cpu", "bbb", "aaa"));
+// I9 · the same folder listed twice is not a contest — a rescan that sees one folder once
+// per pass must not refuse the widget it just found.
+Check("I9 one folder claiming its own id twice is not ambiguous",
+    WidgetIdentity.AmbiguousIds(new[]
+    {
+        ("com.example.cpu", "com-example-cpu"),
+        ("com.example.cpu", "com-example-cpu"),
+    }).Count == 0);
+
+// I9b · ids differing only in case are DIFFERENT widgets, matching the ordinal identity the
+// rest of the library uses. Folding them together would refuse two innocent widgets.
+Check("I9b ids differing only in case are not the same claim",
+    WidgetIdentity.AmbiguousIds(new[] { ("com.example.cpu", "a"), ("com.example.CPU", "b") }).Count == 0);
 
 Console.WriteLine("Host assignment (#93)");
 
