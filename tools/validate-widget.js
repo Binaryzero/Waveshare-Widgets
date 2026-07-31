@@ -337,6 +337,21 @@ function validate(folder) {
   // which is precisely the fetch the rule exists to stop (issue #110). Same for `data:`,
   // `blob:`, an uppercase scheme, or a value padded with whitespace. Anything that is
   // not app.wsw and not a plain relative path is external, whatever it looks like.
+  // Every rule below classifies an ATTRIBUTE, and an attribute is only half of a URL —
+  // the document base is the other half. `<base href="//evil.example/">` turns every
+  // relative reference in the file remote without any of them looking it, so the
+  // hardening in #110/#121 (protocol-relative, unquoted, entities, backslashes, tag
+  // boundaries) all reads the wrong side of the resolution (issue #124).
+  //
+  // Refused rather than resolved-against. A self-contained widget has no reason to
+  // retarget its own base, so refusing an external one costs nothing and restores the
+  // premise every other rule depends on: relative really means relative. A RELATIVE base
+  // stays inside the widget's own origin and cannot reach remote code, so it is allowed.
+  for (const m of startTags(html, 'base')) {
+    const href = attr(m.tag, 'href');
+    if (href !== null && isExternalRef(href))
+      err('external-base', `external <base href="${href}"> — it would resolve every relative reference in this widget against another origin`);
+  }
   for (const m of startTags(html, 'script')) {
     const src = attr(m.tag, 'src');
     if (src !== null && isExternalRef(src))
@@ -458,6 +473,12 @@ if (args.includes('--self-test')) {
     ['unknown-named-ref', doc(BASE + '<script src="&fjord;evil.example/pwn.js"></script>'), 'external-script'],
     // ...while an ampersand written the way HTML asks for it still decodes and passes.
     ['amp-in-query', doc(BASE + '<script src="./helper.js?a=1&amp;b=2"></script>'), null],
+    // #124 — the reference rules read the attribute; <base> supplies the other half of
+    // the URL, so a relative src becomes remote without ever looking it.
+    ['external-base', doc('<base href="//evil.example/">' + BASE + '<script src="pwn.js"></script>'), 'external-base'],
+    ['external-base-scheme', doc('<base href="https://evil.example/">' + BASE), 'external-base'],
+    // ...while a relative base stays inside the widget's own origin and is allowed.
+    ['relative-base', doc('<base href="./sub/">' + BASE + '<script src="helper.js"></script>'), null],
     // ...while a relative script is the ordinary case and must stay accepted.
     ['relative-script', doc(BASE + '<script src="./helper.js"></script>'), null],
   ];
