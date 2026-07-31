@@ -63,7 +63,15 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   and has that document attack `window.top`: the legitimate widget frame must still
   reach the host (a fix that silences everyone would pass every other check here), the
   nested frame's messages must not, and the routing tables must not be armed for a
-  refused sender. Ports used: 8956.
+  refused sender. Then the other half of the same boundary, which frame identity alone
+  does not cover: a slot frame that NAVIGATES away keeps its WindowProxy, so it still
+  looks like the registered widget while being someone else — it must not drive the
+  host, must not be answered with the widget's settings, and must not receive the
+  broadcasts still aimed at that slot (a second, untouched widget proves the broadcast
+  really happened). The shim is injected into every document too, so a nested page runs
+  it: its uncaught errors must not be reported to the widget framing it, while a real
+  widget's own errors must still reach the host log, including one raised before init —
+  held until the shell answers, not dropped. Ports used: 8956.
 - `deckpreview-run.js` — the settings LIVE PREVIEW, which nothing else here reaches
   (issue #78, the third time the Control Deck has come back empty after #43 and #49).
   Every other suite drives the shell directly with a stubbed `chrome.webview`; the

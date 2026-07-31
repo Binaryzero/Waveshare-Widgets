@@ -26,10 +26,10 @@
   let dotsIdleTimer = null;
   let bgSettleTimer = null;    // debounces the wallpaper swap during multi-page scrolls
   let generation = 0;          // invalidates watchdogs from a previous layout
-  const fetchRoutes = new Map(); // proxy-fetch id -> widget iframe window
-  const pingRoutes = new Map();  // ping id -> widget iframe window
-  const mediaRoutes = new Map(); // media-list id -> widget iframe window
-  const audioRoutes = new Map(); // audio-get id -> widget iframe window
+  const fetchRoutes = new Map(); // proxy-fetch id -> { win, origin } of the asking widget frame
+  const pingRoutes = new Map();  // ping id -> { win, origin } of the asking widget frame
+  const mediaRoutes = new Map(); // media-list id -> { win, origin } of the asking widget frame
+  const audioRoutes = new Map(); // audio-get id -> { win, origin } of the asking widget frame
 
   let backgroundHost = 'backgrounds.wsw';
   let bgGlobal = null;         // dashboard-wide background spec
@@ -138,11 +138,7 @@
       broadcast({ type: 'ww-game', game: gameState });
     }
     else if (msg.type === 'fetch-result') {
-      const target = fetchRoutes.get(msg.data && msg.data.id);
-      if (target) {
-        fetchRoutes.delete(msg.data.id);
-        try { target.postMessage({ type: 'ww-fetch-result', ...msg.data }, '*'); } catch (e) { /* frame gone */ }
-      }
+      routeReply(fetchRoutes, msg, 'ww-fetch-result');
     } else if (msg.type === 'sd-profiles-result') {
       // Discovered VSD profile list for the settings sheet's host-backed selects.
       const waiters = psProfileWaiters.splice(0);
@@ -153,24 +149,23 @@
     } else if (msg.type === 'sd-capture-result') {
       broadcast({ type: 'ww-sd-capture-result', data: msg.data });
     } else if (msg.type === 'ping-result') {
-      const target = pingRoutes.get(msg.data && msg.data.id);
-      if (target) {
-        pingRoutes.delete(msg.data.id);
-        try { target.postMessage({ type: 'ww-ping-result', ...msg.data }, '*'); } catch (e) { /* frame gone */ }
-      }
+      routeReply(pingRoutes, msg, 'ww-ping-result');
     } else if (msg.type === 'media-list-result') {
-      const target = mediaRoutes.get(msg.data && msg.data.id);
-      if (target) {
-        mediaRoutes.delete(msg.data.id);
-        try { target.postMessage({ type: 'ww-media-list-result', ...msg.data }, '*'); } catch (e) { /* frame gone */ }
-      }
+      routeReply(mediaRoutes, msg, 'ww-media-list-result');
     } else if (msg.type === 'audio-result') {
-      const target = audioRoutes.get(msg.data && msg.data.id);
-      if (target) {
-        audioRoutes.delete(msg.data.id);
-        try { target.postMessage({ type: 'ww-audio-result', ...msg.data }, '*'); } catch (e) { /* frame gone */ }
-      }
+      routeReply(audioRoutes, msg, 'ww-audio-result');
     }
+  }
+
+  /** Delivers a host answer to the frame that asked for it. Routes hold the origin the
+   * asking frame was on, not just its window: a proxy fetch reply carries the response
+   * body, so a frame that navigated between request and answer must not receive it. */
+  function routeReply(routes, msg, type) {
+    const id = msg.data && msg.data.id;
+    const route = routes.get(id);
+    if (!route) return;
+    routes.delete(id);
+    try { route.win.postMessage({ type, ...msg.data }, route.origin); } catch (e) { /* frame gone */ }
   }
 
   function postToHost(message) {
@@ -201,12 +196,19 @@
     //
     // The sandbox does not help — allow-scripts is what makes the widget work, and
     // per-widget virtual hosts stop a frame READING the shell, not messaging it. Only
-    // the WindowProxy identity distinguishes the widget frame from its descendants,
-    // which is why this is an identity check and not an origin check: ev.origin of a
-    // nested Twitch frame is twitch.tv, but so would be a legitimate one's, and a
-    // widget's own origin is attacker-chosen the moment the widget is third-party.
+    // the WindowProxy identity distinguishes the widget frame from its descendants:
+    // ev.origin of a nested Twitch frame is twitch.tv, but so would be a legitimate
+    // one's, so origin alone cannot tell them apart.
     const sender = slots.find((s) => s.frame && s.frame.contentWindow === ev.source);
     if (!sender) return;
+    // Identity alone is not enough EITHER. A slot frame that navigates away — to
+    // attacker.example, or anywhere the widget's own code sends it — keeps the same
+    // WindowProxy, so it still passes the check above while no longer being the
+    // widget: it inherits the injected bridge and, unchecked, would be answered with
+    // the slot's settings (credentials included), the sensor snapshot and the host
+    // capabilities. Identity says WHICH slot is speaking; origin says whether the
+    // widget is still the one speaking. Both, or neither.
+    if (!sender.origin || ev.origin !== sender.origin) return;
 
     if (msg.type === 'ww-media-control' && typeof msg.action === 'string') {
       postToHost({ type: 'media-control', action: msg.action });
@@ -231,19 +233,19 @@
     } else if (msg.type === 'ww-sd-click') {
       postToHost({ type: 'sd-click', row: msg.row | 0, col: msg.col | 0, rows: msg.rows | 0, cols: msg.cols | 0 });
     } else if (msg.type === 'ww-fetch' && msg.id) {
-      fetchRoutes.set(msg.id, ev.source);
+      fetchRoutes.set(msg.id, { win: ev.source, origin: ev.origin });
       setTimeout(() => fetchRoutes.delete(msg.id), 30000);
       postToHost({ type: 'fetch', id: msg.id, url: msg.url, method: msg.method, body: msg.body, contentType: msg.contentType, headers: msg.headers, insecure: msg.insecure === true });
     } else if (msg.type === 'ww-ping' && msg.id) {
-      pingRoutes.set(msg.id, ev.source);
+      pingRoutes.set(msg.id, { win: ev.source, origin: ev.origin });
       setTimeout(() => pingRoutes.delete(msg.id), 15000);
       postToHost({ type: 'ping', id: msg.id, hosts: Array.isArray(msg.hosts) ? msg.hosts.slice(0, 16) : [] });
     } else if (msg.type === 'ww-media-list' && msg.id) {
-      mediaRoutes.set(msg.id, ev.source);
+      mediaRoutes.set(msg.id, { win: ev.source, origin: ev.origin });
       setTimeout(() => mediaRoutes.delete(msg.id), 15000);
       postToHost({ type: 'media-list', id: msg.id });
     } else if (msg.type === 'ww-audio-get' && msg.id) {
-      audioRoutes.set(msg.id, ev.source);
+      audioRoutes.set(msg.id, { win: ev.source, origin: ev.origin });
       setTimeout(() => audioRoutes.delete(msg.id), 15000);
       postToHost({ type: 'audio-get', id: msg.id });
     } else if (msg.type === 'ww-notifications-watch') {
@@ -256,7 +258,7 @@
       postToHost({ type: 'notification-dismiss', id: msg.id });
     } else if (msg.type === 'ww-audio-set') {
       if (msg.id) {
-        audioRoutes.set(msg.id, ev.source);
+        audioRoutes.set(msg.id, { win: ev.source, origin: ev.origin });
         setTimeout(() => audioRoutes.delete(msg.id), 15000);
       }
       postToHost({ type: 'audio-set', id: msg.id, target: String(msg.target || 'master'), level: msg.level, muted: msg.muted });
@@ -316,10 +318,21 @@
     panelNoticeTimer = setTimeout(() => { node.hidden = true; }, 6000);
   }
 
+  /** The origin a slot's frame must be on to count as that widget. Derived from the
+   * widget's own URL rather than a hardcoded host pattern, so it holds for the real
+   * `{slug}.widgets.wsw` mapping and for the harness fixtures alike. A URL that will
+   * not parse yields null, which every caller treats as "refuse". */
+  function originOf(url) {
+    try { return new URL(url, location.href).origin; } catch (e) { return null; }
+  }
+
   function sendToSlot(slot, message) {
-    if (!slot.frame) return; // not-installed placeholder
+    if (!slot.frame || !slot.origin) return; // not-installed placeholder / unparseable url
     try {
-      slot.frame.contentWindow.postMessage(message, '*');
+      // Targeted, never '*': a slot frame that has navigated away is still the same
+      // WindowProxy, so an untargeted post would hand settings, sensors and media to
+      // whatever now occupies it. The browser drops the message instead.
+      slot.frame.contentWindow.postMessage(message, slot.origin);
     } catch (e) { /* frame may be reloading */ }
   }
 
@@ -527,7 +540,8 @@
       } catch (e) { /* unserializable settings: init delivery still applies them */ }
       frame.src = widget.url + slotHash;
       slotEl.appendChild(frame);
-      record = { frame, el: slotEl, url: widget.url, hash: slotHash, tag, def: slotDef, page, uid, settings, initialized: false, retries: 0 };
+      record = { frame, el: slotEl, url: widget.url, origin: originOf(widget.url), hash: slotHash, tag,
+        def: slotDef, page, uid, settings, initialized: false, retries: 0 };
     }
 
     slotEl.appendChild(buildOverlay(record, widget));
