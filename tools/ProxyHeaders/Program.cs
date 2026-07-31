@@ -63,18 +63,29 @@ Check("P6 ...and Authorization survives the browser tier too, or a 403 retry los
 // already refused, so the escalation ladder changed the request's trustworthiness
 // halfway up. Any name refused as browser-forwardable for being browser-OWNED must be
 // refused on the proxy tier as well.
-// Cookie2 is here because it is exactly how this drifts: the browser list named it, the
-// proxy list did not, and the parity check missed it by naming neither. The lists are
-// the thing that rots, so the parity set should hold every name EITHER list mentions.
-string[] hostOwned = ["User-Agent", "Referer", "Origin", "Sec-Fetch-Site", "Sec-Fetch-Mode",
-    "Sec-CH-UA-Platform", "Proxy-Authorization", "Cookie", "Cookie2"];
-var drifted = hostOwned.Where(h =>
+// DERIVED, not listed. Twice this probe missed a drift because its corpus was a set of
+// strings I maintained by hand — Cookie2 was added after the first miss and the check
+// was still incomplete at the next one (#126). The corpus is now the rules' own shared
+// set, so a name added there is covered here the moment it is added, and no edit to this
+// file is needed to keep the check honest.
+var shared = ProxyHeaderRules.SharedRefusals.ToArray();
+Check("P7 setup: the shared refusal set is non-trivial", shared.Length >= 10, $"{shared.Length} names");
+
+var drifted = shared.Where(h =>
     ProxyHeaderRules.IsWidgetSuppliable(h) != ProxyHeaderRules.IsBrowserForwardable(h)).ToArray();
-Check("P7 the two tiers agree on every host-owned name",
+Check("P7 the two tiers agree on every shared name",
     drifted.Length == 0, string.Join(", ", drifted));
 
-Check("P7b and both refuse them, rather than agreeing to allow them",
-    hostOwned.All(h => !ProxyHeaderRules.IsWidgetSuppliable(h) && !ProxyHeaderRules.IsBrowserForwardable(h)));
+Check("P7b and both REFUSE them, rather than agreeing to allow them",
+    shared.All(h => !ProxyHeaderRules.IsWidgetSuppliable(h) && !ProxyHeaderRules.IsBrowserForwardable(h)),
+    string.Join(", ", shared.Where(ProxyHeaderRules.IsWidgetSuppliable)));
+
+// The names from the finding, spelled out so the regression is legible in the output
+// even though the derived check above already covers them.
+string[] hopByHop = ["Via", "Upgrade", "TE", "Trailer", "Connection", "Keep-Alive"];
+Check("P7c hop-by-hop names are refused on the proxy tier too (#126)",
+    hopByHop.All(h => !ProxyHeaderRules.IsWidgetSuppliable(h)),
+    string.Join(", ", hopByHop.Where(ProxyHeaderRules.IsWidgetSuppliable)));
 
 // ---- P8: name handling ------------------------------------------------------------
 

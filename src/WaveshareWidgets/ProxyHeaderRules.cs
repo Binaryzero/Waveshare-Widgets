@@ -19,54 +19,80 @@ namespace WaveshareWidgets;
 ///      one does not merely add a value, it SUPPRESSES the host's honest one. There is
 ///      no version of this where the host's default and the widget's value both appear.
 ///
-/// The two tiers disagreeing about a name is itself the bug: the browser tier already
-/// refused browser-owned headers (a page-context fetch throws on them, which would kill
-/// the retry), while the proxy tier forwarded them. A header the browser tier will not
-/// replay is one the proxy tier has no business sending either, so both tiers now read
-/// their rule from here and <c>P7</c> in the probe asserts they cannot drift apart.
+/// THE RECURRING DEFECT is not any single name — it is the two tiers disagreeing. A
+/// header the browser tier will not replay is one the proxy tier has no business
+/// sending, because the escalation ladder would then change the request's
+/// trustworthiness halfway up. That drifted three times: first <c>Sec-*</c> and
+/// <c>User-Agent</c> (#92), then <c>Cookie2</c>, then <c>Via</c>/<c>Upgrade</c>/
+/// <c>TE</c>/<c>Trailer</c> (#126) — each time because the shared names lived as two
+/// hand-written lists that had to be edited in step.
+///
+/// So they are ONE set now, named and exported. Each tier refuses the shared set plus
+/// its own content-negotiation quirks, and <c>tools/ProxyHeaders</c> derives its parity
+/// check FROM <see cref="SharedRefusals"/> rather than from a list in the probe — so a
+/// name added here is covered by the probe the moment it is added, and a name added to
+/// one tier only cannot pass unnoticed.
 /// </summary>
 public static class ProxyHeaderRules
 {
-    /// <summary>Names the host owns on EVERY tier: browser-controlled metadata a page
-    /// script can never set, plus the identity the request presents.</summary>
+    /// <summary>Browser-controlled metadata a page script can never set, plus the
+    /// identity the request presents. Prefix rules, so the reserved namespaces are
+    /// covered without enumerating them.</summary>
     private static bool IsHostOwned(string lower) =>
         lower is "user-agent" or "referer" or "origin"
         || lower.StartsWith("sec-", StringComparison.Ordinal)
         || lower.StartsWith("proxy-", StringComparison.Ordinal);
 
+    /// <summary>Hop-by-hop and connection-management names. These belong to whatever is
+    /// actually making the connection; a caller-chosen value either corrupts the request
+    /// or describes a hop that is not the one being made.</summary>
+    private static readonly HashSet<string> HopByHop = new(StringComparer.Ordinal)
+    {
+        "connection", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade",
+        "via", "host", "content-length",
+    };
+
+    /// <summary>Cookie state. A page-context fetch cannot set it, so neither tier may
+    /// present a caller-chosen one.</summary>
+    private static readonly HashSet<string> CookieState = new(StringComparer.Ordinal)
+    {
+        "cookie", "cookie2",
+    };
+
+    /// <summary>Every name BOTH tiers must refuse — the invariant the probe derives its
+    /// parity check from. Exposed so that check cannot fall behind this file: it is the
+    /// same data, not a copy of it.</summary>
+    public static IEnumerable<string> SharedRefusals =>
+        new[] { "user-agent", "referer", "origin", "sec-fetch-site", "sec-ch-ua", "proxy-authorization" }
+            .Concat(HopByHop).Concat(CookieState);
+
+    private static bool IsSharedRefusal(string lower) =>
+        IsHostOwned(lower) || HopByHop.Contains(lower) || CookieState.Contains(lower);
+
     /// <summary>Whether a widget-supplied header may be copied onto the proxy request.
-    /// Rejects host-owned metadata, plus hop-by-hop and body-framing names that belong to
-    /// HttpClient (forwarding those corrupts the request rather than spoofing anything).
     /// </summary>
     /// <param name="name">Header name; compared case-insensitively.</param>
     public static bool IsWidgetSuppliable(string? name)
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
-        var lower = name.ToLowerInvariant();
-        if (IsHostOwned(lower)) return false;
-        // cookie2 with cookie: the browser tier already refused it, and a tier
-        // disagreement about a browser-owned name is the exact defect this file exists
-        // to end — legacy or not, the proxy has no business presenting caller-chosen
-        // cookie state that a page-context fetch could never set.
-        return lower is not ("host" or "content-length" or "transfer-encoding"
-            or "connection" or "cookie" or "cookie2");
+        return !IsSharedRefusal(name.ToLowerInvariant());
     }
 
     /// <summary>Whether a widget-supplied header can be replayed from a page-context
-    /// fetch in the hidden-browser tier. Names the Fetch spec forbids page scripts to set
-    /// (the browser throws, killing the whole retry) and anything the browser must own
-    /// stay out; auth and API-key headers pass through, because an Authorization header
-    /// must survive EVERY tier of the ladder or a private feed keeps answering 403 right
-    /// when the bot wall forces the escalation (#37).</summary>
+    /// fetch in the hidden-browser tier. The shared set, plus the names the Fetch spec
+    /// forbids page scripts to set for content-negotiation reasons (the browser throws,
+    /// killing the whole retry). Auth and API-key headers pass through, because an
+    /// Authorization header must survive EVERY tier of the ladder or a private feed keeps
+    /// answering 403 right when the bot wall forces the escalation (#37).</summary>
     public static bool IsBrowserForwardable(string? name)
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
         var lower = name.ToLowerInvariant();
-        if (IsHostOwned(lower)) return false;
-        return lower is not ("accept-charset" or "accept-encoding" or "connection"
-            or "content-length" or "content-type" or "cookie" or "cookie2" or "date"
-            or "dnt" or "expect" or "host" or "keep-alive" or "te" or "trailer"
-            or "transfer-encoding" or "upgrade" or "via")
+        if (IsSharedRefusal(lower)) return false;
+        // Browser-tier-only. content-type is carried on the dedicated field instead, so
+        // refusing it here does not lose it; the rest a page fetch simply cannot set.
+        return lower is not ("accept-charset" or "accept-encoding" or "content-type"
+            or "date" or "dnt" or "expect")
             && !lower.StartsWith("access-control-", StringComparison.Ordinal);
     }
 }
