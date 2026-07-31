@@ -144,6 +144,29 @@ public static partial class WidgetIdentity
         return found.Where(w => !skip.Contains(w.FolderName)).ToList();
     }
 
+    /// <summary>The folder a widget's origin is actually served from.</summary>
+    /// <remarks>
+    /// For a stock widget: the SHIPPED folder, never the seeded copy in the writable
+    /// widgets directory — even though the fingerprint check proved the two identical.
+    /// That check is a moment in time and a virtual host mapping is continuous: it serves
+    /// whatever is in its folder at the instant of each request, watcher events are
+    /// debounced, and in that window another widget can iframe the stock origin with a
+    /// cache-busting query and run whatever was just written there. No amount of checking
+    /// harder closes a gap between the check and every subsequent read — only pointing the
+    /// origin somewhere the install path cannot write does.
+    ///
+    /// The fingerprint's job changes rather than disappears: it no longer authorizes the
+    /// writable copy to be served, it establishes that the widget the user has is the
+    /// widget the app ships, and then the app serves its own.
+    ///
+    /// Non-stock widgets serve from where they were found, because editing them in place is
+    /// the documented workflow and the only origin at stake is their own.
+    /// </remarks>
+    public static string ServingFolder(string id, string scannedFolder, string shippedRoot) =>
+        IsReserved(id)
+            ? Path.Combine(shippedRoot, Path.GetFileName(scannedFolder.TrimEnd('/', '\\')))
+            : scannedFolder;
+
     /// <summary>Which currently-mapped virtual hosts must stop being served, given the
     /// widgets the library now lists.</summary>
     /// <remarks>

@@ -289,5 +289,20 @@ Check("I23b ...while a host it still lists is not", !stale.Contains("clock.widge
 Check("I23c ...and the shell/media/background hosts are never swept",
     !stale.Contains("app.wsw") && !stale.Contains("media.wsw"), string.Join(", ", stale));
 
+// I24 · validating the writable copy is not the same as serving it. A virtual host serves
+// its folder continuously, so a fingerprint checked during a rescan says nothing about what
+// the next request reads — watcher events are debounced 800 ms, and in that window a widget
+// can iframe the stock origin with a cache-busting query and run whatever was just written
+// into the seeded folder. The origin therefore points at the shipped copy, which the
+// install path cannot write.
+const string Shipped = "/opt/app/stock-widgets";
+Check("I24 a stock widget is served from the SHIPPED folder, not the writable copy",
+    WidgetIdentity.ServingFolder("ws.stock.hue", "/data/widgets/hue", Shipped)
+        == System.IO.Path.Combine(Shipped, "hue"),
+    WidgetIdentity.ServingFolder("ws.stock.hue", "/data/widgets/hue", Shipped));
+Check("I24b ...and an ordinary widget is still served from where it was found",
+    WidgetIdentity.ServingFolder("com.example.cpu", "/data/widgets/com-example-cpu", Shipped)
+        == "/data/widgets/com-example-cpu");
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;

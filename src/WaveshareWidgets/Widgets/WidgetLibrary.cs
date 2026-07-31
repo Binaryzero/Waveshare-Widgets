@@ -62,6 +62,26 @@ public sealed partial class WidgetLibrary : IDisposable
         _watcher.EnableRaisingEvents = true;
     }
 
+    /// <summary>Backoff for re-running a scan that had to withhold widgets because the host
+    /// map was unreadable. Doubles to a ceiling rather than hammering the file, and resets
+    /// whenever a scan gets through.</summary>
+    private System.Threading.Timer? _hostMapRetry;
+    private int _hostMapRetryDelay = InitialHostMapRetryMs;
+    private const int InitialHostMapRetryMs = 2000;
+    private const int MaxHostMapRetryMs = 60000;
+
+    private void ScheduleHostMapRetry()
+    {
+        _hostMapRetry?.Dispose();
+        var delay = _hostMapRetryDelay;
+        _hostMapRetryDelay = Math.Min(_hostMapRetryDelay * 2, MaxHostMapRetryMs);
+        _hostMapRetry = new System.Threading.Timer(_ =>
+        {
+            Rescan();
+            Changed?.Invoke();   // the windows are showing a library missing those widgets
+        }, null, delay, Timeout.Infinite);
+    }
+
     private void ScheduleReload()
     {
         // Editors fire bursts of events; wait for the writes to settle.
@@ -355,8 +375,16 @@ public sealed partial class WidgetLibrary : IDisposable
         {
             foreach (var dir in Directory.GetDirectories(AppPaths.StockWidgetsDir))
             {
-                if (ManifestIdOf(dir) is { Length: > 0 } id)
-                    list.Add(new WidgetIdentity.StockWidget(Path.GetFileName(dir), id, Fingerprint(dir)));
+                if (!File.Exists(Path.Combine(dir, "manifest.json")))
+                    continue;   // not a widget folder at all; nothing to be incomplete about
+                // ManifestIdOf answers null for BOTH "no manifest" and "could not read it",
+                // and only the second is a failed scan. Skipping it silently is how an
+                // update replacing one file mid-scan pinned a stock widget as non-existent
+                // for the process lifetime — the outer catch never saw it, so the truncated
+                // list looked complete and was cached.
+                if (ManifestIdOf(dir) is not { Length: > 0 } id)
+                    throw new IOException($"shipped manifest for '{Path.GetFileName(dir)}' could not be read");
+                list.Add(new WidgetIdentity.StockWidget(Path.GetFileName(dir), id, Fingerprint(dir)));
             }
             // A stale shipped copy from an overwrite upgrade authorizes nobody.
             list = WidgetIdentity.Shipped(list, RetiredStockNames).ToList();
@@ -377,6 +405,27 @@ public sealed partial class WidgetLibrary : IDisposable
     }
 
     private static IReadOnlyList<WidgetIdentity.StockWidget>? _stockWidgets;
+
+    /// <summary>Where a widget is actually SERVED from.</summary>
+    /// <remarks>
+    /// For a stock widget: the shipped folder next to the exe, never the seeded copy in the
+    /// writable widgets directory — even though the fingerprint check just proved the two
+    /// are byte-identical. That check is a moment in time and the mapping is continuous: a
+    /// virtual host serves whatever is in its folder RIGHT NOW, watcher events are debounced
+    /// 800 ms, and in that window another widget can iframe the stock origin with a
+    /// cache-busting query and run whatever was just written there. Validating harder cannot
+    /// close a gap between the check and every subsequent read.
+    ///
+    /// So the origin points somewhere the install path cannot write. The fingerprint's job
+    /// changes accordingly: it no longer authorizes the writable copy to be served, it
+    /// establishes that the widget the user has is the widget the app ships — and then the
+    /// app serves its own.
+    ///
+    /// Non-stock widgets keep serving from the widgets directory, because editing them there
+    /// IS the documented workflow and the origin at risk is their own.
+    /// </remarks>
+    private static string ServeFrom(string id, string scannedFolder) =>
+        WidgetIdentity.ServingFolder(id, scannedFolder, AppPaths.StockWidgetsDir);
 
     /// <summary>Content fingerprint of an INSTALLED folder, for comparison against the
     /// shipped one. Any failure answers null, which refuses the claim.</summary>
@@ -550,15 +599,23 @@ public sealed partial class WidgetLibrary : IDisposable
         {
             Log.Error($"Refusing to serve {assigned.Count} widget(s) whose origin would be minted without the " +
                       "host map — the assignment cannot be checked against origins that already have an owner. " +
-                      "Widgets already in the map are unaffected; this clears once the file can be read.");
+                      "Widgets already in the map are unaffected; retrying shortly.");
+            // And actually retry. Nothing else would: Initialize scans BEFORE the watcher
+            // exists, and the watcher only ever fires for the widgets directory, while the
+            // file that could not be read lives elsewhere. Without this, a lock lasting a
+            // second at startup withheld those widgets for the entire process lifetime,
+            // under a log line promising it would clear.
+            ScheduleHostMapRetry();
         }
         var widgets = resolved
             .Where(r => WidgetIdentity.MayServe(r.Manifest.Id, assigned, trustworthy))
-            .Select(r => new InstalledWidget(r.Manifest, r.Folder, hostMap[r.Manifest.Id]))
+            .Select(r => new InstalledWidget(r.Manifest, ServeFrom(r.Manifest.Id, r.Folder), hostMap[r.Manifest.Id]))
             .ToList();
         // Only when the map that was read really is the whole record. Writing a map built
         // on top of one this process could not read would erase the assignments it could
         // not see, and those are exactly the origins that already have an owner.
+        if (trustworthy)
+            _hostMapRetryDelay = InitialHostMapRetryMs;
         if (assigned.Count > 0 && trustworthy)
             SaveHostMap(hostMap);
 
@@ -745,5 +802,6 @@ public sealed partial class WidgetLibrary : IDisposable
     {
         _watcher?.Dispose();
         _debounce?.Dispose();
+        _hostMapRetry?.Dispose();
     }
 }
