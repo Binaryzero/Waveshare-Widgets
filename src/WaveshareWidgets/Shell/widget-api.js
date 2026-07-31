@@ -119,14 +119,19 @@
   /// A ReadableStream that relays the response's own and ERRORS past the budget rather than
   /// relaying more.
   ///
-  /// Built only when a widget actually reaches for .body: getReader() locks the source, so
-  /// constructing one eagerly for every wrapped response would break text() and friends on
-  /// the far more common path where nobody touches the stream at all.
+  /// The source is not touched until something actually reads from the returned stream, so
+  /// building one costs nothing and disturbs nothing — see pull().
   function cappedStream(source, maxBytes) {
-    const reader = source.getReader();
+    let reader = null;
     let total = 0;
     return new ReadableStream({
       async pull(controller) {
+        // The lock is taken HERE rather than when the stream is built, because READING the
+        // .body property does not disturb a native body — `if (res.body)` followed by
+        // res.text() is ordinary widget code. Locking at construction would make merely
+        // looking at .body break every reader after it, which is a stranger failure than
+        // the one this wrapper exists to prevent.
+        if (!reader) reader = source.getReader();
         const { done, value } = await reader.read();
         if (done) { controller.close(); return; }
         if (total + value.length > maxBytes) {
@@ -137,7 +142,7 @@
         total += value.length;
         controller.enqueue(value);
       },
-      cancel() { cancelQuietly(reader); },
+      cancel() { cancelQuietly(reader || source); },   // never read: cancel the source itself
     });
   }
 
@@ -180,15 +185,24 @@
       // Not a body reader itself, but it PARSES one — and parsing a multipart body the
       // platform read for us would be exactly the unbounded materialisation this exists to
       // stop. Read within the budget first, then let the platform parse the capped copy.
-      formData: async () => new Response(await readCapped(response, maxBytes),
-        { headers: response.headers }).formData(),
+      formData: async () => {
+        const bytes = await readCapped(response, maxBytes);
+        // Only the content-type is carried over. It is all formData() needs — the multipart
+        // boundary lives in it — while content-length and content-encoding describe the
+        // bytes ON THE WIRE, and these are the decoded ones we just read. Handing the
+        // platform headers that disagree with the body is how the encoded-length bug above
+        // got in; there is no reason to reintroduce it one function later.
+        const ct = response.headers.get('content-type');
+        return new Response(bytes, ct ? { headers: { 'Content-Type': ct } } : undefined).formData();
+      },
       // A clone has to stay capped, or a widget could read the body through it uncapped.
       clone: () => cappedResponse(response.clone(), maxBytes),
     };
     // .body is handled in the trap rather than here: it is THE gap that made every override
-    // above optional — a widget can skip all of them and pull the stream itself — but it has
-    // to be wrapped lazily, because building it locks the source and most responses are read
-    // through text() or json() and never touch .body at all.
+    // above optional — a widget can skip all of them and pull the stream itself. Built once
+    // and remembered, because native fetch returns the SAME stream object every time the
+    // property is read, and code that compares them (or reads .body twice and expects one
+    // reader's worth of data) would break on a fresh wrapper per access.
     let wrappedBody;
     return new Proxy(response, {
       get(target, prop) {

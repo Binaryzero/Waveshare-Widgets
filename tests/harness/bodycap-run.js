@@ -273,6 +273,19 @@ function server() {
   check('C10c a body under the ceiling streams through intact',
     !streamError && streamedBytes === 4096, streamError ? String(streamError) : String(streamedBytes));
 
+  // C10d · LOOKING at .body must not consume it. Native fetch does not disturb a body when
+  // the property is read — `if (res.body)` before res.text() is ordinary widget code — so a
+  // wrapper that locks the source on property access breaks readers that would have worked
+  // before the ceiling existed. Stranger than the failure the ceiling prevents, and silent.
+  const peeked = await capped(`http://127.0.0.1:${PORT}/wpeek?bytes=1024&declare=1`);
+  const hasBody = !!peeked.body;
+  let peekError = null;
+  let peekedText = '';
+  try { peekedText = await peeked.text(); } catch (e) { peekError = e; }
+  check('C10d reading the .body property does not consume the response',
+    hasBody && !peekError && peekedText.length === 1024,
+    peekError ? String(peekError) : `body=${hasBody} text=${peekedText.length}`);
+
   // C11 · formData() does not read a body itself, it PARSES one — and parsing a multipart
   // body the platform already materialised for us is the same unbounded read by another
   // name. It has to go through the budget first.
