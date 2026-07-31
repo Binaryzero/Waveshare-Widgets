@@ -16,7 +16,8 @@
 //   R22 · a response past the WW.fetch ceiling is named as such, not as unreachable —
 //         and an ordinary body still reads through the new cap
 //   R23 · the same refusal arriving from the HOST proxy tier reads the same way, by either
-//         way into the ladder, while an ordinary host failure still reads as unreachable
+//         way into the ladder, and carries the same error TYPE — while an ordinary host
+//         failure keeps the type, and the state, that means "unreachable"
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -396,17 +397,26 @@ const TOKEN = 'Bearer super-secret-probe-token';
   check('R23b a size refusal behind a bot wall is named, not reported as the wall\'s 403',
     /too large/i.test(walled.title), `${walled.title} — ${walled.body}`);
 
-  // ...and the discrimination is real in the other direction. Turning every host failure
-  // into "too large" would pass both of those while telling the field to shrink a response
-  // that was never sent, so an ordinary refusal has to keep saying the endpoint is
-  // unreachable.
-  respond = () => ({ abort: true });
-  await page.evaluate(() => { window.__probeHostError = 'connection refused'; });
-  await init(Object.assign({}, base, { url: 'https://api.test/proxydown', jsonPointer: '/v' }));
-  await wait(2500);
-  const down = await read();
-  check('R23c ...while an ordinary host failure still reads as unreachable',
-    /could not reach/i.test(down.title), `${down.title} — ${down.body}`);
+  // R23c/d · the TYPE, at the shim, which is the contract the two probes above lean on.
+  // Asserted here rather than through the tile because the tile tests the type AND the
+  // message, so it goes on rendering the right state even when the type is wrong — a
+  // rendering check cannot fail for a broken classifier alone, and one that cannot fail
+  // for the thing it is named after is not guarding it. proxy:'always' takes the tier
+  // directly, with no fallback in the way.
+  const kinds = await page.evaluate(async () => {
+    const one = async (hostError) => {
+      window.__probeHostError = hostError;
+      try { await WW.fetch('https://api.test/typed', { proxy: 'always' }); return 'resolved'; }
+      catch (e) { return e.constructor.name; }
+    };
+    return { big: await one('response too large'), ordinary: await one('connection refused') };
+  });
+  check('R23c the proxy tier\'s size refusal rejects as a RangeError, like the browser tier\'s',
+    kinds.big === 'RangeError', kinds.big);
+  // The other direction: turning every host failure into a size refusal would pass R23,
+  // R23b and R23c while telling the field to shrink a response that was never sent.
+  check('R23d ...while an ordinary host failure stays a TypeError',
+    kinds.ordinary === 'TypeError', kinds.ordinary);
   await page.evaluate(() => { window.__probeHostError = 'host offline in probe'; });
 
   // ---- R13 · a Critical threshold works on its own ---------------------------------
