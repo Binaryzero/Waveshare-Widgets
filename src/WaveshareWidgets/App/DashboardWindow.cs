@@ -31,7 +31,7 @@ public sealed class DashboardWindow : Form
     private readonly SensorHub _hub;
     private readonly WidgetLibrary _library;
     private readonly WebView2 _webView = new();
-    private readonly HashSet<string> _mappedHosts = [];
+    private readonly VirtualHostMap _hosts = new();
     private Rectangle _targetBounds;
     private BrowserFetcher? _browserFetcher;
     private StreamDeckBridge? _streamDeck;
@@ -168,30 +168,12 @@ public sealed class DashboardWindow : Form
     private void MapVirtualHosts()
     {
         var core = _webView.CoreWebView2;
-
-        if (_mappedHosts.Add(ShellHost))
-            core.SetVirtualHostNameToFolderMapping(ShellHost, AppPaths.ShellDir, CoreWebView2HostResourceAccessKind.Allow);
-
+        _hosts.MapFixed(core, ShellHost, AppPaths.ShellDir);
         // User background images/videos, referenced by file name as https://backgrounds.wsw/<file>.
-        if (_mappedHosts.Add(BackgroundHost))
-            core.SetVirtualHostNameToFolderMapping(BackgroundHost, AppPaths.BackgroundsDir, CoreWebView2HostResourceAccessKind.Allow);
-
+        _hosts.MapFixed(core, BackgroundHost, AppPaths.BackgroundsDir);
         // User media library (Gallery widget): drop files in, they serve as https://media.wsw/<file>.
-        if (_mappedHosts.Add(MediaHost))
-            core.SetVirtualHostNameToFolderMapping(MediaHost, AppPaths.MediaDir, CoreWebView2HostResourceAccessKind.Allow);
-
-        var wanted = _library.Widgets.ToDictionary(w => w.VirtualHost, w => w.Folder);
-        foreach (var stale in _mappedHosts.Where(h => h != ShellHost && h != BackgroundHost && h != MediaHost && !wanted.ContainsKey(h)).ToList())
-        {
-            core.ClearVirtualHostNameToFolderMapping(stale);
-            _mappedHosts.Remove(stale);
-        }
-        foreach (var (host, folder) in wanted)
-        {
-            // Re-mapping an existing host updates its folder, so no separate clear is needed.
-            core.SetVirtualHostNameToFolderMapping(host, folder, CoreWebView2HostResourceAccessKind.Allow);
-            _mappedHosts.Add(host);
-        }
+        _hosts.MapFixed(core, MediaHost, AppPaths.MediaDir);
+        _hosts.Sync(core, _library.Widgets);
     }
 
     /// <summary>Rescan-safe reload: refreshes host mappings and reloads the shell page.</summary>

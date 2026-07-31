@@ -25,6 +25,13 @@ public sealed record InstalledWidget(WidgetManifest Manifest, string Folder, str
 public sealed record RejectedWidget(
     string Id, string Name, string Folder, string Reason, IReadOnlyList<string> RedactNames);
 
+/// <summary>The outcome of installing a package: what was installed, and whether it is
+/// being served yet.</summary>
+/// <param name="Widget">Null when the package is on disk but its origin could not be
+/// assigned this scan — the host map was unreadable. A retry is already scheduled. This is
+/// a PENDING install, not a failed one, and the two must not be reported alike.</param>
+public sealed record InstallResult(WidgetManifest Manifest, InstalledWidget? Widget);
+
 /// <summary>
 /// Manages the user's widgets folder: seeds stock widgets on first run, scans installed
 /// widget folders, installs .wswidget packages (zip of manifest.json + index.html), and
@@ -62,6 +69,26 @@ public sealed partial class WidgetLibrary : IDisposable
         _watcher.EnableRaisingEvents = true;
     }
 
+    /// <summary>Backoff for re-running a scan that had to withhold widgets because the host
+    /// map was unreadable. Doubles to a ceiling rather than hammering the file, and resets
+    /// whenever a scan gets through.</summary>
+    private System.Threading.Timer? _hostMapRetry;
+    private int _hostMapRetryDelay = InitialHostMapRetryMs;
+    private const int InitialHostMapRetryMs = 2000;
+    private const int MaxHostMapRetryMs = 60000;
+
+    private void ScheduleHostMapRetry()
+    {
+        _hostMapRetry?.Dispose();
+        var delay = _hostMapRetryDelay;
+        _hostMapRetryDelay = Math.Min(_hostMapRetryDelay * 2, MaxHostMapRetryMs);
+        _hostMapRetry = new System.Threading.Timer(_ =>
+        {
+            Rescan();
+            Changed?.Invoke();   // the windows are showing a library missing those widgets
+        }, null, delay, Timeout.Infinite);
+    }
+
     private void ScheduleReload()
     {
         // Editors fire bursts of events; wait for the writes to settle.
@@ -89,7 +116,7 @@ public sealed partial class WidgetLibrary : IDisposable
         // folder's absence: extracting a release over an old install leaves stale
         // stock-widgets entries behind, which would both skip this cleanup and
         // re-seed the retired widget below.
-        var retiredNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "fans" };
+        var retiredNames = RetiredStockNames;
         var retiredIds = new List<string>();
         foreach (var retired in retiredNames)
         {
@@ -216,29 +243,85 @@ public sealed partial class WidgetLibrary : IDisposable
         return dir;
     }
 
-    /// <summary>Short stable discriminator for host-slug collisions between distinct ids.</summary>
-    private static string ShortHash(string value)
-    {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
-        return Convert.ToHexString(bytes, 0, 4).ToLowerInvariant();
-    }
+    /// <summary>The last host map this process read successfully. A rescan that cannot
+    /// read the file — antivirus or an indexer holding it is routine on Windows — reuses
+    /// this instead of behaving as though no widget had ever been assigned an origin.</summary>
+    private static Dictionary<string, string>? _lastGoodHostMap;
 
     /// <summary>Persisted widget-id → virtual-host assignments. Hosts are browser
     /// origins (localStorage, credentials), so an entry is written once and kept
-    /// forever — an unreadable file starts a fresh map rather than crashing scan.</summary>
-    private static Dictionary<string, string> LoadHostMap()
+    /// forever.</summary>
+    /// <returns>The map, and whether it is TRUSTWORTHY — i.e. whether it really
+    /// represents every assignment ever made. False means the file exists but this
+    /// process could not read it, and the caller must not write over it: the entries
+    /// it cannot see are the only record of which origins already have an owner.</returns>
+    private static (Dictionary<string, string> Map, bool Trustworthy) LoadHostMap()
+    {
+        if (!File.Exists(AppPaths.HostMapFile))
+            return (new Dictionary<string, string>(), true);   // first run: nothing assigned yet
+
+        // Antivirus and the search indexer routinely hold a just-written file open on
+        // Windows, and the answer to that is to wait a moment, not to conclude that no
+        // widget has ever been assigned an origin. Three tries covers it; what survives
+        // all three is reported honestly rather than papered over.
+        Exception? lastIoFailure = null;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                var map = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(AppPaths.HostMapFile))
+                          ?? new Dictionary<string, string>();
+                _lastGoodHostMap = new Dictionary<string, string>(map, StringComparer.Ordinal);
+                return (map, true);
+            }
+            catch (JsonException ex)
+            {
+                // Corrupt, not busy: rereading will never work, and DurableStore's atomic
+                // writes mean this is damage from outside the app. Move it aside rather than
+                // silently overwriting it — it is the only record of who owns which origin,
+                // and it is now evidence. A fresh map may be written after this.
+                Log.Error($"Widget host map is unreadable ({ex.Message}) — quarantining it and re-minting hosts");
+                QuarantineHostMap();
+                return (new Dictionary<string, string>(), true);
+            }
+            catch (Exception ex)
+            {
+                lastIoFailure = ex;
+                Thread.Sleep(100 * (attempt + 1));
+            }
+        }
+
+        // Still locked. If this process has read the map once, that copy is authoritative
+        // enough — nothing outside this app writes it.
+        if (_lastGoodHostMap is { } cached)
+        {
+            Log.Warn($"Could not read widget host map ({lastIoFailure?.Message}) — using the copy read earlier this session");
+            return (new Dictionary<string, string>(cached, StringComparer.Ordinal), true);
+        }
+        Log.Error($"Could not read widget host map ({lastIoFailure?.Message}) — refusing to assign origins without it");
+        return (new Dictionary<string, string>(), false);
+    }
+
+    private static void QuarantineHostMap()
     {
         try
         {
-            if (File.Exists(AppPaths.HostMapFile))
-                return JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(AppPaths.HostMapFile))
-                       ?? new Dictionary<string, string>();
+            var aside = UniqueFile(AppPaths.HostMapFile + ".corrupt");
+            File.Move(AppPaths.HostMapFile, aside);
+            Log.Error($"Previous widget host map kept at '{aside}'");
         }
         catch (Exception ex)
         {
-            Log.Warn($"Could not read widget host map: {ex.Message} — starting a new one");
+            Log.Warn($"Could not quarantine the widget host map: {ex.Message}");
         }
-        return new Dictionary<string, string>();
+    }
+
+    private static string UniqueFile(string basePath)
+    {
+        var path = basePath;
+        for (var i = 2; File.Exists(path); i++)
+            path = basePath + i;
+        return path;
     }
 
     private static void SaveHostMap(Dictionary<string, string> map)
@@ -247,23 +330,120 @@ public sealed partial class WidgetLibrary : IDisposable
         {
             DurableStore.Write(AppPaths.HostMapFile,
                 JsonSerializer.Serialize(map, new JsonSerializerOptions { WriteIndented = true }));
+            // The lock fallback is only as good as this. Left at the pre-save copy, it
+            // described a map that no longer existed: assignments made after the last
+            // successful READ were missing from it, so a rescan that could not open the
+            // file would treat an out-of-date map as the whole record and hand a newcomer
+            // an origin that the missing entry had already reserved.
+            _lastGoodHostMap = new Dictionary<string, string>(map, StringComparer.Ordinal);
         }
         catch (Exception ex)
         {
+            // Deliberately NOT updating the cache here: nothing was persisted, so the last
+            // copy that matches the file is still the one read from it.
             Log.Warn($"Could not save widget host map: {ex.Message}");
         }
     }
 
-    private static bool IsDigits(string s)
+    /// <summary>Widgets the app no longer ships. AUTHORITATIVE — never inferred from a
+    /// folder's absence, because extracting a release over an old install leaves stale
+    /// stock-widgets folders behind.</summary>
+    /// <remarks>Shared by the seeder and the provenance map on purpose. When only the
+    /// seeder knew, a stale shipped `fans/` folder still authorized `ws.stock.fans` from a
+    /// hand-dropped `widgets/fans` — the retirement was enforced in the one place that
+    /// copies files and ignored in the one place that decides identity.</remarks>
+    private static readonly HashSet<string> RetiredStockNames =
+        new(StringComparer.OrdinalIgnoreCase) { "fans" };
+
+    /// <summary>Every widget the app SHIPS: folder name, declared id, and a content
+    /// fingerprint. Read from next to the exe and cached for the process.</summary>
+    /// <remarks>
+    /// This is the provenance side of the reserved-id rule (#94), so it must come from
+    /// somewhere a package cannot write. AppContext.BaseDirectory is not a security
+    /// boundary in a portable copy — a user who can drop a folder there can already
+    /// replace the exe — but it is categorically not reachable by installing a widget,
+    /// which is the attack this rule is about.
+    ///
+    /// The FINGERPRINT is what makes the rule hold. The folder name is not evidence: the
+    /// widgets directory is documented as somewhere users unzip archives, and those writes
+    /// hot-reload, so `widgets/hue` is a name an attacker can occupy. Only matching content
+    /// distinguishes the seeded copy from something wearing its name.
+    ///
+    /// Cached because it cannot change while the app runs and every rescan asks: the
+    /// FileSystemWatcher fires a scan per edit, and re-hashing two dozen shipped folders
+    /// each time to answer a question with a constant answer is pure cost.
+    /// </remarks>
+    private static (IReadOnlyList<WidgetIdentity.StockWidget> Set, bool Complete) StockWidgets()
     {
-        if (s.Length == 0)
-            return false;
-        foreach (var c in s)
+        if (_stockWidgets is { } cached)
+            return (cached, true);
+        var list = new List<WidgetIdentity.StockWidget>();
+        try
         {
-            if (c is < '0' or > '9')
-                return false;
+            foreach (var dir in Directory.GetDirectories(AppPaths.StockWidgetsDir))
+            {
+                if (!File.Exists(Path.Combine(dir, "manifest.json")))
+                    continue;   // not a widget folder at all; nothing to be incomplete about
+                // ManifestIdOf answers null for BOTH "no manifest" and "could not read it",
+                // and only the second is a failed scan. Skipping it silently is how an
+                // update replacing one file mid-scan pinned a stock widget as non-existent
+                // for the process lifetime — the outer catch never saw it, so the truncated
+                // list looked complete and was cached.
+                if (ManifestIdOf(dir) is not { Length: > 0 } id)
+                    throw new IOException($"shipped manifest for '{Path.GetFileName(dir)}' could not be read");
+                list.Add(new WidgetIdentity.StockWidget(Path.GetFileName(dir), id, Fingerprint(dir)));
+            }
+            // A stale shipped copy from an overwrite upgrade authorizes nobody.
+            list = WidgetIdentity.Shipped(list, RetiredStockNames).ToList();
         }
-        return true;
+        catch (Exception ex)
+        {
+            // An incomplete list refuses reserved ids, including the stock widgets' own —
+            // the safe direction, and a loud one. But it is NOT cached: an updater holding
+            // a file for a moment would otherwise pin "these widgets do not exist" for the
+            // lifetime of the process, and every later rescan would return the bad answer
+            // instantly without ever looking again. Only a complete scan is worth keeping.
+            Log.Error($"Could not read the shipped stock widgets ({ex.Message}) — " +
+                      "reserved widget ids will be refused until a later scan succeeds");
+            return (WidgetIdentity.Shipped(list, RetiredStockNames), false);
+        }
+        _stockWidgets = list;
+        return (list, true);
+    }
+
+    private static IReadOnlyList<WidgetIdentity.StockWidget>? _stockWidgets;
+
+    /// <summary>Where a widget is actually SERVED from.</summary>
+    /// <remarks>
+    /// For a stock widget: the shipped folder next to the exe, never the seeded copy in the
+    /// writable widgets directory — even though the fingerprint check just proved the two
+    /// are byte-identical. That check is a moment in time and the mapping is continuous: a
+    /// virtual host serves whatever is in its folder RIGHT NOW, watcher events are debounced
+    /// 800 ms, and in that window another widget can iframe the stock origin with a
+    /// cache-busting query and run whatever was just written there. Validating harder cannot
+    /// close a gap between the check and every subsequent read.
+    ///
+    /// So the origin points somewhere the install path cannot write. The fingerprint's job
+    /// changes accordingly: it no longer authorizes the writable copy to be served, it
+    /// establishes that the widget the user has is the widget the app ships — and then the
+    /// app serves its own.
+    ///
+    /// Non-stock widgets keep serving from the widgets directory, because editing them there
+    /// IS the documented workflow and the origin at risk is their own.
+    /// </remarks>
+    private static string ServeFrom(string id, string scannedFolder) =>
+        WidgetIdentity.ServingFolder(id, scannedFolder, AppPaths.StockWidgetsDir);
+
+    /// <summary>Content fingerprint of an INSTALLED folder, for comparison against the
+    /// shipped one. Any failure answers null, which refuses the claim.</summary>
+    private static string? InstalledFingerprint(string dir)
+    {
+        try { return Fingerprint(dir); }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not fingerprint '{dir}': {ex.Message}");
+            return null;
+        }
     }
 
     private static bool MarkerMatches(string installedDir, string fingerprint)
@@ -285,19 +465,47 @@ public sealed partial class WidgetLibrary : IDisposable
     private static string Fingerprint(string dir)
     {
         using var sha = SHA256.Create();
+        var buffer = new byte[81920];
         foreach (var file in Directory.GetFiles(dir, "*", SearchOption.AllDirectories)
+                     .Where(f => !string.Equals(Path.GetFileName(f), SeedMarker, StringComparison.OrdinalIgnoreCase))
                      .OrderBy(f => Path.GetRelativePath(dir, f).Replace('\\', '/'), StringComparer.Ordinal))
         {
             var rel = Encoding.UTF8.GetBytes(Path.GetRelativePath(dir, file).Replace('\\', '/') + "\n");
             sha.TransformBlock(rel, 0, rel.Length, null, 0);
-            var content = File.ReadAllBytes(file);
-            sha.TransformBlock(content, 0, content.Length, null, 0);
+            // STREAMED, not ReadAllBytes. This now hashes folders nobody has vouched for —
+            // a hand-dropped folder claiming a stock id is fingerprinted in order to be
+            // refused — so the size of a file here is a number an attacker picks. Reading
+            // one whole into memory made a large, highly compressible asset into a large
+            // allocation on startup and on every watcher rescan. A fixed buffer costs the
+            // same whatever the file claims to be.
+            using var stream = File.OpenRead(file);
+            int read;
+            while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                sha.TransformBlock(buffer, 0, read, null, 0);
         }
         sha.TransformFinalBlock([], 0, 0);
         return Convert.ToHexString(sha.Hash!);
     }
 
+    /// <summary>Serializes the whole read-map / assign / publish / save transaction.</summary>
+    /// <remarks>
+    /// There are now two independent timers that call Rescan — the watcher debounce and the
+    /// host-map retry — plus the install path and startup. Two of them running at once each
+    /// read the same persisted map, compute assignments from a DIFFERENT set of installed
+    /// widgets, and then write their own whole-map copy; the later write silently drops an
+    /// assignment the other scan had already published in Widgets. That origin is then
+    /// recorded nowhere, and the next slug-colliding package is free to take it along with
+    /// whatever storage it still holds. Load-and-save is only safe as one indivisible step.
+    /// </remarks>
+    private readonly object _scanGate = new();
+
     public void Rescan()
+    {
+        lock (_scanGate)
+            RescanCore();
+    }
+
+    private void RescanCore()
     {
         // Pass 1: parse every candidate folder and resolve same-id duplicates
         // (decided by the EXACT manifest id — never by the slugged host, where
@@ -344,28 +552,65 @@ public sealed partial class WidgetLibrary : IDisposable
                     continue;
                 }
 
-                var duplicate = resolved.FindIndex(w => w.Manifest.Id == manifest.Id);
-                if (duplicate >= 0)
+                // The reserved id namespace, checked against what the app SHIPS rather
+                // than against anything on the writable side of the disk (#94). A package
+                // claiming a stock id would otherwise be served from the stock widget's
+                // own virtual host — same origin, same localStorage, same tokens.
+                if (!WidgetIdentity.MayClaim(manifest.Id, Path.GetFileName(folder),
+                        () => InstalledFingerprint(folder), StockWidgets().Set))
                 {
-                    // Same id in two folders (e.g. a stale package install alongside the
-                    // seeded stock copy). First-alphabetical used to win silently, which
-                    // could pin a months-old copy in front of every fresh re-seed — the
-                    // HIGHER manifest version wins now, and the loser is named.
-                    var kept = resolved[duplicate];
-                    var keepNew = CompareManifestVersions(manifest.Version, kept.Manifest.Version) > 0;
-                    Log.Warn($"Duplicate widget id '{manifest.Id}': keeping " +
-                             $"'{(keepNew ? folder : kept.Folder)}' (v{(keepNew ? manifest.Version : kept.Manifest.Version)}), " +
-                             $"shadowing '{(keepNew ? kept.Folder : folder)}' — delete one to silence this");
-                    if (keepNew)
-                        resolved[duplicate] = (manifest, folder);
+                    Log.Warn($"Refusing widget in '{folder}': '{manifest.Id}' is a reserved stock id, " +
+                             "and this is not the folder the app seeds it into");
+                    rejected.Add(new RejectedWidget(manifest.Id, manifest.Name, folder,
+                        $"'{manifest.Id}' is reserved for a widget the app ships. A package cannot claim it.",
+                        manifest.CredentialPropertyNames()));
                     continue;
                 }
+
                 resolved.Add((manifest, folder));
             }
             catch (Exception ex)
             {
                 Log.Warn($"Skipping widget in '{folder}': {ex.Message}");
             }
+        }
+
+        // Pass 1b: an id claimed by more than one folder is served from NONE of them.
+        //
+        // There used to be a tiebreak here, and every version of it was a way to take
+        // another widget's origin. Version let the challenger pick the winning number.
+        // Preferring the folder the installer writes was better and still wrong: dropping
+        // a folder into the widgets directory is a documented install path, so anyone who
+        // can get an archive unzipped can create `com-example-cpu/`, claim the id of a
+        // widget living under any other name, and inherit its persisted host — and with it
+        // the localStorage and credentials scoped to that origin. Refusing the install path
+        // (#94 round 4) left this one wide open, because a folder drop never goes near it.
+        //
+        // There is nothing on disk that says which folder is the rightful owner. So the
+        // question is not answered — it is declined. Both copies are refused, both are
+        // named, and the user deletes the one they did not put there. An attacker who can
+        // write to the widgets folder can already delete a widget outright, so failing
+        // closed costs an availability the user never had, and buys back the only thing
+        // that mattered: the origin does not move.
+        var ambiguous = WidgetIdentity.AmbiguousIds(
+            resolved.Select(r => (r.Manifest.Id, Path.GetFileName(r.Folder))));
+        if (ambiguous.Count > 0)
+        {
+            foreach (var (manifest, folder) in resolved.Where(r => ambiguous.Contains(r.Manifest.Id)))
+            {
+                var others = resolved
+                    .Where(o => o.Manifest.Id == manifest.Id && !ReferenceEquals(o.Folder, folder))
+                    .Select(o => $"'{Path.GetFileName(o.Folder)}'");
+                Log.Warn($"Refusing widget id '{manifest.Id}': claimed by more than one folder " +
+                         $"('{Path.GetFileName(folder)}' and {string.Join(", ", others)}) — " +
+                         "delete the one you did not install, then reload");
+                rejected.Add(new RejectedWidget(manifest.Id, manifest.Name, folder,
+                    $"'{manifest.Id}' is claimed by more than one widget folder, so none of them is " +
+                    "served — the id decides which stored data a widget can read. Delete the copy " +
+                    "you did not install.",
+                    manifest.CredentialPropertyNames()));
+            }
+            resolved.RemoveAll(r => ambiguous.Contains(r.Manifest.Id));
         }
 
         // Pass 2: assign hosts from a PERSISTED id → host map, so an id keeps the
@@ -376,30 +621,48 @@ public sealed partial class WidgetLibrary : IDisposable
         // its predecessor's localStorage/credentials). Once a host is in the map
         // it is reserved for that id permanently and never reused for another.
         // Layouts reference widgets by id, never by host, so suffixes are transparent.
-        var hostMap = LoadHostMap();
-        var mapChanged = false;
-        var usedHosts = new HashSet<string>(hostMap.Values, StringComparer.OrdinalIgnoreCase);
-        var widgets = new List<InstalledWidget>();
-        foreach (var (manifest, folder) in resolved)
+        var (hostMap, trustworthy) = LoadHostMap();
+        var assigned = WidgetIdentity.AssignHosts(resolved.Select(r => r.Manifest.Id), hostMap);
+        foreach (var (id, host) in assigned)
         {
-            if (!hostMap.TryGetValue(manifest.Id, out var host))
+            if (id.StartsWith(WidgetIdentity.ReservationPrefix, StringComparison.Ordinal))
             {
-                var slug = Slug(manifest.Id);
-                host = $"{slug}.widgets.wsw";
-                if (!usedHosts.Add(host))
-                {
-                    host = $"{slug}-{ShortHash(manifest.Id)}.widgets.wsw";
-                    var bump = 2;
-                    while (!usedHosts.Add(host))
-                        host = $"{slug}-{ShortHash(manifest.Id)}{bump++}.widgets.wsw";
-                    Log.Warn($"Widget id '{manifest.Id}' shares its host slug with a previously seen widget — serving it from '{host}'");
-                }
-                hostMap[manifest.Id] = host;
-                mapChanged = true;
+                hostMap[id] = host;   // a reservation: an origin nobody is served from
+                continue;
             }
-            widgets.Add(new InstalledWidget(manifest, folder, host));
+            if (!string.Equals(host, WidgetIdentity.Slug(id) + WidgetIdentity.HostSuffix, StringComparison.Ordinal))
+                Log.Warn($"Widget id '{id}' shares its host slug with another widget — serving it from '{host}'");
+            hostMap[id] = host;
         }
-        if (mapChanged)
+
+        // A map this process could not read is not a map with nothing in it. Minting from
+        // an empty one and SERVING the result is how a newly installed widget ends up on
+        // the clean origin of an owner that is merely uninstalled, reading storage the
+        // browser still holds for it — the file being briefly locked is not consent to
+        // reassign anyone's origin. Not saving was only half the answer: nothing may be
+        // served either. A rescan retries, and the read above already retried three times.
+        if (!trustworthy && assigned.Count > 0)
+        {
+            Log.Error($"Refusing to serve {assigned.Count} widget(s) whose origin would be minted without the " +
+                      "host map — the assignment cannot be checked against origins that already have an owner. " +
+                      "Widgets already in the map are unaffected; retrying shortly.");
+            // And actually retry. Nothing else would: Initialize scans BEFORE the watcher
+            // exists, and the watcher only ever fires for the widgets directory, while the
+            // file that could not be read lives elsewhere. Without this, a lock lasting a
+            // second at startup withheld those widgets for the entire process lifetime,
+            // under a log line promising it would clear.
+            ScheduleHostMapRetry();
+        }
+        var widgets = resolved
+            .Where(r => WidgetIdentity.MayServe(r.Manifest.Id, assigned, trustworthy))
+            .Select(r => new InstalledWidget(r.Manifest, ServeFrom(r.Manifest.Id, r.Folder), hostMap[r.Manifest.Id]))
+            .ToList();
+        // Only when the map that was read really is the whole record. Writing a map built
+        // on top of one this process could not read would erase the assignments it could
+        // not see, and those are exactly the origins that already have an owner.
+        if (trustworthy)
+            _hostMapRetryDelay = InitialHostMapRetryMs;
+        if (assigned.Count > 0 && trustworthy)
             SaveHostMap(hostMap);
 
         Widgets = widgets.OrderBy(w => w.Manifest.Name, StringComparer.OrdinalIgnoreCase).ToList();
@@ -425,112 +688,8 @@ public sealed partial class WidgetLibrary : IDisposable
                + (Rejected.Count > 0 ? $", {Rejected.Count} refused" : ""));
     }
 
-    /// <summary>Compares SemVer-ish manifest versions ("1.2.3", "2.0.0-beta.1",
-    /// "2.0.0+build.7"). Every numeric identifier — core parts AND prerelease
-    /// numerics — compares as an arbitrary-precision digit string, so nothing is
-    /// bounded by Int32/Int64 the way <see cref="Version"/> or an integer parse
-    /// would be. Equal cores rank a release above any prerelease. Unparseable
-    /// cores (non-digit parts) rank lowest; two unparseables tie (the first copy
-    /// found keeps its spot).</summary>
-    private static int CompareManifestVersions(string? a, string? b)
-    {
-        var (coreA, preA, okA) = SplitSemVer(a);
-        var (coreB, preB, okB) = SplitSemVer(b);
-        if (okA != okB)
-            return okA ? 1 : -1;
-        if (!okA)
-            return 0;
-        for (var i = 0; i < Math.Max(coreA.Length, coreB.Length); i++)
-        {
-            var cmp = CompareDigitStrings(
-                i < coreA.Length ? coreA[i] : "0",
-                i < coreB.Length ? coreB[i] : "0");
-            if (cmp != 0)
-                return cmp;
-        }
-        var releaseA = preA.Length == 0;
-        var releaseB = preB.Length == 0;
-        if (releaseA != releaseB)
-            return releaseA ? 1 : -1;
-        return ComparePrerelease(preA, preB);
-    }
-
-    /// <summary>Numeric compare of two all-digit strings with no magnitude bound:
-    /// trim leading zeros, shorter ranks lower, equal lengths compare digit-wise.</summary>
-    private static int CompareDigitStrings(string a, string b)
-    {
-        var trimmedA = a.TrimStart('0');
-        var trimmedB = b.TrimStart('0');
-        return trimmedA.Length != trimmedB.Length
-            ? trimmedA.Length.CompareTo(trimmedB.Length)
-            : string.CompareOrdinal(trimmedA, trimmedB);
-    }
-
-    /// <summary>SemVer §11 prerelease comparison: dot-separated identifiers compare
-    /// pairwise — numeric ones numerically (and below any alphanumeric identifier),
-    /// alphanumeric ones ordinally; when one list prefixes the other, the shorter
-    /// ranks lower. So "beta.2" &lt; "beta.10" &lt; "beta.10.x" (a plain ordinal
-    /// compare would have put beta.2 above beta.10).</summary>
-    private static int ComparePrerelease(string a, string b)
-    {
-        var idsA = a.Split('.');
-        var idsB = b.Split('.');
-        for (var i = 0; i < Math.Max(idsA.Length, idsB.Length); i++)
-        {
-            if (i >= idsA.Length)
-                return -1;
-            if (i >= idsB.Length)
-                return 1;
-            // Numeric identifiers compare as arbitrary-precision numbers (SemVer puts
-            // no 64-bit bound on them): all-digit strings compare by trimmed length,
-            // then digit-by-digit — no integer parse to overflow.
-            var isNumA = IsDigits(idsA[i]);
-            var isNumB = IsDigits(idsB[i]);
-            int cmp;
-            if (isNumA && isNumB)
-            {
-                cmp = CompareDigitStrings(idsA[i], idsB[i]);
-            }
-            else if (isNumA != isNumB)
-            {
-                cmp = isNumA ? -1 : 1;
-            }
-            else
-            {
-                cmp = string.CompareOrdinal(idsA[i], idsB[i]);
-            }
-            if (cmp != 0)
-                return cmp;
-        }
-        return 0;
-    }
-
-    private static (string[] Core, string Prerelease, bool Ok) SplitSemVer(string? version)
-    {
-        var v = (version ?? "").Trim();
-        var plus = v.IndexOf('+');
-        if (plus >= 0)
-            v = v[..plus]; // build metadata never affects precedence
-        var dash = v.IndexOf('-');
-        var prerelease = dash >= 0 ? v[(dash + 1)..] : "";
-        var core = dash >= 0 ? v[..dash] : v;
-        var parts = core.Split('.');
-        // Core parts stay digit STRINGS (compared arbitrary-precision) — parsing
-        // them into Version/int would cap valid SemVer numerics at Int32.
-        var ok = core.Length > 0;
-        foreach (var part in parts)
-        {
-            if (!IsDigits(part))
-            {
-                ok = false;
-                break;
-            }
-        }
-        return (parts, prerelease, ok);
-    }
-
     /// <summary>Installs a .wswidget package (a zip containing manifest.json + index.html at its root).</summary>
-    public InstalledWidget InstallPackage(string packagePath)
+    public InstallResult InstallPackage(string packagePath)
     {
         using var archive = ZipFile.OpenRead(packagePath);
 
@@ -544,7 +703,56 @@ public sealed partial class WidgetLibrary : IDisposable
         if (archive.GetEntry("index.html") is null)
             throw new InvalidDataException("Package has no index.html at its root.");
 
-        var targetDir = Path.Combine(AppPaths.WidgetsDir, Slug(manifest.Id));
+        // Refuse everywhere, the same rule the plaintext-credential guard follows: Rescan
+        // will not serve a reserved id from a folder the seeder did not write, and install
+        // never produces such a folder, so a package claiming one can only ever be refused
+        // later. Saying so here means the user hears it from the install they just ran
+        // instead of finding a widget missing (#94).
+        if (WidgetIdentity.IsReserved(manifest.Id))
+            throw new InvalidDataException(
+                $"Refusing to install '{manifest.Name}': '{manifest.Id}' is in the '{WidgetIdentity.ReservedPrefix}' " +
+                "namespace, which is reserved for widgets the app ships. Give the widget its own id.");
+
+        var installFolder = WidgetIdentity.InstallFolderName(manifest.Id);
+
+        // ...and refuse to land ON a stock widget's folder. A package whose id merely
+        // SLUGS to a stock folder name ("hue") is not claiming a reserved id, but its
+        // target directory is the seeded copy, which the swap below would move aside and
+        // then delete. That is a stock widget destroyed by an install, restored only by
+        // the next launch's re-seed.
+        var (shipped, shippedComplete) = StockWidgets();
+        // Fail CLOSED on an incomplete shipped set. A partial list is missing names, and a
+        // missing name is one this guard would wave through — the install would then land
+        // on a seeded stock folder and delete it on success, displacing that widget until
+        // the next re-seed. "We could not read the list" is not "the list does not contain
+        // it".
+        if (!shippedComplete)
+            throw new InvalidDataException(
+                "Refusing to install: the widgets shipped with the app could not be read just now, " +
+                "so it cannot be checked whether this package would displace one. Try again.");
+        if (shipped.Any(w => string.Equals(w.FolderName, installFolder, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidDataException(
+                $"Refusing to install '{manifest.Name}': its id would occupy the folder of the stock " +
+                $"widget '{installFolder}'. Give the widget an id that does not collide.");
+
+        // ---- J1: the canonical folder is where the INSTALLER writes, not proof of who
+        // owns the id. A widget installed by direct folder drop lives under whatever name
+        // the user chose; a package declaring the same id lands in the canonical folder and
+        // would win the duplicate tiebreak on provenance alone — inheriting the persisted
+        // virtual host, and with it the original widget's origin-scoped storage. Upgrading
+        // in place (same id, canonical folder) is untouched; taking an id that lives
+        // somewhere else is refused, and named, so the user can remove one deliberately.
+        var incumbent = WidgetIdentity.WouldStealId(
+                manifest.Id, Widgets.Select(w => (w.Manifest.Id, Path.GetFileName(w.Folder))))
+            ? Widgets.First(w => string.Equals(w.Manifest.Id, manifest.Id, StringComparison.Ordinal))
+            : null;
+        if (incumbent is not null)
+            throw new InvalidDataException(
+                $"Refusing to install '{manifest.Name}': the id '{manifest.Id}' already belongs to the " +
+                $"widget in '{Path.GetFileName(incumbent.Folder)}'. Installing here would hand this package " +
+                "that widget's stored data. Remove the other copy first if you meant to replace it.");
+
+        var targetDir = Path.Combine(AppPaths.WidgetsDir, installFolder);
 
         // Stage into a sibling temp folder and validate THERE before touching what is
         // already installed. The old order deleted the target first, so a package that
@@ -641,18 +849,21 @@ public sealed partial class WidgetLibrary : IDisposable
         Log.Info($"Installed widget '{manifest.Id}' v{manifest.Version} from {Path.GetFileName(packagePath)}");
 
         Rescan();
-        return Widgets.First(w => w.Manifest.Id == manifest.Id);
+        // FirstOrDefault, not First. The scan legitimately withholds a widget whose origin
+        // would have to be minted without the host map, and the package is on disk either
+        // way — reporting "could not install" for something that is installed, and that a
+        // retry will surface in seconds, describes the wrong problem to the user.
+        var served = Widgets.FirstOrDefault(w => w.Manifest.Id == manifest.Id);
+        return new InstallResult(manifest, served);
     }
 
     /// <summary>Lowercases the widget id into a hostname-safe label ("com.example.CPU" -> "com-example-cpu").</summary>
-    public static string Slug(string id)
-    {
-        var slug = SlugPattern().Replace(id.ToLowerInvariant(), "-").Trim('-');
-        return slug.Length == 0 ? "widget" : slug;
-    }
-
-    [GeneratedRegex("[^a-z0-9-]+")]
-    private static partial Regex SlugPattern();
+    /// <remarks>Lives in <see cref="WidgetIdentity"/> now, with the rest of the rules
+    /// about who may be whom. Kept here so a caller reading the library does not have to
+    /// know that, and so this stays ONE function — two slug implementations that drifted
+    /// would mean the folder an install writes and the folder a scan expects stop being
+    /// the same folder.</remarks>
+    public static string Slug(string id) => WidgetIdentity.Slug(id);
 
     private static void CopyDirectory(string source, string target)
     {
@@ -669,5 +880,6 @@ public sealed partial class WidgetLibrary : IDisposable
     {
         _watcher?.Dispose();
         _debounce?.Dispose();
+        _hostMapRetry?.Dispose();
     }
 }

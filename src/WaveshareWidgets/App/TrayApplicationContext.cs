@@ -224,8 +224,13 @@ public sealed class TrayApplicationContext : ApplicationContext
             _dashboard?.ReloadDashboard();
             // A message box, not a balloon tip: Windows 11 quietly drops balloon
             // notifications for many users, which made installs look like silent failures.
-            MessageBox.Show($"Installed '{installed.Manifest.Name}' v{installed.Manifest.Version}.\n\nOpen Settings to add it to a page.",
-                "Waveshare Widgets", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            // Pending is its own outcome: the package IS installed, it simply has no origin
+            // yet because the host map could not be read. Saying "failed" would be false.
+            var message = installed.Widget is null
+                ? $"Installed '{installed.Manifest.Name}' v{installed.Manifest.Version}, but it is not being "
+                  + "served yet — the widget host map could not be read. It will appear shortly; see app.log."
+                : $"Installed '{installed.Manifest.Name}' v{installed.Manifest.Version}.\n\nOpen Settings to add it to a page.";
+            MessageBox.Show(message, "Waveshare Widgets", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {

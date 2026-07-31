@@ -68,14 +68,13 @@ public sealed class SettingsWindow : Form
             core.Settings.IsStatusBarEnabled = false;
             core.Settings.IsZoomControlEnabled = false;
             core.WebMessageReceived += OnWebMessageReceived;
-            core.SetVirtualHostNameToFolderMapping(ShellHost, AppPaths.ShellDir, CoreWebView2HostResourceAccessKind.Allow);
+            _hosts.MapFixed(core, ShellHost, AppPaths.ShellDir);
             // So the editor can preview chosen background images/videos.
-            core.SetVirtualHostNameToFolderMapping(BackgroundHost, AppPaths.BackgroundsDir, CoreWebView2HostResourceAccessKind.Allow);
+            _hosts.MapFixed(core, BackgroundHost, AppPaths.BackgroundsDir);
             // The live replica embeds the real shell with real widget iframes, so their
             // origins (and the media library) must resolve here too.
-            core.SetVirtualHostNameToFolderMapping("media.wsw", AppPaths.MediaDir, CoreWebView2HostResourceAccessKind.Allow);
-            foreach (var w in _library.Widgets)
-                core.SetVirtualHostNameToFolderMapping(w.VirtualHost, w.Folder, CoreWebView2HostResourceAccessKind.Allow);
+            _hosts.MapFixed(core, "media.wsw", AppPaths.MediaDir);
+            _hosts.Sync(core, _library.Widgets);
             // The replica's widget iframes rely on the injected shim, same as the panel.
             var shim = File.ReadAllText(Path.Combine(AppPaths.ShellDir, "widget-api.js")) + "\n" +
                        File.ReadAllText(Path.Combine(AppPaths.ShellDir, "icue-compat.js"));
@@ -471,6 +470,11 @@ public sealed class SettingsWindow : Form
     ///
     /// Deliberately NOT a full settings-init: that would re-seed the layout from disk and
     /// throw away unsaved edits. Only the catalog and the banner move.</summary>
+    /// <summary>The origins this window serves. Shared implementation with the dashboard,
+    /// because the two had drifted: only one of them stopped serving what the library no
+    /// longer lists.</summary>
+    private readonly VirtualHostMap _hosts = new();
+
     private void OnLibraryChanged()
     {
         if (IsDisposed || !IsHandleCreated) return;
@@ -483,10 +487,15 @@ public sealed class SettingsWindow : Form
                 // A widget added or repaired since the window opened has a virtual host
                 // this WebView has never been told about, so its preview iframe would not
                 // resolve until Settings was reopened. InitializeAsync maps only what
-                // existed at open; remap the WHOLE library, as the install path does.
-                foreach (var w in _library.Widgets)
-                    _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
-                        w.VirtualHost, w.Folder, CoreWebView2HostResourceAccessKind.Allow);
+                // existed at open, so the whole library is synced here.
+                //
+                // Sync, not a map-everything loop: a widget the library has REFUSED since
+                // this window opened — a replaced stock folder, a manifest that started
+                // declaring a plaintext credential — has to stop being served, and adding
+                // mappings can only ever add. It stayed reachable at its old origin, where
+                // any other widget could iframe it and run it inside the origin whose
+                // stored data the refusal was protecting.
+                _hosts.Sync(_webView.CoreWebView2, _library.Widgets);
 
                 // MERGE, never replace: the editor is still holding a layout masked with
                 // the previous manifests, and dropping one would make Seal skip its
@@ -624,11 +633,16 @@ public sealed class SettingsWindow : Form
             // not just the new arrival — the install's rescan can also pick up
             // widgets dropped into the folder since the window opened.
             if (_webView.CoreWebView2 is { } core)
+                _hosts.Sync(core, _library.Widgets);
+            Post(new JsonObject
             {
-                foreach (var w in _library.Widgets)
-                    core.SetVirtualHostNameToFolderMapping(w.VirtualHost, w.Folder, CoreWebView2HostResourceAccessKind.Allow);
-            }
-            Post(new JsonObject { ["type"] = "widget-installed", ["name"] = installed.Manifest.Name });
+                ["type"] = "widget-installed",
+                ["name"] = installed.Manifest.Name,
+                // On disk but not yet served: the host map could not be read and a retry is
+                // already scheduled. The editor says so rather than showing a widget that
+                // is not in the catalog it just received.
+                ["pending"] = installed.Widget is null,
+            });
             PostInit(); // refresh widget list and sensor snapshot in the editor
         }
         catch (Exception ex)
