@@ -18,6 +18,8 @@
 //   R23 · the same refusal arriving from the HOST proxy tier reads the same way, by either
 //         way into the ladder, and carries the same error TYPE — while an ordinary host
 //         failure keeps the type, and the state, that means "unreachable"
+//   R24/R25 · the wrapper WW.fetch returns IS a Response — its body takes a BYOB reader and
+//         it survives the brand check cache.put performs. Neither is expressible in Node.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -418,6 +420,50 @@ const TOKEN = 'Bearer super-secret-probe-token';
   check('R23d ...while an ordinary host failure stays a TypeError',
     kinds.ordinary === 'TypeError', kinds.ordinary);
   await page.evaluate(() => { window.__probeHostError = 'host offline in probe'; });
+
+  // ---- R24/R25 · the wrapper WW.fetch returns has to BE a Response -------------------
+  // Both of these live here rather than in bodycap-run.js because Node cannot express
+  // either one: its Response re-wraps a body stream (so BYOB never reaches ours) and its
+  // own getters accept a forwarding Proxy quite happily (so the brand check passes for the
+  // bug). Chromium is the platform that ships, and it disagrees on both.
+  respond = () => ({ status: 200, contentType: 'application/octet-stream', body: 'y'.repeat(4096) });
+  const wrapper = await page.evaluate(async () => {
+    const out = {};
+    const race = (p, label) => Promise.race([
+      p.then((v) => String(v), (e) => label + ' threw ' + e.constructor.name),
+      new Promise((r) => setTimeout(() => r('HUNG'), 8000)),
+    ]);
+    // A native Response.body is a readable BYTE stream, so a widget may read into a buffer
+    // of its own. An ordinary ReadableStream refuses that reader outright, and a byte stream
+    // that answers the request with enqueue() never settles the read at all — the second is
+    // worse, and is what the obvious fix does.
+    out.byob = await race((async () => {
+      const r = await WW.fetch('https://api.test/byob', { proxy: 'never' });
+      const reader = r.body.getReader({ mode: 'byob' });
+      let n = 0;
+      for (;;) {
+        const { done, value } = await reader.read(new Uint8Array(1024));
+        if (done) break;
+        n += value.byteLength;
+      }
+      return n;
+    })(), 'byob');
+    // ...and the brand check. Every other platform API unwraps its arguments to the real
+    // object, which no amount of faithful property forwarding can supply: cache.put rejects
+    // a Proxy outright, for a value WIDGET-SPEC promises is a Response.
+    out.cachePut = await race((async () => {
+      const cache = await caches.open('ww-probe');
+      await cache.put(new Request('https://api.test/cached'),
+        await WW.fetch('https://api.test/tocache', { proxy: 'never' }));
+      const back = await cache.match('https://api.test/cached');
+      return (await back.arrayBuffer()).byteLength;
+    })(), 'cachePut');
+    return out;
+  });
+  check('R24 the wrapped body accepts a BYOB reader, as a native one does',
+    wrapper.byob === '4096', wrapper.byob);
+  check('R25 the wrapper passes the brand check other platform APIs perform on a Response',
+    wrapper.cachePut === '4096', wrapper.cachePut);
 
   // ---- R13 · a Critical threshold works on its own ---------------------------------
   // The manifest offers Warn and Critical independently and marks neither required, so

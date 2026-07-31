@@ -17,6 +17,13 @@
 //        response, its per-call lowering, and that it forwards the real Response faithfully
 //   C10-C12 · the ways past that wrapper — reading .body directly, formData(), and a clone,
 //        the last of which deadlocked on the tee rather than refusing
+//   C13 · the identity a rebuilt Response would otherwise lose (url, redirected, type)
+//
+// Two properties of the wrapper are NOT checked here, deliberately: that it passes the Web
+// IDL brand check other platform APIs perform, and that its body accepts a BYOB reader.
+// Node disagrees with Chromium on both — its Response re-wraps the body stream, and its own
+// getters accept a forwarding Proxy — so probes here would pass for the bugs. They live in
+// restvalue-run.js (R24, R25), which runs a real browser.
 //
 // Runs on plain Node — no Playwright — so it runs in CI beside the C# probes. Node's fetch
 // gives real Response streams, a real reader, and a real cancel that tears the connection
@@ -318,51 +325,20 @@ function server() {
   ]);
   check('C12 refusing a CLONE settles instead of deadlocking on the tee', verdict === 'refused', verdict);
 
-  // C13 · it has to BE a Response, not merely behave like one. Every other platform API
-  // brand-checks its arguments against the internal slots, which no amount of faithful
-  // forwarding can supply — a Proxy passes every probe above and is still rejected the
-  // moment a widget hands it to cache.put(). Checked here through the constructor the
-  // browser harness cannot reach; Chromium's Cache API needs a secure context and a real
-  // origin, so C13b below asserts the property that makes the brand check pass.
-  const real = await capped(`http://127.0.0.1:${PORT}/wreal?bytes=64&declare=1`);
-  check('C13 the wrapper IS a Response, so other platform APIs accept it',
-    real instanceof Response && Object.getPrototypeOf(real) === Response.prototype,
-    `${real instanceof Response} ${Object.getPrototypeOf(real) === Response.prototype}`);
-  // ...and the identity a rebuilt Response loses is put back. A constructed Response reports
-  // url '' and type 'default'; a widget reading res.url after a redirect would get nothing.
+  // C13 · a rebuilt Response loses its identity: the constructor reports url '' and type
+  // 'default' where the original had the final URL (after any redirect) and its real type.
+  // Widgets read all three. That it IS a Response — the property a Proxy could never have,
+  // and the reason for the rebuild — is asserted in restvalue-run.js instead: the brand
+  // check that rejects a Proxy lives in other platform APIs, and Node has none of them (its
+  // own Response getters accept a forwarding Proxy quite happily, so a probe here would
+  // pass for the bug).
   const src = await fetch(`http://127.0.0.1:${PORT}/wident?bytes=64&declare=1`);
   const ident = shim.cappedResponse(src, MAX);
-  check('C13b ...and it still reports the original url, redirected and type',
-    ident.url === src.url && ident.redirected === src.redirected && ident.type === src.type,
+  check('C13 the wrapper still reports the original url, redirected and type',
+    ident.url === src.url && ident.url !== '' && ident.redirected === src.redirected
+      && ident.type === src.type,
     JSON.stringify({ url: ident.url, redirected: ident.redirected, type: ident.type }));
   await ident.arrayBuffer();
-
-  // C14 · a native Response.body is a readable BYTE stream. A widget may read into its own
-  // buffer with getReader({ mode: 'byob' }), and an ordinary ReadableStream refuses that
-  // reader outright — so a wrapper built from one breaks a valid consumer on responses of
-  // any size, ceiling or no ceiling.
-  //
-  // Raced against a timeout, because the failure mode here is a HANG, not a throw: a byte
-  // stream that answers a BYOB request with enqueue() instead of writing into the caller's
-  // view leaves the read pending forever. Without the race that regression takes the whole
-  // suite down with no output at all, which reads as infrastructure trouble rather than as
-  // this check failing — it cost most of an hour once already.
-  const byob = await capped(`http://127.0.0.1:${PORT}/wbyob?bytes=2048&declare=1`);
-  const byobResult = await Promise.race([
-    (async () => {
-      let n = 0;
-      const reader = byob.body.getReader({ mode: 'byob' });
-      for (;;) {
-        const { done, value } = await reader.read(new Uint8Array(512));
-        if (done) break;
-        n += value.byteLength;
-      }
-      return String(n);
-    })().catch((e) => 'threw: ' + e),
-    new Promise((r) => setTimeout(() => r('HUNG'), 10000)),
-  ]);
-  check('C14 the wrapped body accepts a BYOB reader, as a native one does',
-    byobResult === '2048', byobResult);
 
   // C5 · a body-forbidden response is an ANSWER, not a failure. The streaming rewrite has
   // to absorb r.body === null the way arrayBuffer() did; if it throws instead, BrowserFetcher
