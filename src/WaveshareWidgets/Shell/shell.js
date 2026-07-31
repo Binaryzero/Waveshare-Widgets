@@ -240,20 +240,6 @@
       // Always answer, even for an already-initialized slot: the iframe may have
       // crashed and reloaded (common under cold-start resource pressure), and the
       // fresh document would otherwise run on its built-in defaults forever.
-      // A fresh document announcing itself. The capture dedup remembers which frames a
-      // consumer has been sent, and this one has been sent none — inheriting the
-      // outgoing document's identity would have it told "unchanged" about pixels it
-      // never received, leaving the mirror blank until the deck happened to change.
-      //
-      // Counted HERE rather than where src is reassigned, because src is reassigned in
-      // more than one place: the settings reload, the watchdog retry, and anything a
-      // widget does to itself. Every one of them ends in a ww-ready, so this is the one
-      // point that cannot be forgotten — a probe driving the reload directly caught the
-      // settings-only version of this (#127 review).
-      //
-      // A widget that re-announces without reloading costs itself one redundant frame,
-      // which is the failure direction this whole mechanism prefers.
-      sender.docGen = (sender.docGen || 0) + 1;
       sender.initialized = true;
       const stale = sender.el.querySelector('.error');
       if (stale) stale.remove();
@@ -266,10 +252,17 @@
       const id = armSdRoute(msg, ev);
       postToHost({ type: 'sd-profile', id, profileName: msg.profileName || '', hideWindow: msg.hideWindow !== false, live: msg.live === true });
     } else if (msg.type === 'ww-sd-capture') {
-      // The slot tag identifies the CONSUMER across its polls, which is what the host's
-      // frame dedup is really keyed on — a fresh request id every time would make every
-      // poll look like a new viewer and defeat it entirely.
-      postToHost({ type: 'sd-capture', id: armSdRoute(msg, ev), client: sdClientOf(sender) });
+      // `have` is the hash of the last frame the ASKING DOCUMENT actually received, and
+      // it is the whole dedup. Passed through rather than tracked here: a widget can only
+      // mislead itself with it (claim a frame it lacks and get told "unchanged"; claim
+      // none and get a redundant image), whereas anything the shell or the host remembers
+      // on its behalf can outlive the document it describes — which is what kept freezing
+      // mirrors on a blank frame. Bounded because it crosses to native.
+      postToHost({
+        type: 'sd-capture',
+        id: armSdRoute(msg, ev),
+        have: String(msg.have || '').slice(0, 128),
+      });
     } else if (msg.type === 'ww-sd-click') {
       postToHost({ type: 'sd-click', row: msg.row | 0, col: msg.col | 0, rows: msg.rows | 0, cols: msg.cols | 0 });
     } else if (msg.type === 'ww-fetch' && msg.id) {
@@ -362,13 +355,6 @@
     sdRoutes.set(id, { win: ev.source, origin: ev.origin });
     setTimeout(() => sdRoutes.delete(id), 15000);
     return id;
-  }
-
-  /// Identifies the consumer of capture frames: the slot, plus which DOCUMENT of it.
-  /// Minted here rather than taken from the widget — a widget that could name its own
-  /// cache key could claim another's and starve it of frames it had not been sent.
-  function sdClientOf(slot) {
-    return (slot.tag || '') + '#' + (slot.docGen || 0);
   }
 
   /// One answer, one requester. `build` shapes the payload because the profile and the

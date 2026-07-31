@@ -44,6 +44,16 @@
     setTimeout(() => sdRequests.delete(id), 15000);
     return id;
   }
+  // Hash of the last capture frame this DOCUMENT actually received. It is sent with every
+  // capture request, and it is the entire dedup: the host answers "unchanged" only when
+  // the pixels it just captured hash to what the asker says it already has.
+  //
+  // The host used to remember this per consumer, and every way that memory could outlive
+  // what it described was a widget frozen on a blank mirror — a reloaded slot, a reloaded
+  // shell, a reply that expired before it arrived, a consumer evicted from a bounded
+  // table. None of those are reachable from here: this variable dies with the document
+  // whose pixels it describes, and it only advances below, where the frame is delivered.
+  let lastCaptureHash = '';
   let fetchSeq = 0;
   // The shell routes results by id alone, across EVERY widget frame — a per-frame
   // counter plus a ms-floored clock can collide between frames loaded in the same
@@ -132,7 +142,13 @@
       emit('streamdeck', msg.profile || { available: false });
     } else if (msg.type === 'ww-sd-capture-result') {
       if (!sdRequests.delete(msg.id)) return;
-      emit('sdcapture', msg.data || { available: false });
+      const data = msg.data || { available: false };
+      // Advance the baseline HERE — past the id check, on the way to the listeners — so
+      // it can only ever describe pixels this document was actually handed. A reply that
+      // never arrives, or arrives for a request this document did not make, leaves it
+      // exactly where it was.
+      if (data.image && typeof data.hash === 'string') lastCaptureHash = data.hash;
+      emit('sdcapture', data);
     } else if (msg.type === 'ww-ping-result') {
       const pending = pendingPings.get(msg.id);
       if (pending) {
@@ -508,9 +524,11 @@
     /** Capture-only fast path for live mirroring: cheaper than requestStreamDeck (no
      * profile re-parse; the host skips the frame entirely when pixels are unchanged). */
     requestStreamDeckCapture() {
-      parent.postMessage({ type: 'ww-sd-capture', id: trackSdRequest(reqId('sd')) }, shellTarget());
+      parent.postMessage(
+        { type: 'ww-sd-capture', id: trackSdRequest(reqId('sd')), have: lastCaptureHash },
+        shellTarget());
     },
-    /** cb(data) — {image,w,h} on a new frame, {unchanged:true}, or {available:false}. */
+    /** cb(data) — {image,w,h,hash} on a new frame, {unchanged:true}, or {available:false}. */
     onStreamDeckCapture(cb) { listeners.sdcapture.push(cb); },
     /** Trigger a Stream Deck button by its grid cell. */
     streamDeckClick(row, col, rows, cols) {

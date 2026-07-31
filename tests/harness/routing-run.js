@@ -25,8 +25,11 @@
 //   R8  · dropping the subscription stops delivery
 //   R11 · two Stream Deck askers each get ONLY their own answer (profile and capture)
 //   R11d· a reloaded slot ignores the previous document's answer, not its own
-//   R11e· ...and asks for captures as a different consumer, so it is not told
-//         "unchanged" about pixels it never received
+//   R11e· a document quotes the hash of the frame it RECEIVED on its next capture ask
+//   R11e2 ...a request in flight across a reload is neither rendered nor counted by the
+//         document that replaced it
+//   R11e3 ...and a replacement document quotes nothing, so it cannot be told "unchanged"
+//         about pixels it never received
 //   R9  · a slot subscribing while the host already polls is handed the cached payload
 //   R10 · ...but one subscribing after polling STOPPED is not handed a stale one
 //   R10c· ...nor does a re-init carry it (the cleared cache)
@@ -382,16 +385,40 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   check('R11d2 ...while its own request still is',
     JSON.stringify(freshNames) === '["FRESH-PROFILE"]', JSON.stringify(freshNames));
 
-  // R11e · the capture dedup is keyed on a consumer identity the SHELL mints, and that
-  // identity has to change when the document does. The C# probe covers the dedup's own
-  // contract but cannot see what the shell puts in `client`, so without this the shell
-  // half was inspection only — and the failure it guards against is a mirror that stays
-  // blank after a settings change.
+  // R11e · the capture dedup baseline belongs to the DOCUMENT that received the frame.
+  // The host answers "unchanged" purely from what the asker quotes back, so everything
+  // here is about that quote being an honest record of pixels actually delivered — the
+  // failure it guards against is a mirror that stays blank while the deck sits still.
+  //
+  // First: a document that HAS been handed a frame quotes its hash on the next ask.
   hostMessages.length = 0;
   await reloaded.evaluate(() => window.__askCapture());
   await page.waitForTimeout(250);
-  const clientBefore = (hostMessages.find((m) => m.type === 'sd-capture') || {}).client;
-  check('R11e setup: the capture request carries a consumer id', !!clientBefore, String(clientBefore));
+  const capAskId = (hostMessages.find((m) => m.type === 'sd-capture') || {}).id;
+  check('R11e setup: the first ask quotes nothing',
+    (hostMessages.find((m) => m.type === 'sd-capture') || {}).have === '',
+    JSON.stringify((hostMessages.find((m) => m.type === 'sd-capture') || {}).have));
+  await page.evaluate((id) => window.__push(JSON.stringify({
+    type: 'sd-capture-result', data: { id, image: 'data:image/png;base64,AAAA', w: 4, h: 4, hash: 'HASH-1' } })), capAskId);
+  await page.waitForTimeout(300);
+  hostMessages.length = 0;
+  await reloaded.evaluate(() => window.__askCapture());
+  await page.waitForTimeout(250);
+  const haveAfterFrame = (hostMessages.find((m) => m.type === 'sd-capture') || {}).have;
+  check('R11e a document that received a frame quotes its hash back',
+    haveAfterFrame === 'HASH-1', String(haveAfterFrame));
+
+  // Second and third together, because the hard case is the two at once: a request left
+  // IN FLIGHT across a reload. The shell's route survives (same WindowProxy, same origin,
+  // so the reply is deliverable), and the replacement document must neither render those
+  // pixels nor count them — it never received them. Note that an unrouted reply is the
+  // wrong test here: the shell drops it before the shim is reached, so it would pass with
+  // the shim's id check removed. Only an answer the shell WILL deliver reaches that gate.
+  hostMessages.length = 0;
+  await reloaded.evaluate(() => { window.__caps.length = 0; window.__askCapture(); });
+  await page.waitForTimeout(250);
+  const inFlightId = (hostMessages.find((m) => m.type === 'sd-capture') || {}).id;
+  check('R11e2 setup: a capture request is in flight', !!inFlightId, String(inFlightId));
 
   await reloaded.evaluate(() => { window.__generation = 'BEFORE-2'; });
   await page.evaluate(() => {
@@ -403,17 +430,23 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   });
   await page.waitForTimeout(1800);
   const again = page.frames().find((f) => /sub\.widgets\.wsw/.test(f.url()));
-  check('R11e setup: it really is another new document',
+  check('R11e2 setup: it really is another new document',
     !!again && await again.evaluate(() => window.__generation === undefined));
+
+  // The previous document's answer arrives now, into the document that replaced it.
+  await page.evaluate((id) => window.__push(JSON.stringify({
+    type: 'sd-capture-result', data: { id, image: 'data:image/png;base64,BBBB', w: 4, h: 4, hash: 'HASH-STALE' } })), inFlightId);
+  await page.waitForTimeout(300);
+  const staleCaps = await again.evaluate(() => JSON.stringify(window.__caps));
+  check('R11e2 the replacement document ignores the previous document\'s frame',
+    staleCaps === '[]', staleCaps);
+
   hostMessages.length = 0;
   await again.evaluate(() => window.__askCapture());
   await page.waitForTimeout(250);
-  const clientAfter = (hostMessages.find((m) => m.type === 'sd-capture') || {}).client;
-  check('R11e a reloaded document asks as a DIFFERENT consumer',
-    !!clientAfter && clientAfter !== clientBefore, `${clientBefore} -> ${clientAfter}`);
-  check('R11e2 ...while still naming the same slot',
-    String(clientAfter).split('#')[0] === String(clientBefore).split('#')[0],
-    `${clientBefore} -> ${clientAfter}`);
+  const haveAfterReload = (hostMessages.find((m) => m.type === 'sd-capture') || {}).have;
+  check('R11e3 ...and quotes nothing, so it cannot be told "unchanged" about pixels it never got',
+    haveAfterReload === '', `HASH-1 -> ${JSON.stringify(haveAfterReload)}`);
 
   // R10c · what the CLEARED CACHE covers and the gate does not. `sub` is subscribed with
   // an empty cache; a re-init would carry whatever is cached to a watching slot, so if

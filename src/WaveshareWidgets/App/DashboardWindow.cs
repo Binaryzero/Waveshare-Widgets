@@ -352,7 +352,7 @@ public sealed class DashboardWindow : Form
                     _streamDeck ??= new StreamDeckBridge();
                     HandleSdCapture(
                         message["id"]?.GetValue<string>() ?? "",
-                        message["client"]?.GetValue<string>() ?? "");
+                        message["have"]?.GetValue<string>() ?? "");
                     break;
 
                 case "sd-click":
@@ -813,26 +813,35 @@ public sealed class DashboardWindow : Form
 
     private long _lastCaptureTicks;
     private (string DataUri, int W, int H, string Hash)? _lastCapture;
-    private readonly CaptureDedup _captureSeen = new();
 
     /// <summary>
-    /// Capture-only fast path for the live Stream Deck mirror: no profile re-parse, and
-    /// pixels only for a consumer that has not already been sent this frame.
+    /// Capture-only fast path for the live Stream Deck mirror: no profile re-parse, and no
+    /// pixels for an asker that says it already has this frame.
     /// </summary>
     /// <remarks>
     /// Two separate concerns, which used to be tangled into one cached RESULT:
     ///
     ///   the throttle is a COST control — several widgets polling at once share one
     ///   PrintWindow per interval, so what is cached is the CAPTURE;
-    ///   the dedup is a PER-CONSUMER question — "have you seen this frame?" — and is
-    ///   answered by CaptureDedup.
+    ///   the dedup is a per-consumer question — "have you seen this frame?" — and the
+    ///   consumer answers it, in <paramref name="have"/>.
     ///
     /// Caching the result conflated them, and that only worked while the answer was
     /// broadcast to every live widget at once. Routing replies to the requester made the
-    /// second widget in a polling pair receive "unchanged" about pixels it was never
-    /// sent, freezing it for as long as the phases held.
+    /// second widget in a polling pair receive "unchanged" about pixels it was never sent.
+    ///
+    /// The obvious repair — remember per consumer here — was tried and is gone. Every
+    /// version of it had the same shape of bug: this object outlives the documents it
+    /// describes, so a slot reload, a shell reload, a reply that expired before it landed,
+    /// or an eviction from a bounded table each left an entry claiming a widget had pixels
+    /// it had never received, and the mirror stayed blank until the deck changed. Asking
+    /// the only party that KNOWS has no such failure: the answer dies with the document.
+    ///
+    /// A widget can lie in <paramref name="have"/>, and it only reaches itself — a wrong
+    /// hash costs it a redundant frame or a stale one on its own screen. It cannot name
+    /// another widget's baseline because there is no longer a table to name into.
     /// </remarks>
-    private void HandleSdCapture(string requestId, string client)
+    private void HandleSdCapture(string requestId, string have)
     {
         var now = Environment.TickCount64;
         if (now - _lastCaptureTicks >= 100)
@@ -844,7 +853,7 @@ public sealed class DashboardWindow : Form
         JsonObject result;
         if (_lastCapture is not { } capture)
             result = new JsonObject { ["available"] = false };
-        else if (!_captureSeen.NeedsFrame(client, capture.Hash))
+        else if (!string.IsNullOrEmpty(have) && string.Equals(have, capture.Hash, StringComparison.Ordinal))
             result = new JsonObject { ["unchanged"] = true };
         else
             result = new JsonObject
@@ -852,6 +861,9 @@ public sealed class DashboardWindow : Form
                 ["image"] = capture.DataUri,
                 ["w"] = capture.W,
                 ["h"] = capture.H,
+                // The receipt the next request quotes back. Sent WITH the pixels, so a
+                // reply that never arrives advances nothing.
+                ["hash"] = capture.Hash,
             };
 
         result["id"] = requestId;
