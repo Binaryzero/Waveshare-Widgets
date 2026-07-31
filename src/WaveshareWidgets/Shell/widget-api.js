@@ -26,6 +26,13 @@
   const pendingMediaLists = new Map();
   const pendingAudioGets = new Map();
   const pendingAudioSets = new Map();
+  // Stream Deck replies are emitted to listeners rather than resolving a promise, so
+  // unlike fetch/ping/media/audio there is no per-document pending map to make a stale
+  // answer harmless. A reloaded slot keeps its WindowProxy, so a request the PREVIOUS
+  // document made can still be answered into this one and overwrite the profile it just
+  // selected. Tracking the ids we issued restores the symmetry: this set is empty in a
+  // fresh document, so nothing the old one asked for is accepted here.
+  const sdRequests = new Set();
   let fetchSeq = 0;
   // The shell routes results by id alone, across EVERY widget frame — a per-frame
   // counter plus a ms-floored clock can collide between frames loaded in the same
@@ -110,8 +117,10 @@
       state.media = msg.media || null;
       emit('media', state.media);
     } else if (msg.type === 'ww-sd-profile') {
+      if (!sdRequests.delete(msg.id)) return;
       emit('streamdeck', msg.profile || { available: false });
     } else if (msg.type === 'ww-sd-capture-result') {
+      if (!sdRequests.delete(msg.id)) return;
       emit('sdcapture', msg.data || { available: false });
     } else if (msg.type === 'ww-ping-result') {
       const pending = pendingPings.get(msg.id);
@@ -480,13 +489,19 @@
       opts = opts || {};
       // The id is what lets the shell send the answer to THIS frame rather than to
       // everyone who ever asked (#127). Callback-shaped API is unchanged.
-      parent.postMessage({ type: 'ww-sd-profile', id: reqId('sd'), profileName: opts.profileName || '', hideWindow: opts.hideWindow !== false, live: opts.live === true }, shellTarget());
+      const id = reqId('sd');
+      sdRequests.add(id);
+      parent.postMessage({ type: 'ww-sd-profile', id, profileName: opts.profileName || '', hideWindow: opts.hideWindow !== false, live: opts.live === true }, shellTarget());
     },
     /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}], capture?}. */
     onStreamDeck(cb) { listeners.streamdeck.push(cb); },
     /** Capture-only fast path for live mirroring: cheaper than requestStreamDeck (no
      * profile re-parse; the host skips the frame entirely when pixels are unchanged). */
-    requestStreamDeckCapture() { parent.postMessage({ type: 'ww-sd-capture', id: reqId('sd') }, shellTarget()); },
+    requestStreamDeckCapture() {
+      const id = reqId('sd');
+      sdRequests.add(id);
+      parent.postMessage({ type: 'ww-sd-capture', id }, shellTarget());
+    },
     /** cb(data) — {image,w,h} on a new frame, {unchanged:true}, or {available:false}. */
     onStreamDeckCapture(cb) { listeners.sdcapture.push(cb); },
     /** Trigger a Stream Deck button by its grid cell. */

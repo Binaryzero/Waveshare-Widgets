@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CI guard for the live Stream Deck frame dedup (issue #127).
+
+       The dedup decides whether a polling widget is sent a base64 frame or told
+       "unchanged". It was correct only while the answer was broadcast; once replies were
+       routed to the requester, a global hash silently starved every widget but the one
+       that happened to poll first after a change. That failure is invisible in a
+       screenshot — the tile just stops updating — and cannot be exercised without
+       WebView2, a Stream Deck and two widgets polling out of phase. So the decision is a
+       pure predicate and this probe covers it. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>CaptureDedupProbe</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/WaveshareWidgets/CaptureDedup.cs" />
+  </ItemGroup>
+</Project>

@@ -252,7 +252,10 @@
       const id = armSdRoute(msg, ev);
       postToHost({ type: 'sd-profile', id, profileName: msg.profileName || '', hideWindow: msg.hideWindow !== false, live: msg.live === true });
     } else if (msg.type === 'ww-sd-capture') {
-      postToHost({ type: 'sd-capture', id: armSdRoute(msg, ev) });
+      // The slot tag identifies the CONSUMER across its polls, which is what the host's
+      // frame dedup is really keyed on — a fresh request id every time would make every
+      // poll look like a new viewer and defeat it entirely.
+      postToHost({ type: 'sd-capture', id: armSdRoute(msg, ev), client: sender.tag || '' });
     } else if (msg.type === 'ww-sd-click') {
       postToHost({ type: 'sd-click', row: msg.row | 0, col: msg.col | 0, rows: msg.rows | 0, cols: msg.cols | 0 });
     } else if (msg.type === 'ww-fetch' && msg.id) {
@@ -354,7 +357,13 @@
     const route = sdRoutes.get(id);
     if (!route) return;
     sdRoutes.delete(id);
-    try { route.win.postMessage(build(msg.data), route.origin); } catch (e) { /* frame gone */ }
+    // The id rides on the envelope as well as inside the payload, so the receiving
+    // document can check it against the requests IT issued — a reload keeps the same
+    // WindowProxy, so a route outliving its document would otherwise deliver the old
+    // document's answer to the new one.
+    const out = build(msg.data);
+    out.id = id;
+    try { route.win.postMessage(out, route.origin); } catch (e) { /* frame gone */ }
   }
 
   /// Delivers to the slots that asked for this kind of data, by slot-record flag. The

@@ -24,6 +24,7 @@
 //   R7  · sd-capture reaches the asker only
 //   R8  · dropping the subscription stops delivery
 //   R11 · two Stream Deck askers each get ONLY their own answer (profile and capture)
+//   R11d· a reloaded slot ignores the previous document's answer, not its own
 //   R9  · a slot subscribing while the host already polls is handed the cached payload
 //   R10 · ...but one subscribing after polling STOPPED is not handed a stale one
 //   R10c· ...nor does a re-init carry it (the cleared cache)
@@ -328,6 +329,56 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   await page.waitForTimeout(300);
   const ghost = (await sub.evaluate(() => window.__deckNames())).concat(await bys.evaluate(() => window.__deckNames()));
   check('R11c an unrequested Stream Deck reply reaches nobody', ghost.length === 0, JSON.stringify(ghost));
+
+  // R11d · a slot RELOAD (settings change) keeps the same WindowProxy at the same
+  // origin, so a route armed by the previous document stays deliverable for its whole
+  // timeout. Stream Deck replies go straight to listeners rather than resolving a
+  // promise, so nothing else would stop the old document's answer landing in the new one
+  // and overwriting the profile it just selected.
+  hostMessages.length = 0;
+  await sub.evaluate(() => { window.__decks.length = 0; window.__askDeck(); });
+  await page.waitForTimeout(200);
+  const staleId = (hostMessages.find((m) => m.type === 'sd-profile') || {}).id;
+  check('R11d setup: a request is in flight', !!staleId, String(staleId));
+
+  // Stamp the CURRENT document so "did it reload" is answered by the document being
+  // gone, not by a flag any document would set. A first attempt appended ?r= after the
+  // fragment, which changes only the hash and reloads nothing — and `inited` was true
+  // either way, so the setup check passed while the probe measured the old document.
+  await sub.evaluate(() => { window.__generation = 'OLD'; });
+  // Reload the slot the way a settings change does: query BEFORE the fragment, which is
+  // what makes it a navigation rather than a hash change (mirrors reloadSlot in shell.js).
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll('iframe')) {
+      if (!/sub\./.test(el.src)) continue;
+      const [base, hash] = el.src.split('#');
+      el.src = base.split('?')[0] + '?r=' + Date.now() + (hash ? '#' + hash : '');
+    }
+  });
+  await page.waitForTimeout(1800);
+  const reloaded = page.frames().find((f) => /sub\.widgets\.wsw/.test(f.url()));
+  const isNewDocument = !!reloaded && await reloaded.evaluate(() => window.__generation === undefined);
+  check('R11d setup: the slot is a NEW document, not the same one',
+    isNewDocument && await reloaded.evaluate(() => document.body.dataset.inited === '1'),
+    `newDocument=${isNewDocument}`);
+  await page.evaluate((id) => window.__push(JSON.stringify({
+    type: 'sd-profile-result', data: { id, available: true, name: 'STALE-PROFILE', rows: 3, cols: 5, buttons: [] } })), staleId);
+  await page.waitForTimeout(400);
+  const afterReload = await reloaded.evaluate(() => window.__deckNames());
+  check('R11d the replacement document ignores the previous document\'s answer',
+    afterReload.length === 0, JSON.stringify(afterReload));
+
+  // ...and it is not simply deaf: its own request is still answered.
+  hostMessages.length = 0;
+  await reloaded.evaluate(() => window.__askDeck());
+  await page.waitForTimeout(200);
+  const freshId = (hostMessages.find((m) => m.type === 'sd-profile') || {}).id;
+  await page.evaluate((id) => window.__push(JSON.stringify({
+    type: 'sd-profile-result', data: { id, available: true, name: 'FRESH-PROFILE', rows: 3, cols: 5, buttons: [] } })), freshId);
+  await page.waitForTimeout(400);
+  const freshNames = await reloaded.evaluate(() => window.__deckNames());
+  check('R11d2 ...while its own request still is',
+    JSON.stringify(freshNames) === '["FRESH-PROFILE"]', JSON.stringify(freshNames));
 
   // R10c · what the CLEARED CACHE covers and the gate does not. `sub` is subscribed with
   // an empty cache; a re-init would carry whatever is cached to a watching slot, so if

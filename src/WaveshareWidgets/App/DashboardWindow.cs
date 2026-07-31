@@ -350,7 +350,9 @@ public sealed class DashboardWindow : Form
 
                 case "sd-capture":
                     _streamDeck ??= new StreamDeckBridge();
-                    HandleSdCapture(message["id"]?.GetValue<string>() ?? "");
+                    HandleSdCapture(
+                        message["id"]?.GetValue<string>() ?? "",
+                        message["client"]?.GetValue<string>() ?? "");
                     break;
 
                 case "sd-click":
@@ -809,53 +811,49 @@ public sealed class DashboardWindow : Form
         };
     }
 
-    private string? _lastCaptureHash;
     private long _lastCaptureTicks;
-    private JsonObject? _lastCaptureResult;
+    private (string DataUri, int W, int H, string Hash)? _lastCapture;
+    private readonly CaptureDedup _captureSeen = new();
 
     /// <summary>
-    /// Capture-only fast path for the live Stream Deck mirror: no profile re-parse, JPEG
-    /// frame only when the pixels actually changed ({unchanged:true} otherwise), and a
-    /// short throttle so several polling widgets share one PrintWindow per interval.
+    /// Capture-only fast path for the live Stream Deck mirror: no profile re-parse, and
+    /// pixels only for a consumer that has not already been sent this frame.
     /// </summary>
-    private void HandleSdCapture(string requestId)
+    /// <remarks>
+    /// Two separate concerns, which used to be tangled into one cached RESULT:
+    ///
+    ///   the throttle is a COST control — several widgets polling at once share one
+    ///   PrintWindow per interval, so what is cached is the CAPTURE;
+    ///   the dedup is a PER-CONSUMER question — "have you seen this frame?" — and is
+    ///   answered by CaptureDedup.
+    ///
+    /// Caching the result conflated them, and that only worked while the answer was
+    /// broadcast to every live widget at once. Routing replies to the requester made the
+    /// second widget in a polling pair receive "unchanged" about pixels it was never
+    /// sent, freezing it for as long as the phases held.
+    /// </remarks>
+    private void HandleSdCapture(string requestId, string client)
     {
         var now = Environment.TickCount64;
-        if (now - _lastCaptureTicks < 100 && _lastCaptureResult is { } recent)
+        if (now - _lastCaptureTicks >= 100)
         {
-            // The cached frame is shared between pollers, so the id is stamped on the
-            // COPY — caching it would send the previous asker's id to this one.
-            var replay = (JsonObject)recent.DeepClone();
-            replay["id"] = requestId;
-            PostToShell("sd-capture-result", replay);
-            return;
+            _lastCaptureTicks = now;
+            _lastCapture = _streamDeck!.CaptureVsdWindow();
         }
-        _lastCaptureTicks = now;
 
         JsonObject result;
-        if (_streamDeck!.CaptureVsdWindow() is { } capture)
-        {
-            if (capture.Hash == _lastCaptureHash)
-            {
-                result = new JsonObject { ["unchanged"] = true };
-            }
-            else
-            {
-                _lastCaptureHash = capture.Hash;
-                result = new JsonObject
-                {
-                    ["image"] = capture.DataUri,
-                    ["w"] = capture.W,
-                    ["h"] = capture.H,
-                };
-            }
-        }
-        else
-        {
+        if (_lastCapture is not { } capture)
             result = new JsonObject { ["available"] = false };
-        }
-        // Cached WITHOUT the id, for the same reason as the replay path above.
-        _lastCaptureResult = (JsonObject)result.DeepClone();
+        else if (!_captureSeen.NeedsFrame(client, capture.Hash))
+            result = new JsonObject { ["unchanged"] = true };
+        else
+            result = new JsonObject
+            {
+                ["image"] = capture.DataUri,
+                ["w"] = capture.W,
+                ["h"] = capture.H,
+            };
+
         result["id"] = requestId;
         PostToShell("sd-capture-result", result);
     }

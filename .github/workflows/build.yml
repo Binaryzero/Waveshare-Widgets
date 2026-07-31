@@ -44,6 +44,15 @@ jobs:
       - name: Credential rule agrees with the fixture (validator)
         run: node tools/validate-widget.js --self-test
 
+      # The live Stream Deck mirror skips re-sending pixels a consumer already has. That
+      # decision was correct only while the answer was broadcast; once replies were routed
+      # to the requester, a shared baseline told the second of two polling widgets
+      # "unchanged" about a frame it had never been sent, freezing it silently. Needs a
+      # Stream Deck, WebView2 and two widgets polling out of phase to reproduce, so the
+      # decision is a pure predicate and this covers it.
+      - name: Stream Deck frame dedup
+        run: dotnet run --project tools/CaptureDedup
+
       # The proxy forwards widget-chosen headers to loopback and LAN targets, and its
       # browser-grade defaults only fill GAPS — so a forwarded name replaces the host's
       # honest value rather than adding to it. A local service that trusts fetch metadata
