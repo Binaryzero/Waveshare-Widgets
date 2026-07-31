@@ -25,8 +25,8 @@
 //   D6 · the preview's data bridge, reached from a frame nested INSIDE a widget —
 //        the reported SSRF/media-enumeration path (#96, #108), measured here rather
 //        than inferred from the dashboard sharing shell.js
-//   D6d· ...and no reply route was armed for it either, which refusing to forward
-//        does not by itself prove
+//   D6d· ...and no reply route was armed for ANY of the four request kinds, which
+//        refusing to forward does not by itself prove — they are four separate maps
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -381,13 +381,31 @@ const readDeck = (frame) => frame.evaluate(() => {
   // fetchRoutes and only then declined the outbound post would satisfy every assertion so
   // far, and still deliver a later matching answer straight to that frame. So the answer
   // is injected by hand, the way bridgeorigin-run.js B5 does it.
-  await page.evaluate(() => window.__hostPush(JSON.stringify({
-    type: 'preview-host',
-    message: { type: 'fetch-result', data: { id: 'HOSTILE-ww-fetch', ok: true, status: 200, body: 'SHOULD-NOT-ARRIVE' } },
-  })));
-  await page.waitForTimeout(400);
+  //
+  // EVERY type, not just fetch. The four request kinds are backed by four independent
+  // route maps in shell.js — fetchRoutes, pingRoutes, mediaRoutes, audioRoutes — and a
+  // regression that armed any one of them would be invisible to an injection that only
+  // exercises another. Each refused id gets its matching answer.
+  const REFUSED = [
+    { id: 'HOSTILE-ww-fetch', result: 'fetch-result' },
+    { id: 'HOSTILE-ww-ping', result: 'ping-result' },
+    { id: 'HOSTILE-ww-media-list', result: 'media-list-result' },
+    { id: 'HOSTILE-ww-audio-get', result: 'audio-result' },
+  ];
+  await page.evaluate((refused) => {
+    for (const r of refused)
+      window.__hostPush(JSON.stringify({
+        type: 'preview-host',
+        message: { type: r.result, data: {
+          id: r.id, ok: true, status: 200, body: 'SHOULD-NOT-ARRIVE',
+          results: [{ host: '127.0.0.1', ok: true }],
+          items: [{ name: 'holiday.png', url: 'https://media.wsw/holiday.png' }],
+        } },
+      }));
+  }, REFUSED);
+  await page.waitForTimeout(500);
   const afterInject = nested ? await nested.evaluate(() => window.__replies) : ['(no frame)'];
-  check('D6d a reply for a refused request reaches nobody, so no route was armed for it',
+  check('D6d a reply for EVERY refused request reaches nobody, so no route was armed',
     JSON.stringify(afterInject) === '[]', JSON.stringify(afterInject));
 
   if (errors.length) console.log('  [pageerror]', JSON.stringify(errors.slice(0, 4)));
