@@ -342,12 +342,17 @@ public sealed class DashboardWindow : Form
                                 ["h"] = capture.H,
                             };
                     }
+                    // Echoed so the shell can hand the reply to the frame that asked,
+                    // the way fetch/ping/media/audio already do (#127).
+                    sdResult["id"] = message["id"]?.GetValue<string>() ?? "";
                     PostToShell("sd-profile-result", sdResult);
                     break;
 
                 case "sd-capture":
                     _streamDeck ??= new StreamDeckBridge();
-                    HandleSdCapture();
+                    HandleSdCapture(
+                        message["id"]?.GetValue<string>() ?? "",
+                        message["have"]?.GetValue<string>() ?? "");
                     break;
 
                 case "sd-click":
@@ -806,48 +811,62 @@ public sealed class DashboardWindow : Form
         };
     }
 
-    private string? _lastCaptureHash;
     private long _lastCaptureTicks;
-    private JsonObject? _lastCaptureResult;
+    private (string DataUri, int W, int H, string Hash)? _lastCapture;
 
     /// <summary>
-    /// Capture-only fast path for the live Stream Deck mirror: no profile re-parse, JPEG
-    /// frame only when the pixels actually changed ({unchanged:true} otherwise), and a
-    /// short throttle so several polling widgets share one PrintWindow per interval.
+    /// Capture-only fast path for the live Stream Deck mirror: no profile re-parse, and no
+    /// pixels for an asker that says it already has this frame.
     /// </summary>
-    private void HandleSdCapture()
+    /// <remarks>
+    /// Two separate concerns, which used to be tangled into one cached RESULT:
+    ///
+    ///   the throttle is a COST control — several widgets polling at once share one
+    ///   PrintWindow per interval, so what is cached is the CAPTURE;
+    ///   the dedup is a per-consumer question — "have you seen this frame?" — and the
+    ///   consumer answers it, in <paramref name="have"/>.
+    ///
+    /// Caching the result conflated them, and that only worked while the answer was
+    /// broadcast to every live widget at once. Routing replies to the requester made the
+    /// second widget in a polling pair receive "unchanged" about pixels it was never sent.
+    ///
+    /// The obvious repair — remember per consumer here — was tried and is gone. Every
+    /// version of it had the same shape of bug: this object outlives the documents it
+    /// describes, so a slot reload, a shell reload, a reply that expired before it landed,
+    /// or an eviction from a bounded table each left an entry claiming a widget had pixels
+    /// it had never received, and the mirror stayed blank until the deck changed. Asking
+    /// the only party that KNOWS has no such failure: the answer dies with the document.
+    ///
+    /// A widget can lie in <paramref name="have"/>, and it only reaches itself — a wrong
+    /// hash costs it a redundant frame or a stale one on its own screen. It cannot name
+    /// another widget's baseline because there is no longer a table to name into.
+    /// </remarks>
+    private void HandleSdCapture(string requestId, string have)
     {
         var now = Environment.TickCount64;
-        if (now - _lastCaptureTicks < 100 && _lastCaptureResult is { } recent)
+        if (now - _lastCaptureTicks >= 100)
         {
-            PostToShell("sd-capture-result", recent.DeepClone());
-            return;
+            _lastCaptureTicks = now;
+            _lastCapture = _streamDeck!.CaptureVsdWindow();
         }
-        _lastCaptureTicks = now;
 
         JsonObject result;
-        if (_streamDeck!.CaptureVsdWindow() is { } capture)
-        {
-            if (capture.Hash == _lastCaptureHash)
-            {
-                result = new JsonObject { ["unchanged"] = true };
-            }
-            else
-            {
-                _lastCaptureHash = capture.Hash;
-                result = new JsonObject
-                {
-                    ["image"] = capture.DataUri,
-                    ["w"] = capture.W,
-                    ["h"] = capture.H,
-                };
-            }
-        }
-        else
-        {
+        if (_lastCapture is not { } capture)
             result = new JsonObject { ["available"] = false };
-        }
-        _lastCaptureResult = (JsonObject)result.DeepClone();
+        else if (!string.IsNullOrEmpty(have) && string.Equals(have, capture.Hash, StringComparison.Ordinal))
+            result = new JsonObject { ["unchanged"] = true };
+        else
+            result = new JsonObject
+            {
+                ["image"] = capture.DataUri,
+                ["w"] = capture.W,
+                ["h"] = capture.H,
+                // The receipt the next request quotes back. Sent WITH the pixels, so a
+                // reply that never arrives advances nothing.
+                ["hash"] = capture.Hash,
+            };
+
+        result["id"] = requestId;
         PostToShell("sd-capture-result", result);
     }
 

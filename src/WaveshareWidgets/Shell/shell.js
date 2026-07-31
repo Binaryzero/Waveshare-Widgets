@@ -30,6 +30,13 @@
   const pingRoutes = new Map();  // ping id -> { win, origin } of the asking widget frame
   const mediaRoutes = new Map(); // media-list id -> { win, origin } of the asking widget frame
   const audioRoutes = new Map(); // audio-get id -> { win, origin } of the asking widget frame
+  // Stream Deck profile AND capture share one map: ids are unique across both, and both
+  // are strict request->response. The host never pushes either unsolicited — live mode
+  // just bundles a capture into the profile reply and the widget polls — so a route per
+  // request is the whole mechanism, and the sticky per-slot flags this replaces could
+  // not tell two askers apart (#127).
+  const sdRoutes = new Map();    // sd request id -> { win, origin }
+  let sdSeq = 0;                 // only for a caller that sent no id of its own
 
   let backgroundHost = 'backgrounds.wsw';
   let bgGlobal = null;         // dashboard-wide background spec
@@ -158,11 +165,11 @@
       const profiles = ((msg.data && msg.data.profiles) || []).filter((p) => typeof p === 'string');
       waiters.forEach((cb) => { try { cb(profiles); } catch (e) { /* row rebuilt */ } });
     } else if (msg.type === 'sd-profile-result') {
-      deliverTo('sdWatch', { type: 'ww-sd-profile', profile: msg.data });
+      routeSd(msg, (data) => ({ type: 'ww-sd-profile', profile: data }));
     } else if (msg.type === 'sd-capture-result') {
-      // Live capture is a SCREENSHOT of the user's Stream Deck keys, pushed repeatedly.
-      // Broadcasting it meant a widget did not even have to ask to receive one.
-      deliverTo('sdCapture', { type: 'ww-sd-capture-result', data: msg.data });
+      // A capture is a SCREENSHOT of the user's Stream Deck keys. It goes to the frame
+      // whose request produced it and nowhere else.
+      routeSd(msg, (data) => ({ type: 'ww-sd-capture-result', data }));
     } else if (msg.type === 'ping-result') {
       routeReply(pingRoutes, msg, 'ww-ping-result');
     } else if (msg.type === 'media-list-result') {
@@ -242,12 +249,20 @@
     } else if (msg.type === 'ww-action' && typeof msg.kind === 'string') {
       postToHost({ type: 'action', kind: msg.kind, target: String(msg.target || '') });
     } else if (msg.type === 'ww-sd-profile') {
-      sender.sdWatch = true;
-      if (msg.live === true) sender.sdCapture = true;   // live mode answers as captures
-      postToHost({ type: 'sd-profile', profileName: msg.profileName || '', hideWindow: msg.hideWindow !== false, live: msg.live === true });
+      const id = armSdRoute(msg, ev);
+      postToHost({ type: 'sd-profile', id, profileName: msg.profileName || '', hideWindow: msg.hideWindow !== false, live: msg.live === true });
     } else if (msg.type === 'ww-sd-capture') {
-      sender.sdCapture = true;
-      postToHost({ type: 'sd-capture' });
+      // `have` is the hash of the last frame the ASKING DOCUMENT actually received, and
+      // it is the whole dedup. Passed through rather than tracked here: a widget can only
+      // mislead itself with it (claim a frame it lacks and get told "unchanged"; claim
+      // none and get a redundant image), whereas anything the shell or the host remembers
+      // on its behalf can outlive the document it describes — which is what kept freezing
+      // mirrors on a blank frame. Bounded because it crosses to native.
+      postToHost({
+        type: 'sd-capture',
+        id: armSdRoute(msg, ev),
+        have: String(msg.have || '').slice(0, 128),
+      });
     } else if (msg.type === 'ww-sd-click') {
       postToHost({ type: 'sd-click', row: msg.row | 0, col: msg.col | 0, rows: msg.rows | 0, cols: msg.cols | 0 });
     } else if (msg.type === 'ww-fetch' && msg.id) {
@@ -330,6 +345,32 @@
     slot.notifSeen = slot.notifSeen || new Set();
     for (const n of items) if (n && n.id != null) slot.notifSeen.add(String(n.id));
     return payload;
+  }
+
+  /// Remembers who asked, so the answer can go back to exactly that frame. The shim
+  /// mints the id; a caller that sent none still works, on an id minted here, because a
+  /// reply that cannot be routed would otherwise be dropped in silence.
+  function armSdRoute(msg, ev) {
+    const id = msg.id || ('sd-' + (++sdSeq));
+    sdRoutes.set(id, { win: ev.source, origin: ev.origin });
+    setTimeout(() => sdRoutes.delete(id), 15000);
+    return id;
+  }
+
+  /// One answer, one requester. `build` shapes the payload because the profile and the
+  /// capture reply differ in envelope while sharing this routing.
+  function routeSd(msg, build) {
+    const id = msg.data && msg.data.id;
+    const route = sdRoutes.get(id);
+    if (!route) return;
+    sdRoutes.delete(id);
+    // The id rides on the envelope as well as inside the payload, so the receiving
+    // document can check it against the requests IT issued — a reload keeps the same
+    // WindowProxy, so a route outliving its document would otherwise deliver the old
+    // document's answer to the new one.
+    const out = build(msg.data);
+    out.id = id;
+    try { route.win.postMessage(out, route.origin); } catch (e) { /* frame gone */ }
   }
 
   /// Delivers to the slots that asked for this kind of data, by slot-record flag. The
@@ -1733,6 +1774,7 @@
     } catch (e) { /* unserializable settings: init delivery still applies them */ }
     record.hash = hash;
     record.initialized = false; // the fresh document's ww-ready gets a full init
+
     // The document that registered any notification demand is being destroyed —
     // carrying its flag forward would keep the host polling toasts forever if
     // the fresh document (new settings) never re-opts or the reload fails. The same
@@ -1740,8 +1782,8 @@
     // the one replacing it has asked for nothing yet.
     record.notifWatch = false;
     record.notifSeen = null;
-    record.sdWatch = false;
-    record.sdCapture = false;
+    // No Stream Deck state to reset: a route is per REQUEST and expires on its own, so a
+    // destroyed document leaves nothing behind that a later one could inherit.
     syncNotificationDemand();
     record.frame.src = record.url + '?r=' + (++propReloadSeq) + hash;
     // This navigation can flake exactly like an initial load (virtual-host races,
