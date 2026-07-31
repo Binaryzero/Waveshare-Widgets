@@ -53,6 +53,17 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   that fits by being tiny is not a fit. Also covers re-fitting when the slot resizes
   with no settings change, and that the size sliders can only shrink. Routes are
   fulfilled in-process — no ports.
+- `bridgeorigin-run.js` — sender authorization on the widget bridge. `postMessage`
+  reaches `window.top` from ANY descendant, so a page framed INSIDE a widget could
+  drive the native host: `ww-action` reaching `Process.Start`, `ww-fetch` used as an
+  SSRF hop with the reply routed back to the sender, plus hotkeys, audio and Stream
+  Deck. Reachable through stock widgets — `twitch` and `youtube` frame third-party
+  origins and `iframe` frames whatever URL the user types, so "the remote page turns
+  hostile" is the entire prerequisite. Mounts a widget that frames a remote document
+  and has that document attack `window.top`: the legitimate widget frame must still
+  reach the host (a fix that silences everyone would pass every other check here), the
+  nested frame's messages must not, and the routing tables must not be armed for a
+  refused sender. Ports used: 8956.
 - `deckpreview-run.js` — the settings LIVE PREVIEW, which nothing else here reaches
   (issue #78, the third time the Control Deck has come back empty after #43 and #49).
   Every other suite drives the shell directly with a stubbed `chrome.webview`; the
