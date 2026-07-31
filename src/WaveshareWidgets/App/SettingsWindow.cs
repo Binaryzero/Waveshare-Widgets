@@ -634,7 +634,15 @@ public sealed class SettingsWindow : Form
             // widgets dropped into the folder since the window opened.
             if (_webView.CoreWebView2 is { } core)
                 _hosts.Sync(core, _library.Widgets);
-            Post(new JsonObject { ["type"] = "widget-installed", ["name"] = installed.Manifest.Name });
+            Post(new JsonObject
+            {
+                ["type"] = "widget-installed",
+                ["name"] = installed.Manifest.Name,
+                // On disk but not yet served: the host map could not be read and a retry is
+                // already scheduled. The editor says so rather than showing a widget that
+                // is not in the catalog it just received.
+                ["pending"] = installed.Widget is null,
+            });
             PostInit(); // refresh widget list and sensor snapshot in the editor
         }
         catch (Exception ex)

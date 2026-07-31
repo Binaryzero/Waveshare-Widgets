@@ -304,5 +304,20 @@ Check("I24b ...and an ordinary widget is still served from where it was found",
     WidgetIdentity.ServingFolder("com.example.cpu", "/data/widgets/com-example-cpu", Shipped)
         == "/data/widgets/com-example-cpu");
 
+// I25 · the canonical folder is where the INSTALLER writes, not proof of who owns an id.
+// A widget installed by direct folder drop lives under whatever name the user chose; a
+// package declaring the same id lands in the canonical folder, wins the duplicate tiebreak
+// on provenance, and inherits that id's persisted origin — with the original widget's
+// stored data. Nothing in that chain authenticated the package.
+Check("I25 a package cannot take an id that lives in another folder",
+    WidgetIdentity.WouldStealId("com.example.cpu",
+        new[] { ("com.example.cpu", "my-cpu-widget") }));
+Check("I25b ...while upgrading in place is untouched",
+    !WidgetIdentity.WouldStealId("com.example.cpu",
+        new[] { ("com.example.cpu", "com-example-cpu") }));
+Check("I25c ...and an id nobody holds installs normally",
+    !WidgetIdentity.WouldStealId("com.example.new",
+        new[] { ("com.example.cpu", "my-cpu-widget") }));
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;

@@ -248,7 +248,12 @@
       if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
       toast('Save failed: ' + msg.message, true);
     } else if (msg.type === 'widget-installed') {
-      toast('Installed "' + msg.name + '"');
+      // `pending` means it IS installed but has no origin yet (the host map could not be
+      // read; the library is already retrying). Saying only "Installed" would have the
+      // user hunt the palette for something that is deliberately not there yet.
+      toast(msg.pending
+        ? 'Installed "' + msg.name + '" — waiting for its origin, it will appear shortly'
+        : 'Installed "' + msg.name + '"');
     } else if (msg.type === 'file-picked') {
       // Browse-button round trip (#48): fill the field that asked and commit
       // through its own handler. A null path is a cancelled dialog.

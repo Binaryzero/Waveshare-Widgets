@@ -25,6 +25,13 @@ public sealed record InstalledWidget(WidgetManifest Manifest, string Folder, str
 public sealed record RejectedWidget(
     string Id, string Name, string Folder, string Reason, IReadOnlyList<string> RedactNames);
 
+/// <summary>The outcome of installing a package: what was installed, and whether it is
+/// being served yet.</summary>
+/// <param name="Widget">Null when the package is on disk but its origin could not be
+/// assigned this scan — the host map was unreadable. A retry is already scheduled. This is
+/// a PENDING install, not a failed one, and the two must not be reported alike.</param>
+public sealed record InstallResult(WidgetManifest Manifest, InstalledWidget? Widget);
+
 /// <summary>
 /// Manages the user's widgets folder: seeds stock widgets on first run, scans installed
 /// widget folders, installs .wswidget packages (zip of manifest.json + index.html), and
@@ -366,10 +373,10 @@ public sealed partial class WidgetLibrary : IDisposable
     /// FileSystemWatcher fires a scan per edit, and re-hashing two dozen shipped folders
     /// each time to answer a question with a constant answer is pure cost.
     /// </remarks>
-    private static IReadOnlyList<WidgetIdentity.StockWidget> StockWidgets()
+    private static (IReadOnlyList<WidgetIdentity.StockWidget> Set, bool Complete) StockWidgets()
     {
         if (_stockWidgets is { } cached)
-            return cached;
+            return (cached, true);
         var list = new List<WidgetIdentity.StockWidget>();
         try
         {
@@ -398,10 +405,10 @@ public sealed partial class WidgetLibrary : IDisposable
             // instantly without ever looking again. Only a complete scan is worth keeping.
             Log.Error($"Could not read the shipped stock widgets ({ex.Message}) — " +
                       "reserved widget ids will be refused until a later scan succeeds");
-            return WidgetIdentity.Shipped(list, RetiredStockNames);
+            return (WidgetIdentity.Shipped(list, RetiredStockNames), false);
         }
         _stockWidgets = list;
-        return list;
+        return (list, true);
     }
 
     private static IReadOnlyList<WidgetIdentity.StockWidget>? _stockWidgets;
@@ -480,7 +487,25 @@ public sealed partial class WidgetLibrary : IDisposable
         return Convert.ToHexString(sha.Hash!);
     }
 
+    /// <summary>Serializes the whole read-map / assign / publish / save transaction.</summary>
+    /// <remarks>
+    /// There are now two independent timers that call Rescan — the watcher debounce and the
+    /// host-map retry — plus the install path and startup. Two of them running at once each
+    /// read the same persisted map, compute assignments from a DIFFERENT set of installed
+    /// widgets, and then write their own whole-map copy; the later write silently drops an
+    /// assignment the other scan had already published in Widgets. That origin is then
+    /// recorded nowhere, and the next slug-colliding package is free to take it along with
+    /// whatever storage it still holds. Load-and-save is only safe as one indivisible step.
+    /// </remarks>
+    private readonly object _scanGate = new();
+
     public void Rescan()
+    {
+        lock (_scanGate)
+            RescanCore();
+    }
+
+    private void RescanCore()
     {
         // Pass 1: parse every candidate folder and resolve same-id duplicates
         // (decided by the EXACT manifest id — never by the slugged host, where
@@ -532,7 +557,7 @@ public sealed partial class WidgetLibrary : IDisposable
                 // claiming a stock id would otherwise be served from the stock widget's
                 // own virtual host — same origin, same localStorage, same tokens.
                 if (!WidgetIdentity.MayClaim(manifest.Id, Path.GetFileName(folder),
-                        () => InstalledFingerprint(folder), StockWidgets()))
+                        () => InstalledFingerprint(folder), StockWidgets().Set))
                 {
                     Log.Warn($"Refusing widget in '{folder}': '{manifest.Id}' is a reserved stock id, " +
                              "and this is not the folder the app seeds it into");
@@ -643,7 +668,7 @@ public sealed partial class WidgetLibrary : IDisposable
     }
 
     /// <summary>Installs a .wswidget package (a zip containing manifest.json + index.html at its root).</summary>
-    public InstalledWidget InstallPackage(string packagePath)
+    public InstallResult InstallPackage(string packagePath)
     {
         using var archive = ZipFile.OpenRead(packagePath);
 
@@ -674,10 +699,37 @@ public sealed partial class WidgetLibrary : IDisposable
         // target directory is the seeded copy, which the swap below would move aside and
         // then delete. That is a stock widget destroyed by an install, restored only by
         // the next launch's re-seed.
-        if (StockWidgets().Any(w => string.Equals(w.FolderName, installFolder, StringComparison.OrdinalIgnoreCase)))
+        var (shipped, shippedComplete) = StockWidgets();
+        // Fail CLOSED on an incomplete shipped set. A partial list is missing names, and a
+        // missing name is one this guard would wave through — the install would then land
+        // on a seeded stock folder and delete it on success, displacing that widget until
+        // the next re-seed. "We could not read the list" is not "the list does not contain
+        // it".
+        if (!shippedComplete)
+            throw new InvalidDataException(
+                "Refusing to install: the widgets shipped with the app could not be read just now, " +
+                "so it cannot be checked whether this package would displace one. Try again.");
+        if (shipped.Any(w => string.Equals(w.FolderName, installFolder, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidDataException(
                 $"Refusing to install '{manifest.Name}': its id would occupy the folder of the stock " +
                 $"widget '{installFolder}'. Give the widget an id that does not collide.");
+
+        // ---- J1: the canonical folder is where the INSTALLER writes, not proof of who
+        // owns the id. A widget installed by direct folder drop lives under whatever name
+        // the user chose; a package declaring the same id lands in the canonical folder and
+        // would win the duplicate tiebreak on provenance alone — inheriting the persisted
+        // virtual host, and with it the original widget's origin-scoped storage. Upgrading
+        // in place (same id, canonical folder) is untouched; taking an id that lives
+        // somewhere else is refused, and named, so the user can remove one deliberately.
+        var incumbent = WidgetIdentity.WouldStealId(
+                manifest.Id, Widgets.Select(w => (w.Manifest.Id, Path.GetFileName(w.Folder))))
+            ? Widgets.First(w => string.Equals(w.Manifest.Id, manifest.Id, StringComparison.Ordinal))
+            : null;
+        if (incumbent is not null)
+            throw new InvalidDataException(
+                $"Refusing to install '{manifest.Name}': the id '{manifest.Id}' already belongs to the " +
+                $"widget in '{Path.GetFileName(incumbent.Folder)}'. Installing here would hand this package " +
+                "that widget's stored data. Remove the other copy first if you meant to replace it.");
 
         var targetDir = Path.Combine(AppPaths.WidgetsDir, installFolder);
 
@@ -776,7 +828,12 @@ public sealed partial class WidgetLibrary : IDisposable
         Log.Info($"Installed widget '{manifest.Id}' v{manifest.Version} from {Path.GetFileName(packagePath)}");
 
         Rescan();
-        return Widgets.First(w => w.Manifest.Id == manifest.Id);
+        // FirstOrDefault, not First. The scan legitimately withholds a widget whose origin
+        // would have to be minted without the host map, and the package is on disk either
+        // way — reporting "could not install" for something that is installed, and that a
+        // retry will surface in seconds, describes the wrong problem to the user.
+        var served = Widgets.FirstOrDefault(w => w.Manifest.Id == manifest.Id);
+        return new InstallResult(manifest, served);
     }
 
     /// <summary>Lowercases the widget id into a hostname-safe label ("com.example.CPU" -> "com-example-cpu").</summary>

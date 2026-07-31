@@ -127,6 +127,35 @@ public static partial class WidgetIdentity
     /// into — and therefore the copy that the installer, not a leftover, produced.</summary>
     public static string InstallFolderName(string id) => Slug(id);
 
+    /// <summary>Would installing a package that declares <paramref name="id"/> take that id
+    /// away from a widget already installed somewhere else?</summary>
+    /// <remarks>
+    /// The installer always extracts to <see cref="InstallFolderName"/>, and the duplicate
+    /// tiebreak prefers that folder because the app itself wrote it. That is provenance for
+    /// the FOLDER and says nothing about the CONTENTS, which came from the package.
+    ///
+    /// So when a widget is installed by direct folder drop — a supported path, under
+    /// whatever name the user chose — a package declaring the same id lands in the canonical
+    /// folder, wins the tiebreak on provenance alone, and inherits the persisted virtual
+    /// host: the original widget's origin, and its stored data. Nothing about the package
+    /// was authenticated at any point in that chain.
+    ///
+    /// Upgrading in place is unaffected — same id, same canonical folder, no second
+    /// claimant. Only taking an id that currently lives elsewhere is refused.
+    /// </remarks>
+    public static bool WouldStealId(string id, IEnumerable<(string Id, string Folder)> installed)
+    {
+        var canonical = InstallFolderName(id);
+        foreach (var (installedId, folder) in installed)
+        {
+            if (!string.Equals(installedId, id, StringComparison.Ordinal))
+                continue;
+            if (!string.Equals(folder, canonical, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
     /// <summary>The shipped set, minus widgets the app has retired.</summary>
     /// <remarks>
     /// The retirement list is authoritative and is never inferred from a folder's absence,
