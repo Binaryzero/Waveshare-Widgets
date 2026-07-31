@@ -25,6 +25,8 @@
 //   D6 · the preview's data bridge, reached from a frame nested INSIDE a widget —
 //        the reported SSRF/media-enumeration path (#96, #108), measured here rather
 //        than inferred from the dashboard sharing shell.js
+//   D6d· ...and no reply route was armed for it either, which refusing to forward
+//        does not by itself prove
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -344,17 +346,24 @@ const readDeck = (frame) => frame.evaluate(() => {
     document.body.appendChild(el);
   });
   await page.waitForTimeout(1200);
-  const hostile = hostSeen.filter((m) => m.type === 'preview-data')
-    .map((m) => (m.message && m.message.id) || '?')
-    .filter((id) => /^HOSTILE-/.test(id));
+  // Counted by SHAPE, not by the attack's own ids. Matching on "HOSTILE-" made the
+  // assertion depend on a value the relay is free to drop or rewrite: a regression that
+  // forwarded the request without its id would map to '?', be filtered out, and pass —
+  // while HandlePreviewRequest still dispatched on type and performed the fetch, the ping
+  // or the media enumeration. What must be zero is data requests reaching the host at all,
+  // and this window contains no legitimate ones because only the hostile frame is acting.
+  const ATTACK_TYPES = ['fetch', 'ping', 'media-list', 'audio-get'];
+  const reachedHost = hostSeen.filter((m) =>
+    m.type === 'preview-data' && ATTACK_TYPES.includes(m.message && m.message.type));
   check('D6b a frame nested inside a widget reaches the host with NOTHING',
-    hostile.length === 0, JSON.stringify(hostile));
+    reachedHost.length === 0, JSON.stringify(reachedHost.map((m) => m.message.type)));
   // Named separately because it is a different gate: settings.js checks the SOURCE of
   // ww-shell against the preview frame's own window. A nested frame can address window.top
-  // directly, and shell.js never sees that message at all.
+  // directly, and shell.js never sees that message at all. Also shape-based: the forged
+  // message is the only `fetch` that could arrive by that route in this window.
   check('D6b2 ...including a ww-shell forged straight at the settings page',
-    !hostSeen.some((m) => JSON.stringify(m).includes('HOSTILE-direct-to-top')),
-    hostSeen.filter((m) => JSON.stringify(m).includes('HOSTILE')).length + ' hostile host-messages');
+    !hostSeen.some((m) => m.type === 'preview-data' && m.message && m.message.type === 'fetch'),
+    hostSeen.filter((m) => m.type === 'preview-data').length + ' preview-data message(s) total');
 
   const nested = page.frames().find((f) => /hostile\.example/.test(f.url()));
   // "The frame loaded" is not "the attack ran". If that inline script threw part-way, every
@@ -365,6 +374,21 @@ const readDeck = (frame) => frame.evaluate(() => {
     attacked === 'done', String(attacked));
   const replies = nested ? await nested.evaluate(() => window.__replies) : ['(no frame)'];
   check('D6c ...and receives no reply either', JSON.stringify(replies) === '[]', JSON.stringify(replies));
+
+  // D6d · refusing to FORWARD is not the same as refusing to REMEMBER. Because the gate
+  // works, no hostile request reaches the host, so nothing above ever exercises what the
+  // shell did with its routing tables — a regression that stored the nested window in
+  // fetchRoutes and only then declined the outbound post would satisfy every assertion so
+  // far, and still deliver a later matching answer straight to that frame. So the answer
+  // is injected by hand, the way bridgeorigin-run.js B5 does it.
+  await page.evaluate(() => window.__hostPush(JSON.stringify({
+    type: 'preview-host',
+    message: { type: 'fetch-result', data: { id: 'HOSTILE-ww-fetch', ok: true, status: 200, body: 'SHOULD-NOT-ARRIVE' } },
+  })));
+  await page.waitForTimeout(400);
+  const afterInject = nested ? await nested.evaluate(() => window.__replies) : ['(no frame)'];
+  check('D6d a reply for a refused request reaches nobody, so no route was armed for it',
+    JSON.stringify(afterInject) === '[]', JSON.stringify(afterInject));
 
   if (errors.length) console.log('  [pageerror]', JSON.stringify(errors.slice(0, 4)));
 
