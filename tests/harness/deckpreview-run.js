@@ -22,6 +22,9 @@
 //        a hidden slot keeps a live iframe with all its keys
 //   D5 · a widget with no host at all still says so, so a delivery failure can
 //        never present as a blank tile
+//   D6 · the preview's data bridge, reached from a frame nested INSIDE a widget —
+//        the reported SSRF/media-enumeration path (#96, #108), measured here rather
+//        than inferred from the dashboard sharing shell.js
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -138,8 +141,12 @@ const readDeck = (frame) => frame.evaluate(() => {
     })),
   ] };
 
+  // Everything the settings page sends to the native host. D6 reads this: reaching the
+  // host IS the finding — that is where the proxy fetch and the media enumeration happen.
+  const hostSeen = [];
   await page.exposeFunction('__hostRecv', async (json) => {
     const msg = JSON.parse(json);
+    hostSeen.push(msg);
     const push = (obj) => page.evaluate((d) => window.__hostPush(d), JSON.stringify(obj)).catch(() => {});
     if (msg.type === 'settings-ready') {
       push({ type: 'settings-init', data: {
@@ -148,6 +155,20 @@ const readDeck = (frame) => frame.evaluate(() => {
       } });
     } else if (msg.type === 'save-layout') {
       push({ type: 'saved', seq: msg.seq });
+    } else if (msg.type === 'preview-data') {
+      // Answer the way SettingsWindow does — preview-host wrapping the result the
+      // dashboard produced. Answering rather than dropping is what makes D6c mean
+      // anything: a probe that asserts "the hostile frame got no reply" against a host
+      // that replies to nobody is asserting nothing at all.
+      const m = msg.message || {};
+      const kind = { fetch: 'fetch-result', ping: 'ping-result',
+        'media-list': 'media-list-result', 'audio-get': 'audio-result' }[m.type];
+      if (kind) {
+        push({ type: 'preview-host', message: { type: kind, data: {
+          id: m.id, ok: true, status: 200, body: 'PREVIEW-SENTINEL',
+          results: [], items: [{ name: 'holiday.png', url: 'https://media.wsw/holiday.png' }],
+        } } });
+      }
     }
   });
   await page.addInitScript(() => {
@@ -254,6 +275,61 @@ const readDeck = (frame) => frame.evaluate(() => {
   check('D5 a deck that never receives ww-init says so rather than going blank',
     stamp.waiting && stamp.shown && /waiting for panel data/.test(stamp.content),
     JSON.stringify(stamp));
+
+  // ---- D6 · the data bridge, reached from INSIDE a widget (#96, #108) ---------------
+  // The reported attack: a remote page embedded in a widget posts a data request past
+  // its host widget to the shell — parent.parent from the nested frame — and the shell
+  // stores that remote window as the reply route and forwards the request. In the
+  // PREVIEW that lands on HandlePreviewRequest, which performs the real proxy fetch,
+  // ping, audio or media enumeration. Loopback and LAN SSRF, and the user's media
+  // filenames, from a page inside an iframe widget.
+  //
+  // The sender gate from #88 is believed to close this, because the replica IS shell.js.
+  // But that is inference from shared source, and it is exactly the inference this suite
+  // exists to stop making: the preview reaches the host through hops the dashboard does
+  // not have — a window.parent relay through settings.js, generation tagging, and the
+  // replicaTimer staleness gate — and any of them could have made the dashboard probe
+  // agree with a preview that behaves differently. So: the real settings page, the real
+  // replica, a real nested cross-origin frame.
+  await page.route('https://hostile.example/**', (r) => r.fulfill({
+    status: 200, contentType: 'text/html', body: `<!DOCTYPE html><meta charset="utf-8"><script>
+      window.__replies = [];
+      addEventListener('message', (e) => { window.__replies.push(e.data && e.data.type); });
+      // parent = the widget that embedded us; parent.parent = the replica shell.
+      for (const type of ['ww-fetch', 'ww-ping', 'ww-media-list', 'ww-audio-get'])
+        parent.parent.postMessage({ type, id: 'HOSTILE-' + type, url: 'http://127.0.0.1:9/', targets: ['127.0.0.1'] }, '*');
+    </script>` }));
+
+  const deckFrame = page.frames().find((f) => /deck\.widgets\.wsw/.test(f.url()));
+  check('D6 setup: a widget frame to embed the hostile page in', !!deckFrame);
+
+  // The positive control first, and it is not optional: "the host received nothing" is
+  // also what a broken relay looks like, and this suite would otherwise bless a preview
+  // whose data bridge had stopped working altogether.
+  hostSeen.length = 0;
+  await deckFrame.evaluate(() => parent.postMessage({ type: 'ww-media-list', id: 'LEGIT' }, '*'));
+  await page.waitForTimeout(600);
+  const legit = hostSeen.filter((m) => m.type === 'preview-data').map((m) => m.message && m.message.id);
+  check('D6 control: a registered slot frame DOES reach the host through the preview relay',
+    legit.includes('LEGIT'), JSON.stringify(legit));
+
+  hostSeen.length = 0;
+  await deckFrame.evaluate(() => {
+    const el = document.createElement('iframe');
+    el.src = 'https://hostile.example/nested.html';
+    document.body.appendChild(el);
+  });
+  await page.waitForTimeout(1200);
+  const hostile = hostSeen.filter((m) => m.type === 'preview-data')
+    .map((m) => (m.message && m.message.id) || '?')
+    .filter((id) => /^HOSTILE-/.test(id));
+  check('D6b a frame nested inside a widget reaches the host with NOTHING',
+    hostile.length === 0, JSON.stringify(hostile));
+
+  const nested = page.frames().find((f) => /hostile\.example/.test(f.url()));
+  check('D6b setup: the hostile frame really loaded and really posted', !!nested);
+  const replies = nested ? await nested.evaluate(() => window.__replies) : ['(no frame)'];
+  check('D6c ...and receives no reply either', JSON.stringify(replies) === '[]', JSON.stringify(replies));
 
   if (errors.length) console.log('  [pageerror]', JSON.stringify(errors.slice(0, 4)));
 
