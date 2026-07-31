@@ -22,6 +22,11 @@
 //        a hidden slot keeps a live iframe with all its keys
 //   D5 · a widget with no host at all still says so, so a delivery failure can
 //        never present as a blank tile
+//   D6 · the preview's data bridge, reached from a frame nested INSIDE a widget —
+//        the reported SSRF/media-enumeration path (#96, #108), measured here rather
+//        than inferred from the dashboard sharing shell.js
+//   D6d· ...and no reply route was armed for ANY of the four request kinds, which
+//        refusing to forward does not by itself prove — they are four separate maps
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -138,8 +143,12 @@ const readDeck = (frame) => frame.evaluate(() => {
     })),
   ] };
 
+  // Everything the settings page sends to the native host. D6 reads this: reaching the
+  // host IS the finding — that is where the proxy fetch and the media enumeration happen.
+  const hostSeen = [];
   await page.exposeFunction('__hostRecv', async (json) => {
     const msg = JSON.parse(json);
+    hostSeen.push(msg);
     const push = (obj) => page.evaluate((d) => window.__hostPush(d), JSON.stringify(obj)).catch(() => {});
     if (msg.type === 'settings-ready') {
       push({ type: 'settings-init', data: {
@@ -148,6 +157,20 @@ const readDeck = (frame) => frame.evaluate(() => {
       } });
     } else if (msg.type === 'save-layout') {
       push({ type: 'saved', seq: msg.seq });
+    } else if (msg.type === 'preview-data') {
+      // Answer the way SettingsWindow does — preview-host wrapping the result the
+      // dashboard produced. Answering rather than dropping is what makes D6c mean
+      // anything: a probe that asserts "the hostile frame got no reply" against a host
+      // that replies to nobody is asserting nothing at all.
+      const m = msg.message || {};
+      const kind = { fetch: 'fetch-result', ping: 'ping-result',
+        'media-list': 'media-list-result', 'audio-get': 'audio-result' }[m.type];
+      if (kind) {
+        push({ type: 'preview-host', message: { type: kind, data: {
+          id: m.id, ok: true, status: 200, body: 'PREVIEW-SENTINEL',
+          results: [], items: [{ name: 'holiday.png', url: 'https://media.wsw/holiday.png' }],
+        } } });
+      }
     }
   });
   await page.addInitScript(() => {
@@ -254,6 +277,136 @@ const readDeck = (frame) => frame.evaluate(() => {
   check('D5 a deck that never receives ww-init says so rather than going blank',
     stamp.waiting && stamp.shown && /waiting for panel data/.test(stamp.content),
     JSON.stringify(stamp));
+
+  // ---- D6 · the data bridge, reached from INSIDE a widget (#96, #108) ---------------
+  // The reported attack: a remote page embedded in a widget posts a data request past
+  // its host widget to the shell — parent.parent from the nested frame — and the shell
+  // stores that remote window as the reply route and forwards the request. In the
+  // PREVIEW that lands on HandlePreviewRequest, which performs the real proxy fetch,
+  // ping, audio or media enumeration. Loopback and LAN SSRF, and the user's media
+  // filenames, from a page inside an iframe widget.
+  //
+  // The sender gate from #88 is believed to close this, because the replica IS shell.js.
+  // But that is inference from shared source, and it is exactly the inference this suite
+  // exists to stop making: the preview reaches the host through hops the dashboard does
+  // not have — a window.parent relay through settings.js, generation tagging, and the
+  // replicaTimer staleness gate — and any of them could have made the dashboard probe
+  // agree with a preview that behaves differently. So: the real settings page, the real
+  // replica, a real nested cross-origin frame.
+  await page.route('https://hostile.example/**', (r) => r.fulfill({
+    status: 200, contentType: 'text/html', body: `<!DOCTYPE html><meta charset="utf-8"><script>
+      window.__replies = [];
+      window.__attacked = null;
+      addEventListener('message', (e) => { window.__replies.push(e.data && e.data.type); });
+      try {
+        // parent = the widget that embedded us; parent.parent = the replica shell.
+        // hosts is the key shell.js actually reads for ping. Sending targets made the
+        // forwarded request an empty enumeration, so removing the gate would have leaked
+        // a ping with nothing in it — proving nothing about the path this claims to cover.
+        for (const type of ['ww-fetch', 'ww-ping', 'ww-media-list', 'ww-audio-get'])
+          parent.parent.postMessage(
+            { type, id: 'HOSTILE-' + type, url: 'http://127.0.0.1:9/', hosts: ['127.0.0.1'] }, '*');
+        // The SECOND gate, and a different one: settings.js accepts ww-shell only from the
+        // preview frame's own window. Reaching the replica is not the only way to the host.
+        top.postMessage({ type: 'ww-shell', message: {
+          type: 'fetch', id: 'HOSTILE-direct-to-top', url: 'http://127.0.0.1:9/' } }, '*');
+        window.__attacked = 'done';
+      } catch (e) { window.__attacked = 'threw: ' + e; }
+    </script>` }));
+
+  const deckFrame = page.frames().find((f) => /deck\.widgets\.wsw/.test(f.url()));
+  check('D6 setup: a widget frame to embed the hostile page in', !!deckFrame);
+
+  // The positive control first, and it is not optional: "the host received nothing" is
+  // also what a broken relay looks like, and this suite would otherwise bless a preview
+  // whose data bridge had stopped working altogether.
+  hostSeen.length = 0;
+  await deckFrame.evaluate(() => {
+    window.__legitReplies = [];
+    addEventListener('message', (e) => {
+      if (e.data && e.data.type === 'ww-media-list-result') window.__legitReplies.push(e.data.id);
+    });
+    parent.postMessage({ type: 'ww-media-list', id: 'LEGIT' }, '*');
+  });
+  await page.waitForTimeout(700);
+  const legit = hostSeen.filter((m) => m.type === 'preview-data').map((m) => m.message && m.message.id);
+  check('D6 control: a registered slot frame DOES reach the host through the preview relay',
+    legit.includes('LEGIT'), JSON.stringify(legit));
+  // Both halves of the relay. Checking only the outbound one leaves D6c able to pass
+  // because NOBODY can receive a reply — the exact condition the answering host stub was
+  // added to rule out.
+  const legitReplies = await deckFrame.evaluate(() => window.__legitReplies);
+  check('D6 control: ...and the answer comes back to it',
+    legitReplies.includes('LEGIT'), JSON.stringify(legitReplies));
+
+  hostSeen.length = 0;
+  await deckFrame.evaluate(() => {
+    const el = document.createElement('iframe');
+    el.src = 'https://hostile.example/nested.html';
+    document.body.appendChild(el);
+  });
+  await page.waitForTimeout(1200);
+  // Counted by SHAPE, not by the attack's own ids. Matching on "HOSTILE-" made the
+  // assertion depend on a value the relay is free to drop or rewrite: a regression that
+  // forwarded the request without its id would map to '?', be filtered out, and pass —
+  // while HandlePreviewRequest still dispatched on type and performed the fetch, the ping
+  // or the media enumeration. What must be zero is data requests reaching the host at all,
+  // and this window contains no legitimate ones because only the hostile frame is acting.
+  const ATTACK_TYPES = ['fetch', 'ping', 'media-list', 'audio-get'];
+  const reachedHost = hostSeen.filter((m) =>
+    m.type === 'preview-data' && ATTACK_TYPES.includes(m.message && m.message.type));
+  check('D6b a frame nested inside a widget reaches the host with NOTHING',
+    reachedHost.length === 0, JSON.stringify(reachedHost.map((m) => m.message.type)));
+  // Named separately because it is a different gate: settings.js checks the SOURCE of
+  // ww-shell against the preview frame's own window. A nested frame can address window.top
+  // directly, and shell.js never sees that message at all. Also shape-based: the forged
+  // message is the only `fetch` that could arrive by that route in this window.
+  check('D6b2 ...including a ww-shell forged straight at the settings page',
+    !hostSeen.some((m) => m.type === 'preview-data' && m.message && m.message.type === 'fetch'),
+    hostSeen.filter((m) => m.type === 'preview-data').length + ' preview-data message(s) total');
+
+  const nested = page.frames().find((f) => /hostile\.example/.test(f.url()));
+  // "The frame loaded" is not "the attack ran". If that inline script threw part-way, every
+  // rejection assertion below would pass while testing nothing — and pageerror is only
+  // logged by this harness, never failed. The marker is set after the last postMessage.
+  const attacked = nested ? await nested.evaluate(() => window.__attacked) : '(no frame)';
+  check('D6b setup: the hostile frame loaded AND finished posting every request',
+    attacked === 'done', String(attacked));
+  const replies = nested ? await nested.evaluate(() => window.__replies) : ['(no frame)'];
+  check('D6c ...and receives no reply either', JSON.stringify(replies) === '[]', JSON.stringify(replies));
+
+  // D6d · refusing to FORWARD is not the same as refusing to REMEMBER. Because the gate
+  // works, no hostile request reaches the host, so nothing above ever exercises what the
+  // shell did with its routing tables — a regression that stored the nested window in
+  // fetchRoutes and only then declined the outbound post would satisfy every assertion so
+  // far, and still deliver a later matching answer straight to that frame. So the answer
+  // is injected by hand, the way bridgeorigin-run.js B5 does it.
+  //
+  // EVERY type, not just fetch. The four request kinds are backed by four independent
+  // route maps in shell.js — fetchRoutes, pingRoutes, mediaRoutes, audioRoutes — and a
+  // regression that armed any one of them would be invisible to an injection that only
+  // exercises another. Each refused id gets its matching answer.
+  const REFUSED = [
+    { id: 'HOSTILE-ww-fetch', result: 'fetch-result' },
+    { id: 'HOSTILE-ww-ping', result: 'ping-result' },
+    { id: 'HOSTILE-ww-media-list', result: 'media-list-result' },
+    { id: 'HOSTILE-ww-audio-get', result: 'audio-result' },
+  ];
+  await page.evaluate((refused) => {
+    for (const r of refused)
+      window.__hostPush(JSON.stringify({
+        type: 'preview-host',
+        message: { type: r.result, data: {
+          id: r.id, ok: true, status: 200, body: 'SHOULD-NOT-ARRIVE',
+          results: [{ host: '127.0.0.1', ok: true }],
+          items: [{ name: 'holiday.png', url: 'https://media.wsw/holiday.png' }],
+        } },
+      }));
+  }, REFUSED);
+  await page.waitForTimeout(500);
+  const afterInject = nested ? await nested.evaluate(() => window.__replies) : ['(no frame)'];
+  check('D6d a reply for EVERY refused request reaches nobody, so no route was armed',
+    JSON.stringify(afterInject) === '[]', JSON.stringify(afterInject));
 
   if (errors.length) console.log('  [pageerror]', JSON.stringify(errors.slice(0, 4)));
 
