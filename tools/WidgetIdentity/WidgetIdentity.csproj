@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CI guard for who is allowed to be whom (issues #93, #94).
+
+       A widget's virtual host is its browser ORIGIN: its localStorage, its stored
+       credentials, everything the same-origin policy keeps apart. Two inputs to that
+       assignment were choosable by an untrusted manifest — the version that decided
+       which of two same-id folders won, and the directory enumeration order that
+       decided who got the clean host when the persisted map was empty. Either one was
+       enough to serve an attacker's package from the origin another widget's tokens
+       live under.
+
+       Reproducing that needs a widgets folder, a WebView2 host map and a second
+       installed widget, on a Windows machine neither CI nor the maintainer's device can
+       drive. So the decisions are pure functions of ids and folder names, and this probe
+       covers them; only the wiring is left to inspection. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>WidgetIdentityProbe</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/WaveshareWidgets/Widgets/WidgetIdentity.cs" />
+  </ItemGroup>
+</Project>

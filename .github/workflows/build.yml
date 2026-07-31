@@ -44,6 +44,17 @@ jobs:
       - name: Credential rule agrees with the fixture (validator)
         run: node tools/validate-widget.js --self-test
 
+      # A widget's virtual host is its browser ORIGIN — its localStorage, its stored
+      # credentials. Two inputs to that assignment were choosable by an untrusted
+      # manifest: the VERSION that decided which of two same-id folders won (issue #94),
+      # and the directory ENUMERATION ORDER that decided who got the clean host when the
+      # persisted map was empty (issue #93). Either was enough to serve a hostile package
+      # from the origin another widget's tokens live under. Reproducing it needs a widgets
+      # folder, a WebView2 host map and a second installed widget, so the decisions are
+      # pure functions of ids and folder names and this covers them.
+      - name: Widget identity and host assignment
+        run: dotnet run --project tools/WidgetIdentity
+
       # The proxy forwards widget-chosen headers to loopback and LAN targets, and its
       # browser-grade defaults only fill GAPS — so a forwarded name replaces the host's
       # honest value rather than adding to it. A local service that trusts fetch metadata
