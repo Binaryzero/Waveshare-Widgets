@@ -131,7 +131,20 @@
     }
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
-    else if (msg.type === 'notifications') { latestNotifications = msg.data || null; deliverNotifications(); }
+    else if (msg.type === 'notifications') {
+      // Dropped outright when nobody is watching. The host stops polling on demand=false,
+      // but a poll already in flight lands after that — and the one-time clear at the
+      // transition cannot help, because this arrives AFTER it. Kept, that payload becomes
+      // live again the moment the next subscriber flips demand back on: the first
+      // subscriber is refused by the hostWasPolling gate and then enables delivery for
+      // the SECOND one, and for its own re-init through ww-init (#131 review).
+      //
+      // Demand is the whole condition. A payload nobody asked for is not stale data to
+      // be aged out later, it is data we should never have been holding.
+      if (!notifWatchOn) return;
+      latestNotifications = msg.data || null;
+      deliverNotifications();
+    }
     else if (msg.type === 'game-mode') {
       gameState = { active: !!(msg.data && msg.data.active), process: (msg.data && msg.data.process) || '' };
       applyGameMode();
@@ -258,10 +271,6 @@
       // otherwise nothing would ever send watch(false) when the last watching
       // widget is removed, and the host would poll notifications forever.
       const wasWatching = !!sender.notifWatch;
-      // Whether the HOST was already polling, read before the sync below changes it.
-      // This is the condition the hand-off actually needs, and reading it after would
-      // always say true for the slot that just asked.
-      const hostWasPolling = notifWatchOn;
       sender.notifWatch = msg.on !== false;
       if (!sender.notifWatch) sender.notifSeen = null;
       syncNotificationDemand();
@@ -272,14 +281,16 @@
       // routing fix the panel-wide ww-init carried the payload and hid this; scoping
       // delivery is what exposes it. Hand the newcomer what is already known.
       //
-      // ONLY when the host was already polling (#128). Gated on this slot's own
-      // transition instead, the FIRST subscriber after a quiet period — when polling had
-      // stopped and the cache went stale — was handed an obsolete payload it could
-      // display and, because noteDelivered records the ids, dismiss. The cache is also
-      // cleared when the last watcher stops, so there is nothing stale to hand out
-      // either way; both, because one guard says what is meant and the other removes the
-      // data, and a stale payload should not be reachable by any path.
-      if (sender.notifWatch && !wasWatching && hostWasPolling && latestNotifications)
+      // Safe to hand over whatever is cached, because of where the staleness is handled
+      // rather than here: the cache is cleared when the last watcher leaves, and a
+      // payload arriving with no demand is dropped instead of stored. Between them,
+      // latestNotifications is non-null only while someone is watching (#128, #131).
+      //
+      // An earlier version also required the host to have been polling already. That
+      // read as a second opinion but guarded nothing once the two rules above were in
+      // place — removing it failed no probe — so it is gone rather than left as a layer
+      // nothing can test.
+      if (sender.notifWatch && !wasWatching && latestNotifications)
         sendToSlot(sender, { type: 'ww-notifications', data: noteDelivered(sender, latestNotifications) });
     } else if (msg.type === 'ww-notification-dismiss' && msg.id != null) {
       // Dismissal is scoped to what this slot was actually shown. Otherwise a widget

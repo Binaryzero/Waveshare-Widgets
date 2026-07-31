@@ -27,6 +27,7 @@
 //   R10 · ...but one subscribing after polling STOPPED is not handed a stale one
 //   R10c· ...nor does a re-init carry it (the cleared cache)
 //   R10d· ...nor does a poll that landed while nobody watched (the demand gate)
+//   R10e· ...nor the SECOND subscriber after that one flips demand back on
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -282,6 +283,32 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   const afterLate = await sub.evaluate(() => window.__notifs.length);
   check('R10d a payload that landed while nobody was watching is not handed out either',
     afterLate === 0, `${afterLate} delivery(ies)`);
+
+  // R10e · the one-time clear is not enough on its own. A poll that lands while demand
+  // is off REPOPULATES the cache, and the first subscriber — protected by the gate —
+  // flips demand back on, which makes that stale payload live again for whoever comes
+  // next. So the SECOND subscriber, and a re-init of the first, must not see it either.
+  await sub.evaluate(() => window.__watch(false));
+  await bys.evaluate(() => window.__watch(false));
+  await page.waitForTimeout(300);
+  await pushNotifs();                                   // lands with nobody watching
+  await page.waitForTimeout(200);
+  await sub.evaluate(() => { window.__notifs.length = 0; window.__initNotifs.length = 0; });
+  await bys.evaluate(() => { window.__notifs.length = 0; });
+  await sub.evaluate(() => window.__watch(true));       // first: gate protects it
+  await page.waitForTimeout(300);
+  await bys.evaluate(() => window.__watch(true));       // second: demand is on again
+  await page.waitForTimeout(400);
+  const secondGot = await bys.evaluate(() => window.__notifs.length);
+  check('R10e the SECOND subscriber does not inherit a payload received while demand was off',
+    secondGot === 0, `${secondGot} delivery(ies)`);
+
+  await sub.evaluate(() => parent.postMessage({ type: 'ww-ready' }, '*'));
+  await page.waitForTimeout(400);
+  const lateInit = await sub.evaluate(() => window.__initNotifs.map((n) => JSON.stringify(n)));
+  check('R10e setup: the first subscriber really re-initialized', lateInit.length >= 1, `${lateInit.length} init(s)`);
+  check('R10e2 ...nor does a re-init carry it',
+    lateInit.every((n) => n === 'null'), JSON.stringify(lateInit));
 
   // ...and it is a live subscription, not a silenced one. Without this, R10 and R10d
   // would pass just as well if subscribing had stopped working altogether.
