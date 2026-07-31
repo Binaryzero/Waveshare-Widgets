@@ -33,7 +33,7 @@ Console.WriteLine("Reserved ids (#94)");
 // ws-stock-hue — because that is the only place InstallPackage writes. The seeded copy is
 // in hue/. So the question the scan asks is exactly this one.
 Check("I1 a package claiming a stock id cannot claim it from the folder it lands in",
-    !WidgetIdentity.MayClaim("ws.stock.hue", WidgetIdentity.InstallFolderName("ws.stock.hue"), ShippedHue, stock),
+    !WidgetIdentity.MayClaim("ws.stock.hue", WidgetIdentity.InstallFolderName("ws.stock.hue"), () => ShippedHue, stock),
     WidgetIdentity.InstallFolderName("ws.stock.hue"));
 
 // I1b · the attack that the FOLDER NAME check missed entirely. docs/WIDGET-SPEC.md tells
@@ -42,31 +42,31 @@ Check("I1 a package claiming a stock id cannot claim it from the folder it lands
 // that the unzip triggers would serve it from the real Hue widget's origin. Only content
 // separates the seeded copy from something wearing its name.
 Check("I1b a hostile folder WEARING the stock name and id is still refused",
-    !WidgetIdentity.MayClaim("ws.stock.hue", "hue", "FINGERPRINT-HOSTILE", stock),
+    !WidgetIdentity.MayClaim("ws.stock.hue", "hue", () => "FINGERPRINT-HOSTILE", stock),
     "right name, wrong content");
 
 // I1c · and a claim with no fingerprint at all is refused, not waved through. An
 // unreadable folder is the case a null arrives from, and "could not check" must not read
 // as "checked and fine".
 Check("I1c an unfingerprintable folder cannot claim a stock id",
-    !WidgetIdentity.MayClaim("ws.stock.hue", "hue", null, stock)
-    && !WidgetIdentity.MayClaim("ws.stock.hue", "hue", "", stock));
+    !WidgetIdentity.MayClaim("ws.stock.hue", "hue", () => null, stock)
+    && !WidgetIdentity.MayClaim("ws.stock.hue", "hue", () => "", stock));
 
 // I2 · ...and the real stock widget still loads. A refusal that also refuses the thing it
 // is protecting is not a fix, and this is the direction a too-broad rule breaks in.
 Check("I2 the seeded stock copy still may",
-    WidgetIdentity.MayClaim("ws.stock.hue", "hue", ShippedHue, stock));
+    WidgetIdentity.MayClaim("ws.stock.hue", "hue", () => ShippedHue, stock));
 
 // I2b · reservation keys are not ids. A widget answering to one would be handed the very
 // origin the reservation exists to withhold from it.
 Check("I2b nothing may claim an id in the reservation namespace",
-    !WidgetIdentity.MayClaim(WidgetIdentity.ReservationPrefix + "anything", "whatever", null, stock));
+    !WidgetIdentity.MayClaim(WidgetIdentity.ReservationPrefix + "anything", "whatever", () => null, stock));
 
 // I3 · a stock id from ANY other folder is refused, including one a user hand-copied to a
 // plausible name. Folder names carry no authority; only the shipped set does.
 Check("I3 a stock id from any other folder is refused",
-    !WidgetIdentity.MayClaim("ws.stock.hue", "hue-copy", ShippedHue, stock)
-    && !WidgetIdentity.MayClaim("ws.stock.hue", "clock", ShippedHue, stock));
+    !WidgetIdentity.MayClaim("ws.stock.hue", "hue-copy", () => ShippedHue, stock)
+    && !WidgetIdentity.MayClaim("ws.stock.hue", "clock", () => ShippedHue, stock));
 
 // I4 · case. "WS.Stock.Hue" is the same reserved namespace, and a case-sensitive prefix
 // test would wave it straight through to the clean origin.
@@ -76,20 +76,20 @@ Check("I4 the namespace check is case-insensitive",
 // I5 · a reserved id the app ships NOTHING by belongs to nobody. Retiring a stock widget
 // (fans, for its elevation requirement) must not turn its name into a vacancy.
 Check("I5 a reserved id with no shipped widget is refused everywhere",
-    !WidgetIdentity.MayClaim("ws.stock.fans", "fans", "FINGERPRINT-FANS", stock)
-    && !WidgetIdentity.MayClaim("ws.stock.fans", "ws-stock-fans", "FINGERPRINT-FANS", stock));
+    !WidgetIdentity.MayClaim("ws.stock.fans", "fans", () => "FINGERPRINT-FANS", stock)
+    && !WidgetIdentity.MayClaim("ws.stock.fans", "ws-stock-fans", () => "FINGERPRINT-FANS", stock));
 
 // I6 · and the rule stops at the namespace: ordinary ids install from anywhere, which is
 // the entire point of installing a widget.
 Check("I6 an unreserved id may come from any folder",
-    WidgetIdentity.MayClaim("com.example.cpu", "com-example-cpu", null, stock)
-    && WidgetIdentity.MayClaim("com.example.cpu", "whatever", null, stock));
+    WidgetIdentity.MayClaim("com.example.cpu", "com-example-cpu", () => null, stock)
+    && WidgetIdentity.MayClaim("com.example.cpu", "whatever", () => null, stock));
 
 // I7 · an EMPTY shipped set refuses every reserved id rather than accepting them. This is
 // the failure direction when the stock folder cannot be read: stock widgets go missing and
 // say so, instead of the name being free for anyone to take.
 Check("I7 an unreadable shipped set refuses reserved ids, it does not open them",
-    !WidgetIdentity.MayClaim("ws.stock.hue", "hue", ShippedHue, new List<WidgetIdentity.StockWidget>()));
+    !WidgetIdentity.MayClaim("ws.stock.hue", "hue", () => ShippedHue, new List<WidgetIdentity.StockWidget>()));
 
 Console.WriteLine("Duplicate resolution (#94)");
 
@@ -240,10 +240,10 @@ var shippedRaw = new List<WidgetIdentity.StockWidget>
 };
 var shipped = WidgetIdentity.Shipped(shippedRaw, new[] { "fans" });
 Check("I20 a stale shipped folder for a RETIRED widget authorizes nobody",
-    !WidgetIdentity.MayClaim("ws.stock.fans", "fans", "FINGERPRINT-FANS", shipped),
+    !WidgetIdentity.MayClaim("ws.stock.fans", "fans", () => "FINGERPRINT-FANS", shipped),
     string.Join(", ", shipped.Select(w => w.FolderName)));
 Check("I20b ...while the widgets still shipped are untouched",
-    WidgetIdentity.MayClaim("ws.stock.hue", "hue", "FINGERPRINT-HUE", shipped));
+    WidgetIdentity.MayClaim("ws.stock.hue", "hue", () => "FINGERPRINT-HUE", shipped));
 
 // I20c · the other direction, which is easy to miss because it is not a leak. The install
 // guard refuses a package that would land ON a stock folder; with the retired folder still
@@ -262,6 +262,32 @@ Check("I21b ...while one that already had an entry still is",
     WidgetIdentity.MayServe("com.example.old", minted, mapIsTrustworthy: false));
 Check("I21c ...and a readable map withholds nothing",
     WidgetIdentity.MayServe("com.example.new", minted, mapIsTrustworthy: true));
+
+// I22 · the fingerprint is the expensive half and the folder it hashes is chosen by an
+// attacker: a hand-dropped folder claiming a stock id gets hashed in order to be REFUSED,
+// so a large highly-compressible asset would buy a large read on startup and on every
+// watcher rescan. A claim from a folder no stock widget lives in is refused whatever it
+// contains, so it must never be hashed at all.
+var hashed = 0;
+WidgetIdentity.MayClaim("ws.stock.hue", "somewhere-else", () => { hashed++; return "x"; }, stock);
+Check("I22 a claim from a non-stock folder is refused WITHOUT hashing it", hashed == 0, $"{hashed} hash(es)");
+WidgetIdentity.MayClaim("ws.stock.hue", "hue", () => { hashed++; return "x"; }, stock);
+Check("I22b ...and the folder that could legitimately hold it still is", hashed == 1, $"{hashed} hash(es)");
+
+Console.WriteLine("Serving what the library lists (#94)");
+
+// I23 · a mapping is what makes an origin exist, so a widget the library has REFUSED must
+// lose its mapping. Only the dashboard used to clear stale hosts; the settings window
+// mapped the current library over whatever was there, so a refused widget stayed served
+// from the folder it was refused for and any other widget could iframe that origin.
+var mappedNow = new[] { "app.wsw", "media.wsw", "hue.widgets.wsw", "clock.widgets.wsw" };
+var fixedHosts = new[] { "app.wsw", "media.wsw" };
+var stale = WidgetIdentity.StaleHosts(mappedNow, fixedHosts, new[] { "clock.widgets.wsw" });
+Check("I23 a host the library no longer lists is stale",
+    stale.Contains("hue.widgets.wsw"), string.Join(", ", stale));
+Check("I23b ...while a host it still lists is not", !stale.Contains("clock.widgets.wsw"));
+Check("I23c ...and the shell/media/background hosts are never swept",
+    !stale.Contains("app.wsw") && !stale.Contains("media.wsw"), string.Join(", ", stale));
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;

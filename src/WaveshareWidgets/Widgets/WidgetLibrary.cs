@@ -303,9 +303,17 @@ public sealed partial class WidgetLibrary : IDisposable
         {
             DurableStore.Write(AppPaths.HostMapFile,
                 JsonSerializer.Serialize(map, new JsonSerializerOptions { WriteIndented = true }));
+            // The lock fallback is only as good as this. Left at the pre-save copy, it
+            // described a map that no longer existed: assignments made after the last
+            // successful READ were missing from it, so a rescan that could not open the
+            // file would treat an out-of-date map as the whole record and hand a newcomer
+            // an origin that the missing entry had already reserved.
+            _lastGoodHostMap = new Dictionary<string, string>(map, StringComparer.Ordinal);
         }
         catch (Exception ex)
         {
+            // Deliberately NOT updating the cache here: nothing was persisted, so the last
+            // copy that matches the file is still the one read from it.
             Log.Warn($"Could not save widget host map: {ex.Message}");
         }
     }
@@ -355,11 +363,14 @@ public sealed partial class WidgetLibrary : IDisposable
         }
         catch (Exception ex)
         {
-            // An empty list refuses EVERY reserved id, including the stock widgets' own.
-            // That is the safe direction and a loud one: stock widgets vanish from the
-            // palette rather than a stranger's package quietly answering to their name.
+            // An incomplete list refuses reserved ids, including the stock widgets' own —
+            // the safe direction, and a loud one. But it is NOT cached: an updater holding
+            // a file for a moment would otherwise pin "these widgets do not exist" for the
+            // lifetime of the process, and every later rescan would return the bad answer
+            // instantly without ever looking again. Only a complete scan is worth keeping.
             Log.Error($"Could not read the shipped stock widgets ({ex.Message}) — " +
-                      "every reserved widget id will be refused until this is fixed");
+                      "reserved widget ids will be refused until a later scan succeeds");
+            return WidgetIdentity.Shipped(list, RetiredStockNames);
         }
         _stockWidgets = list;
         return list;
@@ -398,14 +409,23 @@ public sealed partial class WidgetLibrary : IDisposable
     private static string Fingerprint(string dir)
     {
         using var sha = SHA256.Create();
+        var buffer = new byte[81920];
         foreach (var file in Directory.GetFiles(dir, "*", SearchOption.AllDirectories)
                      .Where(f => !string.Equals(Path.GetFileName(f), SeedMarker, StringComparison.OrdinalIgnoreCase))
                      .OrderBy(f => Path.GetRelativePath(dir, f).Replace('\\', '/'), StringComparer.Ordinal))
         {
             var rel = Encoding.UTF8.GetBytes(Path.GetRelativePath(dir, file).Replace('\\', '/') + "\n");
             sha.TransformBlock(rel, 0, rel.Length, null, 0);
-            var content = File.ReadAllBytes(file);
-            sha.TransformBlock(content, 0, content.Length, null, 0);
+            // STREAMED, not ReadAllBytes. This now hashes folders nobody has vouched for —
+            // a hand-dropped folder claiming a stock id is fingerprinted in order to be
+            // refused — so the size of a file here is a number an attacker picks. Reading
+            // one whole into memory made a large, highly compressible asset into a large
+            // allocation on startup and on every watcher rescan. A fixed buffer costs the
+            // same whatever the file claims to be.
+            using var stream = File.OpenRead(file);
+            int read;
+            while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                sha.TransformBlock(buffer, 0, read, null, 0);
         }
         sha.TransformFinalBlock([], 0, 0);
         return Convert.ToHexString(sha.Hash!);
@@ -463,8 +483,7 @@ public sealed partial class WidgetLibrary : IDisposable
                 // claiming a stock id would otherwise be served from the stock widget's
                 // own virtual host — same origin, same localStorage, same tokens.
                 if (!WidgetIdentity.MayClaim(manifest.Id, Path.GetFileName(folder),
-                        WidgetIdentity.IsReserved(manifest.Id) ? InstalledFingerprint(folder) : null,
-                        StockWidgets()))
+                        () => InstalledFingerprint(folder), StockWidgets()))
                 {
                     Log.Warn($"Refusing widget in '{folder}': '{manifest.Id}' is a reserved stock id, " +
                              "and this is not the folder the app seeds it into");

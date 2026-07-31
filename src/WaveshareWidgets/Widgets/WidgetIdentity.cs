@@ -72,7 +72,11 @@ public static partial class WidgetIdentity
     /// May the widget folder named <paramref name="folderName"/> claim <paramref name="id"/>?
     /// </summary>
     /// <param name="installedFingerprint">Content hash of the folder making the claim,
-    /// computed the same way as <see cref="StockWidget.Fingerprint"/>.</param>
+    /// computed the same way as <see cref="StockWidget.Fingerprint"/>. A CALLBACK, and
+    /// invoked only once the folder name matches a shipped widget: hashing is the
+    /// expensive half, the folder it would hash is attacker-controlled, and a claim from a
+    /// folder no stock widget lives in is refused whatever its contents are. So the cost
+    /// is bounded to the couple of dozen names the app actually ships.</param>
     /// <param name="stock">The widgets the app ships, read from next to the exe — the one
     /// statement about stock identity that installing a widget cannot edit.</param>
     /// <remarks>
@@ -95,7 +99,7 @@ public static partial class WidgetIdentity
     /// A reserved id the app ships NOTHING by belongs to nobody: refused everywhere. A
     /// retired stock widget must not become a name anyone can pick up.
     /// </remarks>
-    public static bool MayClaim(string? id, string folderName, string? installedFingerprint,
+    public static bool MayClaim(string? id, string folderName, Func<string?> installedFingerprint,
                                 IReadOnlyList<StockWidget> stock)
     {
         if (string.IsNullOrEmpty(id))
@@ -110,9 +114,11 @@ public static partial class WidgetIdentity
         {
             if (!string.Equals(shipped.Id, id, StringComparison.Ordinal))
                 continue;
-            return string.Equals(shipped.FolderName, folderName, StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrEmpty(installedFingerprint)
-                && string.Equals(installedFingerprint, shipped.Fingerprint, StringComparison.Ordinal);
+            if (!string.Equals(shipped.FolderName, folderName, StringComparison.OrdinalIgnoreCase))
+                return false;
+            var actual = installedFingerprint();
+            return !string.IsNullOrEmpty(actual)
+                && string.Equals(actual, shipped.Fingerprint, StringComparison.Ordinal);
         }
         return false;
     }
@@ -136,6 +142,28 @@ public static partial class WidgetIdentity
     {
         var skip = new HashSet<string>(retired, StringComparer.OrdinalIgnoreCase);
         return found.Where(w => !skip.Contains(w.FolderName)).ToList();
+    }
+
+    /// <summary>Which currently-mapped virtual hosts must stop being served, given the
+    /// widgets the library now lists.</summary>
+    /// <remarks>
+    /// A mapping is what makes an origin exist, so removing one is how a widget stops being
+    /// reachable — and only the dashboard used to do it. The settings window mapped the
+    /// current library over whatever was already there and cleared nothing, which meant a
+    /// widget the library had REFUSED stayed served from the folder it was refused for.
+    /// Any other widget could then iframe that origin, and the refused page would run
+    /// inside the origin whose stored data the refusal was protecting.
+    ///
+    /// Separated from the WebView call so the rule can be checked without one: what the
+    /// library does not list is not served, and hosts that are not widgets are left alone.
+    /// </remarks>
+    public static IReadOnlyList<string> StaleHosts(
+        IEnumerable<string> mapped, IReadOnlyCollection<string> fixedHosts,
+        IEnumerable<string> wanted)
+    {
+        var keep = new HashSet<string>(wanted, StringComparer.OrdinalIgnoreCase);
+        var exempt = new HashSet<string>(fixedHosts, StringComparer.OrdinalIgnoreCase);
+        return mapped.Where(h => !exempt.Contains(h) && !keep.Contains(h)).ToList();
     }
 
     /// <summary>Which resolved widgets may actually be SERVED, given whether the host map
