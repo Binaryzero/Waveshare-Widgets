@@ -105,20 +105,10 @@ public sealed class BrowserFetcher : IDisposable
                 if (headers is not null)
                     foreach (var (name, value) in headers) headerMap[name] = value; // caller's Accept wins
                 var jsHeaders = JsonSerializer.Serialize(headerMap); // safe JS object literal
-                await core.ExecuteScriptAsync($$"""
-                    (() => {
-                      window.__wwResult = null;
-                      fetch({{jsUrl}}, { credentials: 'include', headers: {{jsHeaders}} })
-                        .then(r => r.arrayBuffer().then(buf => {
-                          const bytes = new Uint8Array(buf);
-                          let bin = '';
-                          for (let i = 0; i < bytes.length; i += 0x8000)
-                            bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-                          window.__wwResult = { status: r.status, ct: r.headers.get('content-type') || '', b64: btoa(bin) };
-                        }))
-                        .catch(e => { window.__wwResult = { status: 0, ct: '', b64: '', error: String(e) }; });
-                    })();
-                    """);
+                // The cap is applied INSIDE the page, streaming, so the bytes past it are
+                // never received — see FetchLimits, which is also where the proxy tier's
+                // ceiling lives so the two cannot disagree.
+                await core.ExecuteScriptAsync(FetchLimits.BrowserFetchScript(jsUrl, jsHeaders));
 
                 for (var i = 0; i < 60; i++) // up to ~15 s
                 {
@@ -132,6 +122,13 @@ public sealed class BrowserFetcher : IDisposable
                     if (root.TryGetProperty("error", out var err))
                     {
                         Log.Warn($"browser fetch script error ({SafeUrl.Describe(url)}): {err.GetString()}");
+                        return null;
+                    }
+                    if (root.TryGetProperty("tooLarge", out var big) && big.GetBoolean())
+                    {
+                        var size = root.TryGetProperty("size", out var sz) ? sz.GetInt64() : -1;
+                        Log.Warn($"browser fetch refused ({SafeUrl.Describe(url)}): response exceeds " +
+                                 $"{FetchLimits.MaxBodyBytes} bytes (saw {size})");
                         return null;
                     }
                     var status = root.TryGetProperty("status", out var s) ? s.GetInt32() : 0;

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CI guard for the fetch ladder's body ceiling (issue #117).
+
+       The proxy tier caps; the browser fallback tier did not, and that tier is entered
+       when the remote server answers 403 or 429 — so the attacker chose when the host's
+       advertised limit stopped applying. Exercising the real thing needs WebView2, a
+       Windows host and a server that 403s, so the ceiling and the in-page script that
+       enforces it are values, and this checks them.
+
+       The point of the probe is PARITY: one number, reaching both tiers. The defect was
+       never a missing comparison, it was two tiers disagreeing about whether there was
+       one. It also writes the generated script out so CI can syntax-check it with node —
+       that script is JavaScript embedded in C#, and nothing else in the build would ever
+       notice if it stopped parsing. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>FetchLimitsProbe</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/WaveshareWidgets/FetchLimits.cs" />
+  </ItemGroup>
+</Project>

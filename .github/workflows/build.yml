@@ -55,6 +55,26 @@ jobs:
       - name: Widget identity and host assignment
         run: dotnet run --project tools/WidgetIdentity
 
+      # The fetch ladder advertises a 5 MiB body ceiling, and its browser fallback tier —
+      # entered when the remote server answers 403 or 429, i.e. when the attacker chooses —
+      # did not enforce it. The ceiling now lives in one place and reaches the page as the
+      # same constant; this checks the two tiers cannot drift apart on the number, and that
+      # the generated in-page script still parses, since it is JavaScript inside a C# string
+      # that otherwise only ever runs on a Windows host.
+      - name: Fetch body ceiling
+        run: |
+          dotnet run --project tools/FetchLimits -- browser-fetch.generated.js
+          node --check browser-fetch.generated.js
+
+      # ...and that it BEHAVES: text cannot tell a budget checked before appending a chunk
+      # from one checked after, and the second has already paid for the bytes. This runs the
+      # real generated script against a paced local server and watches whether the transfer
+      # is actually cut off. Plain Node, no browser — the other nine harnesses need
+      # Playwright and run on the maintainer's machine, so a CI step that needed it too
+      # would just be a step that never ran.
+      - name: Fetch body ceiling holds against a real server
+        run: node tests/harness/bodycap-run.js browser-fetch.generated.js
+
       # The proxy forwards widget-chosen headers to loopback and LAN targets, and its
       # browser-grade defaults only fill GAPS — so a forwarded name replaces the host's
       # honest value rather than adding to it. A local service that trusts fetch metadata
