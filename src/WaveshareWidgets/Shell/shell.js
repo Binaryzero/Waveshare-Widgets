@@ -131,7 +131,7 @@
     }
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
-    else if (msg.type === 'notifications') { latestNotifications = msg.data || null; broadcast({ type: 'ww-notifications', data: latestNotifications }); }
+    else if (msg.type === 'notifications') { latestNotifications = msg.data || null; deliverNotifications(); }
     else if (msg.type === 'game-mode') {
       gameState = { active: !!(msg.data && msg.data.active), process: (msg.data && msg.data.process) || '' };
       applyGameMode();
@@ -145,9 +145,11 @@
       const profiles = ((msg.data && msg.data.profiles) || []).filter((p) => typeof p === 'string');
       waiters.forEach((cb) => { try { cb(profiles); } catch (e) { /* row rebuilt */ } });
     } else if (msg.type === 'sd-profile-result') {
-      broadcast({ type: 'ww-sd-profile', profile: msg.data });
+      deliverTo('sdWatch', { type: 'ww-sd-profile', profile: msg.data });
     } else if (msg.type === 'sd-capture-result') {
-      broadcast({ type: 'ww-sd-capture-result', data: msg.data });
+      // Live capture is a SCREENSHOT of the user's Stream Deck keys, pushed repeatedly.
+      // Broadcasting it meant a widget did not even have to ask to receive one.
+      deliverTo('sdCapture', { type: 'ww-sd-capture-result', data: msg.data });
     } else if (msg.type === 'ping-result') {
       routeReply(pingRoutes, msg, 'ww-ping-result');
     } else if (msg.type === 'media-list-result') {
@@ -227,8 +229,11 @@
     } else if (msg.type === 'ww-action' && typeof msg.kind === 'string') {
       postToHost({ type: 'action', kind: msg.kind, target: String(msg.target || '') });
     } else if (msg.type === 'ww-sd-profile') {
+      sender.sdWatch = true;
+      if (msg.live === true) sender.sdCapture = true;   // live mode answers as captures
       postToHost({ type: 'sd-profile', profileName: msg.profileName || '', hideWindow: msg.hideWindow !== false, live: msg.live === true });
     } else if (msg.type === 'ww-sd-capture') {
+      sender.sdCapture = true;
       postToHost({ type: 'sd-capture' });
     } else if (msg.type === 'ww-sd-click') {
       postToHost({ type: 'sd-click', row: msg.row | 0, col: msg.col | 0, rows: msg.rows | 0, cols: msg.cols | 0 });
@@ -253,9 +258,14 @@
       // otherwise nothing would ever send watch(false) when the last watching
       // widget is removed, and the host would poll notifications forever.
       sender.notifWatch = msg.on !== false;
+      if (!sender.notifWatch) sender.notifSeen = null;
       syncNotificationDemand();
     } else if (msg.type === 'ww-notification-dismiss' && msg.id != null) {
-      postToHost({ type: 'notification-dismiss', id: msg.id });
+      // Dismissal is scoped to what this slot was actually shown. Otherwise a widget
+      // that never subscribed can still clear toasts it never saw — and since ids come
+      // from the host, guessing is not required to sweep them.
+      if (sender.notifSeen && sender.notifSeen.has(String(msg.id)))
+        postToHost({ type: 'notification-dismiss', id: msg.id });
     } else if (msg.type === 'ww-audio-set') {
       if (msg.id) {
         audioRoutes.set(msg.id, { win: ev.source, origin: ev.origin });
@@ -272,10 +282,40 @@
       sensors: latestSensors,
       media: latestMedia,
       theme: slotTheme(slot),
-      notifications: latestNotifications,
+      // Only for a slot that asked. A re-init used to hand the latest toasts — app
+      // name, title, body — to every widget on the panel, subscriber or not, so a
+      // widget needed no notification code at all to read the user's notifications.
+      notifications: slot.notifWatch ? noteDelivered(slot, latestNotifications) : null,
       game: gameState,
       status,
     };
+  }
+
+  /// Records which notification ids a slot has been shown, so a later dismiss can be
+  /// checked against them. Returns the payload unchanged, for use at the delivery point.
+  function noteDelivered(slot, payload) {
+    const items = (payload && payload.items) || [];
+    slot.notifSeen = slot.notifSeen || new Set();
+    for (const n of items) if (n && n.id != null) slot.notifSeen.add(String(n.id));
+    return payload;
+  }
+
+  /// Delivers to the slots that asked for this kind of data, by slot-record flag. The
+  /// panel-wide broadcast is right for state every widget is entitled to — sensors, the
+  /// theme, game mode — and wrong for anything a widget has to request, because then the
+  /// request is what distinguishes a subscriber from a bystander.
+  function deliverTo(flag, message) {
+    for (const slot of slots) if (slot.initialized && slot[flag]) sendToSlot(slot, message);
+  }
+
+  /// Notifications go to the slots that subscribed, not to the panel. The host's polling
+  /// is already demand-gated per slot (syncNotificationDemand) — delivery simply had not
+  /// been, so one widget enabling the feature exposed the payload to all of them.
+  function deliverNotifications() {
+    for (const slot of slots) {
+      if (!slot.initialized || !slot.notifWatch) continue;
+      sendToSlot(slot, { type: 'ww-notifications', data: noteDelivered(slot, latestNotifications) });
+    }
   }
 
   // Notification polling is demand-gated in the host; recomputed from the live slot
@@ -1658,8 +1698,13 @@
     record.initialized = false; // the fresh document's ww-ready gets a full init
     // The document that registered any notification demand is being destroyed —
     // carrying its flag forward would keep the host polling toasts forever if
-    // the fresh document (new settings) never re-opts or the reload fails.
+    // the fresh document (new settings) never re-opts or the reload fails. The same
+    // reasoning covers every subscription: the demand belonged to that document, and
+    // the one replacing it has asked for nothing yet.
     record.notifWatch = false;
+    record.notifSeen = null;
+    record.sdWatch = false;
+    record.sdCapture = false;
     syncNotificationDemand();
     record.frame.src = record.url + '?r=' + (++propReloadSeq) + hash;
     // This navigation can flake exactly like an initial load (virtual-host races,

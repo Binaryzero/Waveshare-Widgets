@@ -72,6 +72,16 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   it: its uncaught errors must not be reported to the widget framing it, while a real
   widget's own errors must still reach the host log, including one raised before init —
   held until the shell answers, not dropped. Ports used: 8956.
+- `routing-run.js` — demand-scoped delivery: a widget receives what it ASKED for, not
+  what the panel got. Three host channels answered every initialized widget rather than
+  the subscriber — mirrored Windows toasts (app name, title, body), the Stream Deck's
+  configured keys, and a live screenshot of those keys — so a widget needed no
+  notification code at all to read the user's notifications, and none at all to watch
+  their Stream Deck. Every probe asserts BOTH halves, a subscriber that still receives
+  and a bystander that does not, because "nobody received it" is what a broken delivery
+  path looks like too. Also covers the second delivery path (a re-init used to carry the
+  latest payload to whoever reloaded), that dismissal is scoped to ids the slot was
+  actually shown, and that unsubscribing really stops delivery. Port used: 8957.
 - `deckpreview-run.js` — the settings LIVE PREVIEW, which nothing else here reaches
   (issue #78, the third time the Control Deck has come back empty after #43 and #49).
   Every other suite drives the shell directly with a stubbed `chrome.webview`; the
