@@ -23,6 +23,7 @@
 //   R6  · sd-profile reaches the asker only
 //   R7  · sd-capture reaches the asker only
 //   R8  · dropping the subscription stops delivery
+//   R9  · a slot subscribing while the host already polls is handed the cached payload
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -213,6 +214,32 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   const afterOff = await sub.evaluate(() => window.__notifs.length);
   check('R8 dropping the subscription stops delivery to that slot',
     afterOff === 0, `${afterOff} delivery(ies) after watch(false)`);
+
+  // R9 · a slot that subscribes while another ALREADY has the host polling. There is no
+  // demand transition for it to ride in on, and the host dedupes an unchanged poll, so
+  // without an explicit hand-off the newcomer sits on null until a toast happens to
+  // change. The bystander from R2 becomes that late subscriber — it starts from nothing,
+  // which is exactly the state a reloaded notification widget would be in.
+  await sub.evaluate(() => window.__watch(true));   // first subscriber active again
+  await page.waitForTimeout(200);
+  await pushNotifs();
+  await page.waitForTimeout(300);
+  await bys.evaluate(() => { window.__notifs.length = 0; });
+  check('R9 setup: the late subscriber has nothing yet',
+    (await bys.evaluate(() => window.__notifs.length)) === 0);
+  await bys.evaluate(() => window.__watch(true));
+  await page.waitForTimeout(400);
+  const lateGot = await bys.evaluate(() => window.__notifs.length);
+  check('R9 a slot subscribing after the host is already polling gets the cached payload',
+    lateGot === 1, `${lateGot} delivery(ies)`);
+
+  // ...and it can act on what it was just handed, which is the point of delivering it.
+  hostMessages.length = 0;
+  await bys.evaluate(() => window.__dismiss('n2'));
+  await page.waitForTimeout(300);
+  check('R9b ...and may dismiss what that payload showed it',
+    hostMessages.some((m) => m.type === 'notification-dismiss' && m.id === 'n2'),
+    JSON.stringify(hostMessages.map((m) => m.type)));
 
   await browser.close();
   srv.close();

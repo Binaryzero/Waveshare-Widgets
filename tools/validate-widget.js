@@ -116,9 +116,47 @@ const decodeEntities = (s) => String(s).replace(/&(#[xX][0-9a-fA-F]+|#\d+|[a-zA-
   const named = CHAR_REFS[body.toLowerCase()];
   return named === undefined ? whole : named;
 });
+// Attributes are TOKENIZED rather than searched for. A regex scanning the whole tag has
+// no idea where one attribute ends and the next begins, so
+//   <script data-doc="example src=//cdn.example/x.js">
+// reads as if the element had a src — an inline script that fetches nothing, refused.
+// Walking the tag once, honouring quotes, is both shorter to reason about and the only
+// way the answer can be right for markup nobody thought to predict.
+function tagAttributes(tag) {
+  const attrs = new Map();
+  // Past `<` and the tag name; everything after is attributes until the closing `>`.
+  let i = 1;
+  while (i < tag.length && /[^\s/>]/.test(tag[i])) i++;
+  while (i < tag.length) {
+    while (i < tag.length && /[\s/]/.test(tag[i])) i++;
+    if (i >= tag.length || tag[i] === '>') break;
+    const start = i;
+    while (i < tag.length && /[^\s=/>]/.test(tag[i])) i++;
+    const name = tag.slice(start, i).toLowerCase();
+    if (!name) { i++; continue; }
+    while (i < tag.length && /\s/.test(tag[i])) i++;
+    let value = '';
+    if (tag[i] === '=') {
+      i++;
+      while (i < tag.length && /\s/.test(tag[i])) i++;
+      const quote = tag[i];
+      if (quote === '"' || quote === "'") {
+        const end = tag.indexOf(quote, ++i);
+        value = end < 0 ? tag.slice(i) : tag.slice(i, end);
+        i = end < 0 ? tag.length : end + 1;
+      } else {
+        const vs = i;
+        while (i < tag.length && /[^\s>]/.test(tag[i])) i++;
+        value = tag.slice(vs, i);
+      }
+    }
+    if (!attrs.has(name)) attrs.set(name, decodeEntities(value));   // first wins, as HTML does
+  }
+  return attrs;
+}
 const attr = (tag, name) => {
-  const m = tag.match(new RegExp('[\\s/]' + name + '\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\'|([^\\s"\'>]+))', 'i'));
-  return m ? decodeEntities(m[1] ?? m[2] ?? m[3] ?? '') : null;
+  const v = tagAttributes(tag).get(name.toLowerCase());
+  return v === undefined ? null : v;
 };
 const APP_PREFIX = 'https://app.wsw/';
 // External = anything carrying a scheme or protocol-relative authority that is not the
@@ -126,7 +164,11 @@ const APP_PREFIX = 'https://app.wsw/';
 // is always fine. Whitespace inside the value counts as padding, not as content: a
 // browser strips leading and trailing space (and tabs and newlines) before resolving.
 const isExternalRef = (value, { allowData = false } = {}) => {
-  const s = String(value || '').replace(/[\s\u0000]+/g, '').trim();
+  // Backslashes are slashes to a URL parser on a special scheme, so `\\evil.example/x`
+  // resolves against an https base to `https://evil.example/x` — a bypass that looks like
+  // neither a scheme nor a `//` until the browser normalizes it. Classify what the
+  // browser will act on.
+  const s = String(value || '').replace(/[\s\u0000]+/g, '').replace(/\\/g, '/').trim();
   if (!s || s.startsWith(APP_PREFIX)) return false;
   // A data: URI carries its own bytes, so for a LINK it is self-contained by definition —
   // a packaged data-URI icon fetches nothing. Never passed for <script>, where the bytes
@@ -361,6 +403,14 @@ if (args.includes('--self-test')) {
     // ...while a packaged data: URI fetches nothing and must stay accepted. Inert bytes
     // in a link are self-contained; the same scheme on a <script> is code, and stays out.
     ['data-uri-icon', doc(BASE + '<link rel="icon" href="data:image/png;base64,iVBORw0KGgo=">'), null],
+    // A URL parser treats backslashes as slashes on a special scheme, so this resolves
+    // against the widget's https base to https://evil.example/pwn.js.
+    ['entity-backslashes', doc(BASE + '<script src="&#92;&#92;evil.example/pwn.js"></script>'), 'external-script'],
+    ['literal-backslashes', doc(BASE + '<script src="\\\\evil.example/pwn.js"></script>'), 'external-script'],
+    // ...and the other direction: text INSIDE another attribute is not this element's
+    // src. An inline script fetches nothing and must not be reported as external.
+    ['lookalike-attribute', doc(BASE + '<script data-doc="example src=//cdn.example/x.js">var a=1;</script>'), null],
+    ['lookalike-href-attribute', doc(BASE + '<link rel="icon" data-note="href=//evil.example/x" href="icon.png">'), null],
     // ...while a relative script is the ordinary case and must stay accepted.
     ['relative-script', doc(BASE + '<script src="./helper.js"></script>'), null],
   ];

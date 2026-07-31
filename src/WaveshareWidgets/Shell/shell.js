@@ -257,9 +257,18 @@
       // Demand is tracked per slot and only on/off TRANSITIONS reach the host —
       // otherwise nothing would ever send watch(false) when the last watching
       // widget is removed, and the host would poll notifications forever.
+      const wasWatching = !!sender.notifWatch;
       sender.notifWatch = msg.on !== false;
       if (!sender.notifWatch) sender.notifSeen = null;
       syncNotificationDemand();
+      // A slot that subscribes while ANOTHER already has the host polling gets no
+      // transition to ride in on — syncNotificationDemand returns early because the
+      // aggregate demand is unchanged, and the host dedupes an unchanged poll, so the
+      // new subscriber would sit on null until a toast happened to change. Before the
+      // routing fix the panel-wide ww-init carried the payload and hid this; scoping
+      // delivery is what exposes it. Hand the newcomer what is already known.
+      if (sender.notifWatch && !wasWatching && latestNotifications)
+        sendToSlot(sender, { type: 'ww-notifications', data: noteDelivered(sender, latestNotifications) });
     } else if (msg.type === 'ww-notification-dismiss' && msg.id != null) {
       // Dismissal is scoped to what this slot was actually shown. Otherwise a widget
       // that never subscribed can still clear toasts it never saw — and since ids come
