@@ -71,6 +71,38 @@ Check("F5c ...and reports the refusal so the caller can log it rather than see a
 // holding the 403 the proxy tier got. A cap must not turn an empty answer into a failure.
 Check("F7 a null body is answered, not thrown on", code.Contains("if (!r.body)"));
 
+// F8 · the WIDGET side of the same ceiling. WW.fetch wraps every response so a widget
+// cannot materialise more than this either, and that number lives in widget-api.js because
+// the shim is plain JS with no access to the C# constant. Two hand-kept copies is exactly
+// how the proxy and browser tiers drifted apart in the first place, so they are compared.
+var shim = FindUpwards("src/WaveshareWidgets/Shell/widget-api.js");
+if (shim is null)
+{
+    Check("F8 the widget shim's ceiling matches the host's", false, "widget-api.js not found");
+}
+else
+{
+    var text = File.ReadAllText(shim);
+    var declared = System.Text.RegularExpressions.Regex.Match(
+        text, @"const MAX_BODY_BYTES = ([0-9*\s]+);");
+    var value = declared.Success
+        ? declared.Groups[1].Value.Split('*').Select(part => int.Parse(part.Trim())).Aggregate(1, (a, b) => a * b)
+        : -1;
+    Check("F8 the widget shim's ceiling matches the host's", value == Max, $"shim={value} host={Max}");
+}
+
+static string? FindUpwards(string relative)
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null)
+    {
+        var candidate = Path.Combine(dir.FullName, relative.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(candidate)) return candidate;
+        dir = dir.Parent;
+    }
+    return null;
+}
+
 // F6 · the script is written out for the JS side. It is JavaScript living inside a C#
 // string: nothing in this build would notice it becoming unparseable, and on the product it
 // only ever executes on a Windows host talking to a server that answered 403 — so CI syntax-

@@ -54,6 +54,89 @@
   // table. None of those are reachable from here: this variable dies with the document
   // whose pixels it describes, and it only advances below, where the frame is delivered.
   let lastCaptureHash = '';
+  // >>> BODY-CAP BEGIN — tests/harness/bodycap-run.js lifts this block out and drives it
+  // directly. Extracted by marker rather than copied, so the probe can never diverge from
+  // what ships; the browser harness cannot reach the chunked path (its widget page is
+  // https, so an http fixture is blocked as mixed content) and this is where the streaming
+  // budget is actually exercisable.
+  // Largest response body WW.fetch will materialise, in bytes. The host enforces the same
+  // ceiling on both of its own tiers; this is the widget-side half, and tools/FetchLimits
+  // asserts the two numbers stay equal — a widget reading gigabytes into the panel's
+  // renderer is the same failure whichever path delivered them.
+  //
+  // Overridable per call with init.maxBytes, because a ceiling that cannot be raised for a
+  // legitimately large download turns into widgets that bypass WW.fetch entirely.
+  const MAX_BODY_BYTES = 5 * 1024 * 1024;
+
+  /// Reads a Response body with a byte budget, refusing WITHOUT materialising the excess.
+  /// The check is asked before each chunk is kept, and the transfer is cancelled rather
+  /// than abandoned — walking away from an unread body leaves it downloading in the
+  /// background, which is most of what a ceiling is for.
+  async function readCapped(response, maxBytes) {
+    if (!response.body) return new Uint8Array(0);   // 204/205/304 have no body to read
+    const declared = Number(response.headers.get('content-length') || 0);
+    if (declared > maxBytes) {
+      try { await response.body.cancel(); } catch (e) { /* nothing to cancel */ }
+      throw new RangeError('response too large: ' + declared + ' bytes exceeds ' + maxBytes);
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (total + value.length > maxBytes) {
+        try { await reader.cancel(); } catch (e) { /* already closed */ }
+        throw new RangeError('response too large: exceeds ' + maxBytes + ' bytes');
+      }
+      chunks.push(value);
+      total += value.length;
+    }
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const c of chunks) { out.set(c, at); at += c.length; }
+    return out;
+  }
+
+  /// The ceiling for one call: init.maxBytes when it is a usable number, else the default.
+  /// Inside the extracted block so the plumbing is drivable, not just the wrapper it feeds —
+  /// a probe that called cappedResponse directly would test the budget and never test which
+  /// budget WW.fetch actually picks.
+  function resolveCap(init) {
+    const asked = init && init.maxBytes;
+    return Number.isFinite(asked) && asked > 0 ? Math.floor(asked) : MAX_BODY_BYTES;
+  }
+
+  /// Wraps a Response so its body readers obey the budget, and forwards everything else.
+  ///
+  /// A PROXY rather than a hand-written stand-in: widgets read status, ok, headers,
+  /// redirected, url, type, and whatever the platform adds next, and a copy would silently
+  /// stop matching. Property reads go to the real Response with the real Response as the
+  /// receiver — Response's getters need their internal slot, and handing them the proxy
+  /// instead throws.
+  function cappedResponse(response, maxBytes) {
+    const decode = (bytes) => new TextDecoder().decode(bytes);
+    const overrides = {
+      arrayBuffer: async () => (await readCapped(response, maxBytes)).buffer,
+      text: async () => decode(await readCapped(response, maxBytes)),
+      json: async () => JSON.parse(decode(await readCapped(response, maxBytes))),
+      blob: async () => new Blob([await readCapped(response, maxBytes)],
+        { type: response.headers.get('content-type') || '' }),
+      bytes: async () => readCapped(response, maxBytes),
+      // A clone has to stay capped, or a widget could read the body through it uncapped.
+      clone: () => cappedResponse(response.clone(), maxBytes),
+    };
+    return new Proxy(response, {
+      get(target, prop) {
+        if (Object.prototype.hasOwnProperty.call(overrides, prop)) return overrides[prop];
+        const value = Reflect.get(target, prop, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  }
+
+  // <<< BODY-CAP END
+
   let fetchSeq = 0;
   // The shell routes results by id alone, across EVERY widget frame — a per-frame
   // counter plus a ms-floored clock can collide between frames loaded in the same
@@ -439,9 +522,14 @@
      */
     fetch(url, init) {
       init = init || {};
+      // Every return path below goes through this, so there is one place a body can be
+      // read and no path that forgets. Applied to the RESULT rather than inside each
+      // branch because the escalation ladder has five of them.
+      const cap = resolveCap(init);
+      const capped = (p) => p.then((response) => cappedResponse(response, cap));
       // Aborted before we start: the native path rejects with the spec's
       // AbortError and touches no network — no memo, no proxy.
-      if (init.signal && init.signal.aborted) return fetch(url, init);
+      if (init.signal && init.signal.aborted) return capped(fetch(url, init));
       let memoKey = null;
       let remembered = false;
       try {
@@ -462,7 +550,7 @@
       // a wrong answer no status check can catch.
       const credentialed = init.credentials === 'include';
       if (init.proxy === 'always' || (init.proxy !== 'never' && remembered && replayable && !credentialed)) {
-        return proxyFetch(url, snap, init.signal).then((response) => {
+        return capped(proxyFetch(url, snap, init.signal).then((response) => {
           // An auth-shaped 401/403 from the proxy may just mean the request
           // needed the browser's ambient cookies, which never cross the proxy
           // hop — retry native (unless the caller opted out of the browser
@@ -478,9 +566,9 @@
         }, (err) => {
           if (init.proxy === 'always' || (err && err.name === 'AbortError')) throw err;
           return fetch(url, init); // memory can go stale (CORS fixed upstream): last resort
-        });
+        }));
       }
-      return fetch(url, init).then((response) => {
+      return capped(fetch(url, init).then((response) => {
         // Bot walls sometimes serve their block page WITH CORS headers, so the
         // request "succeeds" as a 403/429; retry those via the host — unless the
         // caller opted out of the proxy, or the body can't be replayed faithfully.
@@ -505,7 +593,7 @@
         // response was blocked — an empty replay would double-hit the server.
         if (!replayable) throw err;
         return proxyFetch(url, snap, init.signal);
-      });
+      }));
     },
 
     /** Request the Virtual Stream Deck profile; delivered via onStreamDeck(cb).

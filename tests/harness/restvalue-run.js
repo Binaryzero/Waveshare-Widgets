@@ -13,6 +13,8 @@
 //   R10 · a failing endpoint backs off; an explicit Retry overrides the backoff
 //   R11 · the age label is recomputed from the clock, not frozen until the next poll
 //   R12 · a tile that BOOTS during a game reads that state out of ww-init and stays quiet
+//   R22 · a response past the WW.fetch ceiling is named as such, not as unreachable —
+//         and an ordinary body still reads through the new cap
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -331,6 +333,29 @@ const TOKEN = 'Bearer super-secret-probe-token';
   await gameEvent(false);
   await wait(600);
   check('R12c and polling resumes once the game exits', seen.length > 0, `${seen.length} requests`);
+
+  // ---- R22 · a response past the WW.fetch ceiling is NAMED, not reported as unreachable
+  // The tile renders one number. An endpoint that answers with megabytes is answering —
+  // the URL is right, the network is fine — so "could not reach the endpoint" would send
+  // the user to check two things that are both working. WW.fetch refuses the body without
+  // materialising it, and the tile has to say which failure this is.
+  respond = () => ({ status: 200, contentType: 'application/json', body: 'x'.repeat(6 * 1024 * 1024) });
+  await init(Object.assign({}, base, { url: 'https://api.test/huge', jsonPointer: '/v' }));
+  await wait(2500);
+  const huge = await read();
+  check('R22 an oversized response says so, rather than blaming the URL or the network',
+    /too large/i.test(huge.title), `${huge.title} — ${huge.body}`);
+  check('R22b ...and it is offered as retryable, since the endpoint is answering',
+    huge.retry === true, String(huge.retry));
+
+  // R13c · and the ordinary case still reads. A ceiling that also refused normal bodies
+  // would pass R13 while breaking every tile, which is the direction this has to be
+  // checked in — the cap is new, and it sits in front of every widget's reads.
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 42 }) });
+  await init(Object.assign({}, base, { url: 'https://api.test/small', jsonPointer: '/v' }));
+  await wait(1500);
+  const afterCap = await read();
+  check('R22c a normal body still reads through the cap', afterCap.value === '42', afterCap.value);
 
   // ---- R13 · a Critical threshold works on its own ---------------------------------
   // The manifest offers Warn and Critical independently and marks neither required, so

@@ -22,7 +22,9 @@
 'use strict';
 const fs = require('fs');
 const http = require('http');
+const path = require('path');
 
+const SHIM = path.join(__dirname, '..', '..', 'src', 'WaveshareWidgets', 'Shell', 'widget-api.js');
 const MAX = 5 * 1024 * 1024;
 const OVERSIZE = MAX * 2;   // enough to be refused, small enough to stay quick when paced
 const PORT = 8961;
@@ -148,6 +150,67 @@ function server() {
   check('C4b ...and the transfer is cancelled, so the server never finishes sending',
     (await settled('chunked')) === 'aborted',
     `${outcome.chunked} after ${sent.chunked} of ${OVERSIZE} bytes`);
+
+  // ---- The WIDGET side of the same ceiling (#106) ----------------------------------
+  // WW.fetch wraps every response so a widget cannot materialise more than the ceiling
+  // either. The block is lifted out of widget-api.js by marker, so this drives exactly what
+  // ships rather than a copy of it — and it runs here because the browser harness cannot:
+  // its widget page is https, so an http fixture is blocked as mixed content, leaving the
+  // declared-length path the only one reachable there.
+  const shimSrc = fs.readFileSync(SHIM, 'utf8');
+  // From the END of the marker LINE: the marker has prose after it on the same line, and
+  // slicing at the marker itself would leave that prose as bare code.
+  const afterMarker = shimSrc.split('>>> BODY-CAP BEGIN')[1] || '';
+  const block = afterMarker.slice(afterMarker.indexOf('\n') + 1).split('<<< BODY-CAP END')[0];
+  check('C6 setup: the body-cap block was found in widget-api.js', !!block && block.includes('readCapped'));
+  // The block ends inside the trailing marker's comment, so the return statement needs its
+  // own line or it is swallowed by it.
+  const shim = new Function('TextDecoder', 'Blob',
+    `${block}\nreturn { readCapped, cappedResponse, resolveCap, MAX_BODY_BYTES };`)(TextDecoder, Blob);
+  check('C6 setup: the shim ceiling is the same number the host uses', shim.MAX_BODY_BYTES === MAX,
+    `${shim.MAX_BODY_BYTES} vs ${MAX}`);
+
+  const capped = (url, max) => fetch(url).then((r) => shim.cappedResponse(r, max || MAX));
+
+  const ok = await capped(`http://127.0.0.1:${PORT}/wsmall?bytes=2048&declare=1`);
+  check('C6 a small body reads through the wrapper', (await ok.text()).length === 2048);
+  check('C6b ...and the forwarded properties are the real Response\'s',
+    ok.status === 200 && ok.ok === true && typeof ok.headers.get === 'function'
+      && ok.headers.get('content-type') === 'application/octet-stream',
+    `${ok.status} ${ok.ok} ${ok.headers.get('content-type')}`);
+
+  const bigDeclared = await capped(`http://127.0.0.1:${PORT}/wdeclared?bytes=${OVERSIZE}&declare=1`);
+  let refusedDeclared = null;
+  try { await bigDeclared.text(); } catch (e) { refusedDeclared = e; }
+  check('C7 a declared oversized body is refused by the wrapper',
+    refusedDeclared instanceof RangeError && /too large/i.test(refusedDeclared.message),
+    String(refusedDeclared));
+  check('C7b ...and the server sees it torn down', (await settled('wdeclared')) === 'aborted', outcome.wdeclared);
+
+  // C8 · THE one the browser harness cannot reach. No Content-Length, so the declared
+  // shortcut has nothing to look at and only the streaming budget stands in the way.
+  const bigChunked = await capped(`http://127.0.0.1:${PORT}/wchunked?bytes=${OVERSIZE}&declare=0`);
+  let refusedChunked = null;
+  try { await bigChunked.json(); } catch (e) { refusedChunked = e; }
+  check('C8 a CHUNKED oversized body is refused by the streaming budget',
+    refusedChunked instanceof RangeError && /too large/i.test(refusedChunked.message),
+    String(refusedChunked));
+  check('C8b ...and that transfer is cancelled too', (await settled('wchunked')) === 'aborted', outcome.wchunked);
+
+  // C9 · the per-call override, because a ceiling nobody can raise gets bypassed instead.
+  // Driven through resolveCap — the value WW.fetch actually passes — rather than by handing
+  // cappedResponse a number directly, which would prove the wrapper obeys a budget while
+  // saying nothing about which budget it is given.
+  check('C9 init.maxBytes chooses the ceiling for that call', shim.resolveCap({ maxBytes: MAX * 2 }) === MAX * 2,
+    String(shim.resolveCap({ maxBytes: MAX * 2 })));
+  check('C9b ...and anything unusable falls back to the default',
+    shim.resolveCap({}) === MAX && shim.resolveCap({ maxBytes: 0 }) === MAX
+      && shim.resolveCap({ maxBytes: -1 }) === MAX && shim.resolveCap({ maxBytes: 'big' }) === MAX
+      && shim.resolveCap(undefined) === MAX);
+  const raised = await capped(`http://127.0.0.1:${PORT}/wraised?bytes=${MAX + 65536}&declare=1`,
+    shim.resolveCap({ maxBytes: MAX * 2 }));
+  check('C9c ...and a body under the raised ceiling then reads',
+    (await raised.arrayBuffer()).byteLength === MAX + 65536);
 
   // C5 · a body-forbidden response is an ANSWER, not a failure. The streaming rewrite has
   // to absorb r.body === null the way arrayBuffer() did; if it throws instead, BrowserFetcher

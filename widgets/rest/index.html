@@ -356,6 +356,20 @@
       if (superseded()) return;
       failures++;
       WW.log('rest: ' + (e && e.message ? e.message : e));
+      // "Too large" is not "unreachable", and the difference is the only thing that tells
+      // the user what to do. WW.fetch refuses a body past its ceiling rather than reading
+      // it, so the endpoint IS answering — it is just answering with more than a tile that
+      // renders one number has any business loading. Naming it keeps them from checking a
+      // URL and a network that are both fine.
+      const tooLarge = e instanceof RangeError && /too large/i.test(e.message || '');
+      if (tooLarge) {
+        if (!showStale('too large')) {
+          showState('⚠', 'Response too large',
+            'The endpoint answered, but its response is larger than this tile will load. ' +
+            'Point it at an endpoint that returns just the value.', true);
+        }
+        return;
+      }
       if (!showStale('unreachable')) {
         showState('⚠', 'Could not reach the endpoint',
           'The request failed. Check the URL, and that this PC can reach it.', true);
