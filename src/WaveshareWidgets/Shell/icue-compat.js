@@ -574,6 +574,12 @@
   }
 
   window.addEventListener('message', (ev) => {
+    // Same gate as widget-api.js, and needed for the same reason: this file is injected
+    // into every document too, so a page an iCUE widget frames can post to its parent
+    // and forge ww-init (overwriting the property globals iCUE widgets read), ww-sensors,
+    // ww-media, or a ww-fetch-result that resolves a pending request with its own data.
+    // Two shims, one boundary — gating only one leaves the other as the way in.
+    if (ev.source !== window.parent) return;
     const msg = ev.data || {};
     if (msg.type === 'ww-init') {
       setPropertyGlobals(msg.settings);

@@ -50,7 +50,12 @@ public static partial class CredentialNames
     [GeneratedRegex(@"(api|client|access|auth|refresh|session|bearer|private|user|admin|service|oauth)(token|secret|key|password|passwd)s?", RegexOptions.IgnoreCase)]
     private static partial Regex CompoundAnywhere();
 
-    [GeneratedRegex(@"^[a-z0-9]+$")]
+    // A SINGLE case run, upper or lower — not merely "letters and digits". APITOKENVALUE
+    // carries no word boundary either, so it is as ambiguous as apitokenvalue and belongs
+    // here. IgnoreCase would also match userKeyboardLayout, whose camelCase IS the
+    // boundary this rule is defined by absence of. Two anchored alternatives say what is
+    // meant: no case change anywhere.
+    [GeneratedRegex(@"^([a-z0-9]+|[A-Z0-9]+)$")]
     private static partial Regex Unstructured();
 
     // A url/link/endpoint is the credential only when the name denotes the VALUE:

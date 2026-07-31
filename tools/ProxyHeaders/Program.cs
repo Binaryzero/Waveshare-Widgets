@@ -38,7 +38,7 @@ Check("P3 Proxy-* is refused",
     !ProxyHeaderRules.IsWidgetSuppliable("Proxy-Authorization"));
 
 // Not spoofing — these belong to HttpClient, and forwarding them corrupts the request.
-string[] framing = ["Host", "Content-Length", "Transfer-Encoding", "Connection", "Cookie"];
+string[] framing = ["Host", "Content-Length", "Transfer-Encoding", "Connection", "Cookie", "Cookie2"];
 Check("P4 hop-by-hop and body-framing headers stay under HttpClient's control",
     framing.All(h => !ProxyHeaderRules.IsWidgetSuppliable(h)),
     string.Join(", ", framing.Where(ProxyHeaderRules.IsWidgetSuppliable)));
@@ -63,8 +63,11 @@ Check("P6 ...and Authorization survives the browser tier too, or a 403 retry los
 // already refused, so the escalation ladder changed the request's trustworthiness
 // halfway up. Any name refused as browser-forwardable for being browser-OWNED must be
 // refused on the proxy tier as well.
+// Cookie2 is here because it is exactly how this drifts: the browser list named it, the
+// proxy list did not, and the parity check missed it by naming neither. The lists are
+// the thing that rots, so the parity set should hold every name EITHER list mentions.
 string[] hostOwned = ["User-Agent", "Referer", "Origin", "Sec-Fetch-Site", "Sec-Fetch-Mode",
-    "Sec-CH-UA-Platform", "Proxy-Authorization"];
+    "Sec-CH-UA-Platform", "Proxy-Authorization", "Cookie", "Cookie2"];
 var drifted = hostOwned.Where(h =>
     ProxyHeaderRules.IsWidgetSuppliable(h) != ProxyHeaderRules.IsBrowserForwardable(h)).ToArray();
 Check("P7 the two tiers agree on every host-owned name",

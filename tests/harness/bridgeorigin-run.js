@@ -23,9 +23,10 @@
 //   B4 · a nested frame cannot impersonate ww-ready and harvest another slot's settings
 //   B5 · the reply channel is not opened for a sender that was refused
 //   B6 · a nested frame cannot forge ww-init and feed its parent widget fake state
+//   B6b· ...including through the iCUE shim's separate listener in the same document
 //   B7 · a nested frame's uncaught errors are not reported to the widget framing it
 //   B7b· ...while a real widget's own errors still reach the host log
-//   B7c· ...and one raised before init is held, not dropped
+//   B7c· ...and one raised before init is not lost to the guard
 //   B8 · a slot frame that navigated to another origin cannot drive the host
 //   B8b· ...and is not answered with the widget's settings
 //   B9 · ...and host broadcasts are not delivered to it, while a live widget still gets them
@@ -66,10 +67,13 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
 <iframe id="evil" src="https://evil.example/nested.html"
         style="width:100%;height:100%;border:0"></iframe>
 <script src="https://app.wsw/widget-api.js"></script>
+<!-- iCUE-compatible widgets carry a SECOND injected shim with its own message
+     listener, so a gate on one file leaves the other as the way in. -->
+<script src="https://app.wsw/icue-compat.js"></script>
 <script>
-  // Raised while the shim is still waiting for its init — B7c checks it is HELD and
-  // delivered once the shell answers, not silently discarded. A widget that dies during
-  // startup is the case these diagnostics exist for, so losing them is its own bug.
+  // Raised while the shim is still waiting for its init — B7c checks it arrives anyway.
+  // A widget that dies during startup is the case these diagnostics exist for, so a
+  // guard that silently costs them would trade one bug for another.
   throw new Error('early-boom');
 </script>
 <script>
@@ -81,6 +85,10 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   window.__wwProbeAction = () => WW.action('launch', 'legit.exe');
   window.__wwThrow = () => setTimeout(() => { throw new Error('widget-boom'); }, 0);
   window.__wwNavigate = (url) => { location.href = url; };
+  // A widget owns the frames it creates, so for its child it IS window.parent. This is
+  // the attack B7d covers: unlock the child's shim by pretending to be the shell.
+  window.__forgeDown = () => document.getElementById('evil').contentWindow.postMessage(
+    { type: 'ww-init', settings: {}, sensors: [] }, '*');
   // Everything this document can SEE, whoever sent it. The shim's own filtering is not
   // the measurement — what a widget can observe of the page it frames is.
   window.__heard = [];
@@ -110,15 +118,28 @@ const NESTED_HTML = `<!DOCTYPE html><meta charset="utf-8">
   // Aimed at the PARENT this time: the widget that framed us. Nothing here needs the
   // shell — it is one frame lying to another.
   window.__forgeInit = () => parent.postMessage({
-    type: 'ww-init', settings: { pwned: 'yes' }, sensors: [{ name: 'fake', value: 1 }],
+    type: 'ww-init',
+    // pwned is read by WW.onInit; pwnedGlobal is what the iCUE shim would publish as a
+    // window global for widget code to read. One forged message, two shims to fool.
+    settings: { pwned: 'yes', pwnedGlobal: 'yes' },
+    sensors: [{ name: 'fake', value: 1 }],
   }, '*');
   window.__throw = () => setTimeout(() => { throw new Error('nested-boom'); }, 0);
+  window.__throw2 = () => setTimeout(() => { throw new Error('nested-boom-2'); }, 0);
   window.__replies = [];
   window.addEventListener('message', (e) => {
     const t = (e.data || {}).type;
     if (typeof t === 'string' && t.startsWith('ww-')) window.__replies.push(t);
   });
 </script>`;
+
+// A document that is a direct CHILD of the shell but was never a registered slot: it
+// passes the topology check and must still be held quiet, which is what keeps B7e from
+// merely re-testing B7d.
+const STRAY_HTML = `<!DOCTYPE html><meta charset="utf-8">
+<body>stray
+<script src="https://app.wsw/widget-api.js"></script>
+<script>window.__throw = () => setTimeout(() => { throw new Error('stray-boom'); }, 0);</script>`;
 
 // The slot frame after it navigates away. Same WindowProxy, foreign origin — it still
 // passes an identity check, which is exactly why identity alone is not enough.
@@ -157,6 +178,8 @@ const HIJACK_HTML = `<!DOCTYPE html><meta charset="utf-8">
     r.fulfill({ status: 200, contentType: 'text/html', body: WIDGET_HTML }));
   await page.route('https://evil.example/**', (r) =>
     r.fulfill({ status: 200, contentType: 'text/html', body: NESTED_HTML }));
+  await page.route('https://stray.example/**', (r) =>
+    r.fulfill({ status: 200, contentType: 'text/html', body: STRAY_HTML }));
   await page.route('https://attacker.example/**', (r) =>
     r.fulfill({ status: 200, contentType: 'text/html', body: HIJACK_HTML }));
 
@@ -249,6 +272,13 @@ const HIJACK_HTML = `<!DOCTYPE html><meta charset="utf-8">
   check('B6 a nested frame cannot forge ww-init to the widget framing it',
     inits.length === 1 && !inits[0].includes('pwned'), JSON.stringify(inits));
 
+  // B6b · the iCUE shim is a separate listener in a separate file, injected into the
+  // same documents. It publishes settings as window globals that widget code reads
+  // directly, so a forged init there rewrites the widget's inputs without touching WW.
+  const icueGlobal = await widgetFrame.evaluate(() => window.pwnedGlobal ?? null);
+  check('B6b ...and the iCUE shim in the same document does not take it either',
+    icueGlobal === null, JSON.stringify(icueGlobal));
+
   // B7 · the injected shim runs in the nested document too, and its error handler
   // reports to `parent` — which for a nested frame is the widget, not the shell. Left
   // ungated, a widget learns the error text, script URLs and post-redirect hostname of
@@ -269,10 +299,46 @@ const HIJACK_HTML = `<!DOCTYPE html><meta charset="utf-8">
   check('B7b a real widget\'s own uncaught error still reaches the host log',
     logs.some((l) => l.includes('widget-boom')), JSON.stringify(logs));
 
-  // B7c · the pre-init throw from the widget's first script. Held while the shim had no
-  // answer yet, it must arrive once the shell replies — held, not dropped.
-  check('B7c a diagnostic raised before init is held and delivered, not discarded',
+  // B7c · the pre-init throw from the widget's first script. A widget that dies during
+  // startup is the case these diagnostics exist for, so the guard must not cost them.
+  check('B7c a diagnostic raised before init still reaches the host',
     allLogs.some((l) => l.includes('early-boom')), JSON.stringify(allLogs));
+
+  // B7d · the hold alone is not enough, and this is why. The widget forges an init to
+  // the page it framed; for that page the widget IS window.parent, so the message is
+  // authentic by every test the shim can apply to it. Only the frame's POSITION — a slot
+  // is a direct child of the shell, a nested page is not — settles it, and no script can
+  // move itself up a level.
+  hostMessages.length = 0;
+  await widgetFrame.evaluate(() => { window.__heard.length = 0; window.__forgeDown(); });
+  await page.waitForTimeout(300);
+  await nested.evaluate(() => window.__throw2());
+  await page.waitForTimeout(500);
+  const heard2 = await widgetFrame.evaluate(() => window.__heard.slice());
+  check('B7d a forged init does not unlock the nested frame\'s diagnostics',
+    !heard2.some((h) => h.includes('nested-boom-2')), JSON.stringify(heard2));
+
+  // B7e · a frame the shell never registered. It is a direct child of the shell, so the
+  // topology check alone would let it speak; the shell's own sender gate is what stops
+  // it, and this pins that the two layers together leave no path.
+  await page.evaluate(() => {
+    const f = document.createElement('iframe');
+    f.id = 'stray';
+    f.src = 'https://stray.example/loose.html';
+    document.body.appendChild(f);
+  });
+  await page.waitForTimeout(1200);
+  const stray = page.frames().find((f) => /stray\.example/.test(f.url()));
+  check('B7e setup: an unregistered frame is live as a direct child of the shell',
+    !!stray, `stray ${!!stray}`);
+  if (stray) {
+    hostMessages.length = 0;
+    await stray.evaluate(() => window.__throw());
+    await page.waitForTimeout(500);
+    const strayLogs = hostMessages.filter((m) => m.type === 'log').map((m) => String(m.message));
+    check('B7e a top-level frame the shell never answered stays quiet',
+      !strayLogs.some((l) => l.includes('stray-boom')), JSON.stringify(strayLogs));
+  }
 
   // B8/B8b/B9 · the slot frame navigates away. Its WindowProxy is unchanged, so it is
   // still `slots[0].frame.contentWindow` — the identity check alone cannot tell that

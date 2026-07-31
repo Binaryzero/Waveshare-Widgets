@@ -50,7 +50,12 @@ const COMPOUND = /(api|client|access|auth|refresh|session|bearer|private|user|ad
 // is refused: an author who means the keyboard one writes `userKeyboardLayout`, which
 // is the spelling the rest of this rule is built around anyway.
 const COMPOUND_ANYWHERE = /(api|client|access|auth|refresh|session|bearer|private|user|admin|service|oauth)(token|secret|key|password|passwd)s?/i;
-const UNSTRUCTURED = /^[a-z0-9]+$/;
+// A SINGLE case run, upper or lower — not merely "letters and digits". APITOKENVALUE
+// carries no word boundary either, so it is exactly as ambiguous as apitokenvalue and
+// belongs here. But an /i flag would also match userKeyboardLayout, whose camelCase IS
+// the boundary this rule is defined by absence of; the shared fixture caught that on the
+// first run. Two anchored alternatives say what is meant: no case change anywhere.
+const UNSTRUCTURED = /^([a-z0-9]+|[A-Z0-9]+)$/;
 // A url/link/endpoint is the credential only when the name denotes the VALUE. Same
 // distinction the webhook rule makes: `privateIcsUrl` holds it, `signedUrlExpiry`
 // holds a duration and `personalLinkLabel` holds a caption.
@@ -97,17 +102,36 @@ const looksLikeCredential = (name) => {
 // double-quoted, single-quoted, or unquoted: all three are valid HTML, and only the
 // first two were being matched. Returns null when the attribute is absent, so callers
 // can tell that apart from an empty value.
+// Attribute values are decoded before they mean anything. `src="&#47;&#47;evil.example/x"`
+// is loaded by a browser as `//evil.example/x`, so a rule reading the raw text sees no
+// scheme and no `//` and waves it through — the guard has to look at the value the
+// BROWSER will act on, not the bytes in the file.
+const CHAR_REFS = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0', sol: '/', colon: ':', tab: '\t', newline: '\n' };
+const decodeEntities = (s) => String(s).replace(/&(#[xX][0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]*);?/g, (whole, body) => {
+  if (body[0] === '#') {
+    const code = body[1] === 'x' || body[1] === 'X'
+      ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+    return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+  }
+  const named = CHAR_REFS[body.toLowerCase()];
+  return named === undefined ? whole : named;
+});
 const attr = (tag, name) => {
   const m = tag.match(new RegExp('[\\s/]' + name + '\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\'|([^\\s"\'>]+))', 'i'));
-  return m ? (m[1] ?? m[2] ?? m[3] ?? '') : null;
+  return m ? decodeEntities(m[1] ?? m[2] ?? m[3] ?? '') : null;
 };
 const APP_PREFIX = 'https://app.wsw/';
 // External = anything carrying a scheme or protocol-relative authority that is not the
 // shell's own origin. A plain relative path stays inside the widget's virtual host and
-// is always fine.
-const isExternalRef = (value) => {
-  const s = String(value || '').trim();
+// is always fine. Whitespace inside the value counts as padding, not as content: a
+// browser strips leading and trailing space (and tabs and newlines) before resolving.
+const isExternalRef = (value, { allowData = false } = {}) => {
+  const s = String(value || '').replace(/[\s\u0000]+/g, '').trim();
   if (!s || s.startsWith(APP_PREFIX)) return false;
+  // A data: URI carries its own bytes, so for a LINK it is self-contained by definition —
+  // a packaged data-URI icon fetches nothing. Never passed for <script>, where the bytes
+  // are code and executing attacker-chosen code is the whole point of the rule.
+  if (allowData && /^data:/i.test(s)) return false;
   return s.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(s);
 };
 const KNOWN_SLOTS = new Set(['quarter', 'half', 'three-quarter', 'full']);
@@ -241,8 +265,12 @@ function validate(folder) {
   }
   for (const m of html.matchAll(/<link\b[^>]*>/gi)) {
     const href = attr(m[0], 'href');
-    if (href !== null && isExternalRef(href))
-      err('external-style', `external stylesheet ${href} — bundle styles in the widget`);
+    // Checked for EVERY rel, not just stylesheet: rel=preload / modulepreload / prefetch
+    // fetch remote content just as effectively, and a rule that only reads stylesheets
+    // would hand them a way through. data: is exempt (see isExternalRef) so a packaged
+    // icon is not mistaken for a remote fetch.
+    if (href !== null && isExternalRef(href, { allowData: true }))
+      err('external-style', `external <link href="${href}"> — widgets must be self-contained`);
   }
 
   // Informational: which external hosts the widget's code mentions.
@@ -322,6 +350,17 @@ if (args.includes('--self-test')) {
     ['uppercase-scheme', doc(BASE + '<script src="HTTPS://evil.example/pwn.js"></script>'), 'external-script'],
     ['data-uri', doc(BASE + '<script src="data:text/javascript,alert(1)"></script>'), 'external-script'],
     ['external-stylesheet', doc(BASE + '<link rel="stylesheet" href="//evil.example/x.css">'), 'external-style'],
+    // A browser DECODES the attribute before resolving it, so a rule reading raw text
+    // sees no scheme and no // and lets the remote script through.
+    ['entity-encoded-slashes', doc(BASE + '<script src="&#47;&#47;evil.example/pwn.js"></script>'), 'external-script'],
+    ['entity-encoded-scheme', doc(BASE + '<script src="&#104;ttps://evil.example/pwn.js"></script>'), 'external-script'],
+    ['entity-hex-encoded', doc(BASE + '<script src="&#x2f;&#x2f;evil.example/pwn.js"></script>'), 'external-script'],
+    // rel=preload fetches remote content as surely as a stylesheet does, so the link
+    // rule cannot be narrowed to rel=stylesheet.
+    ['preload-remote', doc(BASE + '<link rel="preload" as="script" href="//evil.example/x.js">'), 'external-style'],
+    // ...while a packaged data: URI fetches nothing and must stay accepted. Inert bytes
+    // in a link are self-contained; the same scheme on a <script> is code, and stays out.
+    ['data-uri-icon', doc(BASE + '<link rel="icon" href="data:image/png;base64,iVBORw0KGgo=">'), null],
     // ...while a relative script is the ordinary case and must stay accepted.
     ['relative-script', doc(BASE + '<script src="./helper.js"></script>'), null],
   ];

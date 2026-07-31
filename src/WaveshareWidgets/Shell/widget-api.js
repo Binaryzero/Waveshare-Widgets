@@ -87,9 +87,7 @@
       // of sitting as an undiagnosable blank tile (field report: empty deck).
       if (document.documentElement) delete document.documentElement.dataset.wwWaiting;
       state.ready = true;
-      // Being answered IS the proof this frame is a widget slot — see flushDiagnostics.
       if (ev.origin && ev.origin !== 'null') shellOrigin = ev.origin;
-      flushDiagnostics();
       emit('init', state);
       emit('sensors', state.sensors);
       if (state.media) emit('media', state.media);
@@ -563,32 +561,37 @@
   // uncaught error / rejection — and visibility changes, which explain throttled
   // timers — to the host's app.log. Budgeted so a crash-looping widget can't spam.
   //
-  // Held until the shell answers our ww-ready, because WebView2 injects this file into
-  // EVERY document — including a remote page a widget frames, whose parent is then the
-  // widget rather than the shell. Sending as we go would hand that widget the framed
-  // page's error text, script URLs and post-redirect hostname: cross-origin detail the
-  // same-origin policy exists to withhold, delivered by us. Nothing distinguishes a
-  // widget frame from a nested one that the shim can read directly — but only a real
-  // slot gets an init back, so being answered is the proof, and a frame that is never
-  // answered never emits. Queued rather than dropped so a widget that dies during
-  // startup still reports why, which is the case these diagnostics exist for.
+  // Only from a real slot frame, because WebView2 injects this file into EVERY document
+  // — including a remote page a widget frames, whose parent is then the widget rather
+  // than the shell. Reporting from there would hand the embedding widget that page's
+  // error text, script URLs and post-redirect hostname: cross-origin detail the
+  // same-origin policy exists to withhold, delivered by us.
+  //
+  // Nothing IN a message can establish this. The obvious rule — wait to be answered by
+  // the shell — fails against the case that matters, because for a nested page the
+  // widget IS window.parent, so a widget can forge its own ww-init downward and unlock
+  // exactly what the rule was withholding from it. The attacker sits on the
+  // authenticated side of any such check.
+  //
+  // Topology settles it. A widget slot is a DIRECT child of the shell document, so its
+  // parent and top are the same window; anything nested one level deeper has them
+  // differ, and no script can move itself up a level. That is a fact about the frame
+  // tree rather than a claim in a payload.
+  //
+  // Cost, stated plainly: in the settings preview the shell is itself framed, so a
+  // previewed widget's parent is the replica and top is the settings page — its
+  // diagnostics are dropped. The dashboard is where widgets run unattended and where
+  // app.log is the only witness, so that is the side worth keeping.
+  const SLOT_TOPOLOGY = window.parent !== window && window.parent === window.top;
   let diagBudget = 15;
-  let diagQueue = [];
-  function diagSend(text) {
-    try {
-      parent.postMessage({ type: 'ww-log', message: text }, shellTarget());
-    } catch (e) { /* parent gone */ }
-  }
-  function flushDiagnostics() {
-    const queued = diagQueue;
-    diagQueue = [];
-    for (const text of queued) diagSend(text);
-  }
   function diag(kind, message) {
+    if (!SLOT_TOPOLOGY) return;   // nested frame, or a top-level document: not a slot
     if (diagBudget-- <= 0) return;
-    const text = '[widget ' + location.hostname + '] ' + kind + ': ' + String(message).slice(0, 500);
-    if (!state.ready) { diagQueue.push(text); return; }
-    diagSend(text);
+    try {
+      parent.postMessage({ type: 'ww-log',
+        message: '[widget ' + location.hostname + '] ' + kind + ': ' + String(message).slice(0, 500) },
+        shellTarget());
+    } catch (e) { /* parent gone */ }
   }
   window.addEventListener('error', (ev) => {
     diag('uncaught', (ev.message || ev.error) + ' @ ' + String(ev.filename || '?').split('/').pop() + ':' + ev.lineno);

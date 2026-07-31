@@ -44,8 +44,12 @@ public static class ProxyHeaderRules
         if (string.IsNullOrWhiteSpace(name)) return false;
         var lower = name.ToLowerInvariant();
         if (IsHostOwned(lower)) return false;
+        // cookie2 with cookie: the browser tier already refused it, and a tier
+        // disagreement about a browser-owned name is the exact defect this file exists
+        // to end — legacy or not, the proxy has no business presenting caller-chosen
+        // cookie state that a page-context fetch could never set.
         return lower is not ("host" or "content-length" or "transfer-encoding"
-            or "connection" or "cookie");
+            or "connection" or "cookie" or "cookie2");
     }
 
     /// <summary>Whether a widget-supplied header can be replayed from a page-context
