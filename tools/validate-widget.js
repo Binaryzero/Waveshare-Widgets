@@ -11,6 +11,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const KNOWN_TYPES = new Set(['text', 'number', 'slider', 'color', 'select', 'switch',
   'secret', 'sensor', 'sensors-factory', 'location', 'list', 'media-selector']);
@@ -40,6 +41,16 @@ const WEBHOOK_VALUE = /web ?hook$/i;
 // Anchored at the END: unanchored, `userKeyboardLayout` squashes to
 // `userkeyboardlayout` and matches `userkey`, failing a keyboard-layout select.
 const COMPOUND = /(api|client|access|auth|refresh|session|bearer|private|user|admin|service|oauth)(token|secret|key|password|passwd)s?$/i;
+// ...but the anchor only earns that when the name HAS a boundary to reason about.
+// `apiTokenValue` splits to "api Token Value" and CREDENTIAL_WORD catches the standalone
+// "Token"; `apitokenvalue` splits to nothing, so the anchored rule sees a compound in
+// the middle and waves it through — a plaintext token in layout.json (issue #107).
+// For an all-lowercase run there is no honest way to tell `apitokenvalue` from
+// `userkeyboardlayout` without a dictionary, so around credentials the ambiguous name
+// is refused: an author who means the keyboard one writes `userKeyboardLayout`, which
+// is the spelling the rest of this rule is built around anyway.
+const COMPOUND_ANYWHERE = /(api|client|access|auth|refresh|session|bearer|private|user|admin|service|oauth)(token|secret|key|password|passwd)s?/i;
+const UNSTRUCTURED = /^[a-z0-9]+$/;
 // A url/link/endpoint is the credential only when the name denotes the VALUE. Same
 // distinction the webhook rule makes: `privateIcsUrl` holds it, `signedUrlExpiry`
 // holds a duration and `personalLinkLabel` holds a caption.
@@ -74,9 +85,30 @@ const looksLikeCredential = (name) => {
   if (!METADATA_TAIL.test(trimmed)) {
     if (CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(squashed)) return true;
     if (COMPOUND.test(squashed)) return true;
+    if (UNSTRUCTURED.test(String(name || '')) && COMPOUND_ANYWHERE.test(squashed)) return true;
   }
   if (WEBHOOK.test(spaced) && (URLISH.test(spaced) || WEBHOOK_VALUE.test(trimmed))) return true;
   return URLISH.test(spaced) && SECRET_QUALIFIER.test(spaced) && URL_VALUE.test(trimmed);
+};
+// One attribute reader for every rule below, because the rules that rolled their own
+// each missed a different legal spelling. An attribute starts at whitespace or the
+// self-closing slash — NOT at any word boundary, or `data-rel` and `aria-rel` read as
+// `rel` and a stylesheet slips past the ordering rule (issue #121). Values may be
+// double-quoted, single-quoted, or unquoted: all three are valid HTML, and only the
+// first two were being matched. Returns null when the attribute is absent, so callers
+// can tell that apart from an empty value.
+const attr = (tag, name) => {
+  const m = tag.match(new RegExp('[\\s/]' + name + '\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\'|([^\\s"\'>]+))', 'i'));
+  return m ? (m[1] ?? m[2] ?? m[3] ?? '') : null;
+};
+const APP_PREFIX = 'https://app.wsw/';
+// External = anything carrying a scheme or protocol-relative authority that is not the
+// shell's own origin. A plain relative path stays inside the widget's virtual host and
+// is always fine.
+const isExternalRef = (value) => {
+  const s = String(value || '').trim();
+  if (!s || s.startsWith(APP_PREFIX)) return false;
+  return s.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(s);
 };
 const KNOWN_SLOTS = new Set(['quarter', 'half', 'three-quarter', 'full']);
 const LIST_FIELD_TYPES = new Set(['text', 'color']);
@@ -170,8 +202,7 @@ function validate(folder) {
     let firstOther = html.search(/<style[\s>]/i);
     for (const m of html.matchAll(/<link\b[^>]*>/gi)) {
       if (m[0].includes('widget-base.css')) continue;
-      const rel = m[0].match(/\brel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i);
-      const value = rel ? (rel[1] ?? rel[2] ?? rel[3] ?? '') : '';
+      const value = attr(m[0], 'rel') || '';
       if (!value.toLowerCase().split(/\s+/).includes('stylesheet')) continue;
       if (firstOther < 0 || m.index < firstOther) firstOther = m.index;
     }
@@ -196,14 +227,22 @@ function validate(folder) {
 
   // Self-contained: no external scripts or stylesheets (embeds/iframes and data
   // fetches are widget business; script execution from third parties is not).
-  for (const m of html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) {
-    const src = m[1];
-    if (/^https?:\/\//i.test(src) && !src.startsWith('https://app.wsw/'))
+  //
+  // Stated as what is ALLOWED, not as what is forbidden. The forbidden list only ever
+  // covered the shapes someone thought of: `//evil.example/pwn.js` is not `http://`, so
+  // it passed — and a browser resolves it against the widget's own https virtual host,
+  // which is precisely the fetch the rule exists to stop (issue #110). Same for `data:`,
+  // `blob:`, an uppercase scheme, or a value padded with whitespace. Anything that is
+  // not app.wsw and not a plain relative path is external, whatever it looks like.
+  for (const m of html.matchAll(/<script\b[^>]*>/gi)) {
+    const src = attr(m[0], 'src');
+    if (src !== null && isExternalRef(src))
       err('external-script', `external <script src="${src}"> — widgets must be self-contained (only app.wsw scripts allowed)`);
   }
-  for (const m of html.matchAll(/<link[^>]+href=["'](https?:\/\/[^"']+)["']/gi)) {
-    if (!m[1].startsWith('https://app.wsw/'))
-      err('external-style', `external stylesheet ${m[1]} — bundle styles in the widget`);
+  for (const m of html.matchAll(/<link\b[^>]*>/gi)) {
+    const href = attr(m[0], 'href');
+    if (href !== null && isExternalRef(href))
+      err('external-style', `external stylesheet ${href} — bundle styles in the widget`);
   }
 
   // Informational: which external hosts the widget's code mentions.
@@ -263,7 +302,52 @@ if (args.includes('--self-test')) {
   console.log(bad
     ? `${bad} of ${total} disagree with tools/credential-names.json`
     : `credential rule agrees with the fixture on all ${total} names`);
-  process.exit(bad ? 1 : 0);
+
+  // The HTML rules get the same treatment, because both of the ways they leaked were
+  // spellings nobody had written down: a browser-legal shape the regex did not model
+  // (issues #110, #121). The CLEAN case is not decoration — it is what fails first if
+  // one of these rules is tightened into refusing ordinary widgets.
+  const BASE = '<link rel="stylesheet" href="https://app.wsw/widget-base.css">';
+  const doc = (head) => `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>T</title>${head}<style>body { color: var(--text); }</style></head>
+<body><script src="https://app.wsw/widget-api.js"></script></body></html>`;
+  const htmlCases = [
+    ['clean', doc(BASE), null],
+    // #121 — \b matches after a hyphen, so data-rel was read as the real rel and the
+    // stylesheet ahead of the base went unseen.
+    ['rel-after-data-rel', doc('<link data-rel="preload" rel="stylesheet" href="local.css">' + BASE), 'base-css-order'],
+    // #110 — none of these are `http://`, and all four load remote script in a browser.
+    ['protocol-relative', doc(BASE + '<script src="//evil.example/pwn.js"></script>'), 'external-script'],
+    ['unquoted-attribute', doc(BASE + '<script src=https://evil.example/pwn.js></script>'), 'external-script'],
+    ['uppercase-scheme', doc(BASE + '<script src="HTTPS://evil.example/pwn.js"></script>'), 'external-script'],
+    ['data-uri', doc(BASE + '<script src="data:text/javascript,alert(1)"></script>'), 'external-script'],
+    ['external-stylesheet', doc(BASE + '<link rel="stylesheet" href="//evil.example/x.css">'), 'external-style'],
+    // ...while a relative script is the ordinary case and must stay accepted.
+    ['relative-script', doc(BASE + '<script src="./helper.js"></script>'), null],
+  ];
+  const manifest = {
+    id: 'ww.selftest.fixture', name: 'Fixture', author: 'WW', description: 'self-test',
+    version: '1.0.0', min_api_version: 1, supported_slots: ['quarter'], properties: [],
+  };
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ww-validate-'));
+  let htmlBad = 0;
+  for (const [name, body, expected] of htmlCases) {
+    const dir = path.join(tmp, name);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
+    fs.writeFileSync(path.join(dir, 'index.html'), body);
+    const rules = validate(dir).errors.map((e) => e.rule);
+    if (expected === null && rules.length) {
+      console.log(`  FAIL html "${name}" should validate, but raised ${rules.join(', ')}`); htmlBad++;
+    } else if (expected !== null && !rules.includes(expected)) {
+      console.log(`  FAIL html "${name}" should raise ${expected}, raised ${rules.join(', ') || 'nothing'}`); htmlBad++;
+    }
+  }
+  fs.rmSync(tmp, { recursive: true, force: true });
+  console.log(htmlBad
+    ? `${htmlBad} of ${htmlCases.length} html rule cases disagree`
+    : `html rules agree with all ${htmlCases.length} cases`);
+  process.exit(bad || htmlBad ? 1 : 0);
 }
 
 const targets = args.filter((a) => !a.startsWith('--'));

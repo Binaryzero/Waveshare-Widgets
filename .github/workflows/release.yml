@@ -19,25 +19,55 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      # A tag name is attacker-choosable text, and `${{ }}` splices its value into the
+      # script SOURCE before any shell parses it — so `v1.2.3;whoami` runs whoami on a
+      # runner holding `contents: write`. Two rules keep that shut:
+      #   1. the tag must match SemVer exactly, or the job stops here;
+      #   2. the value reaches later steps through the environment, never through `${{ }}`
+      #      inside a `run:` body, so even a future regex hole cannot become execution.
+      # (TrimStart('v') also stripped EVERY leading v — `vvv1.0.0` published as 1.0.0.
+      # The regex settles that too.)
       - name: Resolve version
         id: version
         shell: pwsh
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '0.0.0-dev' }
+          if ($env:REF_TYPE -eq 'tag') {
+            # -match, not -notmatch: $Matches is only documented as populated on a
+            # successful -match, and the capture is what the rest of the job runs on.
+            if ($env:REF_NAME -match '^v(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$') {
+              $version = $Matches[1]
+            } else {
+              Write-Error "tag '$($env:REF_NAME)' is not a SemVer release tag (expected vX.Y.Z)"
+              exit 1
+            }
+          } else {
+            $version = '0.0.0-dev'
+          }
           "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Publish (framework-dependent)
-        run: dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained false -p:Version=${{ steps.version.outputs.version }} -o publish/fdd
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained false -p:Version=$env:VERSION -o publish/fdd
 
       - name: Publish (self-contained)
-        run: dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained true -p:Version=${{ steps.version.outputs.version }} -o publish/scd
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained true -p:Version=$env:VERSION -o publish/scd
 
       - name: Package
         shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           New-Item -ItemType Directory dist | Out-Null
-          Compress-Archive -Path publish/fdd/* -DestinationPath "dist/WaveshareWidgets-v${{ steps.version.outputs.version }}-win-x64.zip"
-          Compress-Archive -Path publish/scd/* -DestinationPath "dist/WaveshareWidgets-v${{ steps.version.outputs.version }}-win-x64-self-contained.zip"
+          Compress-Archive -Path publish/fdd/* -DestinationPath "dist/WaveshareWidgets-v$($env:VERSION)-win-x64.zip"
+          Compress-Archive -Path publish/scd/* -DestinationPath "dist/WaveshareWidgets-v$($env:VERSION)-win-x64-self-contained.zip"
 
       - name: Upload artifacts (dry run)
         if: github.ref_type != 'tag'

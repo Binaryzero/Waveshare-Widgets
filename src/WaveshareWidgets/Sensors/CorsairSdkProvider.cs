@@ -58,12 +58,24 @@ public sealed partial class CorsairSdkProvider : ISensorProvider
         }
     }
 
-    /// <summary>Searches the exe dir, the data dir, and common iCUE install locations for
-    /// a loadable SDK DLL. Returns the resolved path, or null.</summary>
+    /// <summary>Searches the exe dir and common iCUE install locations for a loadable SDK
+    /// DLL. Returns the resolved path, or null.</summary>
+    ///
+    /// <remarks>
+    /// NOT the data dir. It lives under LocalApplicationData and is writable by the user
+    /// — and by anything running as them. Loading a native DLL runs its DllMain BEFORE
+    /// any export is checked, so a planted file does not have to be a Corsair SDK at all
+    /// to execute; and because SensorHub constructs this provider unconditionally, the
+    /// opportunity existed for users who never installed the SDK. Both remaining roots
+    /// are install directories an ordinary user cannot write to.
+    ///
+    /// The log message when nothing is found already tells the user to drop the DLL next
+    /// to the exe, which is the supported placement and is unaffected by this.
+    /// </remarks>
     private string? TryLoadLibrary()
     {
         var names = new[] { DllName, "iCUESDK.x64_2019.dll", "iCUESDK_2019.dll", "iCUESDK.dll" };
-        var dirs = new List<string> { AppContext.BaseDirectory, AppPaths.DataDir };
+        var dirs = new List<string> { AppContext.BaseDirectory };
 
         foreach (var root in new[]
                  {

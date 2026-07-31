@@ -41,6 +41,18 @@ public static partial class CredentialNames
     [GeneratedRegex(@"(api|client|access|auth|refresh|session|bearer|private|user|admin|service|oauth)(token|secret|key|password|passwd)s?$", RegexOptions.IgnoreCase)]
     private static partial Regex Compound();
 
+    // ...but the anchor only earns that when the name HAS a boundary to reason about.
+    // `apiTokenValue` splits to "api Token Value" and CredentialWord catches the
+    // standalone "Token"; `apitokenvalue` splits to nothing, so the anchored rule sees a
+    // compound in the middle and waves it through — a plaintext token in layout.json.
+    // For an all-lowercase run nothing short of a dictionary tells `apitokenvalue` from
+    // `userkeyboardlayout`, so around credentials the ambiguous name is refused.
+    [GeneratedRegex(@"(api|client|access|auth|refresh|session|bearer|private|user|admin|service|oauth)(token|secret|key|password|passwd)s?", RegexOptions.IgnoreCase)]
+    private static partial Regex CompoundAnywhere();
+
+    [GeneratedRegex(@"^[a-z0-9]+$")]
+    private static partial Regex Unstructured();
+
     // A url/link/endpoint is the credential only when the name denotes the VALUE:
     // `privateIcsUrl` holds it, `signedUrlExpiry` holds a duration.
     [GeneratedRegex(@"(url|uri|link|endpoint|address|feed)$", RegexOptions.IgnoreCase)]
@@ -89,6 +101,7 @@ public static partial class CredentialNames
         {
             if (CredentialWord().IsMatch(spaced) || CredentialWord().IsMatch(squashed)) return true;
             if (Compound().IsMatch(squashed)) return true;
+            if (Unstructured().IsMatch(name ?? "") && CompoundAnywhere().IsMatch(squashed)) return true;
         }
         if (Webhook().IsMatch(spaced) && (Urlish().IsMatch(spaced) || WebhookValue().IsMatch(trimmed))) return true;
         return Urlish().IsMatch(spaced) && SecretQualifier().IsMatch(spaced) && UrlValue().IsMatch(trimmed);

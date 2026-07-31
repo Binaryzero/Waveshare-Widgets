@@ -44,6 +44,16 @@ jobs:
       - name: Credential rule agrees with the fixture (validator)
         run: node tools/validate-widget.js --self-test
 
+      # The proxy forwards widget-chosen headers to loopback and LAN targets, and its
+      # browser-grade defaults only fill GAPS — so a forwarded name replaces the host's
+      # honest value rather than adding to it. A local service that trusts fetch metadata
+      # then sees exactly what the caller chose. The loop that decides this cannot be
+      # exercised without WebView2 and a real network, so the decision is a pure
+      # predicate and this covers it — including that the proxy and browser tiers cannot
+      # drift apart on host-owned names, which is the shape the bug actually had.
+      - name: Proxy header rules
+        run: dotnet run --project tools/ProxyHeaders
+
       # A private ICS or webhook link IS the credential (WIDGET-SPEC), and app.log is
       # plaintext, outside the DPAPI work in #15, and the first file attached to a bug
       # report. This asserts both halves: that SafeUrl discloses nothing, and that the
