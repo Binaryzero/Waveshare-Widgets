@@ -2,18 +2,91 @@
   "id": "ws.stock.reddit",
   "name": "Reddit Photos",
   "author": "Waveshare Widgets",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Slideshow of image posts from any subreddit, built for the panel: images preload fully before a slow crossfade, so nothing flashes. Tap left/right edges to step, center to pause.",
   "min_api_version": 1,
-  "supported_slots": ["quarter", "half", "full"],
+  "supported_slots": [
+    "quarter",
+    "half",
+    "full"
+  ],
   "properties": [
-    { "name": "subreddit", "label": "Subreddit (without r/)", "type": "text", "default": "landscapephotography" },
-    { "name": "sort", "label": "Sort", "type": "select", "options": ["hot", "top", "new"], "default": "hot" },
-    { "name": "dwell", "label": "Seconds per image", "type": "number", "min": 4, "max": 120, "step": 1, "default": 12 },
-    { "name": "showTitle", "label": "Show post title", "type": "select", "options": ["on", "off"], "default": "on" },
-    { "name": "fit", "label": "Image fit", "type": "select", "options": ["cover", "contain"], "default": "cover" },
-    { "name": "bgStyle", "label": "Background", "type": "select", "options": ["solid", "glass", "transparent"], "default": "solid" },
-    { "name": "titleSize", "label": "Title size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" },
-    { "name": "metaSize", "label": "Meta size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" }
+    {
+      "name": "subreddit",
+      "label": "Subreddit (without r/)",
+      "type": "text",
+      "default": "landscapephotography"
+    },
+    {
+      "name": "sort",
+      "label": "Sort",
+      "type": "select",
+      "options": [
+        "hot",
+        "top",
+        "new"
+      ],
+      "default": "hot"
+    },
+    {
+      "name": "dwell",
+      "label": "Seconds per image",
+      "type": "number",
+      "min": 4,
+      "max": 120,
+      "step": 1,
+      "default": 12
+    },
+    {
+      "name": "showTitle",
+      "label": "Show post title",
+      "type": "select",
+      "options": [
+        "on",
+        "off"
+      ],
+      "default": "on"
+    },
+    {
+      "name": "fit",
+      "label": "Image fit",
+      "type": "select",
+      "options": [
+        "cover",
+        "contain"
+      ],
+      "default": "cover"
+    },
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": [
+        "solid",
+        "glass",
+        "transparent"
+      ],
+      "default": "solid"
+    },
+    {
+      "name": "titleSize",
+      "label": "Title size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
+    },
+    {
+      "name": "metaSize",
+      "label": "Meta size",
+      "type": "slider",
+      "min": 50,
+      "max": 200,
+      "step": 5,
+      "default": 100,
+      "group": "Text"
+    }
   ]
 }

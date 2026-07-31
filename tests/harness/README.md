@@ -103,3 +103,22 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   auth-shaped proxy answers retrying the native path, and `Request`-object
   inputs keeping their method/headers. Ports used: 8931-8934 (scenario
   origins), 8941 (shell), 8942 (fixtures).
+- `bodycap-run.js` — the 5 MiB body ceiling (issues #106/#117), on plain Node so it
+  runs in CI beside the C# probes. It drives the in-page script `FetchLimits`
+  generates AND the `WW.fetch` wrapper, lifted out of `widget-api.js` by marker so
+  the probe cannot diverge from what ships. The witness is the SERVER's outcome
+  (`aborted` vs `completed`), because a cap that refuses only after reading
+  everything looks identical from the client. Two properties are deliberately NOT
+  checked here — that the wrapper survives the Web IDL brand check, and that its
+  body takes a BYOB reader — because Node disagrees with Chromium on both and
+  probes here would pass for the bug; they live in `restvalue-run.js` (R24/R25).
+  Port used: 8961.
+- `redditcap-run.js` — Reddit Photos' OWN ceilings (issue #116), which sit far below
+  the shared one because the panel is 1280x400 and the paths that run to megabytes
+  are the ones the widget least wants. The oversized fixture is sized deliberately
+  BETWEEN the two ceilings, so only the widget's own number can refuse it — at
+  5 MiB the probe would prove nothing the shared cap does not already. Also that a
+  refusal skips the post rather than breaking the tile, and that "too large" and
+  "could not load" stay distinguishable in both directions. Serves real decodable
+  PNGs padded to exact byte counts, since the widget rejects anything that does not
+  decode and a buffer of zeroes would fail for the wrong reason.

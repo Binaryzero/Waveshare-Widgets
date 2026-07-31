@@ -75,6 +75,36 @@
   let advancing = false;       // guards against overlapping loads (slow proxy fetches)
   const LISTING_REFRESH_MS = 10 * 60 * 1000;
 
+  // Ceilings of this widget's own, well under the 5 MiB WW.fetch applies to everything.
+  //
+  // The shared one stops a widget exhausting the renderer; it is not a statement about what
+  // THIS widget should be loading. The panel is 1280x400, and extractImagePosts already picks
+  // the smallest rendition at least 1280 wide — so anything actually displayable here is a
+  // few hundred KB of JPEG. The paths that run to megabytes are the ones this widget wants
+  // least: a gallery's largest rendition, the preview `source` for a 6000x4000 upload, or a
+  // direct i.redd.it link to the original file, any of which can be tens of megabytes of
+  // pixels to paint into a 400px strip.
+  //
+  // Refusing one is cheap in a way it would not be in another widget: advance() already
+  // walks several posts looking for one that loads, so a refusal costs a skipped image
+  // rather than an empty tile. That asymmetry is what makes a tight number the right call
+  // rather than a risky one.
+  const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+  // limit=60 with raw_json=1 is a few hundred KB of JSON — verbose, because every post
+  // carries its full preview-resolution list. This leaves generous room for a wordy one
+  // and still refuses a body that could only be a bug or an attack.
+  const LISTING_MAX_BYTES = 2 * 1024 * 1024;
+
+  /// WW.fetch refuses a body past the ceiling with a RangeError, on every tier — the
+  /// browser one, the host proxy, and the hidden-browser retry.
+  ///
+  /// The message test is redundant TODAY and kept deliberately: nothing else on this path
+  /// can throw a RangeError, so dropping it fails no probe (N5). It stays because it is the
+  /// shape WIDGET-SPEC documents for every widget and the one the REST tile uses — where it
+  /// is not redundant, since that widget parses arbitrary JSON — and one spelling of this
+  /// check across widgets is worth more than one saved condition here.
+  const isTooLarge = (e) => e instanceof RangeError && /too large/i.test((e && e.message) || '');
+
   WW.onInit((state) => {
     const s = state.settings;
     cfg.subreddit = String(s.subreddit || 'landscapephotography').replace(/^\/?(r\/)?/i, '').trim();
@@ -106,7 +136,7 @@
     try {
       const url = 'https://www.reddit.com/r/' + encodeURIComponent(cfg.subreddit) +
         '/' + cfg.sort + '.json?limit=60&raw_json=1';
-      const res = await WW.fetch(url);
+      const res = await WW.fetch(url, { maxBytes: LISTING_MAX_BYTES });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const json = await res.json();
       const found = extractImagePosts(json);
@@ -123,7 +153,13 @@
       }
     } catch (e) {
       WW.log('reddit: listing failed: ' + e.message);
-      if (firstLoad) showMessage('Could not load r/' + cfg.subreddit, String(e.message || e));
+      // "Too large" is not "could not load": the subreddit name is right and the network is
+      // fine, so pointing at either sends the user to check something that works.
+      if (firstLoad && isTooLarge(e)) {
+        showMessage('Listing is too large', 'r/' + cfg.subreddit + ' returned more data than this tile will load. Try a different subreddit or sort.');
+      } else if (firstLoad) {
+        showMessage('Could not load r/' + cfg.subreddit, String(e.message || e));
+      }
     }
   }
 
@@ -176,6 +212,7 @@
     if (advancing || posts.length === 0) return;
     advancing = true;
     // Try a few posts in case some images fail to fetch.
+    let refusedForSize = 0;
     for (let attempts = 0; attempts < Math.min(5, posts.length); attempts++) {
       index = (index + (direction || 1) + posts.length) % posts.length;
       const post = posts[index];
@@ -185,19 +222,32 @@
         advancing = false;
         return;
       } catch (e) {
+        if (isTooLarge(e)) refusedForSize++;
         WW.log('reddit: image failed (' + e.message + '): ' + post.imageUrl);
       }
     }
     advancing = false;
-    showMessage('Images are not loading', 'r/' + cfg.subreddit + ' — check the app log.');
+    // Counted rather than remembered from the last attempt: the run stops at the first
+    // image that loads, so what matters is whether size explains this run's failures at
+    // all — one oversized image among five ordinary failures is still worth naming, and
+    // "check the app log" for a tile that is working exactly as designed is not an answer.
+    if (refusedForSize) {
+      showMessage('Images are too large',
+        'r/' + cfg.subreddit + ' is serving images bigger than this tile will load. A subreddit of photos sized for the web works better here.');
+    } else {
+      showMessage('Images are not loading', 'r/' + cfg.subreddit + ' — check the app log.');
+    }
   }
 
   // Fetch through the host proxy path (handles Reddit's bot wall and the
   // Referer requirement on *.redd.it) and hand back a local blob URL, so the
   // crossfade only ever starts on a fully-downloaded image — no flashing.
   async function loadImage(url) {
-    const res = await WW.fetch(url);
+    const res = await WW.fetch(url, { maxBytes: IMAGE_MAX_BYTES });
     if (!res.ok) throw new Error('HTTP ' + res.status);
+    // Past the ceiling this rejects with a RangeError rather than returning the bytes, and
+    // the transfer is cancelled rather than abandoned — so an oversized image is never
+    // materialised as a Blob, which is the whole finding.
     const blob = await res.blob();
     if (blob.size < 1024) throw new Error('placeholder response (' + blob.size + ' bytes)');
     const blobUrl = URL.createObjectURL(blob);
