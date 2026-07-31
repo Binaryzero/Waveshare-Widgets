@@ -15,6 +15,12 @@
     if (document.documentElement && !state.ready) document.documentElement.dataset.wwWaiting = '1';
   }, { once: true });
   const state = { settings: {}, sensors: [], media: null, status: null, theme: null, notifications: null, game: { active: false, process: '' }, ready: false };
+  // The shell's origin, learned from the init it answered us with — the shim is
+  // injected into every document in the WebView and has no script URL of its own to
+  // read it from, and hardcoding a host would break both the harness fixtures and
+  // standalone widget development. Until the shell has spoken, '*' is all we have.
+  let shellOrigin = null;
+  const shellTarget = () => shellOrigin || '*';
   const pendingFetches = new Map();
   const pendingPings = new Map();
   const pendingMediaLists = new Map();
@@ -61,6 +67,11 @@
   }
 
   window.addEventListener('message', (ev) => {
+    // Only the shell speaks this protocol, and the shell is always this frame's
+    // parent. Without the check, a page this widget frames can post to its parent —
+    // us — and forge ww-init (fake settings), ww-sensors (fake readings) or a
+    // ww-fetch-result that resolves a pending WW.fetch with data of its choosing.
+    if (ev.source !== window.parent) return;
     const msg = ev.data || {};
     if (msg.type === 'ww-init') {
       state.settings = msg.settings || {};
@@ -76,6 +87,7 @@
       // of sitting as an undiagnosable blank tile (field report: empty deck).
       if (document.documentElement) delete document.documentElement.dataset.wwWaiting;
       state.ready = true;
+      if (ev.origin && ev.origin !== 'null') shellOrigin = ev.origin;
       emit('init', state);
       emit('sensors', state.sensors);
       if (state.media) emit('media', state.media);
@@ -242,7 +254,7 @@
       } else {
         entry.cleanup = () => clearTimeout(timer);
       }
-      parent.postMessage(Object.assign({ type: 'ww-fetch', id, url: String(url) }, snap), '*');
+      parent.postMessage(Object.assign({ type: 'ww-fetch', id, url: String(url) }, snap), shellTarget());
     });
   }
 
@@ -324,9 +336,9 @@
     onNotifications(cb) { listeners.notifications.push(cb); },
     /** Start/stop the host's notification polling. Demand-gated: watch on init,
      * and the host stops polling when no widget is watching. */
-    watchNotifications(on) { parent.postMessage({ type: 'ww-notifications-watch', on: on !== false }, '*'); },
+    watchNotifications(on) { parent.postMessage({ type: 'ww-notifications-watch', on: on !== false }, shellTarget()); },
     /** Dismiss one mirrored notification by its id. */
-    dismissNotification(id) { parent.postMessage({ type: 'ww-notification-dismiss', id }, '*'); },
+    dismissNotification(id) { parent.postMessage({ type: 'ww-notification-dismiss', id }, shellTarget()); },
     /** Game mode: {active, process}. Also stamped as html[data-game="on"|"off"];
      * widget-base.css pauses CSS animation while on. */
     get game() { return state.game; },
@@ -367,13 +379,13 @@
     },
 
     /** Media transport: 'toggle' | 'next' | 'prev'. */
-    mediaControl(action) { parent.postMessage({ type: 'ww-media-control', action }, '*'); },
+    mediaControl(action) { parent.postMessage({ type: 'ww-media-control', action }, shellTarget()); },
 
     /** Open a URL in the desktop browser. */
-    openUrl(url) { parent.postMessage({ type: 'ww-open-url', url: String(url) }, '*'); },
+    openUrl(url) { parent.postMessage({ type: 'ww-open-url', url: String(url) }, shellTarget()); },
 
     /** Run a host action: kind 'launch'|'url'|'hotkey'|'media', target the argument. */
-    action(kind, target) { parent.postMessage({ type: 'ww-action', kind, target: String(target == null ? '' : target) }, '*'); },
+    action(kind, target) { parent.postMessage({ type: 'ww-action', kind, target: String(target == null ? '' : target) }, shellTarget()); },
 
     /**
      * fetch() that survives CORS and bot walls: tries the browser's fetch first and
@@ -466,18 +478,18 @@
      * of dynamic key faces — when the host can capture it. */
     requestStreamDeck(opts) {
       opts = opts || {};
-      parent.postMessage({ type: 'ww-sd-profile', profileName: opts.profileName || '', hideWindow: opts.hideWindow !== false, live: opts.live === true }, '*');
+      parent.postMessage({ type: 'ww-sd-profile', profileName: opts.profileName || '', hideWindow: opts.hideWindow !== false, live: opts.live === true }, shellTarget());
     },
     /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}], capture?}. */
     onStreamDeck(cb) { listeners.streamdeck.push(cb); },
     /** Capture-only fast path for live mirroring: cheaper than requestStreamDeck (no
      * profile re-parse; the host skips the frame entirely when pixels are unchanged). */
-    requestStreamDeckCapture() { parent.postMessage({ type: 'ww-sd-capture' }, '*'); },
+    requestStreamDeckCapture() { parent.postMessage({ type: 'ww-sd-capture' }, shellTarget()); },
     /** cb(data) — {image,w,h} on a new frame, {unchanged:true}, or {available:false}. */
     onStreamDeckCapture(cb) { listeners.sdcapture.push(cb); },
     /** Trigger a Stream Deck button by its grid cell. */
     streamDeckClick(row, col, rows, cols) {
-      parent.postMessage({ type: 'ww-sd-click', row, col, rows, cols }, '*');
+      parent.postMessage({ type: 'ww-sd-click', row, col, rows, cols }, shellTarget());
     },
 
     /**
@@ -492,7 +504,7 @@
         setTimeout(() => {
           if (pendingPings.delete(id)) reject(new TypeError('ping timed out'));
         }, 12000);
-        parent.postMessage({ type: 'ww-ping', id, hosts: (hosts || []).map(String).slice(0, 16) }, '*');
+        parent.postMessage({ type: 'ww-ping', id, hosts: (hosts || []).map(String).slice(0, 16) }, shellTarget());
       });
     },
 
@@ -503,7 +515,7 @@
         const id = reqId('m');
         pendingMediaLists.set(id, { resolve, reject });
         setTimeout(() => { if (pendingMediaLists.delete(id)) reject(new TypeError('media list timed out')); }, 10000);
-        parent.postMessage({ type: 'ww-media-list', id }, '*');
+        parent.postMessage({ type: 'ww-media-list', id }, shellTarget());
       });
     },
 
@@ -514,7 +526,7 @@
         const id = reqId('a');
         pendingAudioGets.set(id, { resolve, reject });
         setTimeout(() => { if (pendingAudioGets.delete(id)) reject(new TypeError('audio get timed out')); }, 10000);
-        parent.postMessage({ type: 'ww-audio-get', id }, '*');
+        parent.postMessage({ type: 'ww-audio-get', id }, shellTarget());
       });
     },
 
@@ -535,12 +547,12 @@
           target: String(target == null ? 'master' : target),
           level: typeof opts.level === 'number' ? Math.max(0, Math.min(1, opts.level)) : undefined,
           muted: typeof opts.muted === 'boolean' ? opts.muted : undefined,
-        }, '*');
+        }, shellTarget());
       });
     },
 
     /** Writes to the host's app.log — useful for debugging on the panel. */
-    log(message) { parent.postMessage({ type: 'ww-log', message: String(message) }, '*'); },
+    log(message) { parent.postMessage({ type: 'ww-log', message: String(message) }, shellTarget()); },
   };
 
   // --- runtime diagnostics -------------------------------------------------------
@@ -548,11 +560,37 @@
   // chain and the widget silently freezes) the panel gives no clue. Forward every
   // uncaught error / rejection — and visibility changes, which explain throttled
   // timers — to the host's app.log. Budgeted so a crash-looping widget can't spam.
+  //
+  // Only from a real slot frame, because WebView2 injects this file into EVERY document
+  // — including a remote page a widget frames, whose parent is then the widget rather
+  // than the shell. Reporting from there would hand the embedding widget that page's
+  // error text, script URLs and post-redirect hostname: cross-origin detail the
+  // same-origin policy exists to withhold, delivered by us.
+  //
+  // Nothing IN a message can establish this. The obvious rule — wait to be answered by
+  // the shell — fails against the case that matters, because for a nested page the
+  // widget IS window.parent, so a widget can forge its own ww-init downward and unlock
+  // exactly what the rule was withholding from it. The attacker sits on the
+  // authenticated side of any such check.
+  //
+  // Topology settles it. A widget slot is a DIRECT child of the shell document, so its
+  // parent and top are the same window; anything nested one level deeper has them
+  // differ, and no script can move itself up a level. That is a fact about the frame
+  // tree rather than a claim in a payload.
+  //
+  // Cost, stated plainly: in the settings preview the shell is itself framed, so a
+  // previewed widget's parent is the replica and top is the settings page — its
+  // diagnostics are dropped. The dashboard is where widgets run unattended and where
+  // app.log is the only witness, so that is the side worth keeping.
+  const SLOT_TOPOLOGY = window.parent !== window && window.parent === window.top;
   let diagBudget = 15;
   function diag(kind, message) {
+    if (!SLOT_TOPOLOGY) return;   // nested frame, or a top-level document: not a slot
     if (diagBudget-- <= 0) return;
     try {
-      parent.postMessage({ type: 'ww-log', message: '[widget ' + location.hostname + '] ' + kind + ': ' + String(message).slice(0, 500) }, '*');
+      parent.postMessage({ type: 'ww-log',
+        message: '[widget ' + location.hostname + '] ' + kind + ': ' + String(message).slice(0, 500) },
+        shellTarget());
     } catch (e) { /* parent gone */ }
   }
   window.addEventListener('error', (ev) => {
@@ -566,5 +604,5 @@
   document.addEventListener('visibilitychange', () => diag('visibility', 'now ' + document.visibilityState));
 
   window.WW = WW;
-  parent.postMessage({ type: 'ww-ready' }, '*');
+  parent.postMessage({ type: 'ww-ready' }, shellTarget());
 })();

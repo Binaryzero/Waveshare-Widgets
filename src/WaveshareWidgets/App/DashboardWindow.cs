@@ -586,20 +586,16 @@ public sealed class DashboardWindow : Form
                 {
                     if (string.IsNullOrWhiteSpace(headerName) || headerValue is null)
                         continue;
-                    var lower = headerName.ToLowerInvariant();
-                    if (lower is "host" or "content-length" or "transfer-encoding" or "connection" or "cookie")
-                        continue;
-                    // Browser-owned metadata: page JS can never set Sec-*/Proxy-*
-                    // natively, so a forwarded value would SPOOF fetch metadata on
-                    // the escalated request (and suppress the host's correct
-                    // defaults below). The host stays authoritative for these.
-                    if (lower.StartsWith("sec-", StringComparison.Ordinal) ||
-                        lower.StartsWith("proxy-", StringComparison.Ordinal))
+                    // Which names the widget may choose, and which the host keeps, is
+                    // decided in ProxyHeaderRules — a pure predicate so it can be
+                    // covered exhaustively (tools/ProxyHeaders), the same reason
+                    // MessageOrigin lives apart from its two call sites.
+                    if (!ProxyHeaderRules.IsWidgetSuppliable(headerName))
                         continue;
                     var value = headerValue.GetValue<string>();
                     if (!request.Headers.TryAddWithoutValidation(headerName, value))
                         request.Content?.Headers.TryAddWithoutValidation(headerName, value);
-                    if (IsBrowserForwardable(lower))
+                    if (ProxyHeaderRules.IsBrowserForwardable(headerName))
                         (browserHeaders ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase))[headerName] = value;
                 }
             }
@@ -684,23 +680,6 @@ public sealed class DashboardWindow : Form
             // window closed mid-request
         }
     }
-
-    /// <summary>
-    /// Whether a widget-supplied header can be replayed from a page-context fetch in
-    /// the hidden-browser tier. Names the Fetch spec forbids page scripts to set (the
-    /// browser throws, killing the whole retry) and anything the browser must own
-    /// (cookies, origin, sec-*) stay out; auth and API-key headers pass through.
-    /// </summary>
-    private static bool IsBrowserForwardable(string lower) =>
-        lower is not ("accept-charset" or "accept-encoding" or "connection" or "content-length"
-            or "content-type" or "cookie" or "cookie2" or "date" or "dnt" or "expect" or "host"
-            or "keep-alive" or "origin" or "referer" or "te" or "trailer" or "transfer-encoding"
-            // The browser tier's whole value is its REAL identity: a widget-
-            // supplied User-Agent would override the genuine Chrome UA.
-            or "upgrade" or "user-agent" or "via")
-        && !lower.StartsWith("sec-", StringComparison.Ordinal)
-        && !lower.StartsWith("proxy-", StringComparison.Ordinal)
-        && !lower.StartsWith("access-control-", StringComparison.Ordinal);
 
     /// <summary>
     /// Real ICMP pings for the Ping Monitor widget (a browser can only fake latency with

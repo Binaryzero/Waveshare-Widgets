@@ -11,6 +11,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const KNOWN_TYPES = new Set(['text', 'number', 'slider', 'color', 'select', 'switch',
   'secret', 'sensor', 'sensors-factory', 'location', 'list', 'media-selector']);
@@ -40,6 +41,21 @@ const WEBHOOK_VALUE = /web ?hook$/i;
 // Anchored at the END: unanchored, `userKeyboardLayout` squashes to
 // `userkeyboardlayout` and matches `userkey`, failing a keyboard-layout select.
 const COMPOUND = /(api|client|access|auth|refresh|session|bearer|private|user|admin|service|oauth)(token|secret|key|password|passwd)s?$/i;
+// ...but the anchor only earns that when the name HAS a boundary to reason about.
+// `apiTokenValue` splits to "api Token Value" and CREDENTIAL_WORD catches the standalone
+// "Token"; `apitokenvalue` splits to nothing, so the anchored rule sees a compound in
+// the middle and waves it through — a plaintext token in layout.json (issue #107).
+// For an all-lowercase run there is no honest way to tell `apitokenvalue` from
+// `userkeyboardlayout` without a dictionary, so around credentials the ambiguous name
+// is refused: an author who means the keyboard one writes `userKeyboardLayout`, which
+// is the spelling the rest of this rule is built around anyway.
+const COMPOUND_ANYWHERE = /(api|client|access|auth|refresh|session|bearer|private|user|admin|service|oauth)(token|secret|key|password|passwd)s?/i;
+// A SINGLE case run, upper or lower — not merely "letters and digits". APITOKENVALUE
+// carries no word boundary either, so it is exactly as ambiguous as apitokenvalue and
+// belongs here. But an /i flag would also match userKeyboardLayout, whose camelCase IS
+// the boundary this rule is defined by absence of; the shared fixture caught that on the
+// first run. Two anchored alternatives say what is meant: no case change anywhere.
+const UNSTRUCTURED = /^([a-z0-9]+|[A-Z0-9]+)$/;
 // A url/link/endpoint is the credential only when the name denotes the VALUE. Same
 // distinction the webhook rule makes: `privateIcsUrl` holds it, `signedUrlExpiry`
 // holds a duration and `personalLinkLabel` holds a caption.
@@ -74,9 +90,128 @@ const looksLikeCredential = (name) => {
   if (!METADATA_TAIL.test(trimmed)) {
     if (CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(squashed)) return true;
     if (COMPOUND.test(squashed)) return true;
+    if (UNSTRUCTURED.test(String(name || '')) && COMPOUND_ANYWHERE.test(squashed)) return true;
   }
   if (WEBHOOK.test(spaced) && (URLISH.test(spaced) || WEBHOOK_VALUE.test(trimmed))) return true;
   return URLISH.test(spaced) && SECRET_QUALIFIER.test(spaced) && URL_VALUE.test(trimmed);
+};
+// One attribute reader for every rule below, because the rules that rolled their own
+// each missed a different legal spelling. An attribute starts at whitespace or the
+// self-closing slash — NOT at any word boundary, or `data-rel` and `aria-rel` read as
+// `rel` and a stylesheet slips past the ordering rule (issue #121). Values may be
+// double-quoted, single-quoted, or unquoted: all three are valid HTML, and only the
+// first two were being matched. Returns null when the attribute is absent, so callers
+// can tell that apart from an empty value.
+// Attribute values are decoded before they mean anything. `src="&#47;&#47;evil.example/x"`
+// is loaded by a browser as `//evil.example/x`, so a rule reading the raw text sees no
+// scheme and no `//` and waves it through — the guard has to look at the value the
+// BROWSER will act on, not the bytes in the file.
+const CHAR_REFS = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0',
+  sol: '/', bsol: '\\', colon: ':', tab: '\t', newline: '\n', period: '.', num: '#', quest: '?' };
+const decodeEntities = (s) => String(s).replace(/&(#[xX][0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]*);?/g, (whole, body) => {
+  if (body[0] === '#') {
+    const code = body[1] === 'x' || body[1] === 'X'
+      ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+    return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+  }
+  const named = CHAR_REFS[body.toLowerCase()];
+  return named === undefined ? whole : named;
+});
+// Attributes are TOKENIZED rather than searched for. A regex scanning the whole tag has
+// no idea where one attribute ends and the next begins, so
+//   <script data-doc="example src=//cdn.example/x.js">
+// reads as if the element had a src — an inline script that fetches nothing, refused.
+// Walking the tag once, honouring quotes, is both shorter to reason about and the only
+// way the answer can be right for markup nobody thought to predict.
+// Finding where a start tag ENDS needs the same quote awareness as parsing it. A `>`
+// inside a quoted value is ordinary text to a browser, so `[^>]*>` truncates
+//   <script data-note=">" src="//evil.example/pwn.js">
+// to `<script data-note=">` — no src in sight, widget accepted, remote script loaded.
+// Fixing the attribute parser and leaving the tag scanner naive fixes one layer of a
+// two-layer problem, which is what happened in the round before this one.
+function startTags(html, tagName) {
+  const out = [];
+  const opener = new RegExp('<' + tagName + '(?=[\\s/>])', 'gi');
+  let m;
+  while ((m = opener.exec(html)) !== null) {
+    let i = m.index + m[0].length;
+    let quote = null;
+    while (i < html.length) {
+      const c = html[i];
+      if (quote) { if (c === quote) quote = null; }
+      else if (c === '"' || c === "'") quote = c;
+      else if (c === '>') break;
+      i++;
+    }
+    out.push({ tag: html.slice(m.index, Math.min(i + 1, html.length)), index: m.index });
+    opener.lastIndex = Math.min(i + 1, html.length);
+  }
+  return out;
+}
+
+function tagAttributes(tag) {
+  const attrs = new Map();
+  // Past `<` and the tag name; everything after is attributes until the closing `>`.
+  let i = 1;
+  while (i < tag.length && /[^\s/>]/.test(tag[i])) i++;
+  while (i < tag.length) {
+    while (i < tag.length && /[\s/]/.test(tag[i])) i++;
+    if (i >= tag.length || tag[i] === '>') break;
+    const start = i;
+    while (i < tag.length && /[^\s=/>]/.test(tag[i])) i++;
+    const name = tag.slice(start, i).toLowerCase();
+    if (!name) { i++; continue; }
+    while (i < tag.length && /\s/.test(tag[i])) i++;
+    let value = '';
+    if (tag[i] === '=') {
+      i++;
+      while (i < tag.length && /\s/.test(tag[i])) i++;
+      const quote = tag[i];
+      if (quote === '"' || quote === "'") {
+        const end = tag.indexOf(quote, ++i);
+        value = end < 0 ? tag.slice(i) : tag.slice(i, end);
+        i = end < 0 ? tag.length : end + 1;
+      } else {
+        const vs = i;
+        while (i < tag.length && /[^\s>]/.test(tag[i])) i++;
+        value = tag.slice(vs, i);
+      }
+    }
+    if (!attrs.has(name)) attrs.set(name, decodeEntities(value));   // first wins, as HTML does
+  }
+  return attrs;
+}
+const attr = (tag, name) => {
+  const v = tagAttributes(tag).get(name.toLowerCase());
+  return v === undefined ? null : v;
+};
+const APP_PREFIX = 'https://app.wsw/';
+// External = anything carrying a scheme or protocol-relative authority that is not the
+// shell's own origin. A plain relative path stays inside the widget's virtual host and
+// is always fine. Whitespace inside the value counts as padding, not as content: a
+// browser strips leading and trailing space (and tabs and newlines) before resolving.
+// A named reference this table does not know is a value we cannot predict the browser's
+// reading of — `&bsol;` is a backslash to HTML and was invisible here. The table will
+// always be partial (the real set runs to thousands), so completeness is the wrong goal:
+// an UNRESOLVED reference in a src/href is refused instead. That is complete by
+// construction, and costs a widget author nothing, since the literal character is always
+// available and a legitimate `&` in a query string is written `&amp;`, which does decode.
+const UNRESOLVED_REF = /&(#[xX]?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/;
+const isExternalRef = (value, { allowData = false } = {}) => {
+  // Backslashes are slashes to a URL parser on a special scheme, so `\\evil.example/x`
+  // resolves against an https base to `https://evil.example/x` — a bypass that looks like
+  // neither a scheme nor a `//` until the browser normalizes it. Classify what the
+  // browser will act on.
+  const s = String(value || '').replace(/[\s\u0000]+/g, '').replace(/\\/g, '/').trim();
+  if (!s || s.startsWith(APP_PREFIX)) return false;
+  // A data: URI carries its own bytes, so for a LINK it is self-contained by definition —
+  // a packaged data-URI icon fetches nothing. Never passed for <script>, where the bytes
+  // are code and executing attacker-chosen code is the whole point of the rule.
+  if (allowData && /^data:/i.test(s)) return false;
+  // Still carrying a reference the decoder did not resolve: treat as external rather
+  // than guess. See UNRESOLVED_REF.
+  if (UNRESOLVED_REF.test(s)) return true;
+  return s.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(s);
 };
 const KNOWN_SLOTS = new Set(['quarter', 'half', 'three-quarter', 'full']);
 const LIST_FIELD_TYPES = new Set(['text', 'color']);
@@ -168,10 +303,9 @@ function validate(folder) {
     // token-matched, so a preload whose filename merely contains "stylesheet"
     // (rel=preload href=stylesheet.css) cannot false-positive.
     let firstOther = html.search(/<style[\s>]/i);
-    for (const m of html.matchAll(/<link\b[^>]*>/gi)) {
-      if (m[0].includes('widget-base.css')) continue;
-      const rel = m[0].match(/\brel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i);
-      const value = rel ? (rel[1] ?? rel[2] ?? rel[3] ?? '') : '';
+    for (const m of startTags(html, 'link')) {
+      if (m.tag.includes('widget-base.css')) continue;
+      const value = attr(m.tag, 'rel') || '';
       if (!value.toLowerCase().split(/\s+/).includes('stylesheet')) continue;
       if (firstOther < 0 || m.index < firstOther) firstOther = m.index;
     }
@@ -196,14 +330,26 @@ function validate(folder) {
 
   // Self-contained: no external scripts or stylesheets (embeds/iframes and data
   // fetches are widget business; script execution from third parties is not).
-  for (const m of html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) {
-    const src = m[1];
-    if (/^https?:\/\//i.test(src) && !src.startsWith('https://app.wsw/'))
+  //
+  // Stated as what is ALLOWED, not as what is forbidden. The forbidden list only ever
+  // covered the shapes someone thought of: `//evil.example/pwn.js` is not `http://`, so
+  // it passed — and a browser resolves it against the widget's own https virtual host,
+  // which is precisely the fetch the rule exists to stop (issue #110). Same for `data:`,
+  // `blob:`, an uppercase scheme, or a value padded with whitespace. Anything that is
+  // not app.wsw and not a plain relative path is external, whatever it looks like.
+  for (const m of startTags(html, 'script')) {
+    const src = attr(m.tag, 'src');
+    if (src !== null && isExternalRef(src))
       err('external-script', `external <script src="${src}"> — widgets must be self-contained (only app.wsw scripts allowed)`);
   }
-  for (const m of html.matchAll(/<link[^>]+href=["'](https?:\/\/[^"']+)["']/gi)) {
-    if (!m[1].startsWith('https://app.wsw/'))
-      err('external-style', `external stylesheet ${m[1]} — bundle styles in the widget`);
+  for (const m of startTags(html, 'link')) {
+    const href = attr(m.tag, 'href');
+    // Checked for EVERY rel, not just stylesheet: rel=preload / modulepreload / prefetch
+    // fetch remote content just as effectively, and a rule that only reads stylesheets
+    // would hand them a way through. data: is exempt (see isExternalRef) so a packaged
+    // icon is not mistaken for a remote fetch.
+    if (href !== null && isExternalRef(href, { allowData: true }))
+      err('external-style', `external <link href="${href}"> — widgets must be self-contained`);
   }
 
   // Informational: which external hosts the widget's code mentions.
@@ -263,7 +409,81 @@ if (args.includes('--self-test')) {
   console.log(bad
     ? `${bad} of ${total} disagree with tools/credential-names.json`
     : `credential rule agrees with the fixture on all ${total} names`);
-  process.exit(bad ? 1 : 0);
+
+  // The HTML rules get the same treatment, because both of the ways they leaked were
+  // spellings nobody had written down: a browser-legal shape the regex did not model
+  // (issues #110, #121). The CLEAN case is not decoration — it is what fails first if
+  // one of these rules is tightened into refusing ordinary widgets.
+  const BASE = '<link rel="stylesheet" href="https://app.wsw/widget-base.css">';
+  const doc = (head) => `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>T</title>${head}<style>body { color: var(--text); }</style></head>
+<body><script src="https://app.wsw/widget-api.js"></script></body></html>`;
+  const htmlCases = [
+    ['clean', doc(BASE), null],
+    // #121 — \b matches after a hyphen, so data-rel was read as the real rel and the
+    // stylesheet ahead of the base went unseen.
+    ['rel-after-data-rel', doc('<link data-rel="preload" rel="stylesheet" href="local.css">' + BASE), 'base-css-order'],
+    // #110 — none of these are `http://`, and all four load remote script in a browser.
+    ['protocol-relative', doc(BASE + '<script src="//evil.example/pwn.js"></script>'), 'external-script'],
+    ['unquoted-attribute', doc(BASE + '<script src=https://evil.example/pwn.js></script>'), 'external-script'],
+    ['uppercase-scheme', doc(BASE + '<script src="HTTPS://evil.example/pwn.js"></script>'), 'external-script'],
+    ['data-uri', doc(BASE + '<script src="data:text/javascript,alert(1)"></script>'), 'external-script'],
+    ['external-stylesheet', doc(BASE + '<link rel="stylesheet" href="//evil.example/x.css">'), 'external-style'],
+    // A browser DECODES the attribute before resolving it, so a rule reading raw text
+    // sees no scheme and no // and lets the remote script through.
+    ['entity-encoded-slashes', doc(BASE + '<script src="&#47;&#47;evil.example/pwn.js"></script>'), 'external-script'],
+    ['entity-encoded-scheme', doc(BASE + '<script src="&#104;ttps://evil.example/pwn.js"></script>'), 'external-script'],
+    ['entity-hex-encoded', doc(BASE + '<script src="&#x2f;&#x2f;evil.example/pwn.js"></script>'), 'external-script'],
+    // rel=preload fetches remote content as surely as a stylesheet does, so the link
+    // rule cannot be narrowed to rel=stylesheet.
+    ['preload-remote', doc(BASE + '<link rel="preload" as="script" href="//evil.example/x.js">'), 'external-style'],
+    // ...while a packaged data: URI fetches nothing and must stay accepted. Inert bytes
+    // in a link are self-contained; the same scheme on a <script> is code, and stays out.
+    ['data-uri-icon', doc(BASE + '<link rel="icon" href="data:image/png;base64,iVBORw0KGgo=">'), null],
+    // A URL parser treats backslashes as slashes on a special scheme, so this resolves
+    // against the widget's https base to https://evil.example/pwn.js.
+    ['entity-backslashes', doc(BASE + '<script src="&#92;&#92;evil.example/pwn.js"></script>'), 'external-script'],
+    ['literal-backslashes', doc(BASE + '<script src="\\\\evil.example/pwn.js"></script>'), 'external-script'],
+    // ...and the other direction: text INSIDE another attribute is not this element's
+    // src. An inline script fetches nothing and must not be reported as external.
+    ['lookalike-attribute', doc(BASE + '<script data-doc="example src=//cdn.example/x.js">var a=1;</script>'), null],
+    ['lookalike-href-attribute', doc(BASE + '<link rel="icon" data-note="href=//evil.example/x" href="icon.png">'), null],
+    // A `>` inside a quoted value is text to a browser; a naive `[^>]*>` scan truncates
+    // the tag right there and never sees the src that follows.
+    ['gt-inside-quoted-attribute', doc(BASE + '<script data-note=">" src="//evil.example/pwn.js"></script>'), 'external-script'],
+    ['gt-inside-quoted-href', doc(BASE + '<link rel="stylesheet" data-note=">" href="//evil.example/x.css">'), 'external-style'],
+    // A named reference outside the decoder's table: &bsol; is a backslash to HTML, and
+    // the resolved URL is remote. Unresolved references are refused rather than guessed.
+    ['named-ref-bsol', doc(BASE + '<script src="&bsol;&bsol;evil.example/pwn.js"></script>'), 'external-script'],
+    ['unknown-named-ref', doc(BASE + '<script src="&fjord;evil.example/pwn.js"></script>'), 'external-script'],
+    // ...while an ampersand written the way HTML asks for it still decodes and passes.
+    ['amp-in-query', doc(BASE + '<script src="./helper.js?a=1&amp;b=2"></script>'), null],
+    // ...while a relative script is the ordinary case and must stay accepted.
+    ['relative-script', doc(BASE + '<script src="./helper.js"></script>'), null],
+  ];
+  const manifest = {
+    id: 'ww.selftest.fixture', name: 'Fixture', author: 'WW', description: 'self-test',
+    version: '1.0.0', min_api_version: 1, supported_slots: ['quarter'], properties: [],
+  };
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ww-validate-'));
+  let htmlBad = 0;
+  for (const [name, body, expected] of htmlCases) {
+    const dir = path.join(tmp, name);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
+    fs.writeFileSync(path.join(dir, 'index.html'), body);
+    const rules = validate(dir).errors.map((e) => e.rule);
+    if (expected === null && rules.length) {
+      console.log(`  FAIL html "${name}" should validate, but raised ${rules.join(', ')}`); htmlBad++;
+    } else if (expected !== null && !rules.includes(expected)) {
+      console.log(`  FAIL html "${name}" should raise ${expected}, raised ${rules.join(', ') || 'nothing'}`); htmlBad++;
+    }
+  }
+  fs.rmSync(tmp, { recursive: true, force: true });
+  console.log(htmlBad
+    ? `${htmlBad} of ${htmlCases.length} html rule cases disagree`
+    : `html rules agree with all ${htmlCases.length} cases`);
+  process.exit(bad || htmlBad ? 1 : 0);
 }
 
 const targets = args.filter((a) => !a.startsWith('--'));

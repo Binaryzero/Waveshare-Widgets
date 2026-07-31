@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CI guard for the proxy's header rules (issue #92).
+
+       The proxy forwards widget-chosen headers to loopback and LAN targets, and its
+       browser-grade defaults GAP-FILL — so a forwarded name does not add a value, it
+       replaces the host's. That makes "which names may a widget choose" a security
+       decision taken once per header, in a loop that cannot be exercised without
+       WebView2 and a real network, on a Windows host neither CI nor the maintainer's
+       device can drive. So the decision is a pure predicate and this probe covers it;
+       only the wiring is left to inspection.
+
+       The finding was not one missing name — it was the two TIERS disagreeing about a
+       whole category. P7 is therefore the point of this probe: it asserts the two
+       predicates cannot drift apart on host-owned names, whatever either list grows. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ProxyHeadersProbe</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/WaveshareWidgets/ProxyHeaderRules.cs" />
+  </ItemGroup>
+</Project>

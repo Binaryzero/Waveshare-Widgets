@@ -131,6 +131,9 @@ If you run iCUE, battery percentages for Corsair wireless keyboards/mice/headset
 appear as sensors (`corsair:*:battery`): download the client DLL
 (`iCUESDK.x64_2019.dll`) from the [cue-sdk releases](https://github.com/CorsairOfficial/cue-sdk/releases),
 drop it next to `WaveshareWidgets.exe`, and enable the SDK toggle in iCUE's settings.
+Next to the exe or an iCUE install directory are the only places it is looked for:
+loading a native DLL runs its startup code before anything checks that it is really the
+Corsair SDK, so a user-writable folder is not somewhere this app will load code from.
 Note that Corsair's public SDK exposes no system temperatures or fan speeds — those
 remain iCUE-internal, which is why the app reads hardware itself.
 
