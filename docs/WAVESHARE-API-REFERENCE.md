@@ -193,6 +193,15 @@ self-signed certs like the Philips Hue bridge. Public hostnames always validate.
 Insecure LAN requests use HTTP/1.1 and are serialized through one connection per
 device — embedded TLS servers mishandle h2 offers and parallel handshakes.
 
+Response bodies are capped at **5 MiB** on every tier. Each reader — `text()`, `json()`,
+`blob()`, `arrayBuffer()`, `bytes()`, `formData()`, and the `body` stream — refuses past
+the ceiling with a `RangeError` and cancels the transfer rather than abandoning it (an
+abandoned body goes on downloading). `init.maxBytes` lowers the ceiling for a single
+call; it cannot raise it, since the host proxy tier enforces the same limit in C# and the
+remote server's status code decides which tier runs. Widgets should distinguish the
+`RangeError` from a network failure — the endpoint answered, it just answered with too
+much.
+
 ---
 
 ## Sensor model

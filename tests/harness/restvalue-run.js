@@ -13,6 +13,13 @@
 //   R10 · a failing endpoint backs off; an explicit Retry overrides the backoff
 //   R11 · the age label is recomputed from the clock, not frozen until the next poll
 //   R12 · a tile that BOOTS during a game reads that state out of ww-init and stays quiet
+//   R22 · a response past the WW.fetch ceiling is named as such, not as unreachable —
+//         and an ordinary body still reads through the new cap
+//   R23 · the same refusal arriving from the HOST proxy tier reads the same way, by either
+//         way into the ladder, and carries the same error TYPE — while an ordinary host
+//         failure keeps the type, and the state, that means "unreachable"
+//   R24/R25 · the wrapper WW.fetch returns IS a Response — its body takes a BYOB reader and
+//         it survives the brand check cache.put performs. Neither is expressible in Node.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -81,9 +88,13 @@ const TOKEN = 'Bearer super-secret-probe-token';
     // host answering that message the promise never settles — which is exactly how the
     // first run of this suite wedged the widget, and why it now has a timeout.
     await p.addInitScript(() => {
+      // Scriptable, because the host has more than one way to refuse. It reports every
+      // failure as a STRING — 'response too large' and 'connection refused' arrive by the
+      // same field — and the tile has to tell those apart (R23).
+      window.__probeHostError = 'host offline in probe';
       window.addEventListener('message', (ev) => {
         const m = ev.data || {};
-        if (m.type === 'ww-fetch') window.postMessage({ type: 'ww-fetch-result', id: m.id, error: 'host offline in probe' }, '*');
+        if (m.type === 'ww-fetch') window.postMessage({ type: 'ww-fetch-result', id: m.id, error: window.__probeHostError }, '*');
       });
     });
   }
@@ -331,6 +342,128 @@ const TOKEN = 'Bearer super-secret-probe-token';
   await gameEvent(false);
   await wait(600);
   check('R12c and polling resumes once the game exits', seen.length > 0, `${seen.length} requests`);
+
+  // ---- R22 · a response past the WW.fetch ceiling is NAMED, not reported as unreachable
+  // The tile renders one number. An endpoint that answers with megabytes is answering —
+  // the URL is right, the network is fine — so "could not reach the endpoint" would send
+  // the user to check two things that are both working. WW.fetch refuses the body without
+  // materialising it, and the tile has to say which failure this is.
+  respond = () => ({ status: 200, contentType: 'application/json', body: 'x'.repeat(6 * 1024 * 1024) });
+  await init(Object.assign({}, base, { url: 'https://api.test/huge', jsonPointer: '/v' }));
+  await wait(2500);
+  const huge = await read();
+  check('R22 an oversized response says so, rather than blaming the URL or the network',
+    /too large/i.test(huge.title), `${huge.title} — ${huge.body}`);
+  check('R22b ...and it is offered as retryable, since the endpoint is answering',
+    huge.retry === true, String(huge.retry));
+
+  // R13c · and the ordinary case still reads. A ceiling that also refused normal bodies
+  // would pass R13 while breaking every tile, which is the direction this has to be
+  // checked in — the cap is new, and it sits in front of every widget's reads.
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 42 }) });
+  await init(Object.assign({}, base, { url: 'https://api.test/small', jsonPointer: '/v' }));
+  await wait(1500);
+  const afterCap = await read();
+  check('R22c a normal body still reads through the cap', afterCap.value === '42', afterCap.value);
+
+  // ---- R23 · the SAME refusal from the host proxy tier reads the same way -----------
+  // Which tier serves a call is the remote server's choice, not the widget's: a 403 or a
+  // CORS failure escalates to the proxy, where the ceiling is enforced in C# and comes
+  // back as a plain string. If only the browser tier's refusal were recognisable, this
+  // tile would name the failure or blame the network depending on something the user
+  // cannot see or influence — and the same target can flip between the two.
+  // The ladder has TWO ways in, and each one used to swallow the refusal differently, so
+  // both are driven — with the proxy-first memo set EXPLICITLY rather than inherited from
+  // whichever earlier probe happened to fail, which is the difference between testing a
+  // path and testing the order this file happens to be written in.
+  respond = () => ({ abort: true });   // browser tier fails, so the call escalates
+  await page.evaluate(() => {
+    window.__probeHostError = 'response too large';
+    sessionStorage.setItem('ww-proxy-first:https://api.test', '1');   // proxy-FIRST path
+  });
+  await init(Object.assign({}, base, { url: 'https://api.test/proxyhuge', jsonPointer: '/v' }));
+  await wait(2500);
+  const proxied = await read();
+  check('R23 an oversize refusal from the proxy tier is named, not blamed on the network',
+    /too large/i.test(proxied.title), `${proxied.title} — ${proxied.body}`);
+
+  // R23b · the other way in: browser tier answers 403 (a bot wall), so the call escalates,
+  // and the proxy gets past the wall only to find the body too large. Handing back the 403
+  // — which is what "keep the original answer if the retry can't do better" did — points
+  // the field at credentials for a resource whose only problem is its size.
+  respond = () => ({ status: 403, body: 'blocked' });
+  await page.evaluate(() => sessionStorage.removeItem('ww-proxy-first:https://api.test'));
+  await init(Object.assign({}, base, { url: 'https://api.test/wallhuge', jsonPointer: '/v' }));
+  await wait(2500);
+  const walled = await read();
+  check('R23b a size refusal behind a bot wall is named, not reported as the wall\'s 403',
+    /too large/i.test(walled.title), `${walled.title} — ${walled.body}`);
+
+  // R23c/d · the TYPE, at the shim, which is the contract the two probes above lean on.
+  // Asserted here rather than through the tile because the tile tests the type AND the
+  // message, so it goes on rendering the right state even when the type is wrong — a
+  // rendering check cannot fail for a broken classifier alone, and one that cannot fail
+  // for the thing it is named after is not guarding it. proxy:'always' takes the tier
+  // directly, with no fallback in the way.
+  const kinds = await page.evaluate(async () => {
+    const one = async (hostError) => {
+      window.__probeHostError = hostError;
+      try { await WW.fetch('https://api.test/typed', { proxy: 'always' }); return 'resolved'; }
+      catch (e) { return e.constructor.name; }
+    };
+    return { big: await one('response too large'), ordinary: await one('connection refused') };
+  });
+  check('R23c the proxy tier\'s size refusal rejects as a RangeError, like the browser tier\'s',
+    kinds.big === 'RangeError', kinds.big);
+  // The other direction: turning every host failure into a size refusal would pass R23,
+  // R23b and R23c while telling the field to shrink a response that was never sent.
+  check('R23d ...while an ordinary host failure stays a TypeError',
+    kinds.ordinary === 'TypeError', kinds.ordinary);
+  await page.evaluate(() => { window.__probeHostError = 'host offline in probe'; });
+
+  // ---- R24/R25 · the wrapper WW.fetch returns has to BE a Response -------------------
+  // Both of these live here rather than in bodycap-run.js because Node cannot express
+  // either one: its Response re-wraps a body stream (so BYOB never reaches ours) and its
+  // own getters accept a forwarding Proxy quite happily (so the brand check passes for the
+  // bug). Chromium is the platform that ships, and it disagrees on both.
+  respond = () => ({ status: 200, contentType: 'application/octet-stream', body: 'y'.repeat(4096) });
+  const wrapper = await page.evaluate(async () => {
+    const out = {};
+    const race = (p, label) => Promise.race([
+      p.then((v) => String(v), (e) => label + ' threw ' + e.constructor.name),
+      new Promise((r) => setTimeout(() => r('HUNG'), 8000)),
+    ]);
+    // A native Response.body is a readable BYTE stream, so a widget may read into a buffer
+    // of its own. An ordinary ReadableStream refuses that reader outright, and a byte stream
+    // that answers the request with enqueue() never settles the read at all — the second is
+    // worse, and is what the obvious fix does.
+    out.byob = await race((async () => {
+      const r = await WW.fetch('https://api.test/byob', { proxy: 'never' });
+      const reader = r.body.getReader({ mode: 'byob' });
+      let n = 0;
+      for (;;) {
+        const { done, value } = await reader.read(new Uint8Array(1024));
+        if (done) break;
+        n += value.byteLength;
+      }
+      return n;
+    })(), 'byob');
+    // ...and the brand check. Every other platform API unwraps its arguments to the real
+    // object, which no amount of faithful property forwarding can supply: cache.put rejects
+    // a Proxy outright, for a value WIDGET-SPEC promises is a Response.
+    out.cachePut = await race((async () => {
+      const cache = await caches.open('ww-probe');
+      await cache.put(new Request('https://api.test/cached'),
+        await WW.fetch('https://api.test/tocache', { proxy: 'never' }));
+      const back = await cache.match('https://api.test/cached');
+      return (await back.arrayBuffer()).byteLength;
+    })(), 'cachePut');
+    return out;
+  });
+  check('R24 the wrapped body accepts a BYOB reader, as a native one does',
+    wrapper.byob === '4096', wrapper.byob);
+  check('R25 the wrapper passes the brand check other platform APIs perform on a Response',
+    wrapper.cachePut === '4096', wrapper.cachePut);
 
   // ---- R13 · a Critical threshold works on its own ---------------------------------
   // The manifest offers Warn and Critical independently and marks neither required, so

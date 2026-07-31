@@ -21,19 +21,43 @@ Console.WriteLine("The ceiling itself");
 
 // F1 · the boundary, both sides. A cap that refuses a body of exactly the allowed size is a
 // different cap from the one documented, and off-by-one here silently shrinks the limit.
-Check("F1 a body of exactly the ceiling is allowed", !FetchLimits.DeclaredTooLarge(Max));
-Check("F1b one byte over is refused", FetchLimits.DeclaredTooLarge(Max + 1));
+Check("F1 a body of exactly the ceiling is allowed", !FetchLimits.DeclaredTooLarge(Max, Max));
+Check("F1b one byte over is refused", FetchLimits.DeclaredTooLarge(Max + 1, Max));
 
 // F2 · an UNKNOWN length is not a large one. Chunked responses declare no Content-Length,
 // so refusing on a missing value would reject the ordinary case rather than the hostile one.
 Check("F2 an absent or unparsed Content-Length is not treated as too large",
-    !FetchLimits.DeclaredTooLarge(0) && !FetchLimits.DeclaredTooLarge(-1));
+    !FetchLimits.DeclaredTooLarge(0, Max) && !FetchLimits.DeclaredTooLarge(-1, Max));
 
 // F3 · the streaming check is asked BEFORE the append. Asking afterwards means the bytes
 // past the bound have already been paid for, which on this path is the whole cost.
-Check("F3 a chunk that exactly fills the ceiling is accepted", !FetchLimits.WouldExceed(Max - 1024, 1024));
-Check("F3b the chunk that would cross it is refused", FetchLimits.WouldExceed(Max - 1024, 1025));
-Check("F3c ...and so is one that starts already full", FetchLimits.WouldExceed(Max, 1));
+Check("F3 a chunk that exactly fills the ceiling is accepted", !FetchLimits.WouldExceed(Max - 1024, 1024, Max));
+Check("F3b the chunk that would cross it is refused", FetchLimits.WouldExceed(Max - 1024, 1025, Max));
+Check("F3c ...and so is one that starts already full", FetchLimits.WouldExceed(Max, 1, Max));
+
+// F9 · the per-request ceiling. WW.fetch lets a widget LOWER its own, and until this the
+// number never left the page: the host still fetched, buffered and base64-encoded the full
+// 5 MiB, so "lowered" meant only that the wrapper threw afterwards — every byte the lower
+// number exists to avoid had already been paid for.
+Check("F9 a lower request lowers the ceiling", FetchLimits.EffectiveCap(64 * 1024) == 64 * 1024);
+// The half that has to hold: the number arrives FROM a widget, and a ceiling a widget can
+// raise is not a ceiling. Same rule as the shim's resolveCap, enforced again here because
+// this side is the one that does the downloading.
+Check("F9b a higher request cannot raise it", FetchLimits.EffectiveCap(Max * 2L) == Max);
+Check("F9c ...nor can a colossal or negative one",
+    FetchLimits.EffectiveCap(long.MaxValue) == Max && FetchLimits.EffectiveCap(-1) == Max);
+// Absent means default, not "refuse everything": an older shell posts no maxBytes at all.
+Check("F9d an unspecified request means the default", FetchLimits.EffectiveCap(0) == Max);
+Check("F9e the ceiling itself is accepted unchanged", FetchLimits.EffectiveCap(Max) == Max);
+
+// F10 · and the lowered number is USED, not merely computed — the same shape of bug as the
+// shim's, where resolveCap returned the right value and the reader ignored it.
+Check("F10 a declared length over the LOWERED ceiling is refused though under the default",
+    FetchLimits.DeclaredTooLarge(1024 * 1024, FetchLimits.EffectiveCap(64 * 1024))
+    && !FetchLimits.DeclaredTooLarge(1024 * 1024, Max));
+Check("F10b ...and so is the chunk that would cross it",
+    FetchLimits.WouldExceed(60 * 1024, 8 * 1024, FetchLimits.EffectiveCap(64 * 1024))
+    && !FetchLimits.WouldExceed(60 * 1024, 8 * 1024, Max));
 
 Console.WriteLine("Parity with the browser tier");
 
@@ -70,6 +94,38 @@ Check("F5c ...and reports the refusal so the caller can log it rather than see a
 // absorb it deliberately, or a successful retry lands in the catch and the widget is left
 // holding the 403 the proxy tier got. A cap must not turn an empty answer into a failure.
 Check("F7 a null body is answered, not thrown on", code.Contains("if (!r.body)"));
+
+// F8 · the WIDGET side of the same ceiling. WW.fetch wraps every response so a widget
+// cannot materialise more than this either, and that number lives in widget-api.js because
+// the shim is plain JS with no access to the C# constant. Two hand-kept copies is exactly
+// how the proxy and browser tiers drifted apart in the first place, so they are compared.
+var shim = FindUpwards("src/WaveshareWidgets/Shell/widget-api.js");
+if (shim is null)
+{
+    Check("F8 the widget shim's ceiling matches the host's", false, "widget-api.js not found");
+}
+else
+{
+    var text = File.ReadAllText(shim);
+    var declared = System.Text.RegularExpressions.Regex.Match(
+        text, @"const MAX_BODY_BYTES = ([0-9*\s]+);");
+    var value = declared.Success
+        ? declared.Groups[1].Value.Split('*').Select(part => int.Parse(part.Trim())).Aggregate(1, (a, b) => a * b)
+        : -1;
+    Check("F8 the widget shim's ceiling matches the host's", value == Max, $"shim={value} host={Max}");
+}
+
+static string? FindUpwards(string relative)
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null)
+    {
+        var candidate = Path.Combine(dir.FullName, relative.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(candidate)) return candidate;
+        dir = dir.Parent;
+    }
+    return null;
+}
 
 // F6 · the script is written out for the JS side. It is JavaScript living inside a C#
 // string: nothing in this build would notice it becoming unparseable, and on the product it

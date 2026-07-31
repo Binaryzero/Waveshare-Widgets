@@ -54,6 +54,219 @@
   // table. None of those are reachable from here: this variable dies with the document
   // whose pixels it describes, and it only advances below, where the frame is delivered.
   let lastCaptureHash = '';
+  // >>> BODY-CAP BEGIN — tests/harness/bodycap-run.js lifts this block out and drives it
+  // directly. Extracted by marker rather than copied, so the probe can never diverge from
+  // what ships; the browser harness cannot reach the chunked path (its widget page is
+  // https, so an http fixture is blocked as mixed content) and this is where the streaming
+  // budget is actually exercisable.
+  // Largest response body WW.fetch will materialise, in bytes. The host enforces the same
+  // ceiling on both of its own tiers; this is the widget-side half, and tools/FetchLimits
+  // asserts the two numbers stay equal — a widget reading gigabytes into the panel's
+  // renderer is the same failure whichever path delivered them.
+  //
+  // Lowerable per call with init.maxBytes, for a widget that knows its payload should be
+  // small and wants to say so. LOWERABLE ONLY — see resolveCap.
+  const MAX_BODY_BYTES = 5 * 1024 * 1024;
+
+  /// Starts a cancel and does NOT wait for it. Awaiting looks tidier and deadlocks: a body
+  /// obtained from clone() is one branch of a tee, and cancelling one branch does not settle
+  /// until the other is cancelled too — so the await would never return, the RangeError would
+  /// never be thrown, and the source would go on filling the unread branch's queue. Exactly
+  /// the unbounded accumulation the budget exists to stop.
+  function cancelQuietly(cancellable) {
+    try {
+      const p = cancellable && cancellable.cancel();
+      if (p && typeof p.catch === 'function') p.catch(() => { /* already gone */ });
+    } catch (e) { /* nothing to cancel */ }
+  }
+
+  /// Reads a Response body with a byte budget, refusing WITHOUT materialising the excess.
+  /// The check is asked before each chunk is kept, and the transfer is cancelled rather
+  /// than abandoned — walking away from an unread body leaves it downloading in the
+  /// background, which is most of what a ceiling is for.
+  async function readCapped(response, maxBytes) {
+    if (!response.body) return new Uint8Array(0);   // 204/205/304 have no body to read
+    // Only when the body is not encoded. Content-Length describes the bytes on the wire,
+    // while response.body yields DECODED ones, so for a Content-Encoding response the two
+    // measure different things — and an incompressible payload can declare slightly more
+    // than it decodes to, which would refuse a body the streaming check would rightly
+    // accept. The streaming check covers this case on its own.
+    const encoded = !!response.headers.get('content-encoding');
+    const declared = encoded ? 0 : Number(response.headers.get('content-length') || 0);
+    if (declared > maxBytes) {
+      cancelQuietly(response.body);
+      throw new RangeError('response too large: ' + declared + ' bytes exceeds ' + maxBytes);
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (total + value.length > maxBytes) {
+        cancelQuietly(reader);
+        throw new RangeError('response too large: exceeds ' + maxBytes + ' bytes');
+      }
+      chunks.push(value);
+      total += value.length;
+    }
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const c of chunks) { out.set(c, at); at += c.length; }
+    return out;
+  }
+
+  /// A ReadableStream that relays the response's own and ERRORS past the budget rather than
+  /// relaying more.
+  ///
+  /// The source is not touched until something actually reads from the returned stream, so
+  /// building one costs nothing and disturbs nothing — see pull().
+  ///
+  /// `type: 'bytes'`, because a native Response.body is a readable BYTE stream: a widget may
+  /// call getReader({ mode: 'byob' }) to read into its own buffer, and an ordinary stream
+  /// refuses BYOB readers outright. Without this the wrapper breaks a valid streaming
+  /// consumer on responses of any size, including ones nowhere near the ceiling.
+  function cappedStream(source, maxBytes) {
+    let reader = null;
+    let pending = null;   // read from the source, not yet handed to the consumer
+    let total = 0;
+    return new ReadableStream({
+      type: 'bytes',
+      async pull(controller) {
+        // The lock is taken HERE rather than when the stream is built, because READING the
+        // .body property does not disturb a native body — `if (res.body)` followed by
+        // res.text() is ordinary widget code. Locking at construction would make merely
+        // looking at .body break every reader after it, which is a stranger failure than
+        // the one this wrapper exists to prevent.
+        if (!reader) reader = source.getReader();
+        if (!pending || !pending.length) {
+          const { done, value } = await reader.read();
+          if (done) {
+            controller.close();
+            // A BYOB read that is waiting when the source ends has to be answered, or it
+            // never settles: close() alone leaves that reader hanging on a stream it can
+            // see is closed.
+            if (controller.byobRequest) controller.byobRequest.respond(0);
+            return;
+          }
+          if (total + value.length > maxBytes) {
+            cancelQuietly(reader);
+            controller.error(new RangeError('response too large: exceeds ' + maxBytes + ' bytes'));
+            return;
+          }
+          total += value.length;
+          pending = value;
+        }
+        // A byte stream must SERVE a pending BYOB request by writing into the view the
+        // reader supplied — enqueue() does not answer one, and the read then waits forever.
+        // Verified in both Chromium and Node: enqueue-only + a BYOB reader hangs, which is
+        // worse than the plain stream this replaced (that one at least threw). Chunks from
+        // the source are whatever size the network gave us and the view is whatever size the
+        // caller asked for, so `pending` carries the remainder across pulls.
+        const req = controller.byobRequest;
+        if (!req) { controller.enqueue(pending); pending = null; return; }
+        const n = Math.min(req.view.byteLength, pending.length);
+        new Uint8Array(req.view.buffer, req.view.byteOffset, req.view.byteLength)
+          .set(pending.subarray(0, n));
+        pending = pending.subarray(n);
+        req.respond(n);
+      },
+      cancel() { cancelQuietly(reader || source); },   // never read: cancel the source itself
+    });
+  }
+
+  /// The ceiling for one call: init.maxBytes when it is a usable number, else the default.
+  ///
+  /// It can only LOWER the default, never raise it. WW.fetch has five return paths across two
+  /// tiers, and the host proxy tier enforces FetchLimits.MaxBodyBytes in C# — an init field
+  /// the shim invents cannot lift it, and whether a given call takes that tier is decided by
+  /// the REMOTE server's status code, not by the widget. So a raise would work or not work
+  /// depending on whether the target happened to answer 403 that minute: an option whose
+  /// effect the caller cannot predict is worse than no option. Clamping keeps the meaning the
+  /// same on every path — "no more than this, and never more than the host's ceiling".
+  ///
+  /// Inside the extracted block so the plumbing is drivable, not just the wrapper it feeds —
+  /// a probe that called cappedResponse directly would test the budget and never test which
+  /// budget WW.fetch actually picks.
+  function resolveCap(init) {
+    const asked = init && init.maxBytes;
+    return Number.isFinite(asked) && asked > 0
+      ? Math.min(Math.floor(asked), MAX_BODY_BYTES)
+      : MAX_BODY_BYTES;
+  }
+
+  /// Shadows a real Response's body readers so they obey the budget and REPORT the refusal.
+  ///
+  /// Own data properties, not a subclass or a wrapper object: they hide the prototype
+  /// methods for anyone holding this response, and leave the internal slots — the only thing
+  /// a Web IDL brand check looks at — exactly as the platform made them.
+  ///
+  /// They are needed because the platform's own readers cannot report this failure. Chromium
+  /// turns ANY body-stream error into `TypeError: Failed to fetch` for text(), json(),
+  /// blob(), arrayBuffer() and formData(); only a direct stream read preserves it. Left to
+  /// the platform, a size refusal would reach every widget as an indistinguishable network
+  /// error — the same defect this round fixed on the proxy tier, everywhere at once and with
+  /// nothing a widget could do about it.
+  const nativeClone = Response.prototype.clone;
+  function shadowReaders(res, maxBytes) {
+    const define = (name, value) =>
+      Object.defineProperty(res, name, { value, writable: true, configurable: true });
+    const decode = (bytes) => new TextDecoder().decode(bytes);
+    define('arrayBuffer', async () => (await readCapped(res, maxBytes)).buffer);
+    define('text', async () => decode(await readCapped(res, maxBytes)));
+    define('json', async () => JSON.parse(decode(await readCapped(res, maxBytes))));
+    define('blob', async () => new Blob([await readCapped(res, maxBytes)],
+      { type: res.headers.get('content-type') || '' }));
+    define('bytes', async () => readCapped(res, maxBytes));
+    // Not a body reader itself, but it PARSES one — and parsing a multipart body the
+    // platform read for us would be exactly the unbounded materialisation this exists to
+    // stop. Read within the budget first, then let the platform parse the capped copy.
+    define('formData', async () => {
+      const bytes = await readCapped(res, maxBytes);
+      // Only the content-type is carried over. It is all formData() needs — the multipart
+      // boundary lives in it — while content-length and content-encoding describe the bytes
+      // ON THE WIRE, and these are the decoded ones just read. Handing the platform headers
+      // that disagree with the body is the encoded-length bug from earlier in this round.
+      const ct = res.headers.get('content-type');
+      return new Response(bytes, ct ? { headers: { 'Content-Type': ct } } : undefined).formData();
+    });
+    // The platform's clone() tees an already-capped body, so the copy is capped whatever we
+    // do — but its readers would be the platform's again, and would report the refusal as a
+    // network error. Tee natively, then shadow the copy the same way.
+    define('clone', () => shadowReaders(nativeClone.call(res), maxBytes));
+    return res;
+  }
+
+  /// Returns a Response whose body cannot exceed the budget.
+  ///
+  /// A REAL Response built from a capped stream, not a Proxy around the original. A Proxy
+  /// forwards every property faithfully and still fails the brand check every other platform
+  /// API performs on its arguments: cache.put(request, response) rejects it outright with
+  /// "parameter 2 is not of type 'Response'" — for a value WIDGET-SPEC promises is a
+  /// Response, and which behaves like one right up until it is handed to something else.
+  /// Faithful forwarding cannot fix that; only being one can.
+  function cappedResponse(response, maxBytes) {
+    // Nothing to cap, and nothing that can be rebuilt: a body-forbidden status (204/205/304)
+    // and an opaque cross-origin response both have a null body, and the constructor refuses
+    // the status an opaque response reports (0) outright. The original is already safe.
+    if (!response.body || response.status < 200 || response.status > 599) return response;
+    const capped = new Response(cappedStream(response.body, maxBytes), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+    // url, redirected and type survive no constructor: a rebuilt Response reports url '',
+    // redirected false and type 'default' where the original had the final URL and its real
+    // type. Widgets read all three — url especially, after a redirect. Own properties shadow
+    // the prototype getters; the internal slots the brand check reads are untouched.
+    for (const [name, value] of [['url', response.url], ['redirected', response.redirected],
+      ['type', response.type]])
+      Object.defineProperty(capped, name, { value, configurable: true });
+    return shadowReaders(capped, maxBytes);
+  }
+
+  // <<< BODY-CAP END
+
   let fetchSeq = 0;
   // The shell routes results by id alone, across EVERY widget frame — a per-frame
   // counter plus a ms-floored clock can collide between frames loaded in the same
@@ -178,7 +391,15 @@
       pendingFetches.delete(msg.id);
       if (pending.cleanup) pending.cleanup();
       if (msg.error) {
-        pending.reject(new TypeError('proxy fetch failed: ' + msg.error));
+        // The host refuses an oversized body with its own exception, and it arrives here as
+        // a STRING — so without this it would land as a TypeError while the identical refusal
+        // on the browser tier is a RangeError. A widget cannot ask which tier served it (the
+        // remote server's status code decides that), so a type that depends on the tier is a
+        // type nothing can branch on: the REST widget's "Response too large" state simply
+        // would not appear for proxied targets. One refusal, one type, either way.
+        const tooLarge = /too large/i.test(msg.error);
+        const Ctor = tooLarge ? RangeError : TypeError;
+        pending.reject(new Ctor('proxy fetch failed: ' + msg.error));
         return;
       }
       let bytes = new Uint8Array(0);
@@ -259,8 +480,27 @@
       contentType: bodyContentType,
       headers,
       insecure: init.insecure === true,
+      // The ceiling has to cross the hop, not just live in the page. Without it the host
+      // fetches, buffers, base64-encodes and posts its full 5 MiB before the wrapper here
+      // can refuse a byte of it — so a lowered ceiling would cost exactly as much as no
+      // ceiling and only look different. The host clamps it (FetchLimits.EffectiveCap): the
+      // number comes from a widget, so it may only ever reduce.
+      maxBytes: resolveCap(init),
     };
   }
+
+  /// A body-size refusal from either tier — the browser tier throws RangeError directly,
+  /// and the proxy tier's string is turned into one where the reply is handled.
+  ///
+  /// The escalation ladder below falls back whenever a tier fails, on the reasoning that the
+  /// other tier might do better. This failure is the exception: it is a fact about the
+  /// RESOURCE, not about the transport, and no other tier is going to make the body smaller.
+  /// Falling back on it pulls the same oversized response down a second time, and then
+  /// reports whatever the fallback happened to hit — so the widget names the wrong problem
+  /// and the field checks a URL and a network that are both fine. Treated like AbortError,
+  /// which every handler here already refuses to mask, and for the same reason: it is an
+  /// answer, not a failure to get one.
+  const isTooLarge = (err) => err instanceof RangeError;
 
   // The host hop can't carry an AbortSignal — honor it locally: never start an
   // already-aborted request, and drop an in-flight one when it fires.
@@ -439,9 +679,14 @@
      */
     fetch(url, init) {
       init = init || {};
+      // Every return path below goes through this, so there is one place a body can be
+      // read and no path that forgets. Applied to the RESULT rather than inside each
+      // branch because the escalation ladder has five of them.
+      const cap = resolveCap(init);
+      const capped = (p) => p.then((response) => cappedResponse(response, cap));
       // Aborted before we start: the native path rejects with the spec's
       // AbortError and touches no network — no memo, no proxy.
-      if (init.signal && init.signal.aborted) return fetch(url, init);
+      if (init.signal && init.signal.aborted) return capped(fetch(url, init));
       let memoKey = null;
       let remembered = false;
       try {
@@ -462,7 +707,7 @@
       // a wrong answer no status check can catch.
       const credentialed = init.credentials === 'include';
       if (init.proxy === 'always' || (init.proxy !== 'never' && remembered && replayable && !credentialed)) {
-        return proxyFetch(url, snap, init.signal).then((response) => {
+        return capped(proxyFetch(url, snap, init.signal).then((response) => {
           // An auth-shaped 401/403 from the proxy may just mean the request
           // needed the browser's ambient cookies, which never cross the proxy
           // hop — retry native (unless the caller opted out of the browser
@@ -476,19 +721,22 @@
               return response;
             });
         }, (err) => {
-          if (init.proxy === 'always' || (err && err.name === 'AbortError')) throw err;
+          if (init.proxy === 'always' || (err && err.name === 'AbortError') || isTooLarge(err)) throw err;
           return fetch(url, init); // memory can go stale (CORS fixed upstream): last resort
-        });
+        }));
       }
-      return fetch(url, init).then((response) => {
+      return capped(fetch(url, init).then((response) => {
         // Bot walls sometimes serve their block page WITH CORS headers, so the
         // request "succeeds" as a 403/429; retry those via the host — unless the
         // caller opted out of the proxy, or the body can't be replayed faithfully.
         if ((response.status === 403 || response.status === 429) && init.proxy !== 'never' && replayable) {
           return proxyFetch(url, snap, init.signal).catch((err) => {
             // An abort during the retry is the caller's cancellation — it must
-            // surface, never be masked by the original bot-wall response.
-            if (err && err.name === 'AbortError') throw err;
+            // surface, never be masked by the original bot-wall response. Nor may a
+            // size refusal: the proxy got PAST the wall and found the body too large,
+            // so handing back the 403 would send the field to check credentials for a
+            // resource whose only problem is its size.
+            if ((err && err.name === 'AbortError') || isTooLarge(err)) throw err;
             return response;
           });
         }
@@ -505,7 +753,7 @@
         // response was blocked — an empty replay would double-hit the server.
         if (!replayable) throw err;
         return proxyFetch(url, snap, init.signal);
-      });
+      }));
     },
 
     /** Request the Virtual Stream Deck profile; delivered via onStreamDeck(cb).

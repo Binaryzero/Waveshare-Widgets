@@ -13,6 +13,17 @@
 //   C4 · an oversized CHUNKED body is refused and the transfer is cancelled mid-flight,
 //        which is the only assertion that catches a budget checked too late
 //   C5 · a 204 is a successful empty answer, not a thrown-away retry
+//   C6-C9 · the WIDGET half of the same ceiling: the wrapper WW.fetch puts around every
+//        response, its per-call lowering, and that it forwards the real Response faithfully
+//   C10-C12 · the ways past that wrapper — reading .body directly, formData(), and a clone,
+//        the last of which deadlocked on the tee rather than refusing
+//   C13 · the identity a rebuilt Response would otherwise lose (url, redirected, type)
+//
+// Two properties of the wrapper are NOT checked here, deliberately: that it passes the Web
+// IDL brand check other platform APIs perform, and that its body accepts a BYOB reader.
+// Node disagrees with Chromium on both — its Response re-wraps the body stream, and its own
+// getters accept a forwarding Proxy — so probes here would pass for the bugs. They live in
+// restvalue-run.js (R24, R25), which runs a real browser.
 //
 // Runs on plain Node — no Playwright — so it runs in CI beside the C# probes. Node's fetch
 // gives real Response streams, a real reader, and a real cancel that tears the connection
@@ -22,7 +33,9 @@
 'use strict';
 const fs = require('fs');
 const http = require('http');
+const path = require('path');
 
+const SHIM = path.join(__dirname, '..', '..', 'src', 'WaveshareWidgets', 'Shell', 'widget-api.js');
 const MAX = 5 * 1024 * 1024;
 const OVERSIZE = MAX * 2;   // enough to be refused, small enough to stay quick when paced
 const PORT = 8961;
@@ -57,10 +70,25 @@ function server() {
       res.end();
       return;
     }
+    // A literal body, for the probes that need one the platform will actually parse —
+    // an oversize fill of 'A' proves nothing about formData() if the parser rejects the
+    // content-type before the budget was ever the reason.
+    if (url.searchParams.has('text')) {
+      outcome[name] = 'completed';
+      res.writeHead(200, {
+        'Content-Type': url.searchParams.get('ct') || 'text/plain',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(url.searchParams.get('text'));
+      return;
+    }
     const total = Number(url.searchParams.get('bytes') || 0);
     const declare = url.searchParams.get('declare') === '1';
     sent[name] = 0;
-    const headers = { 'Content-Type': 'application/octet-stream', 'Access-Control-Allow-Origin': '*' };
+    const headers = {
+      'Content-Type': url.searchParams.get('ct') || 'application/octet-stream',
+      'Access-Control-Allow-Origin': '*',
+    };
     let ended = false;
     const settle = (how) => { if (!outcome[name]) outcome[name] = how; };
     // 'close' fires for BOTH a clean end and a torn-down connection, so the flag is what
@@ -148,6 +176,169 @@ function server() {
   check('C4b ...and the transfer is cancelled, so the server never finishes sending',
     (await settled('chunked')) === 'aborted',
     `${outcome.chunked} after ${sent.chunked} of ${OVERSIZE} bytes`);
+
+  // ---- The WIDGET side of the same ceiling (#106) ----------------------------------
+  // WW.fetch wraps every response so a widget cannot materialise more than the ceiling
+  // either. The block is lifted out of widget-api.js by marker, so this drives exactly what
+  // ships rather than a copy of it — and it runs here because the browser harness cannot:
+  // its widget page is https, so an http fixture is blocked as mixed content, leaving the
+  // declared-length path the only one reachable there.
+  const shimSrc = fs.readFileSync(SHIM, 'utf8');
+  // From the END of the marker LINE: the marker has prose after it on the same line, and
+  // slicing at the marker itself would leave that prose as bare code.
+  const afterMarker = shimSrc.split('>>> BODY-CAP BEGIN')[1] || '';
+  const block = afterMarker.slice(afterMarker.indexOf('\n') + 1).split('<<< BODY-CAP END')[0];
+  check('C6 setup: the body-cap block was found in widget-api.js', !!block && block.includes('readCapped'));
+  // The block ends inside the trailing marker's comment, so the return statement needs its
+  // own line or it is swallowed by it.
+  const shim = new Function('TextDecoder', 'Blob',
+    `${block}\nreturn { readCapped, cappedResponse, resolveCap, MAX_BODY_BYTES };`)(TextDecoder, Blob);
+  check('C6 setup: the shim ceiling is the same number the host uses', shim.MAX_BODY_BYTES === MAX,
+    `${shim.MAX_BODY_BYTES} vs ${MAX}`);
+
+  const capped = (url, max) => fetch(url).then((r) => shim.cappedResponse(r, max || MAX));
+
+  const ok = await capped(`http://127.0.0.1:${PORT}/wsmall?bytes=2048&declare=1`);
+  check('C6 a small body reads through the wrapper', (await ok.text()).length === 2048);
+  check('C6b ...and the forwarded properties are the real Response\'s',
+    ok.status === 200 && ok.ok === true && typeof ok.headers.get === 'function'
+      && ok.headers.get('content-type') === 'application/octet-stream',
+    `${ok.status} ${ok.ok} ${ok.headers.get('content-type')}`);
+
+  const bigDeclared = await capped(`http://127.0.0.1:${PORT}/wdeclared?bytes=${OVERSIZE}&declare=1`);
+  let refusedDeclared = null;
+  try { await bigDeclared.text(); } catch (e) { refusedDeclared = e; }
+  check('C7 a declared oversized body is refused by the wrapper',
+    refusedDeclared instanceof RangeError && /too large/i.test(refusedDeclared.message),
+    String(refusedDeclared));
+  check('C7b ...and the server sees it torn down', (await settled('wdeclared')) === 'aborted', outcome.wdeclared);
+
+  // C8 · THE one the browser harness cannot reach. No Content-Length, so the declared
+  // shortcut has nothing to look at and only the streaming budget stands in the way.
+  const bigChunked = await capped(`http://127.0.0.1:${PORT}/wchunked?bytes=${OVERSIZE}&declare=0`);
+  let refusedChunked = null;
+  try { await bigChunked.json(); } catch (e) { refusedChunked = e; }
+  check('C8 a CHUNKED oversized body is refused by the streaming budget',
+    refusedChunked instanceof RangeError && /too large/i.test(refusedChunked.message),
+    String(refusedChunked));
+  check('C8b ...and that transfer is cancelled too', (await settled('wchunked')) === 'aborted', outcome.wchunked);
+
+  // C9 · the per-call override, LOWER-ONLY. Driven through resolveCap — the value WW.fetch
+  // actually passes — rather than by handing cappedResponse a number directly, which would
+  // prove the wrapper obeys a budget while saying nothing about which budget it is given.
+  const LOW = 256 * 1024;
+  check('C9 init.maxBytes lowers the ceiling for that call', shim.resolveCap({ maxBytes: LOW }) === LOW,
+    String(shim.resolveCap({ maxBytes: LOW })));
+  // The one that has to hold, and the reason the option is not symmetric: the host proxy
+  // tier enforces its own ceiling in C#, and which tier serves a call is the remote server's
+  // choice (403/429 escalates). A raise would therefore work or not work depending on the
+  // target's mood, so it does not work at all.
+  check('C9b ...and cannot raise it above the host ceiling',
+    shim.resolveCap({ maxBytes: MAX * 2 }) === MAX && shim.resolveCap({ maxBytes: Infinity }) === MAX,
+    String(shim.resolveCap({ maxBytes: MAX * 2 })));
+  check('C9c ...and anything unusable falls back to the default',
+    shim.resolveCap({}) === MAX && shim.resolveCap({ maxBytes: 0 }) === MAX
+      && shim.resolveCap({ maxBytes: -1 }) === MAX && shim.resolveCap({ maxBytes: 'big' }) === MAX
+      && shim.resolveCap(undefined) === MAX);
+  // ...and that the lowered number is not merely returned but ENFORCED: this body is far
+  // under the default ceiling, so nothing refuses it except the caller's own request to.
+  const lowered = await capped(`http://127.0.0.1:${PORT}/wlowered?bytes=${LOW * 2}&declare=0`,
+    shim.resolveCap({ maxBytes: LOW }));
+  let refusedLow = null;
+  try { await lowered.arrayBuffer(); } catch (e) { refusedLow = e; }
+  check('C9d a body over the LOWERED ceiling is refused though the default would allow it',
+    refusedLow instanceof RangeError && /too large/i.test(refusedLow.message), String(refusedLow));
+  const underLow = await capped(`http://127.0.0.1:${PORT}/wunder?bytes=${LOW / 2}&declare=1`,
+    shim.resolveCap({ maxBytes: LOW }));
+  check('C9e ...and one under it still reads', (await underLow.arrayBuffer()).byteLength === LOW / 2);
+
+  // C10 · the escape hatch. Every capped reader above is optional — a widget can ignore
+  // all of them and pull response.body itself, which is how the budget came to exist in a
+  // wrapper that had five overrides and no cap at all on the one path that needs none.
+  const streamed = await capped(`http://127.0.0.1:${PORT}/wstream?bytes=${OVERSIZE}&declare=0`);
+  let refusedStream = null;
+  try {
+    const reader = streamed.body.getReader();
+    for (;;) { const { done } = await reader.read(); if (done) break; }
+  } catch (e) { refusedStream = e; }
+  check('C10 a widget reading response.body itself is capped too',
+    refusedStream instanceof RangeError && /too large/i.test(refusedStream.message), String(refusedStream));
+  check('C10b ...and that transfer is cancelled as well', (await settled('wstream')) === 'aborted', outcome.wstream);
+  // ...and the stream is not merely a refusal machine: an ordinary body has to come through
+  // it byte for byte, or every widget that streams is broken by the fix.
+  const okStream = await capped(`http://127.0.0.1:${PORT}/wokstream?bytes=4096&declare=0`);
+  let streamedBytes = 0;
+  let streamError = null;
+  try {
+    for (const reader = okStream.body.getReader(); ;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      streamedBytes += value.length;
+    }
+  } catch (e) { streamError = e; }   // caught, or a wrapper that refuses everything takes
+                                     // the whole run down instead of reporting one failure
+  check('C10c a body under the ceiling streams through intact',
+    !streamError && streamedBytes === 4096, streamError ? String(streamError) : String(streamedBytes));
+
+  // C10d · LOOKING at .body must not consume it. Native fetch does not disturb a body when
+  // the property is read — `if (res.body)` before res.text() is ordinary widget code — so a
+  // wrapper that locks the source on property access breaks readers that would have worked
+  // before the ceiling existed. Stranger than the failure the ceiling prevents, and silent.
+  const peeked = await capped(`http://127.0.0.1:${PORT}/wpeek?bytes=1024&declare=1`);
+  const hasBody = !!peeked.body;
+  let peekError = null;
+  let peekedText = '';
+  try { peekedText = await peeked.text(); } catch (e) { peekError = e; }
+  check('C10d reading the .body property does not consume the response',
+    hasBody && !peekError && peekedText.length === 1024,
+    peekError ? String(peekError) : `body=${hasBody} text=${peekedText.length}`);
+
+  // C11 · formData() does not read a body itself, it PARSES one — and parsing a multipart
+  // body the platform already materialised for us is the same unbounded read by another
+  // name. It has to go through the budget first.
+  // Served as a form the platform WOULD parse, so a failure here means the budget stopped
+  // it — not that the parser turned its nose up at the content-type first.
+  const FORM_CT = 'application/x-www-form-urlencoded';
+  const bigForm = await capped(
+    `http://127.0.0.1:${PORT}/wform?bytes=${OVERSIZE}&declare=1&ct=${encodeURIComponent(FORM_CT)}`);
+  let refusedForm = null;
+  try { await bigForm.formData(); } catch (e) { refusedForm = e; }
+  check('C11 formData() is capped rather than parsing whatever arrived',
+    refusedForm instanceof RangeError && /too large/i.test(refusedForm.message), String(refusedForm));
+  // ...and reading it within the budget first must not have broken the parse itself.
+  const okForm = await capped(`http://127.0.0.1:${PORT}/wokform?text=${encodeURIComponent('a=1&b=two')}`
+    + `&ct=${encodeURIComponent(FORM_CT)}`);
+  const parsed = await okForm.formData();
+  check('C11b ...and an ordinary form still parses through the wrapper',
+    parsed.get('a') === '1' && parsed.get('b') === 'two', `${parsed.get('a')} ${parsed.get('b')}`);
+
+  // C12 · THE deadlock. A body from clone() is one branch of a tee, and cancelling one
+  // branch does not settle until the other is cancelled too — so awaiting the cancel on the
+  // refusal path never returns: no RangeError, and the source goes on filling the unread
+  // branch's queue, which is the unbounded accumulation the budget exists to stop. The
+  // timeout is the assertion; a hang is the bug.
+  const original = await capped(`http://127.0.0.1:${PORT}/wclone?bytes=${OVERSIZE}&declare=0`);
+  const copy = original.clone();
+  const verdict = await Promise.race([
+    copy.text().then(() => 'resolved', (e) => (e instanceof RangeError ? 'refused' : 'other: ' + e)),
+    new Promise((r) => setTimeout(() => r('hung'), 15000)),
+  ]);
+  check('C12 refusing a CLONE settles instead of deadlocking on the tee', verdict === 'refused', verdict);
+
+  // C13 · a rebuilt Response loses its identity: the constructor reports url '' and type
+  // 'default' where the original had the final URL (after any redirect) and its real type.
+  // Widgets read all three. That it IS a Response — the property a Proxy could never have,
+  // and the reason for the rebuild — is asserted in restvalue-run.js instead: the brand
+  // check that rejects a Proxy lives in other platform APIs, and Node has none of them (its
+  // own Response getters accept a forwarding Proxy quite happily, so a probe here would
+  // pass for the bug).
+  const src = await fetch(`http://127.0.0.1:${PORT}/wident?bytes=64&declare=1`);
+  const ident = shim.cappedResponse(src, MAX);
+  check('C13 the wrapper still reports the original url, redirected and type',
+    ident.url === src.url && ident.url !== '' && ident.redirected === src.redirected
+      && ident.type === src.type,
+    JSON.stringify({ url: ident.url, redirected: ident.redirected, type: ident.type }));
+  await ident.arrayBuffer();
 
   // C5 · a body-forbidden response is an ANSWER, not a failure. The streaming rewrite has
   // to absorb r.body === null the way arrayBuffer() did; if it throws instead, BrowserFetcher

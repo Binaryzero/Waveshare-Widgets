@@ -517,6 +517,16 @@ public sealed class DashboardWindow : Form
     /// because the browser fallback tier has to enforce the same one (#117).</summary>
     private const int ProxyMaxBodyBytes = FetchLimits.MaxBodyBytes;
 
+    /// <summary>The ceiling for one proxied request: the widget's own, clamped.</summary>
+    /// <remarks>WW.fetch lets a widget lower its ceiling per call, and until this the number
+    /// stayed in the page — so the host still fetched, buffered and base64-encoded the full
+    /// 5 MiB before the wrapper there could refuse it, which is the entire cost the lower
+    /// ceiling exists to avoid. FetchLimits.EffectiveCap does the clamping: the value comes
+    /// from a widget, so it may only ever reduce.</remarks>
+    private static int RequestedCap(JsonNode message) =>
+        FetchLimits.EffectiveCap(
+            message["maxBytes"] is JsonValue mv && mv.TryGetValue<double>(out var asked) ? (long)asked : 0);
+
     /// <summary>
     /// CORS-relief proxy for widget fetches (iCUE's runtime is CORS-relaxed; ours is not).
     /// The widget shim only calls this after a normal fetch failed at the network layer.
@@ -529,6 +539,7 @@ public sealed class DashboardWindow : Form
         {
             var url = message["url"]?.GetValue<string>();
             var method = message["method"]?.GetValue<string>()?.ToUpperInvariant() ?? "GET";
+            var cap = RequestedCap(message);
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
                 (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
                 throw new InvalidOperationException("only absolute http(s) URLs are allowed");
@@ -614,7 +625,7 @@ public sealed class DashboardWindow : Form
 
             var client = lanDevice ? ProxyClientInsecure : ProxyClient;
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-            var bytes = await ReadCappedAsync(response, ProxyMaxBodyBytes);
+            var bytes = await ReadCappedAsync(response, cap);
 
             result["status"] = (int)response.StatusCode;
             result["statusText"] = response.ReasonPhrase ?? "";
@@ -628,7 +639,18 @@ public sealed class DashboardWindow : Form
             {
                 _browserFetcher ??= new BrowserFetcher();
                 var alt = await _browserFetcher.FetchAsync(uri.ToString(), browserHeaders);
-                if (alt is { } browser && browser.Status < 400)
+                if (alt is { TooLarge: true })
+                {
+                    // The hidden browser got PAST the wall and found the body too large. The
+                    // 403 sitting in `result` describes the tier that never saw the body, so
+                    // returning it reports an authorization problem for a resource whose only
+                    // problem is its size — and the widget's "too large" state, which exists
+                    // precisely for this, never appears. Same message as the proxy tier's own
+                    // refusal, so the shim types both as a RangeError.
+                    result["error"] = "response too large";
+                    result.Remove("bodyBase64");
+                }
+                else if (alt is { } browser && browser.Status < 400)
                 {
                     result["status"] = browser.Status;
                     result["statusText"] = "";
@@ -736,7 +758,7 @@ public sealed class DashboardWindow : Form
 
     private static async Task<byte[]> ReadCappedAsync(HttpResponseMessage response, int maxBytes)
     {
-        if (response.Content.Headers.ContentLength is { } length && FetchLimits.DeclaredTooLarge(length))
+        if (response.Content.Headers.ContentLength is { } length && FetchLimits.DeclaredTooLarge(length, maxBytes))
             throw new InvalidOperationException("response too large");
 
         await using var stream = await response.Content.ReadAsStreamAsync();
@@ -745,7 +767,7 @@ public sealed class DashboardWindow : Form
         int read;
         while ((read = await stream.ReadAsync(chunk)) > 0)
         {
-            if (FetchLimits.WouldExceed(buffer.Length, read))
+            if (FetchLimits.WouldExceed(buffer.Length, read, maxBytes))
                 throw new InvalidOperationException("response too large");
             buffer.Write(chunk, 0, read);
         }

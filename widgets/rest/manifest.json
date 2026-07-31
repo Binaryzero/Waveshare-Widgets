@@ -2,10 +2,14 @@
   "id": "ws.stock.rest",
   "name": "REST Value",
   "author": "Waveshare Widgets",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Any JSON endpoint, one number on the panel: give it a URL and a path to the value. Polls on its own schedule, colors itself against warn/crit thresholds, and can send a static auth header.",
   "min_api_version": 1,
-  "supported_slots": ["quarter", "half", "full"],
+  "supported_slots": [
+    "quarter",
+    "half",
+    "full"
+  ],
   "properties": [
     {
       "name": "url",
@@ -84,7 +88,11 @@
       "name": "bgStyle",
       "label": "Background",
       "type": "select",
-      "options": ["solid", "glass", "transparent"],
+      "options": [
+        "solid",
+        "glass",
+        "transparent"
+      ],
       "default": "solid"
     }
   ]
