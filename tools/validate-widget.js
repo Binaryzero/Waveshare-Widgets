@@ -213,6 +213,12 @@ const isExternalRef = (value, { allowData = false } = {}) => {
   if (UNRESOLVED_REF.test(s)) return true;
   return s.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(s);
 };
+// Link relations whose target is displayed, never executed or followed for more
+// content. Everything else — stylesheet, preload, modulepreload, prefetch, prerender,
+// anything unrecognized — can pull further resources, so a data: URI in one of those is
+// not self-contained no matter that its own bytes are inline.
+const INERT_LINK_RELS = new Set(['icon', 'shortcut', 'apple-touch-icon',
+  'apple-touch-icon-precomposed', 'mask-icon', 'fluid-icon']);
 const KNOWN_SLOTS = new Set(['quarter', 'half', 'three-quarter', 'full']);
 const LIST_FIELD_TYPES = new Set(['text', 'color']);
 // Labels must never teach a syntax — structured values use the list type.
@@ -359,11 +365,20 @@ function validate(folder) {
   }
   for (const m of startTags(html, 'link')) {
     const href = attr(m.tag, 'href');
+    if (href === null) continue;
     // Checked for EVERY rel, not just stylesheet: rel=preload / modulepreload / prefetch
     // fetch remote content just as effectively, and a rule that only reads stylesheets
-    // would hand them a way through. data: is exempt (see isExternalRef) so a packaged
-    // icon is not mistaken for a remote fetch.
-    if (href !== null && isExternalRef(href, { allowData: true }))
+    // would hand them a way through.
+    //
+    // The data: exemption is narrower than the loop, and the two used to contradict each
+    // other (#125). A data: icon is inert bytes; `data:text/css,@import url(...)` is a
+    // stylesheet the browser EVALUATES, and it fetches whatever it names. So the
+    // exemption is an allow-list of relations that cannot pull anything further, and an
+    // unrecognized rel counts as fetching — the failure direction should be refusal, the
+    // same reasoning as the external-reference rule itself.
+    const rels = (attr(m.tag, 'rel') || '').toLowerCase().split(/\s+/).filter(Boolean);
+    const inert = rels.length > 0 && rels.every((r) => INERT_LINK_RELS.has(r));
+    if (isExternalRef(href, { allowData: inert }))
       err('external-style', `external <link href="${href}"> — widgets must be self-contained`);
   }
 
@@ -479,6 +494,11 @@ if (args.includes('--self-test')) {
     ['external-base-scheme', doc('<base href="https://evil.example/">' + BASE), 'external-base'],
     // ...while a relative base stays inside the widget's own origin and is allowed.
     ['relative-base', doc('<base href="./sub/">' + BASE + '<script src="helper.js"></script>'), null],
+    // #125 — a data: stylesheet is evaluated, and @import fetches whatever it names, so
+    // the exemption that makes a packaged icon legal must not cover this.
+    ['data-uri-stylesheet', doc(BASE + '<link rel="stylesheet" href="data:text/css,@import url(https://evil.example/x.css)">'), 'external-style'],
+    ['data-uri-preload', doc(BASE + '<link rel="preload" as="script" href="data:text/javascript,alert(1)">'), 'external-style'],
+    ['data-uri-unknown-rel', doc(BASE + '<link rel="something-new" href="data:text/css,x">'), 'external-style'],
     // ...while a relative script is the ordinary case and must stay accepted.
     ['relative-script', doc(BASE + '<script src="./helper.js"></script>'), null],
   ];

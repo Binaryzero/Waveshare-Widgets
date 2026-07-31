@@ -131,7 +131,20 @@
     }
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
-    else if (msg.type === 'notifications') { latestNotifications = msg.data || null; deliverNotifications(); }
+    else if (msg.type === 'notifications') {
+      // Dropped outright when nobody is watching. The host stops polling on demand=false,
+      // but a poll already in flight lands after that — and the one-time clear at the
+      // transition cannot help, because this arrives AFTER it. Kept, that payload becomes
+      // live again the moment the next subscriber flips demand back on: the first
+      // subscriber is refused by the hostWasPolling gate and then enables delivery for
+      // the SECOND one, and for its own re-init through ww-init (#131 review).
+      //
+      // Demand is the whole condition. A payload nobody asked for is not stale data to
+      // be aged out later, it is data we should never have been holding.
+      if (!notifWatchOn) return;
+      latestNotifications = msg.data || null;
+      deliverNotifications();
+    }
     else if (msg.type === 'game-mode') {
       gameState = { active: !!(msg.data && msg.data.active), process: (msg.data && msg.data.process) || '' };
       applyGameMode();
@@ -267,6 +280,16 @@
       // new subscriber would sit on null until a toast happened to change. Before the
       // routing fix the panel-wide ww-init carried the payload and hid this; scoping
       // delivery is what exposes it. Hand the newcomer what is already known.
+      //
+      // Safe to hand over whatever is cached, because of where the staleness is handled
+      // rather than here: the cache is cleared when the last watcher leaves, and a
+      // payload arriving with no demand is dropped instead of stored. Between them,
+      // latestNotifications is non-null only while someone is watching (#128, #131).
+      //
+      // An earlier version also required the host to have been polling already. That
+      // read as a second opinion but guarded nothing once the two rules above were in
+      // place — removing it failed no probe — so it is gone rather than left as a layer
+      // nothing can test.
       if (sender.notifWatch && !wasWatching && latestNotifications)
         sendToSlot(sender, { type: 'ww-notifications', data: noteDelivered(sender, latestNotifications) });
     } else if (msg.type === 'ww-notification-dismiss' && msg.id != null) {
@@ -335,6 +358,11 @@
     const on = slots.some((s) => s.notifWatch);
     if (on === notifWatchOn) return;
     notifWatchOn = on;
+    // The host stops polling when demand drops, so anything held here is frozen at the
+    // moment the last watcher left and only gets staler. Dropping it means a later
+    // subscriber waits for a real poll instead of being shown toasts that may no longer
+    // exist — and that nothing can carry the stale set, ww-init included (#128).
+    if (!on) latestNotifications = null;
     postToHost({ type: 'notifications-watch', on });
   }
 
