@@ -33,6 +33,17 @@
   // selected. Tracking the ids we issued restores the symmetry: this set is empty in a
   // fresh document, so nothing the old one asked for is accepted here.
   const sdRequests = new Set();
+  /// Remembers an outstanding request, and forgets it if no answer comes. Without the
+  /// expiry the set only ever grows: the settings preview drops every sd-* message by
+  /// design, so a live widget polling four times a second would add an id per poll for
+  /// the lifetime of the preview, and a host failure or the shell's own 15s route
+  /// timeout does the same on the panel. The other pending collections all expire; this
+  /// one matches the shell's route lifetime so the two sides forget together.
+  function trackSdRequest(id) {
+    sdRequests.add(id);
+    setTimeout(() => sdRequests.delete(id), 15000);
+    return id;
+  }
   let fetchSeq = 0;
   // The shell routes results by id alone, across EVERY widget frame — a per-frame
   // counter plus a ms-floored clock can collide between frames loaded in the same
@@ -489,8 +500,7 @@
       opts = opts || {};
       // The id is what lets the shell send the answer to THIS frame rather than to
       // everyone who ever asked (#127). Callback-shaped API is unchanged.
-      const id = reqId('sd');
-      sdRequests.add(id);
+      const id = trackSdRequest(reqId('sd'));
       parent.postMessage({ type: 'ww-sd-profile', id, profileName: opts.profileName || '', hideWindow: opts.hideWindow !== false, live: opts.live === true }, shellTarget());
     },
     /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}], capture?}. */
@@ -498,9 +508,7 @@
     /** Capture-only fast path for live mirroring: cheaper than requestStreamDeck (no
      * profile re-parse; the host skips the frame entirely when pixels are unchanged). */
     requestStreamDeckCapture() {
-      const id = reqId('sd');
-      sdRequests.add(id);
-      parent.postMessage({ type: 'ww-sd-capture', id }, shellTarget());
+      parent.postMessage({ type: 'ww-sd-capture', id: trackSdRequest(reqId('sd')) }, shellTarget());
     },
     /** cb(data) — {image,w,h} on a new frame, {unchanged:true}, or {available:false}. */
     onStreamDeckCapture(cb) { listeners.sdcapture.push(cb); },

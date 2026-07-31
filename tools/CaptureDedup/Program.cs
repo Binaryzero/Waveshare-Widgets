@@ -72,11 +72,25 @@ d = new CaptureDedup(capacity: 4);
 for (var i = 0; i < 50; i++) d.NeedsFrame("slot" + i, "h1");
 Check("C6 the table does not grow without bound", d.TrackedCount <= 4, $"{d.TrackedCount} tracked");
 
+// The reload case, stated the way the shell actually solves it: the replacement document
+// is a DIFFERENT consumer, so it is sent the current frame even though the slot it sits
+// in has already seen it. The previous version of this check called a Forget() method
+// that nothing in the app ever called — it tested a path that did not exist.
 d = new CaptureDedup();
-d.NeedsFrame("slot1", "h1");
-d.Forget("slot1");
-Check("C6b a slot that went away does not starve the next one to reuse its tag",
-    d.NeedsFrame("slot1", "h1"));
+d.NeedsFrame("slot1#0", "h1");
+Check("C6b a reloaded slot is a new consumer and is sent the current frame",
+    d.NeedsFrame("slot1#1", "h1"));
+
+// C7 · eviction must not cascade. With more consumers than the bound, clearing the whole
+// table made every other consumer look new on its next poll and clear it again, so the
+// dedup degraded into sending a full frame nearly every time.
+var big = new CaptureDedup(capacity: 4);
+string[] clients = ["a", "b", "c", "d"];
+foreach (var c in clients) big.NeedsFrame(c, "h1");        // fill to capacity
+big.NeedsFrame("overflow", "h1");                          // evicts the oldest only
+var stillDeduped = clients.Skip(1).Count(c => !big.NeedsFrame(c, "h1"));
+Check("C7 an overflow consumer does not reset everyone else's baseline",
+    stillDeduped == 3, $"{stillDeduped} of 3 kept their baseline");
 
 Console.WriteLine(failures > 0 ? $"{failures} FAILURES" : "ALL PASS");
 return failures > 0 ? 1 : 0;

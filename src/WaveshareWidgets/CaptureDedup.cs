@@ -21,12 +21,20 @@ namespace WaveshareWidgets;
 public sealed class CaptureDedup
 {
     private readonly Dictionary<string, string> _seen = new(StringComparer.Ordinal);
+    private readonly Queue<string> _order = new();
     private readonly int _capacity;
 
-    /// <param name="capacity">Upper bound on remembered consumers. Slots come and go
-    /// across page edits and reloads, so this cannot grow forever; past the bound the
-    /// table is dropped, which costs one redundant frame each and nothing else.</param>
-    public CaptureDedup(int capacity = 32) => _capacity = capacity;
+    /// <param name="capacity">Upper bound on remembered consumers. Consumers are per
+    /// DOCUMENT, so every slot reload mints a new one and the table cannot be allowed to
+    /// grow forever.
+    ///
+    /// Past the bound the OLDEST entry is evicted, not the whole table. Clearing it
+    /// looked simpler and was much worse: with more consumers than the bound, the first
+    /// unknown one wipes everyone, the next poll from each of the others then looks new
+    /// and wipes it again, and the dedup collapses into re-sending a full base64 frame on
+    /// nearly every poll — the exact cost it exists to avoid, arriving only once someone
+    /// has enough widgets to care.</param>
+    public CaptureDedup(int capacity = 64) => _capacity = capacity;
 
     /// <summary>True when <paramref name="client"/> still needs the pixels for
     /// <paramref name="hash"/> — and records that it is about to receive them.</summary>
@@ -42,17 +50,24 @@ public sealed class CaptureDedup
 
         if (_seen.TryGetValue(client, out var last) && last == hash) return false;
 
-        if (!_seen.ContainsKey(client) && _seen.Count >= _capacity) _seen.Clear();
+        if (!_seen.ContainsKey(client))
+        {
+            while (_seen.Count >= _capacity && _order.Count > 0)
+            {
+                var oldest = _order.Dequeue();
+                _seen.Remove(oldest);
+            }
+            _order.Enqueue(client);
+        }
         _seen[client] = hash;
         return true;
     }
 
-    /// <summary>Forgets a consumer — used when its slot goes away, so a later slot
-    /// reusing the tag is not told "unchanged" about a frame it never saw.</summary>
-    public void Forget(string? client)
-    {
-        if (!string.IsNullOrWhiteSpace(client)) _seen.Remove(client);
-    }
+    // There is deliberately no Forget(). An earlier version had one, for a slot going
+    // away — and nothing ever called it, while a probe exercised it and so looked like
+    // coverage of a path that did not exist. The shell now varies the consumer identity
+    // per document instead, which needs no cross-boundary lifecycle call at all and
+    // cannot be forgotten to make.
 
     internal int TrackedCount => _seen.Count;
 }

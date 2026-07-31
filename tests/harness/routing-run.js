@@ -25,6 +25,8 @@
 //   R8  · dropping the subscription stops delivery
 //   R11 · two Stream Deck askers each get ONLY their own answer (profile and capture)
 //   R11d· a reloaded slot ignores the previous document's answer, not its own
+//   R11e· ...and asks for captures as a different consumer, so it is not told
+//         "unchanged" about pixels it never received
 //   R9  · a slot subscribing while the host already polls is handed the cached payload
 //   R10 · ...but one subscribing after polling STOPPED is not handed a stale one
 //   R10c· ...nor does a re-init carry it (the cleared cache)
@@ -379,6 +381,39 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   const freshNames = await reloaded.evaluate(() => window.__deckNames());
   check('R11d2 ...while its own request still is',
     JSON.stringify(freshNames) === '["FRESH-PROFILE"]', JSON.stringify(freshNames));
+
+  // R11e · the capture dedup is keyed on a consumer identity the SHELL mints, and that
+  // identity has to change when the document does. The C# probe covers the dedup's own
+  // contract but cannot see what the shell puts in `client`, so without this the shell
+  // half was inspection only — and the failure it guards against is a mirror that stays
+  // blank after a settings change.
+  hostMessages.length = 0;
+  await reloaded.evaluate(() => window.__askCapture());
+  await page.waitForTimeout(250);
+  const clientBefore = (hostMessages.find((m) => m.type === 'sd-capture') || {}).client;
+  check('R11e setup: the capture request carries a consumer id', !!clientBefore, String(clientBefore));
+
+  await reloaded.evaluate(() => { window.__generation = 'BEFORE-2'; });
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll('iframe')) {
+      if (!/sub\./.test(el.src)) continue;
+      const [base, hash] = el.src.split('#');
+      el.src = base.split('?')[0] + '?r2=' + Date.now() + (hash ? '#' + hash : '');
+    }
+  });
+  await page.waitForTimeout(1800);
+  const again = page.frames().find((f) => /sub\.widgets\.wsw/.test(f.url()));
+  check('R11e setup: it really is another new document',
+    !!again && await again.evaluate(() => window.__generation === undefined));
+  hostMessages.length = 0;
+  await again.evaluate(() => window.__askCapture());
+  await page.waitForTimeout(250);
+  const clientAfter = (hostMessages.find((m) => m.type === 'sd-capture') || {}).client;
+  check('R11e a reloaded document asks as a DIFFERENT consumer',
+    !!clientAfter && clientAfter !== clientBefore, `${clientBefore} -> ${clientAfter}`);
+  check('R11e2 ...while still naming the same slot',
+    String(clientAfter).split('#')[0] === String(clientBefore).split('#')[0],
+    `${clientBefore} -> ${clientAfter}`);
 
   // R10c · what the CLEARED CACHE covers and the gate does not. `sub` is subscribed with
   // an empty cache; a re-init would carry whatever is cached to a watching slot, so if
