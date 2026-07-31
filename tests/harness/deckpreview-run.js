@@ -294,10 +294,22 @@ const readDeck = (frame) => frame.evaluate(() => {
   await page.route('https://hostile.example/**', (r) => r.fulfill({
     status: 200, contentType: 'text/html', body: `<!DOCTYPE html><meta charset="utf-8"><script>
       window.__replies = [];
+      window.__attacked = null;
       addEventListener('message', (e) => { window.__replies.push(e.data && e.data.type); });
-      // parent = the widget that embedded us; parent.parent = the replica shell.
-      for (const type of ['ww-fetch', 'ww-ping', 'ww-media-list', 'ww-audio-get'])
-        parent.parent.postMessage({ type, id: 'HOSTILE-' + type, url: 'http://127.0.0.1:9/', targets: ['127.0.0.1'] }, '*');
+      try {
+        // parent = the widget that embedded us; parent.parent = the replica shell.
+        // hosts is the key shell.js actually reads for ping. Sending targets made the
+        // forwarded request an empty enumeration, so removing the gate would have leaked
+        // a ping with nothing in it — proving nothing about the path this claims to cover.
+        for (const type of ['ww-fetch', 'ww-ping', 'ww-media-list', 'ww-audio-get'])
+          parent.parent.postMessage(
+            { type, id: 'HOSTILE-' + type, url: 'http://127.0.0.1:9/', hosts: ['127.0.0.1'] }, '*');
+        // The SECOND gate, and a different one: settings.js accepts ww-shell only from the
+        // preview frame's own window. Reaching the replica is not the only way to the host.
+        top.postMessage({ type: 'ww-shell', message: {
+          type: 'fetch', id: 'HOSTILE-direct-to-top', url: 'http://127.0.0.1:9/' } }, '*');
+        window.__attacked = 'done';
+      } catch (e) { window.__attacked = 'threw: ' + e; }
     </script>` }));
 
   const deckFrame = page.frames().find((f) => /deck\.widgets\.wsw/.test(f.url()));
@@ -307,11 +319,23 @@ const readDeck = (frame) => frame.evaluate(() => {
   // also what a broken relay looks like, and this suite would otherwise bless a preview
   // whose data bridge had stopped working altogether.
   hostSeen.length = 0;
-  await deckFrame.evaluate(() => parent.postMessage({ type: 'ww-media-list', id: 'LEGIT' }, '*'));
-  await page.waitForTimeout(600);
+  await deckFrame.evaluate(() => {
+    window.__legitReplies = [];
+    addEventListener('message', (e) => {
+      if (e.data && e.data.type === 'ww-media-list-result') window.__legitReplies.push(e.data.id);
+    });
+    parent.postMessage({ type: 'ww-media-list', id: 'LEGIT' }, '*');
+  });
+  await page.waitForTimeout(700);
   const legit = hostSeen.filter((m) => m.type === 'preview-data').map((m) => m.message && m.message.id);
   check('D6 control: a registered slot frame DOES reach the host through the preview relay',
     legit.includes('LEGIT'), JSON.stringify(legit));
+  // Both halves of the relay. Checking only the outbound one leaves D6c able to pass
+  // because NOBODY can receive a reply — the exact condition the answering host stub was
+  // added to rule out.
+  const legitReplies = await deckFrame.evaluate(() => window.__legitReplies);
+  check('D6 control: ...and the answer comes back to it',
+    legitReplies.includes('LEGIT'), JSON.stringify(legitReplies));
 
   hostSeen.length = 0;
   await deckFrame.evaluate(() => {
@@ -325,9 +349,20 @@ const readDeck = (frame) => frame.evaluate(() => {
     .filter((id) => /^HOSTILE-/.test(id));
   check('D6b a frame nested inside a widget reaches the host with NOTHING',
     hostile.length === 0, JSON.stringify(hostile));
+  // Named separately because it is a different gate: settings.js checks the SOURCE of
+  // ww-shell against the preview frame's own window. A nested frame can address window.top
+  // directly, and shell.js never sees that message at all.
+  check('D6b2 ...including a ww-shell forged straight at the settings page',
+    !hostSeen.some((m) => JSON.stringify(m).includes('HOSTILE-direct-to-top')),
+    hostSeen.filter((m) => JSON.stringify(m).includes('HOSTILE')).length + ' hostile host-messages');
 
   const nested = page.frames().find((f) => /hostile\.example/.test(f.url()));
-  check('D6b setup: the hostile frame really loaded and really posted', !!nested);
+  // "The frame loaded" is not "the attack ran". If that inline script threw part-way, every
+  // rejection assertion below would pass while testing nothing — and pageerror is only
+  // logged by this harness, never failed. The marker is set after the last postMessage.
+  const attacked = nested ? await nested.evaluate(() => window.__attacked) : '(no frame)';
+  check('D6b setup: the hostile frame loaded AND finished posting every request',
+    attacked === 'done', String(attacked));
   const replies = nested ? await nested.evaluate(() => window.__replies) : ['(no frame)'];
   check('D6c ...and receives no reply either', JSON.stringify(replies) === '[]', JSON.stringify(replies));
 
