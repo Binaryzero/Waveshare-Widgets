@@ -24,6 +24,9 @@
 //   R7  · sd-capture reaches the asker only
 //   R8  · dropping the subscription stops delivery
 //   R9  · a slot subscribing while the host already polls is handed the cached payload
+//   R10 · ...but one subscribing after polling STOPPED is not handed a stale one
+//   R10c· ...nor does a re-init carry it (the cleared cache)
+//   R10d· ...nor does a poll that landed while nobody watched (the demand gate)
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -240,6 +243,53 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   check('R9b ...and may dismiss what that payload showed it',
     hostMessages.some((m) => m.type === 'notification-dismiss' && m.id === 'n2'),
     JSON.stringify(hostMessages.map((m) => m.type)));
+
+  // R10 · the mirror of R9, and the case that fix opened. When the LAST watcher stops,
+  // the host stops polling, so anything cached is frozen at that moment. A slot
+  // subscribing later must not be handed it: those toasts may be long gone, and the
+  // delivery would also authorize dismissing their ids.
+  await sub.evaluate(() => window.__watch(false));
+  await bys.evaluate(() => window.__watch(false));
+  await page.waitForTimeout(300);
+  await sub.evaluate(() => { window.__notifs.length = 0; });
+  await sub.evaluate(() => window.__watch(true));
+  await page.waitForTimeout(400);
+  const afterQuiet = await sub.evaluate(() => window.__notifs.length);
+  check('R10 a slot subscribing after all watchers stopped is not handed the stale cache',
+    afterQuiet === 0, `${afterQuiet} delivery(ies)`);
+
+  // R10c · what the CLEARED CACHE covers and the gate does not. `sub` is subscribed with
+  // an empty cache; a re-init would carry whatever is cached to a watching slot, so if
+  // the stale payload were still held it would arrive by that path instead.
+  await sub.evaluate(() => { window.__initNotifs.length = 0; parent.postMessage({ type: 'ww-ready' }, '*'); });
+  await page.waitForTimeout(400);
+  const reinit = await sub.evaluate(() => window.__initNotifs.map((n) => JSON.stringify(n)));
+  check('R10c setup: the slot really re-initialized', reinit.length >= 1, `${reinit.length} init(s)`);
+  check('R10c a re-init after the quiet period carries no stale payload',
+    reinit.every((n) => n === 'null'), JSON.stringify(reinit));
+
+  // R10d · what the GATE covers and the cleared cache does not. A poll already in flight
+  // when the last watcher leaves lands after the clear and repopulates the cache; the
+  // host is no longer polling, so that payload is the last thing anyone saw and ages the
+  // same way. Only the "was the host already polling" condition refuses it.
+  await sub.evaluate(() => window.__watch(false));
+  await page.waitForTimeout(300);
+  await pushNotifs();                                  // the late in-flight poll
+  await page.waitForTimeout(200);
+  await sub.evaluate(() => { window.__notifs.length = 0; });
+  await sub.evaluate(() => window.__watch(true));
+  await page.waitForTimeout(400);
+  const afterLate = await sub.evaluate(() => window.__notifs.length);
+  check('R10d a payload that landed while nobody was watching is not handed out either',
+    afterLate === 0, `${afterLate} delivery(ies)`);
+
+  // ...and it is a live subscription, not a silenced one. Without this, R10 and R10d
+  // would pass just as well if subscribing had stopped working altogether.
+  await pushNotifs();
+  await page.waitForTimeout(400);
+  const afterFresh = await sub.evaluate(() => window.__notifs.length);
+  check('R10b ...and still receives the next real poll',
+    afterFresh === 1, `${afterFresh} delivery(ies) after a fresh push`);
 
   await browser.close();
   srv.close();

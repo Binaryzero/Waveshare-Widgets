@@ -258,6 +258,10 @@
       // otherwise nothing would ever send watch(false) when the last watching
       // widget is removed, and the host would poll notifications forever.
       const wasWatching = !!sender.notifWatch;
+      // Whether the HOST was already polling, read before the sync below changes it.
+      // This is the condition the hand-off actually needs, and reading it after would
+      // always say true for the slot that just asked.
+      const hostWasPolling = notifWatchOn;
       sender.notifWatch = msg.on !== false;
       if (!sender.notifWatch) sender.notifSeen = null;
       syncNotificationDemand();
@@ -267,7 +271,15 @@
       // new subscriber would sit on null until a toast happened to change. Before the
       // routing fix the panel-wide ww-init carried the payload and hid this; scoping
       // delivery is what exposes it. Hand the newcomer what is already known.
-      if (sender.notifWatch && !wasWatching && latestNotifications)
+      //
+      // ONLY when the host was already polling (#128). Gated on this slot's own
+      // transition instead, the FIRST subscriber after a quiet period — when polling had
+      // stopped and the cache went stale — was handed an obsolete payload it could
+      // display and, because noteDelivered records the ids, dismiss. The cache is also
+      // cleared when the last watcher stops, so there is nothing stale to hand out
+      // either way; both, because one guard says what is meant and the other removes the
+      // data, and a stale payload should not be reachable by any path.
+      if (sender.notifWatch && !wasWatching && hostWasPolling && latestNotifications)
         sendToSlot(sender, { type: 'ww-notifications', data: noteDelivered(sender, latestNotifications) });
     } else if (msg.type === 'ww-notification-dismiss' && msg.id != null) {
       // Dismissal is scoped to what this slot was actually shown. Otherwise a widget
@@ -335,6 +347,11 @@
     const on = slots.some((s) => s.notifWatch);
     if (on === notifWatchOn) return;
     notifWatchOn = on;
+    // The host stops polling when demand drops, so anything held here is frozen at the
+    // moment the last watcher left and only gets staler. Dropping it means a later
+    // subscriber waits for a real poll instead of being shown toasts that may no longer
+    // exist — and that nothing can carry the stale set, ww-init included (#128).
+    if (!on) latestNotifications = null;
     postToHost({ type: 'notifications-watch', on });
   }
 

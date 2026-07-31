@@ -66,8 +66,21 @@ public sealed partial class CorsairSdkProvider : ISensorProvider
     /// — and by anything running as them. Loading a native DLL runs its DllMain BEFORE
     /// any export is checked, so a planted file does not have to be a Corsair SDK at all
     /// to execute; and because SensorHub constructs this provider unconditionally, the
-    /// opportunity existed for users who never installed the SDK. Both remaining roots
-    /// are install directories an ordinary user cannot write to.
+    /// opportunity existed for users who never installed the SDK.
+    ///
+    /// WHAT THAT DOES NOT BUY (#129). An earlier version of this comment claimed the
+    /// remaining roots are directories an ordinary user cannot write to. That is true of
+    /// the iCUE install locations and FALSE of AppContext.BaseDirectory whenever the app
+    /// is run portably — this project ships a zip, and unzipping it to Downloads or the
+    /// desktop is the documented way to use it. There, the exe directory is writable by
+    /// exactly the processes that could have planted a DLL in the data dir, so dropping
+    /// the data dir narrowed the surface without establishing a trust boundary.
+    ///
+    /// It is same-user code execution either way, and an attacker who can already write
+    /// next to the exe has other routes; the app no longer runs elevated, so there is no
+    /// privilege gain. Constraining it properly — an operator-selected path, a signature
+    /// check, or auto-probing only from a protected location — is a product decision
+    /// tracked in #129 rather than something to decide inside this comment.
     ///
     /// The log message when nothing is found already tells the user to drop the DLL next
     /// to the exe, which is the supported placement and is unaffected by this.
