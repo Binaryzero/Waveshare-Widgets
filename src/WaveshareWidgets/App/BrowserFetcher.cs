@@ -68,8 +68,14 @@ public sealed class BrowserFetcher : IDisposable
         public static BrowserFetch Refused(long size) => new(0, null, Array.Empty<byte>(), true);
     }
 
+    /// <param name="maxBytes">The ceiling for this request, clamped by FetchLimits. REQUIRED,
+    /// with no default on purpose: a default is what this bug looked like — the caller
+    /// computed the widget's ceiling and then called a method that quietly substituted the
+    /// shared one, so the number existed and did nothing. There is one call site; making it
+    /// state the ceiling costs nothing and removes the failure mode rather than probing for
+    /// it, which matters here because nothing about this class is reachable from a test.</param>
     public async Task<BrowserFetch?> FetchAsync(
-        string url, IReadOnlyDictionary<string, string>? headers = null)
+        string url, IReadOnlyDictionary<string, string>? headers, int maxBytes)
     {
         await _gate.WaitAsync();
         try
@@ -120,7 +126,7 @@ public sealed class BrowserFetcher : IDisposable
                 // The cap is applied INSIDE the page, streaming, so the bytes past it are
                 // never received — see FetchLimits, which is also where the proxy tier's
                 // ceiling lives so the two cannot disagree.
-                await core.ExecuteScriptAsync(FetchLimits.BrowserFetchScript(jsUrl, jsHeaders));
+                await core.ExecuteScriptAsync(FetchLimits.BrowserFetchScript(jsUrl, jsHeaders, maxBytes));
 
                 for (var i = 0; i < 60; i++) // up to ~15 s
                 {
@@ -140,7 +146,7 @@ public sealed class BrowserFetcher : IDisposable
                     {
                         var size = root.TryGetProperty("size", out var sz) ? sz.GetInt64() : -1;
                         Log.Warn($"browser fetch refused ({SafeUrl.Describe(url)}): response exceeds " +
-                                 $"{FetchLimits.MaxBodyBytes} bytes (saw {size})");
+                                 $"{FetchLimits.EffectiveCap(maxBytes)} bytes (saw {size})");
                         return BrowserFetch.Refused(size);
                     }
                     var status = root.TryGetProperty("status", out var s) ? s.GetInt32() : 0;
