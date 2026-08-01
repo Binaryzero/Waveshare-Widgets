@@ -66,7 +66,7 @@
   }
   .scenes .btn:active { border-color: var(--accent); color: var(--accent); }
   /* Pairing / message overlays: .state-card anatomy, shown via inline display. */
-  #pair, #message { position: fixed; inset: 0; display: none; }
+  #pair, #message, #legacy { position: fixed; inset: 0; display: none; }
   #pair .state-title, #message .state-title { font-size: clamp(13px, 5vh, 19px); }
   #pairBtn { font-size: clamp(14px, 5.5vh, 22px); padding: 10px 30px; touch-action: manipulation; }
 </style>
@@ -79,6 +79,11 @@
     <small id="pairHint" class="state-body"></small>
   </div>
   <div id="message" class="state-card"></div>
+  <div id="legacy" class="state-card">
+    <div class="state-title">This bridge did not answer over HTTPS</div>
+    <button id="legacyBtn" class="btn">Use the legacy API anyway</button>
+    <small id="legacyHint" class="state-body"></small>
+  </div>
 
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
@@ -197,6 +202,7 @@
         // with it — otherwise a bridge factory-reset down to v1 would be stuck asking for
         // an API generation it no longer serves, with no way to re-probe.
         try { localStorage.removeItem('hue-v2-' + cfg.ip); } catch (e) { /* private mode */ }
+        try { localStorage.removeItem('hue-v1ok-' + cfg.ip); } catch (e) { /* private mode */ }
         document.getElementById('pair').style.display = 'none';
         begin();
       } else if (entry && entry.error && entry.error.type === 101) {
@@ -227,6 +233,11 @@
   const v2Key = () => 'hue-v2-' + cfg.ip;
   const knownV2 = () => { try { return localStorage.getItem(v2Key()) === '1'; } catch (e) { return false; } };
   const rememberV2 = () => { try { localStorage.setItem(v2Key(), '1'); } catch (e) { /* private mode */ } };
+  // Separately: this address may use the legacy API even though we could not confirm HTTPS.
+  // Only ever set by the user tapping the button below — never by a failure.
+  const v1okKey = () => 'hue-v1ok-' + cfg.ip;
+  const legacyAllowed = () => { try { return localStorage.getItem(v1okKey()) === '1'; } catch (e) { return false; } };
+  const allowLegacy = () => { try { localStorage.setItem(v1okKey(), '1'); } catch (e) { /* private mode */ } };
 
   // Probe CLIP v2 once per session: newer bridges answer 200 on /resource/room; a bridge
   // that ANSWERS with anything else is telling us it is v1, which is the bridge speaking
@@ -244,6 +255,18 @@
           mode = res.status === 200 ? 'v2' : 'v1';
           if (mode === 'v2') rememberV2();
         } catch (e) {
+          // A transport failure is not the bridge saying it is v1 — and it is what an
+          // attacker blocking TLS produces. Choosing v1 here would put the stored
+          // application key straight into a plaintext http URL, which is the whole finding;
+          // and because the v2 marker is only ever set by a SUCCESSFUL v2 run, an attacker
+          // who keeps blocking keeps the address unmarked, so this is not a one-time
+          // upgrade window but a permanent one. Every existing install starts here.
+          //
+          // Old bridges that genuinely have no HTTPS listener fail exactly the same way, so
+          // refusing outright would take the widget away from them with no way back. The
+          // user decides, once per address, knowing what it costs — and a decision is the
+          // one thing an attacker on the wire cannot forge.
+          if (!legacyAllowed()) { showLegacyChoice(); return; }
           mode = 'v1';
         }
       }
@@ -251,6 +274,23 @@
     }
     startPolling();
   }
+
+  function showLegacyChoice() {
+    document.getElementById('rooms').innerHTML = '';
+    document.getElementById('message').style.display = 'none';
+    document.getElementById('legacy').style.display = 'flex';
+    document.getElementById('legacyHint').textContent =
+      cfg.ip + ' — the legacy API sends your Hue key unencrypted over your network. '
+      + 'Older bridges only support it. If this bridge worked before, something is blocking HTTPS.';
+  }
+
+  document.getElementById('legacyBtn').addEventListener('click', () => {
+    allowLegacy();
+    document.getElementById('legacy').style.display = 'none';
+    mode = 'v1';
+    WW.log('hue: legacy API allowed by the user for ' + cfg.ip);
+    startPolling();
+  });
 
   // --- polling → normalized room model ----------------------------------------
   // Both API generations are normalized into one room shape so render() and the

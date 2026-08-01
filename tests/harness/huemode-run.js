@@ -111,13 +111,16 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const boot = async (opts) => {
     await page.goto('about:blank');
     await page.goto('https://widget.test/index.html');
-    await page.evaluate(([ip, key, mode, seen]) => {
+    await page.evaluate(([ip, key, mode, seen, clearConsent]) => {
       localStorage.setItem('hue-user-' + ip, key);
       if (seen) localStorage.setItem('hue-v2-' + ip, '1');
       else localStorage.removeItem('hue-v2-' + ip);
+      // NOT cleared unless asked: H8d checks the consent survives a reload, which only
+      // means anything if the reload does not quietly wipe it.
+      if (clearConsent) localStorage.removeItem('hue-v1ok-' + ip);
       window.__v2 = mode;
       window.__asked = [];
-    }, [IP, KEY, opts.v2, !!opts.seen]);
+    }, [IP, KEY, opts.v2, !!opts.seen, opts.clearConsent !== false]);
     await page.evaluate((ip) => {
       window.postMessage({ type: 'ww-init', sensors: [], media: null, theme: null,
         game: { active: false, process: '' }, status: { elevated: false, apiVersion: 1 },
@@ -185,6 +188,32 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   check('H7 setup: the bridge really was on v2 before it broke', beforeBreak > 0, String(beforeBreak));
   check('H7 a session already polling v2 is not moved to http when v2 starts failing',
     httpKeyUrls(afterBreak).length === 0, httpKeyUrls(afterBreak).join(' '));
+
+  // ---- H8 · the UPGRADE case, which is every existing install ---------------------------
+  // The v2 marker is only ever written by a SUCCESSFUL v2 run, so an installation upgrading
+  // from an earlier version has the stored key and no marker — and an attacker who keeps
+  // blocking TLS keeps it that way forever. Choosing v1 here would hand over the key, so
+  // an unconfirmed bridge waits for the user instead of guessing.
+  log = await boot({ v2: 'transport', seen: false, settleMs: 3000 });
+  check('H8 an unmarked bridge whose probe is blocked does NOT put the key on http',
+    httpKeyUrls(log).length === 0, httpKeyUrls(log).join(' '));
+  const choice = await page.evaluate(() => ({
+    shown: document.getElementById('legacy').style.display === 'flex',
+    hint: (document.getElementById('legacyHint') || {}).textContent || '',
+  }));
+  check('H8b ...it asks, naming what the legacy API costs',
+    choice.shown && /unencrypted/i.test(choice.hint), `${choice.shown} — ${choice.hint.slice(0, 60)}`);
+  // ...and the decision is the user's, so taking it must actually work — otherwise the fix
+  // strands every bridge that really has no HTTPS.
+  await page.evaluate(() => { window.__asked = []; document.getElementById('legacyBtn').click(); });
+  await wait(1500);
+  const afterConsent = await page.evaluate(() => window.__asked.slice());
+  check('H8c ...and taking that choice runs v1, so a bridge without HTTPS is not stranded',
+    httpKeyUrls(afterConsent).some((u) => u.includes('/groups')), httpKeyUrls(afterConsent).join(' '));
+  // The consent is per address and persists, or the tile would ask on every reload.
+  log = await boot({ v2: 'transport', seen: false, settleMs: 2500, clearConsent: false });
+  check('H8d ...and once given it is remembered, rather than asked again every reload',
+    httpKeyUrls(log).some((u) => u.includes('/groups')), httpKeyUrls(log).join(' '));
 
   // ---- H5 · v1-only bridges must keep working -----------------------------------------
   // The direction that would make this fix worse than the bug. A bridge that ANSWERS 404
