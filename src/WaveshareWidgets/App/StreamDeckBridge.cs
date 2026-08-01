@@ -304,7 +304,15 @@ public sealed class StreamDeckBridge
 
                 var imageRel = FindImage(stateEl) ?? (states.GetArrayLength() > 0 ? FindImage(states[0]) : null);
                 if (imageRel is not null)
-                    image = LoadImageDataUri(Path.Combine(pageDir, imageRel));
+                {
+                    // The relative path comes out of the profile, so it is only relative by
+                    // convention. Resolve it and check it landed where it claimed to.
+                    var imagePath = Path.Combine(pageDir, imageRel);
+                    if (StreamDeckPaths.IsSafeCandidate(pageDir, imagePath))
+                        image = LoadImageDataUri(imagePath);
+                    else
+                        Log.Warn("Stream Deck: profile state image points outside its own page folder; ignored");
+                }
             }
 
             // Dynamic plugins (weather, statuses) rewrite their key images continuously;
@@ -380,6 +388,15 @@ public sealed class StreamDeckBridge
 
     private static string ResolvePluginIconCore(string pluginUuid, string actionUuid, int state)
     {
+        // Both are read straight out of the profile and both go into directory and file
+        // names below. Anything that is not UUID-shaped is refused outright rather than
+        // cleaned up — see StreamDeckPaths. An empty string is the resolver's own "absent"
+        // value and stays legal; the callers already guard the both-empty case.
+        if (pluginUuid != "" && !StreamDeckPaths.IsPlausibleUuid(pluginUuid))
+            return "";
+        if (actionUuid != "" && !StreamDeckPaths.IsPlausibleUuid(actionUuid))
+            return "";
+
         var userPlugins = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "Elgato", "StreamDeck", "Plugins");
@@ -472,6 +489,11 @@ public sealed class StreamDeckBridge
 
         foreach (var candidate in candidates)
         {
+            // Belt to the UUID check's braces: candidates are also built from mapped action
+            // names and fixed subdirectories, and this stays true if another shape is added
+            // to that list later by someone who has not read this file.
+            if (!pluginDirs.Any(dir => StreamDeckPaths.IsSafeCandidate(dir, candidate)))
+                continue;
             if (!File.Exists(candidate))
                 continue;
             var uri = LoadImageDataUri(candidate);
