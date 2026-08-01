@@ -558,6 +558,23 @@ public sealed class StreamDeckBridge
             return null;
         if (!GetClientRect(vsd, out var rect) || rect.Right <= 0 || rect.Bottom <= 0)
             return null;
+        // Before the bitmap, not after: a refusal that has already allocated the window has
+        // paid the cost it exists to avoid.
+        if (!CaptureLimits.SaneSize(rect.Right, rect.Bottom))
+        {
+            if (!_loggedOversizeCapture)
+            {
+                _loggedOversizeCapture = true;
+                Log.Warn($"Stream Deck: window is {rect.Right}x{rect.Bottom}; too large to capture");
+            }
+            return null;
+        }
+        // Every caller polls, and the API invites polling — so the floor lives here rather
+        // than in each of them, where the next caller would have to remember it.
+        var nowMs = Environment.TickCount64;
+        if (CaptureLimits.TooSoon(_lastCaptureMs, nowMs))
+            return null;
+        _lastCaptureMs = nowMs;
 
         try
         {
@@ -605,6 +622,15 @@ public sealed class StreamDeckBridge
             using var prms = new EncoderParameters(1);
             prms.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 82L);
             bmp.Save(ms, codec, prms);
+            if (CaptureLimits.EncodedTooLarge(ms.Length))
+            {
+                if (!_loggedOversizeCapture)
+                {
+                    _loggedOversizeCapture = true;
+                    Log.Warn($"Stream Deck: encoded frame is {ms.Length} bytes; not sending");
+                }
+                return null;
+            }
             return ("data:image/jpeg;base64," + Convert.ToBase64String(ms.ToArray()), rect.Right, rect.Bottom, hash);
         }
         catch (Exception ex)
@@ -615,6 +641,8 @@ public sealed class StreamDeckBridge
     }
 
     private static bool _loggedBlankCapture;
+    private static bool _loggedOversizeCapture;
+    private static long _lastCaptureMs;
 
     /// <summary>Fast sampled FNV-1a over the raw pixel buffer (change detection, not crypto).</summary>
     private static string HashBitmap(Bitmap bmp)
