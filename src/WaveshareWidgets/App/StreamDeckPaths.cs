@@ -67,7 +67,16 @@ public static class StreamDeckPaths
     ///
     /// The trailing separator on the root matters: without it `C:\Plugins` contains
     /// `C:\PluginsEvil\x.png` by prefix, which is the classic way this check is written
-    /// wrong. Comparison is case-insensitive because the filesystem this runs on is.
+    /// wrong.
+    ///
+    /// Comparison is ORDINAL, not case-insensitive, even though Windows usually is not.
+    /// Windows 10 supports per-directory case sensitivity, so `Profiles\Page` and
+    /// `Profiles\page` can both exist — and OrdinalIgnoreCase would then let a path under
+    /// one satisfy containment for the other. Ordinal is available to us because every
+    /// candidate here is built by Path.Combine from the root itself and therefore carries
+    /// the root's exact spelling. A caller that builds a candidate some other way, from a
+    /// differently-spelled root, will be refused rather than silently trusted — the safe
+    /// direction, and the reason this constraint is written down rather than assumed.
     /// </remarks>
     public static bool IsInside(string root, string candidate)
     {
@@ -86,7 +95,7 @@ public static class StreamDeckPaths
         }
         if (!fullRoot.EndsWith(Path.DirectorySeparatorChar))
             fullRoot += Path.DirectorySeparatorChar;
-        return fullCandidate.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase);
+        return fullCandidate.StartsWith(fullRoot, StringComparison.Ordinal);
     }
 
     /// <summary>Is any component of <paramref name="candidate"/> below
@@ -100,8 +109,15 @@ public static class StreamDeckPaths
     ///
     /// Walks upward from the candidate to the root rather than resolving a final target:
     /// File.ResolveLinkTarget answers for the LAST component only, and the interesting case
-    /// is a directory partway along the path. Everything strictly below the root is checked;
-    /// the root itself and its ancestors are the app's own installation, not profile input.
+    /// is a directory partway along the path.
+    ///
+    /// The root is INCLUDED. It is tempting to treat it as the app's own installation and
+    /// stop above it, and that is wrong here: a page directory comes out of a profile
+    /// bundle and each `.sdPlugin` directory out of the plugins folder, so the root handed
+    /// to this method is itself something the input can choose. If it is a link, every path
+    /// "inside" it is outside the tree that was meant. The root's ANCESTORS are not checked
+    /// — those really are the installation, and a user who has relocated AppData or Program
+    /// Files with a junction should not lose every icon over it.
     /// </remarks>
     public static bool CrossesLink(string root, string candidate)
     {
@@ -115,7 +131,7 @@ public static class StreamDeckPaths
         {
             return true;   // unrepresentable: treat as unsafe rather than reason about it
         }
-        while (current.Length > stop.Length)
+        while (current.Length >= stop.Length)
         {
             try
             {

@@ -120,6 +120,19 @@ try
     Check("S9d ...and a file that does not exist yet is not treated as a link",
         !StreamDeckPaths.CrossesLink(inside, Path.Combine(inside, "images", "missing.png")));
 
+    // S10 · the ROOT itself. The walk used to stop above it, and the root is not the app's
+    // own installation here: a page directory comes out of a profile bundle and a .sdPlugin
+    // directory out of the plugins folder, so the input chooses it. If it is a link, every
+    // path "inside" it is outside the tree that was meant.
+    var linkedRoot = Path.Combine(linkRoot, "linkedpage");
+    Directory.CreateSymbolicLink(linkedRoot, outside);
+    var underLinkedRoot = Path.Combine(linkedRoot, "secret.png");
+    Check("S10 setup: the linked root really does reach outside", File.Exists(underLinkedRoot));
+    Check("S10 setup: and it is lexically contained, so only the link check can refuse it",
+        StreamDeckPaths.IsInside(linkedRoot, underLinkedRoot));
+    Check("S10 a root that is itself a link is refused",
+        !StreamDeckPaths.IsSafeCandidate(linkedRoot, underLinkedRoot));
+
     // A link to a FILE, not a directory — the case File.ResolveLinkTarget would catch and a
     // parent-walk must not miss.
     var fileLink = Path.Combine(inside, "aliased.png");
@@ -135,6 +148,16 @@ finally
 {
     try { Directory.Delete(linkRoot, recursive: true); } catch (Exception) { /* best effort */ }
 }
+
+// S11 · case. Windows 10 supports per-directory case sensitivity, so `Profiles\\Page` and
+// `Profiles\\page` can both exist — and an OrdinalIgnoreCase containment check would let a
+// path under one satisfy the other. Ordinal is affordable because every candidate is built
+// by Path.Combine from the root and carries its exact spelling.
+var caseRoot = Path.Combine(Path.GetTempPath(), "wwprobe-case", "Profiles", "Page");
+Check("S11 a sibling differing only in case is not inside",
+    !StreamDeckPaths.IsInside(caseRoot, Path.Combine(Path.GetTempPath(), "wwprobe-case", "Profiles", "page", "x.png")));
+Check("S11b ...while the root's own spelling still is",
+    StreamDeckPaths.IsInside(caseRoot, Path.Combine(caseRoot, "x.png")));
 
 Console.WriteLine("Wired up");
 
