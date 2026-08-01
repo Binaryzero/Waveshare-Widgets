@@ -109,6 +109,26 @@ else
     Check("K6f every definite failure clears the cached frame",
         code.Split("return _lastCaptureResult = null;").Length - 1 >= 5,
         (code.Split("return _lastCaptureResult = null;").Length - 1) + " clearing returns");
+
+    // K7 · the invariant, not a list of sites. K6f counts clearing returns, which says
+    // nothing about the returns it did NOT count — and that is exactly how the uniform-bitmap
+    // branch sat there returning a bare null while the field's own doc comment claimed it
+    // cleared. Enumerate every return in the method instead: exactly one may reuse the cached
+    // frame (the throttle) and every other must assign the field. A new early return added
+    // later without touching the cache fails this, which is the regression class.
+    var body = MethodBody(code, "public (string DataUri, int W, int H, string Hash)? CaptureVsdWindow()");
+    Check("K7 setup: the capture method body was located", body.Length > 0);
+    var returns = body.Split("return ").Skip(1).Select(s => "return " + s[..Math.Min(s.Length, 60)]).ToList();
+    var reusing = returns.Where(r => r.StartsWith("return _lastCaptureResult;", StringComparison.Ordinal)).ToList();
+    var unaccounted = returns
+        .Where(r => !r.StartsWith("return _lastCaptureResult;", StringComparison.Ordinal)
+                    && !r.StartsWith("return _lastCaptureResult =", StringComparison.Ordinal))
+        .ToList();
+    Check("K7 exactly one return reuses the cached frame — the throttle",
+        reusing.Count == 1, reusing.Count + " reusing returns");
+    Check("K7b every other return in the capture assigns the cache",
+        unaccounted.Count == 0,
+        unaccounted.Count == 0 ? "all accounted for" : string.Join(" | ", unaccounted.Select(r => r.Split('\n')[0].Trim())));
     // Checked PER SITE, not by "both names appear somewhere". The weaker version passed
     // with both branches using one latch and the other field left declared and unused —
     // the regression K6d exists for, surviving the probe named after it.
@@ -122,6 +142,72 @@ else
     Check("K6d2 the oversized-frame warning is guarded by a DIFFERENT one",
         frameGuard.Contains("_loggedOversizeFrame") && !frameGuard.Contains("_loggedOversizeWindow"),
         frameGuard.Trim());
+}
+
+// K8 · the OTHER caller. Bounding the capture is not the same as bounding what gets shipped:
+// the bridge throttle stops a repeat PrintWindow and then returns the cached frame, and the
+// sd-profile route embeds that frame in full with no `have` hash to answer "unchanged" with.
+// A tight poll therefore made the UI thread base64-serialize a maximum-sized frame through
+// PostWebMessageAsJson without bound — the same resource-exhaustion path the PR closes on the
+// capture route, left open on the profile one.
+//
+// A TEXT assertion, like K6 and labelled the same way: it catches the gate being removed, not
+// one neutered in place, and the route needs Windows and a live WebView2 to drive.
+var dash = FindUpwards("src/WaveshareWidgets/App/DashboardWindow.cs");
+if (dash is null)
+{
+    Check("K8 setup: DashboardWindow.cs was found", false);
+}
+else
+{
+    var host = File.ReadAllText(dash);
+    var profileRoute = CaseBody(host, "case \"sd-profile\":");
+    Check("K8 setup: the sd-profile route was located", profileRoute.Length > 0);
+    Check("K8 the profile route rate-limits the frame it embeds",
+        profileRoute.Contains("CaptureLimits.TooSoon(_lastProfileFrameMs"));
+    // ...and does so BEFORE capturing, so a refused request costs nothing at all.
+    Check("K8b the gate precedes the capture call",
+        profileRoute.IndexOf("CaptureLimits.TooSoon", StringComparison.Ordinal) >= 0
+        && profileRoute.IndexOf("CaptureLimits.TooSoon", StringComparison.Ordinal)
+           < profileRoute.IndexOf("CaptureVsdWindow()", StringComparison.Ordinal));
+    // K8c · the stamp must be its OWN. Sharing the capture route's would make this gate fire
+    // against the widget's 250 ms capture timer, so a 4 s profile poll would land inside the
+    // window about 40% of the time and drop to the icon grid — a flicker introduced by the
+    // fix for a flicker, which is this PR's recurring shape.
+    Check("K8c the profile route's stamp is not the capture route's",
+        profileRoute.Contains("_lastProfileFrameMs")
+        && !profileRoute.Contains("_lastCaptureTicks")
+        && !profileRoute.Contains("_lastCaptureMs"));
+    Check("K8d and the stamp only advances when a frame was actually shipped",
+        CaseBody(host, "case \"sd-profile\":").Contains("_lastProfileFrameMs = frameNow;"));
+}
+
+/// One `case` label's body, up to its `break`. Scopes a claim about the sd-profile route to
+/// that route — asserting against the whole file would pass on a gate that lives in some
+/// other handler entirely.
+static string CaseBody(string code, string label)
+{
+    var at = code.IndexOf(label, StringComparison.Ordinal);
+    if (at < 0) return "";
+    var end = code.IndexOf("break;", at, StringComparison.Ordinal);
+    return end < 0 ? "" : code[at..end];
+}
+
+/// The body of a method, by brace matching from its signature. Used so a claim about "every
+/// return in the capture" is scoped to the capture rather than to the whole file.
+static string MethodBody(string code, string signature)
+{
+    var at = code.IndexOf(signature, StringComparison.Ordinal);
+    if (at < 0) return "";
+    var open = code.IndexOf('{', at);
+    if (open < 0) return "";
+    var depth = 0;
+    for (var i = open; i < code.Length; i++)
+    {
+        if (code[i] == '{') depth++;
+        else if (code[i] == '}' && --depth == 0) return code[open..i];
+    }
+    return "";
 }
 
 /// The `if (!_logged…)` guard that precedes a given warning, so each site can be checked on

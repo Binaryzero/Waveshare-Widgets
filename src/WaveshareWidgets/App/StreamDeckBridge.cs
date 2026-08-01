@@ -608,7 +608,7 @@ public sealed class StreamDeckBridge
                     _loggedBlankCapture = true;
                     Log.Warn("Stream Deck: window capture came back uniform; live mirroring unavailable, using profile icons");
                 }
-                return null;
+                return _lastCaptureResult = null;
             }
 
             // Content hash lets the caller skip shipping frames that didn't change —
@@ -637,7 +637,10 @@ public sealed class StreamDeckBridge
         catch (Exception ex)
         {
             Log.Warn($"Stream Deck: window capture failed: {ex.Message}");
-            return null;
+            // Cleared like any other failure. Serving the last good frame through an ongoing
+            // fault would show pixels of unbounded age with nothing to say so; one cycle of
+            // honest fallback is the cheaper error.
+            return _lastCaptureResult = null;
         }
     }
 
@@ -658,9 +661,15 @@ public sealed class StreamDeckBridge
     /// and when their intervals coincide the second one is always throttled, so that
     /// fallback would recur on every profile poll rather than being a rare blip.
     ///
-    /// Cleared on every DEFINITE failure below (no window, refused PrintWindow, uniform
-    /// bitmap, oversized frame) so a deck that really has gone away stops being reported as
-    /// present. Only the rate limit reuses; nothing else does.
+    /// The invariant, stated exactly because the looser version of it drifted: EVERY return
+    /// in CaptureVsdWindow assigns this field except the one throttled return, which is the
+    /// only path that reuses. A failure — no window, oversized window, refused PrintWindow,
+    /// uniform bitmap, oversized frame, thrown exception — clears it, so a deck that really
+    /// has gone away stops being reported as present.
+    ///
+    /// The earlier comment listed the clearing sites by name and named one (the uniform
+    /// bitmap) that did not actually clear. A list has to be maintained against the code; an
+    /// invariant over all returns can be checked mechanically, and K7 checks it.
     /// </remarks>
     private static (string DataUri, int W, int H, string Hash)? _lastCaptureResult;
     private static long _lastCaptureMs;
