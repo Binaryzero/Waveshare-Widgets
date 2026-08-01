@@ -76,6 +76,17 @@ jobs:
       - name: Fetch body ceiling holds against a real server
         run: node tests/harness/bodycap-run.js browser-fetch.generated.js browser-fetch.lowered.js
 
+      # A Stream Deck profile names its plugin and action UUIDs, and the icon resolver used
+      # both to build filesystem paths — so a crafted or imported profile could point them at
+      # any readable file, whose contents are then base64'd into the profile payload and sent
+      # to a widget. Reproducing that needs Windows, an Elgato installation and a profile on
+      # disk; the decision is two predicates over strings, and this drives them. Note the
+      # separator rule is checked per character rather than left to Path.GetFullPath: this
+      # runs on the Windows agent, but the same probe must not silently weaken if it is ever
+      # run anywhere `\` is an ordinary filename character.
+      - name: Stream Deck icon paths
+        run: dotnet run --project tools/StreamDeckPaths
+
       # The proxy forwards widget-chosen headers to loopback and LAN targets, and its
       # browser-grade defaults only fill GAPS — so a forwarded name replaces the host's
       # honest value rather than adding to it. A local service that trusts fetch metadata
