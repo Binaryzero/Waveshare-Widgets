@@ -314,6 +314,17 @@ public sealed class DashboardWindow : Form
                     // Live mode: also ship the VSD window's current pixels so dynamic key
                     // faces (weather, statuses) mirror in real time; null capture (window
                     // missing / GPU refused PrintWindow) leaves the icon grid as fallback.
+                    // Deliberately NOT rate-limited here — see the issue filed from this PR.
+                    // A shipping bound on this route was tried and reverted: the widget falls
+                    // back to the icon grid whenever `capture` is absent, so every version of
+                    // the gate turned a cost bound into a visible flicker. Gating on the
+                    // bridge's stamp flickered one widget against its own capture timer;
+                    // gating on a dashboard-wide stamp flickered a SECOND widget against the
+                    // first, worst at startup when both poll at once and neither has a frame
+                    // to preserve. Fixing that needs either per-requester state (which this
+                    // file rejects elsewhere, for reasons that apply here too) or a "throttled,
+                    // keep what you have" reply the widget understands — a protocol change,
+                    // not a limit.
                     if (message["live"]?.GetValue<bool>() ?? false)
                     {
                         if (_streamDeck.CaptureVsdWindow() is { } capture)

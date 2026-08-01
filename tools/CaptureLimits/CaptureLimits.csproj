@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>CaptureLimitsProbe</AssemblyName>
+    <RootNamespace>CaptureLimitsProbe</RootNamespace>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The predicate only, not the bridge: everything else in that file needs Windows,
+         a Stream Deck installation and a live WebView. The part that was wrong is the
+         part that is pure string handling, which is exactly what this compiles. -->
+    <Compile Include="../../src/WaveshareWidgets/App/CaptureLimits.cs" />
+  </ItemGroup>
+</Project>

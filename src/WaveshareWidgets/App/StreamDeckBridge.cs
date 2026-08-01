@@ -555,9 +555,33 @@ public sealed class StreamDeckBridge
     {
         var vsd = FindVsdWindow();
         if (vsd == IntPtr.Zero)
-            return null;
+            return _lastCaptureResult = null;
         if (!GetClientRect(vsd, out var rect) || rect.Right <= 0 || rect.Bottom <= 0)
-            return null;
+            return _lastCaptureResult = null;
+        // Before the bitmap, not after: a refusal that has already allocated the window has
+        // paid the cost it exists to avoid.
+        if (!CaptureLimits.SaneSize(rect.Right, rect.Bottom))
+        {
+            if (!_loggedOversizeWindow)
+            {
+                _loggedOversizeWindow = true;
+                Log.Warn($"Stream Deck: window is {rect.Right}x{rect.Bottom}; too large to capture");
+            }
+            return _lastCaptureResult = null;
+        }
+        // Every caller polls, and the API invites polling — so the floor lives here rather
+        // than in each of them, where the next caller would have to remember it.
+        var nowMs = Environment.TickCount64;
+        // TWO bounds, because one gap cannot do both jobs. The start-to-start floor is what
+        // the honest caller is measured against — the widget's fastest supported poll is
+        // 150 ms and must never be refused. The duty-cycle bound is what protects the UI
+        // thread when a single capture is itself expensive: measuring the floor from
+        // completion instead would have refused that same 150 ms poll as soon as a capture
+        // took longer than 50 ms.
+        if (CaptureLimits.TooSoon(_lastCaptureMs, nowMs)
+            || CaptureLimits.WouldExceedDutyCycle(_lastCaptureMs, _lastCaptureEndMs, nowMs))
+            return _lastCaptureResult;   // reuse, never "unavailable" — see below
+        _lastCaptureMs = nowMs;
 
         try
         {
@@ -568,7 +592,7 @@ public sealed class StreamDeckBridge
                 try
                 {
                     if (!PrintWindow(vsd, hdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT))
-                        return null;
+                        return _lastCaptureResult = null;
                 }
                 finally
                 {
@@ -591,7 +615,7 @@ public sealed class StreamDeckBridge
                     _loggedBlankCapture = true;
                     Log.Warn("Stream Deck: window capture came back uniform; live mirroring unavailable, using profile icons");
                 }
-                return null;
+                return _lastCaptureResult = null;
             }
 
             // Content hash lets the caller skip shipping frames that didn't change —
@@ -605,16 +629,73 @@ public sealed class StreamDeckBridge
             using var prms = new EncoderParameters(1);
             prms.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 82L);
             bmp.Save(ms, codec, prms);
-            return ("data:image/jpeg;base64," + Convert.ToBase64String(ms.ToArray()), rect.Right, rect.Bottom, hash);
+            if (CaptureLimits.EncodedTooLarge(ms.Length))
+            {
+                if (!_loggedOversizeFrame)
+                {
+                    _loggedOversizeFrame = true;
+                    Log.Warn($"Stream Deck: encoded frame is {ms.Length} bytes; not sending");
+                }
+                return _lastCaptureResult = null;
+            }
+            return _lastCaptureResult =
+                ("data:image/jpeg;base64," + Convert.ToBase64String(ms.ToArray()), rect.Right, rect.Bottom, hash);
         }
         catch (Exception ex)
         {
             Log.Warn($"Stream Deck: window capture failed: {ex.Message}");
-            return null;
+            // Cleared like any other failure. Serving the last good frame through an ongoing
+            // fault would show pixels of unbounded age with nothing to say so; one cycle of
+            // honest fallback is the cheaper error.
+            return _lastCaptureResult = null;
+        }
+        finally
+        {
+            // When the work ended, recorded but NOT folded into the start stamp. Together the
+            // two stamps say how long the last capture took, which is what the duty-cycle
+            // bound needs; overwriting _lastCaptureMs here instead would lose the start time
+            // and turn the start-to-start floor into a completion-to-start one, refusing the
+            // widget's own supported poll rate. Every path out of the try records it — a
+            // frame, a refusal, a throw — so a slow capture is always followed by idle time.
+            _lastCaptureEndMs = Environment.TickCount64;
         }
     }
 
     private static bool _loggedBlankCapture;
+    // One flag per limit, not one for "oversize". They are different conditions with
+    // different fixes — an enormous window versus an enormous encode of an ordinary one —
+    // and sharing the latch means whichever trips first silences the other permanently.
+    // These warnings exist precisely because this path is invisible otherwise.
+    private static bool _loggedOversizeWindow;
+    private static bool _loggedOversizeFrame;
+
+    /// <summary>The last capture that actually succeeded, returned while throttled.</summary>
+    /// <remarks>
+    /// A throttled call must be distinguishable from a missing window, and returning null
+    /// for both conflates them at the caller: HandleSdCapture assigns the result straight
+    /// into its own cache, so a null answers the widget with {available:false} and the deck
+    /// falls back to icons. Two callers poll this — the profile poll and the capture timer —
+    /// and when their intervals coincide the second one is always throttled, so that
+    /// fallback would recur on every profile poll rather than being a rare blip.
+    ///
+    /// The invariant, stated exactly because the looser version of it drifted: EVERY return
+    /// in CaptureVsdWindow assigns this field except the one throttled return, which is the
+    /// only path that reuses. A failure — no window, oversized window, refused PrintWindow,
+    /// uniform bitmap, oversized frame, thrown exception — clears it, so a deck that really
+    /// has gone away stops being reported as present.
+    ///
+    /// The earlier comment listed the clearing sites by name and named one (the uniform
+    /// bitmap) that did not actually clear. A list has to be maintained against the code; an
+    /// invariant over all returns can be checked mechanically, and K7 checks it.
+    /// </remarks>
+    private static (string DataUri, int W, int H, string Hash)? _lastCaptureResult;
+    private static long _lastCaptureMs;
+
+    /// <summary>When the last capture attempt finished.</summary>
+    /// <remarks>Kept alongside the start stamp rather than replacing it: the PAIR is what
+    /// gives the duty-cycle bound the last capture's duration, and either one alone answers
+    /// only half the question.</remarks>
+    private static long _lastCaptureEndMs;
 
     /// <summary>Fast sampled FNV-1a over the raw pixel buffer (change detection, not crypto).</summary>
     private static string HashBitmap(Bitmap bmp)

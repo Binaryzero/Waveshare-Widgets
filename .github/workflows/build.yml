@@ -95,6 +95,13 @@ jobs:
       - name: Deck manifest shapes
         run: dotnet run --project tools/DeckManifest
 
+      # Live capture is a synchronous PrintWindow, a full-bitmap scan, a JPEG encode and a
+      # base64, all on the UI thread — and the API invites polling, so "faster" had no floor
+      # and the frame had no ceiling. The capture needs Windows and a running Stream Deck;
+      # the two decisions are arithmetic, and this drives them.
+      - name: Capture rate and size limits
+        run: dotnet run --project tools/CaptureLimits
+
       # The proxy forwards widget-chosen headers to loopback and LAN targets, and its
       # browser-grade defaults only fill GAPS — so a forwarded name replaces the host's
       # honest value rather than adding to it. A local service that trusts fetch metadata
