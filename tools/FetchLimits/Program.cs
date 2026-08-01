@@ -64,7 +64,11 @@ Console.WriteLine("Parity with the browser tier");
 // A placeholder URL, so tests/harness/bodycap-run.js can point the SAME generated script at
 // a server of its own and actually run it. Everything below is about the script's text; the
 // harness is what checks it behaves, which text cannot.
-var script = FetchLimits.BrowserFetchScript("\"__WW_URL__\"", "{\"Accept\":\"*/*\"}");
+var script = FetchLimits.BrowserFetchScript("\"__WW_URL__\"", "{\"Accept\":\"*/*\"}", Max);
+// The same script with a LOWERED ceiling, which is what a widget asking for less gets on
+// this tier. Written out beside the default one so bodycap-run.js can run BOTH — the
+// number reaching the page is a text fact, but the number being obeyed is not.
+var lowered = FetchLimits.BrowserFetchScript("\"__WW_URL__\"", "{\"Accept\":\"*/*\"}", 256 * 1024);
 
 // The text assertions below are about CODE, so the comments come out first. Writing a
 // comment that mentioned arrayBuffer() was enough to fail the "does not materialise the
@@ -115,6 +119,15 @@ else
     Check("F8 the widget shim's ceiling matches the host's", value == Max, $"shim={value} host={Max}");
 }
 
+/// The line a name appears on, so a failure shows the number that was actually generated
+/// rather than just "false".
+static string Excerpt(string text, string needle)
+{
+    foreach (var line in text.Split('\n'))
+        if (line.Contains(needle, StringComparison.Ordinal)) return line.Trim();
+    return "(not found)";
+}
+
 static string? FindUpwards(string relative)
 {
     var dir = new DirectoryInfo(AppContext.BaseDirectory);
@@ -135,10 +148,28 @@ static string? FindUpwards(string relative)
 // Everything above is a TEXT assertion, and text cannot tell "refuse before appending" from
 // "refuse after": a mutation that moved the budget check below the push kept every string
 // these look for. That is what the harness exists for.
+// F11 · the per-request ceiling reaches this tier. It is entered on the remote server's
+// 403/429, and for the widget that needs it most — Reddit, whose TLS fingerprinting is why
+// the tier exists — that is EVERY request. A per-request cap that stopped at the proxy tier
+// would therefore be absent from the one path its widget actually takes.
+Check("F11 a lowered ceiling reaches the generated script",
+    lowered.Contains($"const MAX = {256 * 1024};"), Excerpt(lowered, "const MAX"));
+// ...and cannot be raised past the host's, wherever the number came from.
+var raised = FetchLimits.BrowserFetchScript("\"u\"", "{}", Max * 2);
+Check("F11b a raised one is clamped to the host ceiling",
+    raised.Contains($"const MAX = {Max};"), Excerpt(raised, "const MAX"));
+Check("F11c an unspecified one is the default", script.Contains($"const MAX = {Max};"),
+    Excerpt(script, "const MAX"));
+
 if (args.Length > 0)
 {
     File.WriteAllText(args[0], script);
     Console.WriteLine($"  wrote the generated script to {args[0]} for a syntax check");
+}
+if (args.Length > 1)
+{
+    File.WriteAllText(args[1], lowered);
+    Console.WriteLine($"  wrote the lowered-ceiling script to {args[1]}");
 }
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");

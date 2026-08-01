@@ -63,8 +63,9 @@ jobs:
       # that otherwise only ever runs on a Windows host.
       - name: Fetch body ceiling
         run: |
-          dotnet run --project tools/FetchLimits -- browser-fetch.generated.js
+          dotnet run --project tools/FetchLimits -- browser-fetch.generated.js browser-fetch.lowered.js
           node --check browser-fetch.generated.js
+          node --check browser-fetch.lowered.js
 
       # ...and that it BEHAVES: text cannot tell a budget checked before appending a chunk
       # from one checked after, and the second has already paid for the bytes. This runs the
@@ -73,7 +74,7 @@ jobs:
       # Playwright and run on the maintainer's machine, so a CI step that needed it too
       # would just be a step that never ran.
       - name: Fetch body ceiling holds against a real server
-        run: node tests/harness/bodycap-run.js browser-fetch.generated.js
+        run: node tests/harness/bodycap-run.js browser-fetch.generated.js browser-fetch.lowered.js
 
       # The proxy forwards widget-chosen headers to loopback and LAN targets, and its
       # browser-grade defaults only fill GAPS — so a forwarded name replaces the host's

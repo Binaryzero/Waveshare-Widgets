@@ -340,6 +340,42 @@ function server() {
     JSON.stringify({ url: ident.url, redirected: ident.redirected, type: ident.type }));
   await ident.arrayBuffer();
 
+  // C15 · the PER-REQUEST ceiling on this tier, which is the one a widget lowers. Driven
+  // against the second script FetchLimits generates, at 256 KiB, with a body sized between
+  // that and the shared 5 MiB — so only the lowered number can refuse it. A text check
+  // proves the number reached the page; nothing but running it proves the number is obeyed,
+  // and "computed but not used" is exactly the shape the finding had.
+  const loweredPath = process.argv[3];
+  if (!loweredPath || !fs.existsSync(loweredPath)) {
+    check('C15 setup: the lowered-ceiling script was generated', false, String(loweredPath));
+  } else {
+    const loweredTemplate = fs.readFileSync(loweredPath, 'utf8');
+    const LOW_TIER = 256 * 1024;
+    check('C15 setup: the second script really does carry the lower ceiling',
+      loweredTemplate.includes(`const MAX = ${LOW_TIER};`) && !loweredTemplate.includes(`const MAX = ${MAX};`));
+    const between = Math.floor((LOW_TIER + MAX) / 2);
+    const runLowered = async (name, bytes) => {
+      const url = `http://127.0.0.1:${PORT}/${name}?bytes=${bytes}&declare=0`;
+      const win = {};
+      // eslint-disable-next-line no-new-func
+      new Function('window', 'fetch', 'btoa', loweredTemplate.replace('__WW_URL__', url))(win, fetch, btoa);
+      for (let i = 0; i < 200; i++) {
+        if (win.__wwResult) return win.__wwResult;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return { timedOut: true };
+    };
+    const overLow = await runLowered('tierlow', between);
+    check('C15 a body over the lowered ceiling is refused, though the shared one would allow it',
+      overLow.tooLarge === true, JSON.stringify({ tooLarge: overLow.tooLarge, size: overLow.size, between }));
+    check('C15b ...and the server sees that transfer torn down too',
+      (await settled('tierlow')) === 'aborted', `${outcome.tierlow} after ${sent.tierlow} of ${between}`);
+    const underLow = await runLowered('tierok', 32 * 1024);
+    check('C15c ...while one under it still comes back intact',
+      !underLow.tooLarge && atobLen(underLow.b64) === 32 * 1024,
+      JSON.stringify({ tooLarge: underLow.tooLarge, bytes: underLow.b64 ? atobLen(underLow.b64) : null }));
+  }
+
   // C5 · a body-forbidden response is an ANSWER, not a failure. The streaming rewrite has
   // to absorb r.body === null the way arrayBuffer() did; if it throws instead, BrowserFetcher
   // discards a retry that actually succeeded and the widget keeps the 403 the proxy got.

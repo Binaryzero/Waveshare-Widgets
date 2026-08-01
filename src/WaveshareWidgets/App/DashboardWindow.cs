@@ -638,7 +638,11 @@ public sealed class DashboardWindow : Form
             if ((int)response.StatusCode is 403 or 429 && method == "GET")
             {
                 _browserFetcher ??= new BrowserFetcher();
-                var alt = await _browserFetcher.FetchAsync(uri.ToString(), browserHeaders);
+                // The widget's own ceiling reaches this tier too. It is entered on the remote
+                // server's 403/429 — which for Reddit, whose TLS fingerprinting is the reason
+                // this tier exists, is every request — so a cap that stopped at the proxy tier
+                // would be missing from the one path its widget actually takes.
+                var alt = await _browserFetcher.FetchAsync(uri.ToString(), browserHeaders, cap);
                 if (alt is { TooLarge: true })
                 {
                     // The hidden browser got PAST the wall and found the body too large. The

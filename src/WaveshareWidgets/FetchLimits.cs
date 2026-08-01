@@ -68,10 +68,17 @@ public static class FetchLimits
     /// </remarks>
     /// <param name="jsUrl">The URL as a JSON-quoted JS string literal.</param>
     /// <param name="jsHeaders">The request headers as a JSON object literal.</param>
-    public static string BrowserFetchScript(string jsUrl, string jsHeaders) => $$"""
+    /// <param name="maxBytes">The ceiling for this request — the caller's own if it asked
+    /// for a lower one, clamped here so a script can never be generated with a higher
+    /// ceiling than the host enforces elsewhere. This tier is entered when the remote
+    /// server answers 403 or 429, which for the widget that needs it most (Reddit, whose
+    /// TLS fingerprinting is why this tier exists at all) is EVERY request — so a
+    /// per-request ceiling that stopped at the proxy tier would be absent exactly where
+    /// its widget relies on it.</param>
+    public static string BrowserFetchScript(string jsUrl, string jsHeaders, int maxBytes) => $$"""
         (() => {
           window.__wwResult = null;
-          const MAX = {{MaxBodyBytes}};
+          const MAX = {{EffectiveCap(maxBytes)}};
           const fail = (e) => { window.__wwResult = { status: 0, ct: '', b64: '', error: String(e) }; };
           fetch({{jsUrl}}, { credentials: 'include', headers: {{jsHeaders}} })
             .then(async (r) => {
