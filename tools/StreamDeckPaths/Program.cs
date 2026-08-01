@@ -80,6 +80,62 @@ Check("S6c a path that climbs out and returns to the SAME root is inside",
 Check("S7 empty inputs are not inside",
     !StreamDeckPaths.IsInside("", "x") && !StreamDeckPaths.IsInside(root, ""));
 
+Console.WriteLine("Links");
+
+// S9 · IsInside is LEXICAL, and the read that follows it is not. Path.GetFullPath collapses
+// `..` and normalises separators; it does not follow junctions or symlinks, and
+// File.ReadAllBytes does. So a link partway along an otherwise-contained path hands back the
+// same arbitrary-read primitive by a different route.
+//
+// Driven against REAL links on disk rather than asserted: .NET maps a Unix symlink to
+// FileAttributes.ReparsePoint exactly as it does a Windows junction, so this runs the actual
+// check against the actual filesystem wherever the suite runs.
+var linkRoot = Path.Combine(Path.GetTempPath(), "wwprobe-links-" + Environment.ProcessId);
+var inside = Path.Combine(linkRoot, "pages", "page1");
+var outside = Path.Combine(linkRoot, "elsewhere");
+try
+{
+    Directory.CreateDirectory(inside);
+    Directory.CreateDirectory(outside);
+    File.WriteAllText(Path.Combine(outside, "secret.png"), "not for widgets");
+    File.WriteAllText(Path.Combine(inside, "ordinary.png"), "fine");
+
+    var linkDir = Path.Combine(inside, "link");
+    Directory.CreateSymbolicLink(linkDir, outside);
+    var throughLink = Path.Combine(linkDir, "secret.png");
+
+    Check("S9 setup: the link really does reach the file outside", File.Exists(throughLink));
+    Check("S9 setup: and the lexical check alone still approves it — which is the finding",
+        StreamDeckPaths.IsInside(inside, throughLink));
+    Check("S9 a path crossing a directory link is refused",
+        StreamDeckPaths.CrossesLink(inside, throughLink));
+    Check("S9b ...so the combined check refuses it",
+        !StreamDeckPaths.IsSafeCandidate(inside, throughLink));
+
+    // The other direction, which matters more than usual here: plugin folders are ordinary
+    // directories, and a rule that called every one of them a link would take every icon
+    // off the deck.
+    Check("S9c an ordinary contained file is still allowed",
+        StreamDeckPaths.IsSafeCandidate(inside, Path.Combine(inside, "ordinary.png")));
+    Check("S9d ...and a file that does not exist yet is not treated as a link",
+        !StreamDeckPaths.CrossesLink(inside, Path.Combine(inside, "images", "missing.png")));
+
+    // A link to a FILE, not a directory — the case File.ResolveLinkTarget would catch and a
+    // parent-walk must not miss.
+    var fileLink = Path.Combine(inside, "aliased.png");
+    File.CreateSymbolicLink(fileLink, Path.Combine(outside, "secret.png"));
+    Check("S9e a file that is itself a link is refused too",
+        !StreamDeckPaths.IsSafeCandidate(inside, fileLink));
+}
+catch (Exception ex)
+{
+    Check("S9 setup: symlinks are creatable here", false, ex.GetType().Name + ": " + ex.Message);
+}
+finally
+{
+    try { Directory.Delete(linkRoot, recursive: true); } catch (Exception) { /* best effort */ }
+}
+
 Console.WriteLine("Wired up");
 
 // S8 · a TEXT check, and labelled as one. Everything above proves the predicates answer
@@ -99,9 +155,13 @@ else
     Check("S8 the resolver validates both UUIDs before building a path",
         code.Contains("IsPlausibleUuid(pluginUuid)") && code.Contains("IsPlausibleUuid(actionUuid)"));
     Check("S8b every candidate is checked for containment before it is opened",
-        code.Contains("StreamDeckPaths.IsInside(dir, candidate)"));
+        code.Contains("StreamDeckPaths.IsSafeCandidate(dir, candidate)"));
     Check("S8c the profile's own state image path is checked too",
-        code.Contains("StreamDeckPaths.IsInside(pageDir, imagePath)"));
+        code.Contains("StreamDeckPaths.IsSafeCandidate(pageDir, imagePath)"));
+    // Both call sites must use the COMBINED check. Taking the lexical half and forgetting
+    // the link half is the mistake this round is fixing, so it is named rather than trusted.
+    Check("S8d neither call site uses the lexical check on its own",
+        !code.Contains("StreamDeckPaths.IsInside("));
 }
 
 static string? FindUpwards(string relative)

@@ -88,4 +88,64 @@ public static class StreamDeckPaths
             fullRoot += Path.DirectorySeparatorChar;
         return fullCandidate.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>Is any component of <paramref name="candidate"/> below
+    /// <paramref name="root"/> a junction or symbolic link?</summary>
+    /// <remarks>
+    /// <see cref="IsInside"/> is LEXICAL. Path.GetFullPath collapses `..` and normalises
+    /// separators; it does not follow reparse points, and the read that comes afterwards
+    /// does. So `pageDir\link\secret.png` satisfies containment while `link` targets
+    /// somewhere else entirely — the containment check passes and the file read escapes
+    /// anyway, which is the whole primitive back again by another route.
+    ///
+    /// Walks upward from the candidate to the root rather than resolving a final target:
+    /// File.ResolveLinkTarget answers for the LAST component only, and the interesting case
+    /// is a directory partway along the path. Everything strictly below the root is checked;
+    /// the root itself and its ancestors are the app's own installation, not profile input.
+    /// </remarks>
+    public static bool CrossesLink(string root, string candidate)
+    {
+        string stop, current;
+        try
+        {
+            stop = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
+            current = Path.GetFullPath(candidate);
+        }
+        catch (Exception)
+        {
+            return true;   // unrepresentable: treat as unsafe rather than reason about it
+        }
+        while (current.Length > stop.Length)
+        {
+            try
+            {
+                // Missing is fine: a component that does not exist cannot redirect a read,
+                // and File.Exists further down is what decides whether there is anything to
+                // read at all.
+                if (File.Exists(current) || Directory.Exists(current))
+                {
+                    var attrs = File.GetAttributes(current);
+                    if ((attrs & FileAttributes.ReparsePoint) != 0)
+                        return true;
+                }
+            }
+            catch (Exception)
+            {
+                return true;   // cannot tell — refuse
+            }
+            var parent = Path.GetDirectoryName(current);
+            if (parent is null || parent == current)
+                break;
+            current = parent;
+        }
+        return false;
+    }
+
+    /// <summary>The question the resolver actually needs answered: may this candidate be
+    /// opened?</summary>
+    /// <remarks>Both halves, in one place, so a call site cannot take the lexical one and
+    /// forget the other — which is precisely the mistake the first version of this file
+    /// made.</remarks>
+    public static bool IsSafeCandidate(string root, string candidate) =>
+        IsInside(root, candidate) && !CrossesLink(root, candidate);
 }

@@ -308,7 +308,7 @@ public sealed class StreamDeckBridge
                     // The relative path comes out of the profile, so it is only relative by
                     // convention. Resolve it and check it landed where it claimed to.
                     var imagePath = Path.Combine(pageDir, imageRel);
-                    if (StreamDeckPaths.IsInside(pageDir, imagePath))
+                    if (StreamDeckPaths.IsSafeCandidate(pageDir, imagePath))
                         image = LoadImageDataUri(imagePath);
                     else
                         Log.Warn("Stream Deck: profile state image points outside its own page folder; ignored");
@@ -492,7 +492,7 @@ public sealed class StreamDeckBridge
             // Belt to the UUID check's braces: candidates are also built from mapped action
             // names and fixed subdirectories, and this stays true if another shape is added
             // to that list later by someone who has not read this file.
-            if (!pluginDirs.Any(dir => StreamDeckPaths.IsInside(dir, candidate)))
+            if (!pluginDirs.Any(dir => StreamDeckPaths.IsSafeCandidate(dir, candidate)))
                 continue;
             if (!File.Exists(candidate))
                 continue;
