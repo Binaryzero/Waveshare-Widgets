@@ -82,16 +82,29 @@ Check("K10h a clock that moved backwards does not block capture",
 // large, ordered, and therefore invisible to every check above. Used as a delay it freezes
 // the deck on its pre-suspend frame for another nap's worth of time, which is the exact
 // failure K3 exists to prevent, arriving by a route K3 cannot see.
-Check("K10i a 30-minute suspend mid-capture does not freeze the deck afterwards",
-    !CaptureLimits.WouldExceedDutyCycle(1000, 1000 + 30 * 60 * 1000, 1000 + 30 * 60 * 1000 + 1),
-    "resumes immediately, not after another 30 minutes");
-Check("K10j the cap sits above any real capture and below a plausible nap",
+const long NapEnd = 1000 + 30L * 60 * 1000;
+Check("K10i a 30-minute suspend mid-capture costs the CLAMP, not another 30 minutes",
+    !CaptureLimits.WouldExceedDutyCycle(1000, NapEnd, NapEnd + CaptureLimits.MaxPlausibleCaptureMs),
+    $"deck resumes {CaptureLimits.MaxPlausibleCaptureMs} ms after waking, not 30 minutes");
+Check("K10j the clamp sits above any real capture and below a plausible nap",
     CaptureLimits.MaxPlausibleCaptureMs > 500 && CaptureLimits.MaxPlausibleCaptureMs <= 10_000,
     $"{CaptureLimits.MaxPlausibleCaptureMs} ms");
-// ...and the cap does not quietly disable the bound for durations that ARE real.
+// ...and the clamp does not quietly disable the bound for durations that ARE real.
 Check("K10k a slow but plausible capture is still duty-cycle limited",
     CaptureLimits.WouldExceedDutyCycle(1000, 1000 + CaptureLimits.MaxPlausibleCaptureMs,
         1000 + CaptureLimits.MaxPlausibleCaptureMs + 1));
+// K10L · the hole the first version of the clamp left. Discarding an over-cap duration
+// instead of clamping it dropped the delay entirely, and being slow is NOT self-limiting:
+// the capture blocks the UI thread while it runs, but the next queued poll is processed the
+// instant it returns, and by then the 100 ms start-to-start floor is long satisfied. A tight
+// caller therefore got continuous occupancy — precisely what the duty cycle exists to stop,
+// arriving only for the most expensive captures of all.
+const long SlowEnd = 1000 + 3000;   // 3 s, above the 2 s clamp
+Check("K10L a capture SLOWER than the clamp still gets a cooldown",
+    CaptureLimits.WouldExceedDutyCycle(1000, SlowEnd, SlowEnd + 1),
+    "an over-cap duration must not mean zero delay");
+Check("K10L2 ...bounded by the clamp rather than by its own length",
+    !CaptureLimits.WouldExceedDutyCycle(1000, SlowEnd, SlowEnd + CaptureLimits.MaxPlausibleCaptureMs));
 
 Console.WriteLine("Size");
 
