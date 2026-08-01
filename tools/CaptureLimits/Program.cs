@@ -40,11 +40,27 @@ Console.WriteLine("Size");
 
 // K4 · dimensions, checked before the bitmap is allocated.
 Check("K4 an ordinary VSD window is sane", CaptureLimits.SaneSize(1200, 500));
-Check("K4b the largest allowed edge is still sane",
-    CaptureLimits.SaneSize(CaptureLimits.MaxEdgePixels, CaptureLimits.MaxEdgePixels));
+// The edge bound still has to admit a long, thin window — the area bound is a second
+// constraint, not a replacement. (This check used to pass MaxEdgePixels on BOTH axes, which
+// the area bound now correctly refuses; it was encoding the contract before K4e existed.)
+Check("K4b the largest allowed edge is sane when the area allows it",
+    CaptureLimits.SaneSize(CaptureLimits.MaxEdgePixels, CaptureLimits.MaxTotalPixels / CaptureLimits.MaxEdgePixels));
 Check("K4c one pixel over is refused",
     !CaptureLimits.SaneSize(CaptureLimits.MaxEdgePixels + 1, 100)
     && !CaptureLimits.SaneSize(100, CaptureLimits.MaxEdgePixels + 1));
+// K4e · the edge bound is not a budget on its own. 8192x8192 satisfies it and is 64
+// megapixels — about 256 MiB of bitmap, allocated and then PrintWindow'd, hashed and
+// JPEG-encoded on the UI thread before the encoded-size ceiling downstream can refuse the
+// result. That ceiling cannot give the allocation back.
+Check("K4e a window within the edge bound but enormous in area is refused",
+    !CaptureLimits.SaneSize(CaptureLimits.MaxEdgePixels, CaptureLimits.MaxEdgePixels),
+    $"{CaptureLimits.MaxEdgePixels}x{CaptureLimits.MaxEdgePixels}");
+Check("K4f the area bound leaves a real VSD window far inside it",
+    CaptureLimits.SaneSize(1200, 500) && CaptureLimits.MaxTotalPixels >= 2_000_000,
+    $"{CaptureLimits.MaxTotalPixels} px");
+Check("K4g exactly the area bound is allowed, one pixel over is not",
+    CaptureLimits.SaneSize(CaptureLimits.MaxTotalPixels / 1000, 1000)
+    && !CaptureLimits.SaneSize(CaptureLimits.MaxTotalPixels / 1000 + 1, 1000));
 Check("K4d zero and negative are refused",
     !CaptureLimits.SaneSize(0, 500) && !CaptureLimits.SaneSize(500, 0) && !CaptureLimits.SaneSize(-4, -4));
 
@@ -81,6 +97,18 @@ else
     // trips first silences the other for the process lifetime — and these warnings are the
     // only reason a refused capture is visible at all, so a silenced one is a refusal that
     // presents as the deck simply not working.
+    // K6e · the throttle must REUSE, not report unavailable. HandleSdCapture assigns this
+    // result straight into its own cache, so a null while merely throttled answers the
+    // widget with {available:false} and the deck falls back to icons — and because two
+    // callers poll (profile poll and capture timer), the second is always throttled when
+    // their intervals coincide, so the fallback recurs rather than blipping.
+    Check("K6e a throttled capture returns the cached frame instead of null",
+        code.Contains("return _lastCaptureResult;   // reuse"));
+    // ...and the cache is cleared on every DEFINITE failure, or a deck that really went
+    // away would be reported as present forever.
+    Check("K6f every definite failure clears the cached frame",
+        code.Split("return _lastCaptureResult = null;").Length - 1 >= 5,
+        (code.Split("return _lastCaptureResult = null;").Length - 1) + " clearing returns");
     Check("K6d each limit has its own one-time warning flag",
         code.Contains("_loggedOversizeWindow") && code.Contains("_loggedOversizeFrame")
         && !code.Contains("_loggedOversizeCapture"));

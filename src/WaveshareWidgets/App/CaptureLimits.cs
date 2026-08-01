@@ -29,6 +29,18 @@ public static class CaptureLimits
     /// land in a widget's renderer.</remarks>
     public const int MaxEncodedBytes = 2 * 1024 * 1024;
 
+    /// <summary>Largest total pixel count that will be captured at all.</summary>
+    /// <remarks>
+    /// The edge bound alone is not a budget. 8192x8192 satisfies it and is 64 megapixels —
+    /// roughly 256 MiB of bitmap, allocated and then PrintWindow'd, hashed and JPEG-encoded
+    /// synchronously on the UI thread, all before the encoded-size ceiling downstream gets
+    /// to refuse the result. That ceiling cannot give the allocation back.
+    ///
+    /// Four megapixels is several times any real Virtual Stream Deck window (roughly
+    /// 1200x500) and about 16 MiB of pixels, which is a cost the UI thread can absorb.
+    /// </remarks>
+    public const int MaxTotalPixels = 4_000_000;
+
     /// <summary>Largest window edge, in pixels, that will be captured at all.</summary>
     /// <remarks>Checked BEFORE allocating the bitmap. Refusing after the allocation would
     /// have already paid for it, which on this path is the entire cost being avoided — the
@@ -50,7 +62,11 @@ public static class CaptureLimits
 
     /// <summary>Is a window of this size worth capturing?</summary>
     public static bool SaneSize(int width, int height) =>
-        width > 0 && height > 0 && width <= MaxEdgePixels && height <= MaxEdgePixels;
+        width > 0 && height > 0 && width <= MaxEdgePixels && height <= MaxEdgePixels
+        // long, not int: 8192*8192 is 67 million and fits, but a caller passing larger
+        // edges would overflow the multiply and wrap to a small positive number — a size
+        // check that says yes to the largest inputs of all.
+        && (long)width * height <= MaxTotalPixels;
 
     /// <summary>Is the encoded frame small enough to send?</summary>
     public static bool EncodedTooLarge(long bytes) => bytes > MaxEncodedBytes;

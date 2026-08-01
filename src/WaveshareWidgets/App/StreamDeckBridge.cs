@@ -555,9 +555,9 @@ public sealed class StreamDeckBridge
     {
         var vsd = FindVsdWindow();
         if (vsd == IntPtr.Zero)
-            return null;
+            return _lastCaptureResult = null;
         if (!GetClientRect(vsd, out var rect) || rect.Right <= 0 || rect.Bottom <= 0)
-            return null;
+            return _lastCaptureResult = null;
         // Before the bitmap, not after: a refusal that has already allocated the window has
         // paid the cost it exists to avoid.
         if (!CaptureLimits.SaneSize(rect.Right, rect.Bottom))
@@ -567,13 +567,13 @@ public sealed class StreamDeckBridge
                 _loggedOversizeWindow = true;
                 Log.Warn($"Stream Deck: window is {rect.Right}x{rect.Bottom}; too large to capture");
             }
-            return null;
+            return _lastCaptureResult = null;
         }
         // Every caller polls, and the API invites polling — so the floor lives here rather
         // than in each of them, where the next caller would have to remember it.
         var nowMs = Environment.TickCount64;
         if (CaptureLimits.TooSoon(_lastCaptureMs, nowMs))
-            return null;
+            return _lastCaptureResult;   // reuse, never "unavailable" — see below
         _lastCaptureMs = nowMs;
 
         try
@@ -585,7 +585,7 @@ public sealed class StreamDeckBridge
                 try
                 {
                     if (!PrintWindow(vsd, hdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT))
-                        return null;
+                        return _lastCaptureResult = null;
                 }
                 finally
                 {
@@ -629,9 +629,10 @@ public sealed class StreamDeckBridge
                     _loggedOversizeFrame = true;
                     Log.Warn($"Stream Deck: encoded frame is {ms.Length} bytes; not sending");
                 }
-                return null;
+                return _lastCaptureResult = null;
             }
-            return ("data:image/jpeg;base64," + Convert.ToBase64String(ms.ToArray()), rect.Right, rect.Bottom, hash);
+            return _lastCaptureResult =
+                ("data:image/jpeg;base64," + Convert.ToBase64String(ms.ToArray()), rect.Right, rect.Bottom, hash);
         }
         catch (Exception ex)
         {
@@ -647,6 +648,21 @@ public sealed class StreamDeckBridge
     // These warnings exist precisely because this path is invisible otherwise.
     private static bool _loggedOversizeWindow;
     private static bool _loggedOversizeFrame;
+
+    /// <summary>The last capture that actually succeeded, returned while throttled.</summary>
+    /// <remarks>
+    /// A throttled call must be distinguishable from a missing window, and returning null
+    /// for both conflates them at the caller: HandleSdCapture assigns the result straight
+    /// into its own cache, so a null answers the widget with {available:false} and the deck
+    /// falls back to icons. Two callers poll this — the profile poll and the capture timer —
+    /// and when their intervals coincide the second one is always throttled, so that
+    /// fallback would recur on every profile poll rather than being a rare blip.
+    ///
+    /// Cleared on every DEFINITE failure below (no window, refused PrintWindow, uniform
+    /// bitmap, oversized frame) so a deck that really has gone away stops being reported as
+    /// present. Only the rate limit reuses; nothing else does.
+    /// </remarks>
+    private static (string DataUri, int W, int H, string Hash)? _lastCaptureResult;
     private static long _lastCaptureMs;
 
     /// <summary>Fast sampled FNV-1a over the raw pixel buffer (change detection, not crypto).</summary>
