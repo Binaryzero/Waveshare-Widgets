@@ -17,6 +17,7 @@
 //   H6 · pairing clears the memory, so a bridge reset down to v1 is not stuck asking for v2
 //   H8 · an UNMARKED bridge — which every existing install is — is not downgraded either
 //   H9 · and the question is not a dead end: https recovering resolves it by itself
+//   H10 · a probe still on the wire when the user answers does not overrule them
 //   H7 · the polling route ALONE: the probe succeeds, then v2 starts failing. H2-H4 cannot
 //        tell the two fixes apart, because a probe that demotes never lets polling see v2
 //
@@ -83,6 +84,8 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
       if (u.indexOf('/clip/v2') !== -1) {
         // A transport failure is what the shim turns a dead socket into: a TypeError.
         if (window.__v2 === 'transport') return fail('connection refused');
+        // Still on the wire when the user answers: the race H10 drives.
+        if (window.__v2 === 'slowfail') return setTimeout(() => fail('connection refused'), window.__v2Delay || 6000);
         if (window.__v2 === '404') return reply('{}', 404);
         if (u.indexOf('/resource/room') !== -1) return reply(JSON.stringify(rooms));
         return reply(JSON.stringify({ data: [] }));
@@ -270,6 +273,47 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     JSON.stringify(recovered));
   check('H9b ...and the key never went to http while the question was open',
     httpKeyUrls(await page.evaluate(() => window.__asked.slice())).length === 0);
+
+  // ---- H10 · a late probe answer does not overrule the user ---------------------------
+  // The consent button can cancel a pending retry timer, but not a v2fetch already on the
+  // wire. Without a latch, that in-flight probe settles seconds later and either re-asks the
+  // question just answered or flips the session to v2 while v1 polling is running.
+  const retryMs = Number((fs.readFileSync(path.join(WIDGET, 'index.html'), 'utf8')
+    .match(/PROBE_RETRY_MS\s*=\s*(\d+)/) || [])[1] || 15000);
+  await page.goto('about:blank');
+  await page.goto('https://widget.test/index.html');
+  await page.evaluate(([ip, key]) => {
+    localStorage.setItem('hue-user-' + ip, key);
+    localStorage.removeItem('hue-v2-' + ip);
+    localStorage.removeItem('hue-v1ok-' + ip);
+    window.__v2 = 'transport';
+    window.__asked = [];
+  }, [IP, KEY]);
+  await page.evaluate((ip) => {
+    window.postMessage({ type: 'ww-init', sensors: [], media: null, theme: null,
+      game: { active: false, process: '' }, status: { elevated: false, apiVersion: 1 },
+      settings: { bridgeIp: ip, showScenes: 'on', bgStyle: 'solid' } }, '*');
+  }, IP);
+  await wait(2000);
+  check('H10 setup: the offer is up after the first probe failed',
+    await page.evaluate(() => document.getElementById('legacy').style.display === 'flex'));
+  // Make the NEXT probe slow, then let the retry timer fire so it is in flight.
+  await page.evaluate(() => { window.__v2 = 'slowfail'; window.__v2Delay = 6000; });
+  await wait(retryMs + 1500);
+  check('H10 setup: a probe really is in flight when the button is clicked',
+    await page.evaluate(() => window.__asked.filter((r) => r.url.indexOf('/clip/v2') !== -1).length >= 2),
+    String(await page.evaluate(() => window.__asked.filter((r) => r.url.indexOf('/clip/v2') !== -1).length)));
+  await page.evaluate(() => { window.__asked = []; document.getElementById('legacyBtn').click(); });
+  await wait(8000);   // long enough for the in-flight probe to settle after the click
+  const late = await page.evaluate(() => ({
+    offerBack: document.getElementById('legacy').style.display === 'flex',
+    urls: window.__asked.map((r) => r.url),
+  }));
+  check('H10 a late probe failure does not re-ask a question the user already answered',
+    !late.offerBack, String(late.offerBack));
+  check('H10b ...and v1 polling, which the user authorized, keeps running',
+    late.urls.some((u) => u.startsWith('http://') && u.includes(KEY) && u.includes('/groups')),
+    late.urls.join(' ').slice(0, 120));
 
   // ---- H6 · pairing clears the memory ---------------------------------------------------
   log = await boot({ v2: '404', seen: true, settleMs: 1500 });

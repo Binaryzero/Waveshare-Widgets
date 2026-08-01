@@ -270,6 +270,12 @@
     } catch (e) {
       confirmed = false;
     }
+    // The mode may have been settled WHILE this request was in flight — the button below
+    // can only cancel a pending timer, never a fetch already on the wire. A late answer
+    // arriving after that would either put the question back on screen seconds after the
+    // user answered it, or quietly move the session to v2 while v1 polling is already
+    // running. Whoever decided first decided.
+    if (mode !== null) return;
     if (confirmed) {
       clearTimeout(probeTimer);
       probeTimer = null;
