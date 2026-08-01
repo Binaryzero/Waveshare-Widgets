@@ -239,40 +239,54 @@
   const legacyAllowed = () => { try { return localStorage.getItem(v1okKey()) === '1'; } catch (e) { return false; } };
   const allowLegacy = () => { try { localStorage.setItem(v1okKey(), '1'); } catch (e) { /* private mode */ } };
 
-  // Probe CLIP v2 once per session: newer bridges answer 200 on /resource/room; a bridge
-  // that ANSWERS with anything else is telling us it is v1, which is the bridge speaking
-  // rather than the network. A connection failure is not an answer — for an address never
-  // seen on v2 it is almost certainly an old bridge with no https at all (the user's own
-  // LAN, and the case the finding explicitly excludes), but for one that HAS spoken v2 it
-  // proves nothing except that something is in the way.
+  // Probe CLIP v2. Only a 200 puts this session on v2; every other outcome — any other
+  // status, or no answer at all — requires the user to say so before the key touches http.
+  //
+  // That asymmetry is the whole rule, and it is narrower than "the bridge decides". The v2
+  // probe rides `insecure: true`, and the host accepts any certificate for a LAN address
+  // (RemoteCertificateValidationCallback => true), so the channel is unauthenticated: an
+  // on-LAN attacker impersonating the bridge can return 404 as easily as it can drop the
+  // connection. An ANSWER is therefore no evidence of who answered, and "the bridge told us
+  // it is v1" was never something this code could actually observe.
+  //
+  // But only one direction needs authorization. A 200 keeps the key on TLS, so a forged 200
+  // buys an attacker nothing it does not already have. A non-200 moves the key to cleartext,
+  // and that is the move no unauthenticated party gets to make on the user's behalf.
+  const PROBE_RETRY_MS = 15000;
+  let probeTimer = null;
+
   async function begin() {
-    if (mode === null) {
-      if (knownV2()) {
-        mode = 'v2';   // settled by a previous successful v2 answer; not re-openable here
-      } else {
-        try {
-          const res = await v2fetch('/resource/room');
-          mode = res.status === 200 ? 'v2' : 'v1';
-          if (mode === 'v2') rememberV2();
-        } catch (e) {
-          // A transport failure is not the bridge saying it is v1 — and it is what an
-          // attacker blocking TLS produces. Choosing v1 here would put the stored
-          // application key straight into a plaintext http URL, which is the whole finding;
-          // and because the v2 marker is only ever set by a SUCCESSFUL v2 run, an attacker
-          // who keeps blocking keeps the address unmarked, so this is not a one-time
-          // upgrade window but a permanent one. Every existing install starts here.
-          //
-          // Old bridges that genuinely have no HTTPS listener fail exactly the same way, so
-          // refusing outright would take the widget away from them with no way back. The
-          // user decides, once per address, knowing what it costs — and a decision is the
-          // one thing an attacker on the wire cannot forge.
-          if (!legacyAllowed()) { showLegacyChoice(); return; }
-          mode = 'v1';
-        }
-      }
-      WW.log('hue: bridge API mode ' + mode + (knownV2() ? ' (v2 confirmed previously)' : ''));
+    if (mode !== null) { startPolling(); return; }
+    if (knownV2()) { mode = 'v2'; startPolling(); return; }        // settled by a real v2 answer
+    if (legacyAllowed()) { mode = 'v1'; startPolling(); return; }  // settled by the user
+    await probeV2();
+  }
+
+  async function probeV2() {
+    let confirmed = false;
+    try {
+      const res = await v2fetch('/resource/room');
+      confirmed = res.status === 200;
+    } catch (e) {
+      confirmed = false;
     }
-    startPolling();
+    if (confirmed) {
+      clearTimeout(probeTimer);
+      probeTimer = null;
+      mode = 'v2';
+      rememberV2();
+      document.getElementById('legacy').style.display = 'none';
+      WW.log('hue: bridge API mode v2');
+      startPolling();
+      return;
+    }
+    // Ask — and KEEP TRYING while the question is on screen. A transient TLS failure would
+    // otherwise leave the tile with one way out: authorizing plaintext permanently, for a
+    // bridge that is about to come back on https. The offer stays available for bridges
+    // that really have no https, and resolves itself for the ones that do.
+    showLegacyChoice();
+    clearTimeout(probeTimer);
+    probeTimer = setTimeout(probeV2, PROBE_RETRY_MS);
   }
 
   function showLegacyChoice() {
@@ -280,11 +294,14 @@
     document.getElementById('message').style.display = 'none';
     document.getElementById('legacy').style.display = 'flex';
     document.getElementById('legacyHint').textContent =
-      cfg.ip + ' — the legacy API sends your Hue key unencrypted over your network. '
-      + 'Older bridges only support it. If this bridge worked before, something is blocking HTTPS.';
+      cfg.ip + ' — still retrying HTTPS. The legacy API sends your Hue key unencrypted over '
+      + 'your network; older bridges support nothing else. If this bridge worked before, '
+      + 'something is interfering with HTTPS and you should not accept.';
   }
 
   document.getElementById('legacyBtn').addEventListener('click', () => {
+    clearTimeout(probeTimer);
+    probeTimer = null;
     allowLegacy();
     document.getElementById('legacy').style.display = 'none';
     mode = 'v1';

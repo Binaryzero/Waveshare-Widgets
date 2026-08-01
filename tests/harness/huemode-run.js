@@ -15,6 +15,8 @@
 //        the same attack four seconds earlier
 //   H5 · a genuinely v1-only bridge still works — the fix must not cost them the widget
 //   H6 · pairing clears the memory, so a bridge reset down to v1 is not stuck asking for v2
+//   H8 · an UNMARKED bridge — which every existing install is — is not downgraded either
+//   H9 · and the question is not a dead end: https recovering resolves it by itself
 //   H7 · the polling route ALONE: the probe succeeds, then v2 starts failing. H2-H4 cannot
 //        tell the two fixes apart, because a probe that demotes never lets polling see v2
 //
@@ -215,13 +217,59 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   check('H8d ...and once given it is remembered, rather than asked again every reload',
     httpKeyUrls(log).some((u) => u.includes('/groups')), httpKeyUrls(log).join(' '));
 
-  // ---- H5 · v1-only bridges must keep working -----------------------------------------
-  // The direction that would make this fix worse than the bug. A bridge that ANSWERS 404
-  // on /clip/v2 is telling us it is v1 — that is the bridge speaking, not the network.
+  // ---- H5 · a bridge that ANSWERS non-200 is not thereby trusted --------------------
+  // This changed in round 2, and the earlier version of this probe was asserting something
+  // the code could not actually observe. The v2 probe rides `insecure: true` and the host
+  // accepts any certificate, so an on-LAN attacker can impersonate the bridge and answer
+  // 404 as easily as it can drop the connection — "the bridge said it is v1" is not a
+  // statement this widget is in a position to make. Only a 200 authorizes v2; every other
+  // outcome asks.
   log = await boot({ v2: '404' });
-  check('H5 a genuinely v1-only bridge still works over v1',
-    httpKeyUrls(log).some((u) => u.includes('/groups')), httpKeyUrls(log).join(' '));
-  check('H5b ...and its tile is not stuck on an error', !(await msg()).shown, (await msg()).title);
+  check('H5 a non-200 answer does not by itself put the key on http',
+    httpKeyUrls(log).length === 0, httpKeyUrls(log).join(' '));
+  const asked404 = await page.evaluate(() => document.getElementById('legacy').style.display === 'flex');
+  check('H5b ...it asks, exactly as a dropped connection does', asked404, String(asked404));
+  // ...and a real v1-only bridge is one tap from working, which is the cost of not being
+  // able to tell it apart from an impersonated one.
+  await page.evaluate(() => { window.__asked = []; document.getElementById('legacyBtn').click(); });
+  await wait(1500);
+  const after404 = await page.evaluate(() => window.__asked.slice());
+  check('H5c ...and accepting runs v1, so a genuine v1-only bridge still works',
+    httpKeyUrls(after404).some((u) => u.includes('/groups')), httpKeyUrls(after404).join(' '));
+
+  // ---- H9 · the question is not a dead end -------------------------------------------
+  // While the offer is on screen the widget keeps retrying https. Without that, one
+  // transient TLS failure leaves a single way out — authorizing plaintext permanently, for
+  // a bridge that is about to come back. The retry is what makes refusing the offer safe.
+  await page.goto('about:blank');
+  await page.goto('https://widget.test/index.html');
+  await page.evaluate(([ip, key]) => {
+    localStorage.setItem('hue-user-' + ip, key);
+    localStorage.removeItem('hue-v2-' + ip);
+    localStorage.removeItem('hue-v1ok-' + ip);
+    window.__v2 = 'transport';
+    window.__asked = [];
+  }, [IP, KEY]);
+  await page.evaluate((ip) => {
+    window.postMessage({ type: 'ww-init', sensors: [], media: null, theme: null,
+      game: { active: false, process: '' }, status: { elevated: false, apiVersion: 1 },
+      settings: { bridgeIp: ip, showScenes: 'on', bgStyle: 'solid' } }, '*');
+  }, IP);
+  await wait(2000);
+  check('H9 setup: the offer is showing while https is down',
+    await page.evaluate(() => document.getElementById('legacy').style.display === 'flex'));
+  await page.evaluate(() => { window.__v2 = 'ok'; });   // https comes back on its own
+  await wait(20000);                                     // one retry interval, plus slack
+  const recovered = await page.evaluate(() => ({
+    hidden: document.getElementById('legacy').style.display === 'none',
+    v2: window.__asked.filter((r) => r.url.indexOf('/clip/v2') !== -1).length,
+    consented: localStorage.getItem('hue-v1ok-' + ''.concat('10.0.0.9')),
+  }));
+  check('H9 https recovering resolves it without the user authorizing anything',
+    recovered.hidden && recovered.v2 > 1 && recovered.consented === null,
+    JSON.stringify(recovered));
+  check('H9b ...and the key never went to http while the question was open',
+    httpKeyUrls(await page.evaluate(() => window.__asked.slice())).length === 0);
 
   // ---- H6 · pairing clears the memory ---------------------------------------------------
   log = await boot({ v2: '404', seen: true, settleMs: 1500 });
