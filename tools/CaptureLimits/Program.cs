@@ -23,11 +23,22 @@ Check("K1b one millisecond sooner is refused",
     CaptureLimits.TooSoon(1000, 1000 + CaptureLimits.MinIntervalMs - 1));
 Check("K1c an immediate repeat is refused", CaptureLimits.TooSoon(1000, 1000));
 
-// K2 · the intended caller must not notice. The widget polls about four times a second;
-// a limit that bit at that rate would be a bug dressed as a fix.
-Check("K2 a 250 ms poll — what the stock widget does — is never refused",
-    !CaptureLimits.TooSoon(1000, 1250) && CaptureLimits.MinIntervalMs < 250,
-    $"floor {CaptureLimits.MinIntervalMs} ms");
+// K2 · the intended caller must not notice. Asserted against the FASTEST the stock widget can
+// be configured to poll, not against its default: `widgets/streamdeck/index.html` clamps
+// liveRefresh with Math.max(150, …), so 150 ms is a supported setting even though 400 ms is
+// the default. Checking 250 ms would let the floor rise to 200 — passing every boundary check
+// here while silently halving a configuration the widget offers.
+const int WidgetFastestPollMs = 150;
+Check("K2 the widget's FASTEST supported poll is never refused",
+    !CaptureLimits.TooSoon(1000, 1000 + WidgetFastestPollMs)
+    && CaptureLimits.MinIntervalMs <= WidgetFastestPollMs,
+    $"floor {CaptureLimits.MinIntervalMs} ms vs widget minimum {WidgetFastestPollMs} ms");
+// ...and the number above is the one the widget actually enforces, not a copy that drifted.
+var deckWidget = FindUpwards("widgets/streamdeck/index.html");
+Check("K2b the widget still clamps its poll to that same floor",
+    deckWidget is not null
+    && File.ReadAllText(deckWidget).Contains($"Math.max({WidgetFastestPollMs}, Number(s.liveRefresh)"),
+    deckWidget is null ? "widget not found" : "clamp matches");
 
 // K3 · the states that are not a rate at all. "No capture yet" and a clock that appears to
 // run backwards (a resumed machine) must not wedge capture permanently — refusing forever
@@ -118,12 +129,24 @@ else
     // later without touching the cache fails this, which is the regression class.
     var body = MethodBody(code, "public (string DataUri, int W, int H, string Hash)? CaptureVsdWindow()");
     Check("K7 setup: the capture method body was located", body.Length > 0);
-    var returns = body.Split("return ").Skip(1).Select(s => "return " + s[..Math.Min(s.Length, 60)]).ToList();
-    var reusing = returns.Where(r => r.StartsWith("return _lastCaptureResult;", StringComparison.Ordinal)).ToList();
+    // Comments and string literals are stripped BEFORE the scan, and whitespace after the
+    // keyword is normalised. Splitting on the literal text "return " missed `return\n null;`
+    // — valid C# that this probe would then not enumerate at all, so the stale-cache
+    // regression could be reintroduced in a form no check here even looked at. It also read
+    // the word "return" inside comments as a statement.
+    var returns = ReturnStatements(body);
+    var reusing = returns.Where(r => r == "return _lastCaptureResult;").ToList();
     var unaccounted = returns
-        .Where(r => !r.StartsWith("return _lastCaptureResult;", StringComparison.Ordinal)
+        .Where(r => r != "return _lastCaptureResult;"
                     && !r.StartsWith("return _lastCaptureResult =", StringComparison.Ordinal))
         .ToList();
+    // The exact count is asserted, not just "some were found". A tokeniser that silently
+    // enumerated a SUBSET is the failure this whole check exists to prevent, and a subset
+    // still satisfies "every return I found assigns the cache". Nine: five definite failures
+    // before the try, the throttle, PrintWindow, uniform, oversize, success and the catch.
+    // If a return is legitimately added or removed, update this number deliberately.
+    Check("K7 setup: the scan found every return the method has",
+        returns.Count == 9, returns.Count + " returns");
     Check("K7 exactly one return reuses the cached frame — the throttle",
         reusing.Count == 1, reusing.Count + " reusing returns");
     Check("K7b every other return in the capture assigns the cache",
@@ -144,42 +167,76 @@ else
         frameGuard.Trim());
 }
 
-// K8 · the OTHER caller. Bounding the capture is not the same as bounding what gets shipped:
-// the bridge throttle stops a repeat PrintWindow and then returns the cached frame, and the
-// sd-profile route embeds that frame in full with no `have` hash to answer "unchanged" with.
-// A tight poll therefore made the UI thread base64-serialize a maximum-sized frame through
-// PostWebMessageAsJson without bound — the same resource-exhaustion path the PR closes on the
-// capture route, left open on the profile one.
+// K9 · the cooldown runs from when the work ENDED, not when it began. Stamping only at the
+// start bounds how often a capture may BEGIN, which leaves no idle time at all once a capture
+// itself takes longer than the floor — plausible near the four-megapixel ceiling — because the
+// next request is already allowed the instant this one returns. That is back-to-back captures
+// on the UI thread despite a limiter that reads as if it prevents them.
 //
-// A TEXT assertion, like K6 and labelled the same way: it catches the gate being removed, not
-// one neutered in place, and the route needs Windows and a live WebView2 to drive.
-var dash = FindUpwards("src/WaveshareWidgets/App/DashboardWindow.cs");
-if (dash is null)
+// A TEXT assertion, on the same terms as K6: it catches the finally-stamp being removed, not
+// one neutered in place. The capture needs Windows and a live Stream Deck to time for real.
+if (bridge is not null)
 {
-    Check("K8 setup: DashboardWindow.cs was found", false);
+    var code2 = File.ReadAllText(bridge);
+    var capture = MethodBody(code2, "public (string DataUri, int W, int H, string Hash)? CaptureVsdWindow()");
+    Check("K9 setup: the capture method body was located", capture.Length > 0);
+    var fin = capture.LastIndexOf("finally", StringComparison.Ordinal);
+    Check("K9 the capture re-stamps the clock in a finally, so the floor follows the work",
+        fin >= 0 && capture[fin..].Contains("_lastCaptureMs = Environment.TickCount64;"));
+    // ...and still stamps up front, so an early return below the throttle counts as an attempt
+    // rather than leaving the previous stamp to authorise an immediate retry.
+    Check("K9b and it still stamps before starting",
+        fin >= 0 && capture[..fin].Contains("_lastCaptureMs = nowMs;"));
 }
-else
+
+/// Every `return` statement in a block of C#, with comments and string literals removed and
+/// whitespace normalised, so the enumeration does not depend on how the source is formatted.
+/// Each entry reads `return <expr-prefix>;` with runs of whitespace collapsed to one space.
+static List<string> ReturnStatements(string body)
 {
-    var host = File.ReadAllText(dash);
-    var profileRoute = CaseBody(host, "case \"sd-profile\":");
-    Check("K8 setup: the sd-profile route was located", profileRoute.Length > 0);
-    Check("K8 the profile route rate-limits the frame it embeds",
-        profileRoute.Contains("CaptureLimits.TooSoon(_lastProfileFrameMs"));
-    // ...and does so BEFORE capturing, so a refused request costs nothing at all.
-    Check("K8b the gate precedes the capture call",
-        profileRoute.IndexOf("CaptureLimits.TooSoon", StringComparison.Ordinal) >= 0
-        && profileRoute.IndexOf("CaptureLimits.TooSoon", StringComparison.Ordinal)
-           < profileRoute.IndexOf("CaptureVsdWindow()", StringComparison.Ordinal));
-    // K8c · the stamp must be its OWN. Sharing the capture route's would make this gate fire
-    // against the widget's 250 ms capture timer, so a 4 s profile poll would land inside the
-    // window about 40% of the time and drop to the icon grid — a flicker introduced by the
-    // fix for a flicker, which is this PR's recurring shape.
-    Check("K8c the profile route's stamp is not the capture route's",
-        profileRoute.Contains("_lastProfileFrameMs")
-        && !profileRoute.Contains("_lastCaptureTicks")
-        && !profileRoute.Contains("_lastCaptureMs"));
-    Check("K8d and the stamp only advances when a frame was actually shipped",
-        CaseBody(host, "case \"sd-profile\":").Contains("_lastProfileFrameMs = frameNow;"));
+    var clean = new System.Text.StringBuilder(body.Length);
+    for (var i = 0; i < body.Length; i++)
+    {
+        // Line comment
+        if (body[i] == '/' && i + 1 < body.Length && body[i + 1] == '/')
+        {
+            while (i < body.Length && body[i] != '\n') i++;
+            clean.Append('\n');
+            continue;
+        }
+        // Block comment
+        if (body[i] == '/' && i + 1 < body.Length && body[i + 1] == '*')
+        {
+            i += 2;
+            while (i + 1 < body.Length && !(body[i] == '*' && body[i + 1] == '/')) i++;
+            i++;
+            clean.Append(' ');
+            continue;
+        }
+        // String or interpolated string — replaced by a placeholder so a `return` inside one
+        // is not read as a statement, and so braces inside it cannot confuse anything later.
+        if (body[i] == '"')
+        {
+            i++;
+            while (i < body.Length && body[i] != '"')
+            {
+                if (body[i] == '\\') i++;
+                i++;
+            }
+            clean.Append("\"\"");
+            continue;
+        }
+        clean.Append(body[i]);
+    }
+
+    var found = new List<string>();
+    foreach (System.Text.RegularExpressions.Match m in
+             System.Text.RegularExpressions.Regex.Matches(clean.ToString(), @"\breturn\b[^;]*;"))
+    {
+        var stmt = System.Text.RegularExpressions.Regex.Replace(m.Value, @"\s+", " ").Trim();
+        found.Add(stmt);
+    }
+    return found;
 }
 
 /// One `case` label's body, up to its `break`. Scopes a claim about the sd-profile route to

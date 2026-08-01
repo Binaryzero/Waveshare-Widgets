@@ -574,6 +574,12 @@ public sealed class StreamDeckBridge
         var nowMs = Environment.TickCount64;
         if (CaptureLimits.TooSoon(_lastCaptureMs, nowMs))
             return _lastCaptureResult;   // reuse, never "unavailable" — see below
+        // Stamped now AND again when the work finishes. Stamping only here bounds how often a
+        // capture may START, which is not the same as leaving the UI thread idle between
+        // them: a capture near the four-megapixel ceiling can itself exceed the floor, and
+        // then the next request is already allowed the instant this one returns — back-to-back
+        // captures with no gap, which is the condition the floor exists to prevent. Stamped
+        // here as well so an early return below still counts as an attempt.
         _lastCaptureMs = nowMs;
 
         try
@@ -641,6 +647,14 @@ public sealed class StreamDeckBridge
             // fault would show pixels of unbounded age with nothing to say so; one cycle of
             // honest fallback is the cheaper error.
             return _lastCaptureResult = null;
+        }
+        finally
+        {
+            // The cooldown runs from when the work ENDED. Every path out of the try — a
+            // frame, a refusal, a throw — leaves at least the floor before the next capture
+            // may begin, so a caller cannot keep the UI thread continuously busy by asking
+            // again the moment a slow capture returns.
+            _lastCaptureMs = Environment.TickCount64;
         }
     }
 

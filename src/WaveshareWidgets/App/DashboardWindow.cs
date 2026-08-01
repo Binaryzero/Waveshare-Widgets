@@ -314,34 +314,26 @@ public sealed class DashboardWindow : Form
                     // Live mode: also ship the VSD window's current pixels so dynamic key
                     // faces (weather, statuses) mirror in real time; null capture (window
                     // missing / GPU refused PrintWindow) leaves the icon grid as fallback.
-                    // Rate-limited on its OWN stamp, not the bridge's. The bridge throttle
-                    // stops a repeat PrintWindow but then hands back the cached frame, which
-                    // this route embeds in full — and unlike sd-capture there is no `have`
-                    // hash here to answer "unchanged" with, so a tight poll would make the UI
-                    // thread base64-serialize a maximum-sized frame through
-                    // PostWebMessageAsJson without bound. Bounding the capture but not the
-                    // shipping of it left the tight-poll path open by another route.
-                    //
-                    // A separate stamp is the whole point: sharing the bridge's would make
-                    // this gate fire against the capture timer's 250 ms poll, so a 4 s profile
-                    // poll would land inside the window about 40% of the time and drop to the
-                    // icon grid (the widget falls back whenever `capture` is absent). Measured
-                    // against when THIS route last shipped a frame, an honest 4 s poll always
-                    // passes and only a caller polling faster than the floor is refused.
+                    // Deliberately NOT rate-limited here — see the issue filed from this PR.
+                    // A shipping bound on this route was tried and reverted: the widget falls
+                    // back to the icon grid whenever `capture` is absent, so every version of
+                    // the gate turned a cost bound into a visible flicker. Gating on the
+                    // bridge's stamp flickered one widget against its own capture timer;
+                    // gating on a dashboard-wide stamp flickered a SECOND widget against the
+                    // first, worst at startup when both poll at once and neither has a frame
+                    // to preserve. Fixing that needs either per-requester state (which this
+                    // file rejects elsewhere, for reasons that apply here too) or a "throttled,
+                    // keep what you have" reply the widget understands — a protocol change,
+                    // not a limit.
                     if (message["live"]?.GetValue<bool>() ?? false)
                     {
-                        var frameNow = Environment.TickCount64;
-                        if (!CaptureLimits.TooSoon(_lastProfileFrameMs, frameNow)
-                            && _streamDeck.CaptureVsdWindow() is { } capture)
-                        {
-                            _lastProfileFrameMs = frameNow;
+                        if (_streamDeck.CaptureVsdWindow() is { } capture)
                             sdResult["capture"] = new JsonObject
                             {
                                 ["image"] = capture.DataUri,
                                 ["w"] = capture.W,
                                 ["h"] = capture.H,
                             };
-                        }
                     }
                     // Echoed so the shell can hand the reply to the frame that asked,
                     // the way fetch/ping/media/audio already do (#127).
@@ -842,12 +834,6 @@ public sealed class DashboardWindow : Form
 
     private long _lastCaptureTicks;
     private (string DataUri, int W, int H, string Hash)? _lastCapture;
-
-    /// <summary>When the sd-profile route last embedded a live frame.</summary>
-    /// <remarks>Deliberately not the bridge's stamp and not <see cref="_lastCaptureTicks"/>:
-    /// this bounds how often a FRAME IS SHIPPED on a route that cannot say "unchanged",
-    /// which is a different question from how often a capture is taken.</remarks>
-    private long _lastProfileFrameMs;
 
     /// <summary>
     /// Capture-only fast path for the live Stream Deck mirror: no profile re-parse, and no
