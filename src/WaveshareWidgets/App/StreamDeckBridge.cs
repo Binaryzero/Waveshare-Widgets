@@ -87,7 +87,11 @@ public sealed class StreamDeckBridge
         }
         catch (Exception ex)
         {
-            Log.Warn($"Stream Deck profile read failed: {ex.Message}");
+            // Name the exception TYPE and keep the message. This catch is why the defect
+            // above was invisible: everything it swallows presents to the user as "no
+            // Stream Deck", so the log is the only place the difference between "none
+            // installed" and "one profile parsed badly" can survive.
+            Log.Warn($"Stream Deck profile read failed ({ex.GetType().Name}): {ex.Message}");
         }
         return null;
     }
@@ -160,7 +164,7 @@ public sealed class StreamDeckBridge
         // VSD window shows the FULL grid, so dividing it by the bounding box lands clicks
         // on the wrong keys whenever the layout doesn't reach the last row/column.
         var (rows, cols) = (minRows, minCols);
-        var (sizeA, sizeB) = ReadDeviceSize(manifest);
+        var (sizeA, sizeB) = DeckManifest.ReadDeviceSize(manifest);
         var parsedTotal = buttons.Count;
         if (sizeA is int a && sizeB is int b2)
         {
@@ -251,22 +255,6 @@ public sealed class StreamDeckBridge
     }
 
     /// <summary>Reads Device.Size from the profile manifest (axis meaning resolved by caller).</summary>
-    private static (int?, int?) ReadDeviceSize(JsonElement manifest)
-    {
-        if (!manifest.TryGetProperty("Device", out var device) ||
-            !device.TryGetProperty("Size", out var size))
-            return (null, null);
-
-        int? Read(params string[] names)
-        {
-            foreach (var key in names)
-                if (size.TryGetProperty(key, out var v) && v.TryGetInt32(out var i) && i > 0 && i <= 32)
-                    return i;
-            return null;
-        }
-        return (Read("Columns", "Cols", "Width"), Read("Rows", "Height"));
-    }
-
     private static void ParsePage(string pageDir, JsonElement pageManifest, List<DeckButton> buttons)
     {
         if (!pageManifest.TryGetProperty("Controllers", out var controllers) ||

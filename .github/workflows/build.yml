@@ -87,6 +87,14 @@ jobs:
       - name: Stream Deck icon paths
         run: dotnet run --project tools/StreamDeckPaths
 
+      # A profile is third-party data from software this app does not control, and
+      # System.Text.Json's TryGetProperty THROWS on a non-object element. ReadProfile
+      # catches everything, so `"Size": "5x3"` did not degrade to grid inference — it
+      # reported the deck as unavailable. An empty Control Deck is this project's recurring
+      # field failure, so a path that produces one silently is worth a probe of its own.
+      - name: Deck manifest shapes
+        run: dotnet run --project tools/DeckManifest
+
       # The proxy forwards widget-chosen headers to loopback and LAN targets, and its
       # browser-grade defaults only fill GAPS — so a forwarded name replaces the host's
       # honest value rather than adding to it. A local service that trusts fetch metadata
