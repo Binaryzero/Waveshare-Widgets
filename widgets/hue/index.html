@@ -193,6 +193,10 @@
       if (entry && entry.success && entry.success.username) {
         username = entry.success.username;
         try { localStorage.setItem('hue-user-' + cfg.ip, username); } catch (e) { /* private mode */ }
+        // Fresh pairing restarts the relationship, so the remembered v2 capability goes
+        // with it — otherwise a bridge factory-reset down to v1 would be stuck asking for
+        // an API generation it no longer serves, with no way to re-probe.
+        try { localStorage.removeItem('hue-v2-' + cfg.ip); } catch (e) { /* private mode */ }
         document.getElementById('pair').style.display = 'none';
         begin();
       } else if (entry && entry.error && entry.error.type === 101) {
@@ -207,17 +211,43 @@
 
   // --- API mode probe ----------------------------------------------------------
 
-  // Probe CLIP v2 once per session: newer bridges answer 200 on /resource/room;
-  // anything else (404 on v1-only bridges, TLS/connection failure) locks in v1.
+  // A bridge that has ever answered CLIP v2 is remembered, per address. That memory is
+  // what stops the NETWORK deciding the transport.
+  //
+  // v1 is plain http and carries `username` in the path — and on this bridge `username`
+  // IS the CLIP v2 application key. So every route from v2 to v1 hands the key, and every
+  // later light command, to anyone watching the LAN. Both routes here used to be openable
+  // by a transport failure: two TypeErrors while polling, or one at probe time. A TypeError
+  // is precisely what an adjacent attacker interfering with TLS produces, so the widget
+  // was taking instruction on its own security properties from the party it was meant to
+  // be protected from.
+  //
+  // Cleared on pairing, which is the one legitimate way this relationship restarts (a
+  // factory-reset bridge invalidates the stored username anyway).
+  const v2Key = () => 'hue-v2-' + cfg.ip;
+  const knownV2 = () => { try { return localStorage.getItem(v2Key()) === '1'; } catch (e) { return false; } };
+  const rememberV2 = () => { try { localStorage.setItem(v2Key(), '1'); } catch (e) { /* private mode */ } };
+
+  // Probe CLIP v2 once per session: newer bridges answer 200 on /resource/room; a bridge
+  // that ANSWERS with anything else is telling us it is v1, which is the bridge speaking
+  // rather than the network. A connection failure is not an answer — for an address never
+  // seen on v2 it is almost certainly an old bridge with no https at all (the user's own
+  // LAN, and the case the finding explicitly excludes), but for one that HAS spoken v2 it
+  // proves nothing except that something is in the way.
   async function begin() {
     if (mode === null) {
-      try {
-        const res = await v2fetch('/resource/room');
-        mode = res.status === 200 ? 'v2' : 'v1';
-      } catch (e) {
-        mode = 'v1';
+      if (knownV2()) {
+        mode = 'v2';   // settled by a previous successful v2 answer; not re-openable here
+      } else {
+        try {
+          const res = await v2fetch('/resource/room');
+          mode = res.status === 200 ? 'v2' : 'v1';
+          if (mode === 'v2') rememberV2();
+        } catch (e) {
+          mode = 'v1';
+        }
       }
-      WW.log('hue: bridge API mode ' + mode);
+      WW.log('hue: bridge API mode ' + mode + (knownV2() ? ' (v2 confirmed previously)' : ''));
     }
     startPolling();
   }
@@ -233,7 +263,6 @@
     pollTimer = setInterval(poll, 4000);
   }
 
-  let v2Failures = 0; // consecutive CLIP v2 transport failures → demote to v1
   let polling = false; // slow polls must not overlap the 4 s interval
 
   async function poll() {
@@ -250,25 +279,21 @@
     let rooms;
     try {
       rooms = mode === 'v2' ? await pollV2() : await pollV1();
-      v2Failures = 0;
+      if (mode === 'v2') rememberV2();
     } catch (e) {
-      // A TypeError is the fetch transport layer (TLS/connection), not a bridge
-      // reply. If v2 transport keeps failing, drop to v1 (plain http) for this
-      // session rather than erroring every cycle — bridge API errors (revoked
-      // key etc.) are Error, not TypeError, and still surface below.
-      if (mode === 'v2' && e instanceof TypeError && ++v2Failures >= 2) {
-        mode = 'v1';
-        WW.log('hue: CLIP v2 transport failing (' + (e.message || e) + '); falling back to v1');
-        try {
-          rooms = await pollV1();
-        } catch (e2) {
-          showMessage('Hue Bridge unreachable', cfg.ip + ' — ' + (e2.message || e2));
-          return;
-        }
-      } else {
-        showMessage('Hue Bridge unreachable', cfg.ip + ' — ' + (e.message || e));
-        return;
-      }
+      // No demotion here, deliberately. This used to drop to v1 after two TypeErrors, and
+      // a TypeError is the fetch TRANSPORT layer — exactly what someone interfering with
+      // TLS on the LAN produces. The fallback then put the Hue application key and every
+      // subsequent light command on plaintext http for the rest of the session, with no
+      // way back short of a reload: a failure the attacker can cause, choosing the
+      // security properties of everything after it.
+      //
+      // A bridge that speaks CLIP v2 keeps being asked over CLIP v2. When v2 is failing
+      // the tile says the bridge is unreachable, which is the same thing it says for every
+      // other failure and is true. v1-only bridges are untouched — they never reach this
+      // branch, because they were never in v2 mode.
+      showMessage('Hue Bridge unreachable', cfg.ip + ' — ' + (e.message || e));
+      return;
     }
     document.getElementById('message').style.display = 'none';
     render(rooms);
