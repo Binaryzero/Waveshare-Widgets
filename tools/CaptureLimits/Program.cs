@@ -77,6 +77,21 @@ Check("K10g an end before its own start is not believed",
     !CaptureLimits.WouldExceedDutyCycle(1000, 900, 1001));
 Check("K10h a clock that moved backwards does not block capture",
     !CaptureLimits.WouldExceedDutyCycle(1000, 1060, 900));
+// K10i · a SUSPENSION between the two stamps. TickCount64 is GetTickCount64, which counts
+// sleep, so a lid closed mid-capture reads back as a capture that took as long as the nap —
+// large, ordered, and therefore invisible to every check above. Used as a delay it freezes
+// the deck on its pre-suspend frame for another nap's worth of time, which is the exact
+// failure K3 exists to prevent, arriving by a route K3 cannot see.
+Check("K10i a 30-minute suspend mid-capture does not freeze the deck afterwards",
+    !CaptureLimits.WouldExceedDutyCycle(1000, 1000 + 30 * 60 * 1000, 1000 + 30 * 60 * 1000 + 1),
+    "resumes immediately, not after another 30 minutes");
+Check("K10j the cap sits above any real capture and below a plausible nap",
+    CaptureLimits.MaxPlausibleCaptureMs > 500 && CaptureLimits.MaxPlausibleCaptureMs <= 10_000,
+    $"{CaptureLimits.MaxPlausibleCaptureMs} ms");
+// ...and the cap does not quietly disable the bound for durations that ARE real.
+Check("K10k a slow but plausible capture is still duty-cycle limited",
+    CaptureLimits.WouldExceedDutyCycle(1000, 1000 + CaptureLimits.MaxPlausibleCaptureMs,
+        1000 + CaptureLimits.MaxPlausibleCaptureMs + 1));
 
 Console.WriteLine("Size");
 
@@ -128,13 +143,18 @@ if (bridge is null)
 else
 {
     var code = File.ReadAllText(bridge);
+    // Everything asserting that a line of CODE exists reads the stripped text, so a guard
+    // that has been commented out cannot satisfy its own check. (K6d below is the exception
+    // and must stay on the raw text: it locates warnings BY their message, which stripping
+    // removes along with every other string literal.)
+    var src = StripCode(code);
     Check("K6 the capture checks the window size before allocating a bitmap",
-        code.Contains("CaptureLimits.SaneSize(rect.Right, rect.Bottom)")
-        && code.IndexOf("CaptureLimits.SaneSize", StringComparison.Ordinal)
-           < code.IndexOf("new Bitmap(", StringComparison.Ordinal));
-    Check("K6b it enforces the rate floor", code.Contains("CaptureLimits.TooSoon(_lastCaptureMs"));
+        src.Contains("CaptureLimits.SaneSize(rect.Right, rect.Bottom)")
+        && src.IndexOf("CaptureLimits.SaneSize", StringComparison.Ordinal)
+           < src.IndexOf("new Bitmap(", StringComparison.Ordinal));
+    Check("K6b it enforces the rate floor", src.Contains("CaptureLimits.TooSoon(_lastCaptureMs"));
     Check("K6c and it refuses an oversized encoded frame",
-        code.Contains("CaptureLimits.EncodedTooLarge(ms.Length)"));
+        src.Contains("CaptureLimits.EncodedTooLarge(ms.Length)"));
     // K6d · the two limits keep SEPARATE one-time-log latches. Sharing one means whichever
     // trips first silences the other for the process lifetime — and these warnings are the
     // only reason a refused capture is visible at all, so a silenced one is a refusal that
@@ -144,13 +164,16 @@ else
     // widget with {available:false} and the deck falls back to icons — and because two
     // callers poll (profile poll and capture timer), the second is always throttled when
     // their intervals coincide, so the fallback recurs rather than blipping.
+    // Matched against the STATEMENT, not against the trailing comment that used to follow it
+    // — `// reuse` was part of the assertion, so the check could have been satisfied by the
+    // comment alone. K7 is what actually pins this down; K6e is kept as a cheap floor.
     Check("K6e a throttled capture returns the cached frame instead of null",
-        code.Contains("return _lastCaptureResult;   // reuse"));
+        src.Contains("return _lastCaptureResult;"));
     // ...and the cache is cleared on every DEFINITE failure, or a deck that really went
     // away would be reported as present forever.
     Check("K6f every definite failure clears the cached frame",
-        code.Split("return _lastCaptureResult = null;").Length - 1 >= 5,
-        (code.Split("return _lastCaptureResult = null;").Length - 1) + " clearing returns");
+        src.Split("return _lastCaptureResult = null;").Length - 1 >= 5,
+        (src.Split("return _lastCaptureResult = null;").Length - 1) + " clearing returns");
 
     // K7 · the invariant, not a list of sites. K6f counts clearing returns, which says
     // nothing about the returns it did NOT count — and that is exactly how the uniform-bitmap
@@ -209,7 +232,11 @@ else
 if (bridge is not null)
 {
     var code2 = File.ReadAllText(bridge);
-    var capture = MethodBody(code2, "public (string DataUri, int W, int H, string Hash)? CaptureVsdWindow()");
+    // Stripped of comments and strings BEFORE any of these look at it. Searching the raw text
+    // meant commenting a line out left the substring in place and the check stayed green — so
+    // K9/K9b/K9c were asserting that the wiring was *described*, not that it was there.
+    var capture = StripCode(
+        MethodBody(code2, "public (string DataUri, int W, int H, string Hash)? CaptureVsdWindow()"));
     Check("K9 setup: the capture method body was located", capture.Length > 0);
     var fin = capture.LastIndexOf("finally", StringComparison.Ordinal);
     Check("K9 the capture records when the work FINISHED, in a finally",
@@ -231,6 +258,22 @@ if (bridge is not null)
 /// whitespace normalised, so the enumeration does not depend on how the source is formatted.
 /// Each entry reads `return <expr-prefix>;` with runs of whitespace collapsed to one space.
 static List<string> ReturnStatements(string body)
+{
+    var found = new List<string>();
+    foreach (System.Text.RegularExpressions.Match m in
+             System.Text.RegularExpressions.Regex.Matches(StripCode(body), @"\breturn\b[^;]*;"))
+    {
+        var stmt = System.Text.RegularExpressions.Regex.Replace(m.Value, @"\s+", " ").Trim();
+        found.Add(stmt);
+    }
+    return found;
+}
+
+/// C# with comments and string literals removed, so a check for a line of code cannot be
+/// satisfied by that line appearing in a comment. K9 originally searched the raw method text,
+/// and commenting out the assignment it looks for left the substring in place and the check
+/// green — the guard was asserting on its own documentation.
+static string StripCode(string body)
 {
     var clean = new System.Text.StringBuilder(body.Length);
     for (var i = 0; i < body.Length; i++)
@@ -266,15 +309,7 @@ static List<string> ReturnStatements(string body)
         }
         clean.Append(body[i]);
     }
-
-    var found = new List<string>();
-    foreach (System.Text.RegularExpressions.Match m in
-             System.Text.RegularExpressions.Regex.Matches(clean.ToString(), @"\breturn\b[^;]*;"))
-    {
-        var stmt = System.Text.RegularExpressions.Regex.Replace(m.Value, @"\s+", " ").Trim();
-        found.Add(stmt);
-    }
-    return found;
+    return clean.ToString();
 }
 
 /// One `case` label's body, up to its `break`. Scopes a claim about the sd-profile route to

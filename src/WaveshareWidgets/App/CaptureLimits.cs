@@ -90,8 +90,31 @@ public static class CaptureLimits
         if (lastStartMs <= 0 || lastEndMs < lastStartMs || nowMs < lastEndMs)
             return false;
         var duration = lastEndMs - lastStartMs;
+        // A duration longer than any real capture is not a measurement of work — it is a
+        // measurement of a SUSPENSION that happened to fall between the two stamps.
+        // Environment.TickCount64 is GetTickCount64, whose elapsed time includes sleep and
+        // hibernate (that is why QueryUnbiasedInterruptTime exists as a separate API), so a
+        // lid closed mid-capture reads back as a capture that took as long as the nap. Used
+        // as a delay, that refuses every capture for another nap's worth of time and the deck
+        // sits on its pre-suspend frame — the wedge this whole file is written to avoid.
+        //
+        // Capped rather than measured with an unbiased clock on purpose: this class is pure
+        // arithmetic, which is the only reason it can be driven from a probe at all, and
+        // reaching for a Windows timing API here would trade that away to handle a case the
+        // cap already handles. An implausible duration simply does not delay anything; the
+        // start-to-start floor still applies, and a capture slow enough to be capped is
+        // already self-limiting, since it blocks the UI thread it would be competing with.
+        if (duration > MaxPlausibleCaptureMs)
+            return false;
         return nowMs - lastEndMs < duration;
     }
+
+    /// <summary>Longest duration still believed to be a capture rather than a suspension.</summary>
+    /// <remarks>A four-megapixel capture — the largest this file permits — is a PrintWindow, a
+    /// sampled hash and a JPEG encode, which is far below this even on slow hardware. Erring
+    /// LOW is the safe direction: too low only forgoes the duty-cycle delay for a freakishly
+    /// slow capture, while too high leaves the deck frozen after a resume.</remarks>
+    public const int MaxPlausibleCaptureMs = 2000;
 
     /// <summary>Is a window of this size worth capturing?</summary>
     public static bool SaneSize(int width, int height) =>
