@@ -77,6 +77,13 @@ else
     Check("K6b it enforces the rate floor", code.Contains("CaptureLimits.TooSoon(_lastCaptureMs"));
     Check("K6c and it refuses an oversized encoded frame",
         code.Contains("CaptureLimits.EncodedTooLarge(ms.Length)"));
+    // K6d · the two limits keep SEPARATE one-time-log latches. Sharing one means whichever
+    // trips first silences the other for the process lifetime — and these warnings are the
+    // only reason a refused capture is visible at all, so a silenced one is a refusal that
+    // presents as the deck simply not working.
+    Check("K6d each limit has its own one-time warning flag",
+        code.Contains("_loggedOversizeWindow") && code.Contains("_loggedOversizeFrame")
+        && !code.Contains("_loggedOversizeCapture"));
 }
 
 static string? FindUpwards(string relative)

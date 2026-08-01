@@ -562,9 +562,9 @@ public sealed class StreamDeckBridge
         // paid the cost it exists to avoid.
         if (!CaptureLimits.SaneSize(rect.Right, rect.Bottom))
         {
-            if (!_loggedOversizeCapture)
+            if (!_loggedOversizeWindow)
             {
-                _loggedOversizeCapture = true;
+                _loggedOversizeWindow = true;
                 Log.Warn($"Stream Deck: window is {rect.Right}x{rect.Bottom}; too large to capture");
             }
             return null;
@@ -624,9 +624,9 @@ public sealed class StreamDeckBridge
             bmp.Save(ms, codec, prms);
             if (CaptureLimits.EncodedTooLarge(ms.Length))
             {
-                if (!_loggedOversizeCapture)
+                if (!_loggedOversizeFrame)
                 {
-                    _loggedOversizeCapture = true;
+                    _loggedOversizeFrame = true;
                     Log.Warn($"Stream Deck: encoded frame is {ms.Length} bytes; not sending");
                 }
                 return null;
@@ -641,7 +641,12 @@ public sealed class StreamDeckBridge
     }
 
     private static bool _loggedBlankCapture;
-    private static bool _loggedOversizeCapture;
+    // One flag per limit, not one for "oversize". They are different conditions with
+    // different fixes — an enormous window versus an enormous encode of an ordinary one —
+    // and sharing the latch means whichever trips first silences the other permanently.
+    // These warnings exist precisely because this path is invisible otherwise.
+    private static bool _loggedOversizeWindow;
+    private static bool _loggedOversizeFrame;
     private static long _lastCaptureMs;
 
     /// <summary>Fast sampled FNV-1a over the raw pixel buffer (change detection, not crypto).</summary>
