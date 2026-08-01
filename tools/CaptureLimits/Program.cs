@@ -47,6 +47,37 @@ Check("K3 the first capture is never too soon", !CaptureLimits.TooSoon(0, 5000))
 Check("K3b a negative or absent stamp is not too soon", !CaptureLimits.TooSoon(-1, 5000));
 Check("K3c a clock that moved backwards does not block capture", !CaptureLimits.TooSoon(9000, 1000));
 
+// K10 · the two bounds COMPOSED, which is the thing neither one alone tests. K1-K3 drive
+// TooSoon in isolation and pass regardless of how the capture stamps its clock, so they said
+// nothing about the version that measured the floor from completion — which refused the
+// widget's own supported poll as soon as a capture took longer than 50 ms. These drive the
+// pair the way the capture calls it.
+static bool MayCapture(long lastStart, long lastEnd, long now) =>
+    !CaptureLimits.TooSoon(lastStart, now)
+    && !CaptureLimits.WouldExceedDutyCycle(lastStart, lastEnd, now);
+
+// The exact scenario: 150 ms poll, 60 ms capture. Fresh frames must land every 150 ms, not
+// every 300 ms.
+Check("K10 a 60 ms capture on the widget's fastest 150 ms poll is not refused",
+    MayCapture(1000, 1060, 1150));
+Check("K10b ...and the one after that is not refused either",
+    MayCapture(1150, 1210, 1300));
+// The other direction: an expensive capture must leave the UI thread idle. A capture that
+// takes as long as the floor cannot run back to back.
+Check("K10c a 150 ms capture cannot start again the instant it finishes",
+    !MayCapture(1000, 1150, 1160));
+Check("K10d ...and is allowed once its own duration has passed — a 50% duty cycle",
+    MayCapture(1000, 1150, 1300), "idle 1150-1300, next start 1300");
+// A cheap capture is governed by the start-to-start floor, not the duty cycle.
+Check("K10e a 5 ms capture is still held to the 100 ms floor",
+    !MayCapture(1000, 1005, 1050) && MayCapture(1000, 1005, 1100));
+// The nonsense states, same reasoning as K3: never wedge capture permanently.
+Check("K10f no capture yet is never refused", MayCapture(0, 0, 5000));
+Check("K10g an end before its own start is not believed",
+    !CaptureLimits.WouldExceedDutyCycle(1000, 900, 1001));
+Check("K10h a clock that moved backwards does not block capture",
+    !CaptureLimits.WouldExceedDutyCycle(1000, 1060, 900));
+
 Console.WriteLine("Size");
 
 // K4 · dimensions, checked before the bitmap is allocated.
@@ -181,12 +212,19 @@ if (bridge is not null)
     var capture = MethodBody(code2, "public (string DataUri, int W, int H, string Hash)? CaptureVsdWindow()");
     Check("K9 setup: the capture method body was located", capture.Length > 0);
     var fin = capture.LastIndexOf("finally", StringComparison.Ordinal);
-    Check("K9 the capture re-stamps the clock in a finally, so the floor follows the work",
-        fin >= 0 && capture[fin..].Contains("_lastCaptureMs = Environment.TickCount64;"));
-    // ...and still stamps up front, so an early return below the throttle counts as an attempt
-    // rather than leaving the previous stamp to authorise an immediate retry.
-    Check("K9b and it still stamps before starting",
-        fin >= 0 && capture[..fin].Contains("_lastCaptureMs = nowMs;"));
+    Check("K9 the capture records when the work FINISHED, in a finally",
+        fin >= 0 && capture[fin..].Contains("_lastCaptureEndMs = Environment.TickCount64;"));
+    // ...and the start stamp survives it. Overwriting _lastCaptureMs at completion is the
+    // version that turned the start-to-start floor into a completion-to-start one and refused
+    // the widget's own supported poll rate; the pair is what carries the duration.
+    Check("K9b and the START stamp is not overwritten at completion",
+        fin >= 0 && capture[..fin].Contains("_lastCaptureMs = nowMs;")
+        && !capture[fin..].Contains("_lastCaptureMs ="));
+    // K9c · the capture consults BOTH bounds. Either alone is a version this PR shipped and
+    // had to take back.
+    Check("K9c the capture checks the duty cycle as well as the floor",
+        capture.Contains("CaptureLimits.TooSoon(_lastCaptureMs")
+        && capture.Contains("CaptureLimits.WouldExceedDutyCycle(_lastCaptureMs, _lastCaptureEndMs"));
 }
 
 /// Every `return` statement in a block of C#, with comments and string literals removed and

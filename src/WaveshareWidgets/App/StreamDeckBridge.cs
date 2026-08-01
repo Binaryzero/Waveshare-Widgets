@@ -572,14 +572,15 @@ public sealed class StreamDeckBridge
         // Every caller polls, and the API invites polling — so the floor lives here rather
         // than in each of them, where the next caller would have to remember it.
         var nowMs = Environment.TickCount64;
-        if (CaptureLimits.TooSoon(_lastCaptureMs, nowMs))
+        // TWO bounds, because one gap cannot do both jobs. The start-to-start floor is what
+        // the honest caller is measured against — the widget's fastest supported poll is
+        // 150 ms and must never be refused. The duty-cycle bound is what protects the UI
+        // thread when a single capture is itself expensive: measuring the floor from
+        // completion instead would have refused that same 150 ms poll as soon as a capture
+        // took longer than 50 ms.
+        if (CaptureLimits.TooSoon(_lastCaptureMs, nowMs)
+            || CaptureLimits.WouldExceedDutyCycle(_lastCaptureMs, _lastCaptureEndMs, nowMs))
             return _lastCaptureResult;   // reuse, never "unavailable" — see below
-        // Stamped now AND again when the work finishes. Stamping only here bounds how often a
-        // capture may START, which is not the same as leaving the UI thread idle between
-        // them: a capture near the four-megapixel ceiling can itself exceed the floor, and
-        // then the next request is already allowed the instant this one returns — back-to-back
-        // captures with no gap, which is the condition the floor exists to prevent. Stamped
-        // here as well so an early return below still counts as an attempt.
         _lastCaptureMs = nowMs;
 
         try
@@ -650,11 +651,13 @@ public sealed class StreamDeckBridge
         }
         finally
         {
-            // The cooldown runs from when the work ENDED. Every path out of the try — a
-            // frame, a refusal, a throw — leaves at least the floor before the next capture
-            // may begin, so a caller cannot keep the UI thread continuously busy by asking
-            // again the moment a slow capture returns.
-            _lastCaptureMs = Environment.TickCount64;
+            // When the work ended, recorded but NOT folded into the start stamp. Together the
+            // two stamps say how long the last capture took, which is what the duty-cycle
+            // bound needs; overwriting _lastCaptureMs here instead would lose the start time
+            // and turn the start-to-start floor into a completion-to-start one, refusing the
+            // widget's own supported poll rate. Every path out of the try records it — a
+            // frame, a refusal, a throw — so a slow capture is always followed by idle time.
+            _lastCaptureEndMs = Environment.TickCount64;
         }
     }
 
@@ -687,6 +690,12 @@ public sealed class StreamDeckBridge
     /// </remarks>
     private static (string DataUri, int W, int H, string Hash)? _lastCaptureResult;
     private static long _lastCaptureMs;
+
+    /// <summary>When the last capture attempt finished.</summary>
+    /// <remarks>Kept alongside the start stamp rather than replacing it: the PAIR is what
+    /// gives the duty-cycle bound the last capture's duration, and either one alone answers
+    /// only half the question.</remarks>
+    private static long _lastCaptureEndMs;
 
     /// <summary>Fast sampled FNV-1a over the raw pixel buffer (change detection, not crypto).</summary>
     private static string HashBitmap(Bitmap bmp)

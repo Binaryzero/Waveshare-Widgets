@@ -60,6 +60,39 @@ public static class CaptureLimits
         return nowMs - lastMs < MinIntervalMs;
     }
 
+    /// <summary>Would starting a capture now leave the UI thread busy more than half the
+    /// time?</summary>
+    /// <remarks>
+    /// The second half of the rate limit, and it exists because a single fixed gap cannot
+    /// satisfy both things the floor has to do.
+    ///
+    /// Measuring the gap from when a capture STARTED bounds how often one may begin, but
+    /// leaves no idle time at all once a capture itself takes longer than the gap — the next
+    /// one is authorised the instant this one returns. Measuring it from when a capture ENDED
+    /// fixes that and breaks the honest caller instead: the widget supports a 150 ms poll, so
+    /// a 60 ms capture plus a 100 ms idle floor pushes the next allowed start to 160 ms and
+    /// the 150 ms poll is refused — fresh frames every 300 ms instead of every 150 ms.
+    ///
+    /// So the two are separate questions. <see cref="TooSoon"/> keeps the start-to-start
+    /// floor, which is what the honest caller is measured against; this bounds the DUTY CYCLE,
+    /// which is what the UI thread actually cares about. A capture may not begin until at
+    /// least its own duration has passed since the last one finished, so the thread is idle
+    /// at least half the time no matter how expensive a single capture becomes.
+    ///
+    /// The honest caller never meets it: a 60 ms capture on a 150 ms poll has 90 ms of idle
+    /// before the next tick, which is more than the 60 ms required.
+    /// </remarks>
+    public static bool WouldExceedDutyCycle(long lastStartMs, long lastEndMs, long nowMs)
+    {
+        // No capture yet, or stamps that cannot be believed (a resumed machine, an end before
+        // its own start). Same reasoning as TooSoon: refusing on nonsense would look exactly
+        // like the deck being broken.
+        if (lastStartMs <= 0 || lastEndMs < lastStartMs || nowMs < lastEndMs)
+            return false;
+        var duration = lastEndMs - lastStartMs;
+        return nowMs - lastEndMs < duration;
+    }
+
     /// <summary>Is a window of this size worth capturing?</summary>
     public static bool SaneSize(int width, int height) =>
         width > 0 && height > 0 && width <= MaxEdgePixels && height <= MaxEdgePixels
