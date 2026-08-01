@@ -122,3 +122,13 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   "could not load" stay distinguishable in both directions. Serves real decodable
   PNGs padded to exact byte counts, since the widget rejects anything that does not
   decode and a buffer of zeroes would fail for the wrong reason.
+- `huemode-run.js` — the Hue tile's API-generation choice (issue #112). v1 is plain http
+  and carries the bridge `username` in the path, and on this bridge that username IS the
+  CLIP v2 application key — so any route from v2 to v1 discloses it. Both routes were
+  openable by a `TypeError`, which is what interfering with TLS produces. The witness is
+  the REQUEST LOG rather than the render: what matters is which URLs the tile was willing
+  to send the key to. Covers both demotion routes separately (H6 isolates the probe, H7
+  the polling path — H2-H4 cannot tell them apart, because a probe that demotes never
+  lets polling reach v2) and, in the other direction, that a genuinely v1-only bridge
+  still works. Bridge traffic is proxy-only, so the fixture answers `ww-fetch` messages
+  rather than routing network requests.

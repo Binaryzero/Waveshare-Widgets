@@ -66,7 +66,7 @@
   }
   .scenes .btn:active { border-color: var(--accent); color: var(--accent); }
   /* Pairing / message overlays: .state-card anatomy, shown via inline display. */
-  #pair, #message { position: fixed; inset: 0; display: none; }
+  #pair, #message, #legacy { position: fixed; inset: 0; display: none; }
   #pair .state-title, #message .state-title { font-size: clamp(13px, 5vh, 19px); }
   #pairBtn { font-size: clamp(14px, 5.5vh, 22px); padding: 10px 30px; touch-action: manipulation; }
 </style>
@@ -79,6 +79,11 @@
     <small id="pairHint" class="state-body"></small>
   </div>
   <div id="message" class="state-card"></div>
+  <div id="legacy" class="state-card">
+    <div class="state-title">This bridge did not answer over HTTPS</div>
+    <button id="legacyBtn" class="btn">Use the legacy API anyway</button>
+    <small id="legacyHint" class="state-body"></small>
+  </div>
 
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
@@ -193,6 +198,11 @@
       if (entry && entry.success && entry.success.username) {
         username = entry.success.username;
         try { localStorage.setItem('hue-user-' + cfg.ip, username); } catch (e) { /* private mode */ }
+        // Fresh pairing restarts the relationship, so the remembered v2 capability goes
+        // with it — otherwise a bridge factory-reset down to v1 would be stuck asking for
+        // an API generation it no longer serves, with no way to re-probe.
+        try { localStorage.removeItem('hue-v2-' + cfg.ip); } catch (e) { /* private mode */ }
+        try { localStorage.removeItem('hue-v1ok-' + cfg.ip); } catch (e) { /* private mode */ }
         document.getElementById('pair').style.display = 'none';
         begin();
       } else if (entry && entry.error && entry.error.type === 101) {
@@ -207,20 +217,103 @@
 
   // --- API mode probe ----------------------------------------------------------
 
-  // Probe CLIP v2 once per session: newer bridges answer 200 on /resource/room;
-  // anything else (404 on v1-only bridges, TLS/connection failure) locks in v1.
+  // A bridge that has ever answered CLIP v2 is remembered, per address. That memory is
+  // what stops the NETWORK deciding the transport.
+  //
+  // v1 is plain http and carries `username` in the path — and on this bridge `username`
+  // IS the CLIP v2 application key. So every route from v2 to v1 hands the key, and every
+  // later light command, to anyone watching the LAN. Both routes here used to be openable
+  // by a transport failure: two TypeErrors while polling, or one at probe time. A TypeError
+  // is precisely what an adjacent attacker interfering with TLS produces, so the widget
+  // was taking instruction on its own security properties from the party it was meant to
+  // be protected from.
+  //
+  // Cleared on pairing, which is the one legitimate way this relationship restarts (a
+  // factory-reset bridge invalidates the stored username anyway).
+  const v2Key = () => 'hue-v2-' + cfg.ip;
+  const knownV2 = () => { try { return localStorage.getItem(v2Key()) === '1'; } catch (e) { return false; } };
+  const rememberV2 = () => { try { localStorage.setItem(v2Key(), '1'); } catch (e) { /* private mode */ } };
+  // Separately: this address may use the legacy API even though we could not confirm HTTPS.
+  // Only ever set by the user tapping the button below — never by a failure.
+  const v1okKey = () => 'hue-v1ok-' + cfg.ip;
+  const legacyAllowed = () => { try { return localStorage.getItem(v1okKey()) === '1'; } catch (e) { return false; } };
+  const allowLegacy = () => { try { localStorage.setItem(v1okKey(), '1'); } catch (e) { /* private mode */ } };
+
+  // Probe CLIP v2. Only a 200 puts this session on v2; every other outcome — any other
+  // status, or no answer at all — requires the user to say so before the key touches http.
+  //
+  // That asymmetry is the whole rule, and it is narrower than "the bridge decides". The v2
+  // probe rides `insecure: true`, and the host accepts any certificate for a LAN address
+  // (RemoteCertificateValidationCallback => true), so the channel is unauthenticated: an
+  // on-LAN attacker impersonating the bridge can return 404 as easily as it can drop the
+  // connection. An ANSWER is therefore no evidence of who answered, and "the bridge told us
+  // it is v1" was never something this code could actually observe.
+  //
+  // But only one direction needs authorization. A 200 keeps the key on TLS, so a forged 200
+  // buys an attacker nothing it does not already have. A non-200 moves the key to cleartext,
+  // and that is the move no unauthenticated party gets to make on the user's behalf.
+  const PROBE_RETRY_MS = 15000;
+  let probeTimer = null;
+
   async function begin() {
-    if (mode === null) {
-      try {
-        const res = await v2fetch('/resource/room');
-        mode = res.status === 200 ? 'v2' : 'v1';
-      } catch (e) {
-        mode = 'v1';
-      }
-      WW.log('hue: bridge API mode ' + mode);
-    }
-    startPolling();
+    if (mode !== null) { startPolling(); return; }
+    if (knownV2()) { mode = 'v2'; startPolling(); return; }        // settled by a real v2 answer
+    if (legacyAllowed()) { mode = 'v1'; startPolling(); return; }  // settled by the user
+    await probeV2();
   }
+
+  async function probeV2() {
+    let confirmed = false;
+    try {
+      const res = await v2fetch('/resource/room');
+      confirmed = res.status === 200;
+    } catch (e) {
+      confirmed = false;
+    }
+    // The mode may have been settled WHILE this request was in flight — the button below
+    // can only cancel a pending timer, never a fetch already on the wire. A late answer
+    // arriving after that would either put the question back on screen seconds after the
+    // user answered it, or quietly move the session to v2 while v1 polling is already
+    // running. Whoever decided first decided.
+    if (mode !== null) return;
+    if (confirmed) {
+      clearTimeout(probeTimer);
+      probeTimer = null;
+      mode = 'v2';
+      rememberV2();
+      document.getElementById('legacy').style.display = 'none';
+      WW.log('hue: bridge API mode v2');
+      startPolling();
+      return;
+    }
+    // Ask — and KEEP TRYING while the question is on screen. A transient TLS failure would
+    // otherwise leave the tile with one way out: authorizing plaintext permanently, for a
+    // bridge that is about to come back on https. The offer stays available for bridges
+    // that really have no https, and resolves itself for the ones that do.
+    showLegacyChoice();
+    clearTimeout(probeTimer);
+    probeTimer = setTimeout(probeV2, PROBE_RETRY_MS);
+  }
+
+  function showLegacyChoice() {
+    document.getElementById('rooms').innerHTML = '';
+    document.getElementById('message').style.display = 'none';
+    document.getElementById('legacy').style.display = 'flex';
+    document.getElementById('legacyHint').textContent =
+      cfg.ip + ' — still retrying HTTPS. The legacy API sends your Hue key unencrypted over '
+      + 'your network; older bridges support nothing else. If this bridge worked before, '
+      + 'something is interfering with HTTPS and you should not accept.';
+  }
+
+  document.getElementById('legacyBtn').addEventListener('click', () => {
+    clearTimeout(probeTimer);
+    probeTimer = null;
+    allowLegacy();
+    document.getElementById('legacy').style.display = 'none';
+    mode = 'v1';
+    WW.log('hue: legacy API allowed by the user for ' + cfg.ip);
+    startPolling();
+  });
 
   // --- polling → normalized room model ----------------------------------------
   // Both API generations are normalized into one room shape so render() and the
@@ -233,7 +326,6 @@
     pollTimer = setInterval(poll, 4000);
   }
 
-  let v2Failures = 0; // consecutive CLIP v2 transport failures → demote to v1
   let polling = false; // slow polls must not overlap the 4 s interval
 
   async function poll() {
@@ -250,25 +342,21 @@
     let rooms;
     try {
       rooms = mode === 'v2' ? await pollV2() : await pollV1();
-      v2Failures = 0;
+      if (mode === 'v2') rememberV2();
     } catch (e) {
-      // A TypeError is the fetch transport layer (TLS/connection), not a bridge
-      // reply. If v2 transport keeps failing, drop to v1 (plain http) for this
-      // session rather than erroring every cycle — bridge API errors (revoked
-      // key etc.) are Error, not TypeError, and still surface below.
-      if (mode === 'v2' && e instanceof TypeError && ++v2Failures >= 2) {
-        mode = 'v1';
-        WW.log('hue: CLIP v2 transport failing (' + (e.message || e) + '); falling back to v1');
-        try {
-          rooms = await pollV1();
-        } catch (e2) {
-          showMessage('Hue Bridge unreachable', cfg.ip + ' — ' + (e2.message || e2));
-          return;
-        }
-      } else {
-        showMessage('Hue Bridge unreachable', cfg.ip + ' — ' + (e.message || e));
-        return;
-      }
+      // No demotion here, deliberately. This used to drop to v1 after two TypeErrors, and
+      // a TypeError is the fetch TRANSPORT layer — exactly what someone interfering with
+      // TLS on the LAN produces. The fallback then put the Hue application key and every
+      // subsequent light command on plaintext http for the rest of the session, with no
+      // way back short of a reload: a failure the attacker can cause, choosing the
+      // security properties of everything after it.
+      //
+      // A bridge that speaks CLIP v2 keeps being asked over CLIP v2. When v2 is failing
+      // the tile says the bridge is unreachable, which is the same thing it says for every
+      // other failure and is true. v1-only bridges are untouched — they never reach this
+      // branch, because they were never in v2 mode.
+      showMessage('Hue Bridge unreachable', cfg.ip + ' — ' + (e.message || e));
+      return;
     }
     document.getElementById('message').style.display = 'none';
     render(rooms);
