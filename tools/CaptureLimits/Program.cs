@@ -109,9 +109,29 @@ else
     Check("K6f every definite failure clears the cached frame",
         code.Split("return _lastCaptureResult = null;").Length - 1 >= 5,
         (code.Split("return _lastCaptureResult = null;").Length - 1) + " clearing returns");
-    Check("K6d each limit has its own one-time warning flag",
-        code.Contains("_loggedOversizeWindow") && code.Contains("_loggedOversizeFrame")
-        && !code.Contains("_loggedOversizeCapture"));
+    // Checked PER SITE, not by "both names appear somewhere". The weaker version passed
+    // with both branches using one latch and the other field left declared and unused —
+    // the regression K6d exists for, surviving the probe named after it.
+    var windowGuard = GuardFor(code, "window is {rect.Right}x{rect.Bottom}; too large");
+    var frameGuard = GuardFor(code, "encoded frame is {ms.Length} bytes");
+    Check("K6d setup: both warning sites were located",
+        windowGuard.Length > 0 && frameGuard.Length > 0);
+    Check("K6d the oversized-window warning is guarded by its own latch",
+        windowGuard.Contains("_loggedOversizeWindow") && !windowGuard.Contains("_loggedOversizeFrame"),
+        windowGuard.Trim());
+    Check("K6d2 the oversized-frame warning is guarded by a DIFFERENT one",
+        frameGuard.Contains("_loggedOversizeFrame") && !frameGuard.Contains("_loggedOversizeWindow"),
+        frameGuard.Trim());
+}
+
+/// The `if (!_logged…)` guard that precedes a given warning, so each site can be checked on
+/// its own rather than by whether a name appears anywhere in the file.
+static string GuardFor(string code, string warning)
+{
+    var at = code.IndexOf(warning, StringComparison.Ordinal);
+    if (at < 0) return "";
+    var from = code.LastIndexOf("if (!_logged", at, StringComparison.Ordinal);
+    return from < 0 ? "" : code[from..at];
 }
 
 static string? FindUpwards(string relative)
