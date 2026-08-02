@@ -120,6 +120,7 @@
   let boundaryTimer = null;
   let pollAnchor = 0;      // when the current wait began: the last poll attempt's end
   let failures = 0;        // consecutive failed polls; stretches the interval
+  let polled = false;      // has a request ever actually been ATTEMPTED?
   let started = false;
   let inFlight = false;
   let answered = false;   // has a cache read or a response actually happened yet?
@@ -183,7 +184,12 @@
         if (!cve || !added) continue;
         clean.push({ vendor: String(v.vendor || ''), product: String(v.product || ''), cve, added });
       }
-      if (!clean.length) return;
+      // An EMPTY cached array is a real answer that was written by a successful poll —
+      // saveCache runs nowhere else — so restoring it keeps the authoritative "no
+      // entries" on screen instead of falling back to a spinner and then, if the next
+      // request fails, to "Feed unavailable". A NON-empty array that validates to
+      // nothing is the corrupt case, and only that one is dropped.
+      if (cached.entries.length && !clean.length) return;
       entries = clean;
       fetchedAt = Number(cached.at) || 0;
       answered = true;
@@ -217,6 +223,7 @@
     if (document.hidden) { schedule(); return; }
     if (inFlight) { schedule(); return; }
     inFlight = true;
+    polled = true;   // an ATTEMPT, not a success: the hidden branch above returns first
     // Neither the connection nor the body read is bounded on its own. The shim puts a
     // deadline on the HOST proxy tier, but the direct browser fetch it tries first has
     // none, and reading the body has none either — so a connection that opens and then
@@ -249,7 +256,7 @@
         bad.schema = true;
         throw bad;
       }
-      entries = json.vulnerabilities
+      const mapped = json.vulnerabilities
         .map((v) => ({
           vendor: String((v && v.vendorProject) || '').trim(),
           product: String((v && v.product) || '').trim(),
@@ -258,6 +265,18 @@
         }))
         .filter((v) => v.cve && v.added)
         .sort((a, b) => (a.added < b.added ? 1 : a.added > b.added ? -1 : 0));
+      // Checking the array's TYPE was not enough. A catalog that still arrives as an
+      // array of objects, with cveID or dateAdded renamed, maps and filters down to
+      // nothing — and that discarded the last good cache, cleared the backoff, and told
+      // the reader CISA had listed no vulnerabilities. Entries that went in and no
+      // entries that came out is a schema failure; only a genuinely empty array is an
+      // empty catalog.
+      if (json.vulnerabilities.length && !mapped.length) {
+        const bad = new Error('no entry in the response had a cveID and a dateAdded');
+        bad.schema = true;
+        throw bad;
+      }
+      entries = mapped;
       fetchedAt = Date.now();
       answered = true;
       failures = 0;
@@ -266,9 +285,15 @@
       render();
     } catch (e) {
       // Keep whatever we have on screen and mark it stale; only a cold start with no
-      // cache at all is a hard error worth taking the tile over.
+      // answer at all is a hard error worth taking the tile over.
+      //
+      // ANSWERED, not entries.length. A catalog that legitimately came back empty is an
+      // answer — the tile should go on saying so, dimmed — but testing for rows treated
+      // it as nothing to lose and replaced it with "Feed unavailable", which is a
+      // different and less true claim. Restoring that empty answer from the cache was
+      // only half the fix; this is the other half.
       failures++;
-      if (entries.length) {
+      if (answered) {
         document.body.classList.add('stale');
         render();
       } else {
@@ -364,7 +389,8 @@
       body.textContent = 'The CISA feed answered but listed no vulnerabilities.';
       st.append(icon, title, body);
       const pill = el('pill');
-      pill.textContent = 'Empty';
+      // Still the last real answer, but say when it stopped being refreshed.
+      pill.textContent = document.body.classList.contains('stale') ? 'Stale' : 'Empty';
       pill.className = 'pill muted';
       return;
     }
@@ -453,7 +479,13 @@
     // failing for one interval, every return to this page fired another request — paging
     // away and back walked straight past the backoff, which is exactly the situation the
     // backoff exists for.
-    if (Date.now() >= pollAnchor + pollDelay()) { clearTimeout(timer); tick(); }
+    // A widget that has never polled is overdue by definition. tick() returns early
+    // while the document is hidden, having armed the timer without asking for anything —
+    // so a tile that initialised on a hidden page has an anchor but no data, and the
+    // deadline test alone leaves it on the spinner for the whole interval, up to a day.
+    // (The previous test read fetchedAt, which is 0 on a cold start and so happened to
+    // cover this; measuring against the anchor is what dropped it.)
+    if (!polled || Date.now() >= pollAnchor + pollDelay()) { clearTimeout(timer); tick(); }
   });
 </script>
 </body>
