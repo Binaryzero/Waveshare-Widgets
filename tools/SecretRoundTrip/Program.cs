@@ -587,9 +587,13 @@ Check("P26 setup: the credential is stored encrypted", r2Sealed is not null && r
 // The editor's masked copy: the credential blanked, exactly what Mask produces.
 var r2Masked = LayoutWith(new JsonObject { ["apiToken"] = "" });
 SecretPolicy.Seal(r2Masked, r2Stored, _ => null);   // lookup has forgotten the widget
-Check("P26 a forgotten manifest lets a masked save wipe the stored credential",
-    Value(r2Masked, "apiToken") != r2Sealed,
-    "if this ever PASSES as equal, Seal grew its own protection and this probe is obsolete");
+// Seal DID grow its own protection, exactly as the note above anticipated. A widget the
+// lookup has forgotten declares nothing secret, so its stored envelope is now a demoted
+// value: RestoreIfUntouched, and a blank restores it. The masked-manifest snapshot merge
+// is therefore no longer the only thing standing between a forgotten manifest and a
+// destroyed credential — which is what makes deleting that machinery tractable.
+Check("P26 a forgotten manifest no longer wipes the stored credential",
+    Value(r2Masked, "apiToken") == r2Sealed, Value(r2Masked, "apiToken"));
 
 // ...and with the manifest retained — what MergeManifestSnapshot guarantees — the same
 // masked save is correctly understood as "untouched" and the ciphertext survives.
@@ -645,13 +649,37 @@ Check("P27e saving the masked layout keeps the credential rather than blanking i
 Check("P27f and it is now encrypted at rest, which the refusal alone never achieved",
     refusedAfter != Token && SecretStore.HasMarker(refusedAfter));
 
-// ---- P28 · #66: a demoted secret is handed to the widget as ciphertext ----------------
-// This pins a KNOWN GAP rather than a fix. When a manifest retypes a property
-// `secret` -> `text`, the stored envelope is not walked by Reveal and reaches the widget
-// verbatim. Three fixes were attempted in PR #65 and every one was worse than the bug —
-// the constraints are written up in issue #66. Asserting the current behaviour keeps the
-// gap honest: whoever changes it has to change this probe deliberately, and will find the
-// issue from here.
+// ---- P28z · demotion is discovered by DECRYPTABILITY, not by shape ---------------------
+// `dpapi:v1:<valid base64>` is a shape a FOREIGN envelope has — a layout copied from another
+// machine or account — and also one a user could type. Under a property the manifest does
+// not call secret, neither is ours: we cannot open it, so it is not our secret material and
+// blanking it would hide a real setting from the editor for no security benefit.
+// docs/SECRET-ADDRESSING.md states this as "decryptability, not shape"; without this probe
+// the two are indistinguishable in the demotion path and a swap to LooksLikeEnvelope passes
+// the whole suite.
+var shapedManifest = new WidgetManifest
+{
+    Id = "test.widget",
+    Name = "Test",
+    Properties = [new WidgetProperty { Name = "note", Label = "Note", Type = "text" }],
+};
+WidgetManifest? ShapedLookup(string id) => id == "test.widget" ? shapedManifest : null;
+var shaped = LayoutWith(new JsonObject { ["note"] = ForeignEnvelope });
+SecretPolicy.Reveal(shaped, ShapedLookup);
+Check("P28z a foreign envelope under an ordinary property is left alone, not blanked",
+    Value(shaped, "note") == ForeignEnvelope, Value(shaped, "note"));
+var shapedMask = JsonSerializer.SerializeToNode(LayoutWith(new JsonObject { ["note"] = ForeignEnvelope }));
+SecretPolicy.Mask(shapedMask, ShapedLookup);
+Check("P28z2 ...and the editor still shows it, so a real setting is not hidden",
+    shapedMask!["pages"]![0]!["slots"]![0]!["settings"]!["note"]!.GetValue<string>() == ForeignEnvelope);
+
+// ---- P28 · #66/#105: a demoted secret must NOT reach the widget as ciphertext ---------
+// This used to pin a KNOWN GAP, and the gap is now closed by SecretIntent.RestoreIfUntouched.
+// The old note was right that blanking alone is not a fix — the shell round-trips this exact
+// layout back through save-layout, so a blank written here reaches disk — and right that
+// routing the restore through the manifest classification would impose secret WRITE
+// semantics and leave the field permanently uneditable. What was missing was a way to say
+// READ-blank without WRITE-encrypt, which is what the intent adds.
 var demotedStored = LayoutWith(new JsonObject { ["apiToken"] = Token, ["repo"] = "owner/name" });
 SecretPolicy.Seal(demotedStored, null, Lookup);
 var demotedCipher = Value(demotedStored, "apiToken");
@@ -672,12 +700,32 @@ WidgetManifest? DemotedLookup(string id) => id == "test.widget" ? demotedManifes
 
 var revealed28 = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(demotedStored))!;
 SecretPolicy.Reveal(revealed28, DemotedLookup);
-Check("P28b KNOWN GAP (#66): a demoted secret still reaches the widget as ciphertext",
-    Value(revealed28, "apiToken") == demotedCipher, Value(revealed28, "apiToken"));
-// The property that makes the gap tolerable, and that any fix must preserve: the stored
-// value is INTACT, so the user can retype the field and it saves as ordinary text.
-Check("P28c but the stored value is intact, so the situation self-heals on the next edit",
-    SecretStore.Unprotect(Value(revealed28, "apiToken")) == Token);
+Check("P28b a demoted secret does NOT reach the widget as ciphertext",
+    Value(revealed28, "apiToken") == "", Value(revealed28, "apiToken"));
+// The property the old gap-probe protected, and that this fix had to preserve: only the
+// PAYLOAD is blanked. What is stored is untouched, so the value is still there to restore.
+Check("P28c and the STORED value is intact, so nothing was destroyed to achieve that",
+    SecretStore.Unprotect(Value(demotedStored, "apiToken")) == Token);
+// The half that makes blanking safe: the blanked field comes home untouched and Seal puts
+// the envelope back. Without this the scrub would destroy the credential on the next save,
+// which is why every earlier attempt at a scrub alone was worse than the bug.
+var demotedRoundTrip = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(revealed28))!;
+SecretPolicy.Seal(demotedRoundTrip, demotedStored, DemotedLookup);
+Check("P28c2 an untouched demoted field is restored, not saved as blank",
+    Value(demotedRoundTrip, "apiToken") == demotedCipher, Value(demotedRoundTrip, "apiToken"));
+// ...and it can still be emptied. The blank alone cannot mean "cleared" — it is also what
+// untouched sends — so the editor says so explicitly.
+var demotedCleared = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(revealed28))!;
+demotedCleared.Pages![0].Slots![0].Settings!["apiToken"] = SecretStore.ClearMarker;
+SecretPolicy.Seal(demotedCleared, demotedStored, DemotedLookup);
+Check("P28c3 ...and an explicitly cleared one is removed, so the field is not uneditable",
+    demotedCleared.Pages![0].Slots![0].Settings!["apiToken"] is null);
+// ...and new text is saved verbatim, with no encryption: it is not a secret any more.
+var demotedTyped = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(revealed28))!;
+demotedTyped.Pages![0].Slots![0].Settings!["apiToken"] = "now-ordinary-text";
+SecretPolicy.Seal(demotedTyped, demotedStored, DemotedLookup);
+Check("P28c4 ...and typed text is saved verbatim, unencrypted",
+    Value(demotedTyped, "apiToken") == "now-ordinary-text", Value(demotedTyped, "apiToken"));
 Check("P28d an ordinary setting beside it is untouched",
     Value(revealed28, "repo") == "owner/name", Value(revealed28, "repo"));
 
@@ -703,16 +751,25 @@ SecretPolicy.Reveal(foreign28, Lookup);
 Check("P28g an unopenable envelope reads as empty under a secret property",
     Value(foreign28, "apiToken") == "", Value(foreign28, "apiToken"));
 
-// An uninstalled widget's ciphertext must survive a reveal untouched and stay recoverable.
-// Nothing blanks it today; the probe exists so a future scrub cannot quietly start.
+// An uninstalled widget's ciphertext must stay RECOVERABLE. It is now blanked in the
+// payload like any other undeclared envelope — a widget frame has no business receiving it
+// — and the recoverability the original probe protected is provided by the restore rather
+// than by leaving ciphertext in flight. The scrub did not "quietly start": it arrived with
+// the restore that makes it safe, which is the condition this probe was guarding.
 var orphan = LayoutWith(new JsonObject { ["apiToken"] = Token });
 SecretPolicy.Seal(orphan, null, Lookup);
 var orphanCipher = Value(orphan, "apiToken");
 var orphanRevealed = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(orphan))!;
 SecretPolicy.Reveal(orphanRevealed, _ => null);
-Check("P28h an uninstalled widget's ciphertext is left intact",
-    Value(orphanRevealed, "apiToken") == orphanCipher, Value(orphanRevealed, "apiToken"));
-var recovered = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(orphanRevealed))!;
+Check("P28h an uninstalled widget's ciphertext is not handed out in the payload",
+    Value(orphanRevealed, "apiToken") == "", Value(orphanRevealed, "apiToken"));
+// The recoverability half, which is the thing that actually mattered: an untouched save
+// restores it, so a later reinstall still finds the credential.
+var orphanSaved = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(orphanRevealed))!;
+SecretPolicy.Seal(orphanSaved, orphan, _ => null);
+Check("P28h1 and an untouched save restores it rather than destroying it",
+    Value(orphanSaved, "apiToken") == orphanCipher, Value(orphanSaved, "apiToken"));
+var recovered = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(orphanSaved))!;
 SecretPolicy.Reveal(recovered, Lookup);
 Check("P28h2 and a later reinstall still reveals the original credential",
     Value(recovered, "apiToken") == Token, Value(recovered, "apiToken"));

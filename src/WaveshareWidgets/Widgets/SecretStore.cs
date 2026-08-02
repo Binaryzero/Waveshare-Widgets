@@ -163,10 +163,29 @@ public sealed record SecretSealResult(
 public enum SecretIntent
 {
     /// <summary>A property the manifest declares `secret`: blanked for the editor,
-    /// encrypted on its way to disk, decrypted for the dashboard. The only intent that
-    /// exists today; the others in docs/SECRET-ADDRESSING.md are what #62, #66 and #67
-    /// each need, and they are additions here rather than rewrites.</summary>
+    /// encrypted on its way to disk, decrypted for the dashboard.</summary>
     Protect,
+
+    /// <summary>A property the manifest USED to declare `secret` and now calls something
+    /// else, whose stored value is still one of our envelopes (#66, #105).</summary>
+    /// <remarks>
+    /// This exists to separate READ semantics from WRITE semantics, which a manifest type
+    /// cannot do because it carries both inseparably — three fixes in PR #65 each traded the
+    /// display bug for data loss or an uneditable field by moving that single lever.
+    ///
+    /// Read side: blank it. A widget must never receive ciphertext, and the editor must not
+    /// show a DPAPI blob in a text box.
+    ///
+    /// Write side: it is NOT a secret any more, so nothing here re-encrypts. An untouched
+    /// field comes back blank and the stored envelope is put back exactly as it was; a
+    /// cleared field removes it; anything else is the user's new text, saved verbatim.
+    ///
+    /// The blank and the clear must be different words. `EditorPlaceholder` is `""` and a
+    /// demoted property renders as an ordinary text input, which also sends `""` when the
+    /// user empties it — so restoring on the blank alone would make the field impossible to
+    /// clear, which is the same uneditable-field failure this was written to avoid.
+    /// </remarks>
+    RestoreIfUntouched,
 }
 
 /// <summary>Which values the secret pipeline acts on, and what it may do with each.
@@ -196,10 +215,93 @@ public sealed class SecretPlan
     private SecretPlan(Func<string, IReadOnlyDictionary<string, SecretIntent>> classify) =>
         _classify = classify;
 
-    /// <summary>The plan every caller builds today: whatever the manifest calls `secret`
-    /// is protected, and nothing else is touched.</summary>
+    /// <summary>Whatever the manifest calls `secret` is protected, and nothing else is
+    /// touched.</summary>
     public static SecretPlan FromManifests(Func<string, WidgetManifest?> lookup) =>
-        new(id => Classify(lookup(id)));
+        new(id => Classify(lookup(id), null));
+
+    /// <summary>...plus the demoted properties a caller found in the values it holds.</summary>
+    /// <remarks>
+    /// Demotion is not a fact about a manifest — the manifest is precisely the thing that has
+    /// stopped saying `secret` — so it can only be discovered where the VALUES are. Each
+    /// caller derives it from what it has: the layout being revealed, the projection being
+    /// masked, the stored layout a save is measured against.
+    ///
+    /// Carried per widget id rather than per slot because the demotion IS per widget: the
+    /// property was retyped for all of them. A slot of that widget with nothing stored simply
+    /// has nothing to restore, which costs a lookup and no correctness.
+    /// </remarks>
+    public static SecretPlan FromManifests(
+        Func<string, WidgetManifest?> lookup,
+        IReadOnlyDictionary<string, IReadOnlySet<string>>? envelopes) =>
+        new(id => Classify(lookup(id), envelopes is not null && envelopes.TryGetValue(id, out var e) ? e : null));
+
+    /// <summary>Names under each widget id whose stored value is one of OUR envelopes.</summary>
+    /// <remarks>
+    /// CANDIDATES ONLY — the manifest is deliberately not consulted here. Whether a candidate
+    /// is actually demoted is decided in <c>Classify</c>, which already holds the manifest and
+    /// is cached per widget id. Looking it up again in this pass would resolve the
+    /// classification twice per operation and, worse, outside that cache: a library rescan
+    /// mid-save could then be seen differently by the two passes, which is exactly the
+    /// single-resolution invariant P33 exists to protect.
+    ///
+    /// DECRYPTABILITY, NOT SHAPE. `dpapi:v1:this-is-actually-my-password` is a legitimate
+    /// thing for a user to have typed and matches <see cref="SecretStore.LooksLikeEnvelope"/>;
+    /// only <see cref="SecretStore.CanUnprotect"/> answers "did WE write this?". A value we
+    /// cannot open is not our secret material, and treating it as one would blank a real
+    /// setting.
+    /// </remarks>
+    public static Dictionary<string, IReadOnlySet<string>> FindEnvelopes(DashboardLayout? layout)
+    {
+        var found = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal);
+        foreach (var page in layout?.Pages ?? [])
+            foreach (var slot in page.Slots ?? [])
+            {
+                if (string.IsNullOrEmpty(slot.WidgetId) || slot.Settings is null)
+                    continue;
+                foreach (var (name, node) in slot.Settings)
+                    Record(found, slot.WidgetId, name, AsStringStatic(node));
+            }
+        return found;
+    }
+
+    private static void Record(
+        Dictionary<string, IReadOnlySet<string>> found, string widgetId, string name, string? value)
+    {
+        if (!SecretStore.CanUnprotect(value))
+            return;
+        if (!found.TryGetValue(widgetId, out var set))
+            found[widgetId] = set = new HashSet<string>(StringComparer.Ordinal);
+        ((HashSet<string>)set).Add(name);
+    }
+
+    /// <inheritdoc cref="FindDemoted(DashboardLayout, Func{string, WidgetManifest})"/>
+    /// <remarks>The editor projection is JSON rather than the model, so the same discovery
+    /// runs over the node tree. Same rule, same decryptability test.</remarks>
+    /// <inheritdoc cref="FindEnvelopes(DashboardLayout)"/>
+    public static Dictionary<string, IReadOnlySet<string>> FindEnvelopes(JsonNode? layoutNode)
+    {
+        var found = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal);
+        if (layoutNode?["pages"] is not JsonArray pages)
+            return found;
+        foreach (var page in pages)
+        {
+            if (page?["slots"] is not JsonArray slots)
+                continue;
+            foreach (var slot in slots)
+            {
+                var widgetId = AsStringStatic(slot?["widgetId"]);
+                if (widgetId is null || slot?["settings"] is not JsonObject settings)
+                    continue;
+                foreach (var (name, node) in settings)
+                    Record(found, widgetId, name, AsStringStatic(node));
+            }
+        }
+        return found;
+    }
+
+    private static string? AsStringStatic(JsonNode? node) =>
+        node is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 
     /// <summary>The intents that apply to a widget's properties, keyed by property name.
     /// Ordinal, like every other identity comparison in this pipeline — `Rescan` resolves
@@ -214,7 +316,8 @@ public sealed class SecretPlan
         return intents;
     }
 
-    private static IReadOnlyDictionary<string, SecretIntent> Classify(WidgetManifest? manifest)
+    private static IReadOnlyDictionary<string, SecretIntent> Classify(
+        WidgetManifest? manifest, IReadOnlySet<string>? candidates)
     {
         var intents = new Dictionary<string, SecretIntent>(StringComparer.Ordinal);
         foreach (var prop in manifest?.Properties ?? [])
@@ -223,12 +326,24 @@ public sealed class SecretPlan
                 string.Equals(prop.Type, "secret", StringComparison.OrdinalIgnoreCase))
                 intents[prop.Name] = SecretIntent.Protect;
         }
+        // Protect always wins, and this is where the "never demote a name the manifest still
+        // calls secret" rule lives — a credential whose plaintext happens to be a
+        // locally-created envelope would otherwise be blanked right after decrypting
+        // correctly. Applied here because this is the one place the manifest is read.
+        foreach (var name in candidates ?? (IReadOnlySet<string>)new HashSet<string>())
+            if (!intents.ContainsKey(name))
+                intents[name] = SecretIntent.RestoreIfUntouched;
         return intents;
     }
 }
 
 public static class SecretPolicy
 {
+    /// <summary>Transient projection key listing DEMOTED property names that hold a stored
+    /// envelope. Projection-only for the same reason as <see cref="SetMarkerKey"/>:
+    /// <see cref="LayoutSlot"/> has no matching member, so it cannot reach layout.json.</summary>
+    public const string RestoreMarkerKey = "secretsRestorable";
+
     /// <summary>Transient projection key listing the secret property names that have a
     /// stored, readable value. <see cref="LayoutSlot"/> deliberately has no matching
     /// member, so it is dropped on deserialize and can never reach layout.json.</summary>
@@ -248,36 +363,50 @@ public static class SecretPolicy
 
     /// <summary>Decrypts every secret in place — for the dashboard's init payload only.
     ///
-    /// KNOWN GAP (issue #66): a property retyped `secret` → `text` still holds ciphertext,
-    /// and this walks only what the CURRENT manifest calls secret — so the widget receives
-    /// the literal "dpapi:v1:…" string. Blanking it here looks like a two-line fix and is
-    /// not: the shell round-trips this exact layout back through save-layout, so a blank
-    /// written here reaches disk unless the save path is taught to restore it, and teaching
-    /// it through the manifest classification also imposes secret WRITE semantics, which
-    /// makes the demoted field permanently uneditable. The real fix needs per-address
-    /// restore with slot identity — the same machinery #62 needs — and is tracked there
-    /// rather than guessed at here. Leaving it alone at least self-heals: the user retypes
-    /// the value and it saves as ordinary text, which is what the manifest now says.</summary>
+    /// The demoted-property gap this used to document is closed (#66, #105). The note was
+    /// right about why blanking alone is not a fix — the shell round-trips this exact layout
+    /// back through save-layout, so a blank written here reaches disk — and right that
+    /// teaching the save path through the manifest classification would impose secret WRITE
+    /// semantics and make the field permanently uneditable.
+    ///
+    /// What it did not have was a way to say READ-blank without WRITE-encrypt. That is
+    /// <see cref="SecretIntent.RestoreIfUntouched"/>, and it is why the intent exists rather
+    /// than being a second boolean on the old classification.</summary>
     /// <summary>Shorthand for "protect exactly what these manifests declare" — the plan
     /// every caller wanted before intents existed. Kept because it is genuinely the common
     /// case, not to spare callers the migration: anything needing a non-default intent
     /// builds its own <see cref="SecretPlan"/>.</summary>
     public static void Reveal(DashboardLayout layout, Func<string, WidgetManifest?> lookup) =>
-        Reveal(layout, SecretPlan.FromManifests(lookup));
+        Reveal(layout, SecretPlan.FromManifests(lookup, SecretPlan.FindEnvelopes(layout)));
 
     /// <inheritdoc cref="Reveal(DashboardLayout, Func{string, WidgetManifest})"/>
     public static void Mask(JsonNode? layoutNode, Func<string, WidgetManifest?> lookup) =>
-        Mask(layoutNode, SecretPlan.FromManifests(lookup));
+        Mask(layoutNode, SecretPlan.FromManifests(lookup, SecretPlan.FindEnvelopes(layoutNode)));
 
     /// <inheritdoc cref="Reveal(DashboardLayout, Func{string, WidgetManifest})"/>
     public static SecretSealResult Seal(
         DashboardLayout layout, DashboardLayout? stored, Func<string, WidgetManifest?> lookup) =>
-        Seal(layout, stored, SecretPlan.FromManifests(lookup));
+        // Demotion is discovered in STORED, never in what was submitted: the incoming copy
+        // has already been blanked by Mask or Reveal, so looking there would find nothing
+        // and restore nothing.
+        Seal(layout, stored, SecretPlan.FromManifests(lookup, SecretPlan.FindEnvelopes(stored)));
 
     public static void Reveal(DashboardLayout layout, SecretPlan plan)
     {
         Walk(layout, plan, (slot, name, intent) =>
         {
+            // #105: a demoted property's stored value is still one of our envelopes, and
+            // this payload reaches widget JavaScript through the iframe fragment and
+            // ww-init. DPAPI still protects the blob off-machine, so it is not plaintext
+            // disclosure — it is handing protected material and its metadata to untrusted
+            // code for no purpose. Blanked here; Seal puts it back when the field comes
+            // home untouched, which is what makes blanking safe at all.
+            if (intent is SecretIntent.RestoreIfUntouched)
+            {
+                if (slot.Settings?[name] is not null)
+                    slot.Settings[name] = "";
+                return;
+            }
             if (intent is not SecretIntent.Protect)
                 return;
             var stored = AsString(slot.Settings?[name]);
@@ -315,8 +444,25 @@ public static class SecretPolicy
                 if (secrets.Count == 0)
                     continue;
                 var set = new JsonArray();
+                var restorable = new JsonArray();
                 foreach (var (name, intent) in secrets)
                 {
+                    if (intent is SecretIntent.RestoreIfUntouched)
+                    {
+                        // Blanked for the same reason as Reveal — the editor must not show a
+                        // DPAPI blob in a text box, and its preview builds real widget frames
+                        // from this payload. Listed separately from `secretsSet` because the
+                        // editor needs to tell the two apart: this renders as an ordinary
+                        // text input that happens to have a value it cannot display, so it
+                        // needs a Clear affordance to send the marker with. Without that the
+                        // blank alone is ambiguous and the field can never be emptied.
+                        if (slot["settings"]?[name] is not null)
+                        {
+                            restorable.Add(name);
+                            slot["settings"]![name] = SecretStore.EditorPlaceholder;
+                        }
+                        continue;
+                    }
                     if (intent is not SecretIntent.Protect)
                         continue;
                     var node = slot["settings"]?[name];
@@ -340,6 +486,8 @@ public static class SecretPolicy
                 }
                 if (set.Count > 0)
                     slot[SetMarkerKey] = set;
+                if (restorable.Count > 0)
+                    slot[RestoreMarkerKey] = restorable;
             }
         }
     }
@@ -385,6 +533,37 @@ public static class SecretPolicy
 
         Walk(layout, plan, (slot, name, intent) =>
         {
+            if (intent is SecretIntent.RestoreIfUntouched)
+            {
+                if (!keyOf.TryGetValue(slot, out var demotedKey))
+                    keyOf[slot] = demotedKey = SlotKey(slot, storedCounts, incomingCounts);
+                var incoming = AsString(slot.Settings?[name]);
+                // Three distinct cases, and they need three distinct words. Nothing here
+                // encrypts: the property is not a secret any more, so a value the user
+                // typed is saved exactly as typed.
+                if (incoming == SecretStore.ClearMarker)
+                {
+                    slot.Settings!.Remove(name);          // deliberately emptied
+                }
+                else if (string.IsNullOrEmpty(incoming))
+                {
+                    // Untouched: the editor was shown a blank because we blanked it, so put
+                    // back precisely what was there. Without this the blank would be saved
+                    // and the credential destroyed — which is what made scrubbing alone
+                    // unsafe, on this path and on Reveal's.
+                    if (TryPrevious(demotedKey, slot, name, out var keptNode))
+                    {
+                        slot.Settings![name] = keptNode?.DeepClone();
+                        Stamp(slot);
+                    }
+                    else
+                    {
+                        slot.Settings?.Remove(name);
+                    }
+                }
+                // else: the user typed something. Leave it exactly as submitted.
+                return;
+            }
             if (intent is not SecretIntent.Protect)
                 return;
             if (!keyOf.TryGetValue(slot, out var key))
@@ -585,7 +764,9 @@ public static class SecretPolicy
         var seen = new HashSet<(string, string)>();
         Walk(stored, plan, (slot, name, intent) =>
         {
-            if (intent is not SecretIntent.Protect)
+            // Demoted names are indexed too — the whole point of the intent is that the
+            // stored envelope survives a round trip through an editor that cannot show it.
+            if (intent is not (SecretIntent.Protect or SecretIntent.RestoreIfUntouched))
                 return;
             var key = SlotKey(slot, storedCounts, incomingCounts);
             // Register the identity BEFORE the value check: a colliding slot whose secret
