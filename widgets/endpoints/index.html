@@ -75,7 +75,7 @@
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
   'use strict';
-  const cfg = { targets: [], intervalMs: 60000, slowMs: 800 };
+  const cfg = { targets: [], intervalMs: 60000, slowMs: 800, dropped: 0 };
   const cards = new Map();     // key -> {root, code, rtt}
   const timers = new Map();    // key -> timeout id
   // Keyed by GENERATION + url, not url alone: a rebuild starts a fresh probe for a
@@ -96,6 +96,8 @@
   // the target's own next check; it delayed that check indefinitely.
   const PROBE_DEADLINE = 10000;
 
+  const MAX_TARGETS = 12;
+
   const el = (id) => document.getElementById(id);
 
   function parseTargets(value) {
@@ -114,7 +116,12 @@
         return { label, url };
       })
       .filter(Boolean)
-      .slice(0, 12);
+      // Two rows pointing at the same URL is a configuration mistake, and it used to be a
+      // silent one: cards, timers, results and the backoff are all keyed by URL, so the
+      // second row overwrote the first card — that tile stayed on "checking…" — and
+      // results.size could never reach the target count, leaving the summary pill on
+      // "Checking" for good. The first row wins, which keeps its label.
+      .filter((t, i, all) => all.findIndex((o) => o.url === t.url) === i);
   }
 
   WW.onInit((state) => {
@@ -128,7 +135,12 @@
     // listens probes straight through a game that was already running when it loaded.
     gameOn = !!(state.game && state.game.active);
 
-    cfg.targets = parseTargets(s.targets);
+    const all = parseTargets(s.targets);
+    // The cap is real and worth keeping — twelve tiles is already past what this panel can
+    // show legibly — but dropping the rest in silence meant the settings still listed
+    // services the widget was never checking. renderSummary says how many.
+    cfg.targets = all.slice(0, MAX_TARGETS);
+    cfg.dropped = all.length - cfg.targets.length;
     cfg.intervalMs = Math.min(900, Math.max(15, Number(s.intervalSeconds) || 60)) * 1000;
     cfg.slowMs = Math.min(5000, Math.max(100, Number(s.slowMs) || 800));
 
@@ -157,13 +169,7 @@
     grid.hidden = !n;
     if (!n) { el('pill').textContent = 'Idle'; el('pill').className = 'pill muted'; el('meta').textContent = ''; return; }
 
-    // Columns follow the WIDTH as well as the count. Going by count alone put three
-    // targets in a full-width slot into a 2x2 — a card-sized hole in the corner and every
-    // tile 185px tall — when the panel had room for a single row of three. 300px is about
-    // where a name and its status code stop being comfortable together.
-    const w = document.documentElement.clientWidth || 640;
-    const cols = Math.max(1, Math.min(n, Math.floor(w / 300) || 1, 4));
-    grid.style.gridTemplateColumns = 'repeat(' + cols + ', minmax(0, 1fr))';
+    applyColumns();
 
     for (const t of cfg.targets) {
       const root = document.createElement('div');
@@ -188,6 +194,30 @@
     for (const t of cfg.targets) probe(t, generation);
     renderSummary();
   }
+
+  // Columns follow the WIDTH as well as the count. Going by count alone put three targets
+  // in a full-width slot into a 2x2 — a card-sized hole in the corner and every tile 340px
+  // tall — when the panel had room for a single row of three. 300px is about where a name
+  // and its status code stop being comfortable together.
+  //
+  // Re-applied on resize, because the on-panel editor changes a slot's width by resizing
+  // the iframe in place: there is no second ww-init to rebuild on, so a widget enlarged
+  // from half to full would have kept two columns and one shrunk from full would have kept
+  // four cramped ones. Cheap enough to do directly, but debounced anyway — a drag emits a
+  // resize per frame.
+  function applyColumns() {
+    const n = cfg.targets.length;
+    if (!n) return;
+    const w = document.documentElement.clientWidth || 640;
+    const cols = Math.max(1, Math.min(n, Math.floor(w / 300) || 1, 4));
+    el('grid').style.gridTemplateColumns = 'repeat(' + cols + ', minmax(0, 1fr))';
+  }
+
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(applyColumns, 120);
+  });
 
   // One chain per target, each rescheduling itself in a finally, so a box that hangs
   // delays only its own next check — the acceptance criterion this widget exists to
@@ -221,7 +251,15 @@
       // a HEAD that hangs for the whole deadline has already spent what the GET would
       // need, and a target is unreachable either way.
       let res = await WW.fetch(target.url, { method: 'HEAD', insecure: true, cache: 'no-store', signal: abort.signal });
-      if (!res.ok) res = await WW.fetch(target.url, { method: 'GET', insecure: true, cache: 'no-store', maxBytes: 65536, signal: abort.signal });
+      if (!res.ok) {
+        await drain(res);
+        res = await WW.fetch(target.url, { method: 'GET', insecure: true, cache: 'no-store', maxBytes: 65536, signal: abort.signal });
+      }
+      // Only the STATUS is wanted from a health probe, and a body nobody reads holds its
+      // transfer and its connection open. Twelve targets on a fifteen-second timer make
+      // that a standing leak rather than a one-off, and clearing the deadline in the
+      // finally means nothing else would ever close them.
+      await drain(res);
       const ms = Date.now() - started;
       outcome = { state: res.ok ? (ms > cfg.slowMs ? 'slow' : 'up') : 'down', code: res.status, ms, at: Date.now() };
     } catch (e) {
@@ -242,6 +280,12 @@
         timers.set(target.url, setTimeout(() => probe(target, gen), cfg.intervalMs * Math.pow(2, n)));
       }
     }
+  }
+
+  // Cancel rather than read: the bytes are of no interest, and reading them would be the
+  // slow way to throw them away.
+  async function drain(res) {
+    try { if (res && res.body && !res.bodyUsed) await res.body.cancel(); } catch (e) { /* gone */ }
   }
 
   function renderTarget(target, r) {
@@ -268,7 +312,9 @@
     else if (down) { pill.textContent = down + ' down'; pill.className = 'pill err'; }
     else if (slow) { pill.textContent = slow + ' slow'; pill.className = 'pill warn'; }
     else { pill.textContent = 'All up'; pill.className = 'pill ok'; }
-    el('meta').textContent = 'times are relative — a blocked call is retried through the host and counts that hop';
+    el('meta').textContent = (cfg.dropped
+      ? cfg.dropped + ' more target' + (cfg.dropped === 1 ? '' : 's') + ' configured than this widget checks (' + MAX_TARGETS + ' max) · '
+      : '') + 'times are relative — a blocked call is retried through the host and counts that hop';
   }
 
   // A flip in either direction re-checks the grid: while a game is on, probe() holds and
