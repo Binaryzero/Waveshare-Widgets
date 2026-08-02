@@ -873,20 +873,31 @@ public static class SecretPolicy
             // is deliberately the SAME predicate Reveal and Mask used, evaluated against the
             // stored bytes — so the read side and the write side cannot disagree about which
             // values are protocol and which are the user's.
-            var restorable = TryPrevious(key, slot, name, out var kept) && kept is not null
-                && Blankable(slot.InstanceId, AsString(kept),
+            TryPrevious(key, slot, name, out var kept);
+            var storedValue = AsString(kept);
+            var restorable = kept is not null
+                && Blankable(slot.InstanceId, storedValue,
                     storedAmbiguous.Contains(Identity(slot.WidgetId, slot.InstanceId ?? "")));
 
             if (value == SecretStore.ClearMarker)
             {
-                // Protocol ONLY where the protocol applies. This intent covers every
-                // ordinary property, so an unrelated setting can legitimately hold this
-                // exact string — typed before the protocol existed, or hand-written into
-                // layout.json. Escaping on input protects a value the user types NOW, but
-                // the escape is stripped on the way to disk, so the very next save arrives
-                // with the bare word and an untouched field would be deleted. Treating it
-                // as ordinary text where nothing was blanked is what makes it round-trip.
-                if (restorable)
+                // Two different things send this word, and the difference is in what is
+                // STORED, not in what arrived.
+                //
+                // An untouched field echoes back whatever the editor was given. If that
+                // value was already the marker — typed before this protocol existed, or
+                // hand-written into layout.json — then incoming and stored agree, and the
+                // user did nothing. Deleting it there is silent data loss on a save that
+                // touched something else entirely. Escaping on input cannot save it: the
+                // escape is stripped on the way to disk, so the NEXT save arrives bare.
+                //
+                // Anything else means the value changed to the marker, which only the Clear
+                // affordance does. That covers the case a restorable check alone got wrong:
+                // type into a demoted field, save, then clear it without reopening Settings.
+                // The save has already replaced the ciphertext with ordinary text, so the
+                // address is no longer restorable — but the user did press Clear, and the
+                // field must clear.
+                if (storedValue != SecretStore.ClearMarker)
                     slot.Settings!.Remove(name);
                 return;
             }

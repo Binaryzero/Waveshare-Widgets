@@ -336,11 +336,20 @@
    * Save, and the replica hosts real widget iframes — so without this the widget holds
    * (and could transmit) a credential the user has not committed, in a surface the spec
    * says always shows an empty secret. Blanked per manifest, on a copy. */
+  /** Names this slot holds a host-supplied blank for: a DEMOTED property whose stored
+   * value is still an envelope. They are `text` to the current catalog, so the secret
+   * scrub below does not cover them — and pressing Clear puts the protocol marker into
+   * `state.layout`, which the replica would then hand to a real widget iframe as the
+   * setting's actual value. The marker is not a credential, but it is not a value either,
+   * and the widget would render or act on the sentinel for the rest of the session. */
+  const restorableNames = (slot) =>
+    Array.isArray(slot && slot.secretsRestorable) ? slot.secretsRestorable : [];
+
   function replicaLayout() {
     const secretsOf = (widgetId) => knownSecretNames(widgetId);
     const copy = { pages: ((state.layout || {}).pages || []).map((page) => Object.assign({}, page, {
       slots: (page.slots || []).map((slot) => {
-        const names = secretsOf(slot.widgetId);
+        const names = secretsOf(slot.widgetId).concat(restorableNames(slot));
         if (!names.length || !slot.settings) return slot;
         const settings = Object.assign({}, slot.settings);
         for (const n of names) if (n in settings) settings[n] = '';
@@ -367,13 +376,17 @@
     const secretsOf = (widgetId) => knownSecretNames(widgetId);
     const pages = (captured.pages || []).map((page, pi) => Object.assign({}, page, {
       slots: (page.slots || []).map((slot, si) => {
-        const names = secretsOf(slot.widgetId);
-        if (!names.length) return slot;
         // By id first, then by position: the replica MINTS an instanceId for legacy
         // id-less slots on its first mutation, so an id-keyed lookup alone would miss
         // exactly the slot whose secret we are trying to preserve.
         const prior = (slot.instanceId && mine.get('i:' + slot.instanceId)) || mine.get('p:' + pi + ':' + si);
         if (!prior || prior.widgetId !== slot.widgetId) return slot;
+        // The restorable names live on the AUTHORITATIVE slot, not the capture -- the
+        // replica was handed a scrubbed copy. Same union as the scrub, for the same
+        // reason: whatever was hidden from the replica must come back from here, or the
+        // capture's blank overwrites the marker and the user's Clear is silently lost.
+        const names = secretsOf(slot.widgetId).concat(restorableNames(prior));
+        if (!names.length) return slot;
         const settings = Object.assign({}, slot.settings);
         for (const n of names) {
           if (prior.settings && n in prior.settings) settings[n] = prior.settings[n];

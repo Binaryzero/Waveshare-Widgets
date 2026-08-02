@@ -1401,11 +1401,34 @@ var realClear = LayoutWith(new JsonObject { ["apiToken"] = SecretStore.ClearMark
 SecretPolicy.Seal(realClear, demotedStored, DemotedLookup);
 Check("P37i3 while a blanked field's clear marker still removes the value",
     Slot(realClear).Settings?["apiToken"] is null, Value(realClear, "apiToken") ?? "(removed)");
-// An unmatched slot cannot have been blanked either, so the word is the user's there too.
+// A slot with no stored counterpart has nothing on disk to lose, so the marker is read as
+// what it usually is — a clear. Keeping it would write the sentinel into the saved layout
+// as though the user had typed it, and they cannot have: an ordinary field offers no Clear,
+// and a typed one arrives escaped.
 var orphanMarker = LayoutWith(new JsonObject { ["repo"] = SecretStore.ClearMarker }, instanceId: "nobody");
 SecretPolicy.Seal(orphanMarker, onDisk, DemotedLookup);
-Check("P37i4 and a slot with no stored counterpart keeps it rather than guessing",
-    Value(orphanMarker, "repo") == SecretStore.ClearMarker, Value(orphanMarker, "repo") ?? "(REMOVED)");
+Check("P37i4 a slot with no stored counterpart reads it as a clear — nothing is at risk",
+    Slot(orphanMarker).Settings?["repo"] is null, Value(orphanMarker, "repo") ?? "(removed)");
+
+// ---- P37j · a clear issued from a STALE restorable control ----------------------------
+// Type into a demoted field, save, then clear it without reopening Settings. The editor's
+// provenance is stale — it still believes the host holds an envelope — so it sends the
+// marker; but the save it just made replaced the ciphertext with ordinary text, so the
+// address is no longer restorable. Gating the marker on restorability alone stored the
+// literal sentinel instead of clearing the field. What separates the cases is the STORED
+// value, not whether a restore is possible.
+var afterRetype = LayoutWith(new JsonObject { ["apiToken"] = "typed-and-saved" });
+var staleClear = LayoutWith(new JsonObject { ["apiToken"] = SecretStore.ClearMarker });
+SecretPolicy.Seal(staleClear, afterRetype, DemotedLookup);
+Check("P37j a clear still clears once the stored value is ordinary text",
+    Slot(staleClear).Settings?["apiToken"] is null, Value(staleClear, "apiToken") ?? "(removed)");
+// ...and the untouched-literal case still survives, which is the pair that has to hold
+// together: the same incoming word, opposite outcomes, decided by what is stored.
+var literalStillSafe = LayoutWith(new JsonObject { ["repo"] = SecretStore.ClearMarker });
+SecretPolicy.Seal(literalStillSafe, onDisk, DemotedLookup);
+Check("P37j2 while an untouched value that always WAS the marker is kept",
+    Value(literalStillSafe, "repo") == SecretStore.ClearMarker,
+    Value(literalStillSafe, "repo") ?? "(REMOVED)");
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
