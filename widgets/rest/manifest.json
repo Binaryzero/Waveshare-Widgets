@@ -2,8 +2,8 @@
   "id": "ws.stock.rest",
   "name": "REST Value",
   "author": "Waveshare Widgets",
-  "version": "1.0.1",
-  "description": "Any JSON endpoint, one number on the panel: give it a URL and a path to the value. Polls on its own schedule, colors itself against warn/crit thresholds, and can send a static auth header.",
+  "version": "1.1.0",
+  "description": "Any JSON endpoint, one number on the panel: give it a URL and a path to the value. Polls on its own schedule, colors itself against warn/crit thresholds, and can authenticate with a static header or an OAuth2 client-credentials exchange.",
   "min_api_version": 1,
   "supported_slots": [
     "quarter",
@@ -37,7 +37,7 @@
       "label": "Unit",
       "type": "text",
       "default": "",
-      "placeholder": "°C"
+      "placeholder": "\u00b0C"
     },
     {
       "name": "decimals",
@@ -82,7 +82,45 @@
       "name": "headerValue",
       "label": "Auth header value",
       "type": "secret",
-      "placeholder": "Bearer eyJhbGciOi…"
+      "placeholder": "Bearer eyJhbGciOi\u2026"
+    },
+    {
+      "name": "authMode",
+      "label": "Authentication",
+      "type": "select",
+      "options": [
+        "none",
+        "header",
+        "oauth2"
+      ],
+      "default": "none"
+    },
+    {
+      "name": "tokenEndpoint",
+      "label": "Token endpoint",
+      "type": "text",
+      "default": "",
+      "placeholder": "https://oauth.battle.net/token"
+    },
+    {
+      "name": "clientId",
+      "label": "Client ID",
+      "type": "text",
+      "default": "",
+      "placeholder": "The application's client id"
+    },
+    {
+      "name": "clientSecret",
+      "label": "Client secret",
+      "type": "secret",
+      "placeholder": "The application's client secret"
+    },
+    {
+      "name": "scope",
+      "label": "Scope",
+      "type": "text",
+      "default": "",
+      "placeholder": "leave empty unless the API requires one"
     },
     {
       "name": "bgStyle",

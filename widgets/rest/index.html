@@ -83,7 +83,14 @@
     url: '', pointer: '', unit: '', decimals: 0,
     pollSeconds: 60, warn: null, crit: null,
     headerName: '', headerValue: '',
+    authMode: 'none', tokenEndpoint: '', clientId: '', clientSecret: '', scope: '',
   };
+  // The bearer from the last client-credentials exchange, cached across reloads so a
+  // panel that restarts overnight does not re-authenticate against every API it holds.
+  // Keyed by endpoint+client so changing either cannot resurrect the old token.
+  let bearer = null;      // { token, expiresAt, key }
+  let tokenFailed = '';   // why the LAST exchange failed — a different sentence from a
+                          // data-fetch failure, and the user fixes a different setting.
   let timer = null;
   let ageTimer = null;    // refreshes the "how old" label between polls
   let inFlight = false;
@@ -262,6 +269,78 @@
     ]);
   }
 
+  const tokenKey = () => cfg.tokenEndpoint + '\n' + cfg.clientId;
+  const CACHE = 'rest.oauth.v1';
+
+  function loadBearer() {
+    try {
+      const raw = localStorage.getItem(CACHE);
+      if (!raw) return null;
+      const c = JSON.parse(raw);
+      if (!c || c.key !== tokenKey() || !c.token) return null;
+      return c;
+    } catch (e) { return null; }
+  }
+
+  /** A valid bearer, exchanging for one if the cache is empty or close to expiry.
+   *  Throws with .tokenExchange set so the caller can tell WHICH call failed. */
+  async function getBearer(force) {
+    if (!force) {
+      if (!bearer) bearer = loadBearer();
+      // 60s of headroom: a token that expires between this check and the request
+      // arriving is a 401 the user sees as a broken tile.
+      if (bearer && bearer.expiresAt - Date.now() > 60000) return bearer.token;
+    }
+    const body = new URLSearchParams({ grant_type: 'client_credentials' });
+    if (cfg.scope) body.set('scope', cfg.scope);
+    let res;
+    try {
+      res = await WW.fetch(cfg.tokenEndpoint, {
+        method: 'POST',
+        headers: {
+          // HTTP Basic is the form every client-credentials server accepts; putting the
+          // id and secret in the body is optional in the RFC and refused by some.
+          Authorization: 'Basic ' + btoa(cfg.clientId + ':' + cfg.clientSecret),
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: body.toString(),
+      });
+    } catch (e) {
+      const err = new Error('token endpoint unreachable');
+      err.tokenExchange = true;
+      throw err;
+    }
+    if (!res.ok) {
+      try { if (res.body && !res.body.locked) await res.body.cancel(); } catch (e) { /* already gone */ }
+      const err = new Error('token endpoint answered ' + res.status);
+      err.tokenExchange = true;
+      err.status = res.status;
+      throw err;
+    }
+    let json;
+    try { json = await res.json(); } catch (e) {
+      const err = new Error('token endpoint did not return JSON');
+      err.tokenExchange = true;
+      throw err;
+    }
+    const token = json && (json.access_token || json.accessToken);
+    if (!token) {
+      const err = new Error('no access_token in the token response');
+      err.tokenExchange = true;
+      throw err;
+    }
+    const ttl = Number(json.expires_in);
+    bearer = {
+      token: String(token),
+      // A server that omits expires_in gets a conservative hour; the reactive 401
+      // retry below is what actually keeps this correct.
+      expiresAt: Date.now() + (Number.isFinite(ttl) && ttl > 0 ? ttl * 1000 : 3600000),
+      key: tokenKey(),
+    };
+    try { localStorage.setItem(CACHE, JSON.stringify(bearer)); } catch (e) { /* quota */ }
+    return bearer.token;
+  }
+
   async function poll() {
     if (inFlight || !cfg.url) return;
     inFlight = true;
@@ -274,9 +353,32 @@
     activeController = controller;
     try {
       const init = { cache: 'no-store', signal: controller.signal };
+      const headers = {};
       // The secret arrives decrypted, exactly like a text setting. An unset or
       // unreadable one is "" — send no header at all rather than an empty one.
-      if (cfg.headerName && cfg.headerValue) init.headers = { [cfg.headerName]: cfg.headerValue };
+      // Applied whenever it is filled in, independent of authMode, so a tile
+      // configured before OAuth existed keeps working untouched.
+      if (cfg.headerName && cfg.headerValue) headers[cfg.headerName] = cfg.headerValue;
+      if (cfg.authMode === 'oauth2') {
+        // "Could not get a token" and "the API refused the request" are different
+        // failures with different fixes, and collapsing them into one card is what
+        // sends people editing the wrong setting.
+        try {
+          headers.Authorization = 'Bearer ' + await getBearer(false);
+          tokenFailed = '';
+        } catch (e) {
+          tokenFailed = e.message;
+          failures++;
+          if (superseded()) return;
+          if (!showStale('sign-in failed')) {
+            showState('⚠', 'Sign-in failed',
+              'Could not get an access token: ' + e.message +
+              '. Check the token endpoint, client ID and client secret.', true);
+          }
+          return;
+        }
+      }
+      if (Object.keys(headers).length) init.headers = headers;
 
       // WW.fetch, not fetch: it escalates through the host when the browser hits
       // CORS or a bot wall, so the same settings work on either path.
@@ -284,7 +386,7 @@
       // outstanding when the next one is due has already failed in every way that matters.
       const budget = Math.min(30000, Math.max(10000, cfg.pollSeconds * 1000));
       const url = cfg.url;
-      const answer = await withDeadline(budget, controller, async () => {
+      const doFetch = async () => {
         const res = await WW.fetch(url, init);
         // Read the body inside the deadline; a non-2xx has nothing worth reading — but
         // "not reading it" is not the same as "done with it". An unread body leaves the
@@ -295,8 +397,28 @@
           return { ok: false, status: res.status, statusText: res.statusText, text: '' };
         }
         return { ok: true, status: res.status, statusText: res.statusText, text: await res.text() };
-      });
+      };
+      let answer = await withDeadline(budget, controller, doFetch);
       if (superseded()) return;
+      // A 401 on an OAuth tile means the token died before its stated expiry —
+      // revoked, rotated, or the server's clock disagrees with ours. Force one fresh
+      // exchange and retry exactly once; a loop here would hammer the token endpoint
+      // on every poll for a credential that is simply wrong.
+      if (!answer.ok && answer.status === 401 && cfg.authMode === 'oauth2') {
+        try {
+          init.headers = Object.assign({}, init.headers, { Authorization: 'Bearer ' + await getBearer(true) });
+          answer = await withDeadline(budget, controller, doFetch);
+          if (superseded()) return;
+        } catch (e) {
+          tokenFailed = e.message;
+          failures++;
+          if (!showStale('sign-in failed')) {
+            showState('⚠', 'Sign-in failed',
+              'The API rejected the token and a new one could not be obtained: ' + e.message + '.', true);
+          }
+          return;
+        }
+      }
       if (!answer.ok) {
         failures++;
         if (!showStale('HTTP ' + answer.status)) {
@@ -471,6 +593,21 @@
     cfg.crit = num(s.crit);
     cfg.headerName = String(s.headerName || '').trim();
     cfg.headerValue = String(s.headerValue || '');
+
+    const prevAuth = cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope;
+    cfg.authMode = s.authMode === 'oauth2' ? 'oauth2' : s.authMode === 'header' ? 'header' : 'none';
+    cfg.tokenEndpoint = String(s.tokenEndpoint || '').trim();
+    cfg.clientId = String(s.clientId || '').trim();
+    cfg.clientSecret = String(s.clientSecret == null ? '' : s.clientSecret);
+    cfg.scope = String(s.scope || '').trim();
+    // Any change to WHO we are invalidates the cached bearer immediately. Leaving it
+    // would authenticate the new credentials' first poll as the old client — which
+    // succeeds, looks correct, and is the wrong account.
+    if (prevAuth !== cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope) {
+      bearer = null;
+      tokenFailed = '';
+      try { localStorage.removeItem(CACHE); } catch (e) { /* quota/private mode */ }
+    }
 
     el('title').textContent = String(s.label || '').trim() || 'REST';
     el('unit').textContent = cfg.unit;
