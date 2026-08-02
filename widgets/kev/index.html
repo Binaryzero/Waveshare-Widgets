@@ -281,6 +281,13 @@
         // server answering, not the network failing. SyntaxError arrives before any of
         // the schema checks below could tag it, so it fell through to "couldn't reach
         // the feed" and sent the reader off to look at their connection.
+        //
+        // ONLY a parse failure, though. Reading the body is also where the 5 MiB ceiling
+        // raises RangeError and where the deadline's abort surfaces, and tagging those as
+        // schema problems stole the oversized-catalog message and blamed the catalog's
+        // SHAPE for a body that never finished arriving. Anything that is not a syntax
+        // error travels on untouched, so the outer handler can still tell them apart.
+        if (!(e instanceof SyntaxError)) throw e;
         const bad = new Error('response was not JSON: ' + e.message);
         bad.schema = true;
         throw bad;
