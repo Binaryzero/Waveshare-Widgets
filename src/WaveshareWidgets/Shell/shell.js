@@ -172,7 +172,13 @@
       // Correlated replies (fetch/ping/media-list/audio/sd-*) are not gated either: they
       // are already non-stale by construction, since each answers a request this shell has
       // outstanding, and dropping one strands its asker until the request times out.
-      if (msg.gen !== notifGen) return;
+      // ...and NOT in the replica, where there is no demand interval to be stale relative
+      // to. The settings window is a second host: it answers a watch synchronously with
+      // sample toasts (settings.js) and never withdraws demand, because it deliberately
+      // refuses to touch the panel's SetWatching bookkeeping. Its reply carries no `gen`,
+      // so gating it dropped every sample and left the replica's widget on its loading
+      // spinner forever — the exact failure the sample data exists to prevent.
+      if (!PREVIEW && msg.gen !== notifGen) return;
       latestNotifications = msg.data || null;
       deliverNotifications();
     }

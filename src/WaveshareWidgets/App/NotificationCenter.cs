@@ -29,16 +29,27 @@ public sealed class NotificationCenter : IDisposable
     /// has since been withdrawn — or withdrawn and re-granted — cannot publish. Disposing
     /// the timer stops the NEXT poll; nothing stops one already awaiting.</remarks>
     private long _watchEpoch;
+
+    /// <summary>The shell generation this demand was declared under (#132).</summary>
+    /// <remarks>Held HERE, under the same lock as the epoch, so the value stamped on a
+    /// payload is the one that was in force when the payload was authorised. Kept in
+    /// DashboardWindow instead, it would be written outside this lock: a poll could hold the
+    /// gate between that write and the SetWatching call which follows it, read the NEW
+    /// generation and the OLD epoch, and stamp a stale payload as current.</remarks>
+    private long _shellGen;
     private bool _accessRequested;
 
     /// <summary>Raised (on a worker thread) whenever the projected payload changes.</summary>
-    public event Action<JsonObject>? Updated;
+    public event Action<JsonObject, long>? Updated;
 
     /// <summary>A widget started or stopped watching; polling follows demand.</summary>
-    public void SetWatching(bool on)
+    public void SetWatching(bool on, long shellGen)
     {
         lock (_gate)
         {
+            // Under the gate, together with the epoch, so a poll can never observe one
+            // updated and the other not.
+            _shellGen = shellGen;
             if (on == _watching)
             {
                 // A repeated "on" means a NEW shell page (reload, crash recovery)
@@ -171,14 +182,23 @@ public sealed class NotificationCenter : IDisposable
     private void Push(long pollEpoch, JsonObject payload, string? signature = null)
     {
         var sig = signature ?? payload["state"]!.GetValue<string>();
+        long gen;
         lock (_gate)
         {
             if (!NotificationGate.ShouldPush(pollEpoch, _watchEpoch, sig, _lastSignature, _watching))
                 return;
             _lastSignature = sig;
+            // Captured WITH the decision, not read again later. Updated fires outside the
+            // lock, and the handler marshals onto the UI thread — which can process a whole
+            // watch-off/watch-on transition before that delegate runs. Reading the current
+            // generation there would stamp this payload with a interval it was not authorised
+            // under, which is the post-time-versus-production-time mistake one last time.
+            gen = _shellGen;
         }
-        Updated?.Invoke(payload);
+        Updated?.Invoke(payload, gen);
     }
 
-    public void Dispose() => SetWatching(false);
+    // Teardown, not a demand declaration: the generation is irrelevant because nothing can
+    // be authorised after it.
+    public void Dispose() => SetWatching(false, 0);
 }

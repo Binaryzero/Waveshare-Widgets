@@ -76,7 +76,7 @@ else
 
     // G1 · every envelope carries it, and it is built in ONE place. The point of stamping in
     // PostToShell rather than at each call site is that a channel added later cannot forget.
-    var post = MethodBody(src, "private void PostToShell(string type, JsonNode? data)");
+    var post = MethodBody(src, "private void PostToShell(string type, JsonNode? data, long? gen");
     Check("G1 setup: PostToShell was located", post.Length > 0);
     Check("G1 every envelope is stamped with the demand generation",
         post.Contains("[\"gen\"]"));
@@ -98,6 +98,29 @@ else
     Check("G2 setup: the notifications-watch case was located", watch.Length > 0);
     Check("G2 the host records the generation the shell sent",
         watch.Contains("_pushGen"));
+
+    // G2b · a new document resets it. notifGen is document-local and restarts at 0 while
+    // this survives a reload, and polling continues because the dead document never posted
+    // watch(false) — so with one notifications widget the old document ends at 1 and the new
+    // one's first watch is also 1, and a poll in flight across the reload carries a matching
+    // stamp. The shell only sends a generation on a demand transition, so it never sends 0.
+    var ready = CaseBody(src, "case \"ready\":");
+    Check("G2b setup: the ready case was located", ready.Length > 0);
+    Check("G2b a new shell document resets the generation",
+        ready.Contains("Volatile.Write(ref _pushGen, 0)"));
+
+    // G2c · the generation is captured when the payload is AUTHORISED, not when the envelope
+    // is built. PostToShellThreadSafe marshals via BeginInvoke and the UI thread can drain a
+    // watch(false) and a watch(true) before reaching that continuation — the same
+    // post-time-versus-production-time mistake, one level further down.
+    Check("G2c the notifications push carries the generation it was authorised under",
+        src.Contains("_notifications.Updated += (data, gen) => PostToShellThreadSafe(\"notifications\", data, gen)"));
+    // G2d · and the shell's number reaches the lock that guards the epoch. Stored only in
+    // this file, it would be written outside that lock — a poll could hold the gate between
+    // the write and SetWatching, read the NEW generation with the OLD epoch, and stamp a
+    // stale payload as current.
+    Check("G2d the declared generation is handed to SetWatching, not merely stored here",
+        src.Contains("_notifications.SetWatching(") && src.Contains(", declaredGen)"));
 
     // G3 · the host must NOT interpret it. Any arithmetic here means two ends with two
     // opinions about what a generation means, which is the bug class the counter exists to
@@ -124,6 +147,16 @@ else
         "captured before the first await");
     Check("N7b and the publish path consults the gate",
         src.Contains("NotificationGate.ShouldPush(pollEpoch, _watchEpoch"));
+    // N7d · the generation is captured INSIDE the lock that made the decision, so the value
+    // stamped on a payload is the one in force when it was authorised.
+    var push = MethodBody(src, "private void Push(long pollEpoch, JsonObject payload");
+    Check("N7d setup: Push was located", push.Length > 0);
+    var lockAt = push.IndexOf("lock (_gate)", StringComparison.Ordinal);
+    var invokeAt = push.IndexOf("Updated?.Invoke", StringComparison.Ordinal);
+    var capAt = push.IndexOf("gen = _shellGen", StringComparison.Ordinal);
+    Check("N7d the stamp is captured inside the lock, before Updated fires",
+        lockAt >= 0 && capAt > lockAt && invokeAt > capAt,
+        capAt < 0 ? "not captured" : "captured under the gate");
     Check("N7c the epoch advances on a demand transition",
         CountOccurrences(src, "_watchEpoch++") >= 2,
         CountOccurrences(src, "_watchEpoch++") + " bump site(s) — transition and re-declare");
@@ -150,6 +183,12 @@ else
     // G5 · and refuses a push from any other interval.
     Check("G5 the notifications branch refuses a foreign generation",
         src.Contains("msg.gen !== notifGen"));
+    // G5b · ...but NOT in the replica. The settings window is a second host: it answers a
+    // watch synchronously with sample toasts and never withdraws demand, so its reply carries
+    // no generation. Gating it dropped every sample and left the replica's widget on its
+    // loading spinner — the exact failure the sample data exists to prevent.
+    Check("G5b the replica is exempt, because its host never declares a demand interval",
+        src.Contains("!PREVIEW && msg.gen !== notifGen"));
 
     // G6 · THE HAZARD. game-mode is edge-triggered: GameModeWatcher raises Changed only on a
     // transition, so the host never re-sends the current state. Gating it would leave the

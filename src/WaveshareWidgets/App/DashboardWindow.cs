@@ -88,7 +88,17 @@ public sealed class DashboardWindow : Form
 
         _hub.SensorsUpdated += OnSensorsUpdated;
         _hub.MediaUpdated += OnMediaUpdated;
-        _notifications.Updated += (data) => PostToShellThreadSafe("notifications", data);
+        // The generation is read HERE, when the payload is authorised, not when the
+        // envelope is built. PostToShellThreadSafe marshals via BeginInvoke, and the UI
+        // thread can drain several WebMessageReceived events — including a watch(false) and
+        // a watch(true) — before it gets to that continuation. Reading _pushGen at
+        // envelope-build time would then stamp a payload authorised under one interval with
+        // the number of a later one, which is the same post-time-versus-production-time
+        // mistake one level further down the pipe.
+        // The generation arrives WITH the payload, captured under NotificationCenter's lock
+        // at the moment the push was authorised. Reading it here instead would reintroduce
+        // the window this exists to close.
+        _notifications.Updated += (data, gen) => PostToShellThreadSafe("notifications", data, gen);
         _gameMode.Changed += (data) => PostToShellThreadSafe("game-mode", data);
         _gameMode.Start();
 
@@ -221,6 +231,19 @@ public sealed class DashboardWindow : Form
             {
                 case "ready":
                     _shellReady = true;
+                    // A NEW document, so its generation counter starts over. Ours must too,
+                    // or the two are compared across a reload that reset only one of them:
+                    // notifGen is document-local and restarts at 0, while this survives, and
+                    // polling continues uninterrupted because the dead document never posted
+                    // watch(false). With a single notifications widget the old document ends
+                    // at 1 and the new one's first watch is also 1 — a poll in flight across
+                    // the reload would carry a matching stamp and be accepted.
+                    //
+                    // Reset to 0 rather than to any live value: the shell only ever sends a
+                    // generation on a demand TRANSITION, so it never sends 0, and 0 therefore
+                    // means "this document has not declared demand yet" — which nothing can
+                    // match.
+                    Volatile.Write(ref _pushGen, 0);
                     PostToShell("init", BuildInitPayload());
                     break;
 
@@ -389,9 +412,12 @@ public sealed class DashboardWindow : Form
                     // (#132). The host never interprets it — it is the shell's counter, and
                     // treating it as opaque is what keeps the two ends from disagreeing
                     // about what it means.
-                    if (message["gen"] is JsonValue gv && gv.TryGetValue<double>(out var gen))
-                        Volatile.Write(ref _pushGen, (long)gen);
-                    _notifications.SetWatching(message["on"]?.GetValue<bool>() == true);
+                    var declaredGen = message["gen"] is JsonValue gv && gv.TryGetValue<double>(out var g)
+                        ? (long)g : 0L;
+                    Volatile.Write(ref _pushGen, declaredGen);
+                    // Handed to SetWatching rather than only stored here, so the notification
+                    // path can capture it under the same lock that guards its epoch.
+                    _notifications.SetWatching(message["on"]?.GetValue<bool>() == true, declaredGen);
                     break;
 
                 case "notification-dismiss":
@@ -960,13 +986,13 @@ public sealed class DashboardWindow : Form
         _revealedManifests = snapshot;
     }
 
-    private void PostToShellThreadSafe(string type, JsonNode? data)
+    private void PostToShellThreadSafe(string type, JsonNode? data, long? gen = null)
     {
         if (!_shellReady || !IsHandleCreated || IsDisposed)
             return;
         try
         {
-            BeginInvoke(() => PostToShell(type, data));
+            BeginInvoke(() => PostToShell(type, data, gen));
         }
         catch (ObjectDisposedException)
         {
@@ -985,7 +1011,7 @@ public sealed class DashboardWindow : Form
     /// </remarks>
     private long _pushGen;
 
-    private void PostToShell(string type, JsonNode? data)
+    private void PostToShell(string type, JsonNode? data, long? gen = null)
     {
         if (_webView.CoreWebView2 is null)
             return;
@@ -998,7 +1024,10 @@ public sealed class DashboardWindow : Form
         {
             ["type"] = type,
             ["data"] = data,
-            ["gen"] = Volatile.Read(ref _pushGen),
+            // The caller's generation when it has one — captured when the payload was
+            // authorised — and otherwise the current one. Only the demand-gated channel
+            // passes one; for the rest the field is informational, since nothing checks it.
+            ["gen"] = gen ?? Volatile.Read(ref _pushGen),
         };
         _webView.CoreWebView2.PostWebMessageAsJson(envelope.ToJsonString());
     }
