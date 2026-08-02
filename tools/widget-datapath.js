@@ -104,9 +104,28 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   const check = (name, ok, detail) => checks.push({ name, ok: !!ok, detail: detail === undefined ? null : String(detail) });
   page.on('pageerror', (e) => consoleErrors.push(String(e).slice(0, 300)));
 
+  // Contained the same way the widget.test route below is. The subtlety is worth
+  // recording because it is the opposite of what it looks like:
+  //
+  //   new URL('https://app.wsw/../../../x').pathname  ->  '/x'
+  //   new URL('https://app.wsw/%2e%2e/%2e%2e/x').pathname -> '/x'
+  //
+  // The URL parser normalizes dot segments, INCLUDING the %2e spelling, so a route that
+  // joins the raw pathname cannot be walked out of with either. But an encoded SLASH
+  // survives it untouched:
+  //
+  //   new URL('https://app.wsw/..%2f..%2fx').pathname  ->  '/..%2f..%2fx'
+  //
+  // so the moment anything calls decodeURIComponent on that pathname — which this route
+  // must, for filenames with spaces, and which the sibling route already did — '../../x'
+  // becomes expressible again. The decode and this containment check therefore belong
+  // together: adding the decode without the check is what would create the hole.
   await page.route('https://app.wsw/**', (route) => {
-    const file = path.join(SHELL, new URL(route.request().url()).pathname);
-    if (fs.existsSync(file)) return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
+    const shellRoot = path.resolve(SHELL);
+    const rel = decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\/+/, '');
+    const file = path.resolve(shellRoot, rel);
+    if (file.startsWith(shellRoot + path.sep) && fs.existsSync(file) && fs.statSync(file).isFile())
+      return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   });
   await page.route('https://widget.test/**', (route) => {
@@ -138,7 +157,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   await page.addInitScript(({ table }) => {
     window.addEventListener('message', (ev) => {
       const m = ev.data || {};
-      const reply = (obj) => window.postMessage(obj, '*');
+      const reply = (obj) => window.postMessage(obj, window.location.origin);
       if (m.type === 'ww-fetch') {
         const stub = table.find((s) => String(m.url || '').includes(s.match));
         if (!stub) return reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
@@ -161,7 +180,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
 
   await page.goto('https://widget.test/index.html');
   await page.evaluate(({ settings, theme }) => {
-    window.postMessage({ type: 'ww-init', settings, sensors: [], media: null, theme, status: { elevated: false, apiVersion: 1 } }, '*');
+    window.postMessage({ type: 'ww-init', settings, sensors: [], media: null, theme, status: { elevated: false, apiVersion: 1 } }, window.location.origin);
   }, { settings, theme });
   await page.waitForTimeout(waitMs);
 
