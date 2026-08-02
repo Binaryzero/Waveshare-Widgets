@@ -75,7 +75,7 @@
 <script src="https://app.wsw/widget-api.js"></script>
 <script>
   'use strict';
-  const cfg = { targets: [], intervalMs: 60000, slowMs: 800, dropped: 0 };
+  const cfg = { targets: [], intervalMs: 60000, slowMs: 800, dropped: 0, hidden: 0 };
   const cards = new Map();     // key -> {root, code, rtt}
   const timers = new Map();    // key -> timeout id
   // Keyed by GENERATION + url, not url alone: a rebuild starts a fresh probe for a
@@ -106,8 +106,14 @@
       .map((item) => {
         if (!item) return null;
         if (typeof item === 'string') {
-          const u = item.trim();
-          return u ? { label: u, url: u } : null;
+          // Same normalization the object rows get. Without it WW.fetch resolved a bare
+          // "nas.lan" against the widget's OWN virtual origin, so the tile probed a
+          // widget-local path and reported that — a green light for a host it never
+          // contacted, which is the one answer this widget must never give.
+          let u = item.trim();
+          if (!u) return null;
+          if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
+          return { label: item.trim(), url: u };
         }
         let url = String(item.url == null ? '' : item.url).trim();
         if (!url) return null;
@@ -165,13 +171,16 @@
     results.clear();
 
     const n = cfg.targets.length;
+    // Probed either way — a target the panel has no room for is still worth knowing about,
+    // and its result reaches the summary pill. Only the CARD is withheld.
+    cfg.hidden = Math.max(0, n - fit().max);
     el('state').hidden = !!n;
     grid.hidden = !n;
     if (!n) { el('pill').textContent = 'Idle'; el('pill').className = 'pill muted'; el('meta').textContent = ''; return; }
 
     applyColumns();
 
-    for (const t of cfg.targets) {
+    for (const t of cfg.targets.slice(0, fit().max)) {
       const root = document.createElement('div');
       root.className = 'target';
       const top = document.createElement('div');
@@ -205,19 +214,75 @@
   // from half to full would have kept two columns and one shrunk from full would have kept
   // four cramped ones. Cheap enough to do directly, but debounced anyway — a drag emits a
   // resize per frame.
-  function applyColumns() {
-    const n = cfg.targets.length;
-    if (!n) return;
+  // How much of the grid this slot can actually show, from BOTH dimensions. Width alone
+  // was not enough: a half-UPPER band is 640x200, so the width rule chose two columns and
+  // twelve targets became six rows in about 130px of usable height — roughly 16px each,
+  // against a tile that has 12px of padding and two lines of text. Every name and status
+  // in the band was clipped to nothing.
+  //
+  // 300px is about where a name and its status code stop being comfortable side by side;
+  // 52px is a row plus its gap. Whatever does not fit is not rendered, and renderSummary
+  // says so — a tile clipped to invisibility is worse than one the widget admits it has no
+  // room for.
+  function fit() {
     const w = document.documentElement.clientWidth || 640;
-    const cols = Math.max(1, Math.min(n, Math.floor(w / 300) || 1, 4));
-    el('grid').style.gridTemplateColumns = 'repeat(' + cols + ', minmax(0, 1fr))';
+    const h = document.documentElement.clientHeight || 400;
+    const cols = Math.max(1, Math.min(Math.floor(w / 300) || 1, 4));
+    const rows = Math.max(1, Math.floor((h - 70) / 52));
+    return { cols, max: cols * rows };
+  }
+
+  function applyColumns() {
+    if (!cfg.targets.length) return;
+    el('grid').style.gridTemplateColumns = 'repeat(' + Math.min(cfg.targets.length, fit().cols) + ', minmax(0, 1fr))';
   }
 
   let resizeTimer = null;
+  let lastFit = '';
   window.addEventListener('resize', () => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(applyColumns, 120);
+    resizeTimer = setTimeout(() => {
+      // A resize can change how many tiles FIT, not only how they are arranged, so the
+      // grid is rebuilt when that number moves and merely re-columned when it does not.
+      // The rebuild reuses the results already in hand; it does not restart the probes.
+      const f = fit();
+      const key = f.cols + 'x' + f.max;
+      if (key !== lastFit) { lastFit = key; relayout(); } else applyColumns();
+    }, 120);
   });
+
+  // Cards only, from what is already known. build() owns the probe chains; this does not
+  // touch them, so resizing a slot never re-probes anyone's network.
+  function relayout() {
+    if (!cfg.targets.length) return;
+    const grid = el('grid');
+    grid.textContent = '';
+    cards.clear();
+    cfg.hidden = Math.max(0, cfg.targets.length - fit().max);
+    for (const t of cfg.targets.slice(0, fit().max)) {
+      const root = document.createElement('div');
+      root.className = 'target';
+      const top = document.createElement('div');
+      top.className = 'top';
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = t.label;
+      const code = document.createElement('span');
+      code.className = 'code';
+      code.textContent = '···';
+      const rtt = document.createElement('div');
+      rtt.className = 'rtt';
+      rtt.textContent = 'checking…';
+      top.append(name, code);
+      root.append(top, rtt);
+      grid.appendChild(root);
+      cards.set(t.url, { root, code, rtt });
+      const known = results.get(t.url);
+      if (known) renderTarget(t, known);
+    }
+    applyColumns();
+    renderSummary();
+  }
 
   // One chain per target, each rescheduling itself in a finally, so a box that hangs
   // delays only its own next check — the acceptance criterion this widget exists to
@@ -250,8 +315,18 @@
       // The signal covers BOTH calls, because the budget is the probe's, not the call's:
       // a HEAD that hangs for the whole deadline has already spent what the GET would
       // need, and a target is unreachable either way.
-      let res = await WW.fetch(target.url, { method: 'HEAD', insecure: true, cache: 'no-store', signal: abort.signal });
-      if (!res.ok) {
+      let res = null;
+      try {
+        res = await WW.fetch(target.url, { method: 'HEAD', insecure: true, cache: 'no-store', signal: abort.signal });
+      } catch (headError) {
+        // A server that hangs up on HEAD REJECTS rather than answering, so the fallback
+        // this widget documents was never reached for the case it was written for: the
+        // rejection went straight to the outer catch and the service was called
+        // unreachable. The one rejection not worth retrying is our own deadline — the
+        // budget is already spent, and a GET would only spend more.
+        if (abort.signal.aborted) throw headError;
+      }
+      if (!res || !res.ok) {
         await drain(res);
         res = await WW.fetch(target.url, { method: 'GET', insecure: true, cache: 'no-store', maxBytes: 65536, signal: abort.signal });
       }
@@ -312,9 +387,12 @@
     else if (down) { pill.textContent = down + ' down'; pill.className = 'pill err'; }
     else if (slow) { pill.textContent = slow + ' slow'; pill.className = 'pill warn'; }
     else { pill.textContent = 'All up'; pill.className = 'pill ok'; }
-    el('meta').textContent = (cfg.dropped
-      ? cfg.dropped + ' more target' + (cfg.dropped === 1 ? '' : 's') + ' configured than this widget checks (' + MAX_TARGETS + ' max) · '
-      : '') + 'times are relative — a blocked call is retried through the host and counts that hop';
+    const notes = [];
+    if (cfg.dropped) notes.push(cfg.dropped + ' more target' + (cfg.dropped === 1 ? '' : 's')
+      + ' configured than this widget checks (' + MAX_TARGETS + ' max)');
+    if (cfg.hidden) notes.push(cfg.hidden + ' checked but no room to show ' + (cfg.hidden === 1 ? 'it' : 'them') + ' in this slot');
+    notes.push('times are relative — a blocked call is retried through the host and counts that hop');
+    el('meta').textContent = notes.join(' · ');
   }
 
   // A flip in either direction re-checks the grid: while a game is on, probe() holds and

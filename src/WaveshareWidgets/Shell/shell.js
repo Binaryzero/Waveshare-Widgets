@@ -319,7 +319,13 @@
     } else if (msg.type === 'ww-fetch' && msg.id) {
       fetchRoutes.set(msg.id, { win: ev.source, origin: ev.origin });
       setTimeout(() => fetchRoutes.delete(msg.id), 30000);
-      postToHost({ type: 'fetch', id: msg.id, url: msg.url, method: msg.method, body: msg.body, contentType: msg.contentType, headers: msg.headers, insecure: msg.insecure === true });
+      // maxBytes travels too. widget-api.js states the requirement where it builds this
+      // snapshot: the ceiling has to cross the hop, because without it the host fetches,
+      // buffers, base64-encodes and posts its full default before the wrapper in the page
+      // can refuse a byte — so a lowered ceiling costs exactly as much as no ceiling and
+      // only looks different. DashboardWindow.RequestedCap reads it and clamps it downward
+      // only, so a widget can lower the limit and never raise it.
+      postToHost({ type: 'fetch', id: msg.id, url: msg.url, method: msg.method, body: msg.body, contentType: msg.contentType, headers: msg.headers, insecure: msg.insecure === true, maxBytes: msg.maxBytes });
     } else if (msg.type === 'ww-ping' && msg.id) {
       pingRoutes.set(msg.id, { win: ev.source, origin: ev.origin });
       setTimeout(() => pingRoutes.delete(msg.id), 15000);
