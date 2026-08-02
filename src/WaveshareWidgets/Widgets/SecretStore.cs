@@ -418,14 +418,16 @@ public static class SecretPolicy
 
     public static void Reveal(DashboardLayout layout, SecretPlan plan)
     {
+        var ambiguous = AmbiguousIdentities(layout);
         Walk(layout, plan, (slot, name, intent) =>
         {
             var stored = AsString(slot.Settings?[name]);
+            var twinned = ambiguous.Contains(Identity(slot.WidgetId, slot.InstanceId ?? ""));
             if (intent is SecretIntent.RestoreIfUntouched)
             {
                 // #105: a demoted property still holding an envelope hands `dpapi:v1:…` to
                 // the widget verbatim. Blank it where the restore is guaranteed.
-                if (Blankable(slot.InstanceId, stored))
+                if (Blankable(slot.InstanceId, stored, twinned))
                     slot.Settings![name] = "";
                 return;
             }
@@ -433,7 +435,7 @@ public static class SecretPolicy
                 return;
             if (!SecretIntents.Reveals(intent))
             {
-                Withhold(slot, name, stored);
+                Withhold(slot, name, stored, twinned);
                 return;
             }
             if (stored is null)
@@ -479,9 +481,17 @@ public static class SecretPolicy
     /// ambiguous, Seal refuses the carry-over and the credential is lost rather than
     /// misdelivered — the posture this pipeline already takes everywhere, and the user
     /// retypes it into a widget they have to fix anyway.</summary>
-    private static void Withhold(LayoutSlot slot, string name, string? stored)
+    private static void Withhold(LayoutSlot slot, string name, string? stored, bool ambiguous)
     {
         if (slot.Settings?[name] is null || SecretStore.CanUnprotect(stored))
+            return;
+        // A twinned identity cannot be restored — BuildStoredIndex poisons the key so
+        // neither copy inherits — so blanking here would destroy the very credential the
+        // withholding is protecting. The plaintext keeps reaching the frame until the
+        // duplicate is healed, which is the pre-existing exposure rather than a new one.
+        // Trading a leak for a destroyed value is the trade this pipeline has refused
+        // three times; see AmbiguousIdentities.
+        if (ambiguous)
             return;
         slot.Settings[name] = "";
     }
@@ -514,8 +524,61 @@ public static class SecretPolicy
     /// That is the pre-existing exposure rather than a new one, and it closes when the slot
     /// gains an identity — or wholesale when the identity protocol lands. Trading a leak
     /// for a destroyed value is the trade this pipeline has refused three times.</summary>
-    private static bool Blankable(string? instanceId, string? value) =>
-        !string.IsNullOrEmpty(instanceId) && SecretStore.CanUnprotect(value);
+    private static bool Blankable(string? instanceId, string? value, bool ambiguous) =>
+        !string.IsNullOrEmpty(instanceId) && !ambiguous && SecretStore.CanUnprotect(value);
+
+    /// <summary>Slot identities that appear more than once in a layout, as
+    /// <c>widgetId|i:instanceId</c> — the same string <see cref="SlotKey"/> builds.
+    ///
+    /// A non-empty instance id is NOT on its own evidence that a slot is addressable, which
+    /// is what makes this necessary rather than defensive. <see cref="BuildStoredIndex"/>
+    /// deliberately POISONS a key two stored slots both resolve to: handing one credential
+    /// to both twins would be worse than losing it, so nobody inherits. Blanking on the
+    /// strength of the id alone therefore blanks both copies and then finds nothing to
+    /// restore, and the empty strings reach layout.json — both credentials gone, in one
+    /// save, irreversibly.
+    ///
+    /// It is reachable rather than theoretical: `shell.js` detects duplicate instance ids
+    /// and heals them, and the healing itself is a save.</summary>
+    private static HashSet<string> AmbiguousIdentities(DashboardLayout? layout)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var repeated = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var page in layout?.Pages ?? [])
+            foreach (var slot in page.Slots ?? [])
+                if (!string.IsNullOrEmpty(slot.WidgetId) && !string.IsNullOrEmpty(slot.InstanceId)
+                    && !seen.Add(Identity(slot.WidgetId, slot.InstanceId)))
+                    repeated.Add(Identity(slot.WidgetId, slot.InstanceId));
+        return repeated;
+    }
+
+    /// <inheritdoc cref="AmbiguousIdentities(DashboardLayout)"/>
+    /// <remarks>The editor projection is JSON rather than the model. Same question, same
+    /// key shape; only the slot's shape differs.</remarks>
+    private static HashSet<string> AmbiguousIdentities(JsonNode? layoutNode)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var repeated = new HashSet<string>(StringComparer.Ordinal);
+        if (layoutNode?["pages"] is not JsonArray pages)
+            return repeated;
+        foreach (var page in pages)
+        {
+            if (page?["slots"] is not JsonArray slots)
+                continue;
+            foreach (var slot in slots)
+            {
+                var widgetId = AsString(slot?["widgetId"]);
+                var instanceId = AsString(slot?["instanceId"]);
+                if (!string.IsNullOrEmpty(widgetId) && !string.IsNullOrEmpty(instanceId)
+                    && !seen.Add(Identity(widgetId, instanceId)))
+                    repeated.Add(Identity(widgetId, instanceId));
+            }
+        }
+        return repeated;
+    }
+
+    private static string Identity(string widgetId, string instanceId) =>
+        widgetId + "|i:" + instanceId;
 
     /// <summary>Blanks every secret and records which ones are set AND readable here.
     /// Mutates the JSON projection (not the model) because <c>secretsSet</c> is
@@ -524,6 +587,7 @@ public static class SecretPolicy
     {
         if (layoutNode?["pages"] is not JsonArray pages)
             return;
+        var ambiguous = AmbiguousIdentities(layoutNode);
         foreach (var page in pages)
         {
             if (page?["slots"] is not JsonArray slots)
@@ -545,7 +609,8 @@ public static class SecretPolicy
                         // #120, the settings-preview twin of #105: the replica hosts real
                         // widget iframes, so a demoted envelope left in this payload is
                         // handed to widget code exactly as the dashboard's is.
-                        if (!Blankable(AsString(slot["instanceId"]), AsString(slot["settings"]?[name])))
+                        if (!Blankable(AsString(slot["instanceId"]), AsString(slot["settings"]?[name]),
+                                ambiguous.Contains(Identity(widgetId, AsString(slot["instanceId"]) ?? ""))))
                             continue;
                         restorable.Add(name);
                         slot["settings"]![name] = SecretStore.EditorPlaceholder;
@@ -607,6 +672,11 @@ public static class SecretPolicy
     {
         var incomingCounts = CountWidgets(layout);
         var previous = BuildStoredIndex(stored, plan, incomingCounts, out var storedCounts);
+        // The STORED layout's twins, because that is what BuildStoredIndex poisons and
+        // therefore what decides whether a value could have been blanked at all. Reveal and
+        // Mask consult the same predicate against the layout they were handed, so the blank
+        // and the restore can never disagree about which slots are addressable.
+        var storedAmbiguous = AmbiguousIdentities(stored);
         var failures = new List<SecretSealFailure>();
         var minted = new List<SecretSlotIdentity>();
         // Position in the layout AS SUBMITTED, so the client can find the same slot.
@@ -628,7 +698,7 @@ public static class SecretPolicy
 
             if (intent is SecretIntent.RestoreIfUntouched)
             {
-                RestoreOrKeep(slot, name, value, key);
+                RestoreOrKeep(slot, name, node, value, key);
                 return;
             }
             if (!SecretIntents.Protects(intent))
@@ -797,18 +867,36 @@ public static class SecretPolicy
         //
         // Never Remove on a failed restore: a blank we cannot match is a blank we cannot
         // prove we caused, and removing would destroy a value on the strength of a guess.
-        void RestoreOrKeep(LayoutSlot slot, string name, string? value, string? key)
+        void RestoreOrKeep(LayoutSlot slot, string name, JsonNode? node, string? value, string? key)
         {
             if (value == SecretStore.ClearMarker)
             {
                 slot.Settings!.Remove(name);
                 return;
             }
+            // The clear marker is a protocol word, and this intent now covers EVERY ordinary
+            // property — so an unrelated text setting whose value happens to be that word
+            // would be removed by an otherwise innocent save. Editors escape anything in the
+            // reserved namespace, exactly as the secret control already did; one prefix is
+            // stripped here and the rest is the user's real text.
+            if (value is not null && value.StartsWith(SecretStore.LiteralPrefix, StringComparison.Ordinal))
+            {
+                slot.Settings![name] = value[SecretStore.LiteralPrefix.Length..];
+                return;
+            }
+            // PRESENT but not a string: a number, boolean or object the user just chose.
+            // `AsString` reports null for those exactly as it does for an absent key, so
+            // reading emptiness off the string alone would treat a deliberate replacement as
+            // an untouched blank and restore the old ciphertext over it. Only a genuinely
+            // absent key or an empty STRING may reach the restore below.
+            if (node is not null && value is null)
+                return;
             if (!string.IsNullOrEmpty(value))
                 return;
             if (!TryPrevious(key, slot, name, out var kept) || kept is null)
                 return;
-            if (!Blankable(slot.InstanceId, AsString(kept)))
+            if (!Blankable(slot.InstanceId, AsString(kept), storedAmbiguous.Contains(
+                    Identity(slot.WidgetId, slot.InstanceId ?? ""))))
                 return;
             slot.Settings![name] = kept.DeepClone();
         }

@@ -2103,7 +2103,11 @@
         input.type = 'text';
         if (prop.placeholder) input.placeholder = String(prop.placeholder);
         input.value = current != null ? String(current) : '';
-        input.oninput = () => set(prop, input.value);
+        // Escaped like the secret control's: every ordinary property is planned
+        // RestoreIfUntouched now, so the host reads the clear marker as protocol wherever
+        // it appears and an unrelated save would remove a setting that merely equals it.
+        input.oninput = () => set(prop,
+          input.value.startsWith('__ww_secret_') ? SECRET_LITERAL + input.value : input.value);
         if (prop.picker === 'emoji' || prop.picker === 'emoji-prefix') {
           const wrap = document.createElement('div');
           wrap.className = 'ps-inline';

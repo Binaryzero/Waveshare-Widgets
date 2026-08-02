@@ -812,6 +812,16 @@
    *
    * Reason strings come from the host and name a third-party manifest, so they are
    * rendered with textContent — never innerHTML. */
+  /** Any value in the reserved `__ww_secret_` namespace travels ESCAPED; the host strips
+   * exactly one prefix (SecretStore.LiteralPrefix). Every ordinary property is now planned
+   * RestoreIfUntouched, so the host reads `__ww_secret_cleared__` as protocol wherever it
+   * appears — without this, a perfectly valid setting that happens to be that string is
+   * removed by an unrelated save. */
+  function escapeReserved(value) {
+    return typeof value === 'string' && value.startsWith('__ww_secret_')
+      ? '__ww_secret_lit_' + value : value;
+  }
+
   function renderRejectedWidgets(list) {
     const box = el('rejectedWidgets');
     if (!box) return;
@@ -1931,7 +1941,7 @@
             // Credentials are arbitrary strings, so one of them can BE the clear marker.
             // Anything in the reserved __ww_secret_ namespace travels escaped; the host
             // strips exactly one prefix (SecretStore.LiteralPrefix).
-            set(input.value.startsWith('__ww_secret_') ? '__ww_secret_lit_' + input.value : input.value);
+            set(escapeReserved(input.value));
           } else if (stored) {
             cleared = true;
             set('__ww_secret_cleared__');
@@ -1970,7 +1980,7 @@
           state.classList.toggle('overridden', overridden);
           reset.hidden = !overridden;
         };
-        input.oninput = () => { set(input.value); sync(); };
+        input.oninput = () => { set(escapeReserved(input.value)); sync(); };
         reset.onclick = () => {
           delete slot.settings[prop.name]; // absent = default = the theme shows through
           input.value = def;
@@ -2060,7 +2070,7 @@
           input.value = Array.isArray(current)
             ? current.map((x) => (x && typeof x === 'object') ? Object.values(x).join('=') : String(x)).join(', ')
             : (current != null ? String(current) : '');
-          input.oninput = () => set(input.value);
+          input.oninput = () => set(escapeReserved(input.value));
           return input;
         }
         const wrap = document.createElement('div');
@@ -2171,7 +2181,7 @@
         // The sanctioned place to teach an expected format — labels must not.
         if (prop.placeholder) input.placeholder = String(prop.placeholder);
         input.value = current != null ? String(current) : '';
-        input.oninput = () => set(input.value);
+        input.oninput = () => set(escapeReserved(input.value));
 
         // A DEMOTED property (#66): the manifest calls it `text` now, but layout.json still
         // holds the envelope from when it was `secret`, so the host blanked it on the way
@@ -2219,7 +2229,7 @@
           input.oninput = () => {
             if (input.value.length > 0) {
               cleared = false;
-              set(input.value);
+              set(escapeReserved(input.value));
             } else if (stored) {
               // Emptying is a deliberate clear, never "leave the stored value alone" —
               // the plain "" is the one string that cannot say which one the user meant.

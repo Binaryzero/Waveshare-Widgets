@@ -1305,6 +1305,81 @@ SecretPolicy.Seal(p36Absent, LayoutWith(new JsonObject { ["repo"] = "owner/name"
 Check("P36j3 and an absent one is not conjured back into existence",
     Slot(p36Absent).Settings?["repo"] is null, Value(p36Absent, "repo") ?? "(absent)");
 
+// ---- P37 · a non-empty instance id is not on its own proof of addressability ----------
+// BuildStoredIndex POISONS a key two stored slots both resolve to: handing one credential
+// to both twins is worse than losing it, so nobody inherits. Blanking on the strength of
+// the id alone therefore blanks both copies and then finds nothing to restore, and the
+// empty strings reach layout.json. Reachable rather than theoretical — shell.js detects
+// duplicate instance ids and heals them, and the heal is itself a save.
+var twins = TwoInstances(
+    new JsonObject { ["apiToken"] = demotedCipher },
+    new JsonObject { ["apiToken"] = demotedCipher },
+    "same", "same");
+SecretPolicy.Reveal(twins, DemotedLookup);
+Check("P37 neither twin is blanked, because neither could be restored",
+    ValueAt(twins, 0, "apiToken") == demotedCipher && ValueAt(twins, 1, "apiToken") == demotedCipher,
+    ValueAt(twins, 0, "apiToken") + " | " + ValueAt(twins, 1, "apiToken"));
+// The full sequence: the shell heals one id and saves. Nothing was blanked, so there is
+// nothing the poisoned index has to give back.
+var healed = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(twins))!;
+healed.Pages[0].Slots[1].InstanceId = "healed";
+SecretPolicy.Seal(healed, twins, DemotedLookup);
+Check("P37b ...so the heal-and-save keeps both credentials",
+    SecretStore.Unprotect(ValueAt(healed, 0, "apiToken")) == Token
+        && SecretStore.Unprotect(ValueAt(healed, 1, "apiToken")) == Token,
+    ValueAt(healed, 0, "apiToken") + " | " + ValueAt(healed, 1, "apiToken"));
+// ProtectWithoutReveal blanks legacy PLAINTEXT, so it has the same exposure and takes the
+// same answer: the value keeps reaching the frame until the duplicate is healed, which is
+// the pre-existing state rather than a new one. A destroyed credential is not recoverable;
+// a leak into an already-broken layout is.
+var twinPlain = TwoInstances(
+    new JsonObject { ["apiToken"] = Token }, new JsonObject { ["apiToken"] = Token }, "same", "same");
+SecretPolicy.Reveal(twinPlain, RefusedPlan());
+Check("P37c a refused widget's twinned plaintext is withheld from nothing, not destroyed",
+    ValueAt(twinPlain, 0, "apiToken") == Token && ValueAt(twinPlain, 1, "apiToken") == Token,
+    ValueAt(twinPlain, 0, "apiToken") + " | " + ValueAt(twinPlain, 1, "apiToken"));
+// The editor projection asks the same question against JSON rather than the model.
+var twinNode = JsonSerializer.SerializeToNode(twins);
+SecretPolicy.Mask(twinNode, SecretPlan.FromManifests(DemotedLookup));
+Check("P37d Mask agrees with Reveal about which slots are addressable",
+    !twinNode!.ToJsonString().Contains("secretsRestorable"), twinNode.ToJsonString());
+
+// ---- P37e · a former secret retyped to a NON-STRING type ------------------------------
+// `secret` -> `number` / `switch` is as ordinary a manifest edit as `secret` -> `text`, and
+// the editor then emits a number or a boolean. AsString reports null for those exactly as
+// it does for an absent key, so reading emptiness off the string alone treats a deliberate
+// replacement as an untouched blank and restores the ciphertext over it.
+var numeric = LayoutWith(new JsonObject { ["apiToken"] = 42 });
+SecretPolicy.Seal(numeric, demotedStored, DemotedLookup);
+// Compared as JSON TEXT, never through a typed accessor: GetValue<int>() THROWS when the
+// node is a string, so the regression this probe exists for would crash the suite instead
+// of failing it — and a crash prints no FAIL line, which reads exactly like a pass.
+Check("P37e a number the user just chose is kept, not replaced by the old ciphertext",
+    Slot(numeric).Settings?["apiToken"]?.ToJsonString() == "42",
+    Slot(numeric).Settings?["apiToken"]?.ToJsonString() ?? "(absent)");
+var boolean = LayoutWith(new JsonObject { ["apiToken"] = false });
+SecretPolicy.Seal(boolean, demotedStored, DemotedLookup);
+Check("P37f and so is a boolean — `false` is a value, not an absence",
+    Slot(boolean).Settings?["apiToken"]?.ToJsonString() == "false",
+    Slot(boolean).Settings?["apiToken"]?.ToJsonString() ?? "(absent)");
+
+// ---- P37g · the clear marker is a protocol word, and now every ordinary property sees it
+// Before this intent, RestoreOrKeep ran for nothing, so an ordinary setting whose value
+// happened to BE the marker was stored like any other string. Now an unrelated save would
+// remove it. Editors escape the reserved namespace exactly as the secret control already
+// did; the host strips one prefix.
+var literal = LayoutWith(new JsonObject
+{
+    ["repo"] = SecretStore.LiteralPrefix + SecretStore.ClearMarker,
+});
+SecretPolicy.Seal(literal, null, DemotedLookup);
+Check("P37g an escaped clear marker in an ordinary field is stored as the user's text",
+    Value(literal, "repo") == SecretStore.ClearMarker, Value(literal, "repo") ?? "(removed)");
+var literalOther = LayoutWith(new JsonObject { ["repo"] = SecretStore.LiteralPrefix + "plain" });
+SecretPolicy.Seal(literalOther, null, DemotedLookup);
+Check("P37h and exactly ONE prefix is stripped, so the escape is reversible",
+    Value(literalOther, "repo") == "plain", Value(literalOther, "repo") ?? "(removed)");
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 

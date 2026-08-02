@@ -1108,6 +1108,31 @@ const layout = {
   const plain = page.locator('#slotDetail .prop-field').filter({ hasText: 'Repository' });
   check('E28h an ordinary field gets no Clear affordance and no restorable row',
     await plain.locator('.restorable-wrap').count() === 0);
+
+  // Every ordinary property is planned RestoreIfUntouched now, so the host reads the clear
+  // marker as protocol wherever it appears. An ordinary setting that happens to BE that
+  // string must still be storeable, which means ordinary inputs escape the reserved
+  // namespace exactly as the secret control always has.
+  await plain.locator('input').fill('__ww_secret_cleared__');
+  await page.waitForTimeout(100);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E28h2 an ordinary value equal to the clear marker travels escaped, so an '
+    + 'unrelated save cannot delete it',
+    last.settings.repo === '__ww_secret_lit___ww_secret_cleared__',
+    JSON.stringify(last.settings.repo));
+  await demoted.locator('input').fill('__ww_secret_cleared__');
+  await page.waitForTimeout(100);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E28h3 and so does one typed into a DEMOTED field, which has the same hazard',
+    last.settings.legacyToken === '__ww_secret_lit___ww_secret_cleared__',
+    JSON.stringify(last.settings.legacyToken));
+  await plain.locator('input').fill('');
+  await demoted.locator('input').fill('');
+  await page.waitForTimeout(100);
   await plain.locator('input').fill('');
   await page.waitForTimeout(100);
   await page.locator('#save').click();
