@@ -1,0 +1,61 @@
+{
+  "id": "ws.stock.wow",
+  "name": "WoW Panel",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Token price with its own recorded trend, the weekly reset countdown, this week's Mythic+ affixes, and your character's item level and rating.",
+  "min_api_version": 1,
+  "supported_slots": ["half", "full"],
+  "properties": [
+    {
+      "name": "region",
+      "label": "Region",
+      "type": "select",
+      "options": ["us", "eu", "kr", "tw"],
+      "default": "us"
+    },
+    {
+      "name": "realm",
+      "label": "Realm",
+      "type": "text",
+      "default": "",
+      "placeholder": "argent-dawn"
+    },
+    {
+      "name": "character",
+      "label": "Character",
+      "type": "text",
+      "default": "",
+      "placeholder": "Thrall"
+    },
+    {
+      "name": "clientId",
+      "label": "Battle.net client ID",
+      "type": "text",
+      "default": "",
+      "placeholder": "From develop.battle.net — needed for the token price"
+    },
+    {
+      "name": "clientSecret",
+      "label": "Battle.net client secret",
+      "type": "secret",
+      "placeholder": "From develop.battle.net"
+    },
+    {
+      "name": "refreshMinutes",
+      "label": "Refresh every (minutes)",
+      "type": "number",
+      "min": 20,
+      "max": 240,
+      "step": 5,
+      "default": 30
+    },
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": ["solid", "glass", "transparent"],
+      "default": "solid"
+    }
+  ]
+}

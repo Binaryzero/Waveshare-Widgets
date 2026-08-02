@@ -76,6 +76,13 @@ jobs:
       - name: Fetch body ceiling holds against a real server
         run: node tests/harness/bodycap-run.js browser-fetch.generated.js browser-fetch.lowered.js
 
+      # The Next Event widget bundles its own ICS reader, and it is the one widget whose
+      # failure mode is a WRONG ANSWER rather than a blank tile: a recurrence expanded
+      # incorrectly puts a meeting on screen at a time that does not exist. The reader is
+      # dependency-free precisely so this can run here without Playwright.
+      - name: ICS reader never reports a time it cannot derive
+        run: node tests/harness/ics-run.js
+
       # A Stream Deck profile names its plugin and action UUIDs, and the icon resolver used
       # both to build filesystem paths — so a crafted or imported profile could point them at
       # any readable file, whose contents are then base64'd into the profile payload and sent

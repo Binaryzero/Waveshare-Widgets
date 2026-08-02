@@ -52,8 +52,15 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
 - **Settings UI**: tray → **Settings…** opens a visual editor for pages, slots, and
   every widget's declared properties (colors, sliders, sensor pickers, structured
   lists) — no JSON editing required — plus the Theme panel with a live preview.
-- **Twenty-four stock widgets**: CPU, GPU, Clock, Countdown, Now Playing, Weather,
-  7-Day Forecast, Weather Radar, Reddit Photos, Ping Monitor, iFrame, Stream Deck
+- **Thirty-one stock widgets**: CPU, GPU, Clock, Countdown, Now Playing, Weather,
+  7-Day Forecast, Weather Radar, Reddit Photos, Ping Monitor, Endpoint Health
+  (red/green tiles for LAN services, each on its own timer), CISA KEV (this week's
+  known-exploited-vulnerability count and the newest entries), Ollama (what is
+  resident on the GPU), Next Event (next calendar entry and a countdown, from an ICS
+  link — no OAuth), GitHub Queue (PRs awaiting your review plus the last workflow
+  result), Home Assistant (entity states with touch control; locks and covers stay
+  display-only until armed), WoW Panel (token price with a locally recorded trend,
+  weekly reset, affixes, character), iFrame, Stream Deck
   mirror (live Virtual Stream Deck with clickable keys), Control Deck (a touch
   button grid — launch apps, open URLs, send hotkeys, control media; no Stream
   Deck or iCUE required), Philips Hue (CLIP v2 + v1),
