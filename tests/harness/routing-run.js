@@ -130,13 +130,19 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   // and echoes it on every envelope it posts (#132) — the harness has to model that, or the
   // shell's staleness check would drop every push here and every test above would fail for
   // a reason unrelated to what it is testing.
-  let hostGen = 0;
+  // The stamp is "<document>:<counter>" — an OPAQUE string. The fake host stores whatever
+  // the shell sent and hands it back, exactly as the real one does; it never parses or
+  // composes it, because a host with an opinion about what a generation means is the bug
+  // this mechanism removes.
+  let hostGen = '';
+  const HOST_DOC = 7;   // a document base the shell will compose onto
   await page.exposeFunction('__rec', async (j) => {
     const m = JSON.parse(j);
     hostMessages.push(m);
-    if (m.type === 'notifications-watch' && typeof m.gen === 'number') hostGen = m.gen;
+    if (m.type === 'notifications-watch' && typeof m.gen === 'string') hostGen = m.gen;
     if (m.type === 'ready') {
       page.evaluate((d) => window.__push(d), JSON.stringify({ type: 'init', data: {
+        genBase: HOST_DOC,
         layout, widgets, sensors: [], status: { elevated: false, version: 'probe' },
       } })).catch(() => {});
     }
@@ -162,6 +168,10 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   // whole race and cannot be staged any other way.
   const pushNotifs = (gen) => page.evaluate((d) => window.__push(d),
     JSON.stringify({ type: 'notifications', data: NOTIFS, gen: gen === undefined ? hostGen : gen }));
+  // A stamp from a DIFFERENT document, with the same counter the current document will reach.
+  // Without a document component in the stamp these are indistinguishable, which is the whole
+  // point of the base — and no epoch can revoke a payload already authorised and stamped.
+  const otherDocumentStampOf = (gen) => String(HOST_DOC + 1) + ':' + String(gen).split(':')[1];
 
   // Only the first widget subscribes. The second is an ordinary widget that never
   // mentions notifications — the malicious-widget case needs no more than that.
@@ -537,7 +547,7 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   await sub.evaluate(() => window.__watch(true));       // and comes straight back
   await page.waitForTimeout(250);
   check('R12 setup: the demand generation actually advanced',
-    hostGen > genWhileWatching, `${genWhileWatching} -> ${hostGen}`);
+    !!hostGen && hostGen !== genWhileWatching, `${genWhileWatching} -> ${hostGen}`);
   await sub.evaluate(() => { window.__notifs.length = 0; });
 
   await pushNotifs(genWhileWatching);                   // the queued payload finally lands
@@ -561,11 +571,32 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   // should be impossible. Refusing is right: a generation we have not issued is not
   // evidence of anything.
   await sub.evaluate(() => { window.__notifs.length = 0; });
-  await pushNotifs(hostGen + 5);
+  await pushNotifs(String(hostGen).split(':')[0] + ':' + (Number(String(hostGen).split(':')[1]) + 5));
   await page.waitForTimeout(400);
   const ahead = await sub.evaluate(() => window.__notifs.length);
   check('R12c a payload stamped with a generation the shell never issued is refused',
     ahead === 0, `${ahead} delivery(ies)`);
+
+  // R12e · the case a per-document counter alone cannot see. A poll can be authorised and
+  // STAMPED for the old document, then have its worker paused; the reload and the new
+  // document's first watch both complete before it resumes. Invalidating the host-side epoch
+  // cannot revoke that payload, because the stamp already happened. Both documents count from
+  // zero, so the old stamp can equal what the new document produces — unless the stamp names
+  // the document. Same counter, different document: must be refused.
+  await sub.evaluate(() => { window.__notifs.length = 0; });
+  await pushNotifs(otherDocumentStampOf(hostGen));
+  await page.waitForTimeout(400);
+  const otherDoc = await sub.evaluate(() => window.__notifs.length);
+  check('R12e a payload from another DOCUMENT with the same counter is refused',
+    otherDoc === 0, `stamp ${otherDocumentStampOf(hostGen)} vs current ${hostGen}`);
+  // ...and the current document's own stamp still gets through, so R12e is not passing
+  // because delivery is broken.
+  await sub.evaluate(() => { window.__notifs.length = 0; });
+  await pushNotifs();
+  await page.waitForTimeout(400);
+  const ownDoc = await sub.evaluate(() => window.__notifs.length);
+  check('R12e2 ...while this document\'s own stamp still is',
+    ownDoc === 1, `${ownDoc} delivery(ies)`);
 
   // R12d · game-mode must NOT be gated. GameModeWatcher raises Changed only on a
   // transition, so the host never re-sends the current state; a dropped push would leave
@@ -574,7 +605,7 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   // stale generation — the exact stamp that would get it dropped if someone ever extended
   // the check to this channel.
   await page.evaluate((d) => window.__push(d),
-    JSON.stringify({ type: 'game-mode', data: { active: true, process: 'game.exe' }, gen: 0 }));
+    JSON.stringify({ type: 'game-mode', data: { active: true, process: 'game.exe' }, gen: '0:0' }));
   await page.waitForTimeout(300);
   const gameSeen = await page.evaluate(() => document.documentElement.dataset.game);
   check('R12d an edge-triggered game-mode push is NOT dropped for its generation',

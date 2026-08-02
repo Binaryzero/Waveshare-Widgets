@@ -36,14 +36,14 @@ public sealed class NotificationCenter : IDisposable
     /// DashboardWindow instead, it would be written outside this lock: a poll could hold the
     /// gate between that write and the SetWatching call which follows it, read the NEW
     /// generation and the OLD epoch, and stamp a stale payload as current.</remarks>
-    private long _shellGen;
+    private string _shellGen = "";
     private bool _accessRequested;
 
     /// <summary>Raised (on a worker thread) whenever the projected payload changes.</summary>
-    public event Action<JsonObject, long>? Updated;
+    public event Action<JsonObject, string>? Updated;
 
     /// <summary>A widget started or stopped watching; polling follows demand.</summary>
-    public void SetWatching(bool on, long shellGen)
+    public void SetWatching(bool on, string shellGen)
     {
         lock (_gate)
         {
@@ -105,7 +105,7 @@ public sealed class NotificationCenter : IDisposable
         lock (_gate)
         {
             _watchEpoch++;
-            _shellGen = 0;
+            _shellGen = "";
             _lastSignature = "";
         }
     }
@@ -209,7 +209,7 @@ public sealed class NotificationCenter : IDisposable
     private void Push(long pollEpoch, JsonObject payload, string? signature = null)
     {
         var sig = signature ?? payload["state"]!.GetValue<string>();
-        long gen;
+        string gen;
         lock (_gate)
         {
             if (!NotificationGate.ShouldPush(pollEpoch, _watchEpoch, sig, _lastSignature, _watching))
@@ -227,5 +227,5 @@ public sealed class NotificationCenter : IDisposable
 
     // Teardown, not a demand declaration: the generation is irrelevant because nothing can
     // be authorised after it.
-    public void Dispose() => SetWatching(false, 0);
+    public void Dispose() => SetWatching(false, "");
 }

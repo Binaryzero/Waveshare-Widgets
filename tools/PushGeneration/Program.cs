@@ -76,10 +76,17 @@ else
 
     // G1 · every envelope carries it, and it is built in ONE place. The point of stamping in
     // PostToShell rather than at each call site is that a channel added later cannot forget.
-    var post = MethodBody(src, "private void PostToShell(string type, JsonNode? data, long? gen");
+    var post = MethodBody(src, "private void PostToShell(string type, JsonNode? data, string? gen");
     Check("G1 setup: PostToShell was located", post.Length > 0);
-    Check("G1 every envelope is stamped with the demand generation",
-        post.Contains("[\"gen\"]"));
+    // G1 · the field is present ONLY when the producing path supplies one. A fallback to a
+    // host-held "current" generation is worse than nothing: it stamps at post time, which is
+    // the race this change closes, and it would let a future gated channel inherit a number
+    // that means nothing rather than being forced to carry its own from its authorisation
+    // point. The absence of the field is the thing that forces that.
+    Check("G1 the envelope carries the producer's generation and has NO fallback",
+        post.Contains("[\"gen\"] = gen,") && !post.Contains("gen ??"));
+    Check("G1c the informational copy is gone entirely",
+        !src.Contains("_pushGen"), "no second source of truth");
     // Exactly one ASSIGNMENT in the whole file: stamped where every envelope is built, and
     // nowhere hand-applied. A second site would mean two places that must agree.
     //
@@ -91,13 +98,17 @@ else
         CountOccurrences(src, "[\"gen\"] =") == 1,
         CountOccurrences(src, "[\"gen\"] =") + " stamp site(s)");
 
-    // G2 · the host records what the shell told it. Without this the stamp is a constant and
-    // the shell's check would refuse everything after the first transition — the failure mode
-    // that looks like notifications simply not working.
+    // G2 · the host hands what the shell told it straight to SetWatching and holds it
+    // nowhere else. A second copy here is what let the wrong one be reset at ready.
     var watch = CaseBody(src, "case \"notifications-watch\":");
     Check("G2 setup: the notifications-watch case was located", watch.Length > 0);
-    Check("G2 the host records the generation the shell sent",
-        watch.Contains("_pushGen"));
+    Check("G2 the declared generation goes straight to SetWatching",
+        watch.Contains("_notifications.SetWatching(") && watch.Contains("declaredGen"));
+    // G2e · read as an OPAQUE string. Parsing it to a number would give the host an opinion
+    // about what a generation means, and two ends with opinions is the bug class the counter
+    // exists to remove — it also cannot represent "<document>:<counter>" at all.
+    Check("G2e the generation is treated as opaque, not parsed",
+        watch.Contains("GetValue<string>()") && !watch.Contains("TryGetValue<double>"));
 
     // G2b · a new document resets it. notifGen is document-local and restarts at 0 while
     // this survives a reload, and polling continues because the dead document never posted
@@ -106,8 +117,14 @@ else
     // stamp. The shell only sends a generation on a demand transition, so it never sends 0.
     var ready = CaseBody(src, "case \"ready\":");
     Check("G2b setup: the ready case was located", ready.Length > 0);
-    Check("G2b a new shell document resets the generation",
-        ready.Contains("Volatile.Write(ref _pushGen, 0)"));
+    // G2b · a new document advances the base that makes its generations distinguishable
+    // from the previous document's. Without it both count from zero and a payload already
+    // authorised and stamped for the old document can equal what the new one produces —
+    // which invalidating the epoch cannot revoke, because the stamp already happened.
+    Check("G2b a new shell document advances the document sequence",
+        ready.Contains("_documentSeq++"));
+    Check("G2b4 and init carries it, so the shell composes onto this document's base",
+        src.Contains("[\"genBase\"] = _documentSeq"));
     // G2b2 · and resets the AUTHORITATIVE one, not just the informational copy. The first
     // attempt reset only _pushGen, which is the field used for the envelope's informational
     // stamp; the value actually placed on a notifications payload is held in
@@ -181,7 +198,7 @@ else
     var begin = MethodBody(src, "public void BeginNewDocument()");
     Check("N7f setup: BeginNewDocument was located", begin.Length > 0);
     Check("N7f it invalidates the epoch, the generation and the signature together",
-        begin.Contains("_watchEpoch++") && begin.Contains("_shellGen = 0")
+        begin.Contains("_watchEpoch++") && begin.Contains("_shellGen = \"\"")
         && begin.Contains("_lastSignature = \"\"") && begin.Contains("lock (_gate)"));
 
     Check("N7c the epoch advances on a demand transition",
@@ -203,7 +220,9 @@ else
     var sync = FunctionBody(src, "function syncNotificationDemand()");
     Check("G4 setup: syncNotificationDemand was located", sync.Length > 0);
     Check("G4 the shell advances the generation when demand changes",
-        sync.Contains("notifGen++"));
+        sync.Contains("notifSeq++"));
+    Check("G4c ...composing onto the host-assigned document base, not a bare counter",
+        sync.Contains("genBase + ':' + notifSeq"));
     Check("G4b ...and sends it with the demand message",
         sync.Contains("gen: notifGen"));
 

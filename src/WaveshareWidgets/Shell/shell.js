@@ -438,12 +438,20 @@
   /// The window is one message-queue hop, so the payload is barely old — but "barely old"
   /// and "produced under demand that has since been revoked and re-granted" are different
   /// claims, and only the second is what the cache is supposed to guarantee.
-  let notifGen = 0;
+  // A generation is "<document>:<counter>". The counter alone restarts at zero in every
+  // document, so a poll still in flight across a reload could carry a stamp the NEW document
+  // will also produce — invalidating the host-side epoch cannot help, because that payload
+  // was already authorised and stamped before the reload. The base comes from the host, which
+  // counts documents, so the two ranges cannot overlap.
+  let genBase = '0';
+  let notifSeq = 0;
+  let notifGen = '';
   function syncNotificationDemand() {
     const on = slots.some((s) => s.notifWatch);
     if (on === notifWatchOn) return;
     notifWatchOn = on;
-    notifGen++;
+    notifSeq++;
+    notifGen = genBase + ':' + notifSeq;
     // The host stops polling when demand drops, so anything held here is frozen at the
     // moment the last watcher left and only gets staler. Dropping it means a later
     // subscriber waits for a real poll instead of being shown toasts that may no longer
@@ -576,6 +584,9 @@
   }
 
   function onInit(data) {
+    // Adopted before anything can declare demand, so the first watch already carries this
+    // document's base.
+    if (data.genBase !== undefined && data.genBase !== null) genBase = String(data.genBase);
     if (PREVIEW) previewGen = data.gen | 0;
     if (PREVIEW && typeof data.page === 'number') previewPage = data.page;
     latestSensors = data.sensors || [];
