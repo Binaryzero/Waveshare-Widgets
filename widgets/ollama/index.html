@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Ollama</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Layout only — colors, background, bgStyle and the typography base come from
+   * widget-base.css. */
+  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+  main { flex: 1 1 auto; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+  #total { display: flex; align-items: baseline; gap: 6px; flex: none; }
+  #vram { line-height: 1; font-size: clamp(28px, 8.5vh, 44px); }
+  #models { display: none; flex: 1 1 auto; flex-direction: column; gap: 5px; min-height: 0; overflow: hidden; }
+  @media (min-width: 470px) and (min-height: 241px) { #models { display: flex; } }
+  /* At three-quarter and full a row is around a thousand pixels wide, which puts a model
+   * name at one edge of the panel and its VRAM figure at the other — the pair a reader is
+   * trying to associate, as far apart as the tile allows. Two columns keep them together.
+   * Tracks are sized to the row rather than to the leftover height, because a 1fr track
+   * is far taller than the 58px a row may grow to and the rows would hang at the top of
+   * theirs. The height guard matches the rule above: a 200px band shows no rows at all. */
+  @media (min-width: 900px) and (min-height: 241px) {
+    #models { display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: minmax(30px, 58px);
+      column-gap: 8px; align-content: start; }
+  }
+  /* A quarter has no room for per-model rows that stay readable, so the resident
+   * total becomes the tile rather than sitting small in a mostly empty card. */
+  @media (max-width: 469px), (max-height: 240px) {
+    main { justify-content: center; }
+    #total { flex-direction: column; align-items: flex-start; gap: 0; }
+    #vram { font-size: min(26vw, 22vh); }
+  }
+  .model {
+    display: flex; flex-direction: column; gap: 3px;
+    padding: 5px 9px;
+    border-radius: var(--radius-control);
+    background: var(--card-surface);
+    min-width: 0;
+    flex: 1 1 0; min-height: 30px; max-height: 58px;
+    justify-content: center;
+  }
+  .model .top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .model .name {
+    color: var(--text); font-weight: 650; font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1 1 auto; min-width: 0;
+  }
+  .model .size {
+    color: var(--text-muted); font-size: 12px; flex: none;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .model .ttl { color: var(--text-dim); font-size: 11px; flex: none; font-variant-numeric: tabular-nums; }
+  footer { color: var(--text-dim); font-size: 11px; flex: none; font-variant-numeric: tabular-nums; }
+  #state { position: fixed; inset: 0; }
+  body.stale main { opacity: 0.55; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="kicker">Ollama</span>
+    <span class="pill muted" id="pill">Loading</span>
+  </header>
+
+  <main id="data" hidden>
+    <div id="total">
+      <span class="value hero" id="vram">--</span>
+      <span class="unit" id="totalLabel">resident</span>
+    </div>
+    <div id="models"></div>
+  </main>
+
+  <footer id="meta"></footer>
+
+  <div class="state-card" id="state">
+    <div class="spinner"></div>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  // One poll's whole budget: connect, transfer and parse. /api/ps is a small response
+  // from a machine-local server, so anything approaching this is a stall rather than a
+  // slow link — and it has to be bounded, because neither the browser fetch nor the body
+  // read has a deadline of its own.
+  const FETCH_DEADLINE = 15000;
+  // How often a suspended document re-checks, without disturbing the poll deadline.
+  const IDLE_RECHECK = 60000;
+
+  const cfg = { base: 'http://localhost:11434', refreshMs: 15000 };
+  let models = [];
+  let started = false;
+  let timer = null;
+  let inFlight = false;
+  let lastOk = 0;
+  let answered = false;    // has a response ever actually arrived?
+  let polled = false;      // has a request ever actually been ATTEMPTED?
+  let failures = 0;        // consecutive failed polls; stretches the interval
+  let pollAnchor = 0;      // when the current wait began: the last poll attempt's end
+  let gameOn = false;      // a fullscreen game is foreground: WIDGET-SPEC gates JS work
+
+  const el = (id) => document.getElementById(id);
+
+  // Binary units, because that is what Ollama reports and what nvidia-smi shows next
+  // to it — a model that reads 6.1 GB here and 5.7 GB there is a support question.
+  function gib(bytes) {
+    const n = Number(bytes);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return n / 1073741824;
+  }
+
+  function fmtGib(bytes) {
+    const g = gib(bytes);
+    if (g == null) return '--';
+    return (g >= 10 ? g.toFixed(1) : g.toFixed(2));
+  }
+
+  // expires_at is when Ollama will evict the model. Past or unparseable reads as no
+  // countdown rather than a negative one.
+  function ttl(expiresAt) {
+    const t = Date.parse(expiresAt || '');
+    if (!Number.isFinite(t)) return '';
+    const secs = Math.round((t - Date.now()) / 1000);
+    if (secs <= 0) return '';
+    if (secs < 60) return secs + 's';
+    if (secs < 3600) return Math.round(secs / 60) + 'm';
+    return Math.round(secs / 3600) + 'h';
+  }
+
+  function normalizeBase(value) {
+    let s = String(value == null ? '' : value).trim();
+    if (!s) s = 'http://localhost:11434';
+    if (!/^https?:\/\//i.test(s)) s = 'http://' + s;
+    return s.replace(/\/+$/, '');
+  }
+
+  WW.onInit((state) => {
+    const s = state.settings;
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+
+    // Seeded, not only listened for: onGame reports later flips, so a widget that only
+    // listens polls straight through a game that was already running when it loaded.
+    gameOn = !!(state.game && state.game.active);
+
+    const wasBase = cfg.base;
+    cfg.base = normalizeBase(s.baseUrl);
+    cfg.refreshMs = Math.min(300, Math.max(5, Number(s.refreshSeconds) || 15)) * 1000;
+
+    if (!started) { started = true; tick(); }
+    else if (cfg.base !== wasBase) {
+      // A new ADDRESS must take effect now: what is on screen describes a different
+      // server. Anything else — an interval change, a background change, a theme push —
+      // re-arms against the time already served instead of firing another request, which
+      // is what the old unconditional refetch did on every re-delivery.
+      failures = 0;
+      clearTimeout(timer);
+      tick();
+    } else if (!inFlight) arm();
+  });
+
+  // A flip in either direction just re-arms: while a game is on the floor keeps this from
+  // spinning, and when it ends an overdue deadline computes to zero and the catch-up poll
+  // runs immediately.
+  WW.onGame((g) => {
+    gameOn = !!(g && g.active);
+    if (started) arm();
+  });
+
+  async function tick() {
+    // Re-armed, NOT rescheduled: schedule() moves the anchor to now, so a wake while the
+    // document is hidden would push the deadline out by another whole interval and the
+    // visibility handler would then see a future deadline and decline to catch up.
+    //
+    // Game mode is here for the reason WIDGET-SPEC gives: the shell pauses CSS animation
+    // for every widget, but JS work is the widget's own to hold, and document.hidden does
+    // not cover it — the panel is a second screen and stays visible while the game has the
+    // first. At the 5-second minimum this widget is the most talkative of the set.
+    if (document.hidden || gameOn) { arm(); return; }
+    if (inFlight) { schedule(); return; }
+    inFlight = true;
+    polled = true;   // an ATTEMPT, not a success: the branches above return first
+    // Nothing else bounds this. The shim puts a deadline on the host-proxy tier, but the
+    // direct browser fetch it tries first has none and reading the body has none either,
+    // so a connection that opens and then stalls would leave inFlight true forever: the
+    // finally never runs, nothing is rescheduled, and every later entry sees a request
+    // still in flight and returns. The tile freezes on whatever it was showing.
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), FETCH_DEADLINE);
+    try {
+      // Ollama's OLLAMA_ORIGINS will reject this widget's origin, so the direct fetch
+      // is expected to fail and WW.fetch's host-proxy tier is the path that works.
+      // Nothing here special-cases that — it is the same call either way.
+      const res = await WW.fetch(cfg.base + '/api/ps', { signal: abort.signal });
+      if (!res.ok) {
+        // Cancelled before the throw: on the direct tier this is a live response whose
+        // body the server may still be sending, and an error status is exactly when that
+        // body is of no use. Left unread it holds the transfer open.
+        try { if (res.body && !res.bodyUsed) await res.body.cancel(); } catch (e) { /* gone */ }
+        throw new Error('HTTP ' + res.status);
+      }
+      let json;
+      try {
+        json = await res.json();
+      } catch (e) {
+        // ONLY a parse failure. Reading the body is also where the body ceiling raises
+        // RangeError and where the deadline's abort surfaces; tagging those as format
+        // problems would blame the response's SHAPE for a body that never arrived.
+        if (!(e instanceof SyntaxError)) throw e;
+        const bad = new Error('response was not JSON: ' + e.message);
+        bad.format = true;
+        throw bad;
+      }
+      // Something is listening on that port; it is not necessarily Ollama. Coercing a
+      // missing or non-array `models` to [] let any JSON — another service, a proxy's
+      // error object — read as "Ollama is running, nothing is resident", which is a
+      // confident claim about a machine this widget never reached. An empty ARRAY is a
+      // real answer and still reads as one.
+      if (!json || !Array.isArray(json.models)) {
+        const bad = new Error('response has no models array');
+        bad.format = true;
+        throw bad;
+      }
+      const mapped = json.models.map((m) => ({
+        name: String((m && (m.name || m.model)) || '').trim() || 'unnamed',
+        vram: Number((m && (m.size_vram != null ? m.size_vram : m.size)) || 0),
+        expires: String((m && m.expires_at) || ''),
+      }));
+      models = mapped;
+      lastOk = Date.now();
+      answered = true;
+      failures = 0;
+      document.body.classList.remove('stale');
+      render();
+    } catch (e) {
+      failures++;
+      // "Nothing loaded" and "Ollama is not there" are different sentences and the
+      // user acts on them differently — reaching the server at all is what separates
+      // them, so only a failed call paints the error.
+      // ANSWERED, not models.length. "Nothing is resident" is an answer this widget
+      // should go on showing, dimmed, when a later poll fails — testing for rows treated
+      // that as nothing to lose and replaced a true statement with "Ollama unreachable",
+      // which is a different and less true claim about a server that was reached.
+      if (answered) {
+        document.body.classList.add('stale');
+        render();
+      } else {
+        showError(e && e.format);
+      }
+      WW.log('ollama: ' + e.message);
+    } finally {
+      clearTimeout(deadline);
+      inFlight = false;
+      schedule();
+    }
+  }
+
+  // The interval the user chose, stretched while the endpoint keeps failing. The floor
+  // here is FIVE SECONDS — a laptop with Ollama shut down would otherwise see seventeen
+  // thousand refused connections a day from a single tile, each one a host round-trip
+  // because the direct tier is expected to be refused. Doubling per consecutive failure
+  // to a ceiling of sixteen intervals; a success or the Retry button clears it.
+  function pollDelay() {
+    return cfg.refreshMs * Math.pow(2, Math.min(failures, 4));
+  }
+
+  // schedule() begins a new waiting period; arm() re-points the timeout at the same
+  // period, so a settings change or a suspended wake is measured against time served.
+  function schedule() {
+    pollAnchor = Date.now();
+    arm();
+  }
+
+  function arm() {
+    clearTimeout(timer);
+    // The floor applies only while the poll is suspended, where tick() returns without
+    // asking for anything: without it an overdue deadline re-enters on a zero timer.
+    const floor = (document.hidden || gameOn) ? IDLE_RECHECK : 0;
+    timer = setTimeout(tick, Math.max(floor, pollAnchor + pollDelay() - Date.now()));
+  }
+
+  function render() {
+    const totalBytes = models.reduce((sum, m) => sum + (Number(m.vram) || 0), 0);
+    const stale = document.body.classList.contains('stale');
+
+    el('vram').textContent = models.length ? fmtGib(totalBytes) : '0';
+    el('totalLabel').textContent = models.length
+      ? 'GB resident · ' + models.length + (models.length === 1 ? ' model' : ' models')
+      : 'GB resident';
+
+    const box = el('models');
+    box.textContent = '';
+    for (const m of models) {
+      const row = document.createElement('div');
+      row.className = 'model';
+      const top = document.createElement('div');
+      top.className = 'top';
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = m.name;
+      const size = document.createElement('span');
+      size.className = 'size';
+      size.textContent = fmtGib(m.vram) + ' GB';
+      const left = ttl(m.expires);
+      top.append(name, size);
+      if (left) {
+        const t = document.createElement('span');
+        t.className = 'ttl';
+        t.textContent = left;
+        top.append(t);
+      }
+      row.append(top);
+      box.appendChild(row);
+    }
+
+    const pill = el('pill');
+    pill.textContent = stale ? 'Stale' : models.length ? 'Loaded' : 'Idle';
+    pill.className = 'pill ' + (stale ? 'muted' : models.length ? 'ok' : 'muted');
+
+    el('meta').textContent = models.length
+      ? (lastOk ? 'updated ' + new Date(lastOk).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '')
+      : 'Ollama is running — nothing is resident on the GPU.';
+
+    el('state').hidden = true;
+    el('data').hidden = false;
+  }
+
+  function showError(format) {
+    // The pill is the header's one-word summary and it starts at Loading. Leaving it
+    // there meant the tile could show an error card and a Retry button while still
+    // claiming to be loading, indefinitely, since nothing else writes it on a cold start
+    // that never succeeds.
+    const pill = el('pill');
+    pill.textContent = 'Error';
+    pill.className = 'pill err';
+    const state = el('state');
+    state.className = 'state-card err';
+    state.textContent = '';
+    const icon = document.createElement('div');
+    icon.className = 'state-icon';
+    icon.textContent = '!';
+    const title = document.createElement('div');
+    title.className = 'state-title';
+    // Two different sentences, because the user acts on them differently: nothing is
+    // listening, versus something answered and it was not Ollama. Telling someone to
+    // check whether Ollama is running, when a server just replied on that port, sends
+    // them to look in the wrong place.
+    title.textContent = format ? 'Not an Ollama server' : 'Ollama unreachable';
+    const body = document.createElement('div');
+    body.className = 'state-body';
+    body.textContent = format
+      ? 'Something answered at ' + cfg.base + ", but it wasn't Ollama's /api/ps."
+      : "Couldn't reach " + cfg.base + '. Check that Ollama is running and the address is right.';
+    const retry = document.createElement('button');
+    retry.className = 'btn';
+    retry.textContent = 'Retry';
+    retry.addEventListener('click', () => {
+      state.className = 'state-card';
+      state.textContent = '';
+      const sp = document.createElement('div');
+      sp.className = 'spinner';
+      state.appendChild(sp);
+      const p = el('pill');
+      p.textContent = 'Loading';
+      p.className = 'pill muted';
+      // A person pressing Retry is saying the outage is over, so the backoff clears as a
+      // success would — and the poll becomes overdue in every path that consults the
+      // deadline, so if a game is running the retry fires the moment it ends rather than
+      // leaving a spinner that cannot resolve.
+      failures = 0;
+      pollAnchor = 0;
+      clearTimeout(timer);
+      tick();
+    });
+    state.append(icon, title, body, retry);
+    state.hidden = false;
+    el('data').hidden = true;
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !started || inFlight) return;
+    // Against the deadline the chain is actually waiting on. Firing unconditionally made
+    // every return to this page another request, which walks straight past the backoff in
+    // exactly the situation the backoff exists for. A widget that has never ATTEMPTED a
+    // poll is overdue by definition: tick() returns early while hidden, so a tile that
+    // initialised on a hidden page has an anchor and no data.
+    if (!polled || Date.now() >= pollAnchor + pollDelay()) { clearTimeout(timer); tick(); }
+  });
+</script>
+</body>
+</html>
