@@ -869,9 +869,25 @@ public static class SecretPolicy
         // prove we caused, and removing would destroy a value on the strength of a guess.
         void RestoreOrKeep(LayoutSlot slot, string name, JsonNode? node, string? value, string? key)
         {
+            // Is this address one we actually blanked? Everything below turns on it, and it
+            // is deliberately the SAME predicate Reveal and Mask used, evaluated against the
+            // stored bytes — so the read side and the write side cannot disagree about which
+            // values are protocol and which are the user's.
+            var restorable = TryPrevious(key, slot, name, out var kept) && kept is not null
+                && Blankable(slot.InstanceId, AsString(kept),
+                    storedAmbiguous.Contains(Identity(slot.WidgetId, slot.InstanceId ?? "")));
+
             if (value == SecretStore.ClearMarker)
             {
-                slot.Settings!.Remove(name);
+                // Protocol ONLY where the protocol applies. This intent covers every
+                // ordinary property, so an unrelated setting can legitimately hold this
+                // exact string — typed before the protocol existed, or hand-written into
+                // layout.json. Escaping on input protects a value the user types NOW, but
+                // the escape is stripped on the way to disk, so the very next save arrives
+                // with the bare word and an untouched field would be deleted. Treating it
+                // as ordinary text where nothing was blanked is what makes it round-trip.
+                if (restorable)
+                    slot.Settings!.Remove(name);
                 return;
             }
             // The clear marker is a protocol word, and this intent now covers EVERY ordinary
@@ -893,12 +909,9 @@ public static class SecretPolicy
                 return;
             if (!string.IsNullOrEmpty(value))
                 return;
-            if (!TryPrevious(key, slot, name, out var kept) || kept is null)
+            if (!restorable)
                 return;
-            if (!Blankable(slot.InstanceId, AsString(kept), storedAmbiguous.Contains(
-                    Identity(slot.WidgetId, slot.InstanceId ?? ""))))
-                return;
-            slot.Settings![name] = kept.DeepClone();
+            slot.Settings![name] = kept!.DeepClone();
         }
 
         // A slot that stores a credential gets a stable identity, so the next save

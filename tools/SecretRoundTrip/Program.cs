@@ -1380,6 +1380,33 @@ SecretPolicy.Seal(literalOther, null, DemotedLookup);
 Check("P37h and exactly ONE prefix is stripped, so the escape is reversible",
     Value(literalOther, "repo") == "plain", Value(literalOther, "repo") ?? "(removed)");
 
+// ---- P37i · the escape reaches disk STRIPPED, so the next save sees the bare word ------
+// This is what escaping-on-input alone could not fix, and asserting the escape rather than
+// the round trip is what hid it: the editor escapes, the host strips, layout.json holds the
+// literal `__ww_secret_cleared__`, and the NEXT save — of a field nobody touched — arrives
+// with the bare marker. The word is only protocol where something was actually blanked.
+var onDisk = LayoutWith(new JsonObject { ["repo"] = SecretStore.ClearMarker });
+var untouchedSave = LayoutWith(new JsonObject { ["repo"] = SecretStore.ClearMarker });
+SecretPolicy.Seal(untouchedSave, onDisk, DemotedLookup);
+Check("P37i an ordinary value equal to the marker survives an untouched save",
+    Value(untouchedSave, "repo") == SecretStore.ClearMarker,
+    Value(untouchedSave, "repo") ?? "(REMOVED)");
+// ...and it keeps surviving, which is the property "round-trips" actually means.
+var thirdSave = LayoutWith(new JsonObject { ["repo"] = SecretStore.ClearMarker });
+SecretPolicy.Seal(thirdSave, untouchedSave, DemotedLookup);
+Check("P37i2 and again on the save after that",
+    Value(thirdSave, "repo") == SecretStore.ClearMarker, Value(thirdSave, "repo") ?? "(REMOVED)");
+// The protocol still works where it means something: a field the host really did blank.
+var realClear = LayoutWith(new JsonObject { ["apiToken"] = SecretStore.ClearMarker });
+SecretPolicy.Seal(realClear, demotedStored, DemotedLookup);
+Check("P37i3 while a blanked field's clear marker still removes the value",
+    Slot(realClear).Settings?["apiToken"] is null, Value(realClear, "apiToken") ?? "(removed)");
+// An unmatched slot cannot have been blanked either, so the word is the user's there too.
+var orphanMarker = LayoutWith(new JsonObject { ["repo"] = SecretStore.ClearMarker }, instanceId: "nobody");
+SecretPolicy.Seal(orphanMarker, onDisk, DemotedLookup);
+Check("P37i4 and a slot with no stored counterpart keeps it rather than guessing",
+    Value(orphanMarker, "repo") == SecretStore.ClearMarker, Value(orphanMarker, "repo") ?? "(REMOVED)");
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 
