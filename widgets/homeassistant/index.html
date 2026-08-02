@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Home Assistant</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Layout only — colors, background, bgStyle and the typography base come from
+   * widget-base.css. */
+  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+  #grid { flex: 1 1 auto; display: grid; gap: 8px; min-height: 0; }
+  .ent {
+    display: flex; flex-direction: column; justify-content: center; gap: 2px;
+    padding: 6px 10px;
+    border-radius: var(--radius-control);
+    background: var(--card-surface);
+    border: 1px solid transparent;
+    min-width: 0; min-height: 0; overflow: hidden;
+    position: relative;
+    /* Every tile is at least a comfortable touch target even in a dense grid. */
+    min-height: 44px;
+  }
+  .ent.on { border-color: rgba(var(--accent-rgb), 0.45); }
+  .ent .name {
+    color: var(--text-muted);
+    font-size: clamp(10px, 2.8vh, 12px);
+    letter-spacing: 0.05em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ent .val {
+    color: var(--text); font-weight: 700;
+    font-size: clamp(13px, 4.2vh, 20px);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ent.on .val { color: var(--accent); }
+  .ent .val small { font-size: 60%; font-weight: 500; color: var(--text-muted); }
+  /* A tile the user can act on says so at rest — there is no hover on this panel. */
+  .ent .hint {
+    position: absolute; top: 5px; right: 8px;
+    font-size: 9px; font-weight: 800; letter-spacing: 0.06em;
+    color: var(--text-dim); text-transform: uppercase;
+  }
+  .ent.armed .hint { color: var(--warn); }
+  /* The long-press fill: a bar that grows across the tile so the user can see the
+   * press being counted rather than guessing whether it registered. */
+  .ent .press {
+    position: absolute; inset: auto 0 0 0; height: 2px; width: 0;
+    background: var(--warn);
+    transition: width 700ms linear;
+  }
+  .ent.pressing .press { width: 100%; }
+  footer { color: var(--text-dim); font-size: 11px; flex: none; }
+  #state { position: fixed; inset: 0; }
+  body.stale #grid { opacity: 0.6; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="kicker">Home</span>
+    <span class="pill muted" id="pill">Loading</span>
+  </header>
+
+  <div id="grid" hidden></div>
+
+  <footer id="meta"></footer>
+
+  <div class="state-card" id="state">
+    <div class="spinner"></div>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  // Domains where a stray brush of a desk-height touch strip has a physical
+  // consequence. These never respond to a tap: they need arming in settings AND a
+  // deliberate long press. Everything else in the house is a light going on.
+  const SECURITY = ['lock', 'cover', 'alarm_control_panel', 'garage_door'];
+  const TOGGLEABLE = ['light', 'switch', 'fan', 'input_boolean', 'automation', 'siren', 'humidifier'];
+  const PRESS_MS = 700;
+
+  const cfg = { base: '', token: '', entities: [], refreshMs: 20000 };
+  const cards = new Map();     // entity_id -> {root, val, hint}
+  let states = new Map();      // entity_id -> {state, unit, name}
+  let started = false;
+  let timer = null;
+  let inFlight = false;
+  let lastOk = 0;
+
+  const el = (id) => document.getElementById(id);
+  const domainOf = (id) => String(id || '').split('.')[0];
+
+  function flash(node, cls) {
+    node.classList.remove(cls);
+    void node.offsetWidth;   // restart the animation even mid-run
+    node.classList.add(cls);
+  }
+
+  function parseEntities(value) {
+    const raw = Array.isArray(value) ? value : String(value || '').split(/[,\n]/).map((s) => ({ entity: s }));
+    return raw
+      .map((item) => {
+        if (!item) return null;
+        const entity = String((typeof item === 'string' ? item : item.entity) || '').trim();
+        if (!/^[a-z_]+\.[a-z0-9_]+$/i.test(entity)) return null;
+        const label = String((item && item.label) || '').trim();
+        const control = String((item && item.control) || '').trim().toLowerCase();
+        return { entity, label, armed: /^(allow|yes|on|true)$/.test(control) };
+      })
+      .filter(Boolean)
+      .slice(0, 16);
+  }
+
+  function normalizeBase(value) {
+    let s = String(value == null ? '' : value).trim();
+    if (!s) return '';
+    if (!/^https?:\/\//i.test(s)) s = 'http://' + s;
+    return s.replace(/\/+$/, '');
+  }
+
+  WW.onInit((s0) => {
+    const s = s0.settings;
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+
+    cfg.base = normalizeBase(s.baseUrl);
+    cfg.token = String(s.accessToken == null ? '' : s.accessToken);
+    cfg.entities = parseEntities(s.entities);
+    cfg.refreshMs = Math.min(600, Math.max(5, Number(s.refreshSeconds) || 20)) * 1000;
+
+    build();
+    if (!cfg.base || !cfg.token || !cfg.entities.length) { showSetup(); return; }
+    if (!started) { started = true; tick(); }
+    else { clearTimeout(timer); tick(); }
+  });
+
+  function build() {
+    const grid = el('grid');
+    grid.textContent = '';
+    cards.clear();
+    const n = cfg.entities.length;
+    if (!n) return;
+    const cols = n <= 2 ? n : n <= 6 ? 3 : n <= 12 ? 4 : 5;
+    grid.style.gridTemplateColumns = 'repeat(' + cols + ', minmax(0, 1fr))';
+
+    for (const e of cfg.entities) {
+      const root = document.createElement('div');
+      root.className = 'ent';
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = e.label || e.entity.split('.')[1].replace(/_/g, ' ');
+      const val = document.createElement('div');
+      val.className = 'val';
+      val.textContent = '--';
+      const hint = document.createElement('span');
+      hint.className = 'hint';
+      const press = document.createElement('i');
+      press.className = 'press';
+      root.append(name, val, hint, press);
+
+      const domain = domainOf(e.entity);
+      const security = SECURITY.includes(domain);
+      const canToggle = TOGGLEABLE.includes(domain) || (security && e.armed);
+      if (canToggle) {
+        root.classList.add('pressable');
+        if (security) {
+          root.classList.add('armed');
+          hint.textContent = 'hold';
+          wireLongPress(root, e);
+        } else {
+          hint.textContent = 'tap';
+          root.addEventListener('click', () => act(e, root));
+        }
+      }
+      grid.appendChild(root);
+      cards.set(e.entity, { root, val, hint });
+    }
+  }
+
+  // A security-domain tile only fires after the finger has been down for PRESS_MS,
+  // and lifting early cancels with no action and no error — an accidental brush is
+  // supposed to be a no-op, not a failure the user has to interpret.
+  function wireLongPress(root, entry) {
+    let held = null;
+    const start = (ev) => {
+      if (ev.button !== undefined && ev.button !== 0) return;
+      root.classList.add('pressing');
+      held = setTimeout(() => { held = null; root.classList.remove('pressing'); act(entry, root); }, PRESS_MS);
+    };
+    const cancel = () => {
+      root.classList.remove('pressing');
+      if (held) { clearTimeout(held); held = null; }
+    };
+    root.addEventListener('pointerdown', start);
+    root.addEventListener('pointerup', cancel);
+    root.addEventListener('pointercancel', cancel);
+    root.addEventListener('pointerleave', cancel);
+  }
+
+  async function ha(path, init) {
+    const opts = Object.assign({ insecure: true }, init || {});
+    opts.headers = Object.assign({
+      Authorization: 'Bearer ' + cfg.token,
+      'Content-Type': 'application/json',
+    }, (init && init.headers) || {});
+    return WW.fetch(cfg.base + path, opts);
+  }
+
+  async function act(entry, root) {
+    const domain = domainOf(entry.entity);
+    const current = states.get(entry.entity);
+    const isOn = current && /^(on|open|unlocked|home|playing)$/i.test(current.state);
+    // Optimistic flip: the panel answers the finger now and reconciles with the next
+    // poll. On failure we put it back AND fail-flash, so a refused action can never
+    // look like it worked.
+    root.classList.toggle('on', !isOn);
+    const service = SECURITY.includes(domain)
+      ? (domain === 'lock' ? (isOn ? 'lock' : 'unlock') : (isOn ? 'close_cover' : 'open_cover'))
+      : 'toggle';
+    const serviceDomain = domain === 'garage_door' ? 'cover' : domain;
+    try {
+      const res = await ha('/api/services/' + serviceDomain + '/' + service, {
+        method: 'POST',
+        body: JSON.stringify({ entity_id: entry.entity }),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      flash(root, 'confirm-flash');
+      clearTimeout(timer);
+      tick();
+    } catch (e) {
+      root.classList.toggle('on', !!isOn);   // revert the optimistic flip
+      flash(root, 'fail-flash');
+      WW.log('homeassistant: ' + entry.entity + ': ' + e.message);
+    }
+  }
+
+  async function tick() {
+    if (document.hidden || inFlight) { schedule(); return; }
+    inFlight = true;
+    try {
+      // /api/states returns every entity in the house, which on a big install is
+      // megabytes. Cap it and filter here — HA has no server-side entity filter on
+      // this endpoint, and the cap is what stops a large install taking the panel out.
+      const res = await ha('/api/states', { maxBytes: 4 * 1024 * 1024 });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const all = await res.json();
+      const wanted = new Set(cfg.entities.map((e) => e.entity));
+      const next = new Map();
+      for (const item of Array.isArray(all) ? all : []) {
+        const id = item && item.entity_id;
+        if (!id || !wanted.has(id)) continue;
+        const attrs = (item && item.attributes) || {};
+        next.set(id, {
+          state: String(item.state == null ? '' : item.state),
+          unit: String(attrs.unit_of_measurement || ''),
+          name: String(attrs.friendly_name || ''),
+        });
+      }
+      states = next;
+      lastOk = Date.now();
+      document.body.classList.remove('stale');
+      render();
+    } catch (e) {
+      if (states.size) { document.body.classList.add('stale'); render(); }
+      else showError(e instanceof RangeError
+        ? 'The entity list is larger than the panel will load.'
+        : "Couldn't reach Home Assistant at " + cfg.base + '.');
+      WW.log('homeassistant: ' + e.message);
+    } finally {
+      inFlight = false;
+      schedule();
+    }
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(tick, cfg.refreshMs);
+  }
+
+  function render() {
+    let unknown = 0;
+    for (const e of cfg.entities) {
+      const ui = cards.get(e.entity);
+      const s = states.get(e.entity);
+      if (!ui) continue;
+      if (!s) {
+        ui.val.textContent = '--';
+        ui.root.classList.remove('on');
+        unknown++;
+        continue;
+      }
+      const on = /^(on|open|unlocked|home|playing)$/i.test(s.state);
+      ui.root.classList.toggle('on', on);
+      ui.val.textContent = '';
+      ui.val.append(s.state);
+      if (s.unit) {
+        const u = document.createElement('small');
+        u.textContent = ' ' + s.unit;
+        ui.val.append(u);
+      }
+    }
+
+    const stale = document.body.classList.contains('stale');
+    const pill = el('pill');
+    if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
+    else if (unknown) { pill.textContent = unknown + ' unknown'; pill.className = 'pill warn'; }
+    else { pill.textContent = 'Live'; pill.className = 'pill ok'; }
+
+    el('meta').textContent = unknown
+      ? unknown + ' entity id' + (unknown === 1 ? '' : 's') + ' not found in Home Assistant'
+      : (lastOk ? 'updated ' + new Date(lastOk).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '');
+
+    el('state').hidden = true;
+    el('grid').hidden = false;
+  }
+
+  function stateCard(cls, icon, title, body, onRetry) {
+    const pill = el('pill');
+    pill.textContent = cls === 'err' ? 'Error' : 'Setup';
+    pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
+    const s = el('state');
+    s.className = 'state-card' + (cls ? ' ' + cls : '');
+    s.textContent = '';
+    const i = document.createElement('div');
+    i.className = 'state-icon';
+    i.textContent = icon;
+    const t = document.createElement('div');
+    t.className = 'state-title';
+    t.textContent = title;
+    const b = document.createElement('div');
+    b.className = 'state-body';
+    b.textContent = body;
+    s.append(i, t, b);
+    if (onRetry) {
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.textContent = 'Retry';
+      btn.addEventListener('click', onRetry);
+      s.append(btn);
+    }
+    s.hidden = false;
+    el('grid').hidden = true;
+  }
+
+  function showSetup() {
+    stateCard('', '◎', 'Not configured yet',
+      !cfg.base ? 'Add your Home Assistant address in the widget settings.'
+      : !cfg.token ? 'Add a long-lived access token in the widget settings.'
+      : 'Add entities in the widget settings, e.g. light.kitchen.');
+  }
+
+  function showError(message) {
+    stateCard('err', '!', 'Home Assistant unavailable', message, () => {
+      stateCard('', '', 'Retrying', '');
+      clearTimeout(timer);
+      tick();
+    });
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !started) return;
+    clearTimeout(timer);
+    tick();
+  });
+</script>
+</body>
+</html>

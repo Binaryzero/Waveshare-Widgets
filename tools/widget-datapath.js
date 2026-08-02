@@ -142,9 +142,15 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
       if (m.type === 'ww-fetch') {
         const stub = table.find((s) => String(m.url || '').includes(s.match));
         if (!stub) return reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
+        // The proxy tier's contract is bodyBase64 + contentType, NOT a body string and
+        // a headers map — the shim rebuilds a Response from exactly those fields. Note
+        // it carries no response headers beyond Content-Type, so anything reading an
+        // ETag off a proxied call legitimately sees nothing; that is the host's shape,
+        // and a widget has to survive it.
+        const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(stub.bodyText || '')));
         return reply({
-          type: 'ww-fetch-result', id: m.id, status: stub.status || 200, ok: (stub.status || 200) < 400,
-          headers: stub.headers || {}, body: stub.bodyText,
+          type: 'ww-fetch-result', id: m.id, status: stub.status || 200,
+          contentType: stub.contentType || 'application/json', bodyBase64: b64,
         });
       }
       if (m.type === 'ww-ping') reply({ type: 'ww-ping-result', id: m.id, results: [] });
