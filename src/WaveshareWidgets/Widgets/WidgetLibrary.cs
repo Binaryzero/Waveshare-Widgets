@@ -19,9 +19,10 @@ public sealed record InstalledWidget(WidgetManifest Manifest, string Folder, str
 ///
 /// <paramref name="RedactNames"/> is redaction metadata, not display data: a refused
 /// widget has no manifest in the library, so nothing downstream can tell which of its
-/// stored settings are credentials. Carrying the names here keeps those slots on the
-/// secret pipeline (see <see cref="WidgetManifest.RedactionOnly"/>) instead of having the
-/// refusal itself publish the plaintext it was raised over.</summary>
+/// stored settings are credentials. Carrying the names here is what lets the two windows
+/// plan those addresses as <see cref="SecretIntent.ProtectWithoutReveal"/> — masked,
+/// encrypted, never handed back out — instead of the refusal itself publishing the
+/// plaintext it was raised over.</summary>
 public sealed record RejectedWidget(
     string Id, string Name, string Folder, string Reason, IReadOnlyList<string> RedactNames);
 
@@ -44,10 +45,25 @@ public sealed partial class WidgetLibrary : IDisposable
 
     public IReadOnlyList<InstalledWidget> Widgets { get; private set; } = [];
 
-    /// <summary>Widgets found on disk but refused, with the reason. Rebuilt by every
-    /// <see cref="Rescan"/>; surfaced in the settings window so a refusal is not a
-    /// silently missing tile.</summary>
+    /// <summary>Widgets found on disk but refused, with the reason — for DISPLAY.
+    /// Rebuilt by every <see cref="Rescan"/>; surfaced in the settings window so a
+    /// refusal is not a silently missing tile.
+    ///
+    /// A refusal shadowed by a same-id widget that loaded is deliberately absent: the
+    /// widget is present and working, so telling the user it is unavailable sends them
+    /// hunting for a problem they do not have. Use <see cref="AllRefusals"/> for anything
+    /// that is not a message to the user.</summary>
     public IReadOnlyList<RejectedWidget> Rejected { get; private set; } = [];
+
+    /// <summary>Every refusal the scan recorded, INCLUDING ones shadowed by a same-id
+    /// widget that loaded. This is the redaction source; <see cref="Rejected"/> is the
+    /// display source and drops the shadowed ones.
+    ///
+    /// The distinction is the whole of #67/#104. A shadowed refusal is uninteresting as a
+    /// message and load-bearing as metadata: its <c>RedactNames</c> are the only record
+    /// that a stored value under that id is a credential the loaded copy never declared,
+    /// and dropping them is what let it reach the loaded copy's iframe.</summary>
+    public IReadOnlyList<RejectedWidget> AllRefusals { get; private set; } = [];
 
     /// <summary>Raised (on a background thread) when widget files change on disk.</summary>
     public event Action? Changed;
@@ -676,16 +692,25 @@ public sealed partial class WidgetLibrary : IDisposable
         // two distinct widgets to that check, so a rejected "Foo" really is unavailable
         // even while "foo" works.
         //
-        // KNOWN GAP (#67): dropping the record also drops its RedactNames, so a layout
-        // holding the refused copy's credential under a key the LOADED copy does not
-        // declare goes unmasked. Retaining shadowed rejections to fix that was tried in
-        // PR #65 and reverted — one snapshot entry cannot represent two different widgets,
-        // and every rule for merging them was wrong in some direction. The fix belongs
-        // with per-(slot, key) redaction metadata, not with manifests.
+        // The filter is for DISPLAY ONLY. It used to apply to the redaction metadata too,
+        // which is what #67/#104 were: dropping the record dropped its RedactNames, so a
+        // layout holding the refused copy's credential under a key the LOADED copy does
+        // not declare went unmasked and reached that widget's own iframe. Retaining the
+        // record and merging its names into the loaded manifest was tried in PR #65 and
+        // reverted — one manifest cannot represent two widgets. The record is retained
+        // here now because nothing merges it into a manifest any more: AllRefusals feeds
+        // SecretPlan directly as ProtectWithoutReveal, per address.
         var loadedIds = new HashSet<string>(widgets.Select(w => w.Manifest.Id), StringComparer.Ordinal);
+        AllRefusals = rejected;
         Rejected = rejected.Where(r => !loadedIds.Contains(r.Id)).ToList();
+        var shadowed = AllRefusals.Count - Rejected.Count;
         Log.Info($"Widget library: {Widgets.Count} widget(s) installed"
-               + (Rejected.Count > 0 ? $", {Rejected.Count} refused" : ""));
+               + (Rejected.Count > 0 ? $", {Rejected.Count} refused" : "")
+               // Shadowed refusals are absent from the banner by design, but they are no
+               // longer inert: their credential names now suppress the reveal for that id,
+               // so a widget whose own credential collides with one stops receiving it.
+               // Silent would make that unexplainable.
+               + (shadowed > 0 ? $", {shadowed} refused but shadowed by a same-id widget that loaded" : ""));
     }
 
     /// <summary>Installs a .wswidget package (a zip containing manifest.json + index.html at its root).</summary>

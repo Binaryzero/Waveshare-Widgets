@@ -148,68 +148,6 @@ public sealed class WidgetManifest
         }
         return names;
     }
-
-    /// <summary>A manifest that exists ONLY to keep a set of property names on the secret
-    /// pipeline. Used for widgets the library refused: they are absent from
-    /// <c>WidgetLibrary.Widgets</c>, so a manifest lookup for their slots returns null,
-    /// <c>SecretPolicy.Mask</c> skips them, and every setting they hold — including the
-    /// plaintext credential the refusal was about — is posted to the editor untouched.
-    /// The refusal would then be the thing that created the exposure it exists to prevent.
-    ///
-    /// Declaring the names <c>secret</c> puts those slots back on the pipeline they fell
-    /// off, which also makes the round-trip safe: Mask blanks the values and Seal restores
-    /// or encrypts them on the next save, rather than the editor's blank overwriting
-    /// them.</summary>
-    public static WidgetManifest RedactionOnly(string id, string name, IEnumerable<string> secretNames) => new()
-    {
-        Id = id,
-        Name = name,
-        Properties = [.. secretNames.Select(n => new WidgetProperty { Name = n, Type = "secret" })],
-    };
-
-    /// <summary>A copy of this manifest with <paramref name="secretNames"/> forced to
-    /// <c>secret</c> — present ones upgraded, absent ones added.
-    ///
-    /// Needed when a widget the snapshot ALREADY holds becomes refused. A stand-in cannot
-    /// simply take its place (the existing entry is what masked the layout the editor is
-    /// holding, and dropping it makes Seal blank every other secret that widget declares),
-    /// but leaving the entry untouched is just as wrong: the refusal is often the moment a
-    /// property was retyped, and the old entry still calls it <c>text</c>, so a credential
-    /// typed into that field before the rescan is written out in the clear.
-    ///
-    /// Merging, with secret winning, is the only answer that loses nothing in either
-    /// direction — the same rule the settings window's property union follows.</summary>
-    public WidgetManifest WithSecretsForced(IEnumerable<string> secretNames)
-    {
-        var props = new List<WidgetProperty>(Properties);
-        var byName = new Dictionary<string, int>(StringComparer.Ordinal);
-        for (var i = 0; i < props.Count; i++)
-            if (!string.IsNullOrEmpty(props[i].Name)) byName[props[i].Name] = i;
-        foreach (var name in secretNames)
-        {
-            if (string.IsNullOrEmpty(name)) continue;
-            if (byName.TryGetValue(name, out var at))
-            {
-                if (props[at].Type != "secret")
-                    props[at] = new WidgetProperty { Name = name, Label = props[at].Label, Type = "secret" };
-                continue;
-            }
-            byName[name] = props.Count;
-            props.Add(new WidgetProperty { Name = name, Type = "secret" });
-        }
-        return new WidgetManifest
-        {
-            Id = Id,
-            Name = Name,
-            Author = Author,
-            Version = Version,
-            Description = Description,
-            MinApiVersion = MinApiVersion,
-            PreviewIcon = PreviewIcon,
-            SupportedSlots = SupportedSlots,
-            Properties = props,
-        };
-    }
 }
 
 /// <summary>A user-configurable widget setting, declared in the manifest and rendered by the host.

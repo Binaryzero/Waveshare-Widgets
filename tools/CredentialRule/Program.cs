@@ -269,14 +269,11 @@ var refusedList = ManifestWith(new WidgetProperty
 });
 Check("C9d a list property is left off the redaction set", refusedList.CredentialPropertyNames().Count == 0,
     string.Join(", ", refusedList.CredentialPropertyNames()));
-// The stand-in manifest is what actually re-enters the pipeline, so it has to declare
-// every name as `secret` — any other type and SecretPolicy walks straight past it.
-var standIn = WidgetManifest.RedactionOnly("com.example.refused", "Refused", redact);
-Check("C9e the stand-in declares every redacted name as a secret",
-    standIn.Properties.Count == redact.Count && standIn.Properties.All(p => p.Type == "secret"),
-    string.Join(", ", standIn.Properties.Select(p => $"{p.Name}:{p.Type}")));
-Check("C9f and it keeps the widget's identity, or the lookup never finds it",
-    standIn.Id == "com.example.refused");
+// Where these names go next is no longer this file's business. They used to be laundered
+// through a fabricated `secret` manifest (RedactionOnly / WithSecretsForced, both now
+// deleted); SecretPlan takes them verbatim as ProtectWithoutReveal, so the assertions that
+// lived here — including the retype-and-refuse case that was C13 — are in
+// tools/SecretRoundTrip P35, against the real pipeline rather than the shape of a stand-in.
 // A duplicate name would make Mask walk the same field twice; harmless today, but the
 // set is the contract.
 var dupes = ManifestWith(
@@ -329,28 +326,6 @@ var dormantFields = ManifestWith(new WidgetProperty
 Check("C12 a non-list property's leftover fields do not refuse the widget",
     dormantFields.CredentialsAreTyped(out var c12Error), c12Error);
 Check("C12b but a real list is still scanned", !listWithSecret.CredentialsAreTyped(out _));
-
-// ---- C13 · a refused widget already in the snapshot is MERGED, not replaced -----------
-// A folder edit can retype a property AND refuse the manifest in the same breath. The
-// settings window is holding the old entry, so a stand-in cannot replace it (that blanks
-// every other secret it declares) and cannot be skipped either (the stale entry still
-// calls the retyped property `text`, and Seal writes the credential out in the clear).
-var wasLoaded = ManifestWith(
-    new WidgetProperty { Name = "feedUrl", Label = "Feed", Type = "text" },
-    new WidgetProperty { Name = "clientSecret", Label = "Client secret", Type = "secret" });
-var merged = wasLoaded.WithSecretsForced(["feedUrl", "apiToken"]);
-Check("C13 a retyped property is upgraded to secret in place",
-    merged.Properties.Single(p => p.Name == "feedUrl").Type == "secret");
-Check("C13b its label survives the upgrade — this manifest still renders the editor",
-    merged.Properties.Single(p => p.Name == "feedUrl").Label == "Feed");
-Check("C13c a name the old manifest never had is added",
-    merged.Properties.Any(p => p.Name == "apiToken" && p.Type == "secret"));
-Check("C13d and every other secret it already declared survives",
-    merged.Properties.Any(p => p.Name == "clientSecret" && p.Type == "secret"));
-Check("C13e the manifest's identity is preserved, or the lookup stops finding it",
-    merged.Id == wasLoaded.Id && merged.Properties.Count == 3);
-Check("C13f the original is not mutated — the snapshot decides what to keep",
-    wasLoaded.Properties.Single(p => p.Name == "feedUrl").Type == "text");
 
 // ---- C4 · the identity checks still work --------------------------------------------
 // CredentialsAreTyped is deliberately separate from IsValid (iCUE widgets have no

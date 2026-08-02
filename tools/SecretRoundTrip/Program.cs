@@ -662,13 +662,16 @@ Check("P27b without redaction metadata the plaintext IS in the editor payload",
     unmasked!.ToJsonString().Contains(Token),
     "if this stops holding, Mask learned to redact unknown widgets and P27c proves less");
 
-// With the stand-in manifest the library now carries for every refusal.
-var standIn = WidgetManifest.RedactionOnly(
-    refusedManifest.Id, refusedManifest.Name, refusedManifest.CredentialPropertyNames());
-WidgetManifest? RedactedLookup(string id) => id == "test.widget" ? standIn : null;
+// The refusal's credential names, carried into the plan directly. No manifest is
+// fabricated to say it any more: the names ARE the classification, per address, as
+// ProtectWithoutReveal. See P35 for what that buys over the stand-in.
+var refusedNames = refusedManifest.CredentialPropertyNames();
+IReadOnlyList<string>? RefusedCredentials(string id) => id == "test.widget" ? refusedNames : null;
+// No manifest at all — the library dropped the widget, which is the whole situation.
+SecretPlan RefusedPlan() => SecretPlan.FromManifests(_ => null, RefusedCredentials);
 var refusedMasked = JsonSerializer.SerializeToNode(refusedStored);
-SecretPolicy.Mask(refusedMasked, RedactedLookup);
-Check("P27c the stand-in keeps the refused widget's credential out of the editor payload",
+SecretPolicy.Mask(refusedMasked, RefusedPlan());
+Check("P27c the refusal's names keep its credential out of the editor payload",
     !refusedMasked!.ToJsonString().Contains(Token), refusedMasked.ToJsonString());
 Check("P27d and the editor is still told a value exists",
     refusedMasked["pages"]![0]!["slots"]![0]!["secretsSet"] is JsonArray s27 && s27.Count == 1);
@@ -676,7 +679,7 @@ Check("P27d and the editor is still told a value exists",
 // Redacting must not cost the user their data: the masked blank saved back has to restore
 // the stored value — and, since it was legacy plaintext, encrypt it on the way past.
 var refusedResave = JsonSerializer.Deserialize<DashboardLayout>(refusedMasked.ToJsonString())!;
-SecretPolicy.Seal(refusedResave, refusedStored, RedactedLookup);
+SecretPolicy.Seal(refusedResave, refusedStored, RefusedPlan());
 var refusedAfter = Value(refusedResave, "apiToken");
 Check("P27e saving the masked layout keeps the credential rather than blanking it",
     SecretStore.Unprotect(refusedAfter) == Token, refusedAfter);
@@ -960,6 +963,163 @@ Check("P33 a manifest changing mid-save cannot leak the plaintext past the secon
     SecretStore.CanUnprotect(Value(p33Layout, "apiToken")), Value(p33Layout, "apiToken"));
 Check("P33b the classification was resolved exactly once for the widget",
     p33Calls == 1, p33Calls.ToString());
+
+// ---- P35 · #67/#104: protected WITHOUT being revealed ---------------------------------
+// P27 above proves the editor side, and that half already worked through the fabricated
+// stand-in manifest. What a manifest could never say is "and nothing may read this back":
+// a stand-in could only declare `secret`, so the value was blanked in the editor and then
+// decrypted straight into the dashboard payload. `shell.js` hands every one of a slot's
+// settings to that slot's iframe — including keys no manifest declares — so in the
+// duplicate-id case (#104) the reader is a widget whose own manifest never mentioned the
+// property. The user typed that credential for the copy that was refused.
+
+var refusedSlot = Slot(LayoutWith(new JsonObject()));
+Check("P35 a refusal classifies the address ProtectWithoutReveal, not Protect",
+    RefusedPlan().For(refusedSlot).TryGetValue("apiToken", out var p35Intent)
+        && p35Intent == SecretIntent.ProtectWithoutReveal,
+    p35Intent.ToString());
+
+// The load-bearing case, and the one a naive "skip the address" reveal gets wrong: a
+// refused widget's credential is normally legacy PLAINTEXT — the refusal is what noticed
+// it — so there is nothing to decline to decrypt. Skipping leaves it in the payload.
+var p35Legacy = LayoutWith(new JsonObject { ["apiToken"] = Token });
+SecretPolicy.Reveal(p35Legacy, RefusedPlan());
+Check("P35b legacy plaintext is BLANKED on the way to the shell, not merely left undecrypted",
+    Value(p35Legacy, "apiToken") == "", Value(p35Legacy, "apiToken"));
+
+// Withholding must not cost the value: the shell round-trips this exact layout back
+// through save-layout, so the blank has to restore — and, being plaintext, encrypt.
+var p35Saved = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p35Legacy))!;
+SecretPolicy.Seal(p35Saved, LayoutWith(new JsonObject { ["apiToken"] = Token }), RefusedPlan());
+var p35Restored = Value(p35Saved, "apiToken");
+Check("P35c the withheld blank round-trips: the save restores the credential",
+    SecretStore.Unprotect(p35Restored) == Token, p35Restored);
+Check("P35d and encrypts it — withholding never replaces encrypting",
+    p35Restored != Token && SecretStore.HasMarker(p35Restored), p35Restored);
+
+// Once it is our ciphertext there is nothing left to blank, and leaving it is what keeps
+// the restore above a one-time dependency rather than a permanent one.
+var p35Sealed = LayoutWith(new JsonObject { ["apiToken"] = p35Restored });
+SecretPolicy.Reveal(p35Sealed, RefusedPlan());
+Check("P35e our own ciphertext is left in place, never decrypted into the payload",
+    Value(p35Sealed, "apiToken") == p35Restored, Value(p35Sealed, "apiToken"));
+Check("P35f which is the point: nothing the iframe receives is the credential",
+    !JsonSerializer.Serialize(p35Sealed).Contains(Token), JsonSerializer.Serialize(p35Sealed));
+
+// Shape does not answer "did WE write this?" — a user can type `dpapi:v1:…` into a text
+// field — so anything that does not actually decrypt is withheld. That is not a new loss:
+// Reveal already blanks a foreign envelope for an ordinary `secret`, because Unprotect
+// returns null for it. The two plans must agree.
+var p35Foreign = LayoutWith(new JsonObject { ["apiToken"] = ForeignEnvelope });
+var p35ForeignProtect = LayoutWith(new JsonObject { ["apiToken"] = ForeignEnvelope });
+SecretPolicy.Reveal(p35Foreign, RefusedPlan());
+SecretPolicy.Reveal(p35ForeignProtect, Lookup);
+Check("P35g a blob from another machine is withheld — CanUnprotect, not LooksLikeEnvelope",
+    Value(p35Foreign, "apiToken") == "", Value(p35Foreign, "apiToken"));
+Check("P35h and that is exactly what an ordinary secret already did, so nothing regressed",
+    Value(p35Foreign, "apiToken") == Value(p35ForeignProtect, "apiToken"));
+
+// ---- P35i · the duplicate-id attack (#104) -------------------------------------------
+// The loaded copy of the id declares the refused copy's credential name as a `secret` of
+// its own. Under any union where Protect can win, that one line of manifest is the whole
+// exploit: the host decrypts a credential the user typed for a different widget straight
+// into the attacker's iframe. ProtectWithoutReveal is the ceiling for this reason alone.
+var shadowManifest = new WidgetManifest
+{
+    Id = "test.widget",
+    Name = "Loaded copy",
+    Properties =
+    [
+        new WidgetProperty { Name = "apiToken", Label = "API token", Type = "secret" },
+        new WidgetProperty { Name = "clientSecret", Label = "Client secret", Type = "secret" },
+    ],
+};
+SecretPlan ShadowPlan() =>
+    SecretPlan.FromManifests(id => id == "test.widget" ? shadowManifest : null, RefusedCredentials);
+Check("P35i a same-id manifest declaring the name `secret` does not win the union",
+    ShadowPlan().For(refusedSlot)["apiToken"] == SecretIntent.ProtectWithoutReveal,
+    ShadowPlan().For(refusedSlot)["apiToken"].ToString());
+
+// Both values sealed the ordinary way first, so this is about the reveal and nothing else.
+var p35Shadow = LayoutWith(new JsonObject { ["apiToken"] = Token, ["clientSecret"] = "cs-live" });
+SecretPolicy.Seal(p35Shadow, null, ShadowPlan());
+Check("P35j setup: both are encrypted at rest",
+    SecretStore.CanUnprotect(Value(p35Shadow, "apiToken"))
+        && SecretStore.CanUnprotect(Value(p35Shadow, "clientSecret")));
+SecretPolicy.Reveal(p35Shadow, ShadowPlan());
+Check("P35k the loaded widget never receives the refused copy's credential",
+    !JsonSerializer.Serialize(p35Shadow).Contains(Token), JsonSerializer.Serialize(p35Shadow));
+Check("P35l but its OWN secret is still revealed — the union is per address, not per widget",
+    Value(p35Shadow, "clientSecret") == "cs-live", Value(p35Shadow, "clientSecret"));
+// The settings surface too: its preview replica hosts real widget iframes, which is the
+// path #104 was actually filed for.
+var p35ShadowNode = JsonSerializer.SerializeToNode(
+    LayoutWith(new JsonObject { ["apiToken"] = Token, ["clientSecret"] = "cs-live" }));
+SecretPolicy.Mask(p35ShadowNode, ShadowPlan());
+Check("P35m and the editor payload holds neither of them",
+    !p35ShadowNode!.ToJsonString().Contains(Token) && !p35ShadowNode.ToJsonString().Contains("cs-live"),
+    p35ShadowNode.ToJsonString());
+
+// ---- P35n · a folder edit that retypes a property AND refuses the manifest ------------
+// Previously C13 in tools/CredentialRule, asserted against the fabricated merge. The
+// window is holding a snapshot that still calls `feedUrl` a `text`, so only the refusal's
+// names protect it; a credential typed into that field before the rescan would otherwise
+// reach layout.json in the clear. The plan says it directly instead of upgrading a
+// property inside a copied manifest.
+var staleManifest = new WidgetManifest
+{
+    Id = "test.widget",
+    Name = "Stale",
+    Properties =
+    [
+        new WidgetProperty { Name = "feedUrl", Label = "Feed", Type = "text" },
+        new WidgetProperty { Name = "clientSecret", Label = "Client secret", Type = "secret" },
+    ],
+};
+string[] retypedNames = ["feedUrl", "apiToken"];
+var retypedIntents = SecretPlan.FromManifests(
+    id => id == "test.widget" ? staleManifest : null,
+    id => id == "test.widget" ? retypedNames : null).For(refusedSlot);
+Check("P35n a property the stale manifest still calls `text` is protected by the refusal",
+    retypedIntents.TryGetValue("feedUrl", out var p35Feed) && p35Feed == SecretIntent.ProtectWithoutReveal,
+    p35Feed.ToString());
+Check("P35o a name no manifest declares at all is planned too",
+    retypedIntents.TryGetValue("apiToken", out var p35Api) && p35Api == SecretIntent.ProtectWithoutReveal);
+Check("P35p while the manifest's own secret keeps its reveal — the refusal names neither",
+    retypedIntents.TryGetValue("clientSecret", out var p35Cs) && p35Cs == SecretIntent.Protect,
+    p35Cs.ToString());
+Check("P35q and nothing else is dragged onto the pipeline", retypedIntents.Count == 3, retypedIntents.Count.ToString());
+
+// ---- P35r · the intent rules themselves ----------------------------------------------
+// A third intent is coming (#66's RestoreIfUntouched) and it is LESS protective than
+// either member here — it does not encrypt at all. A union with a default arm would have
+// guessed at where it sits; these walk the real enum so it has to be placed deliberately.
+var intents = Enum.GetValues<SecretIntent>();
+var (idempotent, commutative, closed) = (true, true, true);
+foreach (var a in intents)
+{
+    if (SecretIntents.MostProtective(a, a) != a) idempotent = false;
+    foreach (var b in intents)
+    {
+        if (SecretIntents.MostProtective(a, b) != SecretIntents.MostProtective(b, a)) commutative = false;
+        var winner = SecretIntents.MostProtective(a, b);
+        if (winner != a && winner != b) closed = false;
+    }
+}
+Check("P35r MostProtective is idempotent for every intent, including ones added later", idempotent);
+Check("P35s and commutative, so the order the two sources are read in cannot decide it", commutative);
+Check("P35t and it always returns one of its inputs rather than inventing a third", closed);
+Check("P35u ProtectWithoutReveal beats Protect, whichever side declares it",
+    SecretIntents.MostProtective(SecretIntent.Protect, SecretIntent.ProtectWithoutReveal)
+        == SecretIntent.ProtectWithoutReveal
+    && SecretIntents.MostProtective(SecretIntent.ProtectWithoutReveal, SecretIntent.Protect)
+        == SecretIntent.ProtectWithoutReveal);
+Check("P35v nothing may be revealed that is not also masked and encrypted",
+    intents.All(i => !SecretIntents.Reveals(i) || SecretIntents.Protects(i)),
+    string.Join(", ", intents.Where(i => SecretIntents.Reveals(i) && !SecretIntents.Protects(i))));
+Check("P35w and ProtectWithoutReveal is on the masking side of that line — it is not a bypass",
+    SecretIntents.Protects(SecretIntent.ProtectWithoutReveal)
+        && !SecretIntents.Reveals(SecretIntent.ProtectWithoutReveal));
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;

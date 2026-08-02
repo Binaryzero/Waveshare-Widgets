@@ -304,42 +304,65 @@ public sealed class SettingsWindow : Form
         var snapshot = new Dictionary<string, WidgetManifest>(StringComparer.Ordinal);
         foreach (var w in _library.Widgets)
             snapshot[w.Manifest.Id] = w.Manifest;
-        AddRedactionManifests(snapshot);
         _maskedManifests = snapshot;
+        _maskedRedactions = null;
+        SnapshotRedactions();
     }
 
-    /// <summary>Stands a redaction-only manifest in for every REFUSED widget.
+    /// <summary>The credential names of every widget the library REFUSED, as of the
+    /// masking. Keyed by widget id, ordinal, and it only ever GROWS — see
+    /// <see cref="SnapshotRedactions"/>.
     ///
-    /// A refusal removes the widget from the library, so <see cref="ManifestAsMasked"/>
-    /// returns null for its slots, <see cref="SecretPolicy.Mask"/> skips them, and the
-    /// plaintext credential the widget was refused over is posted to the editor in the
-    /// clear — the refusal creating the exposure it exists to prevent. The stand-in keeps
-    /// those names on the secret pipeline, so Mask blanks them and Seal restores or
-    /// encrypts them instead of the editor's blank overwriting the stored value.</summary>
-    private void AddRedactionManifests(Dictionary<string, WidgetManifest> snapshot)
+    /// This is what replaced the redaction-only stand-in manifests. A refusal removes the
+    /// widget from the library, so a manifest lookup for its slots returns null and Mask
+    /// walks straight past the plaintext credential the widget was refused over — the
+    /// refusal creating the exposure it exists to prevent. The old answer was to fabricate
+    /// a manifest saying those names were `secret`; the answer now is to say it directly,
+    /// per address, as <c>ProtectWithoutReveal</c>. Two things fall out of that which the
+    /// fabrication could not do: a refusal SHADOWED by a same-id widget that loaded can be
+    /// carried at all (#67, #104 — one manifest cannot represent two widgets), and the
+    /// value is withheld from the dashboard payload rather than merely masked here.</summary>
+    private Dictionary<string, List<string>>? _maskedRedactions;
+
+    private IReadOnlyList<string>? RedactionsAsMasked(string widgetId) =>
+        _maskedRedactions is not null && _maskedRedactions.TryGetValue(widgetId, out var names)
+            ? names
+            : null;
+
+    /// <summary>The plan the masked payload was built with, and therefore the only plan
+    /// the next save may be sealed against. Built at each call site rather than held: a
+    /// plan caches its classifications, so one instance spanning two operations would
+    /// answer the second with the first one's library.</summary>
+    private SecretPlan MaskedPlan() => SecretPlan.FromManifests(ManifestAsMasked, RedactionsAsMasked);
+
+    /// <summary>Folds the library's current refusals into the snapshot. ADDITIVE — a name
+    /// that ever appeared is never dropped.
+    ///
+    /// Same reasoning as the manifest union, and the same asymmetry: a name that was a
+    /// credential at masking time left a blank in the editor, and only a plan that still
+    /// names it makes Seal restore the stored value instead of writing that blank over it.
+    /// If the user fixes the folder and the widget loads on the next rescan, forgetting
+    /// the name here is what destroys the credential on the next save.
+    ///
+    /// Growing costs a value a trip through a cipher it no longer needs, and the reveal it
+    /// is withheld from lasts until the editor is reopened. Shrinking costs the value.
+    ///
+    /// Two refused folders can share an id, so this unions across records rather than
+    /// assuming one.</summary>
+    private void SnapshotRedactions()
     {
-        foreach (var r in _library.Rejected)
+        var into = _maskedRedactions ?? new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var r in _library.AllRefusals)
         {
             if (string.IsNullOrEmpty(r.Id) || r.RedactNames.Count == 0)
                 continue;
-            // MERGE into an existing entry, never replace it and never skip it.
-            //
-            // Replacing loses every OTHER secret the old manifest declared — that entry is
-            // what masked the layout the editor is holding, so Seal would blank them. But
-            // skipping is just as wrong, and that is what a bare TryAdd did: a widget can
-            // be refused by the same folder edit that RETYPED one of its properties, and
-            // the stale entry still calls that property `text`. A credential typed into
-            // the field before the rescan then goes to layout.json in the clear — the very
-            // hole the redaction metadata exists to close, reopened by the order of events.
-            //
-            // Secret wins, exactly as in the property union above. WidgetLibrary.Rejected
-            // never contains an id that also loaded, so `existing` here can only be this
-            // same widget's own older manifest — the case round seven was written for,
-            // where a folder edit both retyped a property and refused the manifest.
-            snapshot[r.Id] = snapshot.TryGetValue(r.Id, out var existing)
-                ? existing.WithSecretsForced(r.RedactNames)
-                : WidgetManifest.RedactionOnly(r.Id, r.Name, r.RedactNames);
+            if (!into.TryGetValue(r.Id, out var names))
+                into[r.Id] = names = [];
+            foreach (var n in r.RedactNames)
+                if (!string.IsNullOrEmpty(n) && !names.Contains(n, StringComparer.Ordinal))
+                    names.Add(n);
         }
+        _maskedRedactions = into;
     }
 
     /// <summary>Adds newly-seen manifests to the baseline WITHOUT dropping any.
@@ -431,11 +454,10 @@ public sealed class SettingsWindow : Form
         }
 
         // A widget can also be refused BETWEEN init and save — or appear already-refused
-        // in a folder that was empty at init. TryAdd leaves any real manifest alone (that
-        // is the one that masked the layout the editor holds); it only fills the gap where
-        // there is nothing at all, so the next save seals the slot instead of writing the
-        // credential back out in the clear.
-        AddRedactionManifests(_maskedManifests);
+        // in a folder that was empty at init — so the refusals are folded in on every
+        // change too, additively. A credential typed into a field before the rescan that
+        // refused the widget would otherwise reach layout.json in the clear.
+        SnapshotRedactions();
     }
 
     /// <summary>The widget palette as the editor sees it. Shared by the initial payload
@@ -532,7 +554,7 @@ public sealed class SettingsWindow : Form
         // stored ciphertext stays in layout.json (restored on save if left untouched).
         var layoutNode = JsonSerializer.SerializeToNode(LayoutStore.Load());
         SnapshotManifests();
-        SecretPolicy.Mask(layoutNode, ManifestAsMasked);
+        SecretPolicy.Mask(layoutNode, MaskedPlan());
 
         Post(new JsonObject
         {
@@ -569,7 +591,7 @@ public sealed class SettingsWindow : Form
 
             // Newly typed secrets get encrypted; masked ones the user didn't retype keep
             // the ciphertext already on disk instead of being wiped.
-            var secrets = SecretPolicy.Seal(layout, LayoutStore.Load(), ManifestAsMasked);
+            var secrets = SecretPolicy.Seal(layout, LayoutStore.Load(), MaskedPlan());
             var secretFailures = secrets.Failures;
             LayoutStore.Save(layout);
             LayoutSaved?.Invoke();

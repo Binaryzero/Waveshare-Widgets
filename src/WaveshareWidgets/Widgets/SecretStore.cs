@@ -163,10 +163,24 @@ public sealed record SecretSealResult(
 public enum SecretIntent
 {
     /// <summary>A property the manifest declares `secret`: blanked for the editor,
-    /// encrypted on its way to disk, decrypted for the dashboard. The only intent that
-    /// exists today; the others in docs/SECRET-ADDRESSING.md are what #62, #66 and #67
-    /// each need, and they are additions here rather than rewrites.</summary>
+    /// encrypted on its way to disk, decrypted for the dashboard.</summary>
     Protect,
+
+    /// <summary>A refused widget's credential (#67, #104): masked and encrypted exactly
+    /// like <see cref="Protect"/>, never decrypted into a payload.
+    ///
+    /// Encrypting matters as much as withholding. A refused widget's credential is
+    /// typically legacy plaintext — the refusal is what noticed it — so an intent that
+    /// only declined to reveal would leave it readable on disk forever. `P27e`/`P27f`
+    /// pin that: after one save "it is now encrypted at rest, which the refusal alone
+    /// never achieved."
+    ///
+    /// Withholding is safe because nothing legitimate is waiting for the value. Either
+    /// the widget is not loaded at all, or — the duplicate-id case — the copy that
+    /// loaded does not declare the property, so its own settings do not include it. The
+    /// only reader the reveal would have created is a same-id widget receiving a
+    /// credential the user typed for a different one.</summary>
+    ProtectWithoutReveal,
 }
 
 /// <summary>Which values the secret pipeline acts on, and what it may do with each.
@@ -206,10 +220,29 @@ public sealed class SecretPlan
     private SecretPlan(Func<string, IReadOnlyDictionary<string, SecretIntent>> classify) =>
         _classify = classify;
 
-    /// <summary>The plan every caller builds today: whatever the manifest calls `secret`
-    /// is protected, and nothing else is touched.</summary>
+    /// <summary>Whatever the manifest calls `secret` is protected, and nothing else is
+    /// touched. For callers with no refusals to account for — the probes, and anything
+    /// classifying a layout that never meets the library.</summary>
     public static SecretPlan FromManifests(Func<string, WidgetManifest?> lookup) =>
-        new(id => Classify(lookup(id)));
+        new(id => Classify(lookup(id), null));
+
+    /// <summary>The plan the two windows build: manifest secrets plus the credential
+    /// names of every widget the library REFUSED under this id.
+    ///
+    /// A refusal is not a manifest and must not be turned into one. The names arrive
+    /// straight from <c>RejectedWidget.RedactNames</c> as
+    /// <see cref="SecretIntent.ProtectWithoutReveal"/>, which is the point of the intent:
+    /// the host can say "this address holds a credential and nothing may read it back"
+    /// without fabricating a widget that says so. Fabricating one is what PR #65 tried
+    /// three ways, and every merge rule was wrong in some direction because a per-widget
+    /// artifact cannot describe two widgets sharing an id.
+    ///
+    /// <paramref name="refusedCredentials"/> is keyed by widget id and may return null for
+    /// ids with no refusal, which is the overwhelmingly common answer.</summary>
+    public static SecretPlan FromManifests(
+        Func<string, WidgetManifest?> lookup,
+        Func<string, IReadOnlyList<string>?> refusedCredentials) =>
+        new(id => Classify(lookup(id), refusedCredentials(id)));
 
     /// <summary>The intents that apply to THIS SLOT's properties, keyed by property name.
     /// </summary>
@@ -250,17 +283,34 @@ public sealed class SecretPlan
         return intents;
     }
 
-    private static IReadOnlyDictionary<string, SecretIntent> Classify(WidgetManifest? manifest)
+    private static IReadOnlyDictionary<string, SecretIntent> Classify(
+        WidgetManifest? manifest, IReadOnlyList<string>? refusedCredentials)
     {
         var intents = new Dictionary<string, SecretIntent>(StringComparer.Ordinal);
         foreach (var prop in manifest?.Properties ?? [])
         {
             if (!string.IsNullOrEmpty(prop.Name) &&
                 string.Equals(prop.Type, "secret", StringComparison.OrdinalIgnoreCase))
-                intents[prop.Name] = SecretIntent.Protect;
+                Merge(intents, prop.Name, SecretIntent.Protect);
+        }
+        // A refusal's names come SECOND but do not simply overwrite: `Merge` is what makes
+        // the collision rule the documented one rather than an accident of ordering.
+        foreach (var name in refusedCredentials ?? [])
+        {
+            if (!string.IsNullOrEmpty(name))
+                Merge(intents, name, SecretIntent.ProtectWithoutReveal);
         }
         return intents;
     }
+
+    /// <summary>Adds an intent for a name, resolving a collision the safe way. See
+    /// <see cref="SecretIntents.MostProtective"/> for why the direction is not a
+    /// preference.</summary>
+    private static void Merge(
+        Dictionary<string, SecretIntent> intents, string name, SecretIntent intent) =>
+        intents[name] = intents.TryGetValue(name, out var existing)
+            ? SecretIntents.MostProtective(existing, intent)
+            : intent;
 }
 
 public static class SecretPolicy
@@ -314,9 +364,14 @@ public static class SecretPolicy
     {
         Walk(layout, plan, (slot, name, intent) =>
         {
-            if (intent is not SecretIntent.Protect)
+            if (!SecretIntents.Protects(intent))
                 return;
             var stored = AsString(slot.Settings?[name]);
+            if (!SecretIntents.Reveals(intent))
+            {
+                Withhold(slot, name, stored);
+                return;
+            }
             if (stored is null)
             {
                 // Non-string junk (hand-edited layout) reads as unset, never as a crash.
@@ -329,6 +384,42 @@ public static class SecretPolicy
             // Legacy plaintext (a property that used to be `text`) already reads as
             // itself; it gets encrypted the next time the layout is saved.
         });
+    }
+
+    /// <summary>The <see cref="SecretIntent.ProtectWithoutReveal"/> half of Reveal.
+    ///
+    /// Declining to DECRYPT is not enough, and that is the whole subtlety of #104. The
+    /// credential a widget was refused over is normally legacy plaintext, so there is
+    /// nothing to decline: skipping the address leaves the plaintext sitting in the
+    /// payload, `shell.js` hands every one of a slot's settings to that slot's iframe
+    /// including keys no manifest declares, and in the duplicate-id case the iframe is
+    /// the same-id widget that loaded. So the value is actively blanked.
+    ///
+    /// Blanked, not removed, and only when we cannot prove we wrote it:
+    ///
+    /// <list type="bullet">
+    /// <item>Ciphertext this machine produced is left alone. It is not a credential to
+    ///   anything without the user's DPAPI key, and leaving it means the round-trip below
+    ///   has nothing to depend on.</item>
+    /// <item>Everything else is blanked — plaintext, junk, and a blob from another
+    ///   machine. `CanUnprotect`, not `LooksLikeEnvelope`: `dpapi:v1:YWJj` is a string a
+    ///   user can type, so shape does not answer "did WE write this?" and a credential
+    ///   that happened to match the shape would be handed out.</item>
+    /// </list>
+    ///
+    /// The blank round-trips safely because the shell posts this exact layout back through
+    /// save-layout, and `Seal` restores the stored node for an address that came back
+    /// empty — then encrypts it, since it was plaintext. That restore is why Seal MUST
+    /// walk the same plan Reveal did; the two call sites in `DashboardWindow` build from
+    /// one snapshot for exactly that reason. The narrow residue: if the slot's identity is
+    /// ambiguous, Seal refuses the carry-over and the credential is lost rather than
+    /// misdelivered — the posture this pipeline already takes everywhere, and the user
+    /// retypes it into a widget they have to fix anyway.</summary>
+    private static void Withhold(LayoutSlot slot, string name, string? stored)
+    {
+        if (slot.Settings?[name] is null || SecretStore.CanUnprotect(stored))
+            return;
+        slot.Settings[name] = "";
     }
 
     /// <summary>Blanks every secret and records which ones are set AND readable here.
@@ -353,7 +444,7 @@ public static class SecretPolicy
                 var set = new JsonArray();
                 foreach (var (name, intent) in secrets)
                 {
-                    if (intent is not SecretIntent.Protect)
+                    if (!SecretIntents.Protects(intent))
                         continue;
                     var node = slot["settings"]?[name];
                     if (node is null)
@@ -421,7 +512,7 @@ public static class SecretPolicy
 
         Walk(layout, plan, (slot, name, intent) =>
         {
-            if (intent is not SecretIntent.Protect)
+            if (!SecretIntents.Protects(intent))
                 return;
             if (!keyOf.TryGetValue(slot, out var key))
                 keyOf[slot] = key = SlotKey(slot, storedCounts, incomingCounts);
@@ -621,7 +712,7 @@ public static class SecretPolicy
         var seen = new HashSet<(string, string)>();
         Walk(stored, plan, (slot, name, intent) =>
         {
-            if (intent is not SecretIntent.Protect)
+            if (!SecretIntents.Protects(intent))
                 return;
             var key = SlotKey(slot, storedCounts, incomingCounts);
             // Register the identity BEFORE the value check: a colliding slot whose secret
