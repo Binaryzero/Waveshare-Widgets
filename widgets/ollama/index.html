@@ -369,6 +369,14 @@
   function scheduleTicker() {
     clearTimeout(tickerTimer);
     if (document.hidden || gameOn) return;
+    // Deadlines that passed while nothing was ticking. The eviction check used to live
+    // only in the timer callback, so it was reachable only by a timer that SURVIVED until
+    // the crossing — and a game (or a hidden document) clears the ticker precisely so that
+    // it does not. Start the game before a model expires, end it afterwards, and the
+    // crossing had no witness: nothing marked the list stale, the poll stayed anchored to
+    // the old interval, and the tile went on counting the evicted model's VRAM. Resuming
+    // is exactly when the elapsed ones need looking at.
+    noticeEvictions();
     let soonest = Infinity;
     for (const m of models) {
       const t = Date.parse(m.expires || '');
@@ -393,17 +401,21 @@
   // `t > lastOk` is what stops this repeating: once a poll lands, lastOk is later than the
   // deadline that triggered it, so a server still reporting the model does not re-arm this
   // on every tick.
-  function onTicker() {
+  function noticeEvictions() {
     const now = Date.now();
     const evicted = models.some((m) => {
       const t = Date.parse(m.expires || '');
       return Number.isFinite(t) && t <= now && t > lastOk;
     });
-    if (evicted) {
-      document.body.classList.add('stale');
-      pollAnchor = 0;
-      arm();
-    }
+    if (!evicted) return;
+    document.body.classList.add('stale');
+    pollAnchor = 0;
+    arm();
+  }
+
+  // render() calls scheduleTicker() first, and that is where the eviction check now lives,
+  // so this only has to repaint.
+  function onTicker() {
     render();
   }
 
