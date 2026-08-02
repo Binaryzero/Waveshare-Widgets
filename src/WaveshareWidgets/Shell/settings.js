@@ -367,21 +367,49 @@
     const secretsOf = (widgetId) => knownSecretNames(widgetId);
     const pages = (captured.pages || []).map((page, pi) => Object.assign({}, page, {
       slots: (page.slots || []).map((slot, si) => {
-        const names = secretsOf(slot.widgetId);
-        if (!names.length) return slot;
         // By id first, then by position: the replica MINTS an instanceId for legacy
         // id-less slots on its first mutation, so an id-keyed lookup alone would miss
         // exactly the slot whose secret we are trying to preserve.
         const prior = (slot.instanceId && mine.get('i:' + slot.instanceId)) || mine.get('p:' + pi + ':' + si);
         if (!prior || prior.widgetId !== slot.widgetId) return slot;
-        const settings = Object.assign({}, slot.settings);
-        for (const n of names) {
-          if (prior.settings && n in prior.settings) settings[n] = prior.settings[n];
-          else delete settings[n];
+        // The projections below are carried across for EVERY captured slot, not only
+        // those whose widget still declares a secret. A demoted property is precisely
+        // one the manifest no longer calls secret, so gating this on the name list drops
+        // secretsCleared for the only case it exists to serve: the capture would replace
+        // the slot wholesale and the clear would silently become a restore.
+        const names = secretsOf(slot.widgetId);
+        let settings = slot.settings;
+        if (names.length) {
+          settings = Object.assign({}, slot.settings);
+          for (const n of names) {
+            if (prior.settings && n in prior.settings) settings[n] = prior.settings[n];
+            else delete settings[n];
+          }
         }
         const merged = Object.assign({}, slot, { settings });
+        // Facts about what the HOST did. The replica cannot change them, so they are
+        // restored wholesale.
         if (prior.secretsSet) merged.secretsSet = prior.secretsSet;
         if (prior.secretsRestorable) merged.secretsRestorable = prior.secretsRestorable;
+        // A pending removal is different: it is a statement the REPLICA can contradict.
+        // replicaLayout passes secretsCleared through, so the panel receives the marker
+        // and cancels it by setting a value — but cancelling deletes the key, which looks
+        // identical to a capture that never carried one. The value is the only signal
+        // that separates them, and it is the same rule the editors use: a removal
+        // survives anything that is not a value. Restoring the marker unconditionally
+        // meant a replacement typed in the preview was deleted by the next Save.
+        // BOTH sides can name an address: the preview's own Clear puts the property in
+        // the CAPTURED list where no prior marker exists, and sourcing the union only
+        // from prior deleted it — so the replica could cancel a removal but never start
+        // one. Union first, then let the value settle it, which also handles the cancel:
+        // a marker the replica dropped comes back through prior and is filtered out by
+        // the replacement value that dropped it.
+        const named = new Set(Array.isArray(slot.secretsCleared) ? slot.secretsCleared : []);
+        for (const n of (prior.secretsCleared || [])) named.add(n);
+        const stillCleared = [...named]
+          .filter((n) => !contradictsRemoval(settings ? settings[n] : undefined));
+        if (stillCleared.length) merged.secretsCleared = stillCleared;
+        else delete merged.secretsCleared;
         return merged;
       }),
     }));
@@ -391,6 +419,11 @@
   // Test seam: the headless probes assert that nothing credential-shaped reaches the
   // preview. Reading a projection is harmless; it exposes no state the page lacks.
   window.__wwReplicaLayout = replicaLayout;
+  // Same seam, write side: the probes drive a capture that mirrors the replica's own
+  // scrubbed view — no secretsCleared, no secretsRestorable — and assert the merge puts
+  // the projections back. Pure over its argument plus state.layout; exposes nothing the
+  // page does not already hold.
+  window.__wwMergeReplicaCapture = mergeReplicaCapture;
 
   function replicaPost(message) {
     if (message && message.type === 'init') window.__wwLastReplicaInit = JSON.stringify(message);
@@ -812,14 +845,34 @@
    *
    * Reason strings come from the host and name a third-party manifest, so they are
    * rendered with textContent — never innerHTML. */
-  /** Any value in the reserved `__ww_secret_` namespace travels ESCAPED; the host strips
-   * exactly one prefix (SecretStore.LiteralPrefix). Every ordinary property is now planned
-   * RestoreIfUntouched, so the host reads `__ww_secret_cleared__` as protocol wherever it
-   * appears — without this, a perfectly valid setting that happens to be that string is
-   * removed by an unrelated save. */
-  function escapeReserved(value) {
-    return typeof value === 'string' && value.startsWith('__ww_secret_')
-      ? '__ww_secret_lit_' + value : value;
+  /** Names the properties the user asked to REMOVE, per slot, as a projection the host
+   * reads off the raw save payload (SecretPolicy.ClearedMarkerKey).
+   *
+   * This replaced a sentinel string written into the value. "The user cleared this" is a
+   * statement ABOUT a value, and putting it IN the value made one string mean two things:
+   * an untouched field echoing that exact text was indistinguishable from a deliberate
+   * clear, and no rule over the bytes could separate them. Escaping made it worse rather
+   * than better — it was a per-producer obligation, and only the text inputs ever had it.
+   *
+   * A name in a list cannot be confused with a value, so nothing escapes anything here. */
+  // Whether a value the user just set CONTRADICTS a pending removal. "" does not: it is
+  // the exact shape the host reads as untouched, so a control with a legitimately empty
+  // choice — an `sd-profiles` select where "" means "first available" — would otherwise
+  // cancel a clear and have Seal restore the envelope the user asked to delete.
+  //
+  // `false` and `0` ARE values. A switch turned off and a number set to zero are choices,
+  // not absences, and they cancel a removal like any other replacement.
+  function contradictsRemoval(value) {
+    return !(value === '' || value === null || value === undefined);
+  }
+
+  function markCleared(slot, name, on) {
+    const list = Array.isArray(slot.secretsCleared) ? slot.secretsCleared.slice() : [];
+    const at = list.indexOf(name);
+    if (on && at < 0) list.push(name);
+    else if (!on && at >= 0) list.splice(at, 1);
+    if (list.length) slot.secretsCleared = list;
+    else delete slot.secretsCleared;
   }
 
   function renderRejectedWidgets(list) {
@@ -1405,6 +1458,7 @@
       // never had one.
       delete slot.secretsSet;
       delete slot.secretsRestorable;
+      delete slot.secretsCleared;
       const w = widgetsById.get(slot.widgetId);
       const widths = offeredWidths(w);
       const current = parseSize(slot.size);
@@ -1486,6 +1540,37 @@
         const field = document.createElement('div');
         field.className = 'prop-field' + (WIDE_TYPES.has(prop.type) ? ' wide' : '');
         field.append(label, editor);
+
+        // A demoted property can be ANY type — `secret` → `number`, `switch`, `color`,
+        // `select` — and the host blanks and lists every one of them. The affordance
+        // therefore belongs to the FIELD, not to one control: a Clear that lived in the
+        // text branch left every other type with a stored envelope it could not delete,
+        // because each of those controls' own reset emits an empty or absent value and
+        // the host reads that as untouched.
+        //
+        // Keyed on the list, so nothing here has to know what the control is. The text
+        // control renders its own richer version (placeholder + live state), so it opts
+        // out — that is the one type where the value and the affordance are the same
+        // widget.
+        if (Array.isArray(slot.secretsRestorable)
+            && slot.secretsRestorable.includes(prop.name)
+            && !(editor.classList && editor.classList.contains('restorable-wrap'))) {
+          const clear = iconButton('✕', 'Remove the stored value on the next save', () => {
+            // Empty, never absent: absent is one of the shapes the host reads as
+            // untouched, and the name is what carries the intent anyway.
+            slot.settings = slot.settings || {};
+            slot.settings[prop.name] = '';
+            markCleared(slot, prop.name, true);
+            // The replica has to see the finished slot. Nothing else here refreshes it —
+            // markDirty only lights the save button and renderEditor only rebuilds this
+            // panel — so without it the preview keeps showing the value just cleared.
+            refreshReplica('layout');
+            markDirty();
+            renderEditor();
+          }, true);
+          clear.classList.add('prop-clear');
+          field.appendChild(clear);
+        }
         grid.appendChild(field);
       }
       propsWrap.appendChild(grid);
@@ -1751,7 +1836,19 @@
 
   function propEditor(prop, slot) {
     const current = slot.settings[prop.name] !== undefined ? slot.settings[prop.name] : prop.default;
-    const set = (value) => { slot.settings[prop.name] = value; refreshReplica('layout'); };
+    // Writing a value CANCELS a pending removal. The field-level Clear names the address,
+    // and without this the name latched: the user cleared a demoted property, picked a
+    // replacement in the same session, and the save deleted the property instead of
+    // storing what they had just chosen. The controls that mean "remove" say so
+    // explicitly through markCleared; every other edit is the user setting a value.
+    //
+    // Only a real value cancels — see contradictsRemoval. Cancelling on "" put the latch
+    // back for any control whose empty choice is a legitimate selection.
+    const set = (value) => {
+      slot.settings[prop.name] = value;
+      if (contradictsRemoval(value)) markCleared(slot, prop.name, false);
+      refreshReplica('layout');
+    };
 
     switch (prop.type) {
       case 'switch': { // iCUE boolean toggle — rendered as a real switch, not a form checkbox
@@ -1886,11 +1983,8 @@
         input.autocomplete = 'off';
         input.spellcheck = false;
         input.placeholder = prop.placeholder || 'Paste the token or key';
-        // The clear marker is a host protocol word, never something to show or re-send
-        // as if the user had typed it.
-        input.value = (typeof current === 'string' && current !== '__ww_secret_cleared__')
-          ? (current.startsWith('__ww_secret_lit_') ? current.slice('__ww_secret_lit_'.length) : current)
-          : '';
+        // No protocol words live in values any more, so whatever is here is the user's.
+        input.value = typeof current === 'string' ? current : '';
         // Whether a credential EXISTS on disk for this field. `secretsSet` is only the
         // state at init: the host does not refresh it on save and this control is not
         // rebuilt, so once the user types and saves, a credential exists that the
@@ -1925,10 +2019,11 @@
           // as "saved · encrypted (hidden)".
           if (Array.isArray(slot.secretsSet))
             slot.secretsSet = slot.secretsSet.filter((n) => n !== prop.name);
-          // A distinct marker, NOT an empty string: empty is what an untouched masked
-          // field sends back, and that must KEEP the stored credential. Only this word
-          // means "delete it" (SecretStore.ClearMarker on the host).
-          set('__ww_secret_cleared__');
+          // The VALUE goes empty and the intent is stated separately. Empty on its own
+          // is what an untouched masked field sends and must KEEP the credential; the
+          // name in secretsCleared is what says "delete it".
+          set('');
+          markCleared(slot, prop.name, true);
           sync();
         }, true);
         input.addEventListener('input', () => {
@@ -1938,15 +2033,17 @@
             stored = true;
             secretsTypedHere.add(typedKey);   // survives the next renderEditor()
             cleared = false;
-            // Credentials are arbitrary strings, so one of them can BE the clear marker.
-            // Anything in the reserved __ww_secret_ namespace travels escaped; the host
-            // strips exactly one prefix (SecretStore.LiteralPrefix).
-            set(escapeReserved(input.value));
+            // A credential is arbitrary text and needs no escaping now: nothing about a
+            // value carries protocol, so any string at all round-trips as itself.
+            markCleared(slot, prop.name, false);
+            set(input.value);
           } else if (stored) {
             cleared = true;
-            set('__ww_secret_cleared__');
+            set('');
+            markCleared(slot, prop.name, true);
           } else {
             cleared = false;
+            markCleared(slot, prop.name, false);
             set('');
           }
           sync();
@@ -1980,7 +2077,7 @@
           state.classList.toggle('overridden', overridden);
           reset.hidden = !overridden;
         };
-        input.oninput = () => { set(escapeReserved(input.value)); sync(); };
+        input.oninput = () => { set(input.value); sync(); };
         reset.onclick = () => {
           delete slot.settings[prop.name]; // absent = default = the theme shows through
           input.value = def;
@@ -2070,7 +2167,7 @@
           input.value = Array.isArray(current)
             ? current.map((x) => (x && typeof x === 'object') ? Object.values(x).join('=') : String(x)).join(', ')
             : (current != null ? String(current) : '');
-          input.oninput = () => set(escapeReserved(input.value));
+          input.oninput = () => set(input.value);
           return input;
         }
         const wrap = document.createElement('div');
@@ -2181,7 +2278,7 @@
         // The sanctioned place to teach an expected format — labels must not.
         if (prop.placeholder) input.placeholder = String(prop.placeholder);
         input.value = current != null ? String(current) : '';
-        input.oninput = () => set(escapeReserved(input.value));
+        input.oninput = () => set(input.value);
 
         // A DEMOTED property (#66): the manifest calls it `text` now, but layout.json still
         // holds the envelope from when it was `secret`, so the host blanked it on the way
@@ -2223,20 +2320,29 @@
           const clear = iconButton('✕', 'Remove the stored value on the next save', () => {
             input.value = '';
             cleared = true;
-            set('__ww_secret_cleared__');
+            // Name the address BEFORE set()'s replica refresh, so the refresh sees the
+            // finished slot. Refreshing first sees no layout change, schedules no
+            // re-init, and mergeReplicaCapture then merges back a captured slot that
+            // never carried the marker. Safe now that set('') no longer cancels.
+            markCleared(slot, prop.name, true);
+            set('');
             sync();
           }, true);
           input.oninput = () => {
             if (input.value.length > 0) {
               cleared = false;
-              set(escapeReserved(input.value));
+              markCleared(slot, prop.name, false);
+              set(input.value);
             } else if (stored) {
-              // Emptying is a deliberate clear, never "leave the stored value alone" —
-              // the plain "" is the one string that cannot say which one the user meant.
+              // Emptying a field the host blanked is a deliberate clear. The plain "" is
+              // the one string that cannot say which one the user meant, so the name says
+              // it instead.
               cleared = true;
-              set('__ww_secret_cleared__');
+              markCleared(slot, prop.name, true);
+              set('');
             } else {
               cleared = false;
+              markCleared(slot, prop.name, false);
               set('');
             }
             sync();

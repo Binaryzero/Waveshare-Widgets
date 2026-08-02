@@ -10,10 +10,31 @@
   // Host protocol: "the user cleared this secret", as distinct from "" which means the
   // masked field came back untouched and the stored credential must survive the save.
   // Must match SecretStore.ClearMarker.
-  const SECRET_CLEARED = '__ww_secret_cleared__';
-  // Escape for a credential that lives in the reserved namespace (it could BE the marker
-  // above). Must match SecretStore.LiteralPrefix.
-  const SECRET_LITERAL = '__ww_secret_lit_';
+  /** Names the properties the user asked to REMOVE, per slot, as a projection the host
+   * reads off the raw save payload (SecretPolicy.ClearedMarkerKey). Replaced a sentinel
+   * written into the value: "the user cleared this" is a statement ABOUT a value, and an
+   * untouched field echoing that exact text was indistinguishable from a real clear.
+   *
+   * This is also the channel the on-panel editor never had. Reveal cannot carry a
+   * projection into the model, so before this the panel could not say a demoted
+   * credential had been cleared at all (#153). */
+  // Whether a value the user just set CONTRADICTS a pending removal. "" does not: it is
+  // the exact shape the host reads as untouched, so a control with a legitimately empty
+  // choice would otherwise cancel a clear and have Seal restore the envelope the user
+  // asked to delete. `false` and `0` ARE values — a switch turned off and a number set to
+  // zero are choices, not absences. Mirrors settings.js.
+  function contradictsRemoval(value) {
+    return !(value === '' || value === null || value === undefined);
+  }
+
+  function markCleared(def, name, on) {
+    const list = Array.isArray(def.secretsCleared) ? def.secretsCleared.slice() : [];
+    const at = list.indexOf(name);
+    if (on && at < 0) list.push(name);
+    else if (!on && at >= 0) list.splice(at, 1);
+    if (list.length) def.secretsCleared = list;
+    else delete def.secretsCleared;
+  }
 
   /** @type {{frame: HTMLIFrameElement, el: HTMLElement, settings: object, initialized: boolean, retries: number}[]} */
   let slots = [];
@@ -975,16 +996,10 @@
       if (prop.name) settings[prop.name] = prop.default;
     }
     Object.assign(settings, slotDef.settings || {});
-    // Secret-protocol words belong in the save payload and nowhere else. A widget handed
-    // the clear marker would read a non-empty string as a live credential and sit in a
-    // configured/retrying state until the next full dashboard reload — the opposite of
-    // what the user just asked for. An escaped literal must arrive as what was typed.
-    for (const prop of widget.properties || []) {
-      const v = prop.name ? settings[prop.name] : undefined;
-      if (typeof v !== 'string') continue;
-      if (v === SECRET_CLEARED) settings[prop.name] = '';
-      else if (v.startsWith(SECRET_LITERAL)) settings[prop.name] = v.slice(SECRET_LITERAL.length);
-    }
+    // No unwrapping here any more. Protocol used to ride INSIDE values, so this had to
+    // defend every widget against being handed a sentinel and reading it as a live
+    // credential; a clear now travels as a name beside the layout and a value is only
+    // ever itself.
     return settings;
   }
 
@@ -1872,7 +1887,28 @@
       const s = record.def.settings || {};
       return s[prop.name] !== undefined ? s[prop.name] : prop.default;
     };
-    const set = (prop, v) => { stored()[prop.name] = v; applyPropChange(); };
+    // The third argument states INTENT, not value: pass true when the user asked to
+    // remove this property. psControl runs outside this closure, so it cannot reach the
+    // slot def to name the address itself.
+    // The third argument states INTENT; omitting it means "the user set a value", which
+    // CANCELS any pending removal. Without that default the name latched: clear a demoted
+    // property, pick a replacement in the same session, and the save deleted the property
+    // instead of storing what was just chosen.
+    // Only a real value cancels — see contradictsRemoval. Cancelling on "" put the latch
+    // back for any control whose empty choice is a legitimate selection.
+    const set = (prop, v, clearedFlag) => {
+      stored()[prop.name] = v;
+      if (clearedFlag === true) markCleared(record.def, prop.name, true);
+      else if (contradictsRemoval(v)) markCleared(record.def, prop.name, false);
+      applyPropChange();
+    };
+
+    // Names the host BLANKED on the way here — a demoted property whose stored value is
+    // still an envelope. Reveal reports them and DashboardWindow stamps them onto the init
+    // payload, which is the channel the panel never had: without it an emptied field and
+    // one the host emptied are the same bytes, so the panel could not offer a Clear and a
+    // demoted credential was undeletable here (#153).
+    const restorable = Array.isArray(record.def.secretsRestorable) ? record.def.secretsRestorable : [];
 
     for (const prop of widget.properties || []) {
       const field = document.createElement('div');
@@ -1881,6 +1917,23 @@
       label.textContent = prop.label || prop.name;
       field.appendChild(label);
       field.appendChild(psControl(prop, cur, set));
+      // Keyed on the LIST, so it reaches every property type rather than only the one
+      // control that happens to render text. The secret control brings its own.
+      if (prop.type !== 'secret' && restorable.includes(prop.name)) {
+        const wipe = document.createElement('button');
+        wipe.type = 'button';
+        wipe.className = 'ps-eye ps-clear ps-field-clear';
+        wipe.textContent = '✕';
+        wipe.title = 'Remove the stored value on save';
+        wipe.addEventListener('click', () => {
+          set(prop, '', true);
+          // Rebuild so each control shows its own "no value" state — a colour input has
+          // no way to render empty, which is exactly why the affordance cannot live
+          // inside the controls.
+          buildPropRows(record, widget);
+        });
+        field.appendChild(wipe);
+      }
       psRows.appendChild(field);
     }
   }
@@ -1923,12 +1976,8 @@
         input.autocomplete = 'off';
         input.spellcheck = false;
         input.placeholder = prop.placeholder || 'Paste the token or key';
-        // `current` is the STORED value, which for a credential in the reserved
-        // namespace is its escaped transport form (the host seals only its own copy, so
-        // reopening the sheet sees what we last sent). Show what the user typed, or the
-        // field displays the protocol prefix and editing escapes it a second time.
-        const raw = (typeof current === 'string' && current !== SECRET_CLEARED) ? current : '';
-        const stored = raw.startsWith(SECRET_LITERAL) ? raw.slice(SECRET_LITERAL.length) : raw;
+        // Whatever is stored IS what the user typed — no transport form to undo.
+        const stored = typeof current === 'string' ? current : '';
         input.value = stored;
         // Whether a credential EXISTS on disk for this field — which changes while the
         // sheet is open, since edits persist on a debounce. A snapshot taken at render
@@ -1940,10 +1989,9 @@
         const commit = () => {
           const typed = input.value.length > 0;
           if (typed) exists = true;   // this keystroke is on its way to disk
-          // A credential can BE the clear marker, so anything in the reserved
-          // __ww_secret_ namespace travels escaped and the host unwraps one prefix.
-          const literal = input.value.startsWith('__ww_secret_') ? SECRET_LITERAL + input.value : input.value;
-          set(prop, typed ? literal : (exists ? SECRET_CLEARED : ''));
+          // A credential is arbitrary text and needs no escaping: the intent travels as a
+          // name, so any string at all round-trips as itself.
+          set(prop, input.value, !typed && exists);
           clear.hidden = !exists;
         };
         input.addEventListener('input', commit);
@@ -2103,11 +2151,7 @@
         input.type = 'text';
         if (prop.placeholder) input.placeholder = String(prop.placeholder);
         input.value = current != null ? String(current) : '';
-        // Escaped like the secret control's: every ordinary property is planned
-        // RestoreIfUntouched now, so the host reads the clear marker as protocol wherever
-        // it appears and an unrelated save would remove a setting that merely equals it.
-        input.oninput = () => set(prop,
-          input.value.startsWith('__ww_secret_') ? SECRET_LITERAL + input.value : input.value);
+        input.oninput = () => set(prop, input.value);
         if (prop.picker === 'emoji' || prop.picker === 'emoji-prefix') {
           const wrap = document.createElement('div');
           wrap.className = 'ps-inline';

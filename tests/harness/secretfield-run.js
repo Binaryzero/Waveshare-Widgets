@@ -50,6 +50,14 @@ const widgets = [{
     // holds the envelope from when it was `secret`. The host blanks it and names it in
     // secretsRestorable.
     { name: 'legacyToken', label: 'Legacy token', type: 'text' },
+    // A demoted property of a NON-text type: the host blanks and lists it exactly the
+    // same way, and the Clear affordance has to reach it too.
+    { name: 'legacyTint', label: 'Legacy tint', type: 'color', default: '#00d4ff' },
+    // A demoted property whose control has a legitimately EMPTY choice: an sd-profiles
+    // select where "" means "first available". Choosing it must NOT cancel a pending
+    // removal — "" is the one value that cannot contradict a clear, because it is the
+    // shape the host already reads as untouched.
+    { name: 'legacyProfile', label: 'Legacy profile', type: 'select', optionsSource: 'sd-profiles' },
   ],
 }, {
   // A DIFFERENT widget that happens to declare the same secret name — the collision
@@ -57,6 +65,15 @@ const widgets = [{
   id: 'test.ha', name: 'Home Assistant', supportedSlots: ['half'],
   properties: [
     { name: 'token', label: 'Long-lived token', type: 'secret' },
+  ],
+}, {
+  // A widget that declares NO secret at all, but still holds a demoted envelope. This is
+  // the shape mergeReplicaCapture's secret-name gate was blind to: a demotion is exactly
+  // the case where the manifest has stopped calling anything secret, so gating the
+  // projection merge on that list dropped it for the only widgets that needed it.
+  id: 'test.demoted', name: 'All Demoted', supportedSlots: ['half'],
+  properties: [
+    { name: 'legacyOnly', label: 'Legacy only', type: 'text' },
   ],
 }];
 
@@ -67,9 +84,17 @@ const layout = {
     name: 'Main',
     slots: [{
       widgetId: 'test.gh', size: 'half', instanceId: 'gh1',
-      settings: { token: '', fresh: '', legacyToken: '', repo: 'binaryzero/waveshare-widgets' },
+      settings: {
+        token: '', fresh: '', legacyToken: '', legacyTint: '', legacyProfile: '',
+        repo: 'binaryzero/waveshare-widgets',
+      },
       secretsSet: ['token'],
-      secretsRestorable: ['legacyToken'],
+      secretsRestorable: ['legacyToken', 'legacyTint', 'legacyProfile'],
+    }, {
+      // Declares no secret, holds a demoted envelope — see the manifest note above.
+      widgetId: 'test.demoted', size: 'half', instanceId: 'dm1',
+      settings: { legacyOnly: '' },
+      secretsRestorable: ['legacyOnly'],
     }],
   }],
 };
@@ -172,14 +197,15 @@ const layout = {
   // An empty string is what an UNTOUCHED masked field sends, and the host keeps the
   // stored credential for that — so a clear has to say something different or the
   // credential silently survives the delete (Codex r1, P1).
-  check('E5b the save sends the distinct clear marker, never a bare empty string',
-    cleared.settings.token === '__ww_secret_cleared__', JSON.stringify(cleared.settings));
+  check('E5b the save NAMES the cleared property, so a bare empty string cannot mean two things',
+    cleared.settings.token === '' && (cleared.secretsCleared || []).includes('token'),
+    JSON.stringify({ settings: cleared.settings, cleared: cleared.secretsCleared }));
   check('E5c an untouched secret still sends "" (the keep-what-you-have signal)',
     cleared.settings.fresh === '', JSON.stringify(cleared.settings));
 
   // ---- E8 · the marker is host protocol, never shown back to the user as a value
   const shownAfterClear = await stored.locator('input').inputValue();
-  check('E8 the clear marker never appears in the field the user reads',
+  check('E8 no protocol word can appear in the field the user reads — none exists',
     shownAfterClear === '', shownAfterClear);
 
   // ---- E9 · a save the host could not fully honour must NOT read as "Saved"
@@ -216,17 +242,21 @@ const layout = {
     await fresh.locator('.secret-state').textContent());
   await page.locator('#save').click();
   await page.waitForTimeout(400);
-  check('E11b and the save sends the clear marker, not the keep-it empty string',
-    saved[saved.length - 1].pages[0].slots[0].settings.fresh === '__ww_secret_cleared__',
+  check('E11b and the save names it cleared, rather than relying on the keep-it empty string',
+    saved[saved.length - 1].pages[0].slots[0].settings.fresh === ''
+      && (saved[saved.length - 1].pages[0].slots[0].secretsCleared || []).includes('fresh'),
     JSON.stringify(saved[saved.length - 1].pages[0].slots[0].settings));
 
-  // ---- E12 · a credential that IS the clear marker stays storeable (escaped)
+  // ---- E12 · a credential that IS the old sentinel stays storeable (no escaping)
   await fresh.locator('input').fill('__ww_secret_cleared__');
   await page.waitForTimeout(120);
   await page.locator('#save').click();
   await page.waitForTimeout(400);
-  check('E12 a typed value in the reserved namespace travels escaped, not as a clear',
-    saved[saved.length - 1].pages[0].slots[0].settings.fresh === '__ww_secret_lit___ww_secret_cleared__',
+  // Nothing escapes anything now: intent travels as a NAME beside the layout, so the
+  // string that used to be the sentinel is a credential like any other.
+  check('E12 a credential equal to the old sentinel travels verbatim, and is not a clear',
+    saved[saved.length - 1].pages[0].slots[0].settings.fresh === '__ww_secret_cleared__'
+      && !((saved[saved.length - 1].pages[0].slots[0].secretsCleared) || []).includes('fresh'),
     JSON.stringify(saved[saved.length - 1].pages[0].slots[0].settings.fresh));
 
   // ---- E13 · a TYPED credential must not reach the preview replica
@@ -1071,7 +1101,8 @@ const layout = {
   await page.waitForTimeout(400);
   let last = saved[saved.length - 1].pages[0].slots[0];
   check('E28e pressing Clear sends the marker, so the host removes the value instead of '
-    + 'restoring it', last.settings.legacyToken === '__ww_secret_cleared__',
+    + 'restoring it', last.settings.legacyToken === ''
+      && (last.secretsCleared || []).includes('legacyToken'),
     JSON.stringify(last.settings.legacyToken));
   // The marker DOES travel back on the slot, exactly as `secretsSet` has always done —
   // the editor echoes the slot it was given. What must never happen is it becoming a
@@ -1100,8 +1131,172 @@ const layout = {
   last = saved[saved.length - 1].pages[0].slots[0];
   check('E28g emptying the field sends the marker too, so the value the user just deleted '
     + 'is not restored underneath them',
-    last.settings.legacyToken === '__ww_secret_cleared__',
+    last.settings.legacyToken === '' && (last.secretsCleared || []).includes('legacyToken'),
     JSON.stringify(last.settings.legacyToken));
+
+  // ---- E29 · the affordance is property-type agnostic ---------------------------------
+  // A demoted `color` is blanked and listed exactly like a demoted `text`, but its own
+  // reset ("Use theme") deletes the key and the host reads that as untouched. Keying the
+  // Clear on the LIST rather than on the control is what reaches every type.
+  const tintField = page.locator('#slotDetail .prop-field').filter({ hasText: 'Legacy tint' });
+  check('E29 a demoted non-text property gets a Clear too',
+    await tintField.locator('.prop-clear').count() === 1,
+    String(await tintField.locator('.prop-clear').count()));
+  check('E29b while an ordinary property of the same type does not',
+    await page.locator('#slotDetail .prop-field').filter({ hasText: 'Repository' })
+      .locator('.prop-clear').count() === 0);
+  await tintField.locator('.prop-clear').click();
+  await page.waitForTimeout(150);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E29c and clearing it names the address, so the host removes rather than restores',
+    (last.secretsCleared || []).includes('legacyTint') && last.settings.legacyTint === '',
+    JSON.stringify({ cleared: last.secretsCleared, value: last.settings.legacyTint }));
+
+  // ---- E30 · a replacement CANCELS a pending removal ----------------------------------
+  // The name is a statement of intent, and the intent changes the moment the user sets a
+  // value. Latched, the sequence "clear, then pick a replacement" deleted the property
+  // instead of storing what was just chosen — the affordance destroying the edit it was
+  // supposed to make room for.
+  const tintField2 = page.locator('#slotDetail .prop-field').filter({ hasText: 'Legacy tint' });
+  await tintField2.locator('.prop-clear').click();
+  await page.waitForTimeout(120);
+  await tintField2.locator('input[type=color]').evaluate((el) => {
+    el.value = '#123456';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForTimeout(120);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E30 picking a replacement after a Clear cancels the removal',
+    !((last.secretsCleared) || []).includes('legacyTint'),
+    JSON.stringify(last.secretsCleared));
+  check('E30b and the replacement is what gets saved',
+    last.settings.legacyTint === '#123456', JSON.stringify(last.settings.legacyTint));
+
+  // ---- E31 · an EMPTY choice does not cancel a removal -------------------------------
+  // The cancel added for E30 was unconditional, which put the latch back the other way
+  // round: an sd-profiles select's "" means "first available" and is a real selection,
+  // but "" is also the shape the host reads as untouched. Cancelling on it made "clear,
+  // then pick the default" restore the envelope the user had just asked to delete.
+  const profileField = page.locator('#slotDetail .prop-field').filter({ hasText: 'Legacy profile' });
+  check('E31 a demoted select gets the Clear affordance too',
+    await profileField.locator('.prop-clear').count() === 1,
+    String(await profileField.locator('.prop-clear').count()));
+  await profileField.locator('.prop-clear').click();
+  await page.waitForTimeout(120);
+  await profileField.locator('select').evaluate((el) => {
+    el.value = '';
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForTimeout(120);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E31b choosing the empty default after a Clear keeps the removal',
+    (last.secretsCleared || []).includes('legacyProfile'),
+    JSON.stringify({ cleared: last.secretsCleared, value: last.settings.legacyProfile }));
+
+  // ...and the cancel still works for a value that IS one. Both directions, so a fix
+  // that simply stopped cancelling would fail here.
+  await profileField.locator('select').evaluate((el) => {
+    el.add(new Option('prod', 'prod', false, true));
+    el.value = 'prod';
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForTimeout(120);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E31c and a real choice after a Clear still cancels the removal',
+    !((last.secretsCleared) || []).includes('legacyProfile')
+      && last.settings.legacyProfile === 'prod',
+    JSON.stringify({ cleared: last.secretsCleared, value: last.settings.legacyProfile }));
+
+  // ---- E32 · the marker survives a replica capture ------------------------------------
+  // mergeReplicaCapture returned a captured slot wholesale when the widget declared no
+  // secret names — which is exactly what a DEMOTED property is, the manifest having
+  // stopped calling it secret. The clear was recorded on state.layout, the capture came
+  // back from the replica without it, and the save restored the envelope instead.
+  // The capture mirrors the replica's own scrubbed view: it carries no projections at
+  // all. slots[1] is the widget that declares NO secret, which is what made the old
+  // name-list gate return it wholesale.
+  const survived = await page.evaluate(() => {
+    const merged = window.__wwMergeReplicaCapture({
+      pages: [{
+        name: 'Main',
+        slots: [
+          { widgetId: 'test.gh', size: 'half', instanceId: 'gh1', settings: {} },
+          { widgetId: 'test.demoted', size: 'half', instanceId: 'dm1', settings: {} },
+        ],
+      }],
+    });
+    return {
+      demoted: merged.pages[0].slots[1].secretsRestorable || [],
+      withSecrets: merged.pages[0].slots[0].secretsRestorable || [],
+    };
+  });
+  check('E32 a capture cannot drop the projections of a widget that declares no secret',
+    survived.demoted.includes('legacyOnly'), JSON.stringify(survived));
+  check('E32b and the widget that does declare one keeps them too',
+    survived.withSecrets.includes('legacyToken'), JSON.stringify(survived));
+
+  // ---- E33 · the replica can CONTRADICT a pending removal -----------------------------
+  // replicaLayout passes secretsCleared through, so the on-panel editor receives the
+  // marker and cancels it by setting a value — and cancelling deletes the key, which is
+  // indistinguishable from a capture that never carried one. Restoring the prior marker
+  // unconditionally meant a replacement typed in the PREVIEW was deleted by the next
+  // desktop Save. The value is the signal, exactly as it is inside the editors.
+  // The marker has to be REAL. E31 left one standing on legacyToken, put there by the
+  // editor's own Clear — seeding secretsCleared into a fixture would fake a projection
+  // the host never sends, and prove nothing about the merge.
+  const contradiction = await page.evaluate(() => {
+    const cap = (value) => window.__wwMergeReplicaCapture({
+      pages: [{
+        name: 'Main',
+        slots: [{
+          widgetId: 'test.gh', size: 'half', instanceId: 'gh1',
+          settings: { legacyToken: value },
+        }],
+      }],
+    }).pages[0].slots[0];
+    return {
+      replaced: cap('typed-in-the-preview').secretsCleared || [],
+      emptied: cap('').secretsCleared || [],
+      replacedValue: cap('typed-in-the-preview').settings.legacyToken,
+    };
+  });
+  check('E33 setup: a real pending removal is standing before the merge',
+    contradiction.emptied.includes('legacyToken'), JSON.stringify(contradiction));
+  check('E33b a replacement captured from the replica cancels the pending removal',
+    !contradiction.replaced.includes('legacyToken')
+      && contradiction.replacedValue === 'typed-in-the-preview',
+    JSON.stringify(contradiction));
+
+  // ---- E34 · the replica can INITIATE a removal, not only cancel one -------------------
+  // The preview has its own Clear (#153). Pressing it names the address in the CAPTURED
+  // slot, where the desktop copy has no prior marker at all — so sourcing the merge only
+  // from prior deleted the intent on its way back and the Save restored the envelope.
+  // legacyTint carries no pending removal here: E30 cancelled it with a replacement.
+  const initiated = await page.evaluate(() => {
+    const merged = window.__wwMergeReplicaCapture({
+      pages: [{
+        name: 'Main',
+        slots: [{
+          widgetId: 'test.gh', size: 'half', instanceId: 'gh1',
+          settings: { legacyTint: '' },
+          secretsCleared: ['legacyTint'],
+        }],
+      }],
+    }).pages[0].slots[0];
+    return merged.secretsCleared || [];
+  });
+  check('E34 a removal started in the replica survives the merge',
+    initiated.includes('legacyTint'), JSON.stringify(initiated));
+  check('E34b and it does not displace one already standing on the desktop side',
+    initiated.includes('legacyToken'), JSON.stringify(initiated));
 
   // An ordinary property the host never blanked keeps its plain behaviour: there is
   // nothing to restore, so "" is unambiguous and no affordance is needed.
@@ -1118,17 +1313,19 @@ const layout = {
   await page.locator('#save').click();
   await page.waitForTimeout(400);
   last = saved[saved.length - 1].pages[0].slots[0];
-  check('E28h2 an ordinary value equal to the clear marker travels escaped, so an '
+  check('E28h2 an ordinary value equal to the old sentinel is stored verbatim, and an '
     + 'unrelated save cannot delete it',
-    last.settings.repo === '__ww_secret_lit___ww_secret_cleared__',
+    last.settings.repo === '__ww_secret_cleared__'
+      && !((last.secretsCleared) || []).includes('repo'),
     JSON.stringify(last.settings.repo));
   await demoted.locator('input').fill('__ww_secret_cleared__');
   await page.waitForTimeout(100);
   await page.locator('#save').click();
   await page.waitForTimeout(400);
   last = saved[saved.length - 1].pages[0].slots[0];
-  check('E28h3 and so does one typed into a DEMOTED field, which has the same hazard',
-    last.settings.legacyToken === '__ww_secret_lit___ww_secret_cleared__',
+  check('E28h3 and so is one typed into a DEMOTED field, which had the same hazard',
+    last.settings.legacyToken === '__ww_secret_cleared__'
+      && !((last.secretsCleared) || []).includes('legacyToken'),
     JSON.stringify(last.settings.legacyToken));
   await plain.locator('input').fill('');
   await demoted.locator('input').fill('');

@@ -116,11 +116,11 @@ property renders as an ordinary text input, which also sends `""` when the user 
 Comparing against the blank alone would restore the old ciphertext over a deliberate
 clear, making the field impossible to empty — which is the *same* "permanently uneditable
 field" failure this document cites PR #65 for hitting. So the intent needs an explicit
-signal, and the machinery already exists: `Mask` lists these addresses in a
-projection-only marker beside `secretsSet`, the editor emits `SecretStore.ClearMarker` for
-them exactly as the secret editor does, and `Seal` reads three distinct cases — `""` is
-untouched (restore), `ClearMarker` is cleared (remove), anything else is new text (save
-verbatim).
+signal. **It must not be a sentinel value** — that was tried, and step 6 below is the
+write-up of why it cannot work. `Mask` lists these addresses in a projection-only marker
+beside `secretsSet`, the editor names the ones the user cleared in `secretsCleared` on the
+way back, and `Seal` reads three distinct cases — `""` is untouched (restore), a name in
+that list is cleared (remove), anything else is new text (save verbatim).
 
 Two further constraints from probing, both non-obvious:
 
@@ -297,12 +297,46 @@ is the same channel — once identity flows both ways, both halves are the same 
      blank is the user's clear. Restoring it is the uneditable-field failure PR #65 hit
      three times, and with a broad plan it would hit every text input in the product.
 
-   **Not covered: the on-panel editor.** `Mask` emits `secretsRestorable` so `settings.js`
-   can offer a Clear; `Reveal` has no equivalent channel, so `shell.js` cannot tell an
-   untouched blank from a deliberate one and a demoted credential cannot be deleted from
-   the panel. Narrower than what shipped before — the value no longer reaches the widget
-   either way — but it is a gap, and it is the `Reveal`-side metadata field this document
-   has wanted since the beginning.
+6. ~~**The clear protocol.**~~ **Done.** Closes #153, #154, #155. Not a step this document
+   planned — it was forced by seven review rounds on step 5, four of them the same
+   mechanism.
+
+   `ClearMarker` was a sentinel string written *into* a value. But "the user cleared this"
+   is a statement **about** a value, and encoding it in the value made one string mean two
+   things with no way to say which. Every rule over `(incoming, stored)` broke something:
+
+   | rule | broke |
+   | --- | --- |
+   | always protocol | an untouched field echoing a value that already equalled it |
+   | only where the address is restorable | a real Clear after the stored value changed |
+   | only where incoming differs from stored | Clear of a field whose stored value IS it |
+
+   The third case is unfixable by any such rule — incoming and stored agree while the
+   meanings differ — because the information is not in the payload at all. `LiteralPrefix`
+   made it worse rather than better: escaping is a **per-producer obligation**, there are
+   six controls across two editors, and only the text inputs ever had it.
+
+   Cleared addresses now travel as `secretsCleared`, a per-slot projection, the direction
+   `secretsSet` and `secretsRestorable` already travel. A name in a list cannot be confused
+   with a value, so nothing escapes anything and every setting means itself. Both sentinels
+   are deleted, along with the unwrap `shell.js` needed to stop widgets being handed one.
+
+   `Seal` gained one argument and lost three special cases. The other two took real work
+   on top, and review caught me claiming otherwise:
+
+   - **The affordance belongs to the FIELD, not a control (#154).** A demoted property can
+     be any type, and each control's own reset emits an empty or absent value the host
+     reads as untouched — so a Clear living in the `text` branch left every other type with
+     an envelope it could not delete. It is keyed on the list now, in both editors.
+   - **`Reveal` did need a channel after all (#153).** I wrote that it did not, because the
+     editor can state what it cleared; but the panel cannot offer a Clear it does not know
+     to draw, and a blanked field is indistinguishable from an always-empty one. `Reveal`
+     reports the addresses it blanked and `DashboardWindow` stamps them where `Mask` puts
+     its own.
+
+   `LayoutSlot` still carries no extension data, so `ReadClearedMarkers` runs on the raw
+   node before deserialization — and indexes over the slots that survive the placeholder
+   filter, or every marker past a blank slot lands on its neighbour.
 6. **Row addressing** — closes #62's remaining half.
 
 Still to delete, once nothing needs them: `_maskedManifests`, `_revealedManifests` and

@@ -7,7 +7,7 @@
 // untouched" and KEEPS the stored ciphertext.
 //   N1 · the field is masked on glass and holds the real (revealed) value
 //   N2 · a stored secret offers an explicit Clear; an unset one does not
-//   N3 · Clear sends the clear marker, so the credential is actually removed
+//   N3 · Clear names the property cleared, so the credential is actually removed
 //   N4 · deleting the characters by hand sends it too (Codex r2, P1: it sent "",
 //        so the credential came back on the next reload)
 //   N5 · a secret that was never set sends "" — nothing to remove
@@ -45,7 +45,11 @@ const check = (name, ok, detail) => {
 };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const CLEAR = '__ww_secret_cleared__';
+// The string that USED to be the clear sentinel. Kept only so the probes can assert it
+// is now ordinary text: intent travels as a name in the slot's secretsCleared projection,
+// so no value carries protocol and nothing has to be escaped by any producer.
+const EX_SENTINEL = '__ww_secret_cleared__';
+const clearedNames = (slot) => (slot && slot.secretsCleared) || [];
 const STORED_TOKEN = 'ghp_REAL_DECRYPTED_VALUE';
 
 const widgets = [{
@@ -56,6 +60,9 @@ const widgets = [{
     { name: 'token', label: 'Token', type: 'secret', placeholder: 'ghp_…' },
     { name: 'fresh', label: 'Other token', type: 'secret' },
     { name: 'repo', label: 'Repository', type: 'text', default: 'owner/name' },
+    // DEMOTED: the manifest calls it text now, but layout.json still holds the envelope,
+    // so Reveal blanked it and named it in secretsRestorable on the init payload.
+    { name: 'legacyToken', label: 'Legacy token', type: 'text' },
   ],
 }, {
   // Declares half+full only, while N11's slot is STORED as quarter — a manifest that
@@ -87,7 +94,8 @@ const widgets = [{
     // three-quarter. With both reachable, N11 is decided by cycle ORDER; if only one
     // fitted, the probe would pass whichever order the cycler used.
     widgetId: 'test.gh', size: 'quarter',
-    settings: { token: STORED_TOKEN, fresh: '', repo: 'binaryzero/waveshare-widgets' },
+    settings: { token: STORED_TOKEN, fresh: '', legacyToken: '', repo: 'binaryzero/waveshare-widgets' },
+    secretsRestorable: ['legacyToken'],
   }, narrowSlot] }] };
 
   const saves = [];
@@ -116,9 +124,13 @@ const widgets = [{
   await wait(1200);
 
   const lastSave = () => (saves.length ? saves[saves.length - 1] : null);
-  const savedSetting = (name) => {
+  const savedSlot = () => {
     const s = lastSave();
-    return s ? s.pages[0].slots[0].settings[name] : undefined;
+    return s ? s.pages[0].slots[0] : null;
+  };
+  const savedSetting = (name) => {
+    const slot = savedSlot();
+    return slot ? slot.settings[name] : undefined;
   };
 
   await page.locator('#editBtn').click();
@@ -146,8 +158,9 @@ const widgets = [{
   // ---- N4 · deleting the characters by hand must reach the host as a REMOVAL
   await tokenRow.locator('input').fill('');
   await wait(900); // apply + persist debounces
-  check('N4 emptying the field by hand sends the clear marker, not a bare ""',
-    savedSetting('token') === CLEAR, JSON.stringify(savedSetting('token')));
+  check('N4 emptying the field by hand names it cleared, not a bare "" that means two things',
+    savedSetting('token') === '' && clearedNames(savedSlot()).includes('token'),
+    JSON.stringify({ value: savedSetting('token'), cleared: clearedNames(savedSlot()) }));
 
   // ---- N6 · typing a replacement sends the plaintext for the host to encrypt
   await tokenRow.locator('input').fill('ghp_TYPED_ON_GLASS');
@@ -159,8 +172,9 @@ const widgets = [{
   await tokenRow.locator('.ps-clear').click();
   await wait(900);
   check('N3 Clear empties the field', await tokenRow.locator('input').inputValue() === '');
-  check('N3b and the save carries the clear marker',
-    savedSetting('token') === CLEAR, JSON.stringify(savedSetting('token')));
+  check('N3b and the save carries the cleared name beside the layout',
+    savedSetting('token') === '' && clearedNames(savedSlot()).includes('token'),
+    JSON.stringify({ value: savedSetting('token'), cleared: clearedNames(savedSlot()) }));
 
   // ---- N5 · a secret nobody touched is never turned into a removal
   check('N5 an untouched unset secret still saves as "" — there is nothing to delete',
@@ -181,21 +195,77 @@ const widgets = [{
     await freshRow.locator('.ps-clear').evaluate((n) => n.hidden) === false);
   await freshRow.locator('input').fill('');
   await wait(900);
-  check('N8c deleting it sends the clear marker, not the "keep it" empty string',
-    savedSetting('fresh') === CLEAR, JSON.stringify(savedSetting('fresh')));
+  check('N8c deleting it NAMES the property cleared, so the empty value cannot be read '
+    + 'as "keep it"',
+    savedSetting('fresh') === '' && clearedNames(savedSlot()).includes('fresh'),
+    JSON.stringify({ value: savedSetting('fresh'), cleared: clearedNames(savedSlot()) }));
 
-  // ---- N9 · the clear marker is host protocol: the live widget must never see it
+  // ---- N9 · nothing sentinel-shaped can reach the live widget, because none exists
   // The 400 ms apply path reloads the iframe with ww-settings from the same record the
-  // save payload comes from. A widget handed "__ww_secret_cleared__" would read a
-  // non-empty string as a live credential and keep retrying (Codex r4, P2).
+  // save payload comes from. This used to need an unwrap step in mergedSettings, because
+  // a widget handed the sentinel would read a non-empty string as a live credential and
+  // keep retrying (Codex r4, P2). The value is simply empty now.
   await tokenRow.locator('input').fill('ghp_ABOUT_TO_BE_CLEARED');
   await wait(900);
   await tokenRow.locator('.ps-clear').click();
   await wait(900);
   const frameHash = await page.locator('.slot iframe').first().getAttribute('src');
   const applied = decodeURIComponent((frameHash || '').split('ww-settings=')[1] || '');
-  check('N9 the reloaded widget receives an empty secret, not the clear marker',
-    applied.length > 0 && !applied.includes(CLEAR) && /"token":""/.test(applied), applied.slice(0, 160));
+  check('N9 the reloaded widget receives an empty secret, with no sentinel anywhere',
+    applied.length > 0 && !applied.includes('__ww_secret') && /"token":""/.test(applied),
+    applied.slice(0, 160));
+
+  // ---- N9b · the string that used to be protocol is now an ordinary credential --------
+  // The panel had to escape it before; a value can only mean itself now.
+  await tokenRow.locator('input').fill(EX_SENTINEL);
+  await wait(900);
+  check('N9b a credential equal to the old sentinel is sent verbatim, and is not a clear',
+    savedSetting('token') === EX_SENTINEL && !clearedNames(savedSlot()).includes('token'),
+    JSON.stringify({ value: savedSetting('token'), cleared: clearedNames(savedSlot()) }));
+
+  // ---- N12 · #153: the panel can finally DELETE a demoted credential ------------------
+  // Reveal blanks the envelope, so the field arrives empty and looks identical to one that
+  // was always empty. Before the reveal-side marker the panel had no way to tell them
+  // apart, rendered no Clear, and an emptied field was read by Seal as untouched — the
+  // stored envelope came straight back. The name is what makes the intent sayable.
+  const legacyRow = page.locator('.ps-field').filter({ hasText: 'Legacy token' });
+  check('N12 a demoted property gets a Clear on the panel',
+    await legacyRow.locator('.ps-field-clear').count() === 1,
+    String(await legacyRow.locator('.ps-field-clear').count()));
+  check('N12b while an ordinary property does not',
+    await page.locator('.ps-field').filter({ hasText: 'Repository' })
+      .locator('.ps-field-clear').count() === 0);
+  await legacyRow.locator('.ps-field-clear').click();
+  await wait(900);
+  check('N12c and using it names the address, so the host removes rather than restores',
+    savedSetting('legacyToken') === '' && clearedNames(savedSlot()).includes('legacyToken'),
+    JSON.stringify({ value: savedSetting('legacyToken'), cleared: clearedNames(savedSlot()) }));
+
+  // A replacement CANCELS the pending removal — the panel's ordinary controls call set()
+  // without an intent argument, and latching there deleted the property instead of storing
+  // what the user had just typed.
+  await legacyRow.locator('input').fill('now-ordinary');
+  await wait(900);
+  check('N12d typing a replacement after a Clear cancels the removal',
+    savedSetting('legacyToken') === 'now-ordinary'
+      && !clearedNames(savedSlot()).includes('legacyToken'),
+    JSON.stringify({ value: savedSetting('legacyToken'), cleared: clearedNames(savedSlot()) }));
+
+  // ...but an EMPTY value must NOT cancel it. "" is the shape the host already reads as
+  // untouched, so it cannot contradict a removal — a control whose empty choice is a real
+  // selection would otherwise undo the clear and have Seal restore the envelope. Making
+  // the cancel unconditional put the latch back facing the other way.
+  await legacyRow.locator('.ps-field-clear').click();
+  await wait(900);
+  await legacyRow.locator('input').evaluate((el) => {
+    el.value = '';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await wait(900);
+  check('N12e but an empty value does not — it cannot contradict a removal',
+    savedSetting('legacyToken') === ''
+      && clearedNames(savedSlot()).includes('legacyToken'),
+    JSON.stringify({ value: savedSetting('legacyToken'), cleared: clearedNames(savedSlot()) }));
 
   // ---- N7 · a save the host could not protect has to surface on the panel
   await page.evaluate(() => window.__hostPush(JSON.stringify({

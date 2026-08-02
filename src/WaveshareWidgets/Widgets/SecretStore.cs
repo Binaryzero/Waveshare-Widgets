@@ -26,18 +26,6 @@ public static class SecretStore
     /// a value EXISTS (per-slot <c>secretsSet</c>) so it can show a "saved" state.</summary>
     public const string EditorPlaceholder = "";
 
-    /// <summary>Sent by the editor when the user pressed Clear. An empty value can't
-    /// carry that meaning: it is also what an untouched masked field sends back, which
-    /// must KEEP the stored credential. The two intents need different words.</summary>
-    public const string ClearMarker = "__ww_secret_cleared__";
-
-    /// <summary>Escape hatch so the sentinel above doesn't make one string unstoreable.
-    /// Credentials are arbitrary text, and a token that happens to BE the clear marker
-    /// would otherwise be read as "remove this" and silently discarded. Editors prefix
-    /// any typed value starting with the reserved <c>__ww_secret_</c> namespace with
-    /// this; the host strips exactly one prefix and treats the rest as plaintext.</summary>
-    public const string LiteralPrefix = "__ww_secret_lit_";
-
     /// <summary>Cheap syntactic check: does this look like one of our envelopes? Only
     /// meaningful together with <see cref="CanUnprotect"/> — see the class remarks.</summary>
     public static bool HasMarker(string? value) =>
@@ -194,9 +182,9 @@ public enum SecretIntent
     /// property is ordinary and the user must be able to type into it, empty it, and have
     /// what they typed saved verbatim.
     ///
-    /// Blank on the way out, and on the way back: <c>""</c> means untouched (restore),
-    /// <see cref="SecretStore.ClearMarker"/> means cleared (remove), anything else is new
-    /// text (save as-is, unencrypted).
+    /// Blank on the way out, and on the way back: <c>""</c> means untouched (restore), a
+    /// name in the editor's <see cref="SecretPolicy.ClearedMarkerKey"/> list means cleared
+    /// (remove), anything else is new text (save as-is, unencrypted).
     ///
     /// It is the LEAST protective intent — it does not encrypt at all — so it loses every
     /// collision in <see cref="SecretIntents.MostProtective"/>. That is deliberate and
@@ -369,12 +357,99 @@ public static class SecretPolicy
     /// user empties it — the same <c>""</c> an untouched blanked field sends. Comparing
     /// against the blank alone restores the old value over a deliberate clear, and the
     /// field becomes impossible to empty. So the editor needs to know WHICH fields are
-    /// holding a blank it did not put there, in order to offer a Clear that sends
-    /// <see cref="SecretStore.ClearMarker"/> and makes the three cases distinguishable.
+    /// holding a blank it did not put there, in order to offer a Clear — which then names
+    /// the property in <see cref="ClearedMarkerKey"/> on the way back.
     ///
     /// It is per SLOT and not per property name, because two instances of one widget can
     /// disagree — one still holding an envelope, the other already retyped.</summary>
     public const string RestorableMarkerKey = "secretsRestorable";
+
+    /// <summary>Transient projection key, EDITOR to HOST, naming the properties the user
+    /// asked to remove. The only one of the three markers that travels inbound.
+    ///
+    /// This replaced a sentinel string written into the value itself, and the reason is
+    /// worth keeping: "the user cleared this" is a statement ABOUT a value, and encoding it
+    /// IN the value made one string mean two things with no way to say which. Seven review
+    /// rounds on PR #152 came out of that, four of them the same mechanism from different
+    /// angles — an untouched field echoing a value that already equalled the sentinel, a
+    /// clear issued after the stored value had changed, an escape prefix eroding one layer
+    /// per save, and finally the discovery that escaping was a per-producer obligation
+    /// across six controls in two editors, of which only the text inputs had it.
+    ///
+    /// A name in a list cannot be confused with a value, so nothing escapes anything and
+    /// every setting means exactly itself. It also makes the affordance property-type
+    /// agnostic (#154) and gives the on-panel editor the channel it never had (#153): the
+    /// editor states what it cleared, and does not have to infer it from what it was sent.
+    ///
+    /// <see cref="LayoutSlot"/> has no matching member, so this cannot reach layout.json —
+    /// and <see cref="ReadClearedMarkers"/> is the only thing that reads it, before the
+    /// model exists.</summary>
+    public const string ClearedMarkerKey = "secretsCleared";
+
+    /// <summary>Writes a (page, slot) → names map onto a serialized layout as a per-slot
+    /// projection. Used for the reveal-side <see cref="RestorableMarkerKey"/>, so the panel
+    /// receives the same shape the settings editor already gets from <c>Mask</c>.</summary>
+    public static void StampMarkers(
+        JsonNode? layoutNode, string key,
+        IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>> markers)
+    {
+        if (markers.Count == 0 || layoutNode?["pages"] is not JsonArray pages)
+            return;
+        foreach (var ((p, i), names) in markers)
+        {
+            if (p < 0 || p >= pages.Count || pages[p]?["slots"] is not JsonArray slots)
+                continue;
+            if (i < 0 || i >= slots.Count || slots[i] is not JsonObject slot)
+                continue;
+            var list = new JsonArray();
+            foreach (var name in names)
+                list.Add(name);
+            slot[key] = list;
+        }
+    }
+
+    /// <summary>Pulls the cleared-property lists out of a submitted layout, addressed by
+    /// (page, slot) — the same coordinates <see cref="SecretSealResult.Minted"/> uses.
+    ///
+    /// It must run on the RAW JSON, before deserialization: the model deliberately carries
+    /// no extension data, which is what keeps every projection out of layout.json, so by
+    /// the time there is a <see cref="DashboardLayout"/> this key is already gone. Both
+    /// windows call it on the node they are about to deserialize and hand the result to
+    /// <see cref="Seal"/>.</summary>
+    public static IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>> ReadClearedMarkers(
+        JsonNode? layoutNode)
+    {
+        var cleared = new Dictionary<(int, int), IReadOnlyList<string>>();
+        if (layoutNode?["pages"] is not JsonArray pages)
+            return cleared;
+        for (var p = 0; p < pages.Count; p++)
+        {
+            if (pages[p]?["slots"] is not JsonArray slots)
+                continue;
+            // Indexed over the slots that SURVIVE, because both save handlers drop
+            // placeholder slots from the model right after deserializing and these
+            // coordinates have to point into that filtered model — the same space
+            // SecretSealResult.Minted already uses. Counting raw positions here would
+            // silently shift every marker past the first blank slot onto its neighbour,
+            // which is a clear applied to the wrong property.
+            var kept = 0;
+            for (var i = 0; i < slots.Count; i++)
+            {
+                if (string.IsNullOrWhiteSpace(AsString(slots[i]?["widgetId"])))
+                    continue;
+                var at = kept++;
+                if (slots[i]?[ClearedMarkerKey] is not JsonArray names)
+                    continue;
+                var list = new List<string>();
+                foreach (var entry in names)
+                    if (AsString(entry) is { Length: > 0 } name)
+                        list.Add(name);
+                if (list.Count > 0)
+                    cleared[(p, at)] = list;
+            }
+        }
+        return cleared;
+    }
 
     /// <summary>A hand-edited layout can hold a number/object/array where a secret
     /// belongs. <c>GetValue&lt;string&gt;()</c> would THROW on those, and this code runs
@@ -404,7 +479,8 @@ public static class SecretPolicy
     /// every caller wanted before intents existed. Kept because it is genuinely the common
     /// case, not to spare callers the migration: anything needing a non-default intent
     /// builds its own <see cref="SecretPlan"/>.</summary>
-    public static void Reveal(DashboardLayout layout, Func<string, WidgetManifest?> lookup) =>
+    public static IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>> Reveal(
+        DashboardLayout layout, Func<string, WidgetManifest?> lookup) =>
         Reveal(layout, SecretPlan.FromManifests(lookup));
 
     /// <inheritdoc cref="Reveal(DashboardLayout, Func{string, WidgetManifest})"/>
@@ -416,9 +492,31 @@ public static class SecretPolicy
         DashboardLayout layout, DashboardLayout? stored, Func<string, WidgetManifest?> lookup) =>
         Seal(layout, stored, SecretPlan.FromManifests(lookup));
 
-    public static void Reveal(DashboardLayout layout, SecretPlan plan)
+    /// <returns>The addresses this call BLANKED, by (page, slot) — the reveal-side twin of
+    /// the <see cref="RestorableMarkerKey"/> list <c>Mask</c> emits.
+    ///
+    /// Without it the on-panel editor cannot tell a field the host emptied from one that
+    /// was always empty, so it renders no Clear and a demoted credential is undeletable
+    /// there (#153). The model cannot carry a projection — that is what keeps every marker
+    /// out of layout.json — so it is reported back instead, and `DashboardWindow` stamps it
+    /// onto the JSON it is about to send, exactly where `Mask` puts its own.</returns>
+    public static IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>> Reveal(
+        DashboardLayout layout, SecretPlan plan)
     {
         var ambiguous = AmbiguousSlots(layout);
+        var blanked = new Dictionary<(int, int), IReadOnlyList<string>>();
+        var at = new Dictionary<LayoutSlot, (int Page, int Slot)>(ReferenceEqualityComparer.Instance);
+        for (var p = 0; p < (layout.Pages?.Count ?? 0); p++)
+            for (var i = 0; i < (layout.Pages![p].Slots?.Count ?? 0); i++)
+                at[layout.Pages[p].Slots![i]] = (p, i);
+        void Note(LayoutSlot slot, string name)
+        {
+            if (!at.TryGetValue(slot, out var where))
+                return;
+            if (!blanked.TryGetValue(where, out var names))
+                blanked[where] = names = new List<string>();
+            ((List<string>)names).Add(name);
+        }
         Walk(layout, plan, (slot, name, intent) =>
         {
             var stored = AsString(slot.Settings?[name]);
@@ -428,7 +526,10 @@ public static class SecretPolicy
                 // #105: a demoted property still holding an envelope hands `dpapi:v1:…` to
                 // the widget verbatim. Blank it where the restore is guaranteed.
                 if (Blankable(slot.InstanceId, stored, twinned))
+                {
                     slot.Settings![name] = "";
+                    Note(slot, name);
+                }
                 return;
             }
             if (!SecretIntents.Protects(intent))
@@ -450,6 +551,7 @@ public static class SecretPolicy
             // Legacy plaintext (a property that used to be `text`) already reads as
             // itself; it gets encrypted the next time the layout is saved.
         });
+        return blanked;
     }
 
     /// <summary>The <see cref="SecretIntent.ProtectWithoutReveal"/> half of Reveal.
@@ -694,7 +796,8 @@ public static class SecretPolicy
     /// acknowledging a clean save), plus any instance ids minted here, which the caller
     /// must hand back to the client that submitted the layout.</returns>
     public static SecretSealResult Seal(
-        DashboardLayout layout, DashboardLayout? stored, SecretPlan plan)
+        DashboardLayout layout, DashboardLayout? stored, SecretPlan plan,
+        IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>>? cleared = null)
     {
         var incomingCounts = CountWidgets(layout);
         var previous = BuildStoredIndex(stored, plan, incomingCounts, out var storedCounts);
@@ -722,6 +825,14 @@ public static class SecretPolicy
         for (var p = 0; p < (layout.Pages?.Count ?? 0); p++)
             for (var i = 0; i < (layout.Pages![p].Slots?.Count ?? 0); i++)
                 address[layout.Pages[p].Slots![i]] = (p, i);
+        // "Did the user ask to remove THIS property?" — a name in a list the editor sent,
+        // never a sentinel smuggled through the value. See ClearedMarkerKey.
+        bool Cleared(LayoutSlot slot, string name) =>
+            cleared is not null
+            && address.TryGetValue(slot, out var at)
+            && cleared.TryGetValue(at, out var names)
+            && names.Contains(name, StringComparer.Ordinal);
+
         // Minting an instance id below CHANGES a slot's key, so a widget with two secrets
         // would look up its second one under the brand-new id and find nothing. Resolve
         // each slot's key once, before anything can mint.
@@ -743,17 +854,14 @@ public static class SecretPolicy
                 return;
 
             // Explicit clear: drop the key so the widget sees an unset secret and the
-            // ciphertext is gone from disk.
-            if (value == SecretStore.ClearMarker)
+            // ciphertext is gone from disk. The editor NAMES it; a credential is arbitrary
+            // text and can be any string at all, so nothing about the value could ever have
+            // carried this reliably.
+            if (Cleared(slot, name))
             {
                 slot.Settings!.Remove(name);
                 return;
             }
-            // A typed credential that lives in the reserved namespace arrives escaped, so
-            // it can never be mistaken for the clear marker. Unwrap exactly one prefix
-            // and carry on: the value below is the user's real plaintext.
-            if (value is not null && value.StartsWith(SecretStore.LiteralPrefix, StringComparison.Ordinal))
-                value = value[SecretStore.LiteralPrefix.Length..];
 
             // Already a real envelope (idempotent re-save of a sealed layout).
             if (SecretStore.CanUnprotect(value))
@@ -891,83 +999,47 @@ public static class SecretPolicy
         // write semantics must NOT follow, because the manifest now calls the property
         // ordinary and the user has to be able to type into it and empty it.
         //
-        // Three cases, and the empty one is where PR #65 died three times:
+        // Three cases, and they are finally three PLAIN cases:
         //
-        //   ClearMarker  -> the user pressed Clear. Remove the key.
-        //   ""           -> ambiguous ON ITS OWN. An untouched blanked field and a text
-        //                   input the user just emptied send byte-identical payloads, so
-        //                   this restores ONLY where Mask/Reveal would have blanked —
-        //                   the same Blankable predicate, evaluated against the STORED
-        //                   value. If we did not blank it, the blank is the user's and
-        //                   restoring it would make the field impossible to empty.
-        //   anything else-> new text. Saved verbatim, unencrypted, because that is what
-        //                   an ordinary property means.
+        //   named cleared -> the user pressed Clear. Remove the key.
+        //   ""            -> untouched IF this pipeline is what blanked it. An ordinary
+        //                    field the user emptied sends the same bytes, so the question
+        //                    is answered by the STORED value through the same Blankable
+        //                    predicate Reveal and Mask used, never by the bytes that
+        //                    arrived.
+        //   anything else -> new text. Saved verbatim, unencrypted, because that is what
+        //                    an ordinary property means.
+        //
+        // The first case used to be a sentinel string, and getting it wrong cost four
+        // review rounds: an untouched field echoing a value that already equalled the
+        // sentinel, a clear issued after the stored value changed, an escape prefix eroding
+        // one layer per save, and six controls of which only some escaped. A name in a list
+        // cannot be mistaken for a value. See ClearedMarkerKey.
         //
         // Never Remove on a failed restore: a blank we cannot match is a blank we cannot
         // prove we caused, and removing would destroy a value on the strength of a guess.
         void RestoreOrKeep(LayoutSlot slot, string name, JsonNode? node, string? value, string? key)
         {
-            // Is this address one we actually blanked? Everything below turns on it, and it
-            // is deliberately the SAME predicate Reveal and Mask used, evaluated against the
-            // stored bytes — so the read side and the write side cannot disagree about which
-            // values are protocol and which are the user's.
-            TryPrevious(key, slot, name, out var kept);
-            var storedValue = AsString(kept);
-            var restorable = kept is not null
-                && Blankable(slot.InstanceId, storedValue,
-                    key is not null && storedAmbiguousKeys.Contains(key));
-
-            if (value == SecretStore.ClearMarker)
+            if (Cleared(slot, name))
             {
-                // Two different things send this word, and the difference is in what is
-                // STORED, not in what arrived.
-                //
-                // An untouched field echoes back whatever the editor was given. If that
-                // value was already the marker — typed before this protocol existed, or
-                // hand-written into layout.json — then incoming and stored agree, and the
-                // user did nothing. Deleting it there is silent data loss on a save that
-                // touched something else entirely. Escaping on input cannot save it: the
-                // escape is stripped on the way to disk, so the NEXT save arrives bare.
-                //
-                // Anything else means the value changed to the marker, which only the Clear
-                // affordance does. That covers the case a restorable check alone got wrong:
-                // type into a demoted field, save, then clear it without reopening Settings.
-                // The save has already replaced the ciphertext with ordinary text, so the
-                // address is no longer restorable — but the user did press Clear, and the
-                // field must clear.
-                if (storedValue != SecretStore.ClearMarker)
-                    slot.Settings!.Remove(name);
-                return;
-            }
-            // The escape prefix, and the SAME asymmetry the clear marker has one branch up.
-            //
-            // An editor adds this prefix when the user types something in the reserved
-            // namespace, and the host strips exactly one on the way to disk — so a value the
-            // user typed as `__ww_secret_lit_foo` is STORED as `__ww_secret_lit_foo`, and the
-            // next save of a field nobody touched echoes it back bare. Stripping that
-            // unconditionally quietly rewrites the setting to `foo`, one character-run
-            // shorter every time it is saved.
-            //
-            // Only an editor adds a prefix, and only to a value it just changed. If incoming
-            // and stored agree, nobody typed anything and there is nothing to unwrap.
-            if (value is not null && value != storedValue
-                && value.StartsWith(SecretStore.LiteralPrefix, StringComparison.Ordinal))
-            {
-                slot.Settings![name] = value[SecretStore.LiteralPrefix.Length..];
+                slot.Settings!.Remove(name);
                 return;
             }
             // PRESENT but not a string: a number, boolean or object the user just chose.
             // `AsString` reports null for those exactly as it does for an absent key, so
             // reading emptiness off the string alone would treat a deliberate replacement as
-            // an untouched blank and restore the old ciphertext over it. Only a genuinely
-            // absent key or an empty STRING may reach the restore below.
+            // an untouched blank and restore the old ciphertext over it.
             if (node is not null && value is null)
                 return;
             if (!string.IsNullOrEmpty(value))
                 return;
-            if (!restorable)
+            TryPrevious(key, slot, name, out var kept);
+            if (kept is null)
                 return;
-            slot.Settings![name] = kept!.DeepClone();
+            if (!Blankable(slot.InstanceId, AsString(kept),
+                    key is not null && storedAmbiguousKeys.Contains(key)))
+                return;
+            slot.Settings![name] = kept.DeepClone();
         }
 
         // A slot that stores a credential gets a stable identity, so the next save
