@@ -1884,9 +1884,13 @@
     // The third argument states INTENT, not value: pass true when the user asked to
     // remove this property. psControl runs outside this closure, so it cannot reach the
     // slot def to name the address itself.
+    // The third argument states INTENT; omitting it means "the user set a value", which
+    // CANCELS any pending removal. Without that default the name latched: clear a demoted
+    // property, pick a replacement in the same session, and the save deleted the property
+    // instead of storing what was just chosen.
     const set = (prop, v, clearedFlag) => {
       stored()[prop.name] = v;
-      if (clearedFlag !== undefined) markCleared(record.def, prop.name, clearedFlag);
+      markCleared(record.def, prop.name, clearedFlag === true);
       applyPropChange();
     };
 

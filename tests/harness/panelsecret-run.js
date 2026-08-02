@@ -241,6 +241,16 @@ const widgets = [{
     savedSetting('legacyToken') === '' && clearedNames(savedSlot()).includes('legacyToken'),
     JSON.stringify({ value: savedSetting('legacyToken'), cleared: clearedNames(savedSlot()) }));
 
+  // A replacement CANCELS the pending removal — the panel's ordinary controls call set()
+  // without an intent argument, and latching there deleted the property instead of storing
+  // what the user had just typed.
+  await legacyRow.locator('input').fill('now-ordinary');
+  await wait(900);
+  check('N12d typing a replacement after a Clear cancels the removal',
+    savedSetting('legacyToken') === 'now-ordinary'
+      && !clearedNames(savedSlot()).includes('legacyToken'),
+    JSON.stringify({ value: savedSetting('legacyToken'), cleared: clearedNames(savedSlot()) }));
+
   // ---- N7 · a save the host could not protect has to surface on the panel
   await page.evaluate(() => window.__hostPush(JSON.stringify({
     type: 'secrets-failed', data: ['test.gh.token'],

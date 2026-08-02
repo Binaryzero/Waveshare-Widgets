@@ -1513,11 +1513,11 @@
             && slot.secretsRestorable.includes(prop.name)
             && !(editor.classList && editor.classList.contains('restorable-wrap'))) {
           const clear = iconButton('✕', 'Remove the stored value on the next save', () => {
-            markCleared(slot, prop.name, true);
             // Empty, never absent: absent is one of the shapes the host reads as
             // untouched, and the name is what carries the intent anyway.
             slot.settings = slot.settings || {};
             slot.settings[prop.name] = '';
+            markCleared(slot, prop.name, true);
             markDirty();
             renderEditor();
           }, true);
@@ -1789,7 +1789,16 @@
 
   function propEditor(prop, slot) {
     const current = slot.settings[prop.name] !== undefined ? slot.settings[prop.name] : prop.default;
-    const set = (value) => { slot.settings[prop.name] = value; refreshReplica('layout'); };
+    // Writing a value CANCELS a pending removal. The field-level Clear names the address,
+    // and without this the name latched: the user cleared a demoted property, picked a
+    // replacement in the same session, and the save deleted the property instead of
+    // storing what they had just chosen. The controls that mean "remove" say so
+    // explicitly through markCleared; every other edit is the user setting a value.
+    const set = (value) => {
+      slot.settings[prop.name] = value;
+      markCleared(slot, prop.name, false);
+      refreshReplica('layout');
+    };
 
     switch (prop.type) {
       case 'switch': { // iCUE boolean toggle — rendered as a real switch, not a form checkbox
@@ -1963,8 +1972,8 @@
           // The VALUE goes empty and the intent is stated separately. Empty on its own
           // is what an untouched masked field sends and must KEEP the credential; the
           // name in secretsCleared is what says "delete it".
-          markCleared(slot, prop.name, true);
           set('');
+          markCleared(slot, prop.name, true);
           sync();
         }, true);
         input.addEventListener('input', () => {
@@ -1980,8 +1989,8 @@
             set(input.value);
           } else if (stored) {
             cleared = true;
-            markCleared(slot, prop.name, true);
             set('');
+            markCleared(slot, prop.name, true);
           } else {
             cleared = false;
             markCleared(slot, prop.name, false);
@@ -2261,8 +2270,8 @@
           const clear = iconButton('✕', 'Remove the stored value on the next save', () => {
             input.value = '';
             cleared = true;
-            markCleared(slot, prop.name, true);
             set('');
+            markCleared(slot, prop.name, true);
             sync();
           }, true);
           input.oninput = () => {
@@ -2275,8 +2284,8 @@
               // the one string that cannot say which one the user meant, so the name says
               // it instead.
               cleared = true;
-              markCleared(slot, prop.name, true);
               set('');
+              markCleared(slot, prop.name, true);
             } else {
               cleared = false;
               markCleared(slot, prop.name, false);

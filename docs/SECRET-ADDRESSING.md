@@ -116,11 +116,11 @@ property renders as an ordinary text input, which also sends `""` when the user 
 Comparing against the blank alone would restore the old ciphertext over a deliberate
 clear, making the field impossible to empty — which is the *same* "permanently uneditable
 field" failure this document cites PR #65 for hitting. So the intent needs an explicit
-signal, and the machinery already exists: `Mask` lists these addresses in a
-projection-only marker beside `secretsSet`, the editor emits `SecretStore.ClearMarker` for
-them exactly as the secret editor does, and `Seal` reads three distinct cases — `""` is
-untouched (restore), `ClearMarker` is cleared (remove), anything else is new text (save
-verbatim).
+signal. **It must not be a sentinel value** — that was tried, and step 6 below is the
+write-up of why it cannot work. `Mask` lists these addresses in a projection-only marker
+beside `secretsSet`, the editor names the ones the user cleared in `secretsCleared` on the
+way back, and `Seal` reads three distinct cases — `""` is untouched (restore), a name in
+that list is cleared (remove), anything else is new text (save verbatim).
 
 Two further constraints from probing, both non-obvious:
 

@@ -1132,6 +1132,28 @@ const layout = {
     (last.secretsCleared || []).includes('legacyTint') && last.settings.legacyTint === '',
     JSON.stringify({ cleared: last.secretsCleared, value: last.settings.legacyTint }));
 
+  // ---- E30 · a replacement CANCELS a pending removal ----------------------------------
+  // The name is a statement of intent, and the intent changes the moment the user sets a
+  // value. Latched, the sequence "clear, then pick a replacement" deleted the property
+  // instead of storing what was just chosen — the affordance destroying the edit it was
+  // supposed to make room for.
+  const tintField2 = page.locator('#slotDetail .prop-field').filter({ hasText: 'Legacy tint' });
+  await tintField2.locator('.prop-clear').click();
+  await page.waitForTimeout(120);
+  await tintField2.locator('input[type=color]').evaluate((el) => {
+    el.value = '#123456';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForTimeout(120);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E30 picking a replacement after a Clear cancels the removal',
+    !((last.secretsCleared) || []).includes('legacyTint'),
+    JSON.stringify(last.secretsCleared));
+  check('E30b and the replacement is what gets saved',
+    last.settings.legacyTint === '#123456', JSON.stringify(last.settings.legacyTint));
+
   // An ordinary property the host never blanked keeps its plain behaviour: there is
   // nothing to restore, so "" is unambiguous and no affordance is needed.
   const plain = page.locator('#slotDetail .prop-field').filter({ hasText: 'Repository' });
