@@ -398,7 +398,15 @@
         // that separates them, and it is the same rule the editors use: a removal
         // survives anything that is not a value. Restoring the marker unconditionally
         // meant a replacement typed in the preview was deleted by the next Save.
-        const stillCleared = (prior.secretsCleared || [])
+        // BOTH sides can name an address: the preview's own Clear puts the property in
+        // the CAPTURED list where no prior marker exists, and sourcing the union only
+        // from prior deleted it — so the replica could cancel a removal but never start
+        // one. Union first, then let the value settle it, which also handles the cancel:
+        // a marker the replica dropped comes back through prior and is filtered out by
+        // the replacement value that dropped it.
+        const named = new Set(Array.isArray(slot.secretsCleared) ? slot.secretsCleared : []);
+        for (const n of (prior.secretsCleared || [])) named.add(n);
+        const stillCleared = [...named]
           .filter((n) => !contradictsRemoval(settings ? settings[n] : undefined));
         if (stillCleared.length) merged.secretsCleared = stillCleared;
         else delete merged.secretsCleared;

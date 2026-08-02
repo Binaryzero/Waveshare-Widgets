@@ -1275,6 +1275,29 @@ const layout = {
       && contradiction.replacedValue === 'typed-in-the-preview',
     JSON.stringify(contradiction));
 
+  // ---- E34 · the replica can INITIATE a removal, not only cancel one -------------------
+  // The preview has its own Clear (#153). Pressing it names the address in the CAPTURED
+  // slot, where the desktop copy has no prior marker at all — so sourcing the merge only
+  // from prior deleted the intent on its way back and the Save restored the envelope.
+  // legacyTint carries no pending removal here: E30 cancelled it with a replacement.
+  const initiated = await page.evaluate(() => {
+    const merged = window.__wwMergeReplicaCapture({
+      pages: [{
+        name: 'Main',
+        slots: [{
+          widgetId: 'test.gh', size: 'half', instanceId: 'gh1',
+          settings: { legacyTint: '' },
+          secretsCleared: ['legacyTint'],
+        }],
+      }],
+    }).pages[0].slots[0];
+    return merged.secretsCleared || [];
+  });
+  check('E34 a removal started in the replica survives the merge',
+    initiated.includes('legacyTint'), JSON.stringify(initiated));
+  check('E34b and it does not displace one already standing on the desktop side',
+    initiated.includes('legacyToken'), JSON.stringify(initiated));
+
   // An ordinary property the host never blanked keeps its plain behaviour: there is
   // nothing to restore, so "" is unambiguous and no affordance is needed.
   const plain = page.locator('#slotDetail .prop-field').filter({ hasText: 'Repository' });
