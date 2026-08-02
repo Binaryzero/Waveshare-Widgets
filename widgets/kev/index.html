@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CISA KEV</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Layout only — colors, background, bgStyle and the typography base come from
+   * widget-base.css. */
+  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+  main { flex: 1 1 auto; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+  #count { display: flex; align-items: baseline; gap: 8px; flex: none; }
+  #n { line-height: 1; font-size: clamp(30px, 9vh, 46px); }
+  #window { color: var(--text-muted); font-size: 12px; letter-spacing: 0.04em; }
+  /* The list is the half/full story. In a quarter there is no room for rows that stay
+   * legible, so the count becomes the tile: it takes the space the rows would have had
+   * rather than leaving a mostly-empty card with a small number in the corner. */
+  #list { display: none; flex: 1 1 auto; flex-direction: column; gap: 4px; min-height: 0; overflow: hidden; }
+  @media (min-width: 470px) and (min-height: 241px) { #list { display: flex; } }
+  /* At three-quarter and full a row is roughly a thousand pixels wide, which parks a
+   * vendor at one edge of the panel and its CVE at the other with nothing between them —
+   * the pair a reader is trying to associate ends up as far apart as the tile allows.
+   * Two columns keep them together and fit the same list in half the height. The height
+   * guard matches the rule above: in a 200px band the list is not shown at all. */
+  @media (min-width: 900px) and (min-height: 241px) {
+    /* Tracks sized to the row rather than to the leftover height, then spread: a 1fr
+     * track is far taller than the 46px a row may grow to, so the rows would hang at the
+     * top of their tracks with the slack showing as a ragged gap under each one. */
+    #list { display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: minmax(24px, 46px);
+      column-gap: 8px; align-content: space-between; }
+  }
+  @media (max-width: 469px), (max-height: 240px) {
+    main { justify-content: center; }
+    #count { flex-direction: column; align-items: flex-start; gap: 0; }
+    #n { font-size: min(34vw, 26vh); }
+    #window { font-size: 13px; }
+  }
+  .row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 8px;
+    border-radius: var(--radius-control);
+    background: var(--card-surface);
+    min-width: 0;
+    /* Share the tile: rows grow into the height a 400px slot has and a 200px band
+     * does not, capped so a short list never turns into fat bars. */
+    flex: 1 1 0; min-height: 24px; max-height: 46px;
+  }
+  .row .who {
+    color: var(--text); font-weight: 650; font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1 1 auto; min-width: 0;
+  }
+  .row .cve {
+    color: var(--text-muted); font-size: 11px;
+    font-variant-numeric: tabular-nums; white-space: nowrap; flex: none;
+  }
+  .row .when {
+    color: var(--text-dim); font-size: 11px;
+    font-variant-numeric: tabular-nums; white-space: nowrap; flex: none;
+  }
+  footer { color: var(--text-dim); font-size: 11px; flex: none; font-variant-numeric: tabular-nums; }
+  #state { position: fixed; inset: 0; }
+  /* Stale keeps the last data visible but dimmed — old KEV data still beats none. */
+  body.stale #count, body.stale #list { opacity: 0.55; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="kicker">CISA KEV</span>
+    <span class="pill muted" id="pill">Loading</span>
+  </header>
+
+  <main id="data" hidden>
+    <div id="count">
+      <span class="value hero" id="n">--</span>
+      <span id="window">added in 7 days</span>
+    </div>
+    <div id="list"></div>
+  </main>
+
+  <footer id="meta"></footer>
+
+  <div class="state-card" id="state">
+    <div class="spinner"></div>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  // The catalog is public and unauthenticated; it changes a few times a day at most.
+  const FEED = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json';
+  // The full catalog is well over a megabyte and grows every week. We keep only the
+  // slice the tile can ever show, because localStorage is a few MB total and stashing
+  // the raw feed would evict itself (and everything else this widget owns) at random.
+  // Enough to answer the QUESTIONS, not just to fill the list. The cap used to be the
+  // display length, so the newest-40 slice was taken BEFORE the watch terms and the
+  // date window were applied: a watched vendor sitting at position 60 read as absent,
+  // and any month with more than 40 additions under-reported its own count. Filtering
+  // happens on this whole set; only the rendered rows are limited.
+  const KEEP = 600;
+  const CACHE_KEY = 'kev.cache.v1';
+
+  const cfg = { watch: [], maxItems: 6, windowDays: 7, refreshMs: 3600000 };
+  let entries = [];        // [{vendor, product, cve, added}] newest first
+  let fetchedAt = 0;
+  let timer = null;
+  let started = false;
+  let inFlight = false;
+  let answered = false;   // has a cache read or a response actually happened yet?
+
+  const el = (id) => document.getElementById(id);
+
+  function parseTerms(value) {
+    const raw = Array.isArray(value) ? value : [];
+    return raw
+      .map((item) => {
+        if (!item) return '';
+        if (typeof item === 'string') return item.trim();
+        return String(item.term == null ? '' : item.term).trim();
+      })
+      .filter(Boolean)
+      .map((t) => t.toLowerCase());
+  }
+
+  WW.onInit((state) => {
+    const s = state.settings;
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+
+    cfg.watch = parseTerms(s.watch);
+    cfg.maxItems = Math.min(12, Math.max(3, Number(s.maxItems) || 6));
+    cfg.windowDays = Math.min(30, Math.max(1, Number(s.windowDays) || 7));
+    cfg.refreshMs = Math.min(1440, Math.max(15, Number(s.refreshMinutes) || 60)) * 60000;
+
+    // A re-init is a settings change, not a reason to refetch a catalog that moves a
+    // few times a day: re-render what we hold and let the running chain do the rest.
+    render();
+    if (!started) { started = true; loadCache(); tick(); }
+  });
+
+  function loadCache() {
+    try {
+      const raw = localStorage.getItem(CACHE_KEY);
+      if (!raw) return;
+      const cached = JSON.parse(raw);
+      if (!cached || !Array.isArray(cached.entries)) return;
+      entries = cached.entries;
+      fetchedAt = Number(cached.at) || 0;
+      if (entries.length) answered = true;
+      render();
+    } catch (e) {
+      // A corrupt or evicted cache is not an error state — we are about to fetch.
+      WW.log('kev: cache read failed: ' + e.message);
+    }
+  }
+
+  function saveCache() {
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ at: fetchedAt, entries }));
+    } catch (e) {
+      WW.log('kev: cache write failed: ' + e.message);
+    }
+  }
+
+  async function tick() {
+    if (document.hidden) { schedule(); return; }
+    if (inFlight) { schedule(); return; }
+    inFlight = true;
+    try {
+      // maxBytes lowers the ceiling for this call. The catalog is the one stock feed
+      // big enough to approach it, and "too large" is a different sentence from
+      // "unreachable" — only this widget knows which to paint.
+      const res = await WW.fetch(FEED, { maxBytes: 5 * 1024 * 1024 });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const json = await res.json();
+      const list = Array.isArray(json && json.vulnerabilities) ? json.vulnerabilities : [];
+      entries = list
+        .map((v) => ({
+          vendor: String((v && v.vendorProject) || '').trim(),
+          product: String((v && v.product) || '').trim(),
+          cve: String((v && v.cveID) || '').trim(),
+          added: String((v && v.dateAdded) || '').trim(),
+        }))
+        .filter((v) => v.cve && v.added)
+        .sort((a, b) => (a.added < b.added ? 1 : a.added > b.added ? -1 : 0))
+        .slice(0, KEEP);
+      fetchedAt = Date.now();
+      answered = true;
+      saveCache();
+      document.body.classList.remove('stale');
+      render();
+    } catch (e) {
+      // Keep whatever we have on screen and mark it stale; only a cold start with no
+      // cache at all is a hard error worth taking the tile over.
+      if (entries.length) {
+        document.body.classList.add('stale');
+        render();
+      } else {
+        showError(e instanceof RangeError
+          ? 'The catalog is larger than the panel will load.'
+          : "Couldn't reach the CISA feed.");
+      }
+      WW.log('kev: ' + e.message);
+    } finally {
+      inFlight = false;
+      schedule();
+    }
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(tick, cfg.refreshMs);
+  }
+
+  function matches(entry) {
+    if (!cfg.watch.length) return true;
+    const hay = (entry.vendor + ' ' + entry.product + ' ' + entry.cve).toLowerCase();
+    return cfg.watch.some((term) => hay.includes(term));
+  }
+
+  function render() {
+    // Nothing has been asked yet — onInit calls render() before loadCache() and tick().
+    // Painting "the feed listed no vulnerabilities" here claimed an answer that had not
+    // been requested, and on a slow feed it stayed on screen until the request finished.
+    if (!entries.length && !answered) return;
+    if (!entries.length) {
+      // A successful response with an empty (or renamed) vulnerabilities array is not
+      // "still loading" — returning here left the initial spinner up forever, which is
+      // the one state that can never resolve on its own.
+      el('state').hidden = false;
+      el('data').hidden = true;
+      const st = el('state');
+      st.className = 'state-card';
+      st.textContent = '';
+      const icon = document.createElement('div');
+      icon.className = 'state-icon';
+      icon.textContent = '○';
+      const title = document.createElement('div');
+      title.className = 'state-title';
+      title.textContent = 'No entries';
+      const body = document.createElement('div');
+      body.className = 'state-body';
+      body.textContent = 'The CISA feed answered but listed no vulnerabilities.';
+      st.append(icon, title, body);
+      const pill = el('pill');
+      pill.textContent = 'Empty';
+      pill.className = 'pill muted';
+      return;
+    }
+    const shown = entries.filter(matches);
+    const cutoff = Date.now() - cfg.windowDays * 86400000;
+    // dateAdded is a plain YYYY-MM-DD; Date.parse reads it as UTC midnight, which is
+    // what we want for a day-granularity window.
+    const recent = shown.filter((v) => {
+      const t = Date.parse(v.added);
+      return Number.isFinite(t) && t >= cutoff;
+    });
+
+    el('n').textContent = String(recent.length);
+    el('window').textContent = 'added in ' + cfg.windowDays + (cfg.windowDays === 1 ? ' day' : ' days');
+
+    const list = el('list');
+    list.textContent = '';
+    for (const v of shown.slice(0, cfg.maxItems)) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const who = document.createElement('span');
+      who.className = 'who';
+      who.textContent = v.product ? v.vendor + ' · ' + v.product : v.vendor || v.cve;
+      const cve = document.createElement('span');
+      cve.className = 'cve';
+      cve.textContent = v.cve;
+      const when = document.createElement('span');
+      when.className = 'when';
+      when.textContent = v.added.slice(5);
+      row.append(who, cve, when);
+      list.appendChild(row);
+    }
+
+    const stale = document.body.classList.contains('stale');
+    const pill = el('pill');
+    pill.textContent = stale ? 'Stale' : recent.length ? 'New' : 'Quiet';
+    pill.className = 'pill ' + (stale ? 'muted' : recent.length ? 'warn' : 'ok');
+
+    el('meta').textContent = (cfg.watch.length ? shown.length + ' of ' + entries.length + ' watched · ' : '') +
+      (fetchedAt ? 'updated ' + new Date(fetchedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '');
+
+    el('state').hidden = true;
+    el('data').hidden = false;
+  }
+
+  function showError(message) {
+    const state = el('state');
+    state.className = 'state-card err';
+    state.textContent = '';
+    const icon = document.createElement('div');
+    icon.className = 'state-icon';
+    icon.textContent = '!';
+    const title = document.createElement('div');
+    title.className = 'state-title';
+    title.textContent = 'Feed unavailable';
+    const body = document.createElement('div');
+    body.className = 'state-body';
+    body.textContent = message;
+    const retry = document.createElement('button');
+    retry.className = 'btn';
+    retry.textContent = 'Retry';
+    retry.addEventListener('click', () => {
+      state.className = 'state-card';
+      state.textContent = '';
+      const sp = document.createElement('div');
+      sp.className = 'spinner';
+      state.appendChild(sp);
+      clearTimeout(timer);
+      tick();
+    });
+    state.append(icon, title, body, retry);
+    state.hidden = false;
+    el('data').hidden = true;
+  }
+
+  // Browsers throttle timers in hidden documents; cooperate rather than fight it, and
+  // catch up the moment the page comes back.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !started) return;
+    if (Date.now() - fetchedAt >= cfg.refreshMs) { clearTimeout(timer); tick(); }
+  });
+</script>
+</body>
+</html>
