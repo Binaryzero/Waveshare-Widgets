@@ -180,7 +180,7 @@
 
     applyColumns();
 
-    for (const t of cfg.targets.slice(0, fit().max)) {
+    for (const t of visibleTargets()) {
       const root = document.createElement('div');
       root.className = 'target';
       const top = document.createElement('div');
@@ -237,6 +237,28 @@
     el('grid').style.gridTemplateColumns = 'repeat(' + Math.min(cfg.targets.length, fit().cols) + ', minmax(0, 1fr))';
   }
 
+  // Which targets get a card when the slot cannot show them all: the ones in TROUBLE
+  // first. A grid whose entire job is to surface a red box was hiding red boxes behind
+  // healthy ones purely because they were configured later — leaving a "1 down" pill with
+  // no way to learn which one. Stable within each group, so a steady grid does not shuffle
+  // and an unknown target outranks a healthy one rather than being buried by it.
+  function visibleTargets() {
+    const max = fit().max;
+    if (cfg.targets.length <= max) return cfg.targets;
+    const rank = (t) => {
+      const r = results.get(t.url);
+      if (!r) return 1;
+      return (r.state === 'down' || r.state === 'slow') ? 0 : 2;
+    };
+    return cfg.targets
+      .map((t, i) => ({ t, i, r: rank(t) }))
+      .sort((a, b) => (a.r - b.r) || (a.i - b.i))
+      .slice(0, max)
+      .map((x) => x.t);
+  }
+
+  const visibleKey = () => visibleTargets().map((t) => t.url).join('\n');
+
   let resizeTimer = null;
   let lastFit = '';
   window.addEventListener('resize', () => {
@@ -259,7 +281,7 @@
     grid.textContent = '';
     cards.clear();
     cfg.hidden = Math.max(0, cfg.targets.length - fit().max);
-    for (const t of cfg.targets.slice(0, fit().max)) {
+    for (const t of visibleTargets()) {
       const root = document.createElement('div');
       root.className = 'target';
       const top = document.createElement('div');
@@ -338,12 +360,29 @@
       const ms = Date.now() - started;
       outcome = { state: res.ok ? (ms > cfg.slowMs ? 'slow' : 'up') : 'down', code: res.status, ms, at: Date.now() };
     } catch (e) {
-      outcome = { state: 'down', code: 0, ms: Date.now() - started, at: Date.now() };
+      const ms = Date.now() - started;
+      // A body-size refusal means bytes ARRIVED: the server answered and only the size of
+      // its reply stopped us reading a status off it. For a health probe that is a
+      // REACHABLE service — a CORS-blocked LAN web interface with a large HTML page would
+      // otherwise sit red while serving 200s all day. The status genuinely is not
+      // available: the host caps the body before it records one
+      // (DashboardWindow.HandleProxyFetchAsync reads the body, then sets result["status"]),
+      // so the tile says the reply was too large rather than inventing a code for it.
+      outcome = (e instanceof RangeError)
+        ? { state: ms > cfg.slowMs ? 'slow' : 'up', code: 0, ms, at: Date.now(), oversize: true }
+        : { state: 'down', code: 0, ms, at: Date.now() };
     } finally {
       clearTimeout(deadline);
       running.delete(mark);
       if (gen === generation) {
-        if (outcome) { results.set(target.url, outcome); renderTarget(target, outcome); renderSummary(); }
+        if (outcome) {
+          results.set(target.url, outcome);
+          // A result can change WHICH targets deserve a card, not just what one says, so a
+          // membership change relays out rather than updating a tile that may no longer be
+          // on screen — or failing to create one for a target that just went red.
+          if (cfg.hidden && visibleKey() !== [...cards.keys()].join('\n')) relayout();
+          else { renderTarget(target, outcome); renderSummary(); }
+        }
         // Per TARGET, because that is the unit that is failing. A box that is switched off
         // is otherwise probed every fifteen seconds forever — nearly six thousand refused
         // connections a day, times up to twelve targets — and each one is a host round-trip
@@ -367,7 +406,7 @@
     const ui = cards.get(target.url);
     if (!ui) return;
     ui.root.className = 'target ' + r.state;
-    ui.code.textContent = r.code ? String(r.code) : '—';
+    ui.code.textContent = r.code ? String(r.code) : r.oversize ? '···' : '—';
     // "Unreachable" is reserved for a call that got no answer at all. A 503 IS
     // reachable — it replied, and it replied badly — so it keeps its timing and the
     // red status code carries the bad news.
@@ -375,7 +414,9 @@
     // Deliberately "~": when a direct call is blocked, WW.fetch escalates through the
     // host proxy and the number includes that hop. The widget cannot see which tier
     // served it, so presenting this as the server's true latency would be a lie.
-    ui.rtt.textContent = r.code ? '~' + r.ms + ' ms' : 'unreachable';
+    ui.rtt.textContent = r.code ? '~' + r.ms + ' ms'
+      : r.oversize ? '~' + r.ms + ' ms · reply too large to read'
+      : 'unreachable';
   }
 
   function renderSummary() {
