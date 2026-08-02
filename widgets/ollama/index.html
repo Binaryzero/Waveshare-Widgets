@@ -378,7 +378,33 @@
     }
     if (soonest === Infinity) return;          // nothing is counting down
     const every = soonest < 60 ? 1000 : soonest < 3600 ? 30000 : 300000;
-    tickerTimer = setTimeout(render, every);
+    tickerTimer = setTimeout(onTicker, every);
+  }
+
+  // A deadline that has PASSED does not make the held list old, it makes it wrong: Ollama
+  // has evicted that model, and the tile would go on counting its VRAM and saying Loaded
+  // until the next poll — roughly another 270 seconds at the maximum interval, describing
+  // a residency that has already ended. The list is marked stale and the poll made due.
+  //
+  // Both, not either: the poll is what corrects the number, and the stale mark is what
+  // tells the truth in the meantime — including when the poll is gated because the
+  // document is hidden or a game is running, where it may not happen for some time.
+  //
+  // `t > lastOk` is what stops this repeating: once a poll lands, lastOk is later than the
+  // deadline that triggered it, so a server still reporting the model does not re-arm this
+  // on every tick.
+  function onTicker() {
+    const now = Date.now();
+    const evicted = models.some((m) => {
+      const t = Date.parse(m.expires || '');
+      return Number.isFinite(t) && t <= now && t > lastOk;
+    });
+    if (evicted) {
+      document.body.classList.add('stale');
+      pollAnchor = 0;
+      arm();
+    }
+    render();
   }
 
   function render() {
