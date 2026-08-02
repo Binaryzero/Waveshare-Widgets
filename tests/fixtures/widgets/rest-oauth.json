@@ -1,0 +1,4 @@
+[
+ { "match": "oauth.battle.net/token", "json": { "access_token": "eyJTEST", "token_type": "bearer", "expires_in": 86399 } },
+ { "match": "/data/wow/token/index", "json": { "lastUpdatedTimestamp": 1785600000000, "price": 2841230000 } }
+]

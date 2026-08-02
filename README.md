@@ -63,8 +63,11 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   the portable zip the widget explains itself instead of mirroring), Vitals (a
   self-care HUD whose water/eyes/posture/stretch meters drain over desk time,
   tended alongside a pixel pet), REST Value (any JSON endpoint, one number on
-  the panel — give it a URL and a path, set warn/crit thresholds, and add an auth
-  header that is stored encrypted), CISA KEV (the Known Exploited
+  the panel — give it a URL and a path, set warn/crit thresholds, and
+  authenticate with either a static header or an OAuth2 client-credentials
+  exchange; the header value and the client secret are both stored encrypted,
+  and the tile tells a sign-in failure apart from an API that refused the
+  request), CISA KEV (the Known Exploited
   Vulnerabilities catalog as a glance tile: how many landed this week and the
   newest entries by vendor and product, filterable to the vendors you run —
   public feed, no key needed), Ollama (what your local instance actually has
