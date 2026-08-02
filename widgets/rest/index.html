@@ -91,6 +91,10 @@
   let bearer = null;      // { token, expiresAt, key }
   let tokenFailed = '';   // why the LAST exchange failed — a different sentence from a
                           // data-fetch failure, and the user fixes a different setting.
+  // False until the first onInit has applied real settings. Before that, `cfg` holds
+  // defaults that differ from every saved configuration, so a comparison against them
+  // reports an edit that never happened.
+  let inited = false;
   let timer = null;
   let ageTimer = null;    // refreshes the "how old" label between polls
   let inFlight = false;
@@ -108,6 +112,20 @@
    * Both are offered because users reach for the dotted form and being strict about
    * it buys nothing. Returns undefined for any miss — the caller renders "no value
    * at that path" rather than guessing. */
+  /** Sets Authorization, removing any existing entry whatever its casing. HTTP header
+   *  names are case-insensitive, but a plain object's keys are not: a legacy tile whose
+   *  custom header is spelled `authorization` kept that key alongside the `Authorization`
+   *  written here, and both native Headers and serializeProxyInit COMBINE duplicates —
+   *  so the API received `Bearer old, Bearer new` and rejected the lot. Unrelated custom
+   *  headers are left alone. */
+  function setAuthHeader(headers, value) {
+    for (const k of Object.keys(headers)) {
+      if (k.toLowerCase() === 'authorization') delete headers[k];
+    }
+    headers.Authorization = value;
+    return headers;
+  }
+
   function resolvePath(doc, path) {
     // Leading whitespace is never part of either syntax, and stripping it is what
     // decides WHICH syntax this is — " /a/b" pasted with a stray space would otherwise
@@ -405,12 +423,16 @@
           // Inside the deadline, not before it: a token endpoint that accepts the
           // connection and then stalls held inFlight for the whole of WW.fetch's own
           // timeout, and every poll behind it waited on that.
-          headers.Authorization = 'Bearer ' + await withDeadline(budget, controller, () => getBearer(false, controller.signal));
+          setAuthHeader(headers, 'Bearer ' + await withDeadline(budget, controller, () => getBearer(false, controller.signal)));
           tokenFailed = '';
         } catch (e) {
+          // Before ANY shared state moves, not after. A retired exchange belongs to a
+          // source the user has already moved off: charging its failure to the new one's
+          // backoff, or recording its message as the new one's reason, is the same
+          // mistake as painting its card — it was just happening one line earlier.
+          if (superseded()) return;
           tokenFailed = e.message;
           failures++;
-          if (superseded()) return;
           if (!showStale('sign-in failed')) {
             showState('⚠', 'Sign-in failed',
               'Could not get an access token: ' + e.message +
@@ -444,12 +466,16 @@
       // on every poll for a credential that is simply wrong.
       if (!answer.ok && answer.status === 401 && cfg.authMode === 'oauth2') {
         try {
-          init.headers = Object.assign({}, init.headers, {
-            Authorization: 'Bearer ' + await withDeadline(budget, controller, () => getBearer(true, controller.signal)),
-          });
+          init.headers = setAuthHeader(Object.assign({}, init.headers),
+            'Bearer ' + await withDeadline(budget, controller, () => getBearer(true, controller.signal)));
           answer = await withDeadline(budget, controller, doFetch);
           if (superseded()) return;
         } catch (e) {
+          // Retargeting the tile aborts this exchange, and the rejection that follows
+          // describes the OLD credentials. This catch had no generation check at all,
+          // so it could charge the new source's backoff and paint "Sign-in failed" over
+          // a tile that had just been pointed somewhere else entirely.
+          if (superseded()) return;
           tokenFailed = e.message;
           failures++;
           if (!showStale('sign-in failed')) {
@@ -643,7 +669,16 @@
     // Any change to WHO we are invalidates the cached bearer immediately. Leaving it
     // would authenticate the new credentials' first poll as the old client — which
     // succeeds, looks correct, and is the wrong account.
-    if (prevAuth !== cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope) {
+    //
+    // The FIRST init is not such a change. `cfg` still holds the hard-coded none/empty
+    // defaults when prevAuth is captured, so an OAuth tile arriving with its saved
+    // settings always looked like an edit and wiped the cache before getBearer could
+    // read it — every reload of the widget or the app bought a fresh exchange, which is
+    // exactly what the cache exists to avoid, and multiplies by the number of REST tiles.
+    // Skipping the wipe here is safe because it is not what protects correctness:
+    // loadBearer() refuses any entry whose key does not match the current endpoint,
+    // client and scope, so a token from other credentials can never be used regardless.
+    if (inited && prevAuth !== cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope) {
       bearer = null;
       tokenFailed = '';
       try { localStorage.removeItem(CACHE); } catch (e) { /* quota/private mode */ }
@@ -697,6 +732,8 @@
       if (stale) showStale(staleWhy);
       else { paintValue(last.text, last.cls); renderMeta(); }
     }
+    // Last, so every comparison above still sees the real "was this the first one".
+    inited = true;
     startAgeTicker();
     restart();
   });
