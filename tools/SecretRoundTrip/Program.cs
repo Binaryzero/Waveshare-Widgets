@@ -1455,6 +1455,26 @@ SecretPolicy.Seal(literalOther, null, DemotedLookup);
 Check("P37h and exactly ONE prefix is stripped, so the escape is reversible",
     Value(literalOther, "repo") == "plain", Value(literalOther, "repo") ?? "(removed)");
 
+// The escape prefix has the marker's asymmetry too: the host strips one on the way to disk,
+// so a value typed as `__ww_secret_lit_foo` is STORED bare and the next untouched save
+// echoes it back — stripping again would rewrite the setting, shorter every save.
+var storedEscape = LayoutWith(new JsonObject { ["repo"] = SecretStore.LiteralPrefix + "foo" });
+var untouchedEscape = LayoutWith(new JsonObject { ["repo"] = SecretStore.LiteralPrefix + "foo" });
+SecretPolicy.Seal(untouchedEscape, storedEscape, DemotedLookup);
+Check("P37h2 an untouched value that already carries the prefix is left alone",
+    Value(untouchedEscape, "repo") == SecretStore.LiteralPrefix + "foo",
+    Value(untouchedEscape, "repo") ?? "(removed)");
+var againEscape = LayoutWith(new JsonObject { ["repo"] = SecretStore.LiteralPrefix + "foo" });
+SecretPolicy.Seal(againEscape, untouchedEscape, DemotedLookup);
+Check("P37h3 and on the save after that — it does not erode one prefix per save",
+    Value(againEscape, "repo") == SecretStore.LiteralPrefix + "foo",
+    Value(againEscape, "repo") ?? "(removed)");
+// A freshly TYPED escape still unwraps: incoming differs from stored, so an editor made it.
+var typedEscape = LayoutWith(new JsonObject { ["repo"] = SecretStore.LiteralPrefix + SecretStore.ClearMarker });
+SecretPolicy.Seal(typedEscape, storedEscape, DemotedLookup);
+Check("P37h4 while a freshly typed escape still unwraps exactly once",
+    Value(typedEscape, "repo") == SecretStore.ClearMarker, Value(typedEscape, "repo") ?? "(removed)");
+
 // ---- P37i · the escape reaches disk STRIPPED, so the next save sees the bare word ------
 // This is what escaping-on-input alone could not fix, and asserting the escape rather than
 // the round trip is what hid it: the editor escapes, the host strips, layout.json holds the

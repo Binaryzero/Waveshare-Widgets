@@ -939,12 +939,19 @@ public static class SecretPolicy
                     slot.Settings!.Remove(name);
                 return;
             }
-            // The clear marker is a protocol word, and this intent now covers EVERY ordinary
-            // property — so an unrelated text setting whose value happens to be that word
-            // would be removed by an otherwise innocent save. Editors escape anything in the
-            // reserved namespace, exactly as the secret control already did; one prefix is
-            // stripped here and the rest is the user's real text.
-            if (value is not null && value.StartsWith(SecretStore.LiteralPrefix, StringComparison.Ordinal))
+            // The escape prefix, and the SAME asymmetry the clear marker has one branch up.
+            //
+            // An editor adds this prefix when the user types something in the reserved
+            // namespace, and the host strips exactly one on the way to disk — so a value the
+            // user typed as `__ww_secret_lit_foo` is STORED as `__ww_secret_lit_foo`, and the
+            // next save of a field nobody touched echoes it back bare. Stripping that
+            // unconditionally quietly rewrites the setting to `foo`, one character-run
+            // shorter every time it is saved.
+            //
+            // Only an editor adds a prefix, and only to a value it just changed. If incoming
+            // and stored agree, nobody typed anything and there is nothing to unwrap.
+            if (value is not null && value != storedValue
+                && value.StartsWith(SecretStore.LiteralPrefix, StringComparison.Ordinal))
             {
                 slot.Settings![name] = value[SecretStore.LiteralPrefix.Length..];
                 return;
