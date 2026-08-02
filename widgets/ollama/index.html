@@ -174,6 +174,18 @@
       polled = false;
       failures = 0;
       inFlight = false;   // the retired request cleans up nothing; this chain owns it now
+      // Overdue from this instant, in every path that reads the deadline. Without it, a
+      // switch made while a game was running left arm() computing against the PREVIOUS
+      // endpoint's anchor: tick() was gated, onGame's resume only re-armed that same
+      // deadline, and the tile could sit on Loading for the rest of the old interval —
+      // up to five minutes — before it ever spoke to the new address.
+      pollAnchor = 0;
+      // And the countdown timer goes with it. scheduleTicker() may already have queued a
+      // render() from the previous server's expires_at; clearing only the poll timer left
+      // that callback to fire against the now-empty model list, hide the loading card, and
+      // announce that the NEW address was running and idle — a claim about a machine
+      // nothing had yet asked.
+      clearTimeout(tickerTimer);
       document.body.classList.remove('stale');
       showLoading();
       clearTimeout(timer);
@@ -260,7 +272,11 @@
         const n = Number(raw);
         return {
           name: String((m && (m.name || m.model)) || '').trim() || 'unnamed',
-          vram: (raw == null || !Number.isFinite(n)) ? null : n,
+          // Negative is not a known figure either. Finite-but-negative slipped through as
+          // "known", so gib() dashed the row while the total quietly SUBTRACTED it — an
+          // understated, possibly negative aggregate with no "not reporting" suffix to
+          // hint that anything was wrong. Same rule here as gib() applies there.
+          vram: (raw == null || !Number.isFinite(n) || n < 0) ? null : n,
           expires: String((m && m.expires_at) || ''),
         };
       });
@@ -368,6 +384,10 @@
   function render() {
     // First, because it depends on the model list rather than on anything painted below.
     scheduleTicker();
+    // Nothing has answered yet, so there is nothing to describe. An empty model list means
+    // "idle" only once a server has SAID so; before that it is just an empty list, and
+    // painting it would replace the loading card with a claim.
+    if (!answered) return;
     // Only what was actually reported goes into the total, and the label says so when
     // something was left out rather than quietly under-counting.
     const known = models.filter((m) => m.vram != null);
