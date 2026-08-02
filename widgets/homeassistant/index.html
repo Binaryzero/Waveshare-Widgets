@@ -122,6 +122,14 @@
   let gameOn = false;
   const acting = new Set();     // entity ids with a command in flight
   let refreshQueued = false;    // an action wants a poll as soon as the current one ends
+  // Every hold timer currently running, so a rebuild can call them all off. A poll that
+  // changes the ranking detaches the tile a finger is resting on, and the timer's closure
+  // outlives the node: releasing early then lands on a listener nobody is attached to any
+  // more, and the abandoned hold goes on to unlock the device. Declared up here with the
+  // rest of the module state, because build() is called from onInit — which the shim
+  // invokes synchronously when it is already ready — and a `const` sited next to
+  // wireLongPress further down the file is still in its dead zone at that point.
+  const holds = new Set();
   // Bumped whenever WHICH SERVER we are talking to changes. A response belongs to the
   // identity that asked for it; clearing `states` alone did not stop an already-issued
   // /api/states from landing and being rendered against the new configuration — and a
@@ -157,8 +165,14 @@
     return "Couldn't reach Home Assistant at " + cfg.base + '.';
   }
 
+  const FLASHES = ['confirm-flash', 'fail-flash', 'pending-flash'];
   function flash(node, cls) {
-    node.classList.remove(cls);
+    // All three are mutually exclusive answers to the same question, and only the one
+    // being set was being cleared. A tile left holding `pending-flash` from an unresolved
+    // command matched a later, more specific rule than the confirm and fail ones, so every
+    // subsequent success or refusal on that tile showed nothing at all — the finished
+    // pending animation won, silently.
+    for (const c of FLASHES) node.classList.remove(c);
     void node.offsetWidth;   // restart the animation even mid-run
     node.classList.add(cls);
   }
@@ -238,8 +252,13 @@
     build();
     if (!cfg.base || !cfg.token || !cfg.entities.length) {
       // Stop rather than just repaint: a running timer would keep asking with a
-      // configuration the user has just emptied.
+      // configuration the user has just emptied. Bumping the generation matters as much
+      // as clearing the timer — with the address and token unchanged nothing else
+      // invalidates a poll already in flight, so it would land, paint an empty "Live"
+      // grid straight over this setup card, and re-arm itself in its own finally.
       clearTimeout(timer);
+      generation++;
+      inFlight = false;
       started = false;
       showSetup();
       return;
@@ -296,8 +315,16 @@
 
   const visibleKey = () => visibleEntities().map((e) => e.entity).join('\n');
 
+  function cancelHolds() {
+    for (const cancel of holds) cancel();
+    holds.clear();
+  }
+
   function build() {
     const grid = el('grid');
+    // Any hold in progress is against a tile about to be detached, and its timer would
+    // outlive the node it belongs to.
+    cancelHolds();
     grid.textContent = '';
     cards.clear();
     const n = cfg.entities.length;
@@ -375,9 +402,11 @@
       root.classList.add('pressing');
       held = setTimeout(() => {
         held = null; owner = null;
+        holds.delete(cancel);
         root.classList.remove('pressing');
         act(entry, root);
       }, PRESS_MS);
+      holds.add(cancel);
     };
     const cancel = (ev) => {
       // Only the finger that started the hold can end it; a second one lifting off must
@@ -386,6 +415,7 @@
       root.classList.remove('pressing');
       if (held) { clearTimeout(held); held = null; }
       owner = null;
+      holds.delete(cancel);
     };
     root.addEventListener('pointerdown', start);
     root.addEventListener('pointerup', cancel);
@@ -419,7 +449,7 @@
       // that sends headers and then stalls mid-stream left res.json() pending forever,
       // with inFlight still true and nothing armed — the same dead panel, reached by a
       // slightly different route.
-      return consume ? await consume(res) : res;
+      return consume ? await consume(res, abort) : res;
     } finally {
       clearTimeout(deadline);
     }
@@ -427,12 +457,17 @@
 
   // Fetch and parse under ONE deadline, and require the shape while we are at it.
   async function haJson(path, init, deadlineMs, wantArray) {
-    return ha(path, init, deadlineMs, async (res) => {
+    return ha(path, init, deadlineMs, async (res, abort) => {
       let body;
       try {
         body = await res.json();
       } catch (e) {
+        // The deadline firing mid-stream rejects this read with an abort error. Calling
+        // that a format fault told someone with a healthy but slow Home Assistant that
+        // their address points at a router — the timeout has to survive the fact that it
+        // now happens during the body read rather than before it.
         throw e instanceof RangeError ? fault('toolarge', 'reply too large')
+          : abort.signal.aborted ? fault('timeout', 'no answer in time')
           : fault('format', 'reply was not JSON');
       }
       if (wantArray && !Array.isArray(body)) throw fault('format', 'reply was not a state list');
@@ -462,9 +497,13 @@
     // poll. On failure we put it back AND fail-flash, so a refused action can never
     // look like it worked.
     root.classList.toggle('on', !isOn);
-    const service = SECURITY.includes(domain)
-      ? (domain === 'lock' ? (isOn ? 'lock' : 'unlock') : (isOn ? 'close_cover' : 'open_cover'))
-      : 'toggle';
+    // Each armed domain has its OWN services. Folding sirens in with covers — which is
+    // what moving them into the armed set did — sent siren/open_cover, a service that
+    // does not exist, so every deliberate siren hold failed instead of controlling it.
+    const service = !SECURITY.includes(domain) ? 'toggle'
+      : domain === 'lock' ? (isOn ? 'lock' : 'unlock')
+      : domain === 'siren' ? (isOn ? 'turn_off' : 'turn_on')
+      : (isOn ? 'close_cover' : 'open_cover');
     const serviceDomain = domain === 'garage_door' ? 'cover' : domain;
     const gen = generation;
     acting.add(entry.entity);
@@ -488,7 +527,14 @@
       // failure there is a lie in the more dangerous direction: someone reads "failed",
       // presses again, and locks what they had just unlocked. The honest answer is that
       // the panel does not know yet — so it says nothing definitive and goes and looks.
-      if (e.kind === 'http') {
+      // Only a status that DEFINITELY rejected the request counts as a refusal. A 502 or
+      // 504 comes from a reverse proxy in front of Home Assistant, which may well have
+      // executed the service before its answer was lost — treating that as failure
+      // recreates exactly the misleading retry this pending state was added to prevent.
+      // Same for 408 and 429: the request's fate is not settled by them.
+      const definite = e.kind === 'http' && e.status >= 400 && e.status < 500
+        && e.status !== 408 && e.status !== 429;
+      if (definite) {
         root.classList.toggle('on', !!isOn);
         flash(root, 'fail-flash');
       } else {
@@ -496,9 +542,15 @@
       }
       WW.log('homeassistant: ' + entry.entity + ': ' + e.message);
       reconcile();
-    } finally {
-      acting.delete(entry.entity);
     }
+    // Deliberately NOT released here. `states` still holds the value from before the
+    // command, so a second tap arriving between the POST settling and the reconciling
+    // poll landing reads the same stale state and sends the opposite service — undoing
+    // the first action, which is the very thing the guard was added to stop. A fast
+    // Home Assistant makes that window an ordinary double tap. The guard is released
+    // when an authoritative refresh lands, with a timer as the backstop for a
+    // reconciliation that never arrives.
+    setTimeout(() => acting.delete(entry.entity), ACT_DEADLINE);
   }
 
   // Go and look, now. Someone acting on the panel has asked for its current state, so the
@@ -548,6 +600,9 @@
       states = next;
       lastOk = Date.now();
       fails = 0;
+      // An authoritative snapshot has landed, so the presses held back while commands
+      // were unresolved can be let through again.
+      acting.clear();
       document.body.classList.remove('stale');
       // A result can change WHICH entities deserve a tile, not only what one says.
       if (cfg.hidden && visibleKey() !== [...cards.keys()].join('\n')) build();
