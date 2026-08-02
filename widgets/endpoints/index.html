@@ -238,17 +238,21 @@
   }
 
   // Which targets get a card when the slot cannot show them all: the ones in TROUBLE
-  // first. A grid whose entire job is to surface a red box was hiding red boxes behind
-  // healthy ones purely because they were configured later — leaving a "1 down" pill with
-  // no way to learn which one. Stable within each group, so a steady grid does not shuffle
-  // and an unknown target outranks a healthy one rather than being buried by it.
+  // first, worst first. A grid whose entire job is to surface a red box was hiding red
+  // boxes behind healthy ones purely because they were configured later — leaving a
+  // "1 down" pill with no way to learn which one. Stable within each group, so a steady
+  // grid does not shuffle, and an unknown target outranks a healthy one rather than being
+  // buried by it.
   function visibleTargets() {
     const max = fit().max;
     if (cfg.targets.length <= max) return cfg.targets;
     const rank = (t) => {
       const r = results.get(t.url);
-      if (!r) return 1;
-      return (r.state === 'down' || r.state === 'slow') ? 0 : 2;
+      if (!r) return 2;
+      // Down outranks slow: they are not the same news. Four slow boxes configured before
+      // one dead one would otherwise fill every card in yellow while the pill said "1 down"
+      // and still named nothing, which is the exact hole this ordering exists to close.
+      return r.state === 'down' ? 0 : r.state === 'slow' ? 1 : 3;
     };
     return cfg.targets
       .map((t, i) => ({ t, i, r: rank(t) }))
@@ -327,6 +331,10 @@
     const abort = new AbortController();
     const deadline = setTimeout(() => abort.abort(), PROBE_DEADLINE);
     let outcome;
+    // Kept out here because the catch cannot see into the try: if the GET is refused for
+    // size there is no status to report, and a bad answer HEAD already gave is better
+    // than none.
+    let headVerdict = 0;
     try {
       // HEAD first — cheapest possible answer. Plenty of servers (and most SPA dev
       // servers) answer 405 or hang up on it, so a non-2xx HEAD is retried as GET
@@ -349,6 +357,11 @@
         if (abort.signal.aborted) throw headError;
       }
       if (!res || !res.ok) {
+        // 405 and 501 are the method being unsupported — the very reason this fallback
+        // exists — so they are not the service's verdict on itself and are not kept. Any
+        // other answered-but-unhappy status IS the service talking, and if the GET comes
+        // back unreadable it is the only verdict there will be.
+        if (res && res.status !== 405 && res.status !== 501) headVerdict = res.status;
         await drain(res);
         res = await WW.fetch(target.url, { method: 'GET', insecure: true, cache: 'no-store', maxBytes: 65536, signal: abort.signal });
       }
@@ -368,9 +381,14 @@
       // available: the host caps the body before it records one
       // (DashboardWindow.HandleProxyFetchAsync reads the body, then sets result["status"]),
       // so the tile says the reply was too large rather than inventing a code for it.
-      outcome = (e instanceof RangeError)
-        ? { state: ms > cfg.slowMs ? 'slow' : 'up', code: 0, ms, at: Date.now(), oversize: true }
-        : { state: 'down', code: 0, ms, at: Date.now() };
+      // ...unless HEAD already got a bad answer out of it. A service that serves the same
+      // large error page to both verbs would otherwise go green on the strength of the
+      // GET being unreadable, which is the reply itself being used as proof of health.
+      outcome = !(e instanceof RangeError)
+        ? { state: 'down', code: 0, ms, at: Date.now() }
+        : headVerdict
+          ? { state: 'down', code: headVerdict, ms, at: Date.now() }
+          : { state: ms > cfg.slowMs ? 'slow' : 'up', code: 0, ms, at: Date.now(), oversize: true };
     } finally {
       clearTimeout(deadline);
       running.delete(mark);
