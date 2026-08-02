@@ -1,0 +1,5 @@
+[
+ { "match": "search/issues", "json": { "total_count": 3, "items": [] }, "headers": { "etag": "W/\"abc\"" } },
+ { "match": "waveshare-widgets/actions/runs", "json": { "workflow_runs": [ { "status": "completed", "conclusion": "success" } ] } },
+ { "match": "flaky-service/actions/runs", "json": { "workflow_runs": [ { "status": "completed", "conclusion": "failure" } ] } }
+]

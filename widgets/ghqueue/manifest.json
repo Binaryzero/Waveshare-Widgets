@@ -1,0 +1,44 @@
+{
+  "id": "ws.stock.ghqueue",
+  "name": "GitHub Queue",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Per repo: pull requests waiting on your review, and how the last workflow run finished. Uses conditional requests so it stays well inside the token's rate limit.",
+  "min_api_version": 1,
+  "supported_slots": ["half", "full"],
+  "properties": [
+    {
+      "name": "repos",
+      "label": "Repositories",
+      "type": "list",
+      "itemLabel": "repository",
+      "maxItems": 10,
+      "fields": [
+        { "key": "repo", "label": "owner/name", "type": "text", "placeholder": "binaryzero/waveshare-widgets" }
+      ],
+      "default": []
+    },
+    {
+      "name": "apiToken",
+      "label": "Personal access token",
+      "type": "secret",
+      "placeholder": "Fine-grained PAT with read access to the repos above"
+    },
+    {
+      "name": "refreshMinutes",
+      "label": "Refresh every (minutes)",
+      "type": "number",
+      "min": 1,
+      "max": 120,
+      "step": 1,
+      "default": 5
+    },
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": ["solid", "glass", "transparent"],
+      "default": "solid"
+    }
+  ]
+}

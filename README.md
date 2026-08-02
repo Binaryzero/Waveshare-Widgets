@@ -52,7 +52,7 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
 - **Settings UI**: tray → **Settings…** opens a visual editor for pages, slots, and
   every widget's declared properties (colors, sliders, sensor pickers, structured
   lists) — no JSON editing required — plus the Theme panel with a live preview.
-- **Twenty-seven stock widgets**: CPU, GPU, Clock, Countdown, Now Playing, Weather,
+- **Twenty-eight stock widgets**: CPU, GPU, Clock, Countdown, Now Playing, Weather,
   7-Day Forecast, Weather Radar, Reddit Photos, Ping Monitor, iFrame, Stream Deck
   mirror (live Virtual Stream Deck with clickable keys), Control Deck (a touch
   button grid — launch apps, open URLs, send hotkeys, control media; no Stream
@@ -69,9 +69,12 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   newest entries by vendor and product, filterable to the vendors you run —
   public feed, no key needed), Ollama (what your local instance actually has
   resident on the GPU right now: each loaded model, the VRAM it holds, and how
-  long until it unloads — pairs with the GPU widget), and Endpoint Health
+  long until it unloads — pairs with the GPU widget), Endpoint Health
   (red/green tiles for self-hosted and LAN services, each checked on its own
-  timer so one hung box never freezes the rest of the grid).
+  timer so one hung box never freezes the rest of the grid), and GitHub Queue
+  (per repo, the pull requests waiting on your review and how the last workflow
+  run finished — conditional requests keep it well inside the token's rate
+  limit).
 - **iCUE widget compatibility**: many `.icuewidget` packages from the
   [Elgato Marketplace](https://marketplace.elgato.com/icue/widgets) install and run
   as-is — the runtime emulates the `Sensorsdataprovider` plugin API and reads

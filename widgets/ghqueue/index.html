@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>GitHub Queue</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Layout only — colors, background, bgStyle and the typography base come from
+   * widget-base.css. */
+  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+  #repos { flex: 1 1 auto; display: flex; flex-direction: column; gap: 5px; min-height: 0; overflow: hidden; }
+  .repo {
+    display: flex; align-items: center; gap: 10px;
+    padding: 5px 10px;
+    border-radius: var(--radius-control);
+    background: var(--card-surface);
+    min-width: 0;
+    flex: 1 1 0; min-height: 28px; max-height: 54px;
+  }
+  .repo .name {
+    color: var(--text); font-weight: 650;
+    font-size: clamp(11px, 3.2vh, 14px);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1 1 auto; min-width: 0;
+  }
+  .repo .reviews {
+    font-size: clamp(11px, 3vh, 13px); font-weight: 700; flex: none;
+    font-variant-numeric: tabular-nums; color: var(--text-muted);
+  }
+  .repo .reviews.waiting { color: var(--accent); }
+  .repo .run { flex: none; }
+  footer { color: var(--text-dim); font-size: 11px; flex: none; font-variant-numeric: tabular-nums; }
+  #state { position: fixed; inset: 0; }
+  body.stale #repos { opacity: 0.6; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="kicker">GitHub</span>
+    <span class="pill muted" id="pill">Loading</span>
+  </header>
+
+  <div id="repos" hidden></div>
+
+  <footer id="meta"></footer>
+
+  <div class="state-card" id="state">
+    <div class="spinner"></div>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const API = 'https://api.github.com';
+  // Per REQUEST, not per tick. A tick makes two calls per repo across up to ten repos, and
+  // the unit that hangs is one call — bounding the tick instead would let a single silent
+  // request spend the whole budget and starve every repo behind it.
+  const REQUEST_DEADLINE = 15000;
+  // Only the status, the ETag and a small JSON object are wanted from either endpoint at
+  // per_page=1. Anything larger is something other than the GitHub API answering.
+  const RESPONSE_CAP = 262144;
+  const CACHE_MAX = 60;          // etag/body entries kept; repo lists change over a session
+  const IDLE_FLOOR = 5000;       // a re-armed timer never fires sooner than this
+  const GATED_RECHECK = 60000;   // backstop while paused for a game or a hidden panel
+  const MAX_WAIT = 3600000;
+  const MAX_REPOS = 10;
+  const cfg = { repos: [], token: '', refreshMs: 300000, dropped: 0, hidden: 0, malformed: 0 };
+  // ETags let a poll that finds nothing new cost zero rate-limit budget. GitHub
+  // answers 304 and does not decrement the quota, which is what makes a 1-minute
+  // cadence across a handful of repos sustainable on a PAT.
+  const etags = new Map();     // url -> etag
+  const bodies = new Map();    // url -> last parsed body (what a 304 means "still")
+  const rows = new Map();      // repo -> {reviews, run}
+  let state = new Map();       // repo -> {reviews, conclusion, status}
+  let started = false;
+  let timer = null;
+  let inFlight = false;
+  let lastOk = 0;
+  let rateLimitedUntil = 0;
+  // Every poll carries the generation it was started under. A settings change bumps it,
+  // and anything still in flight from before then discards its own results rather than
+  // writing a state keyed by the OLD repo list into a grid built for the new one.
+  let generation = 0;
+  let pollAnchor = 0;          // when the current cadence's period began
+  let fails = 0;               // consecutive failed polls, for backoff
+  let gameOn = false;
+
+  const el = (id) => document.getElementById(id);
+
+  // The two reasons to hold network work, in one predicate so the gate at the top of a
+  // sweep and the gate between its requests cannot drift apart.
+  const paused = () => gameOn || document.hidden;
+
+  function parseRepos(value) {
+    const raw = Array.isArray(value) ? value : [];
+    const named = raw
+      .map((item) => {
+        if (!item) return '';
+        const s = typeof item === 'string' ? item : String(item.repo == null ? '' : item.repo);
+        return s.trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\/+$/, '');
+      })
+      .filter((s) => s !== '');
+    // A row that is not owner/name cannot be checked, and dropping it in silence let the
+    // widget report "Clear" on the strength of the entries that happened to survive —
+    // while the rejected one sat in Settings looking configured and watched.
+    const wellFormed = named.filter((s) => /^[^/\s]+\/[^/\s]+$/.test(s));
+    cfg.malformed = named.length - wellFormed.length;
+    // Every map here is keyed by the repo name, so a list containing the same repo twice
+    // had its second row overwrite the first's reference: the first row stayed on its
+    // placeholder forever, both endpoints were called twice, and render() added the same
+    // review count into the summary twice. GitHub is case-insensitive about owner/name, so
+    // the same repo in two casings is the same repo — but the FIRST spelling is kept, so
+    // the row reads the way it was typed.
+    const seen = new Set();
+    const unique = wellFormed.filter((s) => {
+      const key = s.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    cfg.dropped = Math.max(0, unique.length - MAX_REPOS);
+    return unique.slice(0, MAX_REPOS);
+  }
+
+  WW.onInit((s0) => {
+    const gen = ++generation;
+    const s = s0.settings;
+    // Seeded here, not left to onGame: onGame reports later flips, so a widget that only
+    // listens polls straight through a game that was already running when it loaded
+    // (WIDGET-SPEC.md:200-205). Twenty API calls an interval is exactly the work the spec
+    // asks widgets to hold, and document.hidden does not cover it — the panel is a second
+    // screen and stays visible while the game has the first.
+    gameOn = !!(s0.game && s0.game.active);
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+
+    const hadRepos = cfg.repos.join(',');
+    const hadToken = cfg.token;
+    cfg.repos = parseRepos(s.repos);
+    // An unset or unreadable secret arrives as "" — that is the setup state, never a
+    // spinner and never an error.
+    cfg.token = String(s.apiToken == null ? '' : s.apiToken);
+    cfg.refreshMs = Math.min(120, Math.max(1, Number(s.refreshMinutes) || 5)) * 60000;
+
+    // A rate limit belongs to the credential that earned it. Swapping in a fresh token
+    // and finding the widget still refusing to try — for up to an hour, on a limit the
+    // new token has nothing to do with — is a dead end nobody can act on. The gate
+    // survives an identical repeat init (the shell re-sends one for theme changes), so
+    // this does not become a way to hammer through a real limit by touching settings.
+    if (hadRepos !== cfg.repos.join(',') || hadToken !== cfg.token) {
+      rateLimitedUntil = 0;
+      etags.clear();
+      bodies.clear();
+      fails = 0;
+    }
+
+    build();
+    if (!cfg.repos.length || !cfg.token) {
+      // Stop, do not just repaint. Leaving the timer running meant the next tick
+      // treated an empty repo list as a SUCCESSFUL poll and replaced the setup card
+      // with a green "Clear", or fired unauthorized requests with the repos still set.
+      clearTimeout(timer);
+      started = false;
+      state = new Map();
+      lastOk = 0;
+      fails = 0;
+      showSetup();
+      return;
+    }
+    clearTimeout(timer);
+    started = true;
+    // Any poll still running belongs to an older generation and will now discard itself,
+    // so the flag it set must not keep the new one out.
+    inFlight = false;
+    tick(gen);
+  });
+
+  // How many rows the slot can actually hold. A supported 200px band fits three, and the
+  // column simply CLIPPED the rest behind overflow:hidden — those repos were still polled
+  // and still counted in the summary, so the pill could say a repo was failing while no
+  // visible row could possibly be the one. Chrome is the body padding, the header, the
+  // footer and the two flex gaps; a row is its 28px minimum plus the 5px gap under it.
+  function fitRows() {
+    const h = document.documentElement.clientHeight || window.innerHeight || 400;
+    return Math.max(1, Math.floor((h - 80) / 33));
+  }
+
+  // Which repos get a row when they cannot all have one: the ones in trouble first, worst
+  // first, then the ones with reviews waiting, then the quiet ones. Stable inside each
+  // group, so a steady list does not shuffle itself between polls.
+  function visibleRepos() {
+    const max = fitRows();
+    if (cfg.repos.length <= max) return cfg.repos;
+    const rank = (repo) => {
+      const s = state.get(repo);
+      if (!s) return 3;
+      if (s.reviewsFault || s.runsFault) return 0;
+      const cls = runClass(s.conclusion, s.status);
+      if (cls === 'err' || cls === 'warn') return 1;
+      if (s.reviews) return 2;
+      return 4;
+    };
+    return cfg.repos
+      .map((repo, i) => ({ repo, i, r: rank(repo) }))
+      .sort((a, b) => (a.r - b.r) || (a.i - b.i))
+      .slice(0, max)
+      .map((x) => x.repo);
+  }
+
+  const visibleKey = () => visibleRepos().join('\n');
+
+  // The bare name, because owner/name is mostly the same owner repeated down the column.
+  // But team-a/api and team-b/api both rendered as "api", which is worse than long: two
+  // rows that cannot be told apart, one of them asking for attention. When the short name
+  // is ambiguous, everyone with that short name gets the owner back.
+  function label(repo) {
+    const short = repo.split('/')[1] || repo;
+    const clashes = cfg.repos.some((other) => other !== repo && (other.split('/')[1] || other) === short);
+    return clashes ? repo : short;
+  }
+
+  function build() {
+    const box = el('repos');
+    box.textContent = '';
+    rows.clear();
+    const shown = visibleRepos();
+    cfg.hidden = Math.max(0, cfg.repos.length - shown.length);
+    for (const repo of shown) {
+      const root = document.createElement('div');
+      root.className = 'repo';
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = label(repo);
+      const reviews = document.createElement('span');
+      reviews.className = 'reviews';
+      reviews.textContent = '·';
+      const run = document.createElement('span');
+      run.className = 'pill muted run';
+      run.textContent = '—';
+      root.append(name, reviews, run);
+      box.appendChild(root);
+      rows.set(repo, { reviews, run });
+    }
+  }
+
+  let resizeTimer = null;
+  let lastFit = 0;
+  window.addEventListener('resize', () => {
+    // The on-panel editor resizes this widget's iframe in place without sending another
+    // init, so a widget grown from a band to a full slot would keep showing three rows.
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const now = fitRows();
+      if (now === lastFit) return;
+      lastFit = now;
+      if (!started) return;
+      build();
+      if (state.size) render();
+    }, 150);
+  });
+
+  // The error kinds this widget can tell apart. They are not interchangeable: "could not
+  // reach the API" sent someone hunting a network fault when their token had expired, and
+  // a captive portal answering 200 with a login page was reported as a permissions
+  // problem on the repository.
+  function fault(kind, message, status) {
+    const e = new Error(message);
+    e.kind = kind;
+    if (status) e.status = status;
+    return e;
+  }
+
+  function remember(url, etag, body) {
+    // Repo lists change over a session and every URL is remembered forever otherwise. The
+    // bound is on the WRITE, so a cache that never grows never pays for the check.
+    if (!etags.has(url) && etags.size >= CACHE_MAX) {
+      const oldest = etags.keys().next().value;
+      etags.delete(oldest);
+      bodies.delete(oldest);
+    }
+    etags.set(url, etag);
+    bodies.set(url, body);
+  }
+
+  async function gh(url) {
+    // Neither tier of WW.fetch bounds a direct browser request — the shim's own timer is
+    // on the host-proxy tier — so a host that accepts the connection and then goes silent
+    // left this await pending forever. The `finally` never ran, inFlight stayed true, and
+    // nothing re-armed the timer: the widget was not slow, it was dead, still showing
+    // whatever had last been on screen.
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), REQUEST_DEADLINE);
+    try {
+      return await ghOnce(url, abort);
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
+
+  async function ghOnce(url, abort) {
+    const headers = {
+      Authorization: 'Bearer ' + cfg.token,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+    const prev = etags.get(url);
+    if (prev) headers['If-None-Match'] = prev;
+    let res;
+    try {
+      res = await WW.fetch(url, { headers, maxBytes: RESPONSE_CAP, signal: abort.signal });
+    } catch (e) {
+      throw e instanceof RangeError ? fault('toolarge', 'reply too large')
+        : abort.signal.aborted ? fault('timeout', 'no answer in time')
+        : fault('unreachable', 'could not reach the API');
+    }
+    if (res.status === 304) return { unchanged: true, body: bodies.get(url) };
+    // A 403 is NOT automatically a rate limit — GitHub uses it for ordinary permission
+    // failures too, and classifying those as rate limiting hid them behind the rate-limit
+    // path AND retried them on the reset cadence instead of saying the token cannot see
+    // the repo.
+    //
+    // The headers alone cannot tell them apart here, though, and that is not a detail:
+    // WW.fetch retries EVERY direct 403 through the host proxy (widget-api.js:732), and
+    // the proxy's reconstructed Response carries only Content-Type (widget-api.js:418-421)
+    // because the host never sends the rest (DashboardWindow.cs:686-689). So on the tier
+    // this actually takes, x-ratelimit-remaining is simply absent and a real rate limit
+    // read as a repository-access problem — the widget then kept sweeping instead of
+    // waiting for the reset. GitHub also says so in the BODY, and the body does survive
+    // the hop, so that is what decides it. Headers still win when they are there: they
+    // carry the exact reset time.
+    if (res.status === 403 || res.status === 429) {
+      const remaining = res.headers && res.headers.get && res.headers.get('x-ratelimit-remaining');
+      const resetHdr = res.headers && res.headers.get && res.headers.get('x-ratelimit-reset');
+      let said = false;
+      try {
+        const detail = await res.clone().json();
+        said = /rate limit|abuse detection/i.test(String((detail && detail.message) || ''));
+      } catch (e) { /* not JSON, or already consumed — the headers are all there is */ }
+      if (res.status === 429 || remaining === '0' || said) {
+        const reset = Number(resetHdr);
+        const until = Number.isFinite(reset) && reset > 0 ? reset * 1000 : Date.now() + 900000;
+        const err = fault('ratelimit', 'rate limited');
+        err.rateLimitedUntil = until;
+        throw err;
+      }
+    }
+    if (!res.ok) throw fault('http', 'HTTP ' + res.status, res.status);
+    const etag = res.headers && res.headers.get && res.headers.get('etag');
+    let body;
+    try {
+      body = await res.json();
+    } catch (e) {
+      // A 200 whose body is not JSON is a captive portal, a proxy login page or an
+      // outage page — something that is NOT GitHub answering on GitHub's behalf. Calling
+      // that a permissions problem sent people to check repository access that was fine.
+      throw e instanceof RangeError ? fault('toolarge', 'reply too large')
+        : abort.signal.aborted ? fault('timeout', 'no answer in time')
+        : fault('format', 'reply was not JSON');
+    }
+    if (etag) remember(url, etag, body);
+    return { unchanged: false, body };
+  }
+
+  async function tick(gen) {
+    if (gen !== generation) return;
+    // Held, not cancelled: the anchor is preserved so the cadence resumes where it was
+    // rather than starting a fresh period every time something interrupts.
+    if (paused() || inFlight) { armIn(GATED_RECHECK, gen); return; }
+    if (Date.now() < rateLimitedUntil) { arm(gen); return; }
+    inFlight = true;
+    pollAnchor = Date.now();
+    try {
+      const next = new Map();
+      for (const repo of cfg.repos) {
+        // A settings change part-way through a sweep makes the rest of it worthless:
+        // those results would be keyed to a repo list nobody is looking at any more.
+        if (gen !== generation) return;
+        // The gate at the top of the sweep is not enough. Requests are sequential, so a
+        // game starting — or the panel being hidden — after the first one is already away
+        // would be followed by up to eighteen more calls, the exact work both gates exist
+        // to hold. WIDGET-STANDARD.md asks widgets to skip work while hidden rather than
+        // fight the timer throttle, and a sweep already in flight is still work.
+        if (paused()) return;
+        const [owner, name] = repo.split('/');
+        // Two independent requests, so two independent faults. One combined `error` meant
+        // a token without Actions read — or one flaky /actions/runs call — replaced a
+        // perfectly good review count with "unavailable", hiding the number this widget
+        // exists to show. `status` is the workflow run's; `errStatus` is HTTP.
+        const entry = {
+          reviews: null, conclusion: null, status: null,
+          reviewsFault: null, runsFault: null,
+        };
+        // Review-requested PRs, scoped per repo so one bad repo name cannot blank the
+        // whole grid the way a single cross-repo search would.
+        try {
+          const q = encodeURIComponent('is:open is:pr review-requested:@me repo:' + repo);
+          const r = await gh(API + '/search/issues?q=' + q + '&per_page=1');
+          // A 200 carrying valid JSON that is not GitHub's search schema — a portal's
+          // login object, an outage page's error payload — left the count at null, so the
+          // row showed "·" and the summary fell through to a green "Clear". Nothing had
+          // been checked. Answering the wrong question is a format fault, not an answer.
+          if (!r.body || typeof r.body.total_count !== 'number') throw fault('format', 'reply was not a search result');
+          entry.reviews = r.body.total_count;
+        } catch (e) {
+          if (e.rateLimitedUntil) throw e;
+          // A 401, 404 or permission 403 is NOT an empty queue. Swallowing it left the
+          // counts at zero and the pill green, so an expired token looked exactly like
+          // having nothing to review — the most reassuring possible way to be wrong.
+          entry.reviewsFault = { kind: e.kind || 'unreachable', errStatus: e.status || 0 };
+          WW.log('ghqueue: reviews ' + repo + ': ' + e.message);
+        }
+        if (paused()) return;
+        try {
+          const r = await gh(API + '/repos/' + owner + '/' + name + '/actions/runs?per_page=1');
+          // The same rule the review call got: a 200 whose JSON is not this endpoint's
+          // shape is a fault, not an answer. Treating it as "no workflow runs" printed
+          // "none" on the row and let the pill go green over a result never obtained.
+          // An EMPTY workflow_runs array is a real answer — a repo with no runs yet.
+          if (!r.body || !Array.isArray(r.body.workflow_runs)) throw fault('format', 'reply was not a workflow run list');
+          const run = r.body.workflow_runs[0];
+          if (run) { entry.conclusion = run.conclusion || null; entry.status = run.status || null; }
+        } catch (e) {
+          if (e.rateLimitedUntil) throw e;
+          entry.runsFault = { kind: e.kind || 'unreachable', errStatus: e.status || 0 };
+          WW.log('ghqueue: runs ' + repo + ': ' + e.message);
+        }
+        next.set(repo, entry);
+      }
+      if (gen !== generation) return;
+      // A sweep in which NOTHING came back is a failed poll, and the outer catch has always
+      // treated a failed poll as a reason to dim what is on screen rather than throw it
+      // away. This path did the opposite: it replaced every last-known value with a
+      // fault-only map and cleared the stale marker, so a minute of network trouble wiped
+      // review counts that were true sixty seconds ago. Only the first sweep, which has
+      // nothing to keep, shows the faults themselves.
+      const anySucceeded = [...next.values()].some((e) => !e.reviewsFault || !e.runsFault);
+      if (next.size && !anySucceeded && state.size) {
+        fails++;
+        document.body.classList.add('stale');
+        render();
+        return;
+      }
+      state = next;
+      lastOk = Date.now();
+      rateLimitedUntil = 0;
+      // A per-repo fault is caught inside the loop, so the sweep itself "succeeds" even
+      // when every single repo failed — and the backoff, which only counted thrown polls,
+      // never engaged for the case it exists for: a revoked token retried twenty times an
+      // interval, forever. A sweep where nothing came back counts as a failed poll (handled
+      // above, where there is state worth keeping). If ANY repo answered, data is flowing
+      // and the cadence goes back to normal.
+      fails = (next.size && !anySucceeded) ? fails + 1 : 0;
+      document.body.classList.remove('stale');
+      // A result can change WHICH repos deserve a row, not only what one says. Rebuilding
+      // first means a repo that just went red gets a card instead of having its verdict
+      // written to a row that does not exist.
+      if (cfg.hidden && visibleKey() !== [...rows.keys()].join('\n')) build();
+      render();
+    } catch (e) {
+      if (gen !== generation) return;
+      fails++;
+      if (e.rateLimitedUntil) {
+        rateLimitedUntil = e.rateLimitedUntil;
+        // Rate limiting is not an error tile: the data on screen is still true, it is
+        // just aging. Show it dimmed with how old it is.
+        document.body.classList.add('stale');
+        // No Retry offered while limited: the gate at the top of tick() would turn it away
+        // without a request, leaving a card that says "Retrying" for the rest of the reset
+        // window. The one honest thing to show is the wait.
+        if (state.size) render(); else showWaiting('Rate limit reached. Waiting for it to reset.');
+      } else if (state.size) {
+        document.body.classList.add('stale');
+        render();
+      } else {
+        showError(kindText(e.kind));
+      }
+      WW.log('ghqueue: ' + e.message);
+    } finally {
+      if (gen === generation) { inFlight = false; arm(gen); }
+    }
+  }
+
+  // What actually went wrong, in the words someone would use to fix it. These are not
+  // interchangeable: a rejected token and an unplugged cable want different actions, and
+  // a proxy answering for GitHub wants a third.
+  function kindText(kind, status) {
+    if (kind === 'format') return "GitHub's reply wasn't JSON — something on the network may be answering for it.";
+    if (kind === 'toolarge') return "GitHub's reply was too large to read.";
+    if (kind === 'timeout') return 'GitHub did not answer in time.';
+    if (kind === 'http' && status === 401) return 'The token was rejected — check it has not expired.';
+    if (kind === 'http' && (status === 403 || status === 404)) return 'Check the token has access to those repositories.';
+    if (kind === 'http') return 'GitHub answered ' + status + '.';
+    return "Couldn't reach the GitHub API.";
+  }
+
+  function pollDelay() {
+    // Backoff on CONSECUTIVE failures. A token that has been revoked, or a network that
+    // is down for the evening, otherwise costs twenty requests every refresh interval
+    // forever. Any success resets it, so one blip does not stretch the cadence.
+    if (!fails) return cfg.refreshMs;
+    // The ceiling is a ceiling on the GROWTH, never a way to poll harder. Applying it
+    // flat meant a two-hour refresh — a setting this widget offers — came back to one
+    // hour on its first failure: twice the traffic, at the exact moment nothing is
+    // answering. A backoff can only ever wait longer than the interval it started from.
+    const grown = Math.min(cfg.refreshMs * Math.pow(2, Math.min(fails, 4)), MAX_WAIT);
+    return Math.max(cfg.refreshMs, grown);
+  }
+
+  function armIn(ms, gen) {
+    clearTimeout(timer);
+    timer = setTimeout(() => tick(gen), Math.max(IDLE_FLOOR, ms));
+  }
+
+  // Re-arm on the EXISTING period rather than starting a new one. A poll that was skipped
+  // or that took eleven seconds should not push the next one a full interval further out;
+  // the anchor is when this period began, not when the last attempt happened to finish.
+  function arm(gen) {
+    if (rateLimitedUntil > Date.now()) {
+      armIn(Math.min(rateLimitedUntil - Date.now() + 1000, MAX_WAIT), gen);
+      return;
+    }
+    armIn(pollAnchor + pollDelay() - Date.now(), gen);
+  }
+
+  function ageText(ms) {
+    const secs = Math.round((Date.now() - ms) / 1000);
+    if (secs < 90) return secs + 's ago';
+    if (secs < 5400) return Math.round(secs / 60) + 'm ago';
+    return Math.round(secs / 3600) + 'h ago';
+  }
+
+  // How a workflow conclusion should READ, in one place, so the row's colour and the
+  // summary pill cannot disagree. They did: anything non-success other than failure or
+  // timed_out styled the row amber but counted as nothing, so a repo whose last run ended
+  // `startup_failure` or `action_required` sat there in amber under a green "Clear".
+  // GitHub's other conclusions — neutral, skipped, cancelled, stale — are not the workflow
+  // asking for anything, so they stay quiet.
+  function runClass(conclusion, status) {
+    if (status && status !== 'completed') return 'running';
+    if (!conclusion) return 'none';
+    if (conclusion === 'success') return 'ok';
+    if (conclusion === 'failure' || conclusion === 'timed_out' || conclusion === 'startup_failure') return 'err';
+    if (conclusion === 'action_required') return 'warn';
+    return 'quiet';
+  }
+
+  function render() {
+    let waiting = 0;
+    let failing = 0;
+    let attention = 0;
+    let errored = 0;
+    // Counted over EVERY configured repo; only the ROWS are limited to what fits. Scoping
+    // the counters to the visible ones meant a band showing three of five reported "3 to
+    // review" while its own footer said two more had been checked — the summary
+    // contradicting the line underneath it, and undercounting failures the same way.
+    for (const repo of cfg.repos) {
+      const s = state.get(repo);
+      if (!s) continue;
+      if (!s.reviewsFault && s.reviews) waiting += s.reviews;
+      if (s.reviewsFault || s.runsFault) errored++;
+      const cls = s.runsFault ? 'none' : runClass(s.conclusion, s.status);
+      if (cls === 'err') failing++;
+      if (cls === 'warn') attention++;
+    }
+    for (const repo of visibleRepos()) {
+      const ui = rows.get(repo);
+      const s = state.get(repo);
+      if (!ui || !s) continue;
+      // Each half of the row answers for its OWN request. A workflow call that failed no
+      // longer erases a review count that arrived perfectly well.
+      if (s.reviewsFault) {
+        ui.reviews.textContent = 'unavailable';
+        ui.reviews.className = 'reviews';
+      } else if (s.reviews == null) {
+        ui.reviews.textContent = '·';
+        ui.reviews.className = 'reviews';
+      } else {
+        ui.reviews.textContent = s.reviews ? s.reviews + ' to review' : 'clear';
+        ui.reviews.className = 'reviews' + (s.reviews ? ' waiting' : '');
+      }
+      const cls = s.runsFault ? 'none' : runClass(s.conclusion, s.status);
+      ui.run.textContent = s.runsFault ? 'unavailable'
+        : cls === 'running' ? 'running' : (s.conclusion || 'none');
+      ui.run.className = 'pill run ' + (
+        cls === 'err' ? 'err' : cls === 'warn' ? 'warn' : cls === 'ok' ? 'ok'
+        : cls === 'running' ? '' : 'muted');
+    }
+
+    const stale = document.body.classList.contains('stale');
+    const pill = el('pill');
+    if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
+    else if (errored) { pill.textContent = errored + ' unavailable'; pill.className = 'pill err'; }
+    else if (failing) { pill.textContent = failing + ' failing'; pill.className = 'pill err'; }
+    else if (attention) { pill.textContent = attention + ' needs action'; pill.className = 'pill warn'; }
+    else if (waiting) { pill.textContent = waiting + ' to review'; pill.className = 'pill'; }
+    else { pill.textContent = 'Clear'; pill.className = 'pill ok'; }
+
+    // The footer names the FIRST fault it can, rather than assuming a permissions problem
+    // for every one of them.
+    let fail = null;
+    for (const repo of cfg.repos) {
+      const s = state.get(repo);
+      if (s && (s.reviewsFault || s.runsFault)) { fail = s.reviewsFault || s.runsFault; break; }
+    }
+    const notes = [];
+    if (cfg.hidden) notes.push(cfg.hidden + ' more checked but no room to show in this slot');
+    if (cfg.dropped) notes.push(cfg.dropped + ' more configured than this widget checks (' + MAX_REPOS + ' max)');
+    if (cfg.malformed) notes.push(cfg.malformed + ' entr' + (cfg.malformed === 1 ? 'y is' : 'ies are') + " not owner/name and can't be checked");
+    notes.push(rateLimitedUntil > Date.now()
+      ? 'rate limited — showing data from ' + ageText(lastOk)
+      : fail ? kindText(fail.kind, fail.errStatus)
+      : (lastOk ? 'updated ' + ageText(lastOk) : ''));
+    el('meta').textContent = notes.filter(Boolean).join(' · ');
+
+    el('state').hidden = true;
+    el('repos').hidden = false;
+  }
+
+  function stateCard(cls, icon, title, body, onRetry) {
+    // The header stays visible behind the state layer, so a stale "Loading" pill sits
+    // next to an error card contradicting it.
+    const pill = el('pill');
+    pill.textContent = cls === 'err' ? 'Error' : 'Setup';
+    pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
+    const s = el('state');
+    s.className = 'state-card' + (cls ? ' ' + cls : '');
+    s.textContent = '';
+    const i = document.createElement('div');
+    i.className = 'state-icon';
+    i.textContent = icon;
+    const t = document.createElement('div');
+    t.className = 'state-title';
+    t.textContent = title;
+    const b = document.createElement('div');
+    b.className = 'state-body';
+    b.textContent = body;
+    s.append(i, t, b);
+    if (onRetry) {
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.textContent = 'Retry';
+      btn.addEventListener('click', onRetry);
+      s.append(btn);
+    }
+    s.hidden = false;
+    el('repos').hidden = true;
+  }
+
+  function showSetup() {
+    stateCard('', '◎', 'Not configured yet',
+      !cfg.repos.length
+        ? 'Add repositories in the widget settings, as owner/name.'
+        : 'Add a personal access token in the widget settings — it needs read access to those repositories.');
+  }
+
+  // A card with no Retry, for a wait that a button cannot shorten.
+  function showWaiting(message) {
+    stateCard('err', '◷', 'Rate limited', message);
+  }
+
+  function showError(message) {
+    stateCard('err', '!', 'GitHub unavailable', message, () => {
+      stateCard('', '', 'Retrying', '');
+      clearTimeout(timer);
+      // A person pressing Retry has asked for a poll now, so the backoff a failing token
+      // earned is spent rather than applied to their request — but the game gate stays
+      // shut, because a button in a widget cannot consent to work during someone's game.
+      fails = 0;
+      pollAnchor = 0;
+      tick(generation);
+    });
+  }
+
+  WW.onGame((g) => {
+    const was = gameOn;
+    gameOn = !!(g && g.active);
+    if (!started || gameOn || !was) return;
+    // The game ended. Someone turning back to the panel is asking for its current state,
+    // not the stretched schedule the pause left behind.
+    clearTimeout(timer);
+    tick(generation);
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !started || gameOn) return;
+    if (Date.now() - lastOk >= pollDelay()) { clearTimeout(timer); tick(generation); }
+  });
+</script>
+</body>
+</html>
