@@ -1,0 +1,55 @@
+{
+  "id": "ws.stock.kev",
+  "name": "CISA KEV",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "CISA's Known Exploited Vulnerabilities catalog as a glance tile: how many landed this week, and the newest entries by vendor and product. Public feed, no key needed.",
+  "min_api_version": 1,
+  "supported_slots": ["quarter", "half", "full"],
+  "properties": [
+    {
+      "name": "watch",
+      "label": "Only show",
+      "type": "list",
+      "itemLabel": "term",
+      "fields": [
+        { "key": "term", "label": "Vendor or keyword", "type": "text", "placeholder": "fortinet" }
+      ],
+      "default": []
+    },
+    {
+      "name": "maxItems",
+      "label": "Entries to list",
+      "type": "slider",
+      "min": 3,
+      "max": 12,
+      "step": 1,
+      "default": 6
+    },
+    {
+      "name": "windowDays",
+      "label": "Count added within (days)",
+      "type": "slider",
+      "min": 1,
+      "max": 30,
+      "step": 1,
+      "default": 7
+    },
+    {
+      "name": "refreshMinutes",
+      "label": "Refresh every (minutes)",
+      "type": "number",
+      "min": 15,
+      "max": 1440,
+      "step": 15,
+      "default": 60
+    },
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": ["solid", "glass", "transparent"],
+      "default": "solid"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+[
+ {
+  "match": "cisa.gov",
+  "json": {
+   "title": "KEV",
+   "catalogVersion": "2026.08.02",
+   "vulnerabilities": [
+    {
+     "cveID": "CVE-2026-2101",
+     "vendorProject": "Fortinet",
+     "product": "FortiOS",
+     "dateAdded": "2026-08-01"
+    },
+    {
+     "cveID": "CVE-2026-2088",
+     "vendorProject": "Ivanti",
+     "product": "Connect Secure",
+     "dateAdded": "2026-07-31"
+    },
+    {
+     "cveID": "CVE-2026-1975",
+     "vendorProject": "Microsoft",
+     "product": "Windows SmartScreen",
+     "dateAdded": "2026-07-29"
+    },
+    {
+     "cveID": "CVE-2026-1834",
+     "vendorProject": "Cisco",
+     "product": "IOS XE",
+     "dateAdded": "2026-07-27"
+    },
+    {
+     "cveID": "CVE-2026-1702",
+     "vendorProject": "Apache",
+     "product": "Struts",
+     "dateAdded": "2026-07-13"
+    },
+    {
+     "cveID": "CVE-2026-1566",
+     "vendorProject": "Fortinet",
+     "product": "FortiManager",
+     "dateAdded": "2026-06-23"
+    }
+   ]
+  }
+ }
+]
