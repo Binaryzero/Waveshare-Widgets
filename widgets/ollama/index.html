@@ -99,6 +99,7 @@
   let pollAnchor = 0;      // when the current wait began: the last poll attempt's end
   let gameOn = false;      // a fullscreen game is foreground: WIDGET-SPEC gates JS work
   let tickerTimer = null;  // repaints the unload countdowns between polls
+  let gen = 0;             // bumped when the address changes; retires older requests
 
   const el = (id) => document.getElementById(id);
 
@@ -156,11 +157,25 @@
 
     if (!started) { started = true; tick(); }
     else if (cfg.base !== wasBase) {
-      // A new ADDRESS must take effect now: what is on screen describes a different
-      // server. Anything else — an interval change, a background change, a theme push —
-      // re-arms against the time already served instead of firing another request, which
-      // is what the old unconditional refetch did on every re-delivery.
+      // A new ADDRESS must take effect now, and everything on screen belongs to the old
+      // one. Leaving models/answered/lastOk in place meant a failure against the NEW
+      // address showed the OLD server's models as merely stale — data attributed to a
+      // machine that never sent it. Bumping the generation also retires a request already
+      // in flight, which would otherwise land after the switch and repaint the tile with
+      // the previous server's answer.
+      //
+      // Anything else — an interval change, a background change, a theme push — re-arms
+      // against the time already served instead of firing another request, which is what
+      // the old unconditional refetch did on every re-delivery.
+      gen++;
+      models = [];
+      answered = false;
+      lastOk = 0;
+      polled = false;
       failures = 0;
+      inFlight = false;   // the retired request cleans up nothing; this chain owns it now
+      document.body.classList.remove('stale');
+      showLoading();
       clearTimeout(timer);
       tick();
     } else if (!inFlight) arm();
@@ -187,6 +202,7 @@
     if (inFlight) { schedule(); return; }
     inFlight = true;
     polled = true;   // an ATTEMPT, not a success: the branches above return first
+    const myGen = gen;   // the address this request belongs to
     // Nothing else bounds this. The shim puts a deadline on the host-proxy tier, but the
     // direct browser fetch it tries first has none and reading the body has none either,
     // so a connection that opens and then stalls would leave inFlight true forever: the
@@ -200,11 +216,17 @@
       // Nothing here special-cases that — it is the same call either way.
       const res = await WW.fetch(cfg.base + '/api/ps', { signal: abort.signal });
       if (!res.ok) {
+        // The status travels ON the error, because a status is the endpoint ANSWERING.
+        // Routing 401 or 404 to the generic unreachable card told the reader to check
+        // whether Ollama was running, when a reverse proxy had just refused them or the
+        // path was simply wrong.
         // Cancelled before the throw: on the direct tier this is a live response whose
         // body the server may still be sending, and an error status is exactly when that
         // body is of no use. Left unread it holds the transfer open.
         try { if (res.body && !res.bodyUsed) await res.body.cancel(); } catch (e) { /* gone */ }
-        throw new Error('HTTP ' + res.status);
+        const bad = new Error('HTTP ' + res.status);
+        bad.http = res.status;
+        throw bad;
       }
       let json;
       try {
@@ -242,6 +264,7 @@
           expires: String((m && m.expires_at) || ''),
         };
       });
+      if (myGen !== gen) return;   // retired: a different address is current now
       models = mapped;
       lastOk = Date.now();
       answered = true;
@@ -249,6 +272,7 @@
       document.body.classList.remove('stale');
       render();
     } catch (e) {
+      if (myGen !== gen) return;   // retired along with its address; says nothing here
       failures++;
       // "Nothing loaded" and "Ollama is not there" are different sentences and the
       // user acts on them differently — reaching the server at all is what separates
@@ -261,14 +285,36 @@
         document.body.classList.add('stale');
         render();
       } else {
-        showError(e instanceof RangeError ? 'toolarge' : (e && e.format) ? 'format' : 'unreachable');
+        showError(e instanceof RangeError ? 'toolarge'
+          : (e && e.format) ? 'format'
+          : (e && e.http) ? 'http'
+          : 'unreachable', e && e.http);
       }
       WW.log('ollama: ' + e.message);
     } finally {
       clearTimeout(deadline);
-      inFlight = false;
-      schedule();
+      // A retired request disturbs nothing on its way out: the chain that replaced it is
+      // already running, and clearing inFlight or rescheduling here would fight it.
+      if (myGen === gen) { inFlight = false; schedule(); }
     }
+  }
+
+  // Back to the state a cold start begins in — used when the address changes, because
+  // what is on screen belongs to the previous server and nothing has been asked of the
+  // new one yet.
+  function showLoading() {
+    const state = el('state');
+    state.className = 'state-card';
+    state.textContent = '';
+    const sp = document.createElement('div');
+    sp.className = 'spinner';
+    state.appendChild(sp);
+    state.hidden = false;
+    el('data').hidden = true;
+    el('meta').textContent = '';
+    const pill = el('pill');
+    pill.textContent = 'Loading';
+    pill.className = 'pill muted';
   }
 
   // The interval the user chose, stretched while the endpoint keeps failing. The floor
@@ -329,7 +375,11 @@
     const totalBytes = known.reduce((sum, m) => sum + m.vram, 0);
     const stale = document.body.classList.contains('stale');
 
-    el('vram').textContent = models.length && known.length ? fmtGib(totalBytes) : '0';
+    // Zero is reserved for the two things that really are zero: no models loaded, and a
+    // model that reported zero. When models ARE loaded and none of them reported a GPU
+    // figure, the total is unknown — printing 0 there was the same authoritative
+    // under-count as summing `size`, wearing a "not reporting" suffix as a fig leaf.
+    el('vram').textContent = !models.length ? '0' : known.length ? fmtGib(totalBytes) : '--';
     el('totalLabel').textContent = models.length
       ? 'GB resident · ' + models.length + (models.length === 1 ? ' model' : ' models')
         + (unknown ? ' · ' + unknown + ' not reporting' : '')
@@ -372,7 +422,7 @@
     el('data').hidden = false;
   }
 
-  function showError(kind) {
+  function showError(kind, status) {
     // The pill is the header's one-word summary and it starts at Loading. Leaving it
     // there meant the tile could show an error card and a Retry button while still
     // claiming to be loading, indefinitely, since nothing else writes it on a cold start
@@ -398,6 +448,7 @@
     // running, and the other two used to say so anyway.
     title.textContent = kind === 'format' ? 'Not an Ollama server'
       : kind === 'toolarge' ? 'Response too large'
+      : kind === 'http' ? 'HTTP ' + status
       : 'Ollama unreachable';
     const body = document.createElement('div');
     body.className = 'state-body';
@@ -405,6 +456,8 @@
         ? 'Something answered at ' + cfg.base + ", but it wasn't Ollama's /api/ps."
       : kind === 'toolarge'
         ? 'The reply from ' + cfg.base + ' was larger than the panel will load.'
+      : kind === 'http'
+        ? cfg.base + '/api/ps answered with ' + status + '. Something is listening — check the address, and any proxy in front of it.'
       : "Couldn't reach " + cfg.base + '. Check that Ollama is running and the address is right.';
     const retry = document.createElement('button');
     retry.className = 'btn';
@@ -430,6 +483,10 @@
     state.append(icon, title, body, retry);
     state.hidden = false;
     el('data').hidden = true;
+    // The footer describes an answer, and there is not one. It kept the previous
+    // server's timestamp under the new address's error card — a stamp attributed to a
+    // machine that had just failed to answer at all.
+    el('meta').textContent = '';
   }
 
   document.addEventListener('visibilitychange', () => {
