@@ -274,7 +274,7 @@ public sealed class DashboardWindow : Form
                         // unparsable since then, a live lookup would stop calling the
                         // property a secret, Seal would skip it, and the plaintext the
                         // shell is round-tripping would be written straight to disk.
-                        var secrets = SecretPolicy.Seal(edited, LayoutStore.Load(), ManifestRevealedWith);
+                        var secrets = SecretPolicy.Seal(edited, LayoutStore.Load(), RevealPlan());
                         var secretFailures = secrets.Failures;
                         LayoutStore.Save(edited);
                         Log.Info("layout saved from on-panel editor");
@@ -845,7 +845,7 @@ public sealed class DashboardWindow : Form
         // The dashboard's widget iframes need real credentials, so secrets are decrypted
         // for THIS payload only — layout.json keeps the DPAPI ciphertext.
         SnapshotManifests();
-        SecretPolicy.Reveal(layout, ManifestRevealedWith);
+        SecretPolicy.Reveal(layout, RevealPlan());
         var widgets = _library.Widgets.Select(w => new
         {
             id = w.Manifest.Id,
@@ -987,6 +987,24 @@ public sealed class DashboardWindow : Form
         return ManifestFor(widgetId);
     }
 
+    /// <summary>The credential names of every widget the library REFUSED, as of the same
+    /// reveal. Ordinal, and paired with <see cref="_revealedManifests"/> — the two are
+    /// snapshotted together and consumed together by <see cref="RevealPlan"/>, because a
+    /// value this plan WITHHELD is a blank in the shell's copy, and only the same plan
+    /// makes the next save restore it instead of writing that blank to disk.</summary>
+    private Dictionary<string, List<string>>? _revealedRedactions;
+
+    private IReadOnlyList<string>? RedactionsRevealedWith(string widgetId) =>
+        _revealedRedactions is not null && _revealedRedactions.TryGetValue(widgetId, out var names)
+            ? names
+            : null;
+
+    /// <summary>The plan that produced the shell's layout, and therefore the only plan its
+    /// saves may be sealed against. Rebuilt per call — a plan caches, so holding one
+    /// across operations would answer the second with the first one's library.</summary>
+    private SecretPlan RevealPlan() =>
+        SecretPlan.FromManifests(ManifestRevealedWith, RedactionsRevealedWith);
+
     private void SnapshotManifests()
     {
         // Ordinal — see ManifestFor. Collapsing case here would let one widget's manifest
@@ -995,6 +1013,24 @@ public sealed class DashboardWindow : Form
         foreach (var w in _library.Widgets)
             snapshot[w.Manifest.Id] = w.Manifest;
         _revealedManifests = snapshot;
+
+        // Refusals are snapshotted in the same breath and, unlike the settings window's,
+        // are simply rebuilt: this runs once per reveal and nothing consults the snapshot
+        // before the layout it describes exists. There is no rescan path that replaces it
+        // underneath a shell already holding withheld blanks — BuildInitPayload is the
+        // only caller, and it re-reveals from disk.
+        var redactions = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var r in _library.AllRefusals)
+        {
+            if (string.IsNullOrEmpty(r.Id) || r.RedactNames.Count == 0)
+                continue;
+            if (!redactions.TryGetValue(r.Id, out var names))
+                redactions[r.Id] = names = [];
+            foreach (var n in r.RedactNames)
+                if (!string.IsNullOrEmpty(n) && !names.Contains(n, StringComparer.Ordinal))
+                    names.Add(n);
+        }
+        _revealedRedactions = redactions;
     }
 
     private void PostToShellThreadSafe(string type, JsonNode? data, string? gen = null)
