@@ -569,6 +569,44 @@ Check("P25 a failed replacement keeps the legacy plaintext that still worked",
 Check("P25b and the failure is still reported, so the save is not called clean",
     r5Result.Failures.Count == 1);
 
+static string? FindUpwards(string relative)
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null)
+    {
+        var candidate = Path.Combine(dir.FullName, relative.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(candidate)) return candidate;
+        dir = dir.Parent;
+    }
+    return null;
+}
+
+// ---- P34 · the plan is asked PER SLOT, and the widget-level question is unreachable ---
+// A TEXT assertion, and the only kind available: the refactor's real guarantee is enforced
+// by the COMPILER — a caller cannot ask the widget-level question because the method is
+// private — and a compile-time guarantee has no runtime mutation to catch. What this pins is
+// the modifier itself, because that is the one edit that would silently reopen the shape.
+//
+// Why it matters: every intent today derives from the manifest, so a slot and its siblings
+// get identical answers and the distinction is invisible. It stops being invisible the moment
+// an intent depends on a slot's own VALUE — two instances of one widget can be in different
+// states, and a per-widget answer treats them as interchangeable. PR #147 was withdrawn over
+// four separate consequences of exactly that (#148).
+var planSrc = FindUpwards("src/WaveshareWidgets/Widgets/SecretStore.cs");
+if (planSrc is null)
+{
+    Check("P34 setup: SecretStore.cs was found", false);
+}
+else
+{
+    var planText = File.ReadAllText(planSrc);
+    Check("P34 the widget-level lookup is private, so nothing can be written against it",
+        planText.Contains("private IReadOnlyDictionary<string, SecretIntent> ForWidget("));
+    Check("P34b and the public question takes a slot",
+        planText.Contains("public IReadOnlyDictionary<string, SecretIntent> For(LayoutSlot? slot)") &&
+        planText.Contains("public IReadOnlyDictionary<string, SecretIntent> For(JsonNode? slotNode)"));
+}
+
 // ---- P26 · #61 r2: a manifest lookup that FORGETS a widget destroys its secret -------
 // Pins the hazard behind SettingsWindow's masked-manifest snapshot. Seal identifies
 // secret fields through the manifest; if the widget is no longer in the lookup, Seal

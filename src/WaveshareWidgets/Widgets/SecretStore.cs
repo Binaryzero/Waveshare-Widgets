@@ -183,7 +183,17 @@ public enum SecretIntent
 ///
 /// A plan is resolved ONCE per operation and caches per widget id, so a single Mask, Seal
 /// or Reveal sees one consistent classification even if the library rescans underneath it.
-/// Build one at the call site rather than holding it across operations.</summary>
+/// Build one at the call site rather than holding it across operations.
+///
+/// THE QUESTION IS ASKED PER SLOT. Every answer today comes from the widget's manifest, so
+/// siblings get identical intents and the distinction is invisible — which is precisely why
+/// it has to be established before it matters. An intent built on the widget-level question
+/// treats two instances of one widget as interchangeable, and they are not: one can hold a
+/// credential while the other has already been retyped to ordinary text, one can be
+/// addressable while the other is not. A PR that assumed otherwise was withdrawn (#148)
+/// after review found four separate consequences, and the design has now recorded the same
+/// ordering failure three times. The widget-level lookup is private so it cannot be the
+/// shape anything is written against again.</summary>
 public sealed class SecretPlan
 {
     private static readonly IReadOnlyDictionary<string, SecretIntent> Nothing =
@@ -201,11 +211,37 @@ public sealed class SecretPlan
     public static SecretPlan FromManifests(Func<string, WidgetManifest?> lookup) =>
         new(id => Classify(lookup(id)));
 
-    /// <summary>The intents that apply to a widget's properties, keyed by property name.
+    /// <summary>The intents that apply to THIS SLOT's properties, keyed by property name.
+    /// </summary>
+    /// <remarks>
+    /// The question is per SLOT, not per widget id. Today every answer is derived from the
+    /// widget's manifest, so a slot and its siblings get identical intents and this is a
+    /// rename — deliberately, so the vehicle lands before anything rides on it and a probe
+    /// failure in the next change is about the intent rather than the plumbing under it.
+    /// </remarks>
+    public IReadOnlyDictionary<string, SecretIntent> For(LayoutSlot? slot) =>
+        ForWidget(slot?.WidgetId);
+
+    /// <inheritdoc cref="For(LayoutSlot)"/>
+    /// <remarks>The editor projection is JSON rather than the model. Same question, same
+    /// answer; only the shape of the slot differs.</remarks>
+    public IReadOnlyDictionary<string, SecretIntent> For(JsonNode? slotNode) =>
+        ForWidget(slotNode?["widgetId"] is JsonValue v && v.TryGetValue<string>(out var id) ? id : null);
+
+    /// <summary>Resolution by widget id — an IMPLEMENTATION DETAIL, deliberately private.
+    /// </summary>
+    /// <remarks>
+    /// The compiler is a better guard than a probe here. A caller able to ask the
+    /// widget-level question would keep getting a per-widget answer to a per-slot question,
+    /// silently and correctly-looking, which is how two instances of one widget in different
+    /// states came to be treated as interchangeable. Unreachable means the next intent cannot
+    /// regress to that shape by accident.
+    ///
     /// Ordinal, like every other identity comparison in this pipeline — `Rescan` resolves
     /// duplicate ids ordinally, so a consumer that disagreed would silently classify a
-    /// different widget's properties.</summary>
-    public IReadOnlyDictionary<string, SecretIntent> For(string? widgetId)
+    /// different widget's properties.
+    /// </remarks>
+    private IReadOnlyDictionary<string, SecretIntent> ForWidget(string? widgetId)
     {
         if (string.IsNullOrEmpty(widgetId))
             return Nothing;
@@ -311,7 +347,7 @@ public static class SecretPolicy
                 var widgetId = AsString(slot?["widgetId"]);
                 if (widgetId is null || slot is null)
                     continue;
-                var secrets = plan.For(widgetId);
+                var secrets = plan.For(slot);
                 if (secrets.Count == 0)
                     continue;
                 var set = new JsonArray();
@@ -651,7 +687,7 @@ public static class SecretPolicy
             {
                 if (string.IsNullOrEmpty(slot.WidgetId))
                     continue;
-                var planned = plan.For(slot.WidgetId);
+                var planned = plan.For(slot);
                 if (planned.Count == 0)
                     continue;
                 slot.Settings ??= new JsonObject();
