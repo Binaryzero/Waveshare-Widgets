@@ -120,7 +120,11 @@
   let pollAnchor = 0;
   let fails = 0;
   let gameOn = false;
-  const acting = new Set();     // entity ids with a command in flight
+  // entity id -> the poll sequence current when its command was sent. A guard may only be
+  // released by a poll that BEGAN after the command; one already in flight when the
+  // command went out carries a snapshot from before it and cannot reconcile anything.
+  const acting = new Map();
+  let pollSeq = 0;
   let refreshQueued = false;    // an action wants a poll as soon as the current one ends
   // Every hold timer currently running, so a rebuild can call them all off. A poll that
   // changes the ranking detaches the tile a finger is resting on, and the timer's closure
@@ -506,7 +510,7 @@
       : (isOn ? 'close_cover' : 'open_cover');
     const serviceDomain = domain === 'garage_door' ? 'cover' : domain;
     const gen = generation;
-    acting.add(entry.entity);
+    acting.set(entry.entity, pollSeq);
     try {
       await ha('/api/services/' + serviceDomain + '/' + service, {
         method: 'POST',
@@ -575,6 +579,9 @@
     if (paused() || inFlight) { armIn(GATED_RECHECK, gen); return; }
     inFlight = true;
     pollAnchor = Date.now();
+    // Stamped when the poll actually begins, so a command can record which polls were
+    // already running when it went out.
+    const seq = ++pollSeq;
     try {
       // /api/states returns every entity in the house, which on a big install is
       // megabytes. Cap it and filter here — HA has no server-side entity filter on
@@ -600,9 +607,12 @@
       states = next;
       lastOk = Date.now();
       fails = 0;
-      // An authoritative snapshot has landed, so the presses held back while commands
-      // were unresolved can be let through again.
-      acting.clear();
+      // Release only the guards this poll can actually speak for. Clearing all of them
+      // let a poll that had STARTED BEFORE a command — and therefore carries a snapshot
+      // from before it — open the gate on the strength of stale data: a second press in
+      // the window before the queued follow-up landed would read the pre-command state
+      // and send the opposite service.
+      for (const [entity, atSeq] of acting) if (atSeq < seq) acting.delete(entity);
       document.body.classList.remove('stale');
       // A result can change WHICH entities deserve a tile, not only what one says.
       if (cfg.hidden && visibleKey() !== [...cards.keys()].join('\n')) build();
