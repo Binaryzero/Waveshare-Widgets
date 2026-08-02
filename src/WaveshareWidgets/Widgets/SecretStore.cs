@@ -187,13 +187,13 @@ public enum SecretIntent
 ///
 /// This replaces asking a manifest "is this property typed `secret`?" at every step. The
 /// question the pipeline actually needs answered is per-VALUE and carries an intent —
-/// three open issues are each a case a manifest cannot express: a credential inside a
-/// list row (#62), a property demoted to `text` whose stored value is still ciphertext
-/// and must be restored without acquiring write-side secret semantics (#66), and two
-/// folders declaring the same widget id where one entry cannot represent both (#67).
-/// Naming the value directly is what makes those tractable; see docs/SECRET-ADDRESSING.md
-/// for the design and for why the per-slot key arrives with the identity protocol rather
-/// than before it.
+/// three issues are each a case a manifest cannot express: a credential inside a list row
+/// (#62), a property demoted to `text` whose stored value is still ciphertext and must be
+/// restored without acquiring write-side secret semantics (#66), and two folders declaring
+/// the same widget id where one entry cannot represent both (#67, closed here — see
+/// <see cref="SecretIntent.ProtectWithoutReveal"/>). Naming the value directly is what
+/// makes those tractable; see docs/SECRET-ADDRESSING.md for the design and for why the
+/// per-slot key arrives with the identity protocol rather than before it.
 ///
 /// A plan is resolved ONCE per operation and caches per widget id, so a single Mask, Seal
 /// or Reveal sees one consistent classification even if the library rescans underneath it.

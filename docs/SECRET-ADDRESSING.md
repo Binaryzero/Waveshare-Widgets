@@ -150,6 +150,12 @@ exists only because a manifest is the wrong carrier and the host has to fabricat
 says what it means. A plan is directly serializable, directly addressable, and can be
 captured verbatim. All of it goes.
 
+`WithSecretsForced` and `RedactionOnly` went with step 4, along with
+`SettingsWindow.AddRedactionManifests`. What replaced them is a per-id list of credential
+names snapshotted beside the manifests and read straight into the plan — additive on the
+settings side for the same reason the manifest union is, because a name that ever masked
+a field must still be planned when the save arrives or the blank overwrites the value.
+
 ---
 
 ## Part B — the identity protocol
@@ -253,9 +259,29 @@ is the same channel — once identity flows both ways, both halves are the same 
    message handlers, so step 3 rests on a check rather than on three configurational
    barriers.
 3. **Identity protocol** (Part B) — closes #68, #70, #56 items 1 and 3.
-4. **`ProtectWithoutReveal`** — closes #67, and #62's classification half.
-5. **`RestoreIfUntouched`** — closes #66.
+4. ~~**`ProtectWithoutReveal`**~~ **Done.** Closes #67, #104, and #62's classification
+   half. `RejectedWidget.RedactNames` reach `SecretPlan` directly, so a refusal shadowed
+   by a same-id widget that loaded can be carried at all — `WidgetLibrary.AllRefusals`
+   retains it for redaction while `Rejected` stays filtered for the banner. Two things
+   the write-up did not anticipate, both found while building it:
+   - **Withholding the reveal means blanking, not skipping.** A refused widget's
+     credential is normally legacy plaintext, so there is nothing to decline to decrypt;
+     an implementation that merely skipped the address left the plaintext in the payload
+     and closed nothing. The blank round-trips through `Seal`'s restore, so the two call
+     sites in each window must build from ONE snapshot. `P35b` is that probe.
+   - **The union direction is the fix, not a tidiness choice.** If `Protect` could beat
+     `ProtectWithoutReveal`, declaring the shadowed name `secret` in the loaded manifest
+     would be the entire #104 exploit. `SecretIntents.MostProtective` and `P35i`.
+5. **`RestoreIfUntouched`** — closes #66. Note it is LESS protective than either intent
+   above (it does not encrypt), so placing it in `MostProtective` is a decision, not a
+   default; `P35r`–`P35t` walk `Enum.GetValues` so it cannot be skipped.
 6. **Row addressing** — closes #62's remaining half.
+
+Still to delete, once nothing needs them: `_maskedManifests`, `_revealedManifests` and
+`MergeManifestSnapshot`. `WithSecretsForced` and `RedactionOnly` went with step 4 — the
+plan is what says "this address holds a credential" now, so there is nothing left to
+fabricate a manifest for. The snapshots survive because they answer a different question
+(what did the library say when this payload was built), which the plan does not yet carry.
 
 Identity comes before the intents because addresses are keyed by slot identity, and
 because two PRs have now failed on exactly that ordering being implicit.
