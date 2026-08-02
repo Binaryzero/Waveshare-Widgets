@@ -51,6 +51,10 @@
     transition: width 700ms linear;
   }
   .ent.pressing .press { width: 100%; }
+  /* Neither confirmation nor failure: the command went out and no answer came back, so
+   * the panel does not yet know whether the house acted on it. */
+  @keyframes ha-pending { 0%, 100% { border-color: transparent; } 50% { border-color: var(--warn); } }
+  .ent.pending-flash { animation: ha-pending 900ms ease-in-out 2; }
   footer { color: var(--text-dim); font-size: 11px; flex: none; }
   #state { position: fixed; inset: 0; }
   body.stale #grid { opacity: 0.6; }
@@ -80,8 +84,17 @@
   // disarm, not the cover services this widget knows how to send, and several of them
   // require a code. A panel here would have offered a long press that always failed.
   // They still render as read-only state, which is the useful half.
-  const SECURITY = ['lock', 'cover', 'garage_door'];
-  const TOGGLEABLE = ['light', 'switch', 'fan', 'input_boolean', 'automation', 'siren', 'humidifier'];
+  // A siren is a physical alarm in someone's house. It was in the tap-to-toggle list,
+  // which means a stray brush of a desk-height touch strip could sound it — exactly the
+  // thing the arming model exists to prevent, and against this widget's own description.
+  // It belongs with the devices that need arming AND a deliberate hold.
+  const SECURITY = ['lock', 'cover', 'garage_door', 'siren'];
+  const TOGGLEABLE = ['light', 'switch', 'fan', 'input_boolean', 'automation', 'humidifier'];
+  // What a security device must be saying about itself before this widget will send it
+  // anything. `unknown` and `unavailable` are not states, they are the absence of one,
+  // and picking a direction from the absence of a state is how a press meant to lock a
+  // door sends unlock instead.
+  const DEFINITE = /^(locked|unlocked|open|closed|opening|closing|on|off)$/i;
   const PRESS_MS = 700;
   // Neither tier of WW.fetch bounds a direct browser request — the shim's own timer is on
   // the host-proxy tier — so a box that accepts the connection and then goes quiet leaves
@@ -107,6 +120,8 @@
   let pollAnchor = 0;
   let fails = 0;
   let gameOn = false;
+  const acting = new Set();     // entity ids with a command in flight
+  let refreshQueued = false;    // an action wants a poll as soon as the current one ends
   // Bumped whenever WHICH SERVER we are talking to changes. A response belongs to the
   // identity that asked for it; clearing `states` alone did not stop an already-issued
   // /api/states from landing and being rendered against the new configuration — and a
@@ -153,7 +168,12 @@
     const typed = raw
       .map((item) => {
         if (!item) return null;
-        const entity = String((typeof item === 'string' ? item : item.entity) || '').trim();
+        // Home Assistant entity ids are lower-case, and the states endpoint returns them
+        // that way. Validation accepted `Light.Kitchen` case-insensitively and then kept
+        // that spelling, so the exact lookup never matched and the tile sat "unknown"
+        // forever — while the dedupe below, which lowercases its key, would discard a
+        // correctly spelled duplicate in favour of the one that could never match.
+        const entity = String((typeof item === 'string' ? item : item.entity) || '').trim().toLowerCase();
         if (!entity) return null;
         const label = String((item && item.label) || '').trim();
         const control = String((item && item.control) || '').trim().toLowerCase();
@@ -343,14 +363,29 @@
   // supposed to be a no-op, not a failure the user has to interpret.
   function wireLongPress(root, entry) {
     let held = null;
+    let owner = null;
     const start = (ev) => {
       if (ev.button !== undefined && ev.button !== 0) return;
+      // ONE pointer owns the hold. A second finger landing on the same tile used to
+      // overwrite the timer handle without clearing the first, so lifting both fingers
+      // early cancelled only the second — and the orphaned first timer went on to fire
+      // after a gesture the user had deliberately abandoned, opening the thing.
+      if (held) return;
+      owner = ev.pointerId;
       root.classList.add('pressing');
-      held = setTimeout(() => { held = null; root.classList.remove('pressing'); act(entry, root); }, PRESS_MS);
+      held = setTimeout(() => {
+        held = null; owner = null;
+        root.classList.remove('pressing');
+        act(entry, root);
+      }, PRESS_MS);
     };
-    const cancel = () => {
+    const cancel = (ev) => {
+      // Only the finger that started the hold can end it; a second one lifting off must
+      // not cancel a press the first is still making.
+      if (ev && owner !== null && ev.pointerId !== undefined && ev.pointerId !== owner) return;
       root.classList.remove('pressing');
       if (held) { clearTimeout(held); held = null; }
+      owner = null;
     };
     root.addEventListener('pointerdown', start);
     root.addEventListener('pointerup', cancel);
@@ -360,7 +395,7 @@
 
   // Every call through here carries a deadline — the poll and the action alike, because
   // both were unbounded and both could hang the thing that depends on them.
-  async function ha(path, init, deadlineMs) {
+  async function ha(path, init, deadlineMs, consume) {
     const abort = new AbortController();
     const deadline = setTimeout(() => abort.abort(), deadlineMs);
     const opts = Object.assign({ insecure: true }, init || {});
@@ -379,15 +414,49 @@
           : fault('unreachable', 'could not reach the server');
       }
       if (!res.ok) throw fault('http', 'HTTP ' + res.status, res.status);
-      return res;
+      // The body is read INSIDE the timed region. Returning the Response and parsing it
+      // after this finally cleared the timer just moved the hang one step along: a server
+      // that sends headers and then stalls mid-stream left res.json() pending forever,
+      // with inFlight still true and nothing armed — the same dead panel, reached by a
+      // slightly different route.
+      return consume ? await consume(res) : res;
     } finally {
       clearTimeout(deadline);
     }
   }
 
+  // Fetch and parse under ONE deadline, and require the shape while we are at it.
+  async function haJson(path, init, deadlineMs, wantArray) {
+    return ha(path, init, deadlineMs, async (res) => {
+      let body;
+      try {
+        body = await res.json();
+      } catch (e) {
+        throw e instanceof RangeError ? fault('toolarge', 'reply too large')
+          : fault('format', 'reply was not JSON');
+      }
+      if (wantArray && !Array.isArray(body)) throw fault('format', 'reply was not a state list');
+      return body;
+    });
+  }
+
   async function act(entry, root) {
     const domain = domainOf(entry.entity);
     const current = states.get(entry.entity);
+    // One action per entity at a time. A double tap sent two toggles, Home Assistant
+    // processed both, the device ended up exactly where it started — and the panel
+    // flashed confirmation twice on the way.
+    if (acting.has(entry.entity)) return;
+    // A security device that is not saying what it is gets nothing sent to it. `isOn`
+    // is false for `unknown` and `unavailable` just as it is for `locked`, so a press on
+    // an indeterminate lock chose the unlock branch: the unsafe direction, picked from
+    // the absence of information.
+    if (SECURITY.includes(domain) && !(current && DEFINITE.test(current.state))) {
+      flash(root, 'fail-flash');
+      WW.log('homeassistant: ' + entry.entity + ': refused — state is '
+        + ((current && current.state) || 'unknown'));
+      return;
+    }
     const isOn = current && /^(on|open|unlocked|home|playing)$/i.test(current.state);
     // Optimistic flip: the panel answers the finger now and reconciles with the next
     // poll. On failure we put it back AND fail-flash, so a refused action can never
@@ -398,6 +467,7 @@
       : 'toggle';
     const serviceDomain = domain === 'garage_door' ? 'cover' : domain;
     const gen = generation;
+    acting.add(entry.entity);
     try {
       await ha('/api/services/' + serviceDomain + '/' + service, {
         method: 'POST',
@@ -408,18 +478,44 @@
       // dropping it silently.
       if (gen !== generation) return;
       flash(root, 'confirm-flash');
-      // Someone acting on the panel has asked for its current state, so the backoff a
-      // failing server earned is spent rather than charged to their press.
-      fails = 0;
-      pollAnchor = 0;
-      clearTimeout(timer);
-      tick(generation);
+      reconcile();
     } catch (e) {
       if (gen !== generation) return;
-      root.classList.toggle('on', !!isOn);   // revert the optimistic flip
-      flash(root, 'fail-flash');
+      // A REFUSAL is definite: the server answered and said no, so the flip comes back
+      // and the tile says it failed. A timeout or a lost connection is NOT a refusal —
+      // aborting proxyFetch only drops the local promise (widget-api.js:505-529) and does
+      // not recall the request, so Home Assistant may well have carried it out. Claiming
+      // failure there is a lie in the more dangerous direction: someone reads "failed",
+      // presses again, and locks what they had just unlocked. The honest answer is that
+      // the panel does not know yet — so it says nothing definitive and goes and looks.
+      if (e.kind === 'http') {
+        root.classList.toggle('on', !!isOn);
+        flash(root, 'fail-flash');
+      } else {
+        flash(root, 'pending-flash');
+      }
       WW.log('homeassistant: ' + entry.entity + ': ' + e.message);
+      reconcile();
+    } finally {
+      acting.delete(entry.entity);
     }
+  }
+
+  // Go and look, now. Someone acting on the panel has asked for its current state, so the
+  // backoff a failing server earned is spent rather than charged to their press.
+  function reconcile() {
+    fails = 0;
+    pollAnchor = 0;
+    if (inFlight) {
+      // A poll already running was very likely started BEFORE the action and carries a
+      // snapshot from before it. Its finally would otherwise re-arm the ordinary schedule
+      // over the top of this request and no reconciliation would happen for a whole
+      // interval — up to ten minutes at the maximum setting.
+      refreshQueued = true;
+      return;
+    }
+    clearTimeout(timer);
+    tick(generation);
   }
 
   async function tick(gen) {
@@ -431,19 +527,11 @@
       // /api/states returns every entity in the house, which on a big install is
       // megabytes. Cap it and filter here — HA has no server-side entity filter on
       // this endpoint, and the cap is what stops a large install taking the panel out.
-      const res = await ha('/api/states', { maxBytes: 4 * 1024 * 1024 }, POLL_DEADLINE);
-      let all;
-      try {
-        all = await res.json();
-      } catch (e) {
-        throw e instanceof RangeError ? fault('toolarge', 'reply too large')
-          : fault('format', 'reply was not JSON');
-      }
       // A 200 that is not an array is not an empty house. Coercing it to [] made every
       // configured entity "unknown" and told the user their entity ids were "not found in
       // Home Assistant" — sending them to check their configuration when the real problem
       // was that whatever answered was not Home Assistant.
-      if (!Array.isArray(all)) throw fault('format', 'reply was not a state list');
+      const all = await haJson('/api/states', { maxBytes: 4 * 1024 * 1024 }, POLL_DEADLINE, true);
       if (gen !== generation) return;   // a different server answered this question
       const wanted = new Set(cfg.entities.map((e) => e.entity));
       const next = new Map();
@@ -471,7 +559,13 @@
       else showError(faultText(e.kind, e.status));
       WW.log('homeassistant: ' + e.message);
     } finally {
-      if (gen === generation) { inFlight = false; arm(gen); }
+      if (gen === generation) {
+        inFlight = false;
+        // An action landed while this poll was already away, so this poll's snapshot
+        // predates it. Go again rather than re-arming the ordinary schedule over the top.
+        if (refreshQueued) { refreshQueued = false; clearTimeout(timer); tick(gen); }
+        else arm(gen);
+      }
     }
   }
 
