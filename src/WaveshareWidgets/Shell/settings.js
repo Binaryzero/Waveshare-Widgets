@@ -387,9 +387,21 @@
           }
         }
         const merged = Object.assign({}, slot, { settings });
+        // Facts about what the HOST did. The replica cannot change them, so they are
+        // restored wholesale.
         if (prior.secretsSet) merged.secretsSet = prior.secretsSet;
         if (prior.secretsRestorable) merged.secretsRestorable = prior.secretsRestorable;
-        if (prior.secretsCleared) merged.secretsCleared = prior.secretsCleared;
+        // A pending removal is different: it is a statement the REPLICA can contradict.
+        // replicaLayout passes secretsCleared through, so the panel receives the marker
+        // and cancels it by setting a value — but cancelling deletes the key, which looks
+        // identical to a capture that never carried one. The value is the only signal
+        // that separates them, and it is the same rule the editors use: a removal
+        // survives anything that is not a value. Restoring the marker unconditionally
+        // meant a replacement typed in the preview was deleted by the next Save.
+        const stillCleared = (prior.secretsCleared || [])
+          .filter((n) => !contradictsRemoval(settings ? settings[n] : undefined));
+        if (stillCleared.length) merged.secretsCleared = stillCleared;
+        else delete merged.secretsCleared;
         return merged;
       }),
     }));

@@ -1243,6 +1243,38 @@ const layout = {
   check('E32b and the widget that does declare one keeps them too',
     survived.withSecrets.includes('legacyToken'), JSON.stringify(survived));
 
+  // ---- E33 · the replica can CONTRADICT a pending removal -----------------------------
+  // replicaLayout passes secretsCleared through, so the on-panel editor receives the
+  // marker and cancels it by setting a value — and cancelling deletes the key, which is
+  // indistinguishable from a capture that never carried one. Restoring the prior marker
+  // unconditionally meant a replacement typed in the PREVIEW was deleted by the next
+  // desktop Save. The value is the signal, exactly as it is inside the editors.
+  // The marker has to be REAL. E31 left one standing on legacyToken, put there by the
+  // editor's own Clear — seeding secretsCleared into a fixture would fake a projection
+  // the host never sends, and prove nothing about the merge.
+  const contradiction = await page.evaluate(() => {
+    const cap = (value) => window.__wwMergeReplicaCapture({
+      pages: [{
+        name: 'Main',
+        slots: [{
+          widgetId: 'test.gh', size: 'half', instanceId: 'gh1',
+          settings: { legacyToken: value },
+        }],
+      }],
+    }).pages[0].slots[0];
+    return {
+      replaced: cap('typed-in-the-preview').secretsCleared || [],
+      emptied: cap('').secretsCleared || [],
+      replacedValue: cap('typed-in-the-preview').settings.legacyToken,
+    };
+  });
+  check('E33 setup: a real pending removal is standing before the merge',
+    contradiction.emptied.includes('legacyToken'), JSON.stringify(contradiction));
+  check('E33b a replacement captured from the replica cancels the pending removal',
+    !contradiction.replaced.includes('legacyToken')
+      && contradiction.replacedValue === 'typed-in-the-preview',
+    JSON.stringify(contradiction));
+
   // An ordinary property the host never blanked keeps its plain behaviour: there is
   // nothing to restore, so "" is unambiguous and no affordance is needed.
   const plain = page.locator('#slotDetail .prop-field').filter({ hasText: 'Repository' });
