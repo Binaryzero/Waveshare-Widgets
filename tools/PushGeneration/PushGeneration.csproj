@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>PushGenerationProbe</AssemblyName>
+    <RootNamespace>PushGenerationProbe</RootNamespace>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+  <!-- No <Compile Include> of app source, deliberately. The host half of this change is
+       plumbing rather than a decision — store a number, echo it on every envelope — and it
+       lives in DashboardWindow, which needs WebView2 and a window to instantiate. There is
+       no pure predicate to extract, so these are TEXT assertions and say so.
+
+       They exist because the behavioural probe cannot reach here: routing-run.js drives the
+       shell against a FAKE host, so the shell's checking is genuinely exercised while the
+       host's stamping is only imitated. Delete the stamp from PostToShell and every JS test
+       still passes. That is the gap this file covers, and the reason it runs in CI while
+       routing-run.js does not. -->
+</Project>

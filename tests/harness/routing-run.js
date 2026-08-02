@@ -126,9 +126,15 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
     } };
     window.__push = (j) => { const d = JSON.parse(j); L.forEach((c) => { try { c({ data: d }); } catch (e) {} }); };
   });
+  // The demand generation the shell last told us about. The real host keeps exactly this
+  // and echoes it on every envelope it posts (#132) — the harness has to model that, or the
+  // shell's staleness check would drop every push here and every test above would fail for
+  // a reason unrelated to what it is testing.
+  let hostGen = 0;
   await page.exposeFunction('__rec', async (j) => {
     const m = JSON.parse(j);
     hostMessages.push(m);
+    if (m.type === 'notifications-watch' && typeof m.gen === 'number') hostGen = m.gen;
     if (m.type === 'ready') {
       page.evaluate((d) => window.__push(d), JSON.stringify({ type: 'init', data: {
         layout, widgets, sensors: [], status: { elevated: false, version: 'probe' },
@@ -151,8 +157,11 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
     { id: 'n1', app: 'Mail', title: 'Invoice', body: 'account details inside' },
     { id: 'n2', app: 'Chat', title: 'Standup', body: 'in five' },
   ] };
-  const pushNotifs = () => page.evaluate((d) => window.__push(d),
-    JSON.stringify({ type: 'notifications', data: NOTIFS }));
+  // Stamped with the generation the host currently believes, exactly as PostToShell does.
+  // `gen` is an explicit parameter so a test can post as a PREVIOUS interval — which is the
+  // whole race and cannot be staged any other way.
+  const pushNotifs = (gen) => page.evaluate((d) => window.__push(d),
+    JSON.stringify({ type: 'notifications', data: NOTIFS, gen: gen === undefined ? hostGen : gen }));
 
   // Only the first widget subscribes. The second is an ordinary widget that never
   // mentions notifications — the malicious-widget case needs no more than that.
@@ -506,6 +515,70 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   const afterFresh = await sub.evaluate(() => window.__notifs.length);
   check('R10b ...and still receives the next real poll',
     afterFresh === 1, `${afterFresh} delivery(ies) after a fresh push`);
+
+  // ---- R12 · the demand GENERATION (#132) -------------------------------------
+  //
+  // Every check above asks whether anyone is watching. This asks a different question:
+  // whether the payload was produced for the watching that is happening NOW. The two come
+  // apart in one message-queue hop — a payload produced as the last watcher leaves can
+  // still be queued when a new watcher arrives, and by the time it dispatches the demand
+  // flag is true again, so it passes every gate and is cached and delivered as current.
+  //
+  // Staged by posting with an explicitly OLD generation, because that is exactly what the
+  // queued payload carries. Nothing else about it differs from a current one — same shape,
+  // same data — which is why no check that looks at the payload could ever separate them.
+  await sub.evaluate(() => { window.__notifs.length = 0; });
+  await bys.evaluate(() => window.__watch(false));
+  await page.waitForTimeout(200);
+  const genWhileWatching = hostGen;                     // the interval the payload is made in
+
+  await sub.evaluate(() => window.__watch(false));      // last watcher leaves: cache cleared
+  await page.waitForTimeout(250);
+  await sub.evaluate(() => window.__watch(true));       // and comes straight back
+  await page.waitForTimeout(250);
+  check('R12 setup: the demand generation actually advanced',
+    hostGen > genWhileWatching, `${genWhileWatching} -> ${hostGen}`);
+  await sub.evaluate(() => { window.__notifs.length = 0; });
+
+  await pushNotifs(genWhileWatching);                   // the queued payload finally lands
+  await page.waitForTimeout(400);
+  const stale = await sub.evaluate(() => window.__notifs.length);
+  check('R12 a payload from the PREVIOUS demand interval is refused',
+    stale === 0, `${stale} delivery(ies)`);
+
+  // ...and the subscription is live, not silenced. Without this R12 passes just as well if
+  // the generation check rejected everything — which is the failure mode a staleness guard
+  // is most likely to have, and the one this session has hit twice.
+  await pushNotifs();
+  await page.waitForTimeout(400);
+  const current = await sub.evaluate(() => window.__notifs.length);
+  check('R12b ...while one from the CURRENT interval is delivered',
+    current === 1, `${current} delivery(ies)`);
+
+  // R12c · a payload from a LATER generation than the shell knows about. The shell bumps
+  // before it posts, so the host can never legitimately be ahead — but an equality check
+  // and a "less than" check differ exactly here, and only one of them refuses a value that
+  // should be impossible. Refusing is right: a generation we have not issued is not
+  // evidence of anything.
+  await sub.evaluate(() => { window.__notifs.length = 0; });
+  await pushNotifs(hostGen + 5);
+  await page.waitForTimeout(400);
+  const ahead = await sub.evaluate(() => window.__notifs.length);
+  check('R12c a payload stamped with a generation the shell never issued is refused',
+    ahead === 0, `${ahead} delivery(ies)`);
+
+  // R12d · game-mode must NOT be gated. GameModeWatcher raises Changed only on a
+  // transition, so the host never re-sends the current state; a dropped push would leave
+  // the shell believing the wrong game state until the next real transition, hiding or
+  // showing every hideInGame widget wrongly for the duration. Posted with a deliberately
+  // stale generation — the exact stamp that would get it dropped if someone ever extended
+  // the check to this channel.
+  await page.evaluate((d) => window.__push(d),
+    JSON.stringify({ type: 'game-mode', data: { active: true, process: 'game.exe' }, gen: 0 }));
+  await page.waitForTimeout(300);
+  const gameSeen = await page.evaluate(() => document.documentElement.dataset.game);
+  check('R12d an edge-triggered game-mode push is NOT dropped for its generation',
+    gameSeen === 'on', `data-game=${gameSeen}`);
 
   await browser.close();
   srv.close();

@@ -383,6 +383,14 @@ public sealed class DashboardWindow : Form
                     break;
 
                 case "notifications-watch":
+                    // The demand interval this instruction belongs to, echoed back on every
+                    // push so the shell can tell a payload produced for the demand it has
+                    // NOW from one produced for demand it has since revoked and re-granted
+                    // (#132). The host never interprets it — it is the shell's counter, and
+                    // treating it as opaque is what keeps the two ends from disagreeing
+                    // about what it means.
+                    if (message["gen"] is JsonValue gv && gv.TryGetValue<double>(out var gen))
+                        Volatile.Write(ref _pushGen, (long)gen);
                     _notifications.SetWatching(message["on"]?.GetValue<bool>() == true);
                     break;
 
@@ -966,11 +974,32 @@ public sealed class DashboardWindow : Form
         }
     }
 
+    /// <summary>The last demand generation the shell told us about (#132).</summary>
+    /// <remarks>
+    /// Written from the web-message handler and read from PostToShell. Those are both the UI
+    /// thread today, but a push can originate on a worker — NotificationCenter and
+    /// GameModeWatcher raise their events from timer threads — and PostToShellThreadSafe
+    /// marshals rather than blocks, so the read is not guaranteed to be on the writer's
+    /// thread. Volatile rather than a lock: a stale read costs one dropped push, which the
+    /// next poll replaces, while a lock on the push path would be contention for nothing.
+    /// </remarks>
+    private long _pushGen;
+
     private void PostToShell(string type, JsonNode? data)
     {
         if (_webView.CoreWebView2 is null)
             return;
-        var envelope = new JsonObject { ["type"] = type, ["data"] = data };
+        // Stamped on EVERY envelope, in the one place every envelope is built, so the field
+        // means the same thing everywhere and no future channel can be added without it.
+        // Which channels the shell actually GATES on it is the shell's decision and is
+        // deliberately narrower — see the note in handleHostMessage. In particular
+        // `game-mode` is edge-triggered and must never be dropped.
+        var envelope = new JsonObject
+        {
+            ["type"] = type,
+            ["data"] = data,
+            ["gen"] = Volatile.Read(ref _pushGen),
+        };
         _webView.CoreWebView2.PostWebMessageAsJson(envelope.ToJsonString());
     }
 
