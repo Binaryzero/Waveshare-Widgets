@@ -583,6 +583,12 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   // cannot revoke that payload, because the stamp already happened. Both documents count from
   // zero, so the old stamp can equal what the new document produces — unless the stamp names
   // the document. Same counter, different document: must be refused.
+  // The mechanism, before the behaviour. Comparing two stamps only shows that DIFFERENT
+  // strings are refused — which stays true if the shell ignores the base entirely and
+  // composes a constant, because the test's synthetic "other document" then differs by
+  // accident. What has to hold is that the stamp actually NAMES this document.
+  check('R12e setup: the shell composed onto the document base the host assigned',
+    String(hostGen).startsWith(HOST_DOC + ':'), `${hostGen} (base ${HOST_DOC})`);
   await sub.evaluate(() => { window.__notifs.length = 0; });
   await pushNotifs(otherDocumentStampOf(hostGen));
   await page.waitForTimeout(400);
