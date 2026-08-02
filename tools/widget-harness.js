@@ -86,9 +86,17 @@ function loadPlaywright() {
   page.on('pageerror', (e) => consoleErrors.push(String(e).slice(0, 300)));
 
   // The widget's own files + the shell foundation, all from disk.
+  // Contained like the widget.test route below. `new URL().pathname` normalizes dot
+  // segments (including the %2e spelling), so the previous raw join could not be walked
+  // out of — but an encoded slash (`..%2f..%2f`) survives normalization, so any decode
+  // of that pathname makes traversal expressible again. The decode and this check go
+  // together. See the fuller note in widget-datapath.js, where this was flagged.
   await page.route('https://app.wsw/**', (route) => {
-    const file = path.join(SHELL, new URL(route.request().url()).pathname);
-    if (fs.existsSync(file)) return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
+    const shellRoot = path.resolve(SHELL);
+    const rel = decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\/+/, '');
+    const file = path.resolve(shellRoot, rel);
+    if (file.startsWith(shellRoot + path.sep) && fs.existsSync(file) && fs.statSync(file).isFile())
+      return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   });
   await page.route('https://widget.test/**', (route) => {
@@ -107,7 +115,7 @@ function loadPlaywright() {
   await page.addInitScript(() => {
     window.addEventListener('message', (ev) => {
       const m = ev.data || {};
-      const reply = (obj) => window.postMessage(obj, '*');
+      const reply = (obj) => window.postMessage(obj, window.location.origin);
       if (m.type === 'ww-fetch') reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
       else if (m.type === 'ww-ping') reply({ type: 'ww-ping-result', id: m.id, results: [] });
       else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
@@ -117,7 +125,7 @@ function loadPlaywright() {
 
   await page.goto('https://widget.test/index.html');
   await page.evaluate(({ settings, theme }) => {
-    window.postMessage({ type: 'ww-init', settings, sensors: [], media: null, theme, status: { elevated: false, apiVersion: 1 } }, '*');
+    window.postMessage({ type: 'ww-init', settings, sensors: [], media: null, theme, status: { elevated: false, apiVersion: 1 } }, window.location.origin);
   }, { settings, theme });
   await page.waitForTimeout(1200);
 
