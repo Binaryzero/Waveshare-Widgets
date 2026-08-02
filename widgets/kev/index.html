@@ -90,21 +90,33 @@
   'use strict';
   // The catalog is public and unauthenticated; it changes a few times a day at most.
   const FEED = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json';
-  // The full catalog is well over a megabyte and grows every week. We keep only the
-  // slice the tile can ever show, because localStorage is a few MB total and stashing
-  // the raw feed would evict itself (and everything else this widget owns) at random.
-  // Enough to answer the QUESTIONS, not just to fill the list. The cap used to be the
-  // display length, so the newest-40 slice was taken BEFORE the watch terms and the
-  // date window were applied: a watched vendor sitting at position 60 read as absent,
-  // and any month with more than 40 additions under-reported its own count. Filtering
-  // happens on this whole set; only the rendered rows are limited.
-  const KEEP = 600;
+  // The raw feed is well over a megabyte — descriptions, notes, required actions, due
+  // dates. The four fields this tile reads are a fraction of that, and the projection
+  // below is what makes keeping the WHOLE catalog affordable: on the order of a hundred
+  // bytes an entry against a localStorage quota measured in megabytes, on a virtual host
+  // this widget has to itself.
+  //
+  // Nothing is dropped before filtering, and that is the point. The cap here used to be
+  // the display length, so the newest-40 slice was taken BEFORE the watch terms and the
+  // date window were applied: a watched vendor sitting at position 60 read as absent, and
+  // any month with more than 40 additions under-reported its own count. Raising that cap
+  // to 600 moved the same defect out of common sight rather than removing it — a vendor
+  // whose most recent KEV entry falls outside the newest 600 still reported "0 watched"
+  // while the catalog held its records. Filtering happens on everything the feed returned.
+  //
+  // CACHE_MAX bounds the WRITE only, and only if the quota refuses the whole list: a
+  // shorter cache still beats an empty one on the next cold start, and either way the
+  // in-memory catalog is untouched.
+  const CACHE_MAX = 2000;
   const CACHE_KEY = 'kev.cache.v1';
 
   const cfg = { watch: [], maxItems: 6, windowDays: 7, refreshMs: 3600000 };
   let entries = [];        // [{vendor, product, cve, added}] newest first
   let fetchedAt = 0;
   let timer = null;
+  let boundaryTimer = null;
+  let pollAnchor = 0;      // when the current wait began: the last poll attempt's end
+  let failures = 0;        // consecutive failed polls; stretches the interval
   let started = false;
   let inFlight = false;
   let answered = false;   // has a cache read or a response actually happened yet?
@@ -139,6 +151,14 @@
     // few times a day: re-render what we hold and let the running chain do the rest.
     render();
     if (!started) { started = true; loadCache(); tick(); }
+    // ...but the chain has to be re-armed, because the interval it is waiting on may be
+    // the one that just changed. Doing nothing here left a poll pending on the OLD
+    // setting: going from a day to fifteen minutes still left the next refresh almost a
+    // day away. arm() measures against the time already served rather than restarting
+    // the wait, so a shortened interval brings the next poll forward — to immediately,
+    // if the new interval has already elapsed, which is a poll that is overdue rather
+    // than a refetch forced by the settings change.
+    else if (!inFlight) arm();
   });
 
   function loadCache() {
@@ -158,10 +178,17 @@
   }
 
   function saveCache() {
+    const write = (list) => localStorage.setItem(CACHE_KEY, JSON.stringify({ at: fetchedAt, entries: list }));
     try {
-      localStorage.setItem(CACHE_KEY, JSON.stringify({ at: fetchedAt, entries }));
+      write(entries);
     } catch (e) {
-      WW.log('kev: cache write failed: ' + e.message);
+      // Almost certainly the quota. Fall back to the newest slice rather than leaving
+      // the cache holding whatever it held before this poll.
+      try {
+        write(entries.slice(0, CACHE_MAX));
+      } catch (e2) {
+        WW.log('kev: cache write failed: ' + e2.message);
+      }
     }
   }
 
@@ -185,16 +212,17 @@
           added: String((v && v.dateAdded) || '').trim(),
         }))
         .filter((v) => v.cve && v.added)
-        .sort((a, b) => (a.added < b.added ? 1 : a.added > b.added ? -1 : 0))
-        .slice(0, KEEP);
+        .sort((a, b) => (a.added < b.added ? 1 : a.added > b.added ? -1 : 0));
       fetchedAt = Date.now();
       answered = true;
+      failures = 0;
       saveCache();
       document.body.classList.remove('stale');
       render();
     } catch (e) {
       // Keep whatever we have on screen and mark it stale; only a cold start with no
       // cache at all is a hard error worth taking the tile over.
+      failures++;
       if (entries.length) {
         document.body.classList.add('stale');
         render();
@@ -210,9 +238,48 @@
     }
   }
 
+  // The interval the user chose, stretched while the feed keeps failing. A dead endpoint
+  // at the 15-minute minimum is 96 requests a day from every instance that has this tile
+  // on a page, and the expensive failure is the one where the catalog outgrows the 5 MiB
+  // ceiling: those bytes cross the wire before the fetch is refused, every time. Doubling
+  // per consecutive failure to a ceiling of eight intervals lets a blip recover on the
+  // next poll while a lasting outage goes quiet. A success or the Retry button clears it.
+  function pollDelay() {
+    return cfg.refreshMs * Math.pow(2, Math.min(failures, 3));
+  }
+
+  // schedule() begins a new waiting period; arm() re-points the timeout at the same
+  // period, so a settings change is measured against the time already served.
   function schedule() {
+    pollAnchor = Date.now();
+    arm();
+  }
+
+  function arm() {
     clearTimeout(timer);
-    timer = setTimeout(tick, cfg.refreshMs);
+    timer = setTimeout(tick, Math.max(0, pollAnchor + pollDelay() - Date.now()));
+  }
+
+  // The count is "added in the last N days", measured against the clock rather than
+  // against the feed, so it goes stale on its own with nothing arriving to correct it.
+  // At the 1440-minute maximum an entry can cross the cutoff a minute after a poll and
+  // stay counted for nearly another day. Every entry leaves the window at exactly
+  // dateAdded + N days, so this re-renders at the earliest of those — clamped, because
+  // setTimeout truncates its delay to 32 bits and a 30-day window overflows that, which
+  // fires immediately and spins.
+  function scheduleBoundary() {
+    clearTimeout(boundaryTimer);
+    if (!entries.length) return;
+    const span = cfg.windowDays * 86400000;
+    const now = Date.now();
+    let soonest = Infinity;
+    for (const v of entries) {
+      const leaves = Date.parse(v.added) + span;
+      if (Number.isFinite(leaves) && leaves > now && leaves < soonest) soonest = leaves;
+    }
+    const CLAMP = 6 * 3600000;
+    const delay = soonest === Infinity ? CLAMP : Math.min(soonest - now, CLAMP);
+    boundaryTimer = setTimeout(render, Math.max(1000, delay));
   }
 
   function matches(entry) {
@@ -222,6 +289,9 @@
   }
 
   function render() {
+    // First, because it depends on the catalog and the window rather than on anything
+    // painted below, and because two of render()'s exits are early returns.
+    scheduleBoundary();
     // Nothing has been asked yet — onInit calls render() before loadCache() and tick().
     // Painting "the feed listed no vulnerabilities" here claimed an answer that had not
     // been requested, and on a slow feed it stayed on screen until the request finished.
@@ -315,6 +385,10 @@
       sp.className = 'spinner';
       state.appendChild(sp);
       clearTimeout(timer);
+      // An explicit Retry is a person saying the outage is over, so it clears the
+      // backoff as a success would: the next automatic poll goes back to the chosen
+      // interval instead of inheriting a stretch this attempt was meant to end.
+      failures = 0;
       tick();
     });
     state.append(icon, title, body, retry);
