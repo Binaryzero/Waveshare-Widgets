@@ -108,6 +108,19 @@ else
     Check("G2b setup: the ready case was located", ready.Length > 0);
     Check("G2b a new shell document resets the generation",
         ready.Contains("Volatile.Write(ref _pushGen, 0)"));
+    // G2b2 · and resets the AUTHORITATIVE one, not just the informational copy. The first
+    // attempt reset only _pushGen, which is the field used for the envelope's informational
+    // stamp; the value actually placed on a notifications payload is held in
+    // NotificationCenter, so the collision stayed open. Duplicating the concept is what made
+    // resetting the wrong one possible, so this names the copy that matters.
+    Check("G2b2 ...including the one a notifications payload is actually stamped with",
+        ready.Contains("_notifications.BeginNewDocument()"));
+    // ...and before init, so nothing produced for the old document can be authorised while
+    // the new one is still being set up.
+    Check("G2b3 and it does so BEFORE init",
+        ready.IndexOf("BeginNewDocument", StringComparison.Ordinal) >= 0
+        && ready.IndexOf("BeginNewDocument", StringComparison.Ordinal)
+           < ready.IndexOf("PostToShell(", StringComparison.Ordinal));
 
     // G2c · the generation is captured when the payload is AUTHORISED, not when the envelope
     // is built. PostToShellThreadSafe marshals via BeginInvoke and the UI thread can drain a
@@ -163,9 +176,17 @@ else
     Check("N7e ...and only ONE critical section is involved",
         CountOccurrences(push, "lock (_gate)") == 1,
         CountOccurrences(push, "lock (_gate)") + " lock block(s)");
+    // N7f · a new document invalidates the in-flight epoch under the gate, and clears both
+    // the generation and the dedup signature with it.
+    var begin = MethodBody(src, "public void BeginNewDocument()");
+    Check("N7f setup: BeginNewDocument was located", begin.Length > 0);
+    Check("N7f it invalidates the epoch, the generation and the signature together",
+        begin.Contains("_watchEpoch++") && begin.Contains("_shellGen = 0")
+        && begin.Contains("_lastSignature = \"\"") && begin.Contains("lock (_gate)"));
+
     Check("N7c the epoch advances on a demand transition",
-        CountOccurrences(src, "_watchEpoch++") >= 2,
-        CountOccurrences(src, "_watchEpoch++") + " bump site(s) — transition and re-declare");
+        CountOccurrences(src, "_watchEpoch++") >= 3,
+        CountOccurrences(src, "_watchEpoch++") + " bump site(s) — transition, re-declare, new document");
 }
 
 Console.WriteLine("Shell checks");

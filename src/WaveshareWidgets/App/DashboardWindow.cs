@@ -244,6 +244,17 @@ public sealed class DashboardWindow : Form
                     // means "this document has not declared demand yet" — which nothing can
                     // match.
                     Volatile.Write(ref _pushGen, 0);
+                    // ...and the AUTHORITATIVE copy, under the lock that guards it. The line
+                    // above resets the field used for the informational envelope stamp; the
+                    // value actually placed on a notifications payload lives in
+                    // NotificationCenter and is captured there. Resetting only this one left
+                    // the collision it was written to close wide open — a poll in flight from
+                    // the old document would still be authorised and stamped with the old
+                    // generation, which the new document's first watch can equal.
+                    //
+                    // Before init, so nothing produced for the previous document can be
+                    // authorised while the new one is still being set up.
+                    _notifications.BeginNewDocument();
                     PostToShell("init", BuildInitPayload());
                     break;
 

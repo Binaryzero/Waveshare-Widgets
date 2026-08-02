@@ -83,6 +83,33 @@ public sealed class NotificationCenter : IDisposable
         }
     }
 
+    /// <summary>A new shell document is taking over from a previous one (#132).</summary>
+    /// <remarks>
+    /// Polling deliberately continues across a reload — the dead document never posted
+    /// watch(false), and stopping would leave the rebuilt widget waiting for a poll interval
+    /// it does not need to wait for. But everything that identifies WHICH document the
+    /// polling is for belongs to the document that is gone:
+    ///
+    ///   the epoch, so a poll already in flight cannot publish for a document that no longer
+    ///   exists;
+    ///   the shell generation, so nothing can be stamped until the new document declares its
+    ///   own demand — the shell never sends 0, so 0 matches nothing;
+    ///   the dedup signature, because the new document has seen nothing and must get a full
+    ///   payload rather than being deduplicated against what its predecessor saw.
+    ///
+    /// Resetting only the copy held in DashboardWindow is what the first attempt did, and it
+    /// reset the INFORMATIONAL one: the value actually stamped on a payload is this one.
+    /// </remarks>
+    public void BeginNewDocument()
+    {
+        lock (_gate)
+        {
+            _watchEpoch++;
+            _shellGen = 0;
+            _lastSignature = "";
+        }
+    }
+
     /// <summary>Dismiss one mirrored notification by the id we projected.</summary>
     public void Dismiss(uint id)
     {
