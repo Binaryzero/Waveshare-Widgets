@@ -1,0 +1,49 @@
+{
+  "id": "ws.stock.nextevent",
+  "name": "Next Event",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "The next thing on your calendar and a live countdown to it, straight from an ICS link — no OAuth, no account connection. Handles daily and weekly repeats.",
+  "min_api_version": 1,
+  "supported_slots": ["quarter", "half", "full"],
+  "properties": [
+    {
+      "name": "icsUrl",
+      "label": "Private ICS link",
+      "type": "secret",
+      "placeholder": "The secret iCal address from your calendar's sharing settings"
+    },
+    {
+      "name": "lookaheadDays",
+      "label": "Look ahead (days)",
+      "type": "slider",
+      "min": 1,
+      "max": 90,
+      "step": 1,
+      "default": 30
+    },
+    {
+      "name": "ignoreAllDay",
+      "label": "All-day events",
+      "type": "select",
+      "options": ["include", "ignore"],
+      "default": "include"
+    },
+    {
+      "name": "refreshMinutes",
+      "label": "Refresh every (minutes)",
+      "type": "number",
+      "min": 5,
+      "max": 720,
+      "step": 5,
+      "default": 30
+    },
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": ["solid", "glass", "transparent"],
+      "default": "solid"
+    }
+  ]
+}
