@@ -251,6 +251,22 @@ const widgets = [{
       && !clearedNames(savedSlot()).includes('legacyToken'),
     JSON.stringify({ value: savedSetting('legacyToken'), cleared: clearedNames(savedSlot()) }));
 
+  // ...but an EMPTY value must NOT cancel it. "" is the shape the host already reads as
+  // untouched, so it cannot contradict a removal — a control whose empty choice is a real
+  // selection would otherwise undo the clear and have Seal restore the envelope. Making
+  // the cancel unconditional put the latch back facing the other way.
+  await legacyRow.locator('.ps-field-clear').click();
+  await wait(900);
+  await legacyRow.locator('input').evaluate((el) => {
+    el.value = '';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await wait(900);
+  check('N12e but an empty value does not — it cannot contradict a removal',
+    savedSetting('legacyToken') === ''
+      && clearedNames(savedSlot()).includes('legacyToken'),
+    JSON.stringify({ value: savedSetting('legacyToken'), cleared: clearedNames(savedSlot()) }));
+
   // ---- N7 · a save the host could not protect has to surface on the panel
   await page.evaluate(() => window.__hostPush(JSON.stringify({
     type: 'secrets-failed', data: ['test.gh.token'],
