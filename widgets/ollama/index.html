@@ -98,14 +98,19 @@
   let failures = 0;        // consecutive failed polls; stretches the interval
   let pollAnchor = 0;      // when the current wait began: the last poll attempt's end
   let gameOn = false;      // a fullscreen game is foreground: WIDGET-SPEC gates JS work
+  let tickerTimer = null;  // repaints the unload countdowns between polls
 
   const el = (id) => document.getElementById(id);
 
   // Binary units, because that is what Ollama reports and what nvidia-smi shows next
   // to it — a model that reads 6.1 GB here and 5.7 GB there is a support question.
+  // Zero is a REAL answer: Ollama reports size_vram 0 for a model it loaded entirely on
+  // the CPU, and rejecting it as invalid rendered "-- GB resident" on exactly the machines
+  // that have no GPU — the ones where the number matters most. Only a negative or
+  // unparseable figure is nothing.
   function gib(bytes) {
     const n = Number(bytes);
-    if (!Number.isFinite(n) || n <= 0) return null;
+    if (!Number.isFinite(n) || n < 0) return null;
     return n / 1073741824;
   }
 
@@ -166,7 +171,7 @@
   // runs immediately.
   WW.onGame((g) => {
     gameOn = !!(g && g.active);
-    if (started) arm();
+    if (started) { arm(); scheduleTicker(); }
   });
 
   async function tick() {
@@ -223,11 +228,20 @@
         bad.format = true;
         throw bad;
       }
-      const mapped = json.models.map((m) => ({
-        name: String((m && (m.name || m.model)) || '').trim() || 'unnamed',
-        vram: Number((m && (m.size_vram != null ? m.size_vram : m.size)) || 0),
-        expires: String((m && m.expires_at) || ''),
-      }));
+      const mapped = json.models.map((m) => {
+        // size_vram is the GPU allocation; size is the model's total loaded size. They
+        // differ whenever a model is partially offloaded, and falling back from one to
+        // the other made a CPU-resident model read as fully GPU-resident and inflated the
+        // number this whole tile is built around. A missing GPU figure is UNKNOWN — an
+        // older Ollama that does not report it gets an honest dash, not a wrong number.
+        const raw = m && m.size_vram;
+        const n = Number(raw);
+        return {
+          name: String((m && (m.name || m.model)) || '').trim() || 'unnamed',
+          vram: (raw == null || !Number.isFinite(n)) ? null : n,
+          expires: String((m && m.expires_at) || ''),
+        };
+      });
       models = mapped;
       lastOk = Date.now();
       answered = true;
@@ -247,7 +261,7 @@
         document.body.classList.add('stale');
         render();
       } else {
-        showError(e && e.format);
+        showError(e instanceof RangeError ? 'toolarge' : (e && e.format) ? 'format' : 'unreachable');
       }
       WW.log('ollama: ' + e.message);
     } finally {
@@ -281,13 +295,44 @@
     timer = setTimeout(tick, Math.max(floor, pollAnchor + pollDelay() - Date.now()));
   }
 
+  // The countdowns are read from the clock, not from the response, so they go stale
+  // between polls with nothing arriving to correct them: at the 300-second maximum a model
+  // shown with "30s" left kept saying 30s for five minutes, including well past the moment
+  // it was gone. That is not a countdown, it is a screenshot of one.
+  //
+  // The cadence follows the display's own resolution rather than the wall clock — a figure
+  // in whole hours does not need repainting every second — and the whole thing stands down
+  // while the document is hidden or a game is foreground, since the point of both gates is
+  // that nothing here is worth CPU when nobody is looking.
+  function scheduleTicker() {
+    clearTimeout(tickerTimer);
+    if (document.hidden || gameOn) return;
+    let soonest = Infinity;
+    for (const m of models) {
+      const t = Date.parse(m.expires || '');
+      if (!Number.isFinite(t)) continue;
+      const secs = (t - Date.now()) / 1000;
+      if (secs > 0 && secs < soonest) soonest = secs;
+    }
+    if (soonest === Infinity) return;          // nothing is counting down
+    const every = soonest < 60 ? 1000 : soonest < 3600 ? 30000 : 300000;
+    tickerTimer = setTimeout(render, every);
+  }
+
   function render() {
-    const totalBytes = models.reduce((sum, m) => sum + (Number(m.vram) || 0), 0);
+    // First, because it depends on the model list rather than on anything painted below.
+    scheduleTicker();
+    // Only what was actually reported goes into the total, and the label says so when
+    // something was left out rather than quietly under-counting.
+    const known = models.filter((m) => m.vram != null);
+    const unknown = models.length - known.length;
+    const totalBytes = known.reduce((sum, m) => sum + m.vram, 0);
     const stale = document.body.classList.contains('stale');
 
-    el('vram').textContent = models.length ? fmtGib(totalBytes) : '0';
+    el('vram').textContent = models.length && known.length ? fmtGib(totalBytes) : '0';
     el('totalLabel').textContent = models.length
       ? 'GB resident · ' + models.length + (models.length === 1 ? ' model' : ' models')
+        + (unknown ? ' · ' + unknown + ' not reporting' : '')
       : 'GB resident';
 
     const box = el('models');
@@ -302,7 +347,7 @@
       name.textContent = m.name;
       const size = document.createElement('span');
       size.className = 'size';
-      size.textContent = fmtGib(m.vram) + ' GB';
+      size.textContent = m.vram == null ? '—' : fmtGib(m.vram) + ' GB';
       const left = ttl(m.expires);
       top.append(name, size);
       if (left) {
@@ -327,7 +372,7 @@
     el('data').hidden = false;
   }
 
-  function showError(format) {
+  function showError(kind) {
     // The pill is the header's one-word summary and it starts at Loading. Leaving it
     // there meant the tile could show an error card and a Retry button while still
     // claiming to be loading, indefinitely, since nothing else writes it on a cold start
@@ -347,11 +392,19 @@
     // listening, versus something answered and it was not Ollama. Telling someone to
     // check whether Ollama is running, when a server just replied on that port, sends
     // them to look in the wrong place.
-    title.textContent = format ? 'Not an Ollama server' : 'Ollama unreachable';
+    // Three different sentences, because the reader acts on each differently: nothing is
+    // listening; something answered and it was not Ollama; and the answer arrived but was
+    // too big to read. Only the first is a reason to go and check whether Ollama is
+    // running, and the other two used to say so anyway.
+    title.textContent = kind === 'format' ? 'Not an Ollama server'
+      : kind === 'toolarge' ? 'Response too large'
+      : 'Ollama unreachable';
     const body = document.createElement('div');
     body.className = 'state-body';
-    body.textContent = format
-      ? 'Something answered at ' + cfg.base + ", but it wasn't Ollama's /api/ps."
+    body.textContent = kind === 'format'
+        ? 'Something answered at ' + cfg.base + ", but it wasn't Ollama's /api/ps."
+      : kind === 'toolarge'
+        ? 'The reply from ' + cfg.base + ' was larger than the panel will load.'
       : "Couldn't reach " + cfg.base + '. Check that Ollama is running and the address is right.';
     const retry = document.createElement('button');
     retry.className = 'btn';
@@ -387,6 +440,7 @@
     // poll is overdue by definition: tick() returns early while hidden, so a tile that
     // initialised on a hidden page has an anchor and no data.
     if (!polled || Date.now() >= pollAnchor + pollDelay()) { clearTimeout(timer); tick(); }
+    else scheduleTicker();   // not due a poll, but the countdowns need restarting
   });
 </script>
 </body>
