@@ -275,10 +275,22 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
       return true;
     };
     window.addEventListener('message', (ev) => {
-      // The shim injected into THIS document posts its own ww-ready upward, and in a
-      // top-level document `parent` is itself. Ignoring self-posts keeps that from
-      // being mistaken for the widget's.
-      if (ev.source === window) return;
+      // Identity AND origin, both, exactly as shell.js:275-284 does — and for its
+      // reasons, which apply here unchanged:
+      //
+      //   postMessage reaches window.top from ANY descendant, so a page a widget frames
+      //   can speak this protocol. Three stock widgets do frame third-party content
+      //   (twitch, youtube) and one frames a URL the user types (iframe), so a runner
+      //   that answers nested frames is answering pages the panel ignores — serving them
+      //   proxy fixtures, and letting one of them mark the shim ready.
+      //
+      //   Identity alone is not enough either: a slot frame that navigates away keeps
+      //   the same WindowProxy. Identity says WHICH frame is speaking, origin says
+      //   whether the widget is still the one speaking.
+      //
+      // This also subsumes the self-post case — the shim injected into THIS document
+      // posts its own ww-ready upward, and in a top-level document `parent` is itself.
+      if (!frame || ev.source !== frame.contentWindow || ev.origin !== widgetOrigin) return;
       const m = ev.data || {};
       const target = ev.origin && ev.origin !== 'null' ? ev.origin : '*';
       const reply = (obj) => { try { ev.source.postMessage(obj, target); } catch (e) { /* frame gone */ } };
@@ -297,13 +309,17 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         if (!['GET', 'POST', 'PUT', 'HEAD'].includes(method)) {
           return reply({ type: 'ww-fetch-result', id: m.id, error: 'method ' + method + ' not allowed' });
         }
-        // Match the CANONICAL form, as the direct route does. The browser normalizes a
-        // URL before it hits page.route (spaces encoded, dot segments resolved), while
-        // m.url is whatever the widget passed — so a fixture written against the direct
-        // request form missed the proxy lookup and the same fixture did not cover both
-        // tiers. The host parses the URL too, so canonical is also what it would send.
+        // Match the CANONICAL form, and ONLY that — the same string the direct route
+        // matches against. The browser normalizes a URL before it reaches page.route
+        // (spaces encoded, dot segments resolved, IDN punycoded) while m.url is whatever
+        // the widget passed, so a raw-string fallback here is strictly more permissive
+        // than the direct matcher. A fixture whose `match` only fits the raw spelling
+        // then misses the direct request, the widget escalates, and the proxy answers —
+        // so the run reports proxy-tier traffic and exercises the proxy response shape
+        // for a call the browser would have made directly. The host parses the URL too,
+        // so canonical is also what it would send.
         const canonical = abs.href;
-        const stub = table.find((s) => canonical.includes(s.match) || String(m.url || '').includes(s.match));
+        const stub = table.find((s) => canonical.includes(s.match));
         if (!stub) return reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
         window.__wwProxyServed.push(String(m.url || ''));
         // The proxy tier's contract is bodyBase64 + contentType, NOT a body string and
