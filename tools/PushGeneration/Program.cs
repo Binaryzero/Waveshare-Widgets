@@ -151,12 +151,18 @@ else
     // stamped on a payload is the one in force when it was authorised.
     var push = MethodBody(src, "private void Push(long pollEpoch, JsonObject payload");
     Check("N7d setup: Push was located", push.Length > 0);
+    // Checked against the BODY of the deciding lock, not by index ordering. The index
+    // version passed when the capture was moved into a SECOND lock after the first: still
+    // after the opening brace, still before the invoke, and still racy — the decision and
+    // the capture must be in ONE critical section or a transition can land between them.
     var lockAt = push.IndexOf("lock (_gate)", StringComparison.Ordinal);
-    var invokeAt = push.IndexOf("Updated?.Invoke", StringComparison.Ordinal);
-    var capAt = push.IndexOf("gen = _shellGen", StringComparison.Ordinal);
-    Check("N7d the stamp is captured inside the lock, before Updated fires",
-        lockAt >= 0 && capAt > lockAt && invokeAt > capAt,
-        capAt < 0 ? "not captured" : "captured under the gate");
+    var body = lockAt < 0 ? "" : Braced(push, push.IndexOf('{', lockAt));
+    Check("N7d the stamp is captured inside the SAME lock that made the decision",
+        body.Contains("ShouldPush") && body.Contains("gen = _shellGen"),
+        body.Contains("gen = _shellGen") ? "same critical section" : "captured elsewhere");
+    Check("N7e ...and only ONE critical section is involved",
+        CountOccurrences(push, "lock (_gate)") == 1,
+        CountOccurrences(push, "lock (_gate)") + " lock block(s)");
     Check("N7c the epoch advances on a demand transition",
         CountOccurrences(src, "_watchEpoch++") >= 2,
         CountOccurrences(src, "_watchEpoch++") + " bump site(s) — transition and re-declare");
