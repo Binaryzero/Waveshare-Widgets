@@ -61,8 +61,13 @@
   }
   footer { color: var(--text-dim); font-size: 11px; flex: none; font-variant-numeric: tabular-nums; }
   #state { position: fixed; inset: 0; }
-  /* Stale keeps the last data visible but dimmed — old KEV data still beats none. */
-  body.stale #count, body.stale #list { opacity: 0.55; }
+  /* Stale keeps the last answer visible but dimmed — old KEV data still beats none.
+   * #state is in the list because an empty catalog IS an answer, and it lives in the
+   * state card rather than in #count/#list: without this the one stale answer that has
+   * no rows was the one that did not look stale, while its own pill said so. A visible
+   * error card never carries this class — the stale mark is only set on the branch that
+   * has an answer to keep, and the error branch is the one that does not. */
+  body.stale #count, body.stale #list, body.stale #state { opacity: 0.55; }
 </style>
 </head>
 <body>
