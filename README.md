@@ -52,7 +52,7 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
 - **Settings UI**: tray → **Settings…** opens a visual editor for pages, slots, and
   every widget's declared properties (colors, sliders, sensor pickers, structured
   lists) — no JSON editing required — plus the Theme panel with a live preview.
-- **Twenty-five stock widgets**: CPU, GPU, Clock, Countdown, Now Playing, Weather,
+- **Twenty-six stock widgets**: CPU, GPU, Clock, Countdown, Now Playing, Weather,
   7-Day Forecast, Weather Radar, Reddit Photos, Ping Monitor, iFrame, Stream Deck
   mirror (live Virtual Stream Deck with clickable keys), Control Deck (a touch
   button grid — launch apps, open URLs, send hotkeys, control media; no Stream
@@ -64,10 +64,12 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   self-care HUD whose water/eyes/posture/stretch meters drain over desk time,
   tended alongside a pixel pet), REST Value (any JSON endpoint, one number on
   the panel — give it a URL and a path, set warn/crit thresholds, and add an auth
-  header that is stored encrypted), and CISA KEV (the Known Exploited
+  header that is stored encrypted), CISA KEV (the Known Exploited
   Vulnerabilities catalog as a glance tile: how many landed this week and the
   newest entries by vendor and product, filterable to the vendors you run —
-  public feed, no key needed).
+  public feed, no key needed), and Ollama (what your local instance actually has
+  resident on the GPU right now: each loaded model, the VRAM it holds, and how
+  long until it unloads — pairs with the GPU widget).
 - **iCUE widget compatibility**: many `.icuewidget` packages from the
   [Elgato Marketplace](https://marketplace.elgato.com/icue/widgets) install and run
   as-is — the runtime emulates the `Sensorsdataprovider` plugin API and reads
