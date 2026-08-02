@@ -18,6 +18,15 @@
    * This is also the channel the on-panel editor never had. Reveal cannot carry a
    * projection into the model, so before this the panel could not say a demoted
    * credential had been cleared at all (#153). */
+  // Whether a value the user just set CONTRADICTS a pending removal. "" does not: it is
+  // the exact shape the host reads as untouched, so a control with a legitimately empty
+  // choice would otherwise cancel a clear and have Seal restore the envelope the user
+  // asked to delete. `false` and `0` ARE values — a switch turned off and a number set to
+  // zero are choices, not absences. Mirrors settings.js.
+  function contradictsRemoval(value) {
+    return !(value === '' || value === null || value === undefined);
+  }
+
   function markCleared(def, name, on) {
     const list = Array.isArray(def.secretsCleared) ? def.secretsCleared.slice() : [];
     const at = list.indexOf(name);
@@ -26,9 +35,6 @@
     if (list.length) def.secretsCleared = list;
     else delete def.secretsCleared;
   }
-  // Escape for a credential that lives in the reserved namespace (it could BE the marker
-  // above). Must match SecretStore.LiteralPrefix.
-
 
   /** @type {{frame: HTMLIFrameElement, el: HTMLElement, settings: object, initialized: boolean, retries: number}[]} */
   let slots = [];
@@ -1888,9 +1894,12 @@
     // CANCELS any pending removal. Without that default the name latched: clear a demoted
     // property, pick a replacement in the same session, and the save deleted the property
     // instead of storing what was just chosen.
+    // Only a real value cancels — see contradictsRemoval. Cancelling on "" put the latch
+    // back for any control whose empty choice is a legitimate selection.
     const set = (prop, v, clearedFlag) => {
       stored()[prop.name] = v;
-      markCleared(record.def, prop.name, clearedFlag === true);
+      if (clearedFlag === true) markCleared(record.def, prop.name, true);
+      else if (contradictsRemoval(v)) markCleared(record.def, prop.name, false);
       applyPropChange();
     };
 

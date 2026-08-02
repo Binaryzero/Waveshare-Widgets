@@ -367,17 +367,24 @@
     const secretsOf = (widgetId) => knownSecretNames(widgetId);
     const pages = (captured.pages || []).map((page, pi) => Object.assign({}, page, {
       slots: (page.slots || []).map((slot, si) => {
-        const names = secretsOf(slot.widgetId);
-        if (!names.length) return slot;
         // By id first, then by position: the replica MINTS an instanceId for legacy
         // id-less slots on its first mutation, so an id-keyed lookup alone would miss
         // exactly the slot whose secret we are trying to preserve.
         const prior = (slot.instanceId && mine.get('i:' + slot.instanceId)) || mine.get('p:' + pi + ':' + si);
         if (!prior || prior.widgetId !== slot.widgetId) return slot;
-        const settings = Object.assign({}, slot.settings);
-        for (const n of names) {
-          if (prior.settings && n in prior.settings) settings[n] = prior.settings[n];
-          else delete settings[n];
+        // The projections below are carried across for EVERY captured slot, not only
+        // those whose widget still declares a secret. A demoted property is precisely
+        // one the manifest no longer calls secret, so gating this on the name list drops
+        // secretsCleared for the only case it exists to serve: the capture would replace
+        // the slot wholesale and the clear would silently become a restore.
+        const names = secretsOf(slot.widgetId);
+        let settings = slot.settings;
+        if (names.length) {
+          settings = Object.assign({}, slot.settings);
+          for (const n of names) {
+            if (prior.settings && n in prior.settings) settings[n] = prior.settings[n];
+            else delete settings[n];
+          }
         }
         const merged = Object.assign({}, slot, { settings });
         if (prior.secretsSet) merged.secretsSet = prior.secretsSet;
@@ -392,6 +399,11 @@
   // Test seam: the headless probes assert that nothing credential-shaped reaches the
   // preview. Reading a projection is harmless; it exposes no state the page lacks.
   window.__wwReplicaLayout = replicaLayout;
+  // Same seam, write side: the probes drive a capture that mirrors the replica's own
+  // scrubbed view — no secretsCleared, no secretsRestorable — and assert the merge puts
+  // the projections back. Pure over its argument plus state.layout; exposes nothing the
+  // page does not already hold.
+  window.__wwMergeReplicaCapture = mergeReplicaCapture;
 
   function replicaPost(message) {
     if (message && message.type === 'init') window.__wwLastReplicaInit = JSON.stringify(message);
@@ -823,6 +835,17 @@
    * than better — it was a per-producer obligation, and only the text inputs ever had it.
    *
    * A name in a list cannot be confused with a value, so nothing escapes anything here. */
+  // Whether a value the user just set CONTRADICTS a pending removal. "" does not: it is
+  // the exact shape the host reads as untouched, so a control with a legitimately empty
+  // choice — an `sd-profiles` select where "" means "first available" — would otherwise
+  // cancel a clear and have Seal restore the envelope the user asked to delete.
+  //
+  // `false` and `0` ARE values. A switch turned off and a number set to zero are choices,
+  // not absences, and they cancel a removal like any other replacement.
+  function contradictsRemoval(value) {
+    return !(value === '' || value === null || value === undefined);
+  }
+
   function markCleared(slot, name, on) {
     const list = Array.isArray(slot.secretsCleared) ? slot.secretsCleared.slice() : [];
     const at = list.indexOf(name);
@@ -1518,6 +1541,10 @@
             slot.settings = slot.settings || {};
             slot.settings[prop.name] = '';
             markCleared(slot, prop.name, true);
+            // The replica has to see the finished slot. Nothing else here refreshes it —
+            // markDirty only lights the save button and renderEditor only rebuilds this
+            // panel — so without it the preview keeps showing the value just cleared.
+            refreshReplica('layout');
             markDirty();
             renderEditor();
           }, true);
@@ -1794,9 +1821,12 @@
     // replacement in the same session, and the save deleted the property instead of
     // storing what they had just chosen. The controls that mean "remove" say so
     // explicitly through markCleared; every other edit is the user setting a value.
+    //
+    // Only a real value cancels — see contradictsRemoval. Cancelling on "" put the latch
+    // back for any control whose empty choice is a legitimate selection.
     const set = (value) => {
       slot.settings[prop.name] = value;
-      markCleared(slot, prop.name, false);
+      if (contradictsRemoval(value)) markCleared(slot, prop.name, false);
       refreshReplica('layout');
     };
 
@@ -2270,8 +2300,12 @@
           const clear = iconButton('✕', 'Remove the stored value on the next save', () => {
             input.value = '';
             cleared = true;
-            set('');
+            // Name the address BEFORE set()'s replica refresh, so the refresh sees the
+            // finished slot. Refreshing first sees no layout change, schedules no
+            // re-init, and mergeReplicaCapture then merges back a captured slot that
+            // never carried the marker. Safe now that set('') no longer cancels.
             markCleared(slot, prop.name, true);
+            set('');
             sync();
           }, true);
           input.oninput = () => {
@@ -2284,8 +2318,8 @@
               // the one string that cannot say which one the user meant, so the name says
               // it instead.
               cleared = true;
-              set('');
               markCleared(slot, prop.name, true);
+              set('');
             } else {
               cleared = false;
               markCleared(slot, prop.name, false);

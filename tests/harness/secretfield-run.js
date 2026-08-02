@@ -53,6 +53,11 @@ const widgets = [{
     // A demoted property of a NON-text type: the host blanks and lists it exactly the
     // same way, and the Clear affordance has to reach it too.
     { name: 'legacyTint', label: 'Legacy tint', type: 'color', default: '#00d4ff' },
+    // A demoted property whose control has a legitimately EMPTY choice: an sd-profiles
+    // select where "" means "first available". Choosing it must NOT cancel a pending
+    // removal — "" is the one value that cannot contradict a clear, because it is the
+    // shape the host already reads as untouched.
+    { name: 'legacyProfile', label: 'Legacy profile', type: 'select', optionsSource: 'sd-profiles' },
   ],
 }, {
   // A DIFFERENT widget that happens to declare the same secret name — the collision
@@ -60,6 +65,15 @@ const widgets = [{
   id: 'test.ha', name: 'Home Assistant', supportedSlots: ['half'],
   properties: [
     { name: 'token', label: 'Long-lived token', type: 'secret' },
+  ],
+}, {
+  // A widget that declares NO secret at all, but still holds a demoted envelope. This is
+  // the shape mergeReplicaCapture's secret-name gate was blind to: a demotion is exactly
+  // the case where the manifest has stopped calling anything secret, so gating the
+  // projection merge on that list dropped it for the only widgets that needed it.
+  id: 'test.demoted', name: 'All Demoted', supportedSlots: ['half'],
+  properties: [
+    { name: 'legacyOnly', label: 'Legacy only', type: 'text' },
   ],
 }];
 
@@ -70,9 +84,17 @@ const layout = {
     name: 'Main',
     slots: [{
       widgetId: 'test.gh', size: 'half', instanceId: 'gh1',
-      settings: { token: '', fresh: '', legacyToken: '', legacyTint: '', repo: 'binaryzero/waveshare-widgets' },
+      settings: {
+        token: '', fresh: '', legacyToken: '', legacyTint: '', legacyProfile: '',
+        repo: 'binaryzero/waveshare-widgets',
+      },
       secretsSet: ['token'],
-      secretsRestorable: ['legacyToken', 'legacyTint'],
+      secretsRestorable: ['legacyToken', 'legacyTint', 'legacyProfile'],
+    }, {
+      // Declares no secret, holds a demoted envelope — see the manifest note above.
+      widgetId: 'test.demoted', size: 'half', instanceId: 'dm1',
+      settings: { legacyOnly: '' },
+      secretsRestorable: ['legacyOnly'],
     }],
   }],
 };
@@ -1153,6 +1175,73 @@ const layout = {
     JSON.stringify(last.secretsCleared));
   check('E30b and the replacement is what gets saved',
     last.settings.legacyTint === '#123456', JSON.stringify(last.settings.legacyTint));
+
+  // ---- E31 · an EMPTY choice does not cancel a removal -------------------------------
+  // The cancel added for E30 was unconditional, which put the latch back the other way
+  // round: an sd-profiles select's "" means "first available" and is a real selection,
+  // but "" is also the shape the host reads as untouched. Cancelling on it made "clear,
+  // then pick the default" restore the envelope the user had just asked to delete.
+  const profileField = page.locator('#slotDetail .prop-field').filter({ hasText: 'Legacy profile' });
+  check('E31 a demoted select gets the Clear affordance too',
+    await profileField.locator('.prop-clear').count() === 1,
+    String(await profileField.locator('.prop-clear').count()));
+  await profileField.locator('.prop-clear').click();
+  await page.waitForTimeout(120);
+  await profileField.locator('select').evaluate((el) => {
+    el.value = '';
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForTimeout(120);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E31b choosing the empty default after a Clear keeps the removal',
+    (last.secretsCleared || []).includes('legacyProfile'),
+    JSON.stringify({ cleared: last.secretsCleared, value: last.settings.legacyProfile }));
+
+  // ...and the cancel still works for a value that IS one. Both directions, so a fix
+  // that simply stopped cancelling would fail here.
+  await profileField.locator('select').evaluate((el) => {
+    el.add(new Option('prod', 'prod', false, true));
+    el.value = 'prod';
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForTimeout(120);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E31c and a real choice after a Clear still cancels the removal',
+    !((last.secretsCleared) || []).includes('legacyProfile')
+      && last.settings.legacyProfile === 'prod',
+    JSON.stringify({ cleared: last.secretsCleared, value: last.settings.legacyProfile }));
+
+  // ---- E32 · the marker survives a replica capture ------------------------------------
+  // mergeReplicaCapture returned a captured slot wholesale when the widget declared no
+  // secret names — which is exactly what a DEMOTED property is, the manifest having
+  // stopped calling it secret. The clear was recorded on state.layout, the capture came
+  // back from the replica without it, and the save restored the envelope instead.
+  // The capture mirrors the replica's own scrubbed view: it carries no projections at
+  // all. slots[1] is the widget that declares NO secret, which is what made the old
+  // name-list gate return it wholesale.
+  const survived = await page.evaluate(() => {
+    const merged = window.__wwMergeReplicaCapture({
+      pages: [{
+        name: 'Main',
+        slots: [
+          { widgetId: 'test.gh', size: 'half', instanceId: 'gh1', settings: {} },
+          { widgetId: 'test.demoted', size: 'half', instanceId: 'dm1', settings: {} },
+        ],
+      }],
+    });
+    return {
+      demoted: merged.pages[0].slots[1].secretsRestorable || [],
+      withSecrets: merged.pages[0].slots[0].secretsRestorable || [],
+    };
+  });
+  check('E32 a capture cannot drop the projections of a widget that declares no secret',
+    survived.demoted.includes('legacyOnly'), JSON.stringify(survived));
+  check('E32b and the widget that does declare one keeps them too',
+    survived.withSecrets.includes('legacyToken'), JSON.stringify(survived));
 
   // An ordinary property the host never blanked keeps its plain behaviour: there is
   // nothing to restore, so "" is unambiguous and no affordance is needed.

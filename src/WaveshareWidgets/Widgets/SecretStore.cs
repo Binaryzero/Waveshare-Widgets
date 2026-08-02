@@ -386,14 +386,6 @@ public static class SecretPolicy
     /// model exists.</summary>
     public const string ClearedMarkerKey = "secretsCleared";
 
-    /// <summary>Pulls the cleared-property lists out of a submitted layout, addressed by
-    /// (page, slot) — the same coordinates <see cref="SecretSealResult.Minted"/> uses.
-    ///
-    /// It must run on the RAW JSON, before deserialization: the model deliberately carries
-    /// no extension data, which is what keeps every projection out of layout.json, so by
-    /// the time there is a <see cref="DashboardLayout"/> this key is already gone. Both
-    /// windows call it on the node they are about to deserialize and hand the result to
-    /// <see cref="Seal"/>.</summary>
     /// <summary>Writes a (page, slot) → names map onto a serialized layout as a per-slot
     /// projection. Used for the reveal-side <see cref="RestorableMarkerKey"/>, so the panel
     /// receives the same shape the settings editor already gets from <c>Mask</c>.</summary>
@@ -416,6 +408,14 @@ public static class SecretPolicy
         }
     }
 
+    /// <summary>Pulls the cleared-property lists out of a submitted layout, addressed by
+    /// (page, slot) — the same coordinates <see cref="SecretSealResult.Minted"/> uses.
+    ///
+    /// It must run on the RAW JSON, before deserialization: the model deliberately carries
+    /// no extension data, which is what keeps every projection out of layout.json, so by
+    /// the time there is a <see cref="DashboardLayout"/> this key is already gone. Both
+    /// windows call it on the node they are about to deserialize and hand the result to
+    /// <see cref="Seal"/>.</summary>
     public static IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>> ReadClearedMarkers(
         JsonNode? layoutNode)
     {
