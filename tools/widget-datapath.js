@@ -25,6 +25,17 @@
 // Every request that matches nothing is aborted exactly as widget-harness does, so a
 // widget calling an endpoint you did not stub still lands in its designed failure
 // state rather than hanging.
+//
+// TOPOLOGY. The widget is mounted in an IFRAME owned by a shell page, because that is
+// the only arrangement in which the injected shims are alive. shell.js builds every slot
+// as an iframe, and both shims read the frame tree to decide whether they are in one:
+// icue-compat.js returns immediately at `if (window.top === window)`, and widget-api.js
+// derives SLOT_TOPOLOGY from `window.parent !== window && window.parent === window.top`.
+// Loading the widget top-level — which this runner did at first — therefore ran every
+// iCUE-surface widget with no iCUE surface at all, and silenced widget-api's diagnostics
+// channel. A widget could pass here and be blank on the panel. The shell page also has to
+// be the one that answers host-bound messages: the shim drops anything whose `ev.source`
+// is not `window.parent`, so a reply posted by the widget's own document is ignored.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -51,7 +62,8 @@ const opt = (name, dflt) => {
 };
 if (!folder) {
   console.error('usage: widget-datapath.js <widget-folder> --stubs <file.json> [--slot half] '
-    + '[--theme dark|light] [--settings {json}] [--expect "text"] [--reject "text"] [--wait 1500] [--shot out.png] [--json]');
+    + '[--theme dark|light] [--settings {json}] [--expect "text"] [--reject "text"] [--allow-state] '
+    + '[--wait 1500] [--shot out.png] [--json]');
   process.exit(1);
 }
 
@@ -70,6 +82,14 @@ const settings = (() => {
   } catch (e) { /* validator owns manifest errors */ }
   return Object.assign(merged, given);
 })();
+// The slot fragment shell.js puts on every frame src. The iCUE shim reads its property
+// globals out of ww-settings BEFORE the widget's own scripts run, and uniqueId — the
+// per-instance storage key — out of ww-slot; a frame mounted without it hands ported
+// widgets defaults where the panel hands them their settings.
+const slotHash = (() => {
+  try { return '#ww-slot=p0s0&ww-settings=' + encodeURIComponent(JSON.stringify(settings)); }
+  catch (e) { return '#ww-slot=p0s0'; }   // unserializable: ww-init still applies them
+})();
 const stubs = (() => {
   const file = opt('stubs', null);
   if (!file) return [];
@@ -87,7 +107,7 @@ for (let i = 0; i < args.length; i++) {
 // hatches get misused.
 if (args.includes('--allow-state') && expects.length === 0) {
   console.error('--allow-state requires at least one --expect: the state card still has to be ASSERTED, '
-    + 'not merely permitted.');
+    + 'not merely permitted. Under --allow-state, --expect matches the state layer\'s own text.');
   process.exit(2);
 }
 const waitMs = Number(opt('wait', 1500));
@@ -155,14 +175,40 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   });
+  // The shell page. Markup only — the iframe is created from script (see __wwMount) so
+  // the message listener that answers it is registered before it can exist, and so the
+  // frame is never half-built by the HTML parser. Its own origin is distinct from the
+  // widget's, exactly as on the panel, where each widget gets a virtual host of its own.
+  await page.route('https://shell.test/**', (route) => route.fulfill({
+    contentType: 'text/html',
+    body: '<!doctype html><meta charset="utf-8"><title>ww shell</title>'
+      + '<style>html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#000}'
+      + 'iframe{display:block;border:0;width:100vw;height:100vh}</style>',
+  }));
   // The stubs. Anything unmatched aborts, same as widget-harness — an un-stubbed
   // endpoint must still land the widget in a designed state, never a hang.
   // The exclusions need a HOST BOUNDARY. Without one, `https://app.wswevil.com/`
   // starts with `app.wsw`, so it was excluded from the abort handler while matching
   // neither local route — and the browser then made a real network request out of a
   // runner whose whole contract is that unmatched requests are deterministic.
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test)(?:[:/?#]|$)).*/, (route) => {
+  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[:/?#]|$)).*/, (route) => {
     const url = route.request().url();
+    // A CORS preflight is not the data request — it is the browser ASKING to make one.
+    // Counting it as served let a widget whose real call was then blocked satisfy the
+    // data-path check on the preflight alone, and answering it without the allow-
+    // headers/methods is what blocked that call in the first place.
+    if (route.request().method() === 'OPTIONS') {
+      return route.fulfill({
+        status: 204,
+        headers: {
+          'access-control-allow-origin': '*',
+          'access-control-allow-methods': 'GET, POST, PUT, HEAD, DELETE, PATCH, OPTIONS',
+          'access-control-allow-headers': '*',
+          'access-control-max-age': '0',
+        },
+        body: '',
+      });
+    }
     const stub = stubs.find((s) => url.includes(s.match));
     if (!stub) return route.abort();
     // A proxy-tier fixture refuses the direct call. WW.fetch treats a network-layer
@@ -177,16 +223,67 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     });
   });
 
+  // Errors are collected IN each document as well as via page.on('pageerror'). The
+  // widget now lives in a cross-origin child frame, which Chromium may host in a
+  // separate process; a runner whose only error channel is the page-level event is one
+  // browser-internals change away from reporting a clean run for a widget that threw.
+  await page.addInitScript(() => {
+    window.__wwErrors = [];
+    window.addEventListener('error', (ev) => {
+      window.__wwErrors.push(String((ev && (ev.message || ev.error)) || 'error').slice(0, 300));
+    });
+    window.addEventListener('unhandledrejection', (ev) => {
+      const r = ev && ev.reason;
+      window.__wwErrors.push(('unhandled rejection: ' + ((r && (r.stack || r.message)) || r)).slice(0, 300));
+    });
+  });
   await page.addInitScript(shim);
-  // Host-bound messages. ww-fetch is answered from the SAME stub table, because a
-  // widget that escalates to the host proxy must reach the same data it would have
-  // reached directly — otherwise the stub only covers whichever tier happened to win.
-  await page.addInitScript(({ table, ceiling }) => {
+  // Host-bound messages, answered by the SHELL document — the widget's shim drops any
+  // message whose ev.source is not window.parent, so a reply the widget's own document
+  // posts to itself is discarded. ww-fetch is answered from the SAME stub table the
+  // direct route uses, because a widget that escalates to the host proxy must reach the
+  // same data it would have reached directly — otherwise the stub only covers whichever
+  // tier happened to win.
+  await page.addInitScript(({ table, ceiling, widgetUrl, widgetOrigin, slotHash, initMessage }) => {
+    if (window.top !== window) return;   // shell-side only; the widget frame gets the shim
+    window.__wwProxyServed = [];
+    window.__wwReady = false;
+    window.__wwInitSent = false;
+    let frame = null;
+    window.__wwMount = () => {
+      frame = document.createElement('iframe');
+      // Mirrors shell.js buildSlot: allow-same-origin keeps the widget on its own
+      // virtual host (its localStorage, its stored credentials) rather than an opaque
+      // origin, and the fragment carries the slot tag + merged settings so the iCUE
+      // shim can inject property globals before the widget's own scripts run.
+      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+      frame.src = widgetUrl + slotHash;
+      const attach = () => (document.body || document.documentElement).appendChild(frame);
+      if (document.body) attach();
+      else document.addEventListener('DOMContentLoaded', attach, { once: true });
+    };
+    // The panel answers ww-ready with the init (shell.js), and so does this: a widget
+    // that registers WW.onInit after its scripts load must not race a fixed timer.
+    // `force` is what a ww-ready passes, because shell.js answers EVERY ww-ready even
+    // for an already-initialized slot — a widget that reloads its own frame (several do,
+    // on a settings change) would otherwise run the rest of the session on its defaults.
+    window.__wwSendInit = (force) => {
+      if (!frame || !frame.contentWindow) return false;
+      if (window.__wwInitSent && !force) return false;
+      window.__wwInitSent = true;
+      frame.contentWindow.postMessage(initMessage, widgetOrigin);
+      return true;
+    };
     window.addEventListener('message', (ev) => {
+      // The shim injected into THIS document posts its own ww-ready upward, and in a
+      // top-level document `parent` is itself. Ignoring self-posts keeps that from
+      // being mistaken for the widget's.
+      if (ev.source === window) return;
       const m = ev.data || {};
-      const reply = (obj) => window.postMessage(obj, window.location.origin);
+      const target = ev.origin && ev.origin !== 'null' ? ev.origin : '*';
+      const reply = (obj) => { try { ev.source.postMessage(obj, target); } catch (e) { /* frame gone */ } };
+      if (m.type === 'ww-ready') { window.__wwReady = true; window.__wwSendInit(true); return; }
       if (m.type === 'ww-fetch') {
-        window.__wwProxyServed = window.__wwProxyServed || [];
         // The host REFUSES some calls before it ever looks at the target, and a runner
         // that answers them anyway lets a widget pass here and fail on the real panel.
         // DashboardWindow.HandleProxyFetchAsync: absolute http(s) only, and only
@@ -200,7 +297,13 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         if (!['GET', 'POST', 'PUT', 'HEAD'].includes(method)) {
           return reply({ type: 'ww-fetch-result', id: m.id, error: 'method ' + method + ' not allowed' });
         }
-        const stub = table.find((s) => String(m.url || '').includes(s.match));
+        // Match the CANONICAL form, as the direct route does. The browser normalizes a
+        // URL before it hits page.route (spaces encoded, dot segments resolved), while
+        // m.url is whatever the widget passed — so a fixture written against the direct
+        // request form missed the proxy lookup and the same fixture did not cover both
+        // tiers. The host parses the URL too, so canonical is also what it would send.
+        const canonical = abs.href;
+        const stub = table.find((s) => canonical.includes(s.match) || String(m.url || '').includes(s.match));
         if (!stub) return reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
         window.__wwProxyServed.push(String(m.url || ''));
         // The proxy tier's contract is bodyBase64 + contentType, NOT a body string and
@@ -243,32 +346,45 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     });
   }, {
     ceiling: 5 * 1024 * 1024,   // the host's own body ceiling; init.maxBytes only LOWERS it
+    widgetUrl: 'https://widget.test/index.html',
+    widgetOrigin: 'https://widget.test',
+    slotHash,
+    initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme, status: { elevated: false, apiVersion: 1 } },
     table: stubs.map((s) => ({
       match: s.match, status: s.status, statusText: s.statusText,
       contentType: s.contentType, json: s.json, bodyText: bodyOf(s),
     })),
   });
 
-  await page.goto('https://widget.test/index.html');
-  await page.evaluate(({ settings, theme }) => {
-    window.postMessage({ type: 'ww-init', settings, sensors: [], media: null, theme, status: { elevated: false, apiVersion: 1 } }, window.location.origin);
-  }, { settings, theme });
+  await page.goto('https://shell.test/host.html');
+  await page.evaluate(() => window.__wwMount());
+  const frameEl = await page.waitForSelector('iframe', { timeout: 10000 });
+  const frame = await frameEl.contentFrame();
+  if (!frame) {
+    console.error('widget frame never attached');
+    await browser.close();
+    process.exit(1);
+  }
+  await frame.waitForLoadState('domcontentloaded').catch(() => { /* asserted below */ });
+  // ww-ready normally carries the init already; this covers a widget whose document
+  // failed to run the shim at all, so the run reports its real state rather than hanging.
+  await page.evaluate(() => window.__wwSendInit());
   await page.waitForTimeout(waitMs);
 
+  const frameErrors = await frame.evaluate(() => window.__wwErrors || []).catch(() => []);
+  for (const e of frameErrors) if (!consoleErrors.includes(e)) consoleErrors.push(e);
   check('no page errors', consoleErrors.length === 0, consoleErrors.join(' | '));
+  check('shim reached the widget (ww-ready, framed topology)',
+    await page.evaluate(() => window.__wwReady === true));
 
   // The offline twin checks this and this one dropped it: with no --expect, an entirely
   // blank widget passed every remaining check — no errors, no state layer, nothing to
   // overflow. A script that clears the UI or never builds it would have been a green run.
-  check('visible content rendered', await page.evaluate(() =>
+  check('visible content rendered', await frame.evaluate(() =>
     [...document.body.querySelectorAll('*')].some((el) => {
       const r = el.getBoundingClientRect();
       return r.width > 4 && r.height > 4 && getComputedStyle(el).visibility !== 'hidden';
     })));
-
-  const text = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').trim());
-  for (const want of expects) check(`renders ${JSON.stringify(want)}`, text.includes(want), text.slice(0, 220));
-  for (const nope of rejects) check(`does NOT render ${JSON.stringify(nope)}`, !text.includes(nope), text.slice(0, 220));
 
   // A populated widget must have left its state layer: the whole point of this runner
   // is that a spinner or an error card is a FAILURE when the data was served.
@@ -280,14 +396,31 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // document order, so a widget that keeps a hidden loading card above its error card
   // (forecast7, hue) reported "no state visible" while showing an error — defeating the
   // one assertion this runner exists to make.
-  const stateVisible = await page.evaluate(() => [...document.querySelectorAll('.state-card, .spinner')]
-    .some((el) => {
+  const stateLayer = await frame.evaluate(() => {
+    const shown = [...document.querySelectorAll('.state-card, .spinner')].filter((el) => {
       const r = el.getBoundingClientRect();
       return r.width > 4 && r.height > 4 && getComputedStyle(el).visibility !== 'hidden';
-    }));
-  if (!args.includes('--allow-state')) {
-    check('state layer cleared (data is showing, not a spinner or error card)', !stateVisible);
-  }
+    });
+    return { visible: shown.length > 0, text: shown.map((el) => el.innerText || '').join(' ').replace(/\s+/g, ' ').trim() };
+  });
+  const allowState = args.includes('--allow-state');
+  if (!allowState) check('state layer cleared (data is showing, not a spinner or error card)', !stateLayer.visible);
+  else check('a state layer is showing (--allow-state asserts one)', stateLayer.visible);
+
+  // Scope matters here. --allow-state runs exist to pin down WHICH state card appears —
+  // "not configured", not "rate limited" — and matching the expectation against the whole
+  // document let any other text in the widget satisfy it: a heading, a unit label, the
+  // widget's own name. A run whose error card said something entirely different still
+  // passed. So under --allow-state the expectations are matched against the visible state
+  // layer's own text. --reject stays document-wide: that one asks whether a string appears
+  // ANYWHERE, and narrowing it would weaken it.
+  const bodyText = await frame.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').trim());
+  const haystack = allowState ? stateLayer.text : bodyText;
+  const scope = allowState ? 'state layer' : 'widget';
+  for (const want of expects)
+    check(`${scope} renders ${JSON.stringify(want)}`, haystack.includes(want), haystack.slice(0, 220));
+  for (const nope of rejects)
+    check(`does NOT render ${JSON.stringify(nope)}`, !bodyText.includes(nope), bodyText.slice(0, 220));
 
   // A DATA-PATH run that touched no data proves nothing. Without this, a widget that
   // stopped calling WW.fetch entirely — but still painted a title or an empty card —
@@ -295,16 +428,16 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // --allow-state, where not reaching the network IS the expected outcome (an
   // unconfigured widget makes no request at all).
   const proxyServed = await page.evaluate(() => window.__wwProxyServed || []);
-  if (!args.includes('--allow-state')) {
+  if (!allowState) {
     check('a stubbed endpoint was actually requested (direct or proxy tier)',
       served.length + proxyServed.length > 0,
       served.length + ' direct, ' + proxyServed.length + ' proxied');
   }
 
-  check('no horizontal overflow', await page.evaluate(() =>
+  check('no horizontal overflow', await frame.evaluate(() =>
     document.documentElement.scrollWidth <= window.innerWidth &&
     document.body.scrollWidth <= window.innerWidth),
-    await page.evaluate(() => document.body.scrollWidth + 'w vs viewport ' + window.innerWidth));
+    await frame.evaluate(() => document.body.scrollWidth + 'w vs viewport ' + window.innerWidth));
 
   if (shot) await page.screenshot({ path: shot });
   await browser.close();
