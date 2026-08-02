@@ -22,6 +22,13 @@ public sealed class NotificationCenter : IDisposable
     private System.Threading.Timer? _timer;
     private string _lastSignature = "";
     private bool _watching;
+
+    /// <summary>Which demand interval the current polling belongs to (#132).</summary>
+    /// <remarks>Bumped on every change to the demand situation. A poll captures it when it
+    /// STARTS and quotes it back when it finishes, so a poll that began under demand which
+    /// has since been withdrawn — or withdrawn and re-granted — cannot publish. Disposing
+    /// the timer stops the NEXT poll; nothing stops one already awaiting.</remarks>
+    private long _watchEpoch;
     private bool _accessRequested;
 
     /// <summary>Raised (on a worker thread) whenever the projected payload changes.</summary>
@@ -41,11 +48,17 @@ public sealed class NotificationCenter : IDisposable
                 if (on && _timer is not null)
                 {
                     _lastSignature = "";
+                    // Bumped here too. This branch clears the dedup signature on purpose, so
+                    // a poll still in flight from the previous page would arrive with nothing
+                    // to be deduplicated against and would publish for a document that is
+                    // gone. The immediate re-poll below replaces it anyway.
+                    _watchEpoch++;
                     _timer.Change(0, PollMs);
                 }
                 return;
             }
             _watching = on;
+            _watchEpoch++;
             if (on)
             {
                 _lastSignature = ""; // force an immediate full push to the new watcher
@@ -74,6 +87,10 @@ public sealed class NotificationCenter : IDisposable
 
     private async void Poll()
     {
+        // Captured BEFORE any await, so it names the demand interval this poll was started
+        // for rather than whichever one happens to be current when it finishes.
+        long epoch;
+        lock (_gate) { epoch = _watchEpoch; }
         try
         {
             var listener = UserNotificationListener.Current;
@@ -92,7 +109,7 @@ public sealed class NotificationCenter : IDisposable
 
             if (access != UserNotificationListenerAccessStatus.Allowed)
             {
-                Push(new JsonObject { ["state"] = "denied", ["items"] = new JsonArray() });
+                Push(epoch, new JsonObject { ["state"] = "denied", ["items"] = new JsonArray() });
                 return;
             }
 
@@ -139,24 +156,24 @@ public sealed class NotificationCenter : IDisposable
                 signature += n.Id + ":" + (app + "\n" + title + "\n" + body).GetHashCode() + "|";
             }
 
-            Push(new JsonObject { ["state"] = "allowed", ["items"] = items }, signature);
+            Push(epoch, new JsonObject { ["state"] = "allowed", ["items"] = items }, signature);
         }
         catch (Exception ex)
         {
             // No listener on this SKU / policy-blocked: report once, keep polling cheap.
-            Push(new JsonObject { ["state"] = "unavailable", ["items"] = new JsonArray() });
+            Push(epoch, new JsonObject { ["state"] = "unavailable", ["items"] = new JsonArray() });
             Log.Warn($"notification poll failed: {ex.Message}");
         }
     }
 
     private static string Cap(string s) => s.Length <= MaxText ? s : s[..MaxText];
 
-    private void Push(JsonObject payload, string? signature = null)
+    private void Push(long pollEpoch, JsonObject payload, string? signature = null)
     {
         var sig = signature ?? payload["state"]!.GetValue<string>();
         lock (_gate)
         {
-            if (sig == _lastSignature || !_watching)
+            if (!NotificationGate.ShouldPush(pollEpoch, _watchEpoch, sig, _lastSignature, _watching))
                 return;
             _lastSignature = sig;
         }

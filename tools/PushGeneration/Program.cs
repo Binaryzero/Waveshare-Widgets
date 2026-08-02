@@ -6,10 +6,24 @@
 // imitating the host's STAMPING — remove the stamp from PostToShell and every JS test still
 // passes. These checks cover that gap, and they run in CI where routing-run.js cannot.
 //
-// TEXT ASSERTIONS, and labelled as such throughout. They catch a line being removed or
-// commented out; they cannot catch one neutered in place. The host half needs WebView2 and a
-// window, and there is no pure predicate to extract because it is plumbing rather than a
-// decision: store a number, echo it on every envelope.
+// Two kinds of check here, and the difference matters when reading a pass.
+//
+// The N1-N6 block drives a REAL PREDICATE. Whether a completed poll may still publish is a
+// decision with three inputs, and NotificationGate exists so it can be exercised without
+// WinRT, a packaged identity or a user with real toasts.
+//
+// Everything else is a TEXT ASSERTION and is labelled as such at each site. Those catch a
+// line removed or commented out; they cannot catch one neutered in place. They cover the
+// wiring — that the poll asks the predicate, that the host stamps and the shell checks —
+// which is plumbing rather than a decision and has nothing to extract.
+//
+// The text half also covers a gap the behavioural harness cannot: routing-run.js drives the
+// real shell against a FAKE host, so it exercises the checking while only imitating the
+// stamping. Delete the stamp from PostToShell and every probe there still passes — verified
+// by mutation, not assumed. That is why this file exists and why it runs in CI, where the
+// Playwright harnesses do not.
+
+using WaveshareWidgets.App;
 
 var failures = 0;
 void Check(string name, bool ok, string? detail = null)
@@ -18,10 +32,39 @@ void Check(string name, bool ok, string? detail = null)
     if (!ok) failures++;
 }
 
-var host = FindUpwards("src/WaveshareWidgets/App/DashboardWindow.cs");
-var shell = FindUpwards("src/WaveshareWidgets/Shell/shell.js");
+Console.WriteLine("Publish gate");
+
+// N · the OTHER half of the race, and the one a stamp at post time cannot reach. A poll is
+// async and awaits real I/O, so it can be in flight far longer than the message-queue hop the
+// envelope generation covers. Turning demand off disposes the timer but cannot cancel a poll
+// already awaiting: it resumes, sees demand true again, and publishes a payload found under
+// demand that has since been withdrawn and re-granted. Stamping at POST time then labels it
+// current, which is exactly the payload the whole change exists to refuse.
+Check("N1 a poll from the current interval publishes",
+    NotificationGate.ShouldPush(7, 7, "sig-a", "sig-b", watching: true));
+Check("N2 a poll from a PREVIOUS interval does not, however current everything else looks",
+    !NotificationGate.ShouldPush(6, 7, "sig-a", "sig-b", watching: true));
+// N3 · the case that makes the epoch necessary rather than merely tidy. Re-declaring demand
+// deliberately CLEARS the last signature so a rebuilt widget gets a full push — so a stale
+// payload arrives with nothing to be deduplicated against. Signature and watching both say
+// yes; only the epoch says no.
+Check("N3 a stale poll is refused even when the dedup signature has just been cleared",
+    !NotificationGate.ShouldPush(6, 7, "sig-a", "", watching: true));
+Check("N3b ...and the equivalent CURRENT poll is published, so N3 is not just refusing everything",
+    NotificationGate.ShouldPush(7, 7, "sig-a", "", watching: true));
+Check("N4 nobody watching means no push, whatever the epoch says",
+    !NotificationGate.ShouldPush(7, 7, "sig-a", "sig-b", watching: false));
+Check("N5 unchanged content is still deduplicated",
+    !NotificationGate.ShouldPush(7, 7, "same", "same", watching: true));
+Check("N5b ...by exact comparison, not a loose one",
+    NotificationGate.ShouldPush(7, 7, "Same", "same", watching: true));
+Check("N6 a future epoch is refused too — a poll cannot begin in an interval not yet declared",
+    !NotificationGate.ShouldPush(8, 7, "sig-a", "sig-b", watching: true));
 
 Console.WriteLine("Host stamps");
+
+var host = FindUpwards("src/WaveshareWidgets/App/DashboardWindow.cs");
+var shell = FindUpwards("src/WaveshareWidgets/Shell/shell.js");
 
 if (host is null)
 {
@@ -62,6 +105,28 @@ else
     Check("G3 the host does not do arithmetic on the generation",
         !src.Contains("_pushGen++") && !src.Contains("_pushGen +") && !src.Contains("_pushGen -"),
         "echoed verbatim");
+}
+
+var notif = FindUpwards("src/WaveshareWidgets/App/NotificationCenter.cs");
+if (notif is null)
+{
+    Check("N7 setup: NotificationCenter.cs was found", false);
+}
+else
+{
+    var src = StripComments(File.ReadAllText(notif), js: false);
+    // TEXT assertions again, for the same reason as G1-G6: the arithmetic above proves the
+    // predicate, not that the poll asks it.
+    Check("N7 the poll captures its epoch BEFORE awaiting anything",
+        src.IndexOf("epoch = _watchEpoch", StringComparison.Ordinal) >= 0
+        && src.IndexOf("epoch = _watchEpoch", StringComparison.Ordinal)
+           < src.IndexOf("await ", StringComparison.Ordinal),
+        "captured before the first await");
+    Check("N7b and the publish path consults the gate",
+        src.Contains("NotificationGate.ShouldPush(pollEpoch, _watchEpoch"));
+    Check("N7c the epoch advances on a demand transition",
+        CountOccurrences(src, "_watchEpoch++") >= 2,
+        CountOccurrences(src, "_watchEpoch++") + " bump site(s) — transition and re-declare");
 }
 
 Console.WriteLine("Shell checks");

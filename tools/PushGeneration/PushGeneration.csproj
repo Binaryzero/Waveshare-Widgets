@@ -18,4 +18,10 @@
        host's stamping is only imitated. Delete the stamp from PostToShell and every JS test
        still passes. That is the gap this file covers, and the reason it runs in CI while
        routing-run.js does not. -->
+  <ItemGroup>
+    <!-- The publish decision only. NotificationCenter itself needs WinRT, a packaged
+         identity and a user with real toasts; the part that was wrong is a comparison of
+         three values, and that is what this compiles. -->
+    <Compile Include="../../src/WaveshareWidgets/App/NotificationGate.cs" />
+  </ItemGroup>
 </Project>
