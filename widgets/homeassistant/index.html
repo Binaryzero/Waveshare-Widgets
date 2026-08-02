@@ -91,6 +91,11 @@
   let timer = null;
   let inFlight = false;
   let lastOk = 0;
+  // Bumped whenever WHICH SERVER we are talking to changes. A response belongs to the
+  // identity that asked for it; clearing `states` alone did not stop an already-issued
+  // /api/states from landing and being rendered against the new configuration — and a
+  // matching lock id would then pick lock-vs-unlock from the previous house.
+  let generation = 0;
 
   const el = (id) => document.getElementById(id);
   const domainOf = (id) => String(id || '').split('.')[0];
@@ -139,7 +144,11 @@
     // facts. Keeping the old map meant the previous house's states rendered under the
     // new configuration if the first fetch failed — and worse, a matching lock id would
     // pick lock-vs-unlock from the OLD server's state and send that to the new one.
-    if (prevIdentity !== cfg.base + '\n' + cfg.token) states = new Map();
+    if (prevIdentity !== cfg.base + '\n' + cfg.token) {
+      states = new Map();
+      generation++;
+      inFlight = false;   // the outstanding response is now orphaned, not awaited
+    }
 
     build();
     if (!cfg.base || !cfg.token || !cfg.entities.length) { showSetup(); return; }
@@ -250,6 +259,7 @@
   async function tick() {
     if (document.hidden || inFlight) { schedule(); return; }
     inFlight = true;
+    const gen = generation;
     try {
       // /api/states returns every entity in the house, which on a big install is
       // megabytes. Cap it and filter here — HA has no server-side entity filter on
@@ -257,6 +267,7 @@
       const res = await ha('/api/states', { maxBytes: 4 * 1024 * 1024 });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const all = await res.json();
+      if (gen !== generation) return;   // a different server answered this question
       const wanted = new Set(cfg.entities.map((e) => e.entity));
       const next = new Map();
       for (const item of Array.isArray(all) ? all : []) {
@@ -274,13 +285,14 @@
       document.body.classList.remove('stale');
       render();
     } catch (e) {
+      if (gen !== generation) return;
       if (states.size) { document.body.classList.add('stale'); render(); }
       else showError(e instanceof RangeError
         ? 'The entity list is larger than the panel will load.'
         : "Couldn't reach Home Assistant at " + cfg.base + '.');
       WW.log('homeassistant: ' + e.message);
     } finally {
-      inFlight = false;
+      if (gen === generation) inFlight = false;
       schedule();
     }
   }

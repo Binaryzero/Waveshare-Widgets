@@ -95,6 +95,7 @@
   let timer = null;
   let started = false;
   let inFlight = false;
+  let answered = false;   // has a cache read or a response actually happened yet?
 
   const el = (id) => document.getElementById(id);
 
@@ -136,6 +137,7 @@
       if (!cached || !Array.isArray(cached.entries)) return;
       entries = cached.entries;
       fetchedAt = Number(cached.at) || 0;
+      if (entries.length) answered = true;
       render();
     } catch (e) {
       // A corrupt or evicted cache is not an error state — we are about to fetch.
@@ -174,6 +176,7 @@
         .sort((a, b) => (a.added < b.added ? 1 : a.added > b.added ? -1 : 0))
         .slice(0, KEEP);
       fetchedAt = Date.now();
+      answered = true;
       saveCache();
       document.body.classList.remove('stale');
       render();
@@ -207,6 +210,10 @@
   }
 
   function render() {
+    // Nothing has been asked yet — onInit calls render() before loadCache() and tick().
+    // Painting "the feed listed no vulnerabilities" here claimed an answer that had not
+    // been requested, and on a slow feed it stayed on screen until the request finished.
+    if (!entries.length && !answered) return;
     if (!entries.length) {
       // A successful response with an empty (or renamed) vulnerabilities array is not
       // "still loading" — returning here left the initial spinner up forever, which is

@@ -74,7 +74,11 @@
   const cfg = { targets: [], intervalMs: 60000, slowMs: 800 };
   const cards = new Map();     // key -> {root, code, rtt}
   const timers = new Map();    // key -> timeout id
-  const running = new Set();   // targets with a probe in flight — see visibilitychange
+  // Keyed by GENERATION + url, not url alone: a rebuild starts a fresh probe for a
+  // retained target while the old generation's probe is still out, and its finally
+  // then deleted the shared marker — reopening the duplicate-chain hole this set
+  // exists to close.
+  const running = new Set();   // "gen\nurl" for probes in flight — see visibilitychange
   const results = new Map();   // key -> {state, code, ms, at}
   let generation = 0;          // invalidates the chains a previous settings load started
 
@@ -166,9 +170,10 @@
   // criterion this widget exists to satisfy.
   async function probe(target, gen) {
     if (gen !== generation) return;
-    running.add(target.url);
+    const mark = gen + '\n' + target.url;
+    running.add(mark);
     if (document.hidden) {
-      running.delete(target.url);
+      running.delete(mark);
       timers.set(target.url, setTimeout(() => probe(target, gen), 5000));
       return;
     }
@@ -178,14 +183,17 @@
       // HEAD first — cheapest possible answer. Plenty of servers (and most SPA dev
       // servers) answer 405 or hang up on it, so a non-2xx HEAD is retried as GET
       // before we call the target unhealthy.
-      let res = await WW.fetch(target.url, { method: 'HEAD', insecure: true });
-      if (!res.ok) res = await WW.fetch(target.url, { method: 'GET', insecure: true, maxBytes: 65536 });
+      // no-store on both: a health probe answered from the browser cache reports a
+      // service that has since gone down as green, which is the one answer this widget
+      // must never give.
+      let res = await WW.fetch(target.url, { method: 'HEAD', insecure: true, cache: 'no-store' });
+      if (!res.ok) res = await WW.fetch(target.url, { method: 'GET', insecure: true, cache: 'no-store', maxBytes: 65536 });
       const ms = Date.now() - started;
       outcome = { state: res.ok ? (ms > cfg.slowMs ? 'slow' : 'up') : 'down', code: res.status, ms, at: Date.now() };
     } catch (e) {
       outcome = { state: 'down', code: 0, ms: Date.now() - started, at: Date.now() };
     } finally {
-      running.delete(target.url);
+      running.delete(mark);
       if (gen === generation) {
         if (outcome) { results.set(target.url, outcome); renderTarget(target, outcome); renderSummary(); }
         timers.set(target.url, setTimeout(() => probe(target, gen), cfg.intervalMs));
@@ -230,7 +238,7 @@
     // gave that target two self-scheduling chains whose timeout ids overwrote each
     // other in the map, leaving one untracked and polling forever — and every
     // hide/show cycle added another.
-    for (const t of cfg.targets) if (!running.has(t.url)) probe(t, generation);
+    for (const t of cfg.targets) if (!running.has(generation + '\n' + t.url)) probe(t, generation);
   });
 </script>
 </body>

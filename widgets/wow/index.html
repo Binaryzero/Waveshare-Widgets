@@ -103,6 +103,10 @@
   let resetTimer = null;
   let inFlight = false;
   let lastOk = 0;
+  // Bumped on a region change: the price in flight belongs to the market that was
+  // configured when it was asked for, and appending it to the new region's series is
+  // exactly the mixed-market trend the per-region key was added to prevent.
+  let generation = 0;
 
   const el = (id) => document.getElementById(id);
   const sparkColors = { accent: '', line: '' };
@@ -172,7 +176,7 @@
     if (prevKey !== cfg.clientId + '\n' + cfg.clientSecret) bearer = null;
     // A region change swaps which market the series describes, so reload it from that
     // region's own key rather than carrying the previous one's points forward.
-    if (prevRegion !== cfg.region) { series = []; loadSeries(); }
+    if (prevRegion !== cfg.region) { generation++; inFlight = false; series = []; loadSeries(); }
 
     if (!started) {
       started = true;
@@ -258,6 +262,7 @@
   async function tick() {
     if (document.hidden || inFlight) { schedule(); return; }
     inFlight = true;
+    const gen = generation;
     const problems = [];
     try {
       // Each source is independent: a bad character name must not blank the token
@@ -265,6 +270,7 @@
       if (cfg.clientId && cfg.clientSecret) {
         try {
           const price = await fetchPrice();
+          if (gen !== generation) return;   // a different region asked for this
           data.price = price;
           const lastPoint = series[series.length - 1];
           // Only append a genuinely new observation — the API updates every ~20
@@ -302,7 +308,7 @@
       else showError(problems.join('; ') || e.message);
       WW.log('wow: ' + e.message);
     } finally {
-      inFlight = false;
+      if (gen === generation) inFlight = false;
       schedule();
     }
   }

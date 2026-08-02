@@ -95,7 +95,17 @@
     cfg.refreshMs = Math.min(120, Math.max(1, Number(s.refreshMinutes) || 5)) * 60000;
 
     build();
-    if (!cfg.repos.length || !cfg.token) { showSetup(); return; }
+    if (!cfg.repos.length || !cfg.token) {
+      // Stop, do not just repaint. Leaving the timer running meant the next tick
+      // treated an empty repo list as a SUCCESSFUL poll and replaced the setup card
+      // with a green "Clear", or fired unauthorized requests with the repos still set.
+      clearTimeout(timer);
+      started = false;
+      state = new Map();
+      lastOk = 0;
+      showSetup();
+      return;
+    }
     if (!started) { started = true; tick(); }
     else { clearTimeout(timer); tick(); }
   });
@@ -132,10 +142,16 @@
     if (prev) headers['If-None-Match'] = prev;
     const res = await WW.fetch(url, { headers });
     if (res.status === 304) return { unchanged: true, body: bodies.get(url) };
-    if (res.status === 403 || res.status === 429) {
-      // Primary or secondary rate limit. Back off to the reset the API names rather
-      // than guessing, and let the caller keep showing what it already has.
-      const reset = Number(res.headers && res.headers.get && res.headers.get('x-ratelimit-reset'));
+    // A 403 is NOT automatically a rate limit — GitHub uses it for ordinary permission
+    // failures too, and classifying those as rate limiting hid them behind the
+    // rate-limit path AND retried them on the reset cadence instead of saying the token
+    // cannot see the repo. Only the headers can tell the two apart.
+    const remaining = res.headers && res.headers.get && res.headers.get('x-ratelimit-remaining');
+    const resetHdr = res.headers && res.headers.get && res.headers.get('x-ratelimit-reset');
+    const isRateLimit = res.status === 429 ||
+      (res.status === 403 && (remaining === '0' || /rate limit/i.test(res.statusText || '')));
+    if (isRateLimit) {
+      const reset = Number(resetHdr);
       const until = Number.isFinite(reset) && reset > 0 ? reset * 1000 : Date.now() + 900000;
       const err = new Error('rate limited');
       err.rateLimitedUntil = until;

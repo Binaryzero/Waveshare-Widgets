@@ -59,27 +59,45 @@
     return { y: +m.year, mo: +m.month, d: +m.day, h: (+m.hour) % 24, mi: +m.minute, s: +m.second };
   }
 
-  /** Add `n` days to an instant, PRESERVING WALL-CLOCK TIME in the event's own frame.
+  /** The wall-clock fields DTSTART actually names, in the event's own frame. */
+  function wallOf(start) {
+    if (start.tz) return partsInZone(start.ms, start.tz);
+    const d = new Date(start.ms);
+    if (start.floating || start.allDay) {
+      return { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes(), s: d.getSeconds() };
+    }
+    return { y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, d: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes(), s: d.getUTCSeconds() };
+  }
+
+  /** The instant `dayOffset` days after DTSTART, at DTSTART's WALL-CLOCK time.
    *
-   * `ms + n * 86400000` is wrong for anything but a UTC (`Z`) time, because a day is
-   * not always 86400 seconds where the event lives. A 09:00 America/New_York daily
-   * event stepped that way becomes 10:00 the morning after the spring transition and
-   * stays an hour wrong until autumn — a meeting displayed at a time it does not
-   * happen, which is the one thing this reader is not allowed to do. */
-  function addDays(ms, n, frame) {
-    if (!n) return ms;
-    if (frame && frame.tz) {
-      const p = partsInZone(ms, frame.tz);
-      return zonedToUtc(p.y, p.mo, p.d + n, p.h, p.mi, p.s, frame.tz);
+   * Iterating on the resolved instant was wrong twice over. Stepping it by 86,400,000 ms
+   * drifts an hour across a DST transition; stepping it through the zone and then using
+   * the RESULT as the next baseline lets one bad conversion poison every step after it.
+   * A 02:30 America/New_York daily series hit both: 02:30 does not exist on the spring
+   * -forward morning, so it resolved to 01:30 and then stayed 01:30 for good.
+   *
+   * Recurrence is defined on the CALENDAR, so the calendar is what advances: the day is
+   * offset from DTSTART's own date and the time comes from DTSTART every single step.
+   * Returns null for an instant that does not exist (the gap), which the caller skips
+   * rather than rendering at a shifted time. */
+  function instantAt(anchor, dayOffset, frame) {
+    const shifted = new Date(Date.UTC(anchor.y, anchor.mo - 1, anchor.d + dayOffset));
+    const y = shifted.getUTCFullYear(), mo = shifted.getUTCMonth() + 1, d = shifted.getUTCDate();
+    if (frame.tz) {
+      const ms = zonedToUtc(y, mo, d, anchor.h, anchor.mi, anchor.s, frame.tz);
+      // Round-trip: if the instant does not read back as the local time we asked for,
+      // that local time does not exist on that date and the occurrence is skipped.
+      const back = partsInZone(ms, frame.tz);
+      if (back.h !== anchor.h || back.mi !== anchor.mi) return null;
+      return ms;
     }
-    if (frame && (frame.floating || frame.allDay)) {
-      // Floating and all-day are local wall clock by definition; Date's local
-      // arithmetic already preserves it across a transition.
-      const d = new Date(ms);
-      d.setDate(d.getDate() + n);
-      return d.getTime();
+    if (frame.floating || frame.allDay) {
+      const dt = new Date(y, mo - 1, d, anchor.h, anchor.mi, anchor.s);
+      if (dt.getHours() !== anchor.h || dt.getMinutes() !== anchor.mi) return null;
+      return dt.getTime();
     }
-    return ms + n * 86400000;   // a Z time is an absolute instant — UTC has no DST
+    return Date.UTC(y, mo - 1, d, anchor.h, anchor.mi, anchor.s);
   }
 
   // Returns {ms, allDay, floating} or null. A floating time (no Z, no TZID) is local
@@ -134,17 +152,21 @@
   }
 
   // Every RRULE part this reader actually implements. Anything else — BYMONTHDAY,
-  // BYSETPOS, BYMONTH, BYWEEKNO, BYHOUR — CONSTRAINS the series, so ignoring it
-  // produces more occurrences than the rule describes rather than fewer.
+  // BYSETPOS, BYMONTH, BYWEEKNO, BYHOUR, WKST — either CONSTRAINS the series or moves
+  // its week boundary, so ignoring one produces occurrences the rule does not describe.
   // `FREQ=DAILY;BYMONTHDAY=15` means the 15th of each month; ignoring BYMONTHDAY
   // renders it as every single day. Unknown parts are refused, not skipped.
-  const KNOWN_RRULE = new Set(['FREQ', 'INTERVAL', 'COUNT', 'UNTIL', 'BYDAY', 'WKST']);
+  const KNOWN_RRULE = new Set(['FREQ', 'INTERVAL', 'COUNT', 'UNTIL', 'BYDAY']);
 
   /** Occurrences of one event at or after `from`, up to `until`, newest-last.
    *  Returns null for a rule this reader cannot expand EXACTLY. */
   function expand(event, from, until) {
     const start = event.start.ms;
     const frame = event.start;
+    // RDATE names extra occurrences outright. Nothing here expands them, and treating
+    // the event as a plain one-off hid a scheduled date completely — a past DTSTART
+    // with a future RDATE read as "finished" with nothing dropped.
+    if (event.hasRdate) return null;
     if (!event.rrule) return (start >= from && start <= until) ? [start] : [];
 
     const rule = event.rrule;
@@ -165,48 +187,49 @@
 
     const out = [];
     const excluded = new Set(event.exdates || []);
-    const stepDays = freq === 'DAILY' ? interval : (byDay && byDay.length ? 1 : 7 * interval);
-    const dayMs = 86400000;
+    const anchor = wallOf(frame);
+    // Days between candidate positions. A weekly rule with BYDAY has to look at every
+    // day and decide, so its step is 1 and the INTERVAL is applied to the WEEK index
+    // below — which is what keeps the alternating phase intact. Advancing such a rule
+    // day-by-day and patching the week boundary afterwards lost track of which week
+    // was active, and a fast-forward landing mid-week skipped the whole thing.
+    const step = freq === 'DAILY' ? interval : (byDay && byDay.length ? 1 : 7 * interval);
 
-    // Where to start walking. COUNT is defined against the SERIES, so a counted rule
-    // must be walked from DTSTART or a finished series would keep producing — but an
-    // UNCOUNTED one can be fast-forwarded, and has to be: a daily standup running
-    // since 2020 needs ~2,400 steps to reach today, and a fixed guard walked from
-    // DTSTART simply gave up and reported nothing scheduled. The event vanished while
-    // the widget said the calendar was empty, which is the failure this reader exists
-    // to prevent, wearing a different hat.
-    let cursor = start;
-    let emitted = 0;
+    // COUNT is defined against the SERIES, so a counted rule is walked from DTSTART.
+    // An uncounted one is fast-forwarded in WHOLE step multiples, which preserves both
+    // the daily interval and the weekly phase because the offset stays a multiple.
+    let offset = 0;
     if (count == null && from > start) {
-      const approxSteps = Math.floor((from - start) / (dayMs * stepDays));
-      if (approxSteps > 0) cursor = addDays(start, approxSteps * stepDays, frame);
-      // Nudge back over a DST-induced overshoot so nothing between here and `from`
-      // is skipped; bounded, since the approximation is at most a day or two out.
-      for (let back = 0; back < 4 && cursor > from; back++) cursor = addDays(cursor, -stepDays, frame);
+      const approx = Math.floor((from - start) / 86400000);
+      offset = Math.max(0, Math.floor(approx / step) - 1) * step;
     }
 
-    // Guard scales with what the rule can legitimately produce: a COUNT series is
-    // bounded by COUNT, an uncounted one is now walked from near `from`.
-    const guardMax = count != null ? Math.min(count + 1, 10000) : 1200;
-    for (let guard = 0; guard < guardMax && cursor <= hardUntil; guard++) {
-      if (count != null && emitted >= count) break;
-      let hit = true;
-      if (byDay && byDay.length) hit = byDay.includes(new Date(cursor).getDay());
-      if (hit) {
-        emitted++;
-        if (cursor >= from && !excluded.has(cursor)) out.push(cursor);
+    let emitted = 0;
+    let exhausted = false;
+    const guardMax = count != null ? 20000 : 4000;
+    let guard = 0;
+    for (; guard < guardMax; guard++) {
+      const ms = instantAt(anchor, offset, frame);
+      offsetStep: {
+        if (ms === null) break offsetStep;          // nonexistent local time (DST gap)
+        if (ms > hardUntil && (count == null || emitted >= (count || 0))) { exhausted = true; break; }
+        // The week index is measured in whole weeks from DTSTART, so INTERVAL selects
+        // active weeks directly instead of being inferred at a day boundary.
+        const activeWeek = !byDay || !byDay.length || Math.floor(offset / 7) % interval === 0;
+        const dayMatches = !byDay || !byDay.length || byDay.includes(new Date(ms).getDay());
+        if (activeWeek && dayMatches) {
+          emitted++;
+          if (ms >= from && ms <= hardUntil && !excluded.has(ms)) out.push(ms);
+        }
+        if (ms > hardUntil) { exhausted = true; }
       }
-      // WEEKLY with BYDAY steps day by day inside the week and jumps INTERVAL weeks
-      // at the week boundary; without BYDAY it is a plain interval of weeks. Every
-      // step goes through addDays so the wall clock survives a DST transition.
-      if (freq === 'DAILY') cursor = addDays(cursor, interval, frame);
-      else if (byDay && byDay.length) {
-        const next = addDays(cursor, 1, frame);
-        cursor = (new Date(next).getDay() === new Date(start).getDay() && interval > 1)
-          ? addDays(next, 7 * (interval - 1), frame)
-          : next;
-      } else cursor = addDays(cursor, 7 * interval, frame);
+      if (exhausted) break;
+      if (count != null && emitted >= count) { exhausted = true; break; }
+      offset += step;
     }
+    // Hitting the safety cap is NOT "the series ended". Returning what we happened to
+    // collect would claim a truncated answer is complete; refusing says so instead.
+    if (!exhausted && guard >= guardMax) return null;
     return out;
   }
 
@@ -239,6 +262,9 @@
       else if (name === 'LOCATION') cur.location = unescapeText(value);
       else if (name === 'UID') cur.uid = value;
       else if (name === 'RRULE') cur.rrule = parseRRule(value);
+      else if (name === 'RDATE') cur.hasRdate = true;
+      // A cancelled override deletes its occurrence rather than moving it.
+      else if (name === 'STATUS') cur.status = String(value || '').trim().toUpperCase();
       else if (name === 'EXDATE') {
         for (const one of value.split(',')) {
           const d = parseDate(one, params);
@@ -267,7 +293,10 @@
       const parent = byUid.get(e.uid);
       if (parent) parent.exdates.push(e.overrideOf);
     }
-    return kept;
+    // A CANCELLED child means "this occurrence is off", not "it moved". It has already
+    // excluded the parent's slot above; keeping it as a candidate too would advertise
+    // the very meeting the calendar says was called off.
+    return kept.filter((e) => e.status !== 'CANCELLED');
   }
 
   /** The soonest occurrence at or after `from`. Returns {event, start, dropped}. */
