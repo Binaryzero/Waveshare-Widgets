@@ -12,6 +12,7 @@
       "label": "Repositories",
       "type": "list",
       "itemLabel": "repository",
+      "maxItems": 10,
       "fields": [
         { "key": "repo", "label": "owner/name", "type": "text", "placeholder": "binaryzero/waveshare-widgets" }
       ],
