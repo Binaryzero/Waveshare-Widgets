@@ -46,6 +46,10 @@ const widgets = [{
     { name: 'token', label: 'Personal access token', type: 'secret', placeholder: 'ghp_…' },
     { name: 'fresh', label: 'Other token', type: 'secret' },
     { name: 'repo', label: 'Repository', type: 'text', default: 'owner/name' },
+    // A DEMOTED property (#66): the manifest calls it `text` now, but layout.json still
+    // holds the envelope from when it was `secret`. The host blanks it and names it in
+    // secretsRestorable.
+    { name: 'legacyToken', label: 'Legacy token', type: 'text' },
   ],
 }, {
   // A DIFFERENT widget that happens to declare the same secret name — the collision
@@ -63,8 +67,9 @@ const layout = {
     name: 'Main',
     slots: [{
       widgetId: 'test.gh', size: 'half', instanceId: 'gh1',
-      settings: { token: '', fresh: '', repo: 'binaryzero/waveshare-widgets' },
+      settings: { token: '', fresh: '', legacyToken: '', repo: 'binaryzero/waveshare-widgets' },
       secretsSet: ['token'],
+      secretsRestorable: ['legacyToken'],
     }],
   }],
 };
@@ -1012,6 +1017,129 @@ const layout = {
     packed.dockBottom <= packed.win + 1, `dock bottom ${packed.dockBottom} vs window ${packed.win}`);
   check('E19c and every column can scroll to what the cap hid',
     packed.scrollable);
+
+  // ---- E28 · #66/#105/#120: a DEMOTED secret must be clearable through the editor ------
+  // The host blanks a demoted envelope and restores it if the field comes home untouched.
+  // An ordinary text input sends "" when emptied, which is byte-identical to what an
+  // untouched blanked field sends — so without an explicit Clear the host restores over a
+  // deliberate clear and the field can NEVER be emptied. Only driving the real editor
+  // catches that: asserting the host's three cases directly (P36h2) passes while this is
+  // broken, because that probe supplies the marker the UI never produced.
+  // A fresh settings-init: everything above has restructured the layout, and this block
+  // needs the pristine fixture — one slot, the demoted property still blanked and named.
+  await page.evaluate((payload) => window.__hostPush(payload), JSON.stringify({
+    type: 'settings-init',
+    data: {
+      layout, widgets, sensors: [], backgroundHost: 'backgrounds.wsw',
+      status: { elevated: false, version: 'v0.2.0 (probe)' },
+    },
+  }));
+  await page.waitForTimeout(400);
+  await page.locator('#slotList .slot-chip .chip-main').first().click();
+  await page.waitForTimeout(250);
+  const demoted = page.locator('#slotDetail .restorable-wrap');
+  const demotedRows = await demoted.count();
+  check('E28 setup: the demoted field renders its own row, not a secret one',
+    demotedRows === 1, String(demotedRows));
+  // Bail rather than drive a control that is not there. Every interaction below waits on
+  // an element, so a regression that stops rendering the row would hang the suite for two
+  // minutes instead of failing — which reads as an infrastructure problem, not a defect.
+  if (demotedRows !== 1) {
+    console.log('  SKIP E28a-E28i — no restorable row to drive');
+    await browser.close();
+    shellSrv.close();
+    console.log(failures ? `${failures} FAILURES` : 'ALL PASS');
+    process.exit(failures ? 1 : 0);
+  }
+  check('E28a it is an ordinary TEXT input — the manifest calls this property ordinary now, '
+    + 'so the user must be able to see what they type into it',
+    await demoted.locator('input').getAttribute('type') === 'text',
+    await demoted.locator('input').getAttribute('type'));
+  check('E28b it says a previous value is stored, since it cannot show one',
+    ((await demoted.locator('input').getAttribute('placeholder')) || '').includes('stored'),
+    await demoted.locator('input').getAttribute('placeholder'));
+  check('E28c and it offers a Clear affordance', await demoted.locator('button').count() === 1,
+    String(await demoted.locator('button').count()));
+  check('E28d the secret rows are unaffected — this is not one of them',
+    await page.locator('#slotDetail .secret-wrap').count() === 2,
+    String(await page.locator('#slotDetail .secret-wrap').count()));
+
+  // Clear: the explicit signal, which is the whole reason the affordance exists.
+  await demoted.locator('button').click();
+  await page.waitForTimeout(100);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  let last = saved[saved.length - 1].pages[0].slots[0];
+  check('E28e pressing Clear sends the marker, so the host removes the value instead of '
+    + 'restoring it', last.settings.legacyToken === '__ww_secret_cleared__',
+    JSON.stringify(last.settings.legacyToken));
+  // The marker DOES travel back on the slot, exactly as `secretsSet` has always done —
+  // the editor echoes the slot it was given. What must never happen is it becoming a
+  // SETTING, which is the only way it could reach a widget or survive a round trip.
+  // Keeping it off layout.json is the host's job and P36g4 asserts it there:
+  // LayoutSlot has no matching member, so deserialize drops both markers.
+  check('E28e2 the marker stays a slot projection and never becomes a setting',
+    !('secretsRestorable' in last.settings) && !('secretsSet' in last.settings),
+    JSON.stringify(Object.keys(last.settings)));
+
+  // Typing replaces it, verbatim and unmasked.
+  await demoted.locator('input').fill('now-an-ordinary-value');
+  await page.waitForTimeout(100);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E28f typed text is saved verbatim — no cipher, no escaping',
+    last.settings.legacyToken === 'now-an-ordinary-value',
+    JSON.stringify(last.settings.legacyToken));
+
+  // Emptying is the same deliberate clear by another route, and must NOT be a bare "".
+  await demoted.locator('input').fill('');
+  await page.waitForTimeout(100);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E28g emptying the field sends the marker too, so the value the user just deleted '
+    + 'is not restored underneath them',
+    last.settings.legacyToken === '__ww_secret_cleared__',
+    JSON.stringify(last.settings.legacyToken));
+
+  // An ordinary property the host never blanked keeps its plain behaviour: there is
+  // nothing to restore, so "" is unambiguous and no affordance is needed.
+  const plain = page.locator('#slotDetail .prop-field').filter({ hasText: 'Repository' });
+  check('E28h an ordinary field gets no Clear affordance and no restorable row',
+    await plain.locator('.restorable-wrap').count() === 0);
+
+  // Every ordinary property is planned RestoreIfUntouched now, so the host reads the clear
+  // marker as protocol wherever it appears. An ordinary setting that happens to BE that
+  // string must still be storeable, which means ordinary inputs escape the reserved
+  // namespace exactly as the secret control always has.
+  await plain.locator('input').fill('__ww_secret_cleared__');
+  await page.waitForTimeout(100);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E28h2 an ordinary value equal to the clear marker travels escaped, so an '
+    + 'unrelated save cannot delete it',
+    last.settings.repo === '__ww_secret_lit___ww_secret_cleared__',
+    JSON.stringify(last.settings.repo));
+  await demoted.locator('input').fill('__ww_secret_cleared__');
+  await page.waitForTimeout(100);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E28h3 and so does one typed into a DEMOTED field, which has the same hazard',
+    last.settings.legacyToken === '__ww_secret_lit___ww_secret_cleared__',
+    JSON.stringify(last.settings.legacyToken));
+  await plain.locator('input').fill('');
+  await demoted.locator('input').fill('');
+  await page.waitForTimeout(100);
+  await plain.locator('input').fill('');
+  await page.waitForTimeout(100);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E28i and emptying it sends a plain empty string', last.settings.repo === '',
+    JSON.stringify(last.settings.repo));
 
   await browser.close();
   shellSrv.close();

@@ -381,6 +381,7 @@
         }
         const merged = Object.assign({}, slot, { settings });
         if (prior.secretsSet) merged.secretsSet = prior.secretsSet;
+        if (prior.secretsRestorable) merged.secretsRestorable = prior.secretsRestorable;
         return merged;
       }),
     }));
@@ -811,6 +812,16 @@
    *
    * Reason strings come from the host and name a third-party manifest, so they are
    * rendered with textContent — never innerHTML. */
+  /** Any value in the reserved `__ww_secret_` namespace travels ESCAPED; the host strips
+   * exactly one prefix (SecretStore.LiteralPrefix). Every ordinary property is now planned
+   * RestoreIfUntouched, so the host reads `__ww_secret_cleared__` as protocol wherever it
+   * appears — without this, a perfectly valid setting that happens to be that string is
+   * removed by an unrelated save. */
+  function escapeReserved(value) {
+    return typeof value === 'string' && value.startsWith('__ww_secret_')
+      ? '__ww_secret_lit_' + value : value;
+  }
+
   function renderRejectedWidgets(list) {
     const box = el('rejectedWidgets');
     if (!box) return;
@@ -1393,6 +1404,7 @@
       // (`token` is the obvious collision) as "saved · encrypted" for a widget that has
       // never had one.
       delete slot.secretsSet;
+      delete slot.secretsRestorable;
       const w = widgetsById.get(slot.widgetId);
       const widths = offeredWidths(w);
       const current = parseSize(slot.size);
@@ -1929,7 +1941,7 @@
             // Credentials are arbitrary strings, so one of them can BE the clear marker.
             // Anything in the reserved __ww_secret_ namespace travels escaped; the host
             // strips exactly one prefix (SecretStore.LiteralPrefix).
-            set(input.value.startsWith('__ww_secret_') ? '__ww_secret_lit_' + input.value : input.value);
+            set(escapeReserved(input.value));
           } else if (stored) {
             cleared = true;
             set('__ww_secret_cleared__');
@@ -1968,7 +1980,7 @@
           state.classList.toggle('overridden', overridden);
           reset.hidden = !overridden;
         };
-        input.oninput = () => { set(input.value); sync(); };
+        input.oninput = () => { set(escapeReserved(input.value)); sync(); };
         reset.onclick = () => {
           delete slot.settings[prop.name]; // absent = default = the theme shows through
           input.value = def;
@@ -2058,7 +2070,7 @@
           input.value = Array.isArray(current)
             ? current.map((x) => (x && typeof x === 'object') ? Object.values(x).join('=') : String(x)).join(', ')
             : (current != null ? String(current) : '');
-          input.oninput = () => set(input.value);
+          input.oninput = () => set(escapeReserved(input.value));
           return input;
         }
         const wrap = document.createElement('div');
@@ -2169,7 +2181,75 @@
         // The sanctioned place to teach an expected format — labels must not.
         if (prop.placeholder) input.placeholder = String(prop.placeholder);
         input.value = current != null ? String(current) : '';
-        input.oninput = () => set(input.value);
+        input.oninput = () => set(escapeReserved(input.value));
+
+        // A DEMOTED property (#66): the manifest calls it `text` now, but layout.json still
+        // holds the envelope from when it was `secret`, so the host blanked it on the way
+        // here and will restore it if this field comes home untouched.
+        //
+        // That restore is what makes a Clear affordance mandatory rather than a nicety. An
+        // ordinary text input sends "" when the user empties it, which is byte-identical to
+        // the "" an untouched blanked field sends — so without a distinct signal the host
+        // restores over a deliberate clear and the field can NEVER be emptied. That is the
+        // uneditable-field failure this intent exists to avoid, and it is the one PR #65 hit
+        // three separate times.
+        //
+        // Deliberately NOT rendered as a secret input: the manifest says this property is
+        // ordinary, so the user must be able to see and type what they put in it. Only the
+        // value they cannot see — the leftover envelope — is withheld.
+        if (Array.isArray(slot.secretsRestorable) && slot.secretsRestorable.includes(prop.name)) {
+          const wrap = document.createElement('div');
+          // Its OWN class, sharing the secret row's layout. Not `.secret-wrap`: this is not
+          // a secret control -- it is a text input with a Clear -- and probes that count
+          // secret rows would otherwise count this one.
+          wrap.className = 'restorable-wrap';
+          input.placeholder = prop.placeholder
+            ? String(prop.placeholder) + ' — a previous value is stored'
+            : 'A previous value is stored (hidden)';
+          // Live, like the secret control's: the marker is the host's snapshot at init and
+          // is not refreshed, so this tracks whether the host would still restore.
+          let stored = true;
+          let cleared = false;
+          const state = document.createElement('span');
+          state.className = 'secret-state';
+          const sync = () => {
+            const typed = input.value.length > 0;
+            state.textContent = typed ? 'will replace the stored value'
+              : cleared ? 'will be removed on save'
+              : 'stored value kept (hidden)';
+            state.classList.toggle('set', typed || !cleared);
+            clear.hidden = cleared && !typed;
+          };
+          const clear = iconButton('✕', 'Remove the stored value on the next save', () => {
+            input.value = '';
+            cleared = true;
+            set('__ww_secret_cleared__');
+            sync();
+          }, true);
+          input.oninput = () => {
+            if (input.value.length > 0) {
+              cleared = false;
+              set(escapeReserved(input.value));
+            } else if (stored) {
+              // Emptying is a deliberate clear, never "leave the stored value alone" —
+              // the plain "" is the one string that cannot say which one the user meant.
+              cleared = true;
+              set('__ww_secret_cleared__');
+            } else {
+              cleared = false;
+              set('');
+            }
+            sync();
+          };
+          sync();
+          wrap.append(input, clear, state);
+          // A demoted property keeps whatever picker its manifest declares. The branch
+          // below never runs for it — this one returns first — so a `picker: 'file'`
+          // property would lose its Browse dialog exactly while the user is trying to
+          // replace the leftover value by hand.
+          if (prop.picker) attachFieldPicker(wrap, prop, input);
+          return wrap;
+        }
         if (prop.picker) {
           // picker:'emoji' / picker:'file' on a top-level text property (#48).
           const wrap = document.createElement('div');

@@ -22,10 +22,34 @@ namespace WaveshareWidgets.Widgets;
 /// something more.</summary>
 public static class SecretIntents
 {
-    /// <summary>The value is blanked for the editor and encrypted on its way to disk.
-    /// <c>Mask</c>, <c>Seal</c> and the stored index act on exactly this set.</summary>
+    /// <summary>The value is ENCRYPTED on its way to disk, and treated as a credential by
+    /// the stored index. <c>Seal</c>'s cipher branches act on exactly this set.
+    ///
+    /// <see cref="SecretIntent.RestoreIfUntouched"/> is deliberately outside it. That
+    /// value is blanked for a payload exactly as these are — see <see cref="Withholds"/> —
+    /// but the manifest now calls the property ordinary, so encrypting what the user types
+    /// into it would be the pipeline overriding the manifest it is supposed to obey.
+    /// Separating read semantics from write semantics is the entire point of that intent;
+    /// folding it in here would weld them back together.</summary>
     public static bool Protects(SecretIntent intent) =>
         intent is SecretIntent.Protect or SecretIntent.ProtectWithoutReveal;
+
+    /// <summary>The value is kept OUT of a payload — blanked for the editor by <c>Mask</c>
+    /// and for the dashboard by <c>Reveal</c>.
+    ///
+    /// Every intent withholds something; only <see cref="SecretIntent.Protect"/> hands the
+    /// real value back, and it does so by decrypting rather than by passing the stored one
+    /// through. So this is "every intent", and it is written as an explicit set anyway
+    /// because the next member added might not be — a reader should have to state which
+    /// side of this line a new intent falls on rather than inherit it from a default.
+    ///
+    /// Whether a given VALUE is actually blanked is a second question with a second
+    /// answer, because blanking is only safe where the value can be put back. That part
+    /// is not here: it depends on the slot and the stored bytes, not on the intent.</summary>
+    public static bool Withholds(SecretIntent intent) =>
+        intent is SecretIntent.Protect
+            or SecretIntent.ProtectWithoutReveal
+            or SecretIntent.RestoreIfUntouched;
 
     /// <summary>The value is decrypted into the dashboard payload. <c>Reveal</c> acts on
     /// exactly this set, and it is deliberately SMALLER than <see cref="Protects"/>:
@@ -50,9 +74,19 @@ public static class SecretIntents
     /// credential is recoverable by retyping it; handing one to a widget that should not
     /// have it is not.
     ///
-    /// The <c>a == b</c> arm keeps this total for members that do not exist yet, and
-    /// tools/SecretRoundTrip walks <c>Enum.GetValues</c> so a third intent has to be
-    /// placed in this ordering deliberately rather than defaulting into it.</summary>
+    /// The full ordering is <c>RestoreIfUntouched &lt; Protect &lt; ProtectWithoutReveal</c>.
+    /// The floor matters as much as the ceiling: <c>RestoreIfUntouched</c> does not encrypt,
+    /// so planning it for a name the manifest still calls <c>secret</c> would blank a
+    /// credential immediately after decrypting it correctly, and save the blank. It loses
+    /// every collision, which the fallback below already does for it — a pair containing
+    /// neither <c>ProtectWithoutReveal</c> resolves to <c>Protect</c>.
+    ///
+    /// The <c>a == b</c> arm keeps this total for members that do not exist yet. Placement
+    /// is forced by <c>P35x</c> in tools/SecretRoundTrip, which holds the rank table this
+    /// paragraph describes and cross-checks it against this function for every pair. The
+    /// idempotence/commutativity/closure probes beside it do NOT force placement — any
+    /// sane function satisfies them, including one that has never heard of a new member.
+    /// </summary>
     public static SecretIntent MostProtective(SecretIntent a, SecretIntent b)
     {
         if (a == b)

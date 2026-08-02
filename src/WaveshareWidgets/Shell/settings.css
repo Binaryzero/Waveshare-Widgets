@@ -740,8 +740,8 @@ header h1 #appVersion {
 /* Secret (credential) field: masked input + reveal/clear + a state word that tells
  * the truth — a stored secret is never sent back to this screen, so it reads
  * "saved · encrypted (hidden)" rather than showing dots that imply readability. */
-.secret-wrap { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.secret-wrap input { flex: 1 1 220px; min-width: 0; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+.secret-wrap, .restorable-wrap { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.secret-wrap input, .restorable-wrap input { flex: 1 1 220px; min-width: 0; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
 .secret-state {
   flex: 0 0 auto;
   font-size: 11px;
