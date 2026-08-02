@@ -116,6 +116,8 @@
   // One poll's whole budget: connect, transfer, and parse. Well under the 15-minute
   // minimum refresh, so a run that hits it is a stall rather than a slow link.
   const FETCH_DEADLINE = 60000;
+  // How often a hidden document re-checks, without disturbing the poll deadline.
+  const HIDDEN_RECHECK = 60000;
   const CACHE_KEY = 'kev.cache.v1';
 
   const cfg = { watch: [], maxItems: 6, windowDays: 7, refreshMs: 3600000 };
@@ -225,7 +227,13 @@
   }
 
   async function tick() {
-    if (document.hidden) { schedule(); return; }
+    // Re-armed, NOT rescheduled. schedule() moves the anchor to now, so every wake while
+    // the document was hidden pushed the deadline out by another whole interval — and the
+    // visibility handler then saw a future deadline and declined to catch up, so a tile
+    // could come back stale and stay that way for another full interval. arm() leaves the
+    // anchor where it was, which keeps an overdue poll overdue; its hidden floor is what
+    // stops an already-overdue deadline from spinning this function on a zero timer.
+    if (document.hidden) { arm(); return; }
     if (inFlight) { schedule(); return; }
     inFlight = true;
     polled = true;   // an ATTEMPT, not a success: the hidden branch above returns first
@@ -335,7 +343,11 @@
 
   function arm() {
     clearTimeout(timer);
-    timer = setTimeout(tick, Math.max(0, pollAnchor + pollDelay() - Date.now()));
+    // The floor applies only while hidden, where tick() returns without polling: without
+    // it an overdue deadline would re-enter on a zero timer forever. Browsers throttle
+    // hidden-document timers to about once a minute anyway, so it costs nothing.
+    const floor = document.hidden ? HIDDEN_RECHECK : 0;
+    timer = setTimeout(tick, Math.max(floor, pollAnchor + pollDelay() - Date.now()));
   }
 
   // The count is "added in the last N days", measured against the clock rather than
@@ -397,6 +409,12 @@
       // Still the last real answer, but say when it stopped being refreshed.
       pill.textContent = document.body.classList.contains('stale') ? 'Stale' : 'Empty';
       pill.className = 'pill muted';
+      // The footer describes THIS answer. Returning before the metadata line left the
+      // previous catalog's update time — and its watched count — under an empty-state
+      // card that had replaced the very data those numbers were counting.
+      el('meta').textContent = fetchedAt
+        ? 'updated ' + new Date(fetchedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+        : '';
       return;
     }
     const shown = entries.filter(matches);
@@ -442,6 +460,13 @@
   }
 
   function showError(message) {
+    // The pill is the header's one-word summary, and it starts at Loading. Leaving it
+    // there meant a tile could show "Feed unavailable" and a Retry button while still
+    // claiming to be loading — indefinitely, since nothing else writes the pill on a
+    // cold start that never succeeds.
+    const pill = el('pill');
+    pill.textContent = 'Error';
+    pill.className = 'pill err';
     const state = el('state');
     state.className = 'state-card err';
     state.textContent = '';
@@ -463,6 +488,10 @@
       const sp = document.createElement('div');
       sp.className = 'spinner';
       state.appendChild(sp);
+      // ...and back to Loading, because that is what pressing Retry starts.
+      const p = el('pill');
+      p.textContent = 'Loading';
+      p.className = 'pill muted';
       clearTimeout(timer);
       // An explicit Retry is a person saying the outage is over, so it clears the
       // backoff as a success would: the next automatic poll goes back to the chosen
