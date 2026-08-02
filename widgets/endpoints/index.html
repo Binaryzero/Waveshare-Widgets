@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Endpoint Health</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Layout only — colors, background, bgStyle and the typography base come from
+   * widget-base.css. State hues map to the --ok/--warn/--err tokens. */
+  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+  /* The row block is CENTRED rather than stretched, so a short list reads as a row of
+   * status tiles instead of columns of mostly empty card — three targets in a full-width
+   * slot were stretching to 340px tall to hold two lines of text. A full grid still fills
+   * the tile, because more rows means more content to centre. */
+  #grid { flex: 1 1 auto; display: grid; gap: 8px; min-height: 0; align-content: center; }
+  .target {
+    display: flex; flex-direction: column; justify-content: center; gap: 3px;
+    padding: 6px 10px;
+    border-radius: var(--radius-control);
+    background: var(--card-surface);
+    min-width: 0; min-height: 0; overflow: hidden;
+    position: relative;
+  }
+  /* The state stripe is the glance: a wall of green with one red edge reads from
+   * across the room, where the text does not. */
+  .target::before {
+    content: ''; position: absolute; inset: 0 auto 0 0; width: 3px;
+    border-radius: var(--radius-control) 0 0 var(--radius-control);
+    background: var(--text-dim);
+  }
+  .target.up::before { background: var(--ok); }
+  .target.slow::before { background: var(--warn); }
+  .target.down::before { background: var(--err); }
+  .target .top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .target .name {
+    color: var(--text); font-weight: 650;
+    font-size: clamp(11px, 3.2vh, 14px);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1 1 auto; min-width: 0;
+  }
+  .target .code {
+    font-size: clamp(11px, 3vh, 13px); font-weight: 700; flex: none;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+  }
+  .target.up .code { color: var(--ok); }
+  .target.slow .code { color: var(--warn); }
+  .target.down .code { color: var(--err); }
+  .target .rtt {
+    color: var(--text-muted); font-size: 11px;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  footer { color: var(--text-dim); font-size: 11px; flex: none; }
+  #state { position: fixed; inset: 0; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="kicker">Endpoints</span>
+    <span class="pill muted" id="pill">Checking</span>
+  </header>
+
+  <div id="grid"></div>
+
+  <footer id="meta"></footer>
+
+  <div class="state-card" id="state">
+    <div class="state-icon">◎</div>
+    <div class="state-title">No targets configured</div>
+    <div class="state-body">Add targets in the widget settings — each one needs a name and a URL, e.g. NAS / http://192.168.1.10:8080/</div>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const cfg = { targets: [], intervalMs: 60000, slowMs: 800, dropped: 0, hidden: 0 };
+  const cards = new Map();     // key -> {root, code, rtt}
+  const timers = new Map();    // key -> timeout id
+  // Keyed by GENERATION + url, not url alone: a rebuild starts a fresh probe for a
+  // retained target while the old generation's probe is still out, and its finally
+  // then deleted the shared marker — reopening the duplicate-chain hole this set
+  // exists to close.
+  const running = new Set();   // "gen\nurl" for probes in flight — see visibilitychange
+  const results = new Map();   // key -> {state, code, ms, at}
+  const fails = new Map();     // key -> consecutive failures, for this target's backoff
+  let generation = 0;          // invalidates the chains a previous settings load started
+  let gameOn = false;          // a fullscreen game is foreground: WIDGET-SPEC gates JS work
+
+  // One probe's whole budget, covering the HEAD and the GET retry together. Neither tier
+  // of WW.fetch bounds a direct browser request — the shim's timer is on the host-proxy
+  // tier — so without this a box that accepts a connection and then goes silent leaves its
+  // probe pending forever: the finally never runs, and THAT TARGET's chain stops for good
+  // while its tile sits on "checking…". The comment below used to say a hang delayed only
+  // the target's own next check; it delayed that check indefinitely.
+  const PROBE_DEADLINE = 10000;
+
+  const MAX_TARGETS = 12;
+
+  const el = (id) => document.getElementById(id);
+
+  function parseTargets(value) {
+    const raw = Array.isArray(value) ? value : [];
+    return raw
+      .map((item) => {
+        if (!item) return null;
+        if (typeof item === 'string') {
+          // Same normalization the object rows get. Without it WW.fetch resolved a bare
+          // "nas.lan" against the widget's OWN virtual origin, so the tile probed a
+          // widget-local path and reported that — a green light for a host it never
+          // contacted, which is the one answer this widget must never give.
+          let u = item.trim();
+          if (!u) return null;
+          if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
+          return { label: item.trim(), url: u };
+        }
+        let url = String(item.url == null ? '' : item.url).trim();
+        if (!url) return null;
+        if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+        const label = String(item.label == null ? '' : item.label).trim() || url;
+        return { label, url };
+      })
+      .filter(Boolean)
+      // Two rows pointing at the same URL is a configuration mistake, and it used to be a
+      // silent one: cards, timers, results and the backoff are all keyed by URL, so the
+      // second row overwrote the first card — that tile stayed on "checking…" — and
+      // results.size could never reach the target count, leaving the summary pill on
+      // "Checking" for good. The first row wins, which keeps its label.
+      .filter((t, i, all) => all.findIndex((o) => o.url === t.url) === i);
+  }
+
+  WW.onInit((state) => {
+    const s = state.settings;
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+
+    // Seeded, not only listened for: onGame reports later flips, so a widget that only
+    // listens probes straight through a game that was already running when it loaded.
+    gameOn = !!(state.game && state.game.active);
+
+    const all = parseTargets(s.targets);
+    // The cap is real and worth keeping — twelve tiles is already past what this panel can
+    // show legibly — but dropping the rest in silence meant the settings still listed
+    // services the widget was never checking. renderSummary says how many.
+    cfg.targets = all.slice(0, MAX_TARGETS);
+    cfg.dropped = all.length - cfg.targets.length;
+    cfg.intervalMs = Math.min(900, Math.max(15, Number(s.intervalSeconds) || 60)) * 1000;
+    cfg.slowMs = Math.min(5000, Math.max(100, Number(s.slowMs) || 800));
+
+    build();
+  });
+
+  function build() {
+    // Every re-init retires the previous generation's chains rather than adding to
+    // them: without this, editing settings three times leaves three timers per target
+    // hammering the same box forever.
+    generation++;
+    for (const t of timers.values()) clearTimeout(t);
+    timers.clear();
+    fails.clear();
+
+    const grid = el('grid');
+    grid.textContent = '';
+    cards.clear();
+    // Outcomes belong to the target list that produced them. renderSummary counts every
+    // value in this map, so a removed target kept contributing its old down/slow status
+    // to the pill for a grid it is no longer part of.
+    results.clear();
+
+    const n = cfg.targets.length;
+    // Probed either way — a target the panel has no room for is still worth knowing about,
+    // and its result reaches the summary pill. Only the CARD is withheld.
+    cfg.hidden = Math.max(0, n - fit().max);
+    el('state').hidden = !!n;
+    grid.hidden = !n;
+    if (!n) { el('pill').textContent = 'Idle'; el('pill').className = 'pill muted'; el('meta').textContent = ''; return; }
+
+    applyColumns();
+
+    for (const t of visibleTargets()) {
+      const root = document.createElement('div');
+      root.className = 'target';
+      const top = document.createElement('div');
+      top.className = 'top';
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = t.label;
+      const code = document.createElement('span');
+      code.className = 'code';
+      code.textContent = '···';
+      top.append(name, code);
+      const rtt = document.createElement('div');
+      rtt.className = 'rtt';
+      rtt.textContent = 'checking…';
+      root.append(top, rtt);
+      grid.appendChild(root);
+      cards.set(t.url, { root, code, rtt });
+    }
+
+    for (const t of cfg.targets) probe(t, generation);
+    renderSummary();
+  }
+
+  // Columns follow the WIDTH as well as the count. Going by count alone put three targets
+  // in a full-width slot into a 2x2 — a card-sized hole in the corner and every tile 340px
+  // tall — when the panel had room for a single row of three. 300px is about where a name
+  // and its status code stop being comfortable together.
+  //
+  // Re-applied on resize, because the on-panel editor changes a slot's width by resizing
+  // the iframe in place: there is no second ww-init to rebuild on, so a widget enlarged
+  // from half to full would have kept two columns and one shrunk from full would have kept
+  // four cramped ones. Cheap enough to do directly, but debounced anyway — a drag emits a
+  // resize per frame.
+  // How much of the grid this slot can actually show, from BOTH dimensions. Width alone
+  // was not enough: a half-UPPER band is 640x200, so the width rule chose two columns and
+  // twelve targets became six rows in about 130px of usable height — roughly 16px each,
+  // against a tile that has 12px of padding and two lines of text. Every name and status
+  // in the band was clipped to nothing.
+  //
+  // 300px is about where a name and its status code stop being comfortable side by side;
+  // 52px is a row plus its gap. Whatever does not fit is not rendered, and renderSummary
+  // says so — a tile clipped to invisibility is worse than one the widget admits it has no
+  // room for.
+  function fit() {
+    const w = document.documentElement.clientWidth || 640;
+    const h = document.documentElement.clientHeight || 400;
+    const cols = Math.max(1, Math.min(Math.floor(w / 300) || 1, 4));
+    const rows = Math.max(1, Math.floor((h - 70) / 52));
+    return { cols, max: cols * rows };
+  }
+
+  function applyColumns() {
+    if (!cfg.targets.length) return;
+    el('grid').style.gridTemplateColumns = 'repeat(' + Math.min(cfg.targets.length, fit().cols) + ', minmax(0, 1fr))';
+  }
+
+  // Which targets get a card when the slot cannot show them all: the ones in TROUBLE
+  // first, worst first. A grid whose entire job is to surface a red box was hiding red
+  // boxes behind healthy ones purely because they were configured later — leaving a
+  // "1 down" pill with no way to learn which one. Stable within each group, so a steady
+  // grid does not shuffle, and an unknown target outranks a healthy one rather than being
+  // buried by it.
+  function visibleTargets() {
+    const max = fit().max;
+    if (cfg.targets.length <= max) return cfg.targets;
+    const rank = (t) => {
+      const r = results.get(t.url);
+      if (!r) return 2;
+      // Down outranks slow: they are not the same news. Four slow boxes configured before
+      // one dead one would otherwise fill every card in yellow while the pill said "1 down"
+      // and still named nothing, which is the exact hole this ordering exists to close.
+      return r.state === 'down' ? 0 : r.state === 'slow' ? 1 : 3;
+    };
+    return cfg.targets
+      .map((t, i) => ({ t, i, r: rank(t) }))
+      .sort((a, b) => (a.r - b.r) || (a.i - b.i))
+      .slice(0, max)
+      .map((x) => x.t);
+  }
+
+  const visibleKey = () => visibleTargets().map((t) => t.url).join('\n');
+
+  let resizeTimer = null;
+  let lastFit = '';
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      // A resize can change how many tiles FIT, not only how they are arranged, so the
+      // grid is rebuilt when that number moves and merely re-columned when it does not.
+      // The rebuild reuses the results already in hand; it does not restart the probes.
+      const f = fit();
+      const key = f.cols + 'x' + f.max;
+      if (key !== lastFit) { lastFit = key; relayout(); } else applyColumns();
+    }, 120);
+  });
+
+  // Cards only, from what is already known. build() owns the probe chains; this does not
+  // touch them, so resizing a slot never re-probes anyone's network.
+  function relayout() {
+    if (!cfg.targets.length) return;
+    const grid = el('grid');
+    grid.textContent = '';
+    cards.clear();
+    cfg.hidden = Math.max(0, cfg.targets.length - fit().max);
+    for (const t of visibleTargets()) {
+      const root = document.createElement('div');
+      root.className = 'target';
+      const top = document.createElement('div');
+      top.className = 'top';
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = t.label;
+      const code = document.createElement('span');
+      code.className = 'code';
+      code.textContent = '···';
+      const rtt = document.createElement('div');
+      rtt.className = 'rtt';
+      rtt.textContent = 'checking…';
+      top.append(name, code);
+      root.append(top, rtt);
+      grid.appendChild(root);
+      cards.set(t.url, { root, code, rtt });
+      const known = results.get(t.url);
+      if (known) renderTarget(t, known);
+    }
+    applyColumns();
+    renderSummary();
+  }
+
+  // One chain per target, each rescheduling itself in a finally, so a box that hangs
+  // delays only its own next check — the acceptance criterion this widget exists to
+  // satisfy. The deadline below is what makes that true rather than merely intended.
+  async function probe(target, gen) {
+    if (gen !== generation) return;
+    const mark = gen + '\n' + target.url;
+    running.add(mark);
+    // Hidden, or a game is running. WIDGET-SPEC: the shell pauses CSS animation for every
+    // widget, but JS work is the widget's own to hold — and this one makes up to twelve
+    // network calls per interval, on a machine whose frame budget is spoken for.
+    // document.hidden does not cover it: the panel is a second screen and stays visible
+    // while the game has the first.
+    if (document.hidden || gameOn) {
+      running.delete(mark);
+      timers.set(target.url, setTimeout(() => probe(target, gen), 5000));
+      return;
+    }
+    const started = Date.now();
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), PROBE_DEADLINE);
+    let outcome;
+    // Kept out here because the catch cannot see into the try: if the GET is refused for
+    // size there is no status to report, and a bad answer HEAD already gave is better
+    // than none.
+    let headVerdict = 0;
+    try {
+      // HEAD first — cheapest possible answer. Plenty of servers (and most SPA dev
+      // servers) answer 405 or hang up on it, so a non-2xx HEAD is retried as GET
+      // before we call the target unhealthy.
+      // no-store on both: a health probe answered from the browser cache reports a
+      // service that has since gone down as green, which is the one answer this widget
+      // must never give.
+      // The signal covers BOTH calls, because the budget is the probe's, not the call's:
+      // a HEAD that hangs for the whole deadline has already spent what the GET would
+      // need, and a target is unreachable either way.
+      let res = null;
+      try {
+        res = await WW.fetch(target.url, { method: 'HEAD', insecure: true, cache: 'no-store', signal: abort.signal });
+      } catch (headError) {
+        // A server that hangs up on HEAD REJECTS rather than answering, so the fallback
+        // this widget documents was never reached for the case it was written for: the
+        // rejection went straight to the outer catch and the service was called
+        // unreachable. The one rejection not worth retrying is our own deadline — the
+        // budget is already spent, and a GET would only spend more.
+        if (abort.signal.aborted) throw headError;
+      }
+      if (!res || !res.ok) {
+        // 405 and 501 are the method being unsupported — the very reason this fallback
+        // exists — so they are not the service's verdict on itself and are not kept. Any
+        // other answered-but-unhappy status IS the service talking, and if the GET comes
+        // back unreadable it is the only verdict there will be.
+        if (res && res.status !== 405 && res.status !== 501) headVerdict = res.status;
+        await drain(res);
+        res = await WW.fetch(target.url, { method: 'GET', insecure: true, cache: 'no-store', maxBytes: 65536, signal: abort.signal });
+      }
+      // Only the STATUS is wanted from a health probe, and a body nobody reads holds its
+      // transfer and its connection open. Twelve targets on a fifteen-second timer make
+      // that a standing leak rather than a one-off, and clearing the deadline in the
+      // finally means nothing else would ever close them.
+      await drain(res);
+      const ms = Date.now() - started;
+      outcome = { state: res.ok ? (ms > cfg.slowMs ? 'slow' : 'up') : 'down', code: res.status, ms, at: Date.now() };
+    } catch (e) {
+      const ms = Date.now() - started;
+      // A body-size refusal means bytes ARRIVED: the server answered and only the size of
+      // its reply stopped us reading a status off it. For a health probe that is a
+      // REACHABLE service — a CORS-blocked LAN web interface with a large HTML page would
+      // otherwise sit red while serving 200s all day. The status genuinely is not
+      // available: the host caps the body before it records one
+      // (DashboardWindow.HandleProxyFetchAsync reads the body, then sets result["status"]),
+      // so the tile says the reply was too large rather than inventing a code for it.
+      // ...unless HEAD already got a bad answer out of it. A service that serves the same
+      // large error page to both verbs would otherwise go green on the strength of the
+      // GET being unreadable, which is the reply itself being used as proof of health.
+      outcome = !(e instanceof RangeError)
+        ? { state: 'down', code: 0, ms, at: Date.now() }
+        : headVerdict
+          ? { state: 'down', code: headVerdict, ms, at: Date.now() }
+          : { state: ms > cfg.slowMs ? 'slow' : 'up', code: 0, ms, at: Date.now(), oversize: true };
+    } finally {
+      clearTimeout(deadline);
+      running.delete(mark);
+      if (gen === generation) {
+        if (outcome) {
+          results.set(target.url, outcome);
+          // A result can change WHICH targets deserve a card, not just what one says, so a
+          // membership change relays out rather than updating a tile that may no longer be
+          // on screen — or failing to create one for a target that just went red.
+          if (cfg.hidden && visibleKey() !== [...cards.keys()].join('\n')) relayout();
+          else { renderTarget(target, outcome); renderSummary(); }
+        }
+        // Per TARGET, because that is the unit that is failing. A box that is switched off
+        // is otherwise probed every fifteen seconds forever — nearly six thousand refused
+        // connections a day, times up to twelve targets — and each one is a host round-trip
+        // whenever the direct call is blocked. Doubling to a ceiling of eight intervals;
+        // the target's own next success clears it, and so does coming back to the widget.
+        const bad = !outcome || outcome.state === 'down';
+        const n = bad ? Math.min((fails.get(target.url) || 0) + 1, 3) : 0;
+        fails.set(target.url, n);
+        timers.set(target.url, setTimeout(() => probe(target, gen), cfg.intervalMs * Math.pow(2, n)));
+      }
+    }
+  }
+
+  // Cancel rather than read: the bytes are of no interest, and reading them would be the
+  // slow way to throw them away.
+  async function drain(res) {
+    try { if (res && res.body && !res.bodyUsed) await res.body.cancel(); } catch (e) { /* gone */ }
+  }
+
+  function renderTarget(target, r) {
+    const ui = cards.get(target.url);
+    if (!ui) return;
+    ui.root.className = 'target ' + r.state;
+    ui.code.textContent = r.code ? String(r.code) : r.oversize ? '···' : '—';
+    // "Unreachable" is reserved for a call that got no answer at all. A 503 IS
+    // reachable — it replied, and it replied badly — so it keeps its timing and the
+    // red status code carries the bad news.
+    //
+    // Deliberately "~": when a direct call is blocked, WW.fetch escalates through the
+    // host proxy and the number includes that hop. The widget cannot see which tier
+    // served it, so presenting this as the server's true latency would be a lie.
+    ui.rtt.textContent = r.code ? '~' + r.ms + ' ms'
+      : r.oversize ? '~' + r.ms + ' ms · reply too large to read'
+      : 'unreachable';
+  }
+
+  function renderSummary() {
+    const seen = [...results.values()];
+    const down = seen.filter((r) => r.state === 'down').length;
+    const slow = seen.filter((r) => r.state === 'slow').length;
+    const pill = el('pill');
+    if (seen.length < cfg.targets.length) { pill.textContent = 'Checking'; pill.className = 'pill muted'; }
+    else if (down) { pill.textContent = down + ' down'; pill.className = 'pill err'; }
+    else if (slow) { pill.textContent = slow + ' slow'; pill.className = 'pill warn'; }
+    else { pill.textContent = 'All up'; pill.className = 'pill ok'; }
+    const notes = [];
+    if (cfg.dropped) notes.push(cfg.dropped + ' more target' + (cfg.dropped === 1 ? '' : 's')
+      + ' configured than this widget checks (' + MAX_TARGETS + ' max)');
+    if (cfg.hidden) notes.push(cfg.hidden + ' checked but no room to show ' + (cfg.hidden === 1 ? 'it' : 'them') + ' in this slot');
+    notes.push('times are relative — a blocked call is retried through the host and counts that hop');
+    el('meta').textContent = notes.join(' · ');
+  }
+
+  // A flip in either direction re-checks the grid: while a game is on, probe() holds and
+  // re-arms cheaply, and when it ends everything is asked again rather than waiting out
+  // each target's remaining interval.
+  WW.onGame((g) => {
+    gameOn = !!(g && g.active);
+    if (!gameOn) recheckAll();
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    recheckAll();
+  });
+
+  // Coming back re-checks everything at once rather than waiting out each target's
+  // remaining interval, and clears the backoff: a person looking at the grid is asking
+  // for its current state, not for the stretched schedule a failing box had earned.
+  function recheckAll() {
+    for (const t of timers.values()) clearTimeout(t);
+    timers.clear();
+    fails.clear();
+    // Only start targets that are NOT already mid-probe. Starting one unconditionally
+    // gave that target two self-scheduling chains whose timeout ids overwrote each
+    // other in the map, leaving one untracked and polling forever — and every
+    // hide/show cycle added another.
+    for (const t of cfg.targets) if (!running.has(generation + '\n' + t.url)) probe(t, generation);
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+{
+  "id": "ws.stock.endpoints",
+  "name": "Endpoint Health",
+  "author": "Waveshare Widgets",
+  "version": "1.0.0",
+  "description": "Red/green tiles for self-hosted and LAN services. Each target is checked on its own timer, so one hung box never freezes the rest of the grid.",
+  "min_api_version": 1,
+  "supported_slots": ["half", "full"],
+  "properties": [
+    {
+      "name": "targets",
+      "label": "Targets",
+      "type": "list",
+      "itemLabel": "target",
+      "fields": [
+        { "key": "label", "label": "Name", "type": "text", "placeholder": "NAS" },
+        { "key": "url", "label": "URL", "type": "text", "placeholder": "http://192.168.1.10:8080/" }
+      ],
+      "default": [
+        { "label": "Router", "url": "http://192.168.1.1/" }
+      ]
+    },
+    {
+      "name": "intervalSeconds",
+      "label": "Check every (seconds)",
+      "type": "number",
+      "min": 15,
+      "max": 900,
+      "step": 15,
+      "default": 60
+    },
+    {
+      "name": "slowMs",
+      "label": "Call it slow above (ms)",
+      "type": "slider",
+      "min": 100,
+      "max": 5000,
+      "step": 100,
+      "default": 800
+    },
+    {
+      "name": "bgStyle",
+      "label": "Background",
+      "type": "select",
+      "options": ["solid", "glass", "transparent"],
+      "default": "solid"
+    }
+  ]
+}

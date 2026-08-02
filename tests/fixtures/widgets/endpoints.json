@@ -1,0 +1,6 @@
+[
+ { "match": "192.168.1.1", "status": 200, "body": "ok" },
+ { "match": "nas.lan",  "status": 200, "body": "ok" },
+ { "match": "grafana.lan", "status": 200, "body": "ok" },
+ { "match": "old.lan", "status": 503, "body": "" }
+]
