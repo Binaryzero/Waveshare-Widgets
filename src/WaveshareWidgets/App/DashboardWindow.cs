@@ -88,7 +88,10 @@ public sealed class DashboardWindow : Form
 
         _hub.SensorsUpdated += OnSensorsUpdated;
         _hub.MediaUpdated += OnMediaUpdated;
-        _notifications.Updated += (data) => PostToShellThreadSafe("notifications", data);
+        // The generation arrives WITH the payload, captured under NotificationCenter's lock
+        // at the moment the push was authorised. Reading it here instead would reintroduce
+        // the window this exists to close.
+        _notifications.Updated += (data, gen) => PostToShellThreadSafe("notifications", data, gen);
         _gameMode.Changed += (data) => PostToShellThreadSafe("game-mode", data);
         _gameMode.Start();
 
@@ -221,6 +224,30 @@ public sealed class DashboardWindow : Form
             {
                 case "ready":
                     _shellReady = true;
+                    // A NEW document, so its generation counter starts over. Ours must too,
+                    // or the two are compared across a reload that reset only one of them:
+                    // notifGen is document-local and restarts at 0, while this survives, and
+                    // polling continues uninterrupted because the dead document never posted
+                    // watch(false). With a single notifications widget the old document ends
+                    // at 1 and the new one's first watch is also 1 — a poll in flight across
+                    // the reload would carry a matching stamp and be accepted.
+                    //
+                    // Reset to 0 rather than to any live value: the shell only ever sends a
+                    // generation on a demand TRANSITION, so it never sends 0, and 0 therefore
+                    // means "this document has not declared demand yet" — which nothing can
+                    // match.
+                    _documentSeq++;
+                    // ...and the AUTHORITATIVE copy, under the lock that guards it. The line
+                    // above resets the field used for the informational envelope stamp; the
+                    // value actually placed on a notifications payload lives in
+                    // NotificationCenter and is captured there. Resetting only this one left
+                    // the collision it was written to close wide open — a poll in flight from
+                    // the old document would still be authorised and stamped with the old
+                    // generation, which the new document's first watch can equal.
+                    //
+                    // Before init, so nothing produced for the previous document can be
+                    // authorised while the new one is still being set up.
+                    _notifications.BeginNewDocument();
                     PostToShell("init", BuildInitPayload());
                     break;
 
@@ -383,7 +410,20 @@ public sealed class DashboardWindow : Form
                     break;
 
                 case "notifications-watch":
-                    _notifications.SetWatching(message["on"]?.GetValue<bool>() == true);
+                    // The demand interval this instruction belongs to, echoed back on every
+                    // push so the shell can tell a payload produced for the demand it has
+                    // NOW from one produced for demand it has since revoked and re-granted
+                    // (#132). The host never interprets it — it is the shell's counter, and
+                    // treating it as opaque is what keeps the two ends from disagreeing
+                    // about what it means.
+                    // Opaque. The host never parses or compares it — it stores the string the
+                    // shell sent and hands it back on payloads authorised under it, which is
+                    // what keeps the two ends from developing separate opinions about what a
+                    // generation means.
+                    var declaredGen = message["gen"]?.GetValue<string>() ?? "";
+                    // Handed straight to SetWatching and held nowhere else: a second copy is
+                    // what let the wrong one be reset at ready.
+                    _notifications.SetWatching(message["on"]?.GetValue<bool>() == true, declaredGen);
                     break;
 
                 case "notification-dismiss":
@@ -829,6 +869,11 @@ public sealed class DashboardWindow : Form
             ["theme"] = tokens,
             ["game"] = _gameMode.Current,
             ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated, ["apiVersion"] = 1 },
+            // What makes this document's generations distinguishable from the previous
+            // document's. The shell counts from zero in every document, so without a base
+            // two documents produce the same strings and a payload authorised for the old
+            // one can equal what the new one will produce.
+            ["genBase"] = _documentSeq,
         };
     }
 
@@ -952,13 +997,13 @@ public sealed class DashboardWindow : Form
         _revealedManifests = snapshot;
     }
 
-    private void PostToShellThreadSafe(string type, JsonNode? data)
+    private void PostToShellThreadSafe(string type, JsonNode? data, string? gen = null)
     {
         if (!_shellReady || !IsHandleCreated || IsDisposed)
             return;
         try
         {
-            BeginInvoke(() => PostToShell(type, data));
+            BeginInvoke(() => PostToShell(type, data, gen));
         }
         catch (ObjectDisposedException)
         {
@@ -966,11 +1011,50 @@ public sealed class DashboardWindow : Form
         }
     }
 
-    private void PostToShell(string type, JsonNode? data)
+    /// <summary>The last demand generation the shell told us about (#132).</summary>
+    /// <remarks>
+    /// Written from the web-message handler and read from PostToShell. Those are both the UI
+    /// thread today, but a push can originate on a worker — NotificationCenter and
+    /// GameModeWatcher raise their events from timer threads — and PostToShellThreadSafe
+    /// marshals rather than blocks, so the read is not guaranteed to be on the writer's
+    /// thread. Volatile rather than a lock: a stale read costs one dropped push, which the
+    /// next poll replaces, while a lock on the push path would be contention for nothing.
+    /// </remarks>
+    /// <summary>How many shell documents this process has served.</summary>
+    /// <remarks>The generation the shell counts restarts at 0 in every document, so two
+    /// documents produce the same numbers. This makes the stamp document-unique: the shell
+    /// composes its counter onto the base it is given in init, and a payload authorised for
+    /// a previous document can never equal one the current document will produce.
+    ///
+    /// Deterministic rather than random on purpose. A random seed makes a collision
+    /// unlikely; a monotonic sequence makes it impossible, and this guard exists precisely
+    /// because "unlikely" was not the standard.
+    ///
+    /// UI thread only — assigned in the ready handler and read when building init.</remarks>
+    private long _documentSeq;
+
+    private void PostToShell(string type, JsonNode? data, string? gen = null)
     {
         if (_webView.CoreWebView2 is null)
             return;
-        var envelope = new JsonObject { ["type"] = type, ["data"] = data };
+        // Stamped on EVERY envelope, in the one place every envelope is built, so the field
+        // means the same thing everywhere and no future channel can be added without it.
+        // Which channels the shell actually GATES on it is the shell's decision and is
+        // deliberately narrower — see the note in handleHostMessage. In particular
+        // `game-mode` is edge-triggered and must never be dropped.
+        var envelope = new JsonObject
+        {
+            ["type"] = type,
+            ["data"] = data,
+            // Present ONLY when the producing path supplies one, captured at the moment the
+            // payload was authorised. There is deliberately no fallback: a channel stamped
+            // here instead would be stamped at post time, which is the race this whole
+            // change exists to close, wearing the costume of a fix. A future gated channel
+            // must carry its own generation from its own authorisation point, and the
+            // absence of the field is what forces that rather than letting it inherit a
+            // number that means nothing.
+            ["gen"] = gen,
+        };
         _webView.CoreWebView2.PostWebMessageAsJson(envelope.ToJsonString());
     }
 

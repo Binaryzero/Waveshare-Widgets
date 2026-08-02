@@ -22,16 +22,34 @@ public sealed class NotificationCenter : IDisposable
     private System.Threading.Timer? _timer;
     private string _lastSignature = "";
     private bool _watching;
+
+    /// <summary>Which demand interval the current polling belongs to (#132).</summary>
+    /// <remarks>Bumped on every change to the demand situation. A poll captures it when it
+    /// STARTS and quotes it back when it finishes, so a poll that began under demand which
+    /// has since been withdrawn — or withdrawn and re-granted — cannot publish. Disposing
+    /// the timer stops the NEXT poll; nothing stops one already awaiting.</remarks>
+    private long _watchEpoch;
+
+    /// <summary>The shell generation this demand was declared under (#132).</summary>
+    /// <remarks>Held HERE, under the same lock as the epoch, so the value stamped on a
+    /// payload is the one that was in force when the payload was authorised. Kept in
+    /// DashboardWindow instead, it would be written outside this lock: a poll could hold the
+    /// gate between that write and the SetWatching call which follows it, read the NEW
+    /// generation and the OLD epoch, and stamp a stale payload as current.</remarks>
+    private string _shellGen = "";
     private bool _accessRequested;
 
     /// <summary>Raised (on a worker thread) whenever the projected payload changes.</summary>
-    public event Action<JsonObject>? Updated;
+    public event Action<JsonObject, string>? Updated;
 
     /// <summary>A widget started or stopped watching; polling follows demand.</summary>
-    public void SetWatching(bool on)
+    public void SetWatching(bool on, string shellGen)
     {
         lock (_gate)
         {
+            // Under the gate, together with the epoch, so a poll can never observe one
+            // updated and the other not.
+            _shellGen = shellGen;
             if (on == _watching)
             {
                 // A repeated "on" means a NEW shell page (reload, crash recovery)
@@ -41,11 +59,17 @@ public sealed class NotificationCenter : IDisposable
                 if (on && _timer is not null)
                 {
                     _lastSignature = "";
+                    // Bumped here too. This branch clears the dedup signature on purpose, so
+                    // a poll still in flight from the previous page would arrive with nothing
+                    // to be deduplicated against and would publish for a document that is
+                    // gone. The immediate re-poll below replaces it anyway.
+                    _watchEpoch++;
                     _timer.Change(0, PollMs);
                 }
                 return;
             }
             _watching = on;
+            _watchEpoch++;
             if (on)
             {
                 _lastSignature = ""; // force an immediate full push to the new watcher
@@ -56,6 +80,33 @@ public sealed class NotificationCenter : IDisposable
                 _timer?.Dispose();
                 _timer = null;
             }
+        }
+    }
+
+    /// <summary>A new shell document is taking over from a previous one (#132).</summary>
+    /// <remarks>
+    /// Polling deliberately continues across a reload — the dead document never posted
+    /// watch(false), and stopping would leave the rebuilt widget waiting for a poll interval
+    /// it does not need to wait for. But everything that identifies WHICH document the
+    /// polling is for belongs to the document that is gone:
+    ///
+    ///   the epoch, so a poll already in flight cannot publish for a document that no longer
+    ///   exists;
+    ///   the shell generation, so nothing can be stamped until the new document declares its
+    ///   own demand — the shell never sends 0, so 0 matches nothing;
+    ///   the dedup signature, because the new document has seen nothing and must get a full
+    ///   payload rather than being deduplicated against what its predecessor saw.
+    ///
+    /// Resetting only the copy held in DashboardWindow is what the first attempt did, and it
+    /// reset the INFORMATIONAL one: the value actually stamped on a payload is this one.
+    /// </remarks>
+    public void BeginNewDocument()
+    {
+        lock (_gate)
+        {
+            _watchEpoch++;
+            _shellGen = "";
+            _lastSignature = "";
         }
     }
 
@@ -74,6 +125,10 @@ public sealed class NotificationCenter : IDisposable
 
     private async void Poll()
     {
+        // Captured BEFORE any await, so it names the demand interval this poll was started
+        // for rather than whichever one happens to be current when it finishes.
+        long epoch;
+        lock (_gate) { epoch = _watchEpoch; }
         try
         {
             var listener = UserNotificationListener.Current;
@@ -92,7 +147,7 @@ public sealed class NotificationCenter : IDisposable
 
             if (access != UserNotificationListenerAccessStatus.Allowed)
             {
-                Push(new JsonObject { ["state"] = "denied", ["items"] = new JsonArray() });
+                Push(epoch, new JsonObject { ["state"] = "denied", ["items"] = new JsonArray() });
                 return;
             }
 
@@ -139,29 +194,38 @@ public sealed class NotificationCenter : IDisposable
                 signature += n.Id + ":" + (app + "\n" + title + "\n" + body).GetHashCode() + "|";
             }
 
-            Push(new JsonObject { ["state"] = "allowed", ["items"] = items }, signature);
+            Push(epoch, new JsonObject { ["state"] = "allowed", ["items"] = items }, signature);
         }
         catch (Exception ex)
         {
             // No listener on this SKU / policy-blocked: report once, keep polling cheap.
-            Push(new JsonObject { ["state"] = "unavailable", ["items"] = new JsonArray() });
+            Push(epoch, new JsonObject { ["state"] = "unavailable", ["items"] = new JsonArray() });
             Log.Warn($"notification poll failed: {ex.Message}");
         }
     }
 
     private static string Cap(string s) => s.Length <= MaxText ? s : s[..MaxText];
 
-    private void Push(JsonObject payload, string? signature = null)
+    private void Push(long pollEpoch, JsonObject payload, string? signature = null)
     {
         var sig = signature ?? payload["state"]!.GetValue<string>();
+        string gen;
         lock (_gate)
         {
-            if (sig == _lastSignature || !_watching)
+            if (!NotificationGate.ShouldPush(pollEpoch, _watchEpoch, sig, _lastSignature, _watching))
                 return;
             _lastSignature = sig;
+            // Captured WITH the decision, not read again later. Updated fires outside the
+            // lock, and the handler marshals onto the UI thread — which can process a whole
+            // watch-off/watch-on transition before that delegate runs. Reading the current
+            // generation there would stamp this payload with a interval it was not authorised
+            // under, which is the post-time-versus-production-time mistake one last time.
+            gen = _shellGen;
         }
-        Updated?.Invoke(payload);
+        Updated?.Invoke(payload, gen);
     }
 
-    public void Dispose() => SetWatching(false);
+    // Teardown, not a demand declaration: the generation is irrelevant because nothing can
+    // be authorised after it.
+    public void Dispose() => SetWatching(false, "");
 }

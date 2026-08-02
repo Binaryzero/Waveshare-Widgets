@@ -82,6 +82,21 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   path looks like too. Also covers the second delivery path (a re-init used to carry the
   latest payload to whoever reloaded), that dismissal is scoped to ids the slot was
   actually shown, and that unsubscribing really stops delivery. Port used: 8957.
+
+  R12 adds the demand GENERATION (#132). Every earlier check asks whether anyone is
+  watching; R12 asks whether the payload was made for the watching happening now, which
+  comes apart in one message-queue hop. It is staged by posting with an explicitly old
+  generation, because that is the only thing about the queued payload that differs — same
+  shape, same data — so no check that inspects the payload could separate them. R12b
+  guards the direction that matters more: a staleness check that refuses *everything*
+  passes R12 perfectly. R12d asserts that `game-mode` is NOT gated, since it is
+  edge-triggered and a dropped push would strand the shell on the wrong state until the
+  next real transition.
+
+  Note the split with `tools/PushGeneration`: this harness fakes the host, so it drives
+  the shell's CHECKING while only imitating the host's STAMPING. Delete the stamp from
+  `PostToShell` and every probe here still passes — verified by mutation. That half is
+  covered by the C# probe, which also runs in CI, where this one does not.
 - `deckpreview-run.js` — the settings LIVE PREVIEW, which nothing else here reaches
   (issue #78, the third time the Control Deck has come back empty after #43 and #49).
   Every other suite drives the shell directly with a stubbed `chrome.webview`; the

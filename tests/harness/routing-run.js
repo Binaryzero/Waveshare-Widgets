@@ -126,11 +126,23 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
     } };
     window.__push = (j) => { const d = JSON.parse(j); L.forEach((c) => { try { c({ data: d }); } catch (e) {} }); };
   });
+  // The demand generation the shell last told us about. The real host keeps exactly this
+  // and echoes it on every envelope it posts (#132) — the harness has to model that, or the
+  // shell's staleness check would drop every push here and every test above would fail for
+  // a reason unrelated to what it is testing.
+  // The stamp is "<document>:<counter>" — an OPAQUE string. The fake host stores whatever
+  // the shell sent and hands it back, exactly as the real one does; it never parses or
+  // composes it, because a host with an opinion about what a generation means is the bug
+  // this mechanism removes.
+  let hostGen = '';
+  const HOST_DOC = 7;   // a document base the shell will compose onto
   await page.exposeFunction('__rec', async (j) => {
     const m = JSON.parse(j);
     hostMessages.push(m);
+    if (m.type === 'notifications-watch' && typeof m.gen === 'string') hostGen = m.gen;
     if (m.type === 'ready') {
       page.evaluate((d) => window.__push(d), JSON.stringify({ type: 'init', data: {
+        genBase: HOST_DOC,
         layout, widgets, sensors: [], status: { elevated: false, version: 'probe' },
       } })).catch(() => {});
     }
@@ -151,8 +163,15 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
     { id: 'n1', app: 'Mail', title: 'Invoice', body: 'account details inside' },
     { id: 'n2', app: 'Chat', title: 'Standup', body: 'in five' },
   ] };
-  const pushNotifs = () => page.evaluate((d) => window.__push(d),
-    JSON.stringify({ type: 'notifications', data: NOTIFS }));
+  // Stamped with the generation the host currently believes, exactly as PostToShell does.
+  // `gen` is an explicit parameter so a test can post as a PREVIOUS interval — which is the
+  // whole race and cannot be staged any other way.
+  const pushNotifs = (gen) => page.evaluate((d) => window.__push(d),
+    JSON.stringify({ type: 'notifications', data: NOTIFS, gen: gen === undefined ? hostGen : gen }));
+  // A stamp from a DIFFERENT document, with the same counter the current document will reach.
+  // Without a document component in the stamp these are indistinguishable, which is the whole
+  // point of the base — and no epoch can revoke a payload already authorised and stamped.
+  const otherDocumentStampOf = (gen) => String(HOST_DOC + 1) + ':' + String(gen).split(':')[1];
 
   // Only the first widget subscribes. The second is an ordinary widget that never
   // mentions notifications — the malicious-widget case needs no more than that.
@@ -506,6 +525,97 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   const afterFresh = await sub.evaluate(() => window.__notifs.length);
   check('R10b ...and still receives the next real poll',
     afterFresh === 1, `${afterFresh} delivery(ies) after a fresh push`);
+
+  // ---- R12 · the demand GENERATION (#132) -------------------------------------
+  //
+  // Every check above asks whether anyone is watching. This asks a different question:
+  // whether the payload was produced for the watching that is happening NOW. The two come
+  // apart in one message-queue hop — a payload produced as the last watcher leaves can
+  // still be queued when a new watcher arrives, and by the time it dispatches the demand
+  // flag is true again, so it passes every gate and is cached and delivered as current.
+  //
+  // Staged by posting with an explicitly OLD generation, because that is exactly what the
+  // queued payload carries. Nothing else about it differs from a current one — same shape,
+  // same data — which is why no check that looks at the payload could ever separate them.
+  await sub.evaluate(() => { window.__notifs.length = 0; });
+  await bys.evaluate(() => window.__watch(false));
+  await page.waitForTimeout(200);
+  const genWhileWatching = hostGen;                     // the interval the payload is made in
+
+  await sub.evaluate(() => window.__watch(false));      // last watcher leaves: cache cleared
+  await page.waitForTimeout(250);
+  await sub.evaluate(() => window.__watch(true));       // and comes straight back
+  await page.waitForTimeout(250);
+  check('R12 setup: the demand generation actually advanced',
+    !!hostGen && hostGen !== genWhileWatching, `${genWhileWatching} -> ${hostGen}`);
+  await sub.evaluate(() => { window.__notifs.length = 0; });
+
+  await pushNotifs(genWhileWatching);                   // the queued payload finally lands
+  await page.waitForTimeout(400);
+  const stale = await sub.evaluate(() => window.__notifs.length);
+  check('R12 a payload from the PREVIOUS demand interval is refused',
+    stale === 0, `${stale} delivery(ies)`);
+
+  // ...and the subscription is live, not silenced. Without this R12 passes just as well if
+  // the generation check rejected everything — which is the failure mode a staleness guard
+  // is most likely to have, and the one this session has hit twice.
+  await pushNotifs();
+  await page.waitForTimeout(400);
+  const current = await sub.evaluate(() => window.__notifs.length);
+  check('R12b ...while one from the CURRENT interval is delivered',
+    current === 1, `${current} delivery(ies)`);
+
+  // R12c · a payload from a LATER generation than the shell knows about. The shell bumps
+  // before it posts, so the host can never legitimately be ahead — but an equality check
+  // and a "less than" check differ exactly here, and only one of them refuses a value that
+  // should be impossible. Refusing is right: a generation we have not issued is not
+  // evidence of anything.
+  await sub.evaluate(() => { window.__notifs.length = 0; });
+  await pushNotifs(String(hostGen).split(':')[0] + ':' + (Number(String(hostGen).split(':')[1]) + 5));
+  await page.waitForTimeout(400);
+  const ahead = await sub.evaluate(() => window.__notifs.length);
+  check('R12c a payload stamped with a generation the shell never issued is refused',
+    ahead === 0, `${ahead} delivery(ies)`);
+
+  // R12e · the case a per-document counter alone cannot see. A poll can be authorised and
+  // STAMPED for the old document, then have its worker paused; the reload and the new
+  // document's first watch both complete before it resumes. Invalidating the host-side epoch
+  // cannot revoke that payload, because the stamp already happened. Both documents count from
+  // zero, so the old stamp can equal what the new document produces — unless the stamp names
+  // the document. Same counter, different document: must be refused.
+  // The mechanism, before the behaviour. Comparing two stamps only shows that DIFFERENT
+  // strings are refused — which stays true if the shell ignores the base entirely and
+  // composes a constant, because the test's synthetic "other document" then differs by
+  // accident. What has to hold is that the stamp actually NAMES this document.
+  check('R12e setup: the shell composed onto the document base the host assigned',
+    String(hostGen).startsWith(HOST_DOC + ':'), `${hostGen} (base ${HOST_DOC})`);
+  await sub.evaluate(() => { window.__notifs.length = 0; });
+  await pushNotifs(otherDocumentStampOf(hostGen));
+  await page.waitForTimeout(400);
+  const otherDoc = await sub.evaluate(() => window.__notifs.length);
+  check('R12e a payload from another DOCUMENT with the same counter is refused',
+    otherDoc === 0, `stamp ${otherDocumentStampOf(hostGen)} vs current ${hostGen}`);
+  // ...and the current document's own stamp still gets through, so R12e is not passing
+  // because delivery is broken.
+  await sub.evaluate(() => { window.__notifs.length = 0; });
+  await pushNotifs();
+  await page.waitForTimeout(400);
+  const ownDoc = await sub.evaluate(() => window.__notifs.length);
+  check('R12e2 ...while this document\'s own stamp still is',
+    ownDoc === 1, `${ownDoc} delivery(ies)`);
+
+  // R12d · game-mode must NOT be gated. GameModeWatcher raises Changed only on a
+  // transition, so the host never re-sends the current state; a dropped push would leave
+  // the shell believing the wrong game state until the next real transition, hiding or
+  // showing every hideInGame widget wrongly for the duration. Posted with a deliberately
+  // stale generation — the exact stamp that would get it dropped if someone ever extended
+  // the check to this channel.
+  await page.evaluate((d) => window.__push(d),
+    JSON.stringify({ type: 'game-mode', data: { active: true, process: 'game.exe' }, gen: '0:0' }));
+  await page.waitForTimeout(300);
+  const gameSeen = await page.evaluate(() => document.documentElement.dataset.game);
+  check('R12d an edge-triggered game-mode push is NOT dropped for its generation',
+    gameSeen === 'on', `data-game=${gameSeen}`);
 
   await browser.close();
   srv.close();

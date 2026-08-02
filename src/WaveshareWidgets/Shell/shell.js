@@ -149,6 +149,36 @@
       // Demand is the whole condition. A payload nobody asked for is not stale data to
       // be aged out later, it is data we should never have been holding.
       if (!notifWatchOn) return;
+      // ...and produced under the demand interval we are CURRENTLY in, not merely under
+      // some demand. The check above asks whether anyone is watching now; this asks whether
+      // this payload was made for the watching that is happening now. A payload queued as
+      // the last watcher left passes the first and fails this one (#132).
+      //
+      // Envelopes are stamped in the host's PostToShell, so EVERY push carries `gen` — but
+      // it is deliberately only CHECKED here, and adding another channel to this list is a
+      // decision, not a formality:
+      //
+      //   `sensors` and `media` have no demand and no cache the shell ever clears, so they
+      //   have no interval to belong to. A late payload is slightly-old sensor data, which
+      //   is what a polled feed is, not a staleness bug.
+      //
+      //   `game-mode` must NOT be gated. GameModeWatcher.Poll returns early when the state
+      //   is unchanged and raises Changed only on a transition, so the host never re-sends
+      //   the current state. Dropping one push leaves the shell believing the wrong game
+      //   state until the next real transition — possibly hours — hiding or showing every
+      //   hideInGame widget wrongly for the duration. That is a worse bug than the one
+      //   being fixed, manufactured by fixing it.
+      //
+      // Correlated replies (fetch/ping/media-list/audio/sd-*) are not gated either: they
+      // are already non-stale by construction, since each answers a request this shell has
+      // outstanding, and dropping one strands its asker until the request times out.
+      // ...and NOT in the replica, where there is no demand interval to be stale relative
+      // to. The settings window is a second host: it answers a watch synchronously with
+      // sample toasts (settings.js) and never withdraws demand, because it deliberately
+      // refuses to touch the panel's SetWatching bookkeeping. Its reply carries no `gen`,
+      // so gating it dropped every sample and left the replica's widget on its loading
+      // spinner forever — the exact failure the sample data exists to prevent.
+      if (!PREVIEW && msg.gen !== notifGen) return;
       latestNotifications = msg.data || null;
       deliverNotifications();
     }
@@ -395,16 +425,39 @@
   // records after anything that adds or removes them, so removing the last watching
   // widget (edit-mode ✕, page delete, re-init) actually stops the host's polling.
   let notifWatchOn = false; // last demand posted to the host
+
+  /// Which demand interval we are in. Bumped on every transition and sent with the demand
+  /// message, so the host can stamp what it produces and we can tell a payload made under
+  /// the CURRENT demand from one made under a previous one.
+  ///
+  /// The guard below checks current demand, which is a different question: a payload
+  /// produced while the last watcher was leaving can still be sitting in the WebView
+  /// message queue when a new watcher arrives, and by the time it dispatches `notifWatchOn`
+  /// is true again. It then passes, is cached, and is delivered as current (#132).
+  ///
+  /// The window is one message-queue hop, so the payload is barely old — but "barely old"
+  /// and "produced under demand that has since been revoked and re-granted" are different
+  /// claims, and only the second is what the cache is supposed to guarantee.
+  // A generation is "<document>:<counter>". The counter alone restarts at zero in every
+  // document, so a poll still in flight across a reload could carry a stamp the NEW document
+  // will also produce — invalidating the host-side epoch cannot help, because that payload
+  // was already authorised and stamped before the reload. The base comes from the host, which
+  // counts documents, so the two ranges cannot overlap.
+  let genBase = '0';
+  let notifSeq = 0;
+  let notifGen = '';
   function syncNotificationDemand() {
     const on = slots.some((s) => s.notifWatch);
     if (on === notifWatchOn) return;
     notifWatchOn = on;
+    notifSeq++;
+    notifGen = genBase + ':' + notifSeq;
     // The host stops polling when demand drops, so anything held here is frozen at the
     // moment the last watcher left and only gets staler. Dropping it means a later
     // subscriber waits for a real poll instead of being shown toasts that may no longer
     // exist — and that nothing can carry the stale set, ww-init included (#128).
     if (!on) latestNotifications = null;
-    postToHost({ type: 'notifications-watch', on });
+    postToHost({ type: 'notifications-watch', on, gen: notifGen });
   }
 
   // Game mode: pause the shell's own chrome cost and hide slots the user marked
@@ -531,6 +584,9 @@
   }
 
   function onInit(data) {
+    // Adopted before anything can declare demand, so the first watch already carries this
+    // document's base.
+    if (data.genBase !== undefined && data.genBase !== null) genBase = String(data.genBase);
     if (PREVIEW) previewGen = data.gen | 0;
     if (PREVIEW && typeof data.page === 'number') previewPage = data.page;
     latestSensors = data.sensors || [];

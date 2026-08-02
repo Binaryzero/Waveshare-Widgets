@@ -102,6 +102,15 @@ jobs:
       - name: Capture rate and size limits
         run: dotnet run --project tools/CaptureLimits
 
+      # Host pushes carried no sequence, so a demand off/on inside one message-queue hop let
+      # a payload made for the PREVIOUS demand interval be accepted as current. The shell
+      # half is driven for real by routing-run.js — but that harness fakes the host, so it
+      # exercises the checking while only imitating the stamping, and deleting the stamp from
+      # PostToShell leaves every JS test passing. This covers that half, and unlike the
+      # Playwright harnesses it runs here. Text assertions, and the file says so.
+      - name: Host push generation
+        run: dotnet run --project tools/PushGeneration
+
       # The proxy forwards widget-chosen headers to loopback and LAN targets, and its
       # browser-grade defaults only fill GAPS — so a forwarded name replaces the host's
       # honest value rather than adding to it. A local service that trusts fetch metadata
