@@ -274,7 +274,12 @@ is the same channel — once identity flows both ways, both halves are the same 
      would be the entire #104 exploit. `SecretIntents.MostProtective` and `P35i`.
 5. **`RestoreIfUntouched`** — closes #66. Note it is LESS protective than either intent
    above (it does not encrypt), so placing it in `MostProtective` is a decision, not a
-   default; `P35r`–`P35t` walk `Enum.GetValues` so it cannot be skipped.
+   default: the fallback there is `Protect`, which is right for a member above `Protect`
+   and wrong for one below it. `P35x` holds an explicit rank table every member must
+   appear in and cross-checks it against `MostProtective` for every pair, so a new intent
+   fails the suite until it is placed. (`P35r`–`P35t` do NOT do this — they are invariant
+   checks that any sane function satisfies. An earlier version of this line claimed they
+   forced placement; adding a member and running the suite showed nothing failed.)
 6. **Row addressing** — closes #62's remaining half.
 
 Still to delete, once nothing needs them: `_maskedManifests`, `_revealedManifests` and

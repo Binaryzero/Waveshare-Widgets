@@ -1106,6 +1106,29 @@ foreach (var a in intents)
         if (winner != a && winner != b) closed = false;
     }
 }
+// The table is the HUMAN statement of the ordering; MostProtective is the code. P35x fails
+// the moment an intent exists without a row here, which is the only thing in this file that
+// actually forces a new member to be placed deliberately — the three invariants below are
+// satisfied by any sane function and would not have noticed. (I claimed otherwise when this
+// section landed; adding a member and running the suite showed nothing failed.)
+//
+// It matters because the next intent is WEAKER, not stronger. MostProtective falls back to
+// Protect for any pair it does not recognise, which is right for a member above Protect and
+// wrong for one below it — the failure would be silent, and it would be encryption applied
+// to a value that must be stored verbatim.
+var rank = new Dictionary<SecretIntent, int>
+{
+    [SecretIntent.Protect] = 1,
+    [SecretIntent.ProtectWithoutReveal] = 2,
+};
+Check("P35x every intent has a stated position in the protection ordering",
+    intents.All(rank.ContainsKey),
+    string.Join(", ", intents.Where(i => !rank.ContainsKey(i))));
+var tableAgrees = intents.All(a => intents.All(b =>
+    !rank.ContainsKey(a) || !rank.ContainsKey(b) ||
+    SecretIntents.MostProtective(a, b) == (rank[a] >= rank[b] ? a : b)));
+Check("P35x2 and the code agrees with the table for every pair", tableAgrees);
+
 Check("P35r MostProtective is idempotent for every intent, including ones added later", idempotent);
 Check("P35s and commutative, so the order the two sources are read in cannot decide it", commutative);
 Check("P35t and it always returns one of its inputs rather than inventing a third", closed);
