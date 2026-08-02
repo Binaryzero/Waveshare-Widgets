@@ -108,6 +108,9 @@
   // shorter cache still beats an empty one on the next cold start, and either way the
   // in-memory catalog is untouched.
   const CACHE_MAX = 2000;
+  // One poll's whole budget: connect, transfer, and parse. Well under the 15-minute
+  // minimum refresh, so a run that hits it is a stall rather than a slow link.
+  const FETCH_DEADLINE = 60000;
   const CACHE_KEY = 'kev.cache.v1';
 
   const cfg = { watch: [], maxItems: 6, windowDays: 7, refreshMs: 3600000 };
@@ -167,12 +170,30 @@
       if (!raw) return;
       const cached = JSON.parse(raw);
       if (!cached || !Array.isArray(cached.entries)) return;
-      entries = cached.entries;
+      // Validated BEFORE it becomes live state. A cache that parses but holds a damaged
+      // element used to be assigned first and rendered second — and render() throws on
+      // it, from inside this try, so the catch logged and left the bad array installed.
+      // The next failed fetch renders the same array from ITS catch, that throw escapes,
+      // and the tile sits on the spinner with no error and no way back.
+      const clean = [];
+      for (const v of cached.entries) {
+        if (!v || typeof v !== 'object') continue;
+        const cve = typeof v.cve === 'string' ? v.cve : '';
+        const added = typeof v.added === 'string' ? v.added : '';
+        if (!cve || !added) continue;
+        clean.push({ vendor: String(v.vendor || ''), product: String(v.product || ''), cve, added });
+      }
+      if (!clean.length) return;
+      entries = clean;
       fetchedAt = Number(cached.at) || 0;
-      if (entries.length) answered = true;
+      answered = true;
       render();
     } catch (e) {
-      // A corrupt or evicted cache is not an error state — we are about to fetch.
+      // A corrupt or evicted cache is not an error state — we are about to fetch. Drop
+      // anything a partial read installed, so the fetch decides the tile's state alone.
+      entries = [];
+      fetchedAt = 0;
+      answered = false;
       WW.log('kev: cache read failed: ' + e.message);
     }
   }
@@ -196,15 +217,39 @@
     if (document.hidden) { schedule(); return; }
     if (inFlight) { schedule(); return; }
     inFlight = true;
+    // Neither the connection nor the body read is bounded on its own. The shim puts a
+    // deadline on the HOST proxy tier, but the direct browser fetch it tries first has
+    // none, and reading the body has none either — so a connection that opens and then
+    // stalls left inFlight true forever. The finally never ran, nothing was rescheduled,
+    // and every later entry (a poll, a visibility change, a settings change) saw a
+    // request still in flight and returned. The tile froze on whatever it was showing.
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), FETCH_DEADLINE);
     try {
       // maxBytes lowers the ceiling for this call. The catalog is the one stock feed
       // big enough to approach it, and "too large" is a different sentence from
       // "unreachable" — only this widget knows which to paint.
-      const res = await WW.fetch(FEED, { maxBytes: 5 * 1024 * 1024 });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const res = await WW.fetch(FEED, { maxBytes: 5 * 1024 * 1024, signal: abort.signal });
+      if (!res.ok) {
+        // Cancelled before the throw. On the direct tier this is a live response whose
+        // body the server may still be sending, and an error status is exactly when that
+        // body is of no use — left unread it holds the transfer open, and every backed-off
+        // retry would stack another one behind it.
+        try { if (res.body && !res.bodyUsed) await res.body.cancel(); } catch (e) { /* already gone */ }
+        throw new Error('HTTP ' + res.status);
+      }
       const json = await res.json();
-      const list = Array.isArray(json && json.vulnerabilities) ? json.vulnerabilities : [];
-      entries = list
+      // A 2xx that is not the catalog is not an empty catalog. Coercing a missing or
+      // non-array `vulnerabilities` to [] let a JSON error object — or a schema change at
+      // the far end — overwrite the cache, clear the stale mark, and tell the reader that
+      // CISA had listed nothing. An empty ARRAY is a legitimate answer and still reads as
+      // one; anything else is a failure, and the last catalog stays up as stale.
+      if (!json || !Array.isArray(json.vulnerabilities)) {
+        const bad = new Error('response has no vulnerabilities array');
+        bad.schema = true;
+        throw bad;
+      }
+      entries = json.vulnerabilities
         .map((v) => ({
           vendor: String((v && v.vendorProject) || '').trim(),
           product: String((v && v.product) || '').trim(),
@@ -227,12 +272,15 @@
         document.body.classList.add('stale');
         render();
       } else {
-        showError(e instanceof RangeError
-          ? 'The catalog is larger than the panel will load.'
+        showError(e instanceof RangeError ? 'The catalog is larger than the panel will load.'
+          // "Couldn't reach it" would be a lie about a server that answered promptly with
+          // something else, and it sends the reader to check their network.
+          : e && e.schema ? "The feed answered, but it wasn't the KEV catalog."
           : "Couldn't reach the CISA feed.");
       }
       WW.log('kev: ' + e.message);
     } finally {
+      clearTimeout(deadline);
       inFlight = false;
       schedule();
     }
@@ -399,8 +447,13 @@
   // Browsers throttle timers in hidden documents; cooperate rather than fight it, and
   // catch up the moment the page comes back.
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden || !started) return;
-    if (Date.now() - fetchedAt >= cfg.refreshMs) { clearTimeout(timer); tick(); }
+    if (document.hidden || !started || inFlight) return;
+    // Measured against the deadline the chain is actually waiting on. The old test used
+    // the last SUCCESSFUL fetch and the unstretched interval, so once a feed had been
+    // failing for one interval, every return to this page fired another request — paging
+    // away and back walked straight past the backoff, which is exactly the situation the
+    // backoff exists for.
+    if (Date.now() >= pollAnchor + pollDelay()) { clearTimeout(timer); tick(); }
   });
 </script>
 </body>
