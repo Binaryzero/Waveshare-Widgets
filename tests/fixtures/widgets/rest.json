@@ -1,0 +1,11 @@
+[
+  {
+    "match": "api.example.com/sensor",
+    "json": { "data": { "temperature": 21.375, "unit": "C" } }
+  },
+  {
+    "match": "api.example.com/down",
+    "status": 503,
+    "body": "service unavailable"
+  }
+]
