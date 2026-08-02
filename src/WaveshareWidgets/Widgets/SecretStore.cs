@@ -698,11 +698,23 @@ public static class SecretPolicy
     {
         var incomingCounts = CountWidgets(layout);
         var previous = BuildStoredIndex(stored, plan, incomingCounts, out var storedCounts);
-        // The STORED layout's twins, because that is what BuildStoredIndex poisons and
-        // therefore what decides whether a value could have been blanked at all. Reveal and
-        // Mask consult the same predicate against the layout they were handed, so the blank
-        // and the restore can never disagree about which slots are addressable.
-        var storedAmbiguous = AmbiguousSlots(stored);
+        // The STORED layout's twins, as KEYS rather than slot references.
+        //
+        // Reveal and Mask ask this of the layout they were handed, so a reference set works
+        // there. Seal has TWO layouts: the ambiguity lives in `stored`, the slot being
+        // walked belongs to `layout`, and they are different object graphs — so a reference
+        // test here is not merely wrong, it is CONSTANTLY false, and the guard silently
+        // stops guarding. The key is what identifies the stored slot whose value the
+        // restore would take, which is the thing actually being asked about.
+        var storedAmbiguousKeys = new HashSet<string>(StringComparer.Ordinal);
+        {
+            var ambiguousStored = AmbiguousSlots(stored);
+            foreach (var page in stored?.Pages ?? [])
+                foreach (var s in page.Slots ?? [])
+                    if (ambiguousStored.Contains(s)
+                        && SlotKey(s, storedCounts, incomingCounts) is { } k)
+                        storedAmbiguousKeys.Add(k);
+        }
         var failures = new List<SecretSealFailure>();
         var minted = new List<SecretSlotIdentity>();
         // Position in the layout AS SUBMITTED, so the client can find the same slot.
@@ -902,7 +914,8 @@ public static class SecretPolicy
             TryPrevious(key, slot, name, out var kept);
             var storedValue = AsString(kept);
             var restorable = kept is not null
-                && Blankable(slot.InstanceId, storedValue, storedAmbiguous.Contains(slot));
+                && Blankable(slot.InstanceId, storedValue,
+                    key is not null && storedAmbiguousKeys.Contains(key));
 
             if (value == SecretStore.ClearMarker)
             {

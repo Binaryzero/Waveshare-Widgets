@@ -2243,6 +2243,11 @@
           };
           sync();
           wrap.append(input, clear, state);
+          // A demoted property keeps whatever picker its manifest declares. The branch
+          // below never runs for it — this one returns first — so a `picker: 'file'`
+          // property would lose its Browse dialog exactly while the user is trying to
+          // replace the leftover value by hand.
+          if (prop.picker) attachFieldPicker(wrap, prop, input);
           return wrap;
         }
         if (prop.picker) {

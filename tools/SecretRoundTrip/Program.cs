@@ -1390,6 +1390,35 @@ Check("P37k2 an explicit id colliding with a positional tag is ambiguous too",
     ValueAt(positionalClash, 1, "apiToken") == demotedCipher,
     ValueAt(positionalClash, 1, "apiToken"));
 
+// Seal has TWO layouts, and the ambiguity lives in the stored one while the slot being
+// walked belongs to the submitted one. A reference test across those graphs is not merely
+// wrong, it is CONSTANTLY false — the guard reads as "never ambiguous" and stops guarding
+// without failing anything. Here Mask correctly refused to blank (twinned), so the empty
+// the user just typed is THEIRS; misreading it as a host blank restores the envelope over
+// it and the field can never be emptied.
+// CROSS-widget, deliberately: two slots of the SAME widget sharing an id resolve to one
+// SlotKey and BuildStoredIndex poisons it, so the restore misses anyway and the bug hides.
+// Different widget ids make the keys distinct, nothing is poisoned, and the guard is the
+// only thing standing between the user's empty and the old envelope. My first fixture used
+// one widget and passed with the fix reverted.
+static DashboardLayout TwoWidgets(JsonObject a, JsonObject b) => new()
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "same", Size = "half", Settings = a },
+        new LayoutSlot { WidgetId = "other.widget", InstanceId = "same", Size = "half", Settings = b },
+    ] }],
+};
+var twinStored = TwoWidgets(
+    new JsonObject { ["apiToken"] = demotedCipher },
+    new JsonObject { ["apiToken"] = demotedCipher });
+var twinEmptied = TwoWidgets(
+    new JsonObject { ["apiToken"] = "" },
+    new JsonObject { ["apiToken"] = demotedCipher });
+SecretPolicy.Seal(twinEmptied, twinStored, SecretPlan.FromManifests(
+    id => id == "test.widget" ? demotedManifest : id == "other.widget" ? otherDemoted : null));
+Check("P37k3 a twinned slot's empty is the USER's — nothing was blanked there to restore",
+    ValueAt(twinEmptied, 0, "apiToken") == "", ValueAt(twinEmptied, 0, "apiToken") ?? "(removed)");
+
 // ---- P37e · a former secret retyped to a NON-STRING type ------------------------------
 // `secret` -> `number` / `switch` is as ordinary a manifest edit as `secret` -> `text`, and
 // the editor then emits a number or a boolean. AsString reports null for those exactly as
