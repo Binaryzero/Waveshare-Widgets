@@ -1344,6 +1344,52 @@ SecretPolicy.Mask(twinNode, SecretPlan.FromManifests(DemotedLookup));
 Check("P37d Mask agrees with Reveal about which slots are addressable",
     !twinNode!.ToJsonString().Contains("secretsRestorable"), twinNode.ToJsonString());
 
+// ---- P37k · the shell's heal is GLOBAL, so ambiguity must be too ----------------------
+// shell.js builds ONE `seenIds` set of effective tags and re-mints any repeat, then calls
+// persistLayout(). It does not consider widgetId, so two DIFFERENT widgets sharing an
+// explicit instanceId collide there — while a widget-scoped check here calls both unique
+// and blanks them. BuildStoredIndex does not catch it either: its keys DO carry the widget
+// id, so nothing is poisoned and the restore simply looks under an id that no longer
+// exists. Same automatic credential loss, one layer out from the duplicate-key case.
+var crossWidget = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "shared", Size = "half",
+            Settings = new JsonObject { ["apiToken"] = demotedCipher } },
+        new LayoutSlot { WidgetId = "other.widget", InstanceId = "shared", Size = "half",
+            Settings = new JsonObject { ["apiToken"] = demotedCipher } },
+    ] }],
+};
+var otherDemoted = new WidgetManifest
+{
+    Id = "other.widget", Name = "Other",
+    Properties = [new WidgetProperty { Name = "apiToken", Label = "API token", Type = "text" }],
+};
+SecretPolicy.Reveal(crossWidget, SecretPlan.FromManifests(
+    id => id == "test.widget" ? demotedManifest : id == "other.widget" ? otherDemoted : null));
+Check("P37k two widgets sharing one instanceId are both left alone — the shell re-mints "
+    + "one of them and the restore would look under an id that never stored anything",
+    ValueAt(crossWidget, 0, "apiToken") == demotedCipher
+        && ValueAt(crossWidget, 1, "apiToken") == demotedCipher,
+    ValueAt(crossWidget, 0, "apiToken") + " | " + ValueAt(crossWidget, 1, "apiToken"));
+
+// The other half of the shell's rule: an explicit id can collide with a POSITIONAL tag.
+// A slot with no instanceId runs as "p0s0", so an explicit "p0s0" elsewhere collides and
+// the shell re-mints on that too.
+var positionalClash = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = null, Size = "half",
+            Settings = new JsonObject { ["apiToken"] = demotedCipher } },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "p0s0", Size = "half",
+            Settings = new JsonObject { ["apiToken"] = demotedCipher } },
+    ] }],
+};
+SecretPolicy.Reveal(positionalClash, DemotedLookup);
+Check("P37k2 an explicit id colliding with a positional tag is ambiguous too",
+    ValueAt(positionalClash, 1, "apiToken") == demotedCipher,
+    ValueAt(positionalClash, 1, "apiToken"));
+
 // ---- P37e · a former secret retyped to a NON-STRING type ------------------------------
 // `secret` -> `number` / `switch` is as ordinary a manifest edit as `secret` -> `text`, and
 // the editor then emits a number or a boolean. AsString reports null for those exactly as

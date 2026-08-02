@@ -418,11 +418,11 @@ public static class SecretPolicy
 
     public static void Reveal(DashboardLayout layout, SecretPlan plan)
     {
-        var ambiguous = AmbiguousIdentities(layout);
+        var ambiguous = AmbiguousSlots(layout);
         Walk(layout, plan, (slot, name, intent) =>
         {
             var stored = AsString(slot.Settings?[name]);
-            var twinned = ambiguous.Contains(Identity(slot.WidgetId, slot.InstanceId ?? ""));
+            var twinned = ambiguous.Contains(slot);
             if (intent is SecretIntent.RestoreIfUntouched)
             {
                 // #105: a demoted property still holding an envelope hands `dpapi:v1:…` to
@@ -490,7 +490,7 @@ public static class SecretPolicy
         // withholding is protecting. The plaintext keeps reaching the frame until the
         // duplicate is healed, which is the pre-existing exposure rather than a new one.
         // Trading a leak for a destroyed value is the trade this pipeline has refused
-        // three times; see AmbiguousIdentities.
+        // three times; see AmbiguousSlots.
         if (ambiguous)
             return;
         slot.Settings[name] = "";
@@ -527,58 +527,84 @@ public static class SecretPolicy
     private static bool Blankable(string? instanceId, string? value, bool ambiguous) =>
         !string.IsNullOrEmpty(instanceId) && !ambiguous && SecretStore.CanUnprotect(value);
 
-    /// <summary>Slot identities that appear more than once in a layout, as
-    /// <c>widgetId|i:instanceId</c> — the same string <see cref="SlotKey"/> builds.
+    /// <summary>Slots whose identity is not stable enough to blank against.
     ///
-    /// A non-empty instance id is NOT on its own evidence that a slot is addressable, which
-    /// is what makes this necessary rather than defensive. <see cref="BuildStoredIndex"/>
-    /// deliberately POISONS a key two stored slots both resolve to: handing one credential
-    /// to both twins would be worse than losing it, so nobody inherits. Blanking on the
-    /// strength of the id alone therefore blanks both copies and then finds nothing to
-    /// restore, and the empty strings reach layout.json — both credentials gone, in one
-    /// save, irreversibly.
+    /// This mirrors `shell.js`'s duplicate-id healing EXACTLY, and it has to. That pass
+    /// builds one `seenIds` set of EFFECTIVE tags — an explicit `instanceId`, or the
+    /// derived `p{page}s{slot}` for a slot without one — re-mints any repeat, and calls
+    /// `persistLayout()` immediately. Anything it re-mints changes identity underneath a
+    /// value we blanked, so the restore looks under the new id, misses, and the empty
+    /// string reaches layout.json.
     ///
-    /// It is reachable rather than theoretical: `shell.js` detects duplicate instance ids
-    /// and heals them, and the healing itself is a save.</summary>
-    private static HashSet<string> AmbiguousIdentities(DashboardLayout? layout)
+    /// Two ways to get that wrong, both of which I did:
+    ///
+    /// <list type="bullet">
+    /// <item>Keying on widget id as well. The shell's set does NOT — two different widgets
+    ///   sharing one explicit `instanceId` collide there and the second is re-minted, while
+    ///   a per-widget key calls both unique. `BuildStoredIndex` does not even poison that
+    ///   case, because its keys DO carry the widget id, so nothing downstream catches it
+    ///   either.</item>
+    /// <item>Ignoring the positional tags. An explicit id of literally "p0s0" collides with
+    ///   the first id-less slot, and the shell re-mints on that too.</item>
+    /// </list>
+    ///
+    /// Reference identity, not a key: the caller has the slot, not its indices.</summary>
+    private static HashSet<LayoutSlot> AmbiguousSlots(DashboardLayout? layout)
     {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var repeated = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var page in layout?.Pages ?? [])
-            foreach (var slot in page.Slots ?? [])
-                if (!string.IsNullOrEmpty(slot.WidgetId) && !string.IsNullOrEmpty(slot.InstanceId)
-                    && !seen.Add(Identity(slot.WidgetId, slot.InstanceId)))
-                    repeated.Add(Identity(slot.WidgetId, slot.InstanceId));
-        return repeated;
-    }
-
-    /// <inheritdoc cref="AmbiguousIdentities(DashboardLayout)"/>
-    /// <remarks>The editor projection is JSON rather than the model. Same question, same
-    /// key shape; only the slot's shape differs.</remarks>
-    private static HashSet<string> AmbiguousIdentities(JsonNode? layoutNode)
-    {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var repeated = new HashSet<string>(StringComparer.Ordinal);
-        if (layoutNode?["pages"] is not JsonArray pages)
-            return repeated;
-        foreach (var page in pages)
+        var byTag = new Dictionary<string, List<LayoutSlot>>(StringComparer.Ordinal);
+        var pages = layout?.Pages ?? [];
+        for (var pi = 0; pi < pages.Count; pi++)
         {
-            if (page?["slots"] is not JsonArray slots)
-                continue;
-            foreach (var slot in slots)
+            var slots = pages[pi].Slots ?? [];
+            for (var si = 0; si < slots.Count; si++)
             {
-                var widgetId = AsString(slot?["widgetId"]);
-                var instanceId = AsString(slot?["instanceId"]);
-                if (!string.IsNullOrEmpty(widgetId) && !string.IsNullOrEmpty(instanceId)
-                    && !seen.Add(Identity(widgetId, instanceId)))
-                    repeated.Add(Identity(widgetId, instanceId));
+                var tag = string.IsNullOrEmpty(slots[si].InstanceId)
+                    ? "p" + pi + "s" + si
+                    : slots[si].InstanceId!;
+                if (!byTag.TryGetValue(tag, out var sharing))
+                    byTag[tag] = sharing = [];
+                sharing.Add(slots[si]);
             }
         }
-        return repeated;
+        var ambiguous = new HashSet<LayoutSlot>((IEqualityComparer<LayoutSlot>)ReferenceEqualityComparer.Instance);
+        foreach (var sharing in byTag.Values)
+            if (sharing.Count > 1)
+                foreach (var slot in sharing)
+                    ambiguous.Add(slot);
+        return ambiguous;
     }
 
-    private static string Identity(string widgetId, string instanceId) =>
-        widgetId + "|i:" + instanceId;
+    /// <inheritdoc cref="AmbiguousSlots(DashboardLayout)"/>
+    /// <remarks>The editor projection is JSON rather than the model. Same tags, same rule.
+    /// </remarks>
+    private static HashSet<JsonNode> AmbiguousSlots(JsonNode? layoutNode)
+    {
+        var byTag = new Dictionary<string, List<JsonNode>>(StringComparer.Ordinal);
+        if (layoutNode?["pages"] is JsonArray pages)
+        {
+            for (var pi = 0; pi < pages.Count; pi++)
+            {
+                if (pages[pi]?["slots"] is not JsonArray slots)
+                    continue;
+                for (var si = 0; si < slots.Count; si++)
+                {
+                    if (slots[si] is not { } slot)
+                        continue;
+                    var id = AsString(slot["instanceId"]);
+                    var tag = string.IsNullOrEmpty(id) ? "p" + pi + "s" + si : id;
+                    if (!byTag.TryGetValue(tag, out var sharing))
+                        byTag[tag] = sharing = [];
+                    sharing.Add(slot);
+                }
+            }
+        }
+        var ambiguous = new HashSet<JsonNode>((IEqualityComparer<JsonNode>)ReferenceEqualityComparer.Instance);
+        foreach (var sharing in byTag.Values)
+            if (sharing.Count > 1)
+                foreach (var slot in sharing)
+                    ambiguous.Add(slot);
+        return ambiguous;
+    }
 
     /// <summary>Blanks every secret and records which ones are set AND readable here.
     /// Mutates the JSON projection (not the model) because <c>secretsSet</c> is
@@ -587,7 +613,7 @@ public static class SecretPolicy
     {
         if (layoutNode?["pages"] is not JsonArray pages)
             return;
-        var ambiguous = AmbiguousIdentities(layoutNode);
+        var ambiguous = AmbiguousSlots(layoutNode);
         foreach (var page in pages)
         {
             if (page?["slots"] is not JsonArray slots)
@@ -610,7 +636,7 @@ public static class SecretPolicy
                         // widget iframes, so a demoted envelope left in this payload is
                         // handed to widget code exactly as the dashboard's is.
                         if (!Blankable(AsString(slot["instanceId"]), AsString(slot["settings"]?[name]),
-                                ambiguous.Contains(Identity(widgetId, AsString(slot["instanceId"]) ?? ""))))
+                                ambiguous.Contains(slot)))
                             continue;
                         restorable.Add(name);
                         slot["settings"]![name] = SecretStore.EditorPlaceholder;
@@ -676,7 +702,7 @@ public static class SecretPolicy
         // therefore what decides whether a value could have been blanked at all. Reveal and
         // Mask consult the same predicate against the layout they were handed, so the blank
         // and the restore can never disagree about which slots are addressable.
-        var storedAmbiguous = AmbiguousIdentities(stored);
+        var storedAmbiguous = AmbiguousSlots(stored);
         var failures = new List<SecretSealFailure>();
         var minted = new List<SecretSlotIdentity>();
         // Position in the layout AS SUBMITTED, so the client can find the same slot.
@@ -876,8 +902,7 @@ public static class SecretPolicy
             TryPrevious(key, slot, name, out var kept);
             var storedValue = AsString(kept);
             var restorable = kept is not null
-                && Blankable(slot.InstanceId, storedValue,
-                    storedAmbiguous.Contains(Identity(slot.WidgetId, slot.InstanceId ?? "")));
+                && Blankable(slot.InstanceId, storedValue, storedAmbiguous.Contains(slot));
 
             if (value == SecretStore.ClearMarker)
             {

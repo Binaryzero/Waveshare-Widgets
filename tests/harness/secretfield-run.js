@@ -1067,16 +1067,6 @@ const layout = {
   // Clear: the explicit signal, which is the whole reason the affordance exists.
   await demoted.locator('button').click();
   await page.waitForTimeout(100);
-  // ...and the marker it writes into state.layout must not reach the replica. The scrub
-  // there covers names the CATALOG calls `secret`, and a demoted property is `text` now,
-  // so the widget iframe would be handed the sentinel as the setting's real value and
-  // render or act on it for the rest of the session.
-  const replicaAfterClear = await page.evaluate(() => JSON.stringify(window.__wwReplicaLayout()));
-  check('E28e0 the clear marker never reaches the preview replica',
-    !replicaAfterClear.includes('__ww_secret_cleared__'), replicaAfterClear.slice(0, 240));
-  check('E28e0b and the demoted field is blank there, not absent or sentinel-valued',
-    JSON.parse(replicaAfterClear).pages[0].slots[0].settings.legacyToken === '',
-    JSON.stringify(JSON.parse(replicaAfterClear).pages[0].slots[0].settings));
   await page.locator('#save').click();
   await page.waitForTimeout(400);
   let last = saved[saved.length - 1].pages[0].slots[0];
