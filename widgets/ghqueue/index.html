@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>GitHub Queue</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Layout only — colors, background, bgStyle and the typography base come from
+   * widget-base.css. */
+  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+  #repos { flex: 1 1 auto; display: flex; flex-direction: column; gap: 5px; min-height: 0; overflow: hidden; }
+  .repo {
+    display: flex; align-items: center; gap: 10px;
+    padding: 5px 10px;
+    border-radius: var(--radius-control);
+    background: var(--card-surface);
+    min-width: 0;
+    flex: 1 1 0; min-height: 28px; max-height: 54px;
+  }
+  .repo .name {
+    color: var(--text); font-weight: 650;
+    font-size: clamp(11px, 3.2vh, 14px);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1 1 auto; min-width: 0;
+  }
+  .repo .reviews {
+    font-size: clamp(11px, 3vh, 13px); font-weight: 700; flex: none;
+    font-variant-numeric: tabular-nums; color: var(--text-muted);
+  }
+  .repo .reviews.waiting { color: var(--accent); }
+  .repo .run { flex: none; }
+  footer { color: var(--text-dim); font-size: 11px; flex: none; font-variant-numeric: tabular-nums; }
+  #state { position: fixed; inset: 0; }
+  body.stale #repos { opacity: 0.6; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="kicker">GitHub</span>
+    <span class="pill muted" id="pill">Loading</span>
+  </header>
+
+  <div id="repos" hidden></div>
+
+  <footer id="meta"></footer>
+
+  <div class="state-card" id="state">
+    <div class="spinner"></div>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const API = 'https://api.github.com';
+  const cfg = { repos: [], token: '', refreshMs: 300000 };
+  // ETags let a poll that finds nothing new cost zero rate-limit budget. GitHub
+  // answers 304 and does not decrement the quota, which is what makes a 1-minute
+  // cadence across a handful of repos sustainable on a PAT.
+  const etags = new Map();     // url -> etag
+  const bodies = new Map();    // url -> last parsed body (what a 304 means "still")
+  const rows = new Map();      // repo -> {reviews, run}
+  let state = new Map();       // repo -> {reviews, conclusion, status}
+  let started = false;
+  let timer = null;
+  let inFlight = false;
+  let lastOk = 0;
+  let rateLimitedUntil = 0;
+
+  const el = (id) => document.getElementById(id);
+
+  function parseRepos(value) {
+    const raw = Array.isArray(value) ? value : [];
+    return raw
+      .map((item) => {
+        if (!item) return '';
+        const s = typeof item === 'string' ? item : String(item.repo == null ? '' : item.repo);
+        return s.trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\/+$/, '');
+      })
+      .filter((s) => /^[^/\s]+\/[^/\s]+$/.test(s))
+      .slice(0, 10);
+  }
+
+  WW.onInit((s0) => {
+    const s = s0.settings;
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+
+    cfg.repos = parseRepos(s.repos);
+    // An unset or unreadable secret arrives as "" — that is the setup state, never a
+    // spinner and never an error.
+    cfg.token = String(s.apiToken == null ? '' : s.apiToken);
+    cfg.refreshMs = Math.min(120, Math.max(1, Number(s.refreshMinutes) || 5)) * 60000;
+
+    build();
+    if (!cfg.repos.length || !cfg.token) { showSetup(); return; }
+    if (!started) { started = true; tick(); }
+    else { clearTimeout(timer); tick(); }
+  });
+
+  function build() {
+    const box = el('repos');
+    box.textContent = '';
+    rows.clear();
+    for (const repo of cfg.repos) {
+      const root = document.createElement('div');
+      root.className = 'repo';
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = repo.split('/')[1] || repo;
+      const reviews = document.createElement('span');
+      reviews.className = 'reviews';
+      reviews.textContent = '·';
+      const run = document.createElement('span');
+      run.className = 'pill muted run';
+      run.textContent = '—';
+      root.append(name, reviews, run);
+      box.appendChild(root);
+      rows.set(repo, { reviews, run });
+    }
+  }
+
+  async function gh(url) {
+    const headers = {
+      Authorization: 'Bearer ' + cfg.token,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+    const prev = etags.get(url);
+    if (prev) headers['If-None-Match'] = prev;
+    const res = await WW.fetch(url, { headers });
+    if (res.status === 304) return { unchanged: true, body: bodies.get(url) };
+    if (res.status === 403 || res.status === 429) {
+      // Primary or secondary rate limit. Back off to the reset the API names rather
+      // than guessing, and let the caller keep showing what it already has.
+      const reset = Number(res.headers && res.headers.get && res.headers.get('x-ratelimit-reset'));
+      const until = Number.isFinite(reset) && reset > 0 ? reset * 1000 : Date.now() + 900000;
+      const err = new Error('rate limited');
+      err.rateLimitedUntil = until;
+      throw err;
+    }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const etag = res.headers && res.headers.get && res.headers.get('etag');
+    const body = await res.json();
+    if (etag) { etags.set(url, etag); bodies.set(url, body); }
+    return { unchanged: false, body };
+  }
+
+  async function tick() {
+    if (document.hidden || inFlight) { schedule(); return; }
+    if (Date.now() < rateLimitedUntil) { schedule(); return; }
+    inFlight = true;
+    try {
+      const next = new Map();
+      for (const repo of cfg.repos) {
+        const [owner, name] = repo.split('/');
+        const entry = { reviews: null, conclusion: null, status: null };
+        // Review-requested PRs, scoped per repo so one bad repo name cannot blank the
+        // whole grid the way a single cross-repo search would.
+        try {
+          const q = encodeURIComponent('is:open is:pr review-requested:@me repo:' + repo);
+          const r = await gh(API + '/search/issues?q=' + q + '&per_page=1');
+          if (r.body && typeof r.body.total_count === 'number') entry.reviews = r.body.total_count;
+        } catch (e) {
+          if (e.rateLimitedUntil) throw e;
+          WW.log('ghqueue: reviews ' + repo + ': ' + e.message);
+        }
+        try {
+          const r = await gh(API + '/repos/' + owner + '/' + name + '/actions/runs?per_page=1');
+          const run = r.body && Array.isArray(r.body.workflow_runs) ? r.body.workflow_runs[0] : null;
+          if (run) { entry.conclusion = run.conclusion || null; entry.status = run.status || null; }
+        } catch (e) {
+          if (e.rateLimitedUntil) throw e;
+          WW.log('ghqueue: runs ' + repo + ': ' + e.message);
+        }
+        next.set(repo, entry);
+      }
+      state = next;
+      lastOk = Date.now();
+      rateLimitedUntil = 0;
+      document.body.classList.remove('stale');
+      render();
+    } catch (e) {
+      if (e.rateLimitedUntil) {
+        rateLimitedUntil = e.rateLimitedUntil;
+        // Rate limiting is not an error tile: the data on screen is still true, it is
+        // just aging. Show it dimmed with how old it is.
+        document.body.classList.add('stale');
+        if (state.size) render(); else showError('Rate limit reached. Waiting for it to reset.');
+      } else if (state.size) {
+        document.body.classList.add('stale');
+        render();
+      } else {
+        showError("Couldn't reach the GitHub API.");
+      }
+      WW.log('ghqueue: ' + e.message);
+    } finally {
+      inFlight = false;
+      schedule();
+    }
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    const wait = rateLimitedUntil > Date.now()
+      ? Math.min(rateLimitedUntil - Date.now() + 1000, 3600000)
+      : cfg.refreshMs;
+    timer = setTimeout(tick, wait);
+  }
+
+  function ageText(ms) {
+    const secs = Math.round((Date.now() - ms) / 1000);
+    if (secs < 90) return secs + 's ago';
+    if (secs < 5400) return Math.round(secs / 60) + 'm ago';
+    return Math.round(secs / 3600) + 'h ago';
+  }
+
+  function render() {
+    let waiting = 0;
+    let failing = 0;
+    for (const repo of cfg.repos) {
+      const ui = rows.get(repo);
+      const s = state.get(repo);
+      if (!ui || !s) continue;
+      if (s.reviews == null) {
+        ui.reviews.textContent = '·';
+        ui.reviews.className = 'reviews';
+      } else {
+        ui.reviews.textContent = s.reviews ? s.reviews + ' to review' : 'clear';
+        ui.reviews.className = 'reviews' + (s.reviews ? ' waiting' : '');
+        waiting += s.reviews;
+      }
+      const running = s.status && s.status !== 'completed';
+      const label = running ? 'running' : (s.conclusion || 'none');
+      ui.run.textContent = label;
+      ui.run.className = 'pill run ' + (
+        running ? '' :
+        s.conclusion === 'success' ? 'ok' :
+        s.conclusion === 'failure' || s.conclusion === 'timed_out' ? 'err' :
+        s.conclusion ? 'warn' : 'muted');
+      if (s.conclusion === 'failure' || s.conclusion === 'timed_out') failing++;
+    }
+
+    const stale = document.body.classList.contains('stale');
+    const pill = el('pill');
+    if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
+    else if (failing) { pill.textContent = failing + ' failing'; pill.className = 'pill err'; }
+    else if (waiting) { pill.textContent = waiting + ' to review'; pill.className = 'pill'; }
+    else { pill.textContent = 'Clear'; pill.className = 'pill ok'; }
+
+    el('meta').textContent = rateLimitedUntil > Date.now()
+      ? 'rate limited — showing data from ' + ageText(lastOk)
+      : (lastOk ? 'updated ' + ageText(lastOk) : '');
+
+    el('state').hidden = true;
+    el('repos').hidden = false;
+  }
+
+  function stateCard(cls, icon, title, body, onRetry) {
+    // The header stays visible behind the state layer, so a stale "Loading" pill sits
+    // next to an error card contradicting it.
+    const pill = el('pill');
+    pill.textContent = cls === 'err' ? 'Error' : 'Setup';
+    pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
+    const s = el('state');
+    s.className = 'state-card' + (cls ? ' ' + cls : '');
+    s.textContent = '';
+    const i = document.createElement('div');
+    i.className = 'state-icon';
+    i.textContent = icon;
+    const t = document.createElement('div');
+    t.className = 'state-title';
+    t.textContent = title;
+    const b = document.createElement('div');
+    b.className = 'state-body';
+    b.textContent = body;
+    s.append(i, t, b);
+    if (onRetry) {
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.textContent = 'Retry';
+      btn.addEventListener('click', onRetry);
+      s.append(btn);
+    }
+    s.hidden = false;
+    el('repos').hidden = true;
+  }
+
+  function showSetup() {
+    stateCard('', '◎', 'Not configured yet',
+      !cfg.repos.length
+        ? 'Add repositories in the widget settings, as owner/name.'
+        : 'Add a personal access token in the widget settings — it needs read access to those repositories.');
+  }
+
+  function showError(message) {
+    stateCard('err', '!', 'GitHub unavailable', message, () => {
+      stateCard('', '', 'Retrying', '');
+      clearTimeout(timer);
+      tick();
+    });
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !started) return;
+    if (Date.now() - lastOk >= cfg.refreshMs) { clearTimeout(timer); tick(); }
+  });
+</script>
+</body>
+</html>
