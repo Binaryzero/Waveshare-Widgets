@@ -84,7 +84,19 @@
     cfg.ignoreAllDay = s.ignoreAllDay === 'ignore';
     cfg.refreshMs = Math.min(720, Math.max(5, Number(s.refreshMinutes) || 30)) * 60000;
 
-    if (!cfg.url) { showSetup(); return; }
+    if (!cfg.url) {
+      // Stop everything. Without this the chain keeps running against an empty URL,
+      // which resolves to the widget's OWN document, parses as a calendar with no
+      // events, and replaces the setup card with "Nothing scheduled".
+      clearTimeout(fetchTimer);
+      clearInterval(tickTimer);
+      tickTimer = null;
+      current = null;
+      lastOk = 0;
+      started = false;
+      showSetup();
+      return;
+    }
     if (!started) {
       started = true;
       load();
@@ -102,7 +114,12 @@
       const res = await WW.fetch(cfg.url, { maxBytes: 4 * 1024 * 1024 });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const text = await res.text();
-      const found = ICS.next(text, Date.now(), cfg.lookaheadDays * 86400000, { ignoreAllDay: cfg.ignoreAllDay });
+      // From an hour AGO, not from now: paint() deliberately keeps an event on screen
+      // for an hour after it starts, but asking only for future starts meant the next
+      // refresh replaced it — so a meeting vanished one refresh after beginning rather
+      // than at the end of the hour it was promised.
+      const found = ICS.next(text, Date.now() - 3600000, cfg.lookaheadDays * 86400000 + 3600000,
+        { ignoreAllDay: cfg.ignoreAllDay });
       current = found.best;
       dropped = found.dropped;
       lastOk = Date.now();
@@ -153,7 +170,13 @@
         el('state').hidden = false;
         el('data').hidden = true;
         stateCard('', '○', 'Nothing scheduled',
-          'No events in the next ' + cfg.lookaheadDays + ' day' + (cfg.lookaheadDays === 1 ? '' : 's') + '.');
+          'No events in the next ' + cfg.lookaheadDays + ' day' + (cfg.lookaheadDays === 1 ? '' : 's') + '.' +
+          (dropped ? ' ' + dropped + ' repeating event' + (dropped === 1 ? '' : 's') +
+            ' could not be read — only daily and weekly repeats are supported.' : ''));
+        // The footer normally carries this, and the footer is hidden behind the state
+        // card. A calendar containing ONLY unsupported repeats would otherwise claim
+        // outright that nothing is scheduled, which is what the counter exists to stop.
+        el('meta').textContent = '';
       }
       return;
     }

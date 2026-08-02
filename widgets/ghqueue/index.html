@@ -156,7 +156,7 @@
       const next = new Map();
       for (const repo of cfg.repos) {
         const [owner, name] = repo.split('/');
-        const entry = { reviews: null, conclusion: null, status: null };
+        const entry = { reviews: null, conclusion: null, status: null, error: null };
         // Review-requested PRs, scoped per repo so one bad repo name cannot blank the
         // whole grid the way a single cross-repo search would.
         try {
@@ -165,6 +165,10 @@
           if (r.body && typeof r.body.total_count === 'number') entry.reviews = r.body.total_count;
         } catch (e) {
           if (e.rateLimitedUntil) throw e;
+          // A 401, 404 or permission 403 is NOT an empty queue. Swallowing it left the
+          // counts at zero and the pill green, so an expired token looked exactly like
+          // having nothing to review — the most reassuring possible way to be wrong.
+          entry.error = e.message;
           WW.log('ghqueue: reviews ' + repo + ': ' + e.message);
         }
         try {
@@ -173,6 +177,7 @@
           if (run) { entry.conclusion = run.conclusion || null; entry.status = run.status || null; }
         } catch (e) {
           if (e.rateLimitedUntil) throw e;
+          entry.error = entry.error || e.message;
           WW.log('ghqueue: runs ' + repo + ': ' + e.message);
         }
         next.set(repo, entry);
@@ -220,11 +225,16 @@
   function render() {
     let waiting = 0;
     let failing = 0;
+    let errored = 0;
     for (const repo of cfg.repos) {
       const ui = rows.get(repo);
       const s = state.get(repo);
       if (!ui || !s) continue;
-      if (s.reviews == null) {
+      if (s.error) {
+        errored++;
+        ui.reviews.textContent = 'unavailable';
+        ui.reviews.className = 'reviews';
+      } else if (s.reviews == null) {
         ui.reviews.textContent = '·';
         ui.reviews.className = 'reviews';
       } else {
@@ -246,12 +256,14 @@
     const stale = document.body.classList.contains('stale');
     const pill = el('pill');
     if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
+    else if (errored) { pill.textContent = errored + ' unavailable'; pill.className = 'pill err'; }
     else if (failing) { pill.textContent = failing + ' failing'; pill.className = 'pill err'; }
     else if (waiting) { pill.textContent = waiting + ' to review'; pill.className = 'pill'; }
     else { pill.textContent = 'Clear'; pill.className = 'pill ok'; }
 
     el('meta').textContent = rateLimitedUntil > Date.now()
       ? 'rate limited — showing data from ' + ageText(lastOk)
+      : errored ? 'check the token has access to those repositories'
       : (lastOk ? 'updated ' + ageText(lastOk) : '');
 
     el('state').hidden = true;

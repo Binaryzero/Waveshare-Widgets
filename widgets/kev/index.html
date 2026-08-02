@@ -81,7 +81,12 @@
   // The full catalog is well over a megabyte and grows every week. We keep only the
   // slice the tile can ever show, because localStorage is a few MB total and stashing
   // the raw feed would evict itself (and everything else this widget owns) at random.
-  const KEEP = 40;
+  // Enough to answer the QUESTIONS, not just to fill the list. The cap used to be the
+  // display length, so the newest-40 slice was taken BEFORE the watch terms and the
+  // date window were applied: a watched vendor sitting at position 60 read as absent,
+  // and any month with more than 40 additions under-reported its own count. Filtering
+  // happens on this whole set; only the rendered rows are limited.
+  const KEEP = 600;
   const CACHE_KEY = 'kev.cache.v1';
 
   const cfg = { watch: [], maxItems: 6, windowDays: 7, refreshMs: 3600000 };
@@ -202,7 +207,30 @@
   }
 
   function render() {
-    if (!entries.length) return;
+    if (!entries.length) {
+      // A successful response with an empty (or renamed) vulnerabilities array is not
+      // "still loading" — returning here left the initial spinner up forever, which is
+      // the one state that can never resolve on its own.
+      el('state').hidden = false;
+      el('data').hidden = true;
+      const st = el('state');
+      st.className = 'state-card';
+      st.textContent = '';
+      const icon = document.createElement('div');
+      icon.className = 'state-icon';
+      icon.textContent = '○';
+      const title = document.createElement('div');
+      title.className = 'state-title';
+      title.textContent = 'No entries';
+      const body = document.createElement('div');
+      body.className = 'state-body';
+      body.textContent = 'The CISA feed answered but listed no vulnerabilities.';
+      st.append(icon, title, body);
+      const pill = el('pill');
+      pill.textContent = 'Empty';
+      pill.className = 'pill muted';
+      return;
+    }
     const shown = entries.filter(matches);
     const cutoff = Date.now() - cfg.windowDays * 86400000;
     // dateAdded is a plain YYYY-MM-DD; Date.parse reads it as UTC midnight, which is

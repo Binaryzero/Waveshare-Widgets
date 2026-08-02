@@ -157,10 +157,76 @@ const DAY = 86400000;
     !got.best && got.dropped === 1, JSON.stringify({ best: !!got.best, dropped: got.dropped }));
 }
 {
-  const text = ev('UID:9c\nDTSTART:20260810T140000Z\nRECURRENCE-ID:20260810T140000Z\nSUMMARY:Moved');
-  const got = ICS.next(text, Date.UTC(2026, 7, 1), 60 * DAY, {});
-  check('I9c a RECURRENCE-ID override is dropped, never shown at the parent time',
-    !got.best && got.dropped === 1, JSON.stringify({ best: !!got.best, dropped: got.dropped }));
+  const text = ev('UID:9d\nDTSTART:20260801T090000Z\nRRULE:FREQ=DAILY;BYMONTHDAY=15\nSUMMARY:Fifteenth');
+  const hits = ICS.expand(ICS.parse(text)[0], Date.UTC(2026, 7, 1), Date.UTC(2026, 7, 6));
+  check('I9d a SUPPORTED freq with an unsupported CONSTRAINT is refused, not expanded '
+    + 'as if the constraint were absent — ignoring BYMONTHDAY turns "the 15th" into '
+    + '"every day"', hits === null, JSON.stringify(hits));
+}
+{
+  const text = ev('UID:9e\nDTSTART:20260801T090000Z\nRRULE:FREQ=DAILY;BYSETPOS=1\nSUMMARY:Setpos');
+  check('I9e and so is BYSETPOS', ICS.expand(ICS.parse(text)[0], Date.UTC(2026, 7, 1), Date.UTC(2026, 7, 6)) === null);
+}
+
+// ---- I12 · a long-running series must not fall off the guard ------------------------
+// A daily standup running since 2020 needs ~2,400 steps from DTSTART to reach today.
+// Walking from DTSTART with a fixed guard gave up before arriving and returned [] with
+// dropped 0 — the event vanished while the widget said the calendar was empty, which is
+// the same lie as a wrong time wearing a different hat.
+{
+  const text = ev('UID:12\nDTSTART:20200101T090000Z\nRRULE:FREQ=DAILY\nSUMMARY:Ancient standup');
+  const hits = ICS.expand(ICS.parse(text)[0], Date.UTC(2026, 7, 1), Date.UTC(2026, 7, 5));
+  check('I12 a daily series running since 2020 still yields its current occurrences',
+    hits.length === 4 && hits[0] === Date.UTC(2026, 7, 1, 9, 0, 0),
+    hits.length + ' — ' + hits.map((h) => new Date(h).toISOString().slice(0, 10)).join(','));
+}
+{
+  // COUNT must still be honored from the series start, so the fast-forward may not
+  // apply to a counted rule — a finished counted series must stay finished.
+  const text = ev('UID:12b\nDTSTART:20200101T090000Z\nRRULE:FREQ=DAILY;COUNT=5\nSUMMARY:Five in 2020');
+  const hits = ICS.expand(ICS.parse(text)[0], Date.UTC(2026, 7, 1), Date.UTC(2026, 7, 5));
+  check('I12b and a COUNT series that finished in 2020 stays finished', hits.length === 0, hits.length);
+}
+
+// ---- I13 · DST: the wall clock is what recurs, not the elapsed milliseconds ----------
+// Adding 86,400,000 ms is only "the same time tomorrow" where a day is 24h. A 09:00
+// New York daily event stepped that way reads 10:00 from the March transition until
+// November — a meeting displayed at a time it does not happen.
+{
+  const text = ev('UID:13\nDTSTART;TZID=America/New_York:20260307T090000\nRRULE:FREQ=DAILY\nSUMMARY:Daily NY');
+  const hits = ICS.expand(ICS.parse(text)[0], Date.UTC(2026, 2, 7), Date.UTC(2026, 2, 11));
+  const local = hits.map((h) => new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date(h)));
+  check('I13 a TZID daily event holds its wall-clock time across a DST transition',
+    local.length >= 4 && local.every((t) => t === '09:00'), local.join(' | '));
+}
+{
+  // Floating times are local wall clock by definition and must behave the same way.
+  const text = ev('UID:13b\nDTSTART:20260307T090000\nRRULE:FREQ=DAILY\nSUMMARY:Daily floating');
+  const hits = ICS.expand(ICS.parse(text)[0], Date.UTC(2026, 2, 7), Date.UTC(2026, 2, 12));
+  check('I13b and so does a floating one',
+    hits.every((h) => new Date(h).getHours() === 9),
+    hits.map((h) => new Date(h).getHours()).join(','));
+}
+
+// ---- I14 · an override moves its occurrence, it does not duplicate or vanish ---------
+// A real export carries BOTH the recurring parent and a RECURRENCE-ID child for the
+// moved instance. The earlier version of this probe supplied the child ALONE, so it
+// passed while the parent — the half that actually shows the wrong time — went
+// untested. With both present the old slot must be gone and the new one shown.
+{
+  const text = wrap(
+    'BEGIN:VEVENT\nUID:p\nDTSTART:20260803T090000Z\nRRULE:FREQ=DAILY\nSUMMARY:Standup\nEND:VEVENT\n' +
+    'BEGIN:VEVENT\nUID:p\nRECURRENCE-ID:20260804T090000Z\nDTSTART:20260804T140000Z\nSUMMARY:Standup moved\nEND:VEVENT');
+  const got = ICS.next(text, Date.UTC(2026, 7, 3, 10), 30 * DAY, {});
+  check('I14 the next occurrence after a move is the MOVED one, at its new time',
+    got.best && got.best.start === Date.UTC(2026, 7, 4, 14, 0, 0) && got.best.event.summary === 'Standup moved',
+    got.best && new Date(got.best.start).toISOString() + ' ' + JSON.stringify(got.best.event.summary));
+  const hits = ICS.expand(ICS.parse(text)[0], Date.UTC(2026, 7, 3), Date.UTC(2026, 7, 6));
+  check('I14b and the parent no longer emits the slot it moved out of',
+    !hits.includes(Date.UTC(2026, 7, 4, 9, 0, 0)) && hits.includes(Date.UTC(2026, 7, 5, 9, 0, 0)),
+    hits.map((h) => new Date(h).toISOString()).join(','));
 }
 
 // ---- I10 · the soonest event wins across several ------------------------------------

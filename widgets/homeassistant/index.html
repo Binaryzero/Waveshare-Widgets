@@ -76,7 +76,11 @@
   // Domains where a stray brush of a desk-height touch strip has a physical
   // consequence. These never respond to a tap: they need arming in settings AND a
   // deliberate long press. Everything else in the house is a light going on.
-  const SECURITY = ['lock', 'cover', 'alarm_control_panel', 'garage_door'];
+  // Alarm panels are DELIBERATELY absent: their services are arm_home / arm_away /
+  // disarm, not the cover services this widget knows how to send, and several of them
+  // require a code. A panel here would have offered a long press that always failed.
+  // They still render as read-only state, which is the useful half.
+  const SECURITY = ['lock', 'cover', 'garage_door'];
   const TOGGLEABLE = ['light', 'switch', 'fan', 'input_boolean', 'automation', 'siren', 'humidifier'];
   const PRESS_MS = 700;
 
@@ -126,10 +130,16 @@
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
 
+    const prevIdentity = cfg.base + '\n' + cfg.token;
     cfg.base = normalizeBase(s.baseUrl);
     cfg.token = String(s.accessToken == null ? '' : s.accessToken);
     cfg.entities = parseEntities(s.entities);
     cfg.refreshMs = Math.min(600, Math.max(5, Number(s.refreshSeconds) || 20)) * 1000;
+    // A different server (or a different token onto the same one) is a different set of
+    // facts. Keeping the old map meant the previous house's states rendered under the
+    // new configuration if the first fetch failed — and worse, a matching lock id would
+    // pick lock-vs-unlock from the OLD server's state and send that to the new one.
+    if (prevIdentity !== cfg.base + '\n' + cfg.token) states = new Map();
 
     build();
     if (!cfg.base || !cfg.token || !cfg.entities.length) { showSetup(); return; }

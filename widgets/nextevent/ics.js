@@ -48,6 +48,40 @@
     return guess;
   }
 
+  function partsInZone(utcMs, tz) {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    const m = {};
+    for (const p of dtf.formatToParts(new Date(utcMs))) m[p.type] = p.value;
+    return { y: +m.year, mo: +m.month, d: +m.day, h: (+m.hour) % 24, mi: +m.minute, s: +m.second };
+  }
+
+  /** Add `n` days to an instant, PRESERVING WALL-CLOCK TIME in the event's own frame.
+   *
+   * `ms + n * 86400000` is wrong for anything but a UTC (`Z`) time, because a day is
+   * not always 86400 seconds where the event lives. A 09:00 America/New_York daily
+   * event stepped that way becomes 10:00 the morning after the spring transition and
+   * stays an hour wrong until autumn — a meeting displayed at a time it does not
+   * happen, which is the one thing this reader is not allowed to do. */
+  function addDays(ms, n, frame) {
+    if (!n) return ms;
+    if (frame && frame.tz) {
+      const p = partsInZone(ms, frame.tz);
+      return zonedToUtc(p.y, p.mo, p.d + n, p.h, p.mi, p.s, frame.tz);
+    }
+    if (frame && (frame.floating || frame.allDay)) {
+      // Floating and all-day are local wall clock by definition; Date's local
+      // arithmetic already preserves it across a transition.
+      const d = new Date(ms);
+      d.setDate(d.getDate() + n);
+      return d.getTime();
+    }
+    return ms + n * 86400000;   // a Z time is an absolute instant — UTC has no DST
+  }
+
   // Returns {ms, allDay, floating} or null. A floating time (no Z, no TZID) is local
   // by specification — the same wall clock wherever the calendar is read.
   function parseDate(value, params) {
@@ -58,16 +92,18 @@
     const y = +Y, mo = +Mo, d = +D;
     if (H === undefined || (params && params.VALUE === 'DATE')) {
       // All-day: local midnight, so "today" means today for the person looking at it.
-      return { ms: new Date(y, mo - 1, d, 0, 0, 0).getTime(), allDay: true, floating: false };
+      return { ms: new Date(y, mo - 1, d, 0, 0, 0).getTime(), allDay: true, floating: false, tz: null };
     }
     const h = +H, mi = +Mi, s = +S;
-    if (Z) return { ms: Date.UTC(y, mo - 1, d, h, mi, s), allDay: false, floating: false };
+    if (Z) return { ms: Date.UTC(y, mo - 1, d, h, mi, s), allDay: false, floating: false, tz: null };
     const tz = params && params.TZID;
     if (tz) {
-      try { return { ms: zonedToUtc(y, mo, d, h, mi, s, tz), allDay: false, floating: false }; }
+      // The zone is carried, not just applied: recurrence stepping needs the frame to
+      // keep the wall clock stable across a DST transition.
+      try { return { ms: zonedToUtc(y, mo, d, h, mi, s, tz), allDay: false, floating: false, tz }; }
       catch (e) { /* unknown zone — fall through to floating rather than guess UTC */ }
     }
-    return { ms: new Date(y, mo - 1, d, h, mi, s).getTime(), allDay: false, floating: true };
+    return { ms: new Date(y, mo - 1, d, h, mi, s).getTime(), allDay: false, floating: true, tz: null };
   }
 
   function parseParams(chunk) {
@@ -97,15 +133,26 @@
     return out;
   }
 
+  // Every RRULE part this reader actually implements. Anything else — BYMONTHDAY,
+  // BYSETPOS, BYMONTH, BYWEEKNO, BYHOUR — CONSTRAINS the series, so ignoring it
+  // produces more occurrences than the rule describes rather than fewer.
+  // `FREQ=DAILY;BYMONTHDAY=15` means the 15th of each month; ignoring BYMONTHDAY
+  // renders it as every single day. Unknown parts are refused, not skipped.
+  const KNOWN_RRULE = new Set(['FREQ', 'INTERVAL', 'COUNT', 'UNTIL', 'BYDAY', 'WKST']);
+
   /** Occurrences of one event at or after `from`, up to `until`, newest-last.
-   *  Returns [] for a rule this reader cannot expand exactly. */
+   *  Returns null for a rule this reader cannot expand EXACTLY. */
   function expand(event, from, until) {
     const start = event.start.ms;
+    const frame = event.start;
     if (!event.rrule) return (start >= from && start <= until) ? [start] : [];
 
     const rule = event.rrule;
     const freq = String(rule.FREQ || '').toUpperCase();
     if (freq !== 'DAILY' && freq !== 'WEEKLY') return null;   // null = "cannot expand"
+    for (const key of Object.keys(rule)) if (!KNOWN_RRULE.has(key)) return null;
+    // BYDAY on a DAILY rule is a filter we do not apply; refuse rather than over-emit.
+    if (freq === 'DAILY' && rule.BYDAY) return null;
 
     const interval = Math.max(1, parseInt(rule.INTERVAL, 10) || 1);
     const count = rule.COUNT ? parseInt(rule.COUNT, 10) : null;
@@ -118,14 +165,30 @@
 
     const out = [];
     const excluded = new Set(event.exdates || []);
-    let emitted = 0;
+    const stepDays = freq === 'DAILY' ? interval : (byDay && byDay.length ? 1 : 7 * interval);
     const dayMs = 86400000;
-    // Walk from DTSTART rather than from `from`: COUNT is defined against the series,
-    // so starting mid-series would let a finished series keep producing occurrences.
+
+    // Where to start walking. COUNT is defined against the SERIES, so a counted rule
+    // must be walked from DTSTART or a finished series would keep producing — but an
+    // UNCOUNTED one can be fast-forwarded, and has to be: a daily standup running
+    // since 2020 needs ~2,400 steps to reach today, and a fixed guard walked from
+    // DTSTART simply gave up and reported nothing scheduled. The event vanished while
+    // the widget said the calendar was empty, which is the failure this reader exists
+    // to prevent, wearing a different hat.
     let cursor = start;
-    // Bounded so a malformed rule cannot spin: two years of daily steps is far past
-    // any lookahead this widget offers.
-    for (let guard = 0; guard < 1200 && cursor <= hardUntil; guard++) {
+    let emitted = 0;
+    if (count == null && from > start) {
+      const approxSteps = Math.floor((from - start) / (dayMs * stepDays));
+      if (approxSteps > 0) cursor = addDays(start, approxSteps * stepDays, frame);
+      // Nudge back over a DST-induced overshoot so nothing between here and `from`
+      // is skipped; bounded, since the approximation is at most a day or two out.
+      for (let back = 0; back < 4 && cursor > from; back++) cursor = addDays(cursor, -stepDays, frame);
+    }
+
+    // Guard scales with what the rule can legitimately produce: a COUNT series is
+    // bounded by COUNT, an uncounted one is now walked from near `from`.
+    const guardMax = count != null ? Math.min(count + 1, 10000) : 1200;
+    for (let guard = 0; guard < guardMax && cursor <= hardUntil; guard++) {
       if (count != null && emitted >= count) break;
       let hit = true;
       if (byDay && byDay.length) hit = byDay.includes(new Date(cursor).getDay());
@@ -134,14 +197,15 @@
         if (cursor >= from && !excluded.has(cursor)) out.push(cursor);
       }
       // WEEKLY with BYDAY steps day by day inside the week and jumps INTERVAL weeks
-      // at the week boundary; without BYDAY it is a plain interval of weeks.
-      if (freq === 'DAILY') cursor += dayMs * interval;
+      // at the week boundary; without BYDAY it is a plain interval of weeks. Every
+      // step goes through addDays so the wall clock survives a DST transition.
+      if (freq === 'DAILY') cursor = addDays(cursor, interval, frame);
       else if (byDay && byDay.length) {
-        const next = cursor + dayMs;
+        const next = addDays(cursor, 1, frame);
         cursor = (new Date(next).getDay() === new Date(start).getDay() && interval > 1)
-          ? next + dayMs * 7 * (interval - 1)
+          ? addDays(next, 7 * (interval - 1), frame)
           : next;
-      } else cursor += dayMs * 7 * interval;
+      } else cursor = addDays(cursor, 7 * interval, frame);
     }
     return out;
   }
@@ -181,12 +245,29 @@
           if (d) cur.exdates.push(d.ms);
         }
       }
-      // RECURRENCE-ID means this VEVENT overrides one occurrence of a series. Honoring
-      // it correctly means reconciling against the parent; ignoring it silently would
-      // show a moved meeting at its old time. Mark the event so it is dropped.
-      else if (name === 'RECURRENCE-ID') cur.override = true;
+      // RECURRENCE-ID means this VEVENT replaces ONE occurrence of a series. A real
+      // export carries the recurring parent AND this child, so dropping only the child
+      // leaves the parent still emitting the occurrence at its old time — the moved
+      // meeting shown where it no longer is. The id is kept so it can be reconciled
+      // against the parent below.
+      else if (name === 'RECURRENCE-ID') {
+        cur.override = true;
+        const d = parseDate(value, params);
+        if (d) cur.overrideOf = d.ms;
+      }
     }
-    return events.filter((e) => e.start);
+    const kept = events.filter((e) => e.start);
+    // Fold each override into its parent as an exclusion, matched by UID. The parent
+    // then skips that instant and the child is dropped, so the occurrence disappears
+    // from its old slot instead of appearing twice or appearing wrongly.
+    const byUid = new Map();
+    for (const e of kept) if (e.uid && !e.override) byUid.set(e.uid, e);
+    for (const e of kept) {
+      if (!e.override || e.overrideOf == null) continue;
+      const parent = byUid.get(e.uid);
+      if (parent) parent.exdates.push(e.overrideOf);
+    }
+    return kept;
   }
 
   /** The soonest occurrence at or after `from`. Returns {event, start, dropped}. */
@@ -197,7 +278,10 @@
     let best = null;
     let dropped = 0;
     for (const ev of events) {
-      if (ev.override) { dropped++; continue; }
+      // An override is a real event at its NEW time — its old slot has already been
+      // excluded from the parent above, so it can simply be read as an ordinary
+      // one-off rather than thrown away. Dropping it was what left the moved meeting
+      // invisible while the parent still advertised the time it moved from.
       if (options.ignoreAllDay && ev.start.allDay) continue;
       const hits = expand(ev, from, until);
       if (hits === null) { dropped++; continue; }

@@ -208,13 +208,16 @@
 
   /** A reading that genuinely just arrived: this is the only thing allowed to move
    * `lastAt`, because that timestamp is the tile's claim about how fresh the number is. */
-  function showValue(text, cls) {
+  function showValue(text, cls, raw) {
     paintValue(text, cls);
     el('body').classList.remove('stale');
     el('pill').hidden = true;
     stale = false;
     lastAt = Date.now();
-    last = { text: text, cls: cls };
+    // `raw` is kept so a decimals/threshold edit can re-render this reading straight
+    // away. Storing only the formatted text meant the tile showed the OLD precision
+    // and the OLD severity colour until the next poll, which may be a day out.
+    last = { text: text, cls: cls, raw: raw };
     renderMeta('');
   }
 
@@ -269,6 +272,14 @@
     ]);
   }
 
+  const formEnc = (v) => encodeURIComponent(String(v == null ? '' : v)).replace(/%20/g, '+');
+  const b64 = (str) => {
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin);
+  };
+
   const tokenKey = () => cfg.tokenEndpoint + '\n' + cfg.clientId;
   const CACHE = 'rest.oauth.v1';
 
@@ -300,7 +311,11 @@
         headers: {
           // HTTP Basic is the form every client-credentials server accepts; putting the
           // id and secret in the body is optional in the RFC and refused by some.
-          Authorization: 'Basic ' + btoa(cfg.clientId + ':' + cfg.clientSecret),
+          // RFC 6749 §2.3.1: both halves are form-encoded BEFORE the colon join, so a
+          // client id containing ':' cannot be misparsed. The UTF-8 round trip is what
+          // stops btoa throwing on a non-Latin-1 secret and killing the request before
+          // it is sent.
+          Authorization: 'Basic ' + b64(formEnc(cfg.clientId) + ':' + formEnc(cfg.clientSecret)),
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: body.toString(),
@@ -353,6 +368,11 @@
     activeController = controller;
     try {
       const init = { cache: 'no-store', signal: controller.signal };
+      // Declared up here because the OAuth exchange below runs inside the same
+      // deadline as the request it authenticates.
+      // Never wait longer than the poll period (floor 10 s, cap 30 s): a request still
+      // outstanding when the next one is due has already failed in every way that matters.
+      const budget = Math.min(30000, Math.max(10000, cfg.pollSeconds * 1000));
       const headers = {};
       // The secret arrives decrypted, exactly like a text setting. An unset or
       // unreadable one is "" — send no header at all rather than an empty one.
@@ -364,7 +384,10 @@
         // failures with different fixes, and collapsing them into one card is what
         // sends people editing the wrong setting.
         try {
-          headers.Authorization = 'Bearer ' + await getBearer(false);
+          // Inside the deadline, not before it: a token endpoint that accepts the
+          // connection and then stalls held inFlight for the whole of WW.fetch's own
+          // timeout, and every poll behind it waited on that.
+          headers.Authorization = 'Bearer ' + await withDeadline(budget, controller, () => getBearer(false));
           tokenFailed = '';
         } catch (e) {
           tokenFailed = e.message;
@@ -382,9 +405,6 @@
 
       // WW.fetch, not fetch: it escalates through the host when the browser hits
       // CORS or a bot wall, so the same settings work on either path.
-      // Never wait longer than the poll period (floor 10 s, cap 30 s): a request still
-      // outstanding when the next one is due has already failed in every way that matters.
-      const budget = Math.min(30000, Math.max(10000, cfg.pollSeconds * 1000));
       const url = cfg.url;
       const doFetch = async () => {
         const res = await WW.fetch(url, init);
@@ -406,7 +426,9 @@
       // on every poll for a credential that is simply wrong.
       if (!answer.ok && answer.status === 401 && cfg.authMode === 'oauth2') {
         try {
-          init.headers = Object.assign({}, init.headers, { Authorization: 'Bearer ' + await getBearer(true) });
+          init.headers = Object.assign({}, init.headers, {
+            Authorization: 'Bearer ' + await withDeadline(budget, controller, () => getBearer(true)),
+          });
           answer = await withDeadline(budget, controller, doFetch);
           if (superseded()) return;
         } catch (e) {
@@ -467,11 +489,11 @@
       }
       if (formatted === null) {
         // A real null from the source: the endpoint is fine, the reading is missing.
-        if (!showStale('no reading')) showValue('--', '');
+        if (!showStale('no reading')) showValue('--', '', undefined);
         return;
       }
-      if (typeof formatted === 'string') showValue(formatted, '');
-      else showValue(formatted.text, classify(formatted.num));
+      if (typeof formatted === 'string') showValue(formatted, '', found);
+      else showValue(formatted.text, classify(formatted.num), found);
     } catch (e) {
       // An abort we caused by retargeting the tile is not an endpoint failure, and the
       // state it would paint describes a source the user has already moved off.
@@ -614,8 +636,12 @@
 
     // A repeated init (settings edit, theme push) must not stack timers or throw the
     // current reading away. Only a change to WHAT is being fetched invalidates it.
+    // WHO we authenticate as is part of WHAT is being fetched. Leaving auth out meant
+    // an answer already in flight under the old client could land and render after the
+    // edit, and the previous account's reading stayed on screen until new data arrived.
+    const authNow = cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope;
     const sourceChanged = cfg.url !== prevUrl || cfg.pointer !== prevPointer ||
-      (cfg.headerName + '\n' + cfg.headerValue) !== prevHeader;
+      (cfg.headerName + '\n' + cfg.headerValue) !== prevHeader || authNow !== prevAuth;
     if (sourceChanged) {
       last = null;
       lastAt = 0;
@@ -635,6 +661,17 @@
       inFlight = false;
       stale = false;
     } else if (last) {
+      // Re-derive the cached reading under the new presentation settings. `last` stores
+      // formatted TEXT and a classification, so without this a decimals or threshold
+      // edit sat unapplied until the next poll — which the user can set to 24 hours.
+      if (last.raw !== undefined) {
+        const reformatted = formatValue(last.raw);
+        if (reformatted && typeof reformatted === 'object') {
+          last = { text: reformatted.text, cls: classify(reformatted.num), raw: last.raw };
+        } else if (typeof reformatted === 'string') {
+          last = { text: reformatted, cls: '', raw: last.raw };
+        }
+      }
       // Redraw the cached reading, but `showValue` would be a lie here: it stamps
       // `lastAt = now`, drops the Stale pill and clears the failure reason. Renaming a
       // tile would turn an hour-old survivor of a dead endpoint into "0s ago", live.

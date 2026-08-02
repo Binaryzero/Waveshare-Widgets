@@ -166,7 +166,13 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         // it carries no response headers beyond Content-Type, so anything reading an
         // ETag off a proxied call legitimately sees nothing; that is the host's shape,
         // and a widget has to survive it.
-        const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(stub.bodyText || '')));
+        // Chunked: String.fromCharCode(...bytes) blows the argument limit long before
+        // the 5 MiB body ceiling, so a realistic full-size fixture threw inside the
+        // responder instead of exercising the widget's proxy path.
+        const bytes = new TextEncoder().encode(stub.bodyText || '');
+        let bin = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        const b64 = btoa(bin);
         return reply({
           type: 'ww-fetch-result', id: m.id, status: stub.status || 200,
           contentType: stub.contentType || 'application/json', bodyBase64: b64,

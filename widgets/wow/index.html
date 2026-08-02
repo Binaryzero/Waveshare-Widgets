@@ -91,7 +91,7 @@
   // is identical, public, and the same for every player in the region. Purity buys
   // nothing here and costs a call per refresh.
   const RIO = 'https://raider.io/api/v1';
-  const CACHE = 'wow.series.v1';
+  const CACHE_BASE = 'wow.series.v1';
   const SERIES_MAX = 96;      // ~48h at the 30-minute floor; enough for a readable line
 
   const cfg = { region: 'us', realm: '', character: '', clientId: '', clientSecret: '', refreshMs: 1800000 };
@@ -137,15 +137,20 @@
     return String(g);
   }
 
+  // Token prices are per region and are not comparable across them. One shared key
+  // meant switching US->EU (or two tiles side by side) appended two different markets
+  // into one line and reported a percentage move that never happened.
+  const cacheKey = () => CACHE_BASE + '.' + cfg.region;
+
   function loadSeries() {
     try {
-      const raw = localStorage.getItem(CACHE);
+      const raw = localStorage.getItem(cacheKey());
       const c = raw ? JSON.parse(raw) : null;
       if (c && Array.isArray(c.series)) series = c.series.filter((p) => p && Number.isFinite(p.t) && Number.isFinite(p.price));
     } catch (e) { series = []; }
   }
   function saveSeries() {
-    try { localStorage.setItem(CACHE, JSON.stringify({ series })); } catch (e) { /* quota */ }
+    try { localStorage.setItem(cacheKey(), JSON.stringify({ series })); } catch (e) { /* quota */ }
   }
 
   WW.onInit((s0) => {
@@ -157,6 +162,7 @@
     readSparkColors();
 
     const prevKey = cfg.clientId + '\n' + cfg.clientSecret;
+    const prevRegion = cfg.region;
     cfg.region = ['us', 'eu', 'kr', 'tw'].includes(s.region) ? s.region : 'us';
     cfg.realm = String(s.realm || '').trim().toLowerCase().replace(/\s+/g, '-');
     cfg.character = String(s.character || '').trim();
@@ -164,6 +170,9 @@
     cfg.clientSecret = String(s.clientSecret == null ? '' : s.clientSecret);
     cfg.refreshMs = Math.min(240, Math.max(20, Number(s.refreshMinutes) || 30)) * 60000;
     if (prevKey !== cfg.clientId + '\n' + cfg.clientSecret) bearer = null;
+    // A region change swaps which market the series describes, so reload it from that
+    // region's own key rather than carrying the previous one's points forward.
+    if (prevRegion !== cfg.region) { series = []; loadSeries(); }
 
     if (!started) {
       started = true;
@@ -266,7 +275,7 @@
             saveSeries();
           }
         } catch (e) { problems.push(e.message); }
-      } else problems.push('no Battle.net credentials');
+      } else { data.price = null; problems.push('no Battle.net credentials'); }
 
       try { data.affixes = await fetchAffixes(); } catch (e) { problems.push(e.message); }
 
@@ -274,7 +283,13 @@
         try {
           const c = await fetchCharacter();
           data.ilvl = c.ilvl; data.mplus = c.mplus; data.raid = c.raid;
-        } catch (e) { problems.push('character not found'); }
+        } catch (e) {
+          // Clear it. Leaving the previous character's numbers under the NEW name is
+          // worse than the half-populated tile this widget deliberately allows — it is
+          // not missing data, it is another character's data wearing this one's label.
+          data.ilvl = null; data.mplus = null; data.raid = null;
+          problems.push('character not found');
+        }
       }
 
       const gotSomething = data.price != null || data.affixes.length || data.ilvl != null;

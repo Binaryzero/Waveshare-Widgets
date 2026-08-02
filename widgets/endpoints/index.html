@@ -74,6 +74,7 @@
   const cfg = { targets: [], intervalMs: 60000, slowMs: 800 };
   const cards = new Map();     // key -> {root, code, rtt}
   const timers = new Map();    // key -> timeout id
+  const running = new Set();   // targets with a probe in flight — see visibilitychange
   const results = new Map();   // key -> {state, code, ms, at}
   let generation = 0;          // invalidates the chains a previous settings load started
 
@@ -123,6 +124,10 @@
     const grid = el('grid');
     grid.textContent = '';
     cards.clear();
+    // Outcomes belong to the target list that produced them. renderSummary counts every
+    // value in this map, so a removed target kept contributing its old down/slow status
+    // to the pill for a grid it is no longer part of.
+    results.clear();
 
     const n = cfg.targets.length;
     el('state').hidden = !!n;
@@ -161,7 +166,9 @@
   // criterion this widget exists to satisfy.
   async function probe(target, gen) {
     if (gen !== generation) return;
+    running.add(target.url);
     if (document.hidden) {
+      running.delete(target.url);
       timers.set(target.url, setTimeout(() => probe(target, gen), 5000));
       return;
     }
@@ -178,6 +185,7 @@
     } catch (e) {
       outcome = { state: 'down', code: 0, ms: Date.now() - started, at: Date.now() };
     } finally {
+      running.delete(target.url);
       if (gen === generation) {
         if (outcome) { results.set(target.url, outcome); renderTarget(target, outcome); renderSummary(); }
         timers.set(target.url, setTimeout(() => probe(target, gen), cfg.intervalMs));
@@ -218,7 +226,11 @@
     // target's remaining interval.
     for (const t of timers.values()) clearTimeout(t);
     timers.clear();
-    for (const t of cfg.targets) probe(t, generation);
+    // Only start targets that are NOT already mid-probe. Starting one unconditionally
+    // gave that target two self-scheduling chains whose timeout ids overwrote each
+    // other in the map, leaving one untracked and polling forever — and every
+    // hide/show cycle added another.
+    for (const t of cfg.targets) if (!running.has(t.url)) probe(t, generation);
   });
 </script>
 </body>
