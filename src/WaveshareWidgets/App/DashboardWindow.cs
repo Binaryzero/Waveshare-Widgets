@@ -274,7 +274,12 @@ public sealed class DashboardWindow : Form
                         // unparsable since then, a live lookup would stop calling the
                         // property a secret, Seal would skip it, and the plaintext the
                         // shell is round-tripping would be written straight to disk.
-                        var secrets = SecretPolicy.Seal(edited, LayoutStore.Load(), RevealPlan());
+                        // Read off the RAW node — the model carries no extension data.
+                        // This is also the channel the on-panel editor never had: it can
+                        // now say what the user cleared instead of having to infer it from
+                        // a value, which is what Reveal could not express (#153).
+                        var secrets = SecretPolicy.Seal(edited, LayoutStore.Load(), RevealPlan(),
+                            SecretPolicy.ReadClearedMarkers(message["layout"]));
                         var secretFailures = secrets.Failures;
                         LayoutStore.Save(edited);
                         Log.Info("layout saved from on-panel editor");
@@ -845,7 +850,7 @@ public sealed class DashboardWindow : Form
         // The dashboard's widget iframes need real credentials, so secrets are decrypted
         // for THIS payload only — layout.json keeps the DPAPI ciphertext.
         SnapshotManifests();
-        SecretPolicy.Reveal(layout, RevealPlan());
+        var blanked = SecretPolicy.Reveal(layout, RevealPlan());
         var widgets = _library.Widgets.Select(w => new
         {
             id = w.Manifest.Id,
@@ -861,7 +866,7 @@ public sealed class DashboardWindow : Form
 
         return new JsonObject
         {
-            ["layout"] = JsonSerializer.SerializeToNode(layout),
+            ["layout"] = RevealedLayoutNode(layout, blanked),
             ["widgets"] = JsonSerializer.SerializeToNode(widgets, BridgeJson),
             ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
             ["media"] = JsonSerializer.SerializeToNode(_hub.LatestMedia, BridgeJson),
@@ -1004,6 +1009,22 @@ public sealed class DashboardWindow : Form
     /// across operations would answer the second with the first one's library.</summary>
     private SecretPlan RevealPlan() =>
         SecretPlan.FromManifests(ManifestRevealedWith, RedactionsRevealedWith);
+
+    /// <summary>The revealed layout as JSON, carrying the reveal-side restorable marker.
+    ///
+    /// The model cannot hold a projection — that is what keeps every marker out of
+    /// layout.json — so the names are stamped here, on the node about to be sent, exactly
+    /// where `Mask` puts its own for the settings editor. Without it the panel cannot tell
+    /// a field the host emptied from one that was always empty, renders no Clear, and a
+    /// demoted credential is undeletable there (#153).</summary>
+    private static JsonNode? RevealedLayoutNode(
+        DashboardLayout layout,
+        IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>> blanked)
+    {
+        var node = JsonSerializer.SerializeToNode(layout);
+        SecretPolicy.StampMarkers(node, SecretPolicy.RestorableMarkerKey, blanked);
+        return node;
+    }
 
     private void SnapshotManifests()
     {

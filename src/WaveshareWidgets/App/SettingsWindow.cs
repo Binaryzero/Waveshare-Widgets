@@ -591,7 +591,11 @@ public sealed class SettingsWindow : Form
 
             // Newly typed secrets get encrypted; masked ones the user didn't retype keep
             // the ciphertext already on disk instead of being wiped.
-            var secrets = SecretPolicy.Seal(layout, LayoutStore.Load(), MaskedPlan());
+            // Read off the RAW node: the model carries no extension data, so by the time
+            // there is a DashboardLayout this projection is already gone. See
+            // SecretPolicy.ClearedMarkerKey.
+            var secrets = SecretPolicy.Seal(layout, LayoutStore.Load(), MaskedPlan(),
+                SecretPolicy.ReadClearedMarkers(layoutNode));
             var secretFailures = secrets.Failures;
             LayoutStore.Save(layout);
             LayoutSaved?.Invoke();

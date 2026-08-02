@@ -74,6 +74,14 @@ static DashboardLayout LayoutWith(JsonObject settings, string? instanceId = "i1"
     }] }],
 };
 static LayoutSlot Slot(DashboardLayout l) => l.Pages[0].Slots[0];
+// The editor's cleared-address projection, as Seal receives it. A clear is a NAME beside
+// the layout now, never a sentinel inside a value — so a probe cannot express one by
+// writing a magic string into a setting, which is the point.
+static IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>> ClearedAt(
+    int page, int slot, params string[] names) =>
+    new Dictionary<(int, int), IReadOnlyList<string>> { [(page, slot)] = names };
+static IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>> Cleared(params string[] names) =>
+    ClearedAt(0, 0, names);
 static string? Value(DashboardLayout l, string name) =>
     Slot(l).Settings?[name] is System.Text.Json.Nodes.JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 
@@ -125,18 +133,25 @@ SecretPolicy.Reveal(retyped, Lookup);
 Check("P5 a retyped secret replaces the stored one",
     retypedSealed != sealedValue && Value(retyped, "apiToken") == "new-token-42");
 
-// Clearing is an explicit MARKER, never an empty string: empty is also what an
-// untouched masked field sends, and that has to keep the credential.
-var cleared = LayoutWith(new JsonObject { ["apiToken"] = SecretStore.ClearMarker });
-SecretPolicy.Seal(cleared, typed, Lookup);
-Check("P5b the clear marker removes a STORED credential (Codex r1: empty kept it)",
+// Clearing is a NAMED ADDRESS, never a value: empty is also what an untouched masked
+// field sends, and that has to keep the credential. The value the editor sends alongside
+// is a plain empty string, which is what makes any credential text storeable.
+var cleared = LayoutWith(new JsonObject { ["apiToken"] = "" });
+SecretPolicy.Seal(cleared, typed, SecretPlan.FromManifests(Lookup), Cleared("apiToken"));
+Check("P5b a named clear removes a STORED credential (Codex r1: empty alone kept it)",
     Slot(cleared).Settings?["apiToken"] is null, Value(cleared, "apiToken"));
-Check("P5c the clear marker itself is never persisted",
-    !JsonSerializer.Serialize(cleared).Contains(SecretStore.ClearMarker));
-var clearedFresh = LayoutWith(new JsonObject { ["apiToken"] = SecretStore.ClearMarker });
-SecretPolicy.Seal(clearedFresh, null, Lookup);
+Check("P5c nothing sentinel-shaped is persisted, because none exists",
+    !JsonSerializer.Serialize(cleared).Contains("__ww_secret"));
+var clearedFresh = LayoutWith(new JsonObject { ["apiToken"] = "" });
+SecretPolicy.Seal(clearedFresh, null, SecretPlan.FromManifests(Lookup), Cleared("apiToken"));
 Check("P5d clearing with nothing stored also leaves the key absent",
     Slot(clearedFresh).Settings?["apiToken"] is null);
+// The address is what carries the intent, so naming a DIFFERENT property must not touch
+// this one — the failure a positional or slot-wide flag would have.
+var clearedOther = LayoutWith(new JsonObject { ["apiToken"] = "" });
+SecretPolicy.Seal(clearedOther, typed, SecretPlan.FromManifests(Lookup), Cleared("repo"));
+Check("P5e naming another property leaves this one restored, not removed",
+    SecretStore.CanUnprotect(Value(clearedOther, "apiToken")), Value(clearedOther, "apiToken") ?? "(removed)");
 
 // ---- P6 · slots without an instanceId still find their own stored secret -------------
 var positional = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
@@ -477,15 +492,25 @@ Check("P20b a well-formed foreign envelope is still dropped",
     SecretStore.LooksLikeEnvelope("dpapi:v1:" + Convert.ToBase64String(Encoding.UTF8.GetBytes("x"))) &&
     !SecretStore.LooksLikeEnvelope("dpapi:v1:!!!not-base64!!!"));
 
-// ---- P21 · Codex r4: a credential that IS the clear marker stays storeable ----------
-var r4Literal = LayoutWith(new JsonObject { ["apiToken"] = SecretStore.LiteralPrefix + SecretStore.ClearMarker });
+// ---- P21 · Codex r4: a credential that reads like protocol stays storeable ----------
+// There is no reserved namespace any longer. The strings below were the sentinel and its
+// escape hatch, and they are now ordinary text like any other — which is the whole reason
+// the projection replaced them. No escaping, at any producer, ever.
+const string ExSentinel = "__ww_secret_cleared__";
+const string ExEscape = "__ww_secret_lit_";
+var r4Literal = LayoutWith(new JsonObject { ["apiToken"] = ExSentinel });
 SecretPolicy.Seal(r4Literal, null, Lookup);
-Check("P21 an escaped credential equal to the clear marker is stored, not read as a clear",
-    SecretStore.Unprotect(Value(r4Literal, "apiToken") ?? "") == SecretStore.ClearMarker,
+Check("P21 a credential equal to the old sentinel is stored verbatim, not read as a clear",
+    SecretStore.Unprotect(Value(r4Literal, "apiToken") ?? "") == ExSentinel,
     Value(r4Literal, "apiToken"));
-var r4StillClears = LayoutWith(new JsonObject { ["apiToken"] = SecretStore.ClearMarker });
-SecretPolicy.Seal(r4StillClears, typed, Lookup);
-Check("P21b the UNescaped marker still means remove",
+var r4Escape = LayoutWith(new JsonObject { ["apiToken"] = ExEscape + "foo" });
+SecretPolicy.Seal(r4Escape, null, Lookup);
+Check("P21b and one carrying the old escape prefix keeps every character of it",
+    SecretStore.Unprotect(Value(r4Escape, "apiToken") ?? "") == ExEscape + "foo",
+    Value(r4Escape, "apiToken"));
+var r4StillClears = LayoutWith(new JsonObject { ["apiToken"] = "" });
+SecretPolicy.Seal(r4StillClears, typed, SecretPlan.FromManifests(Lookup), Cleared("apiToken"));
+Check("P21c while a NAMED clear still means remove",
     Slot(r4StillClears).Settings?["apiToken"] is null);
 
 // ---- P22 · Codex r4: duplicate instanceIds refuse carry-over ------------------------
@@ -1275,9 +1300,9 @@ Check("P36h new text is saved VERBATIM, not encrypted — that is what `text` me
     Value(p36Typed, "apiToken") == "typed-by-hand", Value(p36Typed, "apiToken"));
 
 var p36Cleared = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(demotedStored))!;
-Slot(p36Cleared).Settings!["apiToken"] = SecretStore.ClearMarker;
-SecretPolicy.Seal(p36Cleared, demotedStored, DemotedLookup);
-Check("P36h2 the clear marker removes it, so the field CAN be emptied",
+Slot(p36Cleared).Settings!["apiToken"] = "";
+SecretPolicy.Seal(p36Cleared, demotedStored, SecretPlan.FromManifests(DemotedLookup), Cleared("apiToken"));
+Check("P36h2 a named clear removes it, so the field CAN be emptied",
     Slot(p36Cleared).Settings?["apiToken"] is null,
     Value(p36Cleared, "apiToken") ?? "(removed)");
 
@@ -1438,92 +1463,132 @@ Check("P37f and so is a boolean — `false` is a value, not an absence",
     Slot(boolean).Settings?["apiToken"]?.ToJsonString() == "false",
     Slot(boolean).Settings?["apiToken"]?.ToJsonString() ?? "(absent)");
 
-// ---- P37g · the clear marker is a protocol word, and now every ordinary property sees it
-// Before this intent, RestoreOrKeep ran for nothing, so an ordinary setting whose value
-// happened to BE the marker was stored like any other string. Now an unrelated save would
-// remove it. Editors escape the reserved namespace exactly as the secret control already
-// did; the host strips one prefix.
-var literal = LayoutWith(new JsonObject
-{
-    ["repo"] = SecretStore.LiteralPrefix + SecretStore.ClearMarker,
-});
-SecretPolicy.Seal(literal, null, DemotedLookup);
-Check("P37g an escaped clear marker in an ordinary field is stored as the user's text",
-    Value(literal, "repo") == SecretStore.ClearMarker, Value(literal, "repo") ?? "(removed)");
-var literalOther = LayoutWith(new JsonObject { ["repo"] = SecretStore.LiteralPrefix + "plain" });
-SecretPolicy.Seal(literalOther, null, DemotedLookup);
-Check("P37h and exactly ONE prefix is stripped, so the escape is reversible",
-    Value(literalOther, "repo") == "plain", Value(literalOther, "repo") ?? "(removed)");
+// ---- P37f2 · Reveal REPORTS what it blanked, or the panel cannot offer a Clear --------
+// Mask names its blanked addresses in the payload; Reveal could not, because the model
+// carries no projection. So the on-panel editor saw a demoted field arrive empty and had
+// no way to tell it from one that was always empty — no Clear, and an emptied field read
+// back as untouched (#153). Reveal returns the addresses now and DashboardWindow stamps
+// them onto the node it sends.
+var reportLayout = LayoutWith(new JsonObject { ["apiToken"] = demotedCipher, ["repo"] = "owner/name" });
+var revealReport = SecretPolicy.Reveal(reportLayout, SecretPlan.FromManifests(DemotedLookup));
+Check("P37f2 Reveal reports the address it blanked",
+    revealReport.TryGetValue((0, 0), out var revealBlanked) && revealBlanked.Contains("apiToken"),
+    string.Join(", ", revealReport.SelectMany(kv => kv.Value)));
+Check("P37f3 and reports nothing for a property it left alone",
+    !revealReport.SelectMany(kv => kv.Value).Contains("repo"));
+// Nothing blanked, nothing revealReport — the panel must not grow affordances for fields the
+// host never touched.
+var nothingBlanked = LayoutWith(new JsonObject { ["repo"] = "owner/name" });
+Check("P37f4 a reveal that blanked nothing reports nothing",
+    SecretPolicy.Reveal(nothingBlanked, SecretPlan.FromManifests(DemotedLookup)).Count == 0);
+// The stamp puts it where Mask puts its own, and the model still cannot carry it.
+var stampNode = JsonSerializer.SerializeToNode(reportLayout)!;
+SecretPolicy.StampMarkers(stampNode, SecretPolicy.RestorableMarkerKey, revealReport);
+Check("P37f5 stamping writes the marker onto the node the panel receives",
+    stampNode["pages"]![0]!["slots"]![0]![SecretPolicy.RestorableMarkerKey] is JsonArray st
+        && st.Count == 1 && st[0]!.GetValue<string>() == "apiToken",
+    stampNode["pages"]![0]!["slots"]![0]![SecretPolicy.RestorableMarkerKey]?.ToJsonString() ?? "(absent)");
+Check("P37f6 and the model still drops it, so it cannot reach layout.json",
+    !JsonSerializer.Serialize(JsonSerializer.Deserialize<DashboardLayout>(stampNode.ToJsonString()))
+        .Contains(SecretPolicy.RestorableMarkerKey));
 
-// The escape prefix has the marker's asymmetry too: the host strips one on the way to disk,
-// so a value typed as `__ww_secret_lit_foo` is STORED bare and the next untouched save
-// echoes it back — stripping again would rewrite the setting, shorter every save.
-var storedEscape = LayoutWith(new JsonObject { ["repo"] = SecretStore.LiteralPrefix + "foo" });
-var untouchedEscape = LayoutWith(new JsonObject { ["repo"] = SecretStore.LiteralPrefix + "foo" });
-SecretPolicy.Seal(untouchedEscape, storedEscape, DemotedLookup);
-Check("P37h2 an untouched value that already carries the prefix is left alone",
-    Value(untouchedEscape, "repo") == SecretStore.LiteralPrefix + "foo",
-    Value(untouchedEscape, "repo") ?? "(removed)");
-var againEscape = LayoutWith(new JsonObject { ["repo"] = SecretStore.LiteralPrefix + "foo" });
-SecretPolicy.Seal(againEscape, untouchedEscape, DemotedLookup);
-Check("P37h3 and on the save after that — it does not erode one prefix per save",
-    Value(againEscape, "repo") == SecretStore.LiteralPrefix + "foo",
-    Value(againEscape, "repo") ?? "(removed)");
-// A freshly TYPED escape still unwraps: incoming differs from stored, so an editor made it.
-var typedEscape = LayoutWith(new JsonObject { ["repo"] = SecretStore.LiteralPrefix + SecretStore.ClearMarker });
-SecretPolicy.Seal(typedEscape, storedEscape, DemotedLookup);
-Check("P37h4 while a freshly typed escape still unwraps exactly once",
-    Value(typedEscape, "repo") == SecretStore.ClearMarker, Value(typedEscape, "repo") ?? "(removed)");
+// ---- P37g · the pathologies the sentinel had, asserted GONE --------------------------
+// Every case below cost a review round on PR #152, and each one existed only because the
+// protocol rode inside the value. There is nothing to escape now, nothing to compare
+// against, and no producer that has to remember a rule — so these assert that the old
+// magic strings are ordinary text, permanently and in both directions.
+var wasSentinel = LayoutWith(new JsonObject { ["repo"] = ExSentinel });
+SecretPolicy.Seal(wasSentinel, null, DemotedLookup);
+Check("P37g an ordinary value equal to the old sentinel is stored verbatim",
+    Value(wasSentinel, "repo") == ExSentinel, Value(wasSentinel, "repo") ?? "(REMOVED)");
+// Survival across TWO saves is the property that matters: the sentinel bugs were invisible
+// to a single save, and the escape prefix eroded one layer per save rather than vanishing.
+var sentinelAgain = LayoutWith(new JsonObject { ["repo"] = ExSentinel });
+SecretPolicy.Seal(sentinelAgain, wasSentinel, DemotedLookup);
+Check("P37g2 and on the save after that", Value(sentinelAgain, "repo") == ExSentinel,
+    Value(sentinelAgain, "repo") ?? "(REMOVED)");
+var wasEscape = LayoutWith(new JsonObject { ["repo"] = ExEscape + "foo" });
+SecretPolicy.Seal(wasEscape, null, DemotedLookup);
+var escapeAgain = LayoutWith(new JsonObject { ["repo"] = ExEscape + "foo" });
+SecretPolicy.Seal(escapeAgain, wasEscape, DemotedLookup);
+Check("P37h a value carrying the old escape prefix keeps every character, twice over",
+    Value(wasEscape, "repo") == ExEscape + "foo" && Value(escapeAgain, "repo") == ExEscape + "foo",
+    (Value(wasEscape, "repo") ?? "?") + " | " + (Value(escapeAgain, "repo") ?? "?"));
 
-// ---- P37i · the escape reaches disk STRIPPED, so the next save sees the bare word ------
-// This is what escaping-on-input alone could not fix, and asserting the escape rather than
-// the round trip is what hid it: the editor escapes, the host strips, layout.json holds the
-// literal `__ww_secret_cleared__`, and the NEXT save — of a field nobody touched — arrives
-// with the bare marker. The word is only protocol where something was actually blanked.
-var onDisk = LayoutWith(new JsonObject { ["repo"] = SecretStore.ClearMarker });
-var untouchedSave = LayoutWith(new JsonObject { ["repo"] = SecretStore.ClearMarker });
-SecretPolicy.Seal(untouchedSave, onDisk, DemotedLookup);
-Check("P37i an ordinary value equal to the marker survives an untouched save",
-    Value(untouchedSave, "repo") == SecretStore.ClearMarker,
-    Value(untouchedSave, "repo") ?? "(REMOVED)");
-// ...and it keeps surviving, which is the property "round-trips" actually means.
-var thirdSave = LayoutWith(new JsonObject { ["repo"] = SecretStore.ClearMarker });
-SecretPolicy.Seal(thirdSave, untouchedSave, DemotedLookup);
-Check("P37i2 and again on the save after that",
-    Value(thirdSave, "repo") == SecretStore.ClearMarker, Value(thirdSave, "repo") ?? "(REMOVED)");
-// The protocol still works where it means something: a field the host really did blank.
-var realClear = LayoutWith(new JsonObject { ["apiToken"] = SecretStore.ClearMarker });
-SecretPolicy.Seal(realClear, demotedStored, DemotedLookup);
-Check("P37i3 while a blanked field's clear marker still removes the value",
-    Slot(realClear).Settings?["apiToken"] is null, Value(realClear, "apiToken") ?? "(removed)");
-// A slot with no stored counterpart has nothing on disk to lose, so the marker is read as
-// what it usually is — a clear. Keeping it would write the sentinel into the saved layout
-// as though the user had typed it, and they cannot have: an ordinary field offers no Clear,
-// and a typed one arrives escaped.
-var orphanMarker = LayoutWith(new JsonObject { ["repo"] = SecretStore.ClearMarker }, instanceId: "nobody");
-SecretPolicy.Seal(orphanMarker, onDisk, DemotedLookup);
-Check("P37i4 a slot with no stored counterpart reads it as a clear — nothing is at risk",
-    Slot(orphanMarker).Settings?["repo"] is null, Value(orphanMarker, "repo") ?? "(removed)");
-
-// ---- P37j · a clear issued from a STALE restorable control ----------------------------
-// Type into a demoted field, save, then clear it without reopening Settings. The editor's
-// provenance is stale — it still believes the host holds an envelope — so it sends the
-// marker; but the save it just made replaced the ciphertext with ordinary text, so the
-// address is no longer restorable. Gating the marker on restorability alone stored the
-// literal sentinel instead of clearing the field. What separates the cases is the STORED
-// value, not whether a restore is possible.
+// ---- P37i · a clear says WHICH address, so none of the old ambiguities can arise -------
+// The stale-editor case: type into a demoted field, save, then clear it without reopening.
+// The stored value is ordinary text by then. Under every value-based rule this was either
+// ignored or stored the sentinel; a named address does not care what is stored.
 var afterRetype = LayoutWith(new JsonObject { ["apiToken"] = "typed-and-saved" });
-var staleClear = LayoutWith(new JsonObject { ["apiToken"] = SecretStore.ClearMarker });
-SecretPolicy.Seal(staleClear, afterRetype, DemotedLookup);
-Check("P37j a clear still clears once the stored value is ordinary text",
+var staleClear = LayoutWith(new JsonObject { ["apiToken"] = "" });
+SecretPolicy.Seal(staleClear, afterRetype, SecretPlan.FromManifests(DemotedLookup), Cleared("apiToken"));
+Check("P37i a clear still clears once the stored value is ordinary text",
     Slot(staleClear).Settings?["apiToken"] is null, Value(staleClear, "apiToken") ?? "(removed)");
-// ...and the untouched-literal case still survives, which is the pair that has to hold
-// together: the same incoming word, opposite outcomes, decided by what is stored.
-var literalStillSafe = LayoutWith(new JsonObject { ["repo"] = SecretStore.ClearMarker });
-SecretPolicy.Seal(literalStillSafe, onDisk, DemotedLookup);
-Check("P37j2 while an untouched value that always WAS the marker is kept",
-    Value(literalStillSafe, "repo") == SecretStore.ClearMarker,
-    Value(literalStillSafe, "repo") ?? "(REMOVED)");
+// ...and the case that made a value-based rule impossible: the user typed the sentinel AS
+// their value, saved, then cleared. Incoming and stored agree; the intent is still stated.
+var sentinelStored = LayoutWith(new JsonObject { ["repo"] = ExSentinel });
+var clearAfterSentinel = LayoutWith(new JsonObject { ["repo"] = "" });
+SecretPolicy.Seal(clearAfterSentinel, sentinelStored, SecretPlan.FromManifests(DemotedLookup), Cleared("repo"));
+Check("P37i2 and a clear of a field whose stored value IS the old sentinel still clears",
+    Slot(clearAfterSentinel).Settings?["repo"] is null,
+    Value(clearAfterSentinel, "repo") ?? "(removed)");
+// The mirror: an untouched field is untouched, however its value reads.
+var untouchedSentinel = LayoutWith(new JsonObject { ["repo"] = ExSentinel });
+SecretPolicy.Seal(untouchedSentinel, sentinelStored, DemotedLookup);
+Check("P37i3 while an untouched field carrying the same text is left alone",
+    Value(untouchedSentinel, "repo") == ExSentinel, Value(untouchedSentinel, "repo") ?? "(REMOVED)");
+
+// ---- P37j · the projection is addressed, and cannot reach disk ------------------------
+// Wrong slot, wrong page, wrong property: each must be inert. A clear applied one slot over
+// is a credential deleted from a widget the user never touched.
+var p37jSlots = TwoInstances(
+    new JsonObject { ["apiToken"] = Token }, new JsonObject { ["apiToken"] = Token });
+SecretPolicy.Seal(p37jSlots, null, Lookup);
+var p37jStored = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p37jSlots))!;
+var clearSecond = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p37jSlots))!;
+clearSecond.Pages[0].Slots[1].Settings!["apiToken"] = "";
+SecretPolicy.Seal(clearSecond, p37jStored, SecretPlan.FromManifests(Lookup), ClearedAt(0, 1, "apiToken"));
+Check("P37j the named slot is cleared", clearSecond.Pages[0].Slots[1].Settings?["apiToken"] is null);
+Check("P37j2 and its sibling is untouched",
+    SecretStore.CanUnprotect(ValueAt(clearSecond, 0, "apiToken")), ValueAt(clearSecond, 0, "apiToken"));
+var wrongPage = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p37jSlots))!;
+wrongPage.Pages[0].Slots[1].Settings!["apiToken"] = "";
+SecretPolicy.Seal(wrongPage, p37jStored, SecretPlan.FromManifests(Lookup), ClearedAt(9, 1, "apiToken"));
+Check("P37j3 a clear addressed to a page that does not exist changes nothing",
+    SecretStore.CanUnprotect(ValueAt(wrongPage, 1, "apiToken")), ValueAt(wrongPage, 1, "apiToken"));
+
+// The marker travels editor-to-host only, and the model has no member for it — so it
+// cannot be read off a layout, and cannot be written to one.
+var markerNode = JsonSerializer.SerializeToNode(LayoutWith(new JsonObject { ["apiToken"] = Token }))!;
+markerNode["pages"]![0]!["slots"]![0]![SecretPolicy.ClearedMarkerKey] = new JsonArray("apiToken");
+var readBack = SecretPolicy.ReadClearedMarkers(markerNode);
+Check("P37k4 ReadClearedMarkers finds the projection on the raw node",
+    readBack.TryGetValue((0, 0), out var names0) && names0.Count == 1 && names0[0] == "apiToken");
+Check("P37k5 and the model drops it, so it can never reach layout.json",
+    !JsonSerializer.Serialize(JsonSerializer.Deserialize<DashboardLayout>(markerNode.ToJsonString()))
+        .Contains(SecretPolicy.ClearedMarkerKey));
+// Placeholder slots are removed from the model right after deserializing, so the
+// projection has to be indexed over the survivors or every marker past a blank slot lands
+// on its neighbour — a clear applied to the wrong property.
+var withBlank = new JsonObject
+{
+    ["pages"] = new JsonArray(new JsonObject
+    {
+        ["name"] = "P",
+        ["slots"] = new JsonArray(
+            new JsonObject { ["widgetId"] = "", ["settings"] = new JsonObject() },
+            new JsonObject
+            {
+                ["widgetId"] = "test.widget",
+                ["settings"] = new JsonObject(),
+                [SecretPolicy.ClearedMarkerKey] = new JsonArray("apiToken"),
+            }),
+    }),
+};
+var blankRead = SecretPolicy.ReadClearedMarkers(withBlank);
+Check("P37k6 the projection is indexed over slots that SURVIVE the placeholder filter",
+    blankRead.ContainsKey((0, 0)) && !blankRead.ContainsKey((0, 1)),
+    string.Join(", ", blankRead.Keys.Select(k => $"({k.Page},{k.Slot})")));
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;

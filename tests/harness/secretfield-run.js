@@ -50,6 +50,9 @@ const widgets = [{
     // holds the envelope from when it was `secret`. The host blanks it and names it in
     // secretsRestorable.
     { name: 'legacyToken', label: 'Legacy token', type: 'text' },
+    // A demoted property of a NON-text type: the host blanks and lists it exactly the
+    // same way, and the Clear affordance has to reach it too.
+    { name: 'legacyTint', label: 'Legacy tint', type: 'color', default: '#00d4ff' },
   ],
 }, {
   // A DIFFERENT widget that happens to declare the same secret name — the collision
@@ -67,9 +70,9 @@ const layout = {
     name: 'Main',
     slots: [{
       widgetId: 'test.gh', size: 'half', instanceId: 'gh1',
-      settings: { token: '', fresh: '', legacyToken: '', repo: 'binaryzero/waveshare-widgets' },
+      settings: { token: '', fresh: '', legacyToken: '', legacyTint: '', repo: 'binaryzero/waveshare-widgets' },
       secretsSet: ['token'],
-      secretsRestorable: ['legacyToken'],
+      secretsRestorable: ['legacyToken', 'legacyTint'],
     }],
   }],
 };
@@ -172,14 +175,15 @@ const layout = {
   // An empty string is what an UNTOUCHED masked field sends, and the host keeps the
   // stored credential for that — so a clear has to say something different or the
   // credential silently survives the delete (Codex r1, P1).
-  check('E5b the save sends the distinct clear marker, never a bare empty string',
-    cleared.settings.token === '__ww_secret_cleared__', JSON.stringify(cleared.settings));
+  check('E5b the save NAMES the cleared property, so a bare empty string cannot mean two things',
+    cleared.settings.token === '' && (cleared.secretsCleared || []).includes('token'),
+    JSON.stringify({ settings: cleared.settings, cleared: cleared.secretsCleared }));
   check('E5c an untouched secret still sends "" (the keep-what-you-have signal)',
     cleared.settings.fresh === '', JSON.stringify(cleared.settings));
 
   // ---- E8 · the marker is host protocol, never shown back to the user as a value
   const shownAfterClear = await stored.locator('input').inputValue();
-  check('E8 the clear marker never appears in the field the user reads',
+  check('E8 no protocol word can appear in the field the user reads — none exists',
     shownAfterClear === '', shownAfterClear);
 
   // ---- E9 · a save the host could not fully honour must NOT read as "Saved"
@@ -216,17 +220,21 @@ const layout = {
     await fresh.locator('.secret-state').textContent());
   await page.locator('#save').click();
   await page.waitForTimeout(400);
-  check('E11b and the save sends the clear marker, not the keep-it empty string',
-    saved[saved.length - 1].pages[0].slots[0].settings.fresh === '__ww_secret_cleared__',
+  check('E11b and the save names it cleared, rather than relying on the keep-it empty string',
+    saved[saved.length - 1].pages[0].slots[0].settings.fresh === ''
+      && (saved[saved.length - 1].pages[0].slots[0].secretsCleared || []).includes('fresh'),
     JSON.stringify(saved[saved.length - 1].pages[0].slots[0].settings));
 
-  // ---- E12 · a credential that IS the clear marker stays storeable (escaped)
+  // ---- E12 · a credential that IS the old sentinel stays storeable (no escaping)
   await fresh.locator('input').fill('__ww_secret_cleared__');
   await page.waitForTimeout(120);
   await page.locator('#save').click();
   await page.waitForTimeout(400);
-  check('E12 a typed value in the reserved namespace travels escaped, not as a clear',
-    saved[saved.length - 1].pages[0].slots[0].settings.fresh === '__ww_secret_lit___ww_secret_cleared__',
+  // Nothing escapes anything now: intent travels as a NAME beside the layout, so the
+  // string that used to be the sentinel is a credential like any other.
+  check('E12 a credential equal to the old sentinel travels verbatim, and is not a clear',
+    saved[saved.length - 1].pages[0].slots[0].settings.fresh === '__ww_secret_cleared__'
+      && !((saved[saved.length - 1].pages[0].slots[0].secretsCleared) || []).includes('fresh'),
     JSON.stringify(saved[saved.length - 1].pages[0].slots[0].settings.fresh));
 
   // ---- E13 · a TYPED credential must not reach the preview replica
@@ -1071,7 +1079,8 @@ const layout = {
   await page.waitForTimeout(400);
   let last = saved[saved.length - 1].pages[0].slots[0];
   check('E28e pressing Clear sends the marker, so the host removes the value instead of '
-    + 'restoring it', last.settings.legacyToken === '__ww_secret_cleared__',
+    + 'restoring it', last.settings.legacyToken === ''
+      && (last.secretsCleared || []).includes('legacyToken'),
     JSON.stringify(last.settings.legacyToken));
   // The marker DOES travel back on the slot, exactly as `secretsSet` has always done —
   // the editor echoes the slot it was given. What must never happen is it becoming a
@@ -1100,8 +1109,28 @@ const layout = {
   last = saved[saved.length - 1].pages[0].slots[0];
   check('E28g emptying the field sends the marker too, so the value the user just deleted '
     + 'is not restored underneath them',
-    last.settings.legacyToken === '__ww_secret_cleared__',
+    last.settings.legacyToken === '' && (last.secretsCleared || []).includes('legacyToken'),
     JSON.stringify(last.settings.legacyToken));
+
+  // ---- E29 · the affordance is property-type agnostic ---------------------------------
+  // A demoted `color` is blanked and listed exactly like a demoted `text`, but its own
+  // reset ("Use theme") deletes the key and the host reads that as untouched. Keying the
+  // Clear on the LIST rather than on the control is what reaches every type.
+  const tintField = page.locator('#slotDetail .prop-field').filter({ hasText: 'Legacy tint' });
+  check('E29 a demoted non-text property gets a Clear too',
+    await tintField.locator('.prop-clear').count() === 1,
+    String(await tintField.locator('.prop-clear').count()));
+  check('E29b while an ordinary property of the same type does not',
+    await page.locator('#slotDetail .prop-field').filter({ hasText: 'Repository' })
+      .locator('.prop-clear').count() === 0);
+  await tintField.locator('.prop-clear').click();
+  await page.waitForTimeout(150);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  last = saved[saved.length - 1].pages[0].slots[0];
+  check('E29c and clearing it names the address, so the host removes rather than restores',
+    (last.secretsCleared || []).includes('legacyTint') && last.settings.legacyTint === '',
+    JSON.stringify({ cleared: last.secretsCleared, value: last.settings.legacyTint }));
 
   // An ordinary property the host never blanked keeps its plain behaviour: there is
   // nothing to restore, so "" is unambiguous and no affordance is needed.
@@ -1118,17 +1147,19 @@ const layout = {
   await page.locator('#save').click();
   await page.waitForTimeout(400);
   last = saved[saved.length - 1].pages[0].slots[0];
-  check('E28h2 an ordinary value equal to the clear marker travels escaped, so an '
+  check('E28h2 an ordinary value equal to the old sentinel is stored verbatim, and an '
     + 'unrelated save cannot delete it',
-    last.settings.repo === '__ww_secret_lit___ww_secret_cleared__',
+    last.settings.repo === '__ww_secret_cleared__'
+      && !((last.secretsCleared) || []).includes('repo'),
     JSON.stringify(last.settings.repo));
   await demoted.locator('input').fill('__ww_secret_cleared__');
   await page.waitForTimeout(100);
   await page.locator('#save').click();
   await page.waitForTimeout(400);
   last = saved[saved.length - 1].pages[0].slots[0];
-  check('E28h3 and so does one typed into a DEMOTED field, which has the same hazard',
-    last.settings.legacyToken === '__ww_secret_lit___ww_secret_cleared__',
+  check('E28h3 and so is one typed into a DEMOTED field, which had the same hazard',
+    last.settings.legacyToken === '__ww_secret_cleared__'
+      && !((last.secretsCleared) || []).includes('legacyToken'),
     JSON.stringify(last.settings.legacyToken));
   await plain.locator('input').fill('');
   await demoted.locator('input').fill('');

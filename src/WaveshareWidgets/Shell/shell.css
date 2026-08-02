@@ -682,6 +682,9 @@ input.toggle-check:checked::after { transform: translateX(22px); }
 /* Removing a credential is destructive and irreversible from the panel — colour it
  * like the other destructive controls so it never reads as a second reveal button. */
 .ps-clear { color: var(--danger, #ff6b6b); }
+/* The field-level Clear for a demoted property of any type; the secret control keeps its
+   own inline one. Right-aligned so it reads as an action on the row above it. */
+.ps-field-clear { align-self: flex-end; margin-top: 2px; }
 
 /* Host-side failure banner. Nothing else on the strip can report one: the panel saves
  * optimistically, so a silent failure would read as success. */

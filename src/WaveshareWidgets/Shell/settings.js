@@ -382,6 +382,7 @@
         const merged = Object.assign({}, slot, { settings });
         if (prior.secretsSet) merged.secretsSet = prior.secretsSet;
         if (prior.secretsRestorable) merged.secretsRestorable = prior.secretsRestorable;
+        if (prior.secretsCleared) merged.secretsCleared = prior.secretsCleared;
         return merged;
       }),
     }));
@@ -812,14 +813,23 @@
    *
    * Reason strings come from the host and name a third-party manifest, so they are
    * rendered with textContent — never innerHTML. */
-  /** Any value in the reserved `__ww_secret_` namespace travels ESCAPED; the host strips
-   * exactly one prefix (SecretStore.LiteralPrefix). Every ordinary property is now planned
-   * RestoreIfUntouched, so the host reads `__ww_secret_cleared__` as protocol wherever it
-   * appears — without this, a perfectly valid setting that happens to be that string is
-   * removed by an unrelated save. */
-  function escapeReserved(value) {
-    return typeof value === 'string' && value.startsWith('__ww_secret_')
-      ? '__ww_secret_lit_' + value : value;
+  /** Names the properties the user asked to REMOVE, per slot, as a projection the host
+   * reads off the raw save payload (SecretPolicy.ClearedMarkerKey).
+   *
+   * This replaced a sentinel string written into the value. "The user cleared this" is a
+   * statement ABOUT a value, and putting it IN the value made one string mean two things:
+   * an untouched field echoing that exact text was indistinguishable from a deliberate
+   * clear, and no rule over the bytes could separate them. Escaping made it worse rather
+   * than better — it was a per-producer obligation, and only the text inputs ever had it.
+   *
+   * A name in a list cannot be confused with a value, so nothing escapes anything here. */
+  function markCleared(slot, name, on) {
+    const list = Array.isArray(slot.secretsCleared) ? slot.secretsCleared.slice() : [];
+    const at = list.indexOf(name);
+    if (on && at < 0) list.push(name);
+    else if (!on && at >= 0) list.splice(at, 1);
+    if (list.length) slot.secretsCleared = list;
+    else delete slot.secretsCleared;
   }
 
   function renderRejectedWidgets(list) {
@@ -1405,6 +1415,7 @@
       // never had one.
       delete slot.secretsSet;
       delete slot.secretsRestorable;
+      delete slot.secretsCleared;
       const w = widgetsById.get(slot.widgetId);
       const widths = offeredWidths(w);
       const current = parseSize(slot.size);
@@ -1486,6 +1497,33 @@
         const field = document.createElement('div');
         field.className = 'prop-field' + (WIDE_TYPES.has(prop.type) ? ' wide' : '');
         field.append(label, editor);
+
+        // A demoted property can be ANY type — `secret` → `number`, `switch`, `color`,
+        // `select` — and the host blanks and lists every one of them. The affordance
+        // therefore belongs to the FIELD, not to one control: a Clear that lived in the
+        // text branch left every other type with a stored envelope it could not delete,
+        // because each of those controls' own reset emits an empty or absent value and
+        // the host reads that as untouched.
+        //
+        // Keyed on the list, so nothing here has to know what the control is. The text
+        // control renders its own richer version (placeholder + live state), so it opts
+        // out — that is the one type where the value and the affordance are the same
+        // widget.
+        if (Array.isArray(slot.secretsRestorable)
+            && slot.secretsRestorable.includes(prop.name)
+            && !(editor.classList && editor.classList.contains('restorable-wrap'))) {
+          const clear = iconButton('✕', 'Remove the stored value on the next save', () => {
+            markCleared(slot, prop.name, true);
+            // Empty, never absent: absent is one of the shapes the host reads as
+            // untouched, and the name is what carries the intent anyway.
+            slot.settings = slot.settings || {};
+            slot.settings[prop.name] = '';
+            markDirty();
+            renderEditor();
+          }, true);
+          clear.classList.add('prop-clear');
+          field.appendChild(clear);
+        }
         grid.appendChild(field);
       }
       propsWrap.appendChild(grid);
@@ -1886,11 +1924,8 @@
         input.autocomplete = 'off';
         input.spellcheck = false;
         input.placeholder = prop.placeholder || 'Paste the token or key';
-        // The clear marker is a host protocol word, never something to show or re-send
-        // as if the user had typed it.
-        input.value = (typeof current === 'string' && current !== '__ww_secret_cleared__')
-          ? (current.startsWith('__ww_secret_lit_') ? current.slice('__ww_secret_lit_'.length) : current)
-          : '';
+        // No protocol words live in values any more, so whatever is here is the user's.
+        input.value = typeof current === 'string' ? current : '';
         // Whether a credential EXISTS on disk for this field. `secretsSet` is only the
         // state at init: the host does not refresh it on save and this control is not
         // rebuilt, so once the user types and saves, a credential exists that the
@@ -1925,10 +1960,11 @@
           // as "saved · encrypted (hidden)".
           if (Array.isArray(slot.secretsSet))
             slot.secretsSet = slot.secretsSet.filter((n) => n !== prop.name);
-          // A distinct marker, NOT an empty string: empty is what an untouched masked
-          // field sends back, and that must KEEP the stored credential. Only this word
-          // means "delete it" (SecretStore.ClearMarker on the host).
-          set('__ww_secret_cleared__');
+          // The VALUE goes empty and the intent is stated separately. Empty on its own
+          // is what an untouched masked field sends and must KEEP the credential; the
+          // name in secretsCleared is what says "delete it".
+          markCleared(slot, prop.name, true);
+          set('');
           sync();
         }, true);
         input.addEventListener('input', () => {
@@ -1938,15 +1974,17 @@
             stored = true;
             secretsTypedHere.add(typedKey);   // survives the next renderEditor()
             cleared = false;
-            // Credentials are arbitrary strings, so one of them can BE the clear marker.
-            // Anything in the reserved __ww_secret_ namespace travels escaped; the host
-            // strips exactly one prefix (SecretStore.LiteralPrefix).
-            set(escapeReserved(input.value));
+            // A credential is arbitrary text and needs no escaping now: nothing about a
+            // value carries protocol, so any string at all round-trips as itself.
+            markCleared(slot, prop.name, false);
+            set(input.value);
           } else if (stored) {
             cleared = true;
-            set('__ww_secret_cleared__');
+            markCleared(slot, prop.name, true);
+            set('');
           } else {
             cleared = false;
+            markCleared(slot, prop.name, false);
             set('');
           }
           sync();
@@ -1980,7 +2018,7 @@
           state.classList.toggle('overridden', overridden);
           reset.hidden = !overridden;
         };
-        input.oninput = () => { set(escapeReserved(input.value)); sync(); };
+        input.oninput = () => { set(input.value); sync(); };
         reset.onclick = () => {
           delete slot.settings[prop.name]; // absent = default = the theme shows through
           input.value = def;
@@ -2070,7 +2108,7 @@
           input.value = Array.isArray(current)
             ? current.map((x) => (x && typeof x === 'object') ? Object.values(x).join('=') : String(x)).join(', ')
             : (current != null ? String(current) : '');
-          input.oninput = () => set(escapeReserved(input.value));
+          input.oninput = () => set(input.value);
           return input;
         }
         const wrap = document.createElement('div');
@@ -2181,7 +2219,7 @@
         // The sanctioned place to teach an expected format — labels must not.
         if (prop.placeholder) input.placeholder = String(prop.placeholder);
         input.value = current != null ? String(current) : '';
-        input.oninput = () => set(escapeReserved(input.value));
+        input.oninput = () => set(input.value);
 
         // A DEMOTED property (#66): the manifest calls it `text` now, but layout.json still
         // holds the envelope from when it was `secret`, so the host blanked it on the way
@@ -2223,20 +2261,25 @@
           const clear = iconButton('✕', 'Remove the stored value on the next save', () => {
             input.value = '';
             cleared = true;
-            set('__ww_secret_cleared__');
+            markCleared(slot, prop.name, true);
+            set('');
             sync();
           }, true);
           input.oninput = () => {
             if (input.value.length > 0) {
               cleared = false;
-              set(escapeReserved(input.value));
+              markCleared(slot, prop.name, false);
+              set(input.value);
             } else if (stored) {
-              // Emptying is a deliberate clear, never "leave the stored value alone" —
-              // the plain "" is the one string that cannot say which one the user meant.
+              // Emptying a field the host blanked is a deliberate clear. The plain "" is
+              // the one string that cannot say which one the user meant, so the name says
+              // it instead.
               cleared = true;
-              set('__ww_secret_cleared__');
+              markCleared(slot, prop.name, true);
+              set('');
             } else {
               cleared = false;
+              markCleared(slot, prop.name, false);
               set('');
             }
             sync();
