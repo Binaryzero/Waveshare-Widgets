@@ -1,0 +1,10 @@
+[
+ { "match": "/api/states", "json": [
+   {"entity_id":"light.kitchen","state":"on","attributes":{"friendly_name":"Kitchen"}},
+   {"entity_id":"switch.desk","state":"off","attributes":{"friendly_name":"Desk"}},
+   {"entity_id":"sensor.living_temp","state":"21.4","attributes":{"friendly_name":"Living room","unit_of_measurement":"°C"}},
+   {"entity_id":"lock.front","state":"locked","attributes":{"friendly_name":"Front door"}},
+   {"entity_id":"light.hall","state":"off","attributes":{"friendly_name":"Hall"}}
+ ] },
+ { "match": "/api/services/", "json": {} }
+]

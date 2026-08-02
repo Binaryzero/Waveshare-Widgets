@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Home Assistant</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Layout only — colors, background, bgStyle and the typography base come from
+   * widget-base.css. */
+  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+  #grid { flex: 1 1 auto; display: grid; gap: 8px; min-height: 0; }
+  .ent {
+    display: flex; flex-direction: column; justify-content: center; gap: 2px;
+    padding: 6px 10px;
+    border-radius: var(--radius-control);
+    background: var(--card-surface);
+    border: 1px solid transparent;
+    min-width: 0; min-height: 0; overflow: hidden;
+    position: relative;
+    /* Every tile is at least a comfortable touch target even in a dense grid. */
+    min-height: 44px;
+  }
+  .ent.on { border-color: rgba(var(--accent-rgb), 0.45); }
+  .ent .name {
+    color: var(--text-muted);
+    font-size: clamp(10px, 2.8vh, 12px);
+    letter-spacing: 0.05em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ent .val {
+    color: var(--text); font-weight: 700;
+    font-size: clamp(13px, 4.2vh, 20px);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ent.on .val { color: var(--accent); }
+  .ent .val small { font-size: 60%; font-weight: 500; color: var(--text-muted); }
+  /* A tile the user can act on says so at rest — there is no hover on this panel. */
+  .ent .hint {
+    position: absolute; top: 5px; right: 8px;
+    font-size: 9px; font-weight: 800; letter-spacing: 0.06em;
+    color: var(--text-dim); text-transform: uppercase;
+  }
+  .ent.armed .hint { color: var(--warn); }
+  /* The long-press fill: a bar that grows across the tile so the user can see the
+   * press being counted rather than guessing whether it registered. */
+  .ent .press {
+    position: absolute; inset: auto 0 0 0; height: 2px; width: 0;
+    background: var(--warn);
+    transition: width 700ms linear;
+  }
+  .ent.pressing .press { width: 100%; }
+  /* Neither confirmation nor failure: the command went out and no answer came back, so
+   * the panel does not yet know whether the house acted on it. */
+  @keyframes ha-pending { 0%, 100% { border-color: transparent; } 50% { border-color: var(--warn); } }
+  .ent.pending-flash { animation: ha-pending 900ms ease-in-out 2; }
+  footer { color: var(--text-dim); font-size: 11px; flex: none; }
+  #state { position: fixed; inset: 0; }
+  body.stale #grid { opacity: 0.6; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="kicker">Home</span>
+    <span class="pill muted" id="pill">Loading</span>
+  </header>
+
+  <div id="grid" hidden></div>
+
+  <footer id="meta"></footer>
+
+  <div class="state-card" id="state">
+    <div class="spinner"></div>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  // Domains where a stray brush of a desk-height touch strip has a physical
+  // consequence. These never respond to a tap: they need arming in settings AND a
+  // deliberate long press. Everything else in the house is a light going on.
+  // Alarm panels are DELIBERATELY absent: their services are arm_home / arm_away /
+  // disarm, not the cover services this widget knows how to send, and several of them
+  // require a code. A panel here would have offered a long press that always failed.
+  // They still render as read-only state, which is the useful half.
+  // A siren is a physical alarm in someone's house. It was in the tap-to-toggle list,
+  // which means a stray brush of a desk-height touch strip could sound it — exactly the
+  // thing the arming model exists to prevent, and against this widget's own description.
+  // It belongs with the devices that need arming AND a deliberate hold.
+  const SECURITY = ['lock', 'cover', 'garage_door', 'siren'];
+  const TOGGLEABLE = ['light', 'switch', 'fan', 'input_boolean', 'automation', 'humidifier'];
+  // What a security device must be saying about itself before this widget will send it
+  // anything. `unknown` and `unavailable` are not states, they are the absence of one,
+  // and picking a direction from the absence of a state is how a press meant to lock a
+  // door sends unlock instead.
+  const DEFINITE = /^(locked|unlocked|open|closed|opening|closing|on|off)$/i;
+  const PRESS_MS = 700;
+  // Neither tier of WW.fetch bounds a direct browser request — the shim's own timer is on
+  // the host-proxy tier — so a box that accepts the connection and then goes quiet leaves
+  // the await pending forever. The finally never runs, inFlight stays true and nothing
+  // re-arms: the panel is not slow, it is dead, still showing the last states it had. A
+  // home server behind a VPN that has just dropped is exactly this shape.
+  const POLL_DEADLINE = 20000;
+  // An action is a person waiting with a finger on the glass. It gets a shorter budget
+  // than a poll, because a spinner that never resolves is worse than a fail flash.
+  const ACT_DEADLINE = 8000;
+  const MAX_ENTITIES = 16;
+  const IDLE_FLOOR = 5000;
+  const GATED_RECHECK = 60000;
+  const MAX_WAIT = 900000;
+
+  const cfg = { base: '', token: '', entities: [], refreshMs: 20000, dropped: 0, malformed: 0, hidden: 0 };
+  const cards = new Map();     // entity_id -> {root, val, hint}
+  let states = new Map();      // entity_id -> {state, unit, name}
+  let started = false;
+  let timer = null;
+  let inFlight = false;
+  let lastOk = 0;
+  let pollAnchor = 0;
+  let fails = 0;
+  let gameOn = false;
+  // entity id -> the poll sequence current when its command was sent. A guard may only be
+  // released by a poll that BEGAN after the command; one already in flight when the
+  // command went out carries a snapshot from before it and cannot reconcile anything.
+  const acting = new Map();
+  let pollSeq = 0;
+  let refreshQueued = false;    // an action wants a poll as soon as the current one ends
+  // Every hold timer currently running, so a rebuild can call them all off. A poll that
+  // changes the ranking detaches the tile a finger is resting on, and the timer's closure
+  // outlives the node: releasing early then lands on a listener nobody is attached to any
+  // more, and the abandoned hold goes on to unlock the device. Declared up here with the
+  // rest of the module state, because build() is called from onInit — which the shim
+  // invokes synchronously when it is already ready — and a `const` sited next to
+  // wireLongPress further down the file is still in its dead zone at that point.
+  const holds = new Set();
+  // Bumped whenever WHICH SERVER we are talking to changes. A response belongs to the
+  // identity that asked for it; clearing `states` alone did not stop an already-issued
+  // /api/states from landing and being rendered against the new configuration — and a
+  // matching lock id would then pick lock-vs-unlock from the previous house.
+  let generation = 0;
+
+  const el = (id) => document.getElementById(id);
+  const domainOf = (id) => String(id || '').split('.')[0];
+
+  // The two reasons to hold network work, in one predicate so every gate agrees. The
+  // panel is a second screen and stays VISIBLE while a game has the first, so
+  // document.hidden does not cover the game on its own (WIDGET-SPEC.md:200-205).
+  const paused = () => gameOn || document.hidden;
+
+  // Faults this widget can tell apart. An expired long-lived token and an unplugged
+  // server want completely different actions, and a router's captive portal answering
+  // 200 with a login page wants a third.
+  function fault(kind, message, status) {
+    const e = new Error(message);
+    e.kind = kind;
+    if (status) e.status = status;
+    return e;
+  }
+
+  function faultText(kind, status) {
+    if (kind === 'toolarge') return 'The entity list is larger than the panel will load.';
+    if (kind === 'format') return "That address answered, but not with Home Assistant's data — check it points at Home Assistant and not a router or portal page.";
+    if (kind === 'timeout') return 'Home Assistant did not answer in time.';
+    if (kind === 'http' && status === 401) return 'The access token was rejected — long-lived tokens can be revoked from your profile.';
+    if (kind === 'http' && status === 403) return 'The access token is not allowed to read states.';
+    if (kind === 'http' && status === 404) return 'That address answered, but has no Home Assistant API at it.';
+    if (kind === 'http') return 'Home Assistant answered ' + status + '.';
+    return "Couldn't reach Home Assistant at " + cfg.base + '.';
+  }
+
+  const FLASHES = ['confirm-flash', 'fail-flash', 'pending-flash'];
+  function flash(node, cls) {
+    // All three are mutually exclusive answers to the same question, and only the one
+    // being set was being cleared. A tile left holding `pending-flash` from an unresolved
+    // command matched a later, more specific rule than the confirm and fail ones, so every
+    // subsequent success or refusal on that tile showed nothing at all — the finished
+    // pending animation won, silently.
+    for (const c of FLASHES) node.classList.remove(c);
+    void node.offsetWidth;   // restart the animation even mid-run
+    node.classList.add(cls);
+  }
+
+  function parseEntities(value) {
+    const raw = Array.isArray(value) ? value : String(value || '').split(/[,\n]/).map((s) => ({ entity: s }));
+    const typed = raw
+      .map((item) => {
+        if (!item) return null;
+        // Home Assistant entity ids are lower-case, and the states endpoint returns them
+        // that way. Validation accepted `Light.Kitchen` case-insensitively and then kept
+        // that spelling, so the exact lookup never matched and the tile sat "unknown"
+        // forever — while the dedupe below, which lowercases its key, would discard a
+        // correctly spelled duplicate in favour of the one that could never match.
+        const entity = String((typeof item === 'string' ? item : item.entity) || '').trim().toLowerCase();
+        if (!entity) return null;
+        const label = String((item && item.label) || '').trim();
+        const control = String((item && item.control) || '').trim().toLowerCase();
+        return { entity, label, armed: /^(allow|yes|on|true)$/.test(control) };
+      })
+      .filter(Boolean);
+    // An entry that is not domain.object_id cannot be asked about, and dropping it in
+    // silence left it sitting in Settings looking watched while the panel reported "Live"
+    // on the strength of the entries that happened to survive.
+    const wellFormed = typed.filter((e) => /^[a-z_]+\.[a-z0-9_]+$/i.test(e.entity));
+    cfg.malformed = typed.length - wellFormed.length;
+    // `cards` and `states` are both keyed by entity_id, so the same entity listed twice
+    // had its second tile overwrite the first's reference: the first tile stayed on "--"
+    // for good, and a press on it acted through a node nothing would ever update again.
+    // Home Assistant entity ids are lower-case, so casing is not a distinction.
+    const seen = new Set();
+    const unique = wellFormed.filter((e) => {
+      const key = e.entity.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    cfg.dropped = Math.max(0, unique.length - MAX_ENTITIES);
+    return unique.slice(0, MAX_ENTITIES);
+  }
+
+  function normalizeBase(value) {
+    let s = String(value == null ? '' : value).trim();
+    if (!s) return '';
+    if (!/^https?:\/\//i.test(s)) s = 'http://' + s;
+    return s.replace(/\/+$/, '');
+  }
+
+  WW.onInit((s0) => {
+    const s = s0.settings;
+    // Seeded here, not left to onGame: onGame reports later flips, so a widget that only
+    // listens polls straight through a game that was already running when it loaded.
+    gameOn = !!(s0.game && s0.game.active);
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+
+    const prevIdentity = cfg.base + '\n' + cfg.token;
+    cfg.base = normalizeBase(s.baseUrl);
+    cfg.token = String(s.accessToken == null ? '' : s.accessToken);
+    cfg.entities = parseEntities(s.entities);
+    cfg.refreshMs = Math.min(600, Math.max(5, Number(s.refreshSeconds) || 20)) * 1000;
+    // A different server (or a different token onto the same one) is a different set of
+    // facts. Keeping the old map meant the previous house's states rendered under the
+    // new configuration if the first fetch failed — and worse, a matching lock id would
+    // pick lock-vs-unlock from the OLD server's state and send that to the new one.
+    if (prevIdentity !== cfg.base + '\n' + cfg.token) {
+      states = new Map();
+      generation++;
+      inFlight = false;   // the outstanding response is now orphaned, not awaited
+      fails = 0;
+      lastOk = 0;
+    }
+    const gen = generation;
+
+    build();
+    if (!cfg.base || !cfg.token || !cfg.entities.length) {
+      // Stop rather than just repaint: a running timer would keep asking with a
+      // configuration the user has just emptied. Bumping the generation matters as much
+      // as clearing the timer — with the address and token unchanged nothing else
+      // invalidates a poll already in flight, so it would land, paint an empty "Live"
+      // grid straight over this setup card, and re-arm itself in its own finally.
+      clearTimeout(timer);
+      generation++;
+      inFlight = false;
+      started = false;
+      showSetup();
+      return;
+    }
+    // build() blanks every tile to "--". The states behind them are still good when the
+    // identity has not changed — the shell re-sends an init for a theme change, and
+    // waiting for a whole poll to repaint them means an ordinary theme switch empties
+    // the panel, or leaves it empty indefinitely if the widget is paused for a game.
+    if (states.size) render();
+    clearTimeout(timer);
+    started = true;
+    tick(gen);
+  });
+
+  WW.onGame((g) => {
+    const was = gameOn;
+    gameOn = !!(g && g.active);
+    if (!started || gameOn || !was) return;
+    // The game ended. Someone turning back to the panel wants the house as it is now,
+    // not the schedule the pause left behind.
+    clearTimeout(timer);
+    tick(generation);
+  });
+
+  // How many tiles the slot can actually hold. Columns followed the entity COUNT alone,
+  // so a supported 200px band asked for four rows of 44px tiles in about 120px of room
+  // and the grid simply overflowed — the tiles past the fold were still polled and still
+  // counted, but nothing on screen could be them. Both dimensions decide it now.
+  function fit() {
+    const w = document.documentElement.clientWidth || window.innerWidth || 640;
+    const h = document.documentElement.clientHeight || window.innerHeight || 400;
+    const cols = Math.max(1, Math.min(Math.floor(w / 150) || 1, 5));
+    const rows = Math.max(1, Math.floor((h - 62) / 52));
+    return { cols, max: cols * rows };
+  }
+
+  // Which entities get a tile when they cannot all have one: the ones whose state is
+  // UNKNOWN first — an entity the house does not report is the one worth seeing — then
+  // the ones that are on, then the rest. Stable inside each group.
+  function visibleEntities() {
+    const { max } = fit();
+    if (cfg.entities.length <= max) return cfg.entities;
+    const rank = (e) => {
+      const s = states.get(e.entity);
+      if (!s) return 0;
+      return /^(on|open|unlocked|home|playing)$/i.test(s.state) ? 1 : 2;
+    };
+    return cfg.entities
+      .map((e, i) => ({ e, i, r: rank(e) }))
+      .sort((a, b) => (a.r - b.r) || (a.i - b.i))
+      .slice(0, max)
+      .map((x) => x.e);
+  }
+
+  const visibleKey = () => visibleEntities().map((e) => e.entity).join('\n');
+
+  function cancelHolds() {
+    for (const cancel of holds) cancel();
+    holds.clear();
+  }
+
+  function build() {
+    const grid = el('grid');
+    // Any hold in progress is against a tile about to be detached, and its timer would
+    // outlive the node it belongs to.
+    cancelHolds();
+    grid.textContent = '';
+    cards.clear();
+    const n = cfg.entities.length;
+    if (!n) return;
+    const shown = visibleEntities();
+    cfg.hidden = Math.max(0, n - shown.length);
+    const cols = Math.min(shown.length, fit().cols);
+    grid.style.gridTemplateColumns = 'repeat(' + Math.max(1, cols) + ', minmax(0, 1fr))';
+
+    for (const e of shown) {
+      const root = document.createElement('div');
+      root.className = 'ent';
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = e.label || e.entity.split('.')[1].replace(/_/g, ' ');
+      const val = document.createElement('div');
+      val.className = 'val';
+      val.textContent = '--';
+      const hint = document.createElement('span');
+      hint.className = 'hint';
+      const press = document.createElement('i');
+      press.className = 'press';
+      root.append(name, val, hint, press);
+
+      const domain = domainOf(e.entity);
+      const security = SECURITY.includes(domain);
+      const canToggle = TOGGLEABLE.includes(domain) || (security && e.armed);
+      if (canToggle) {
+        root.classList.add('pressable');
+        if (security) {
+          root.classList.add('armed');
+          hint.textContent = 'hold';
+          wireLongPress(root, e);
+        } else {
+          hint.textContent = 'tap';
+          root.addEventListener('click', () => act(e, root));
+        }
+      }
+      grid.appendChild(root);
+      cards.set(e.entity, { root, val, hint });
+    }
+  }
+
+  let resizeTimer = null;
+  let lastFit = '';
+  window.addEventListener('resize', () => {
+    // The on-panel editor resizes this widget's frame in place without sending another
+    // init, so a widget grown from a band to a full slot would keep the band's tile count.
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const f = fit();
+      const key = f.cols + 'x' + f.max;
+      if (key === lastFit) return;
+      lastFit = key;
+      if (!started) return;
+      build();
+      if (states.size) render();
+    }, 150);
+  });
+
+  // A security-domain tile only fires after the finger has been down for PRESS_MS,
+  // and lifting early cancels with no action and no error — an accidental brush is
+  // supposed to be a no-op, not a failure the user has to interpret.
+  function wireLongPress(root, entry) {
+    let held = null;
+    let owner = null;
+    const start = (ev) => {
+      if (ev.button !== undefined && ev.button !== 0) return;
+      // ONE pointer owns the hold. A second finger landing on the same tile used to
+      // overwrite the timer handle without clearing the first, so lifting both fingers
+      // early cancelled only the second — and the orphaned first timer went on to fire
+      // after a gesture the user had deliberately abandoned, opening the thing.
+      if (held) return;
+      owner = ev.pointerId;
+      root.classList.add('pressing');
+      held = setTimeout(() => {
+        held = null; owner = null;
+        holds.delete(cancel);
+        root.classList.remove('pressing');
+        act(entry, root);
+      }, PRESS_MS);
+      holds.add(cancel);
+    };
+    const cancel = (ev) => {
+      // Only the finger that started the hold can end it; a second one lifting off must
+      // not cancel a press the first is still making.
+      if (ev && owner !== null && ev.pointerId !== undefined && ev.pointerId !== owner) return;
+      root.classList.remove('pressing');
+      if (held) { clearTimeout(held); held = null; }
+      owner = null;
+      holds.delete(cancel);
+    };
+    root.addEventListener('pointerdown', start);
+    root.addEventListener('pointerup', cancel);
+    root.addEventListener('pointercancel', cancel);
+    root.addEventListener('pointerleave', cancel);
+  }
+
+  // Every call through here carries a deadline — the poll and the action alike, because
+  // both were unbounded and both could hang the thing that depends on them.
+  async function ha(path, init, deadlineMs, consume) {
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), deadlineMs);
+    const opts = Object.assign({ insecure: true }, init || {});
+    opts.signal = abort.signal;
+    opts.headers = Object.assign({
+      Authorization: 'Bearer ' + cfg.token,
+      'Content-Type': 'application/json',
+    }, (init && init.headers) || {});
+    try {
+      let res;
+      try {
+        res = await WW.fetch(cfg.base + path, opts);
+      } catch (e) {
+        throw e instanceof RangeError ? fault('toolarge', 'reply too large')
+          : abort.signal.aborted ? fault('timeout', 'no answer in time')
+          : fault('unreachable', 'could not reach the server');
+      }
+      if (!res.ok) throw fault('http', 'HTTP ' + res.status, res.status);
+      // The body is read INSIDE the timed region. Returning the Response and parsing it
+      // after this finally cleared the timer just moved the hang one step along: a server
+      // that sends headers and then stalls mid-stream left res.json() pending forever,
+      // with inFlight still true and nothing armed — the same dead panel, reached by a
+      // slightly different route.
+      return consume ? await consume(res, abort) : res;
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
+
+  // Fetch and parse under ONE deadline, and require the shape while we are at it.
+  async function haJson(path, init, deadlineMs, wantArray) {
+    return ha(path, init, deadlineMs, async (res, abort) => {
+      let body;
+      try {
+        body = await res.json();
+      } catch (e) {
+        // The deadline firing mid-stream rejects this read with an abort error. Calling
+        // that a format fault told someone with a healthy but slow Home Assistant that
+        // their address points at a router — the timeout has to survive the fact that it
+        // now happens during the body read rather than before it.
+        throw e instanceof RangeError ? fault('toolarge', 'reply too large')
+          : abort.signal.aborted ? fault('timeout', 'no answer in time')
+          : fault('format', 'reply was not JSON');
+      }
+      if (wantArray && !Array.isArray(body)) throw fault('format', 'reply was not a state list');
+      return body;
+    });
+  }
+
+  async function act(entry, root) {
+    const domain = domainOf(entry.entity);
+    const current = states.get(entry.entity);
+    // One action per entity at a time. A double tap sent two toggles, Home Assistant
+    // processed both, the device ended up exactly where it started — and the panel
+    // flashed confirmation twice on the way.
+    if (acting.has(entry.entity)) return;
+    // A security device that is not saying what it is gets nothing sent to it. `isOn`
+    // is false for `unknown` and `unavailable` just as it is for `locked`, so a press on
+    // an indeterminate lock chose the unlock branch: the unsafe direction, picked from
+    // the absence of information.
+    if (SECURITY.includes(domain) && !(current && DEFINITE.test(current.state))) {
+      flash(root, 'fail-flash');
+      WW.log('homeassistant: ' + entry.entity + ': refused — state is '
+        + ((current && current.state) || 'unknown'));
+      return;
+    }
+    const isOn = current && /^(on|open|unlocked|home|playing)$/i.test(current.state);
+    // Optimistic flip: the panel answers the finger now and reconciles with the next
+    // poll. On failure we put it back AND fail-flash, so a refused action can never
+    // look like it worked.
+    root.classList.toggle('on', !isOn);
+    // Each armed domain has its OWN services. Folding sirens in with covers — which is
+    // what moving them into the armed set did — sent siren/open_cover, a service that
+    // does not exist, so every deliberate siren hold failed instead of controlling it.
+    const service = !SECURITY.includes(domain) ? 'toggle'
+      : domain === 'lock' ? (isOn ? 'lock' : 'unlock')
+      : domain === 'siren' ? (isOn ? 'turn_off' : 'turn_on')
+      : (isOn ? 'close_cover' : 'open_cover');
+    const serviceDomain = domain === 'garage_door' ? 'cover' : domain;
+    const gen = generation;
+    acting.set(entry.entity, pollSeq);
+    try {
+      await ha('/api/services/' + serviceDomain + '/' + service, {
+        method: 'POST',
+        body: JSON.stringify({ entity_id: entry.entity }),
+      }, ACT_DEADLINE);
+      // The server this was aimed at may not be the one configured any more. Landing a
+      // confirmation — or a re-poll — against a house nobody is looking at is worse than
+      // dropping it silently.
+      if (gen !== generation) return;
+      flash(root, 'confirm-flash');
+      reconcile();
+    } catch (e) {
+      if (gen !== generation) return;
+      // A REFUSAL is definite: the server answered and said no, so the flip comes back
+      // and the tile says it failed. A timeout or a lost connection is NOT a refusal —
+      // aborting proxyFetch only drops the local promise (widget-api.js:505-529) and does
+      // not recall the request, so Home Assistant may well have carried it out. Claiming
+      // failure there is a lie in the more dangerous direction: someone reads "failed",
+      // presses again, and locks what they had just unlocked. The honest answer is that
+      // the panel does not know yet — so it says nothing definitive and goes and looks.
+      // Only a status that DEFINITELY rejected the request counts as a refusal. A 502 or
+      // 504 comes from a reverse proxy in front of Home Assistant, which may well have
+      // executed the service before its answer was lost — treating that as failure
+      // recreates exactly the misleading retry this pending state was added to prevent.
+      // Same for 408 and 429: the request's fate is not settled by them.
+      const definite = e.kind === 'http' && e.status >= 400 && e.status < 500
+        && e.status !== 408 && e.status !== 429;
+      if (definite) {
+        root.classList.toggle('on', !!isOn);
+        flash(root, 'fail-flash');
+      } else {
+        flash(root, 'pending-flash');
+      }
+      WW.log('homeassistant: ' + entry.entity + ': ' + e.message);
+      reconcile();
+    }
+    // Deliberately NOT released here. `states` still holds the value from before the
+    // command, so a second tap arriving between the POST settling and the reconciling
+    // poll landing reads the same stale state and sends the opposite service — undoing
+    // the first action, which is the very thing the guard was added to stop. A fast
+    // Home Assistant makes that window an ordinary double tap. The guard is released
+    // when an authoritative refresh lands, with a timer as the backstop for a
+    // reconciliation that never arrives.
+    setTimeout(() => acting.delete(entry.entity), ACT_DEADLINE);
+  }
+
+  // Go and look, now. Someone acting on the panel has asked for its current state, so the
+  // backoff a failing server earned is spent rather than charged to their press.
+  function reconcile() {
+    fails = 0;
+    pollAnchor = 0;
+    if (inFlight) {
+      // A poll already running was very likely started BEFORE the action and carries a
+      // snapshot from before it. Its finally would otherwise re-arm the ordinary schedule
+      // over the top of this request and no reconciliation would happen for a whole
+      // interval — up to ten minutes at the maximum setting.
+      refreshQueued = true;
+      return;
+    }
+    clearTimeout(timer);
+    tick(generation);
+  }
+
+  async function tick(gen) {
+    if (gen !== generation) return;
+    if (paused() || inFlight) { armIn(GATED_RECHECK, gen); return; }
+    inFlight = true;
+    pollAnchor = Date.now();
+    // Stamped when the poll actually begins, so a command can record which polls were
+    // already running when it went out.
+    const seq = ++pollSeq;
+    try {
+      // /api/states returns every entity in the house, which on a big install is
+      // megabytes. Cap it and filter here — HA has no server-side entity filter on
+      // this endpoint, and the cap is what stops a large install taking the panel out.
+      // A 200 that is not an array is not an empty house. Coercing it to [] made every
+      // configured entity "unknown" and told the user their entity ids were "not found in
+      // Home Assistant" — sending them to check their configuration when the real problem
+      // was that whatever answered was not Home Assistant.
+      const all = await haJson('/api/states', { maxBytes: 4 * 1024 * 1024 }, POLL_DEADLINE, true);
+      if (gen !== generation) return;   // a different server answered this question
+      const wanted = new Set(cfg.entities.map((e) => e.entity));
+      const next = new Map();
+      for (const item of Array.isArray(all) ? all : []) {
+        const id = item && item.entity_id;
+        if (!id || !wanted.has(id)) continue;
+        const attrs = (item && item.attributes) || {};
+        next.set(id, {
+          state: String(item.state == null ? '' : item.state),
+          unit: String(attrs.unit_of_measurement || ''),
+          name: String(attrs.friendly_name || ''),
+        });
+      }
+      states = next;
+      lastOk = Date.now();
+      fails = 0;
+      // Release only the guards this poll can actually speak for. Clearing all of them
+      // let a poll that had STARTED BEFORE a command — and therefore carries a snapshot
+      // from before it — open the gate on the strength of stale data: a second press in
+      // the window before the queued follow-up landed would read the pre-command state
+      // and send the opposite service.
+      for (const [entity, atSeq] of acting) if (atSeq < seq) acting.delete(entity);
+      document.body.classList.remove('stale');
+      // A result can change WHICH entities deserve a tile, not only what one says.
+      if (cfg.hidden && visibleKey() !== [...cards.keys()].join('\n')) build();
+      render();
+    } catch (e) {
+      if (gen !== generation) return;
+      fails++;
+      if (states.size) { document.body.classList.add('stale'); render(); }
+      else showError(faultText(e.kind, e.status));
+      WW.log('homeassistant: ' + e.message);
+    } finally {
+      if (gen === generation) {
+        inFlight = false;
+        // An action landed while this poll was already away, so this poll's snapshot
+        // predates it. Go again rather than re-arming the ordinary schedule over the top.
+        if (refreshQueued) { refreshQueued = false; clearTimeout(timer); tick(gen); }
+        else arm(gen);
+      }
+    }
+  }
+
+  function pollDelay() {
+    // Backoff on consecutive failures. At the five-second floor this widget offers, a
+    // server that is off for the evening otherwise costs seventeen thousand requests a
+    // day. Any success resets it. The ceiling bounds the GROWTH only — a backoff that
+    // came back under the configured interval would poll a dead server harder than a
+    // live one.
+    if (!fails) return cfg.refreshMs;
+    return Math.max(cfg.refreshMs, Math.min(cfg.refreshMs * Math.pow(2, Math.min(fails, 5)), MAX_WAIT));
+  }
+
+  function armIn(ms, gen) {
+    clearTimeout(timer);
+    timer = setTimeout(() => tick(gen), Math.max(IDLE_FLOOR, ms));
+  }
+
+  // Re-arm on the period that is already running rather than starting a new one: a poll
+  // that was skipped, or that took most of the interval, should not push the next one a
+  // whole interval past whenever it happened to finish.
+  function arm(gen) {
+    armIn(pollAnchor + pollDelay() - Date.now(), gen);
+  }
+
+  function render() {
+    // Counted over EVERY configured entity; only the TILES are limited to what fits.
+    // Scoping the count to the visible ones would have the pill contradict the footer
+    // line directly beneath it.
+    let unknown = 0;
+    for (const e of cfg.entities) if (!states.get(e.entity)) unknown++;
+    for (const e of visibleEntities()) {
+      const ui = cards.get(e.entity);
+      const s = states.get(e.entity);
+      if (!ui) continue;
+      if (!s) {
+        ui.val.textContent = '--';
+        ui.root.classList.remove('on');
+        continue;
+      }
+      const on = /^(on|open|unlocked|home|playing)$/i.test(s.state);
+      ui.root.classList.toggle('on', on);
+      ui.val.textContent = '';
+      ui.val.append(s.state);
+      if (s.unit) {
+        const u = document.createElement('small');
+        u.textContent = ' ' + s.unit;
+        ui.val.append(u);
+      }
+    }
+
+    const stale = document.body.classList.contains('stale');
+    const pill = el('pill');
+    if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
+    else if (unknown) { pill.textContent = unknown + ' unknown'; pill.className = 'pill warn'; }
+    else { pill.textContent = 'Live'; pill.className = 'pill ok'; }
+
+    const notes = [];
+    if (cfg.hidden) notes.push(cfg.hidden + ' more checked but no room to show in this slot');
+    if (cfg.dropped) notes.push(cfg.dropped + ' more configured than this widget watches (' + MAX_ENTITIES + ' max)');
+    if (cfg.malformed) notes.push(cfg.malformed + ' entr' + (cfg.malformed === 1 ? 'y is' : 'ies are') + " not domain.entity and can't be watched");
+    notes.push(unknown
+      ? unknown + ' entity id' + (unknown === 1 ? '' : 's') + ' not found in Home Assistant'
+      : (lastOk ? 'updated ' + new Date(lastOk).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : ''));
+    el('meta').textContent = notes.filter(Boolean).join(' · ');
+
+    el('state').hidden = true;
+    el('grid').hidden = false;
+  }
+
+  function stateCard(cls, icon, title, body, onRetry) {
+    const pill = el('pill');
+    pill.textContent = cls === 'err' ? 'Error' : 'Setup';
+    pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
+    const s = el('state');
+    s.className = 'state-card' + (cls ? ' ' + cls : '');
+    s.textContent = '';
+    const i = document.createElement('div');
+    i.className = 'state-icon';
+    i.textContent = icon;
+    const t = document.createElement('div');
+    t.className = 'state-title';
+    t.textContent = title;
+    const b = document.createElement('div');
+    b.className = 'state-body';
+    b.textContent = body;
+    s.append(i, t, b);
+    if (onRetry) {
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.textContent = 'Retry';
+      btn.addEventListener('click', onRetry);
+      s.append(btn);
+    }
+    s.hidden = false;
+    el('grid').hidden = true;
+  }
+
+  function showSetup() {
+    // When every configured entity was rejected the list reads as empty, and the generic
+    // "add entities" card then told someone with a full settings list to add some. Say
+    // what actually happened to them.
+    const rejected = cfg.malformed
+      ? 'None of the entities configured are domain.entity — ' + cfg.malformed
+        + ' entr' + (cfg.malformed === 1 ? 'y was' : 'ies were') + ' rejected. They look like light.kitchen.'
+      : 'Add entities in the widget settings, e.g. light.kitchen.';
+    stateCard('', '◎', 'Not configured yet',
+      !cfg.base ? 'Add your Home Assistant address in the widget settings.'
+      : !cfg.token ? 'Add a long-lived access token in the widget settings.'
+      : rejected);
+  }
+
+  function showError(message) {
+    stateCard('err', '!', 'Home Assistant unavailable', message, () => {
+      stateCard('', '', 'Retrying', '');
+      // An explicit retry spends the backoff rather than charging it to the person who
+      // pressed the button. The game gate stays shut: a button cannot consent on their
+      // behalf to work during someone else's game.
+      fails = 0;
+      pollAnchor = 0;
+      clearTimeout(timer);
+      tick(generation);
+    });
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !started || gameOn) return;
+    if (Date.now() - lastOk >= pollDelay()) { clearTimeout(timer); tick(generation); }
+  });
+</script>
+</body>
+</html>
