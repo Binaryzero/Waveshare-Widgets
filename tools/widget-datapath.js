@@ -75,6 +75,15 @@ for (let i = 0; i < args.length; i++) {
   if (args[i] === '--expect') expects.push(args[i + 1]);
   if (args[i] === '--reject') rejects.push(args[i + 1]);
 }
+// The escape hatch cannot be used alone. Without --expect it removes the only check
+// that tells the INTENDED state card from an arbitrary spinner or error, so it would
+// turn a failing populated run into a pass by itself — which is precisely how escape
+// hatches get misused.
+if (args.includes('--allow-state') && expects.length === 0) {
+  console.error('--allow-state requires at least one --expect: the state card still has to be ASSERTED, '
+    + 'not merely permitted.');
+  process.exit(2);
+}
 const waitMs = Number(opt('wait', 1500));
 const shot = opt('shot', null);
 const asJson = args.includes('--json');
@@ -129,15 +138,24 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     return route.fulfill({ status: 404, body: '' });
   });
   await page.route('https://widget.test/**', (route) => {
-    const rel = decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\//, '') || 'index.html';
-    const file = path.join(path.resolve(folder), rel);
-    if (file.startsWith(path.resolve(folder)) && fs.existsSync(file) && fs.statSync(file).isFile())
+    // Root PLUS SEPARATOR, not a bare prefix: `widgets/rest` is a string-prefix of
+    // `widgets/rest-private`, so a decoded traversal into a sibling whose name merely
+    // starts with the folder name passed the old test. Same defect the app.wsw route
+    // had, in the route that already looked guarded.
+    const widgetRoot = path.resolve(folder);
+    const rel = decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\/+/, '') || 'index.html';
+    const file = path.resolve(widgetRoot, rel);
+    if ((file === widgetRoot || file.startsWith(widgetRoot + path.sep)) && fs.existsSync(file) && fs.statSync(file).isFile())
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   });
   // The stubs. Anything unmatched aborts, same as widget-harness — an un-stubbed
   // endpoint must still land the widget in a designed state, never a hang.
-  await page.route(/https?:\/\/(?!app\.wsw|widget\.test).*/, (route) => {
+  // The exclusions need a HOST BOUNDARY. Without one, `https://app.wswevil.com/`
+  // starts with `app.wsw`, so it was excluded from the abort handler while matching
+  // neither local route — and the browser then made a real network request out of a
+  // runner whose whole contract is that unmatched requests are deterministic.
+  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test)(?:[:/?#]|$)).*/, (route) => {
     const url = route.request().url();
     const stub = stubs.find((s) => url.includes(s.match));
     if (!stub) return route.abort();
@@ -154,11 +172,24 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // Host-bound messages. ww-fetch is answered from the SAME stub table, because a
   // widget that escalates to the host proxy must reach the same data it would have
   // reached directly — otherwise the stub only covers whichever tier happened to win.
-  await page.addInitScript(({ table }) => {
+  await page.addInitScript(({ table, ceiling }) => {
     window.addEventListener('message', (ev) => {
       const m = ev.data || {};
       const reply = (obj) => window.postMessage(obj, window.location.origin);
       if (m.type === 'ww-fetch') {
+        // The host REFUSES some calls before it ever looks at the target, and a runner
+        // that answers them anyway lets a widget pass here and fail on the real panel.
+        // DashboardWindow.HandleProxyFetchAsync: absolute http(s) only, and only
+        // GET/POST/PUT/HEAD.
+        let abs = null;
+        try { abs = new URL(String(m.url || '')); } catch (e) { abs = null; }
+        if (!abs || (abs.protocol !== 'http:' && abs.protocol !== 'https:')) {
+          return reply({ type: 'ww-fetch-result', id: m.id, error: 'only absolute http(s) URLs are allowed' });
+        }
+        const method = String(m.method || 'GET').toUpperCase();
+        if (!['GET', 'POST', 'PUT', 'HEAD'].includes(method)) {
+          return reply({ type: 'ww-fetch-result', id: m.id, error: 'method ' + method + ' not allowed' });
+        }
         const stub = table.find((s) => String(m.url || '').includes(s.match));
         if (!stub) return reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
         // The proxy tier's contract is bodyBase64 + contentType, NOT a body string and
@@ -170,19 +201,40 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         // the 5 MiB body ceiling, so a realistic full-size fixture threw inside the
         // responder instead of exercising the widget's proxy path.
         const bytes = new TextEncoder().encode(stub.bodyText || '');
+        // The host applies the cap BEFORE it produces a result, so a widget that only
+        // inspects status/headers never sees the body at all. Returning the full body
+        // and leaving the shim's client-side cap to catch it later let such a widget
+        // pass here and be refused in production.
+        const asked = Number(m.maxBytes);
+        const cap = Math.min(ceiling, Number.isFinite(asked) && asked > 0 ? asked : ceiling);
+        if (bytes.length > cap) {
+          return reply({ type: 'ww-fetch-result', id: m.id,
+            error: 'response too large: ' + bytes.length + ' bytes exceeds ' + cap });
+        }
         let bin = '';
         for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
         const b64 = btoa(bin);
         return reply({
           type: 'ww-fetch-result', id: m.id, status: stub.status || 200,
-          contentType: stub.contentType || 'application/json', bodyBase64: b64,
+          // statusText and contentType both travel on the real result
+          // (DashboardWindow.cs) — omitting them tested widgets against a proxy
+          // contract the host does not have.
+          statusText: stub.statusText || '',
+          contentType: stub.contentType || (stub.json !== undefined ? 'application/json' : 'text/plain'),
+          bodyBase64: b64,
         });
       }
       if (m.type === 'ww-ping') reply({ type: 'ww-ping-result', id: m.id, results: [] });
       else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
       else if (m.type === 'ww-audio-get') reply({ type: 'ww-audio-result', id: m.id, available: false });
     });
-  }, { table: stubs.map((s) => ({ match: s.match, status: s.status, headers: s.headers, bodyText: bodyOf(s) })) });
+  }, {
+    ceiling: 5 * 1024 * 1024,   // the host's own body ceiling; init.maxBytes only LOWERS it
+    table: stubs.map((s) => ({
+      match: s.match, status: s.status, statusText: s.statusText,
+      contentType: s.contentType, json: s.json, bodyText: bodyOf(s),
+    })),
+  });
 
   await page.goto('https://widget.test/index.html');
   await page.evaluate(({ settings, theme }) => {
@@ -191,6 +243,15 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   await page.waitForTimeout(waitMs);
 
   check('no page errors', consoleErrors.length === 0, consoleErrors.join(' | '));
+
+  // The offline twin checks this and this one dropped it: with no --expect, an entirely
+  // blank widget passed every remaining check — no errors, no state layer, nothing to
+  // overflow. A script that clears the UI or never builds it would have been a green run.
+  check('visible content rendered', await page.evaluate(() =>
+    [...document.body.querySelectorAll('*')].some((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 4 && r.height > 4 && getComputedStyle(el).visibility !== 'hidden';
+    })));
 
   const text = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').trim());
   for (const want of expects) check(`renders ${JSON.stringify(want)}`, text.includes(want), text.slice(0, 220));
@@ -202,12 +263,15 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // --allow-state opts out, for the runs where the state card IS the expected result:
   // an unconfigured widget with no token, a deliberately un-stubbed endpoint. Those
   // still need their text asserted, which is what --expect is for.
-  const stateVisible = await page.evaluate(() => {
-    const s = document.querySelector('.state-card, .spinner');
-    if (!s) return false;
-    const r = s.getBoundingClientRect();
-    return r.width > 4 && r.height > 4;
-  });
+  // EVERY state layer, not the first one. querySelector returns the earliest match in
+  // document order, so a widget that keeps a hidden loading card above its error card
+  // (forecast7, hue) reported "no state visible" while showing an error — defeating the
+  // one assertion this runner exists to make.
+  const stateVisible = await page.evaluate(() => [...document.querySelectorAll('.state-card, .spinner')]
+    .some((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 4 && r.height > 4 && getComputedStyle(el).visibility !== 'hidden';
+    }));
   if (!args.includes('--allow-state')) {
     check('state layer cleared (data is showing, not a spinner or error card)', !stateVisible);
   }
