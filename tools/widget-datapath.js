@@ -14,7 +14,13 @@
 // request URL wins:
 //
 //   [{ "match": "cisa.gov", "json": { ... } },
-//    { "match": "example.com/slow", "status": 503, "body": "" }]
+//    { "match": "example.com/slow", "status": 503, "body": "" },
+//    { "match": "api.private", "tier": "proxy", "json": { ... } }]
+//
+// `"tier": "proxy"` makes the DIRECT request fail the way a CORS-refusing API does, so
+// WW.fetch escalates and the host-proxy path is what answers. Without it every matched
+// response is directly readable, the fallback is never exercised, and a widget that
+// used native fetch (or proxy:'never') passes here while being blocked in production.
 //
 // Every request that matches nothing is aborted exactly as widget-harness does, so a
 // widget calling an endpoint you did not stub still lands in its designed failure
@@ -159,6 +165,9 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     const url = route.request().url();
     const stub = stubs.find((s) => url.includes(s.match));
     if (!stub) return route.abort();
+    // A proxy-tier fixture refuses the direct call. WW.fetch treats a network-layer
+    // failure as its cue to escalate, which is exactly what a CORS-refusing API causes.
+    if (stub.tier === 'proxy') return route.abort();
     served.push(url);
     return route.fulfill({
       status: stub.status || 200,
@@ -177,6 +186,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
       const m = ev.data || {};
       const reply = (obj) => window.postMessage(obj, window.location.origin);
       if (m.type === 'ww-fetch') {
+        window.__wwProxyServed = window.__wwProxyServed || [];
         // The host REFUSES some calls before it ever looks at the target, and a runner
         // that answers them anyway lets a widget pass here and fail on the real panel.
         // DashboardWindow.HandleProxyFetchAsync: absolute http(s) only, and only
@@ -192,6 +202,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         }
         const stub = table.find((s) => String(m.url || '').includes(s.match));
         if (!stub) return reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
+        window.__wwProxyServed.push(String(m.url || ''));
         // The proxy tier's contract is bodyBase64 + contentType, NOT a body string and
         // a headers map — the shim rebuilds a Response from exactly those fields. Note
         // it carries no response headers beyond Content-Type, so anything reading an
@@ -200,7 +211,9 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         // Chunked: String.fromCharCode(...bytes) blows the argument limit long before
         // the 5 MiB body ceiling, so a realistic full-size fixture threw inside the
         // responder instead of exercising the widget's proxy path.
-        const bytes = new TextEncoder().encode(stub.bodyText || '');
+        // A real HEAD response carries no body, and the host issues a real HEAD. Sending
+        // one lets a widget consume payload data here and receive nothing in production.
+        const bytes = new TextEncoder().encode(method === 'HEAD' ? '' : (stub.bodyText || ''));
         // The host applies the cap BEFORE it produces a result, so a widget that only
         // inspects status/headers never sees the body at all. Returning the full body
         // and leaving the shim's client-side cap to catch it later let such a widget
@@ -276,6 +289,18 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     check('state layer cleared (data is showing, not a spinner or error card)', !stateVisible);
   }
 
+  // A DATA-PATH run that touched no data proves nothing. Without this, a widget that
+  // stopped calling WW.fetch entirely — but still painted a title or an empty card —
+  // satisfied every other check whenever --expect was omitted. The one exemption is
+  // --allow-state, where not reaching the network IS the expected outcome (an
+  // unconfigured widget makes no request at all).
+  const proxyServed = await page.evaluate(() => window.__wwProxyServed || []);
+  if (!args.includes('--allow-state')) {
+    check('a stubbed endpoint was actually requested (direct or proxy tier)',
+      served.length + proxyServed.length > 0,
+      served.length + ' direct, ' + proxyServed.length + ' proxied');
+  }
+
   check('no horizontal overflow', await page.evaluate(() =>
     document.documentElement.scrollWidth <= window.innerWidth &&
     document.body.scrollWidth <= window.innerWidth),
@@ -285,7 +310,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   await browser.close();
 
   const ok = checks.every((c) => c.ok);
-  if (asJson) console.log(JSON.stringify({ folder, slot, theme: themeArg, ok, checks, served, consoleErrors }, null, 1));
+  if (asJson) console.log(JSON.stringify({ folder, slot, theme: themeArg, ok, checks, served, proxyServed, consoleErrors }, null, 1));
   else {
     console.log(`${ok ? 'OK  ' : 'FAIL'} ${folder} @ ${slot} (${themeArg}) — data path`);
     for (const c of checks) console.log(`  ${c.ok ? 'PASS' : 'FAIL'} ${c.name}${c.detail ? ' - ' + c.detail : ''}`);
