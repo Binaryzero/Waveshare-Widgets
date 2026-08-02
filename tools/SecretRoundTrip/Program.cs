@@ -649,6 +649,59 @@ Check("P27e saving the masked layout keeps the credential rather than blanking i
 Check("P27f and it is now encrypted at rest, which the refusal alone never achieved",
     refusedAfter != Token && SecretStore.HasMarker(refusedAfter));
 
+// ---- P28y · blanking only where the restore is GUARANTEED ------------------------------
+// Two conditions, each one a way the first version destroyed data.
+//
+// (1) An id-LESS slot is never blanked. shell.js mints an instanceId on the first unrelated
+// on-panel edit while the stored copy is still id-less, and SlotKey deliberately refuses that
+// mismatch (#68) — so the restore would miss and the blank would reach disk. Before this
+// intent existed the envelope survived that transition untouched, so blanking it would turn a
+// documented identity change into a destructive one. The cost is stated in the source: such a
+// slot keeps the pre-existing exposure until it has an identity.
+var idlessManifest = new WidgetManifest
+{
+    Id = "test.widget",
+    Name = "Test",
+    Properties = [new WidgetProperty { Name = "apiToken", Label = "API token", Type = "text" }],
+};
+WidgetManifest? IdlessLookup(string id) => id == "test.widget" ? idlessManifest : null;
+var idlessStored = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
+SecretPolicy.Seal(idlessStored, null, Lookup);          // sealed while still declared secret
+var idlessCipher = Value(idlessStored, "apiToken");
+Check("P28y setup: an id-less slot holds an envelope", SecretStore.CanUnprotect(idlessCipher));
+var idlessRevealed = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(idlessStored))!;
+idlessRevealed.Pages![0].Slots![0].InstanceId = null;
+SecretPolicy.Reveal(idlessRevealed, IdlessLookup);
+Check("P28y an id-less slot's demoted envelope is NOT blanked, because it could not be restored",
+    Value(idlessRevealed, "apiToken") == idlessCipher, Value(idlessRevealed, "apiToken"));
+// ...and the transition that motivated it: the shell mints an id, the stored copy is still
+// id-less, and the value survives rather than being wiped.
+var minted = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(idlessRevealed))!;
+minted.Pages![0].Slots![0].InstanceId = "freshly-minted-by-the-shell";
+SecretPolicy.Seal(minted, idlessStored, IdlessLookup);
+Check("P28y2 ...so a shell-minted id does not destroy it",
+    SecretStore.CanUnprotect(Value(minted, "apiToken")), Value(minted, "apiToken"));
+
+// (2) A SECOND instance of the same widget that already holds ordinary text keeps it. The
+// intent is planned per widget id because the retype is per widget, but two instances can be
+// in different states — blanking on the intent alone withheld a perfectly displayable value
+// from both the widget and the editor.
+var mixed = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "has-envelope", Size = "half",
+            Settings = new JsonObject { ["apiToken"] = idlessCipher } },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "has-plain-text", Size = "half",
+            Settings = new JsonObject { ["apiToken"] = "already-retyped-by-hand" } },
+    ] }],
+};
+SecretPolicy.Reveal(mixed, IdlessLookup);
+Check("P28y3 the instance holding an envelope is blanked",
+    mixed.Pages![0].Slots![0].Settings!["apiToken"]!.GetValue<string>() == "");
+Check("P28y4 ...while a sibling instance holding ordinary text keeps it",
+    mixed.Pages![0].Slots![1].Settings!["apiToken"]!.GetValue<string>() == "already-retyped-by-hand",
+    mixed.Pages![0].Slots![1].Settings!["apiToken"]!.GetValue<string>());
+
 // ---- P28z · demotion is discovered by DECRYPTABILITY, not by shape ---------------------
 // `dpapi:v1:<valid base64>` is a shape a FOREIGN envelope has — a layout copied from another
 // machine or account — and also one a user could type. Under a property the manifest does

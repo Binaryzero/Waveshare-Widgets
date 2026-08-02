@@ -46,6 +46,9 @@ const widgets = [{
     { name: 'token', label: 'Personal access token', type: 'secret', placeholder: 'ghp_…' },
     { name: 'fresh', label: 'Other token', type: 'secret' },
     { name: 'repo', label: 'Repository', type: 'text', default: 'owner/name' },
+    // A DEMOTED property: the manifest calls it `text` now, but a value from when it was
+    // `secret` is still stored. The host blanks it and lists it in secretsRestorable.
+    { name: 'legacyToken', label: 'Legacy token', type: 'text' },
   ],
 }, {
   // A DIFFERENT widget that happens to declare the same secret name — the collision
@@ -63,8 +66,9 @@ const layout = {
     name: 'Main',
     slots: [{
       widgetId: 'test.gh', size: 'half', instanceId: 'gh1',
-      settings: { token: '', fresh: '', repo: 'binaryzero/waveshare-widgets' },
+      settings: { token: '', fresh: '', legacyToken: '', repo: 'binaryzero/waveshare-widgets' },
       secretsSet: ['token'],
+      secretsRestorable: ['legacyToken'],
     }],
   }],
 };
@@ -171,6 +175,33 @@ const layout = {
     cleared.settings.token === '__ww_secret_cleared__', JSON.stringify(cleared.settings));
   check('E5c an untouched secret still sends "" (the keep-what-you-have signal)',
     cleared.settings.fresh === '', JSON.stringify(cleared.settings));
+
+  // ---- E12 · #66/#105: a DEMOTED secret must be clearable through the editor -----------
+  // The host blanks a demoted envelope and restores it if the field comes home untouched.
+  // An ordinary text input sends "" when emptied, which the host reads as untouched — so
+  // without an explicit Clear the field can NEVER be emptied. That is the uneditable-field
+  // failure the intent exists to avoid, and it can only be caught by driving the editor:
+  // asserting the host's three-case handling directly (P28c3) passes while this is broken,
+  // because that test supplies the marker the UI never produces.
+  const demoted = page.locator('#slotDetail .prop-field').filter({ hasText: 'Legacy token' });
+  check('E12 setup: the demoted field rendered', await demoted.count() === 1);
+  check('E12 a demoted field offers a Clear affordance',
+    await demoted.locator('button').filter({ hasText: 'Clear' }).count() === 1);
+  check('E12b it is an ordinary text input, not a masked secret one',
+    await demoted.locator('input').getAttribute('type') === 'text');
+  check('E12c and it says a previous value is stored, since it cannot show one',
+    (await demoted.locator('input').getAttribute('placeholder') || '').includes('stored'));
+
+  await demoted.locator('button').filter({ hasText: 'Clear' }).click();
+  await page.waitForTimeout(120);
+  await page.locator('#save').click();
+  await page.waitForTimeout(400);
+  const demotedSaved = saved[saved.length - 1].pages[0].slots[0];
+  check('E12d Clear sends the marker, so the host removes it instead of restoring it',
+    demotedSaved.settings.legacyToken === '__ww_secret_cleared__',
+    JSON.stringify(demotedSaved.settings.legacyToken));
+  check('E12e the affordance is gone once cleared — nothing is left to restore',
+    await demoted.locator('button').filter({ hasText: 'Clear' }).count() === 0);
 
   // ---- E8 · the marker is host protocol, never shown back to the user as a value
   const shownAfterClear = await stored.locator('input').inputValue();

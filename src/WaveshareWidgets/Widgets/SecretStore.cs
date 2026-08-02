@@ -403,8 +403,8 @@ public static class SecretPolicy
             // home untouched, which is what makes blanking safe at all.
             if (intent is SecretIntent.RestoreIfUntouched)
             {
-                if (slot.Settings?[name] is not null)
-                    slot.Settings[name] = "";
+                if (Blankable(slot, AsString(slot.Settings?[name])))
+                    slot.Settings![name] = "";
                 return;
             }
             if (intent is not SecretIntent.Protect)
@@ -456,7 +456,7 @@ public static class SecretPolicy
                         // text input that happens to have a value it cannot display, so it
                         // needs a Clear affordance to send the marker with. Without that the
                         // blank alone is ambiguous and the field can never be emptied.
-                        if (slot["settings"]?[name] is not null)
+                        if (Blankable(AsString(slot["instanceId"]), AsString(slot["settings"]?[name])))
                         {
                             restorable.Add(name);
                             slot["settings"]![name] = SecretStore.EditorPlaceholder;
@@ -551,14 +551,15 @@ public static class SecretPolicy
                     // back precisely what was there. Without this the blank would be saved
                     // and the credential destroyed — which is what made scrubbing alone
                     // unsafe, on this path and on Reveal's.
-                    if (TryPrevious(demotedKey, slot, name, out var keptNode))
+                    // Restore, or leave exactly what was submitted. NEVER remove: a blank we
+                    // cannot match is a blank we cannot prove we caused, and removing would
+                    // destroy a value on the strength of a guess. Reveal and Mask only blank
+                    // slots this lookup is guaranteed to resolve, so a miss here means the
+                    // blank came from somewhere else and is the user's.
+                    if (TryPrevious(demotedKey, slot, name, out var keptNode) && keptNode is not null)
                     {
-                        slot.Settings![name] = keptNode?.DeepClone();
+                        slot.Settings![name] = keptNode.DeepClone();
                         Stamp(slot);
-                    }
-                    else
-                    {
-                        slot.Settings?.Remove(name);
                     }
                 }
                 // else: the user typed something. Leave it exactly as submitted.
@@ -823,6 +824,36 @@ public static class SecretPolicy
     /// <summary>Visits every planned (slot, property) pair of a layout, with the intent
     /// that applies. The visitor runs once per planned property, whether or not the slot
     /// carries a value — an absent value is itself a case several branches handle.</summary>
+    /// <summary>May this slot's demoted value be blanked for a payload?</summary>
+    /// <remarks>
+    /// Two conditions, and each answers a way the naive version destroyed data.
+    ///
+    /// THE VALUE IS ACTUALLY ONE OF OURS. The intent is planned per widget id because the
+    /// retype is per widget, but two instances of the same widget can be in different states
+    /// — one still holding an envelope, the other already retyped to ordinary text. Blanking
+    /// on the intent alone withheld the second instance's perfectly displayable value from
+    /// both the widget and the editor.
+    ///
+    /// THE SLOT IS STABLY ADDRESSABLE. Blanking is only safe because Seal can put the value
+    /// back, and that lookup is by slot key. A legacy id-less slot gets an instanceId minted
+    /// by shell.js on its first unrelated on-panel edit while the stored copy is still
+    /// id-less, and SlotKey deliberately refuses that mismatch (#68) — so the restore would
+    /// miss and the blank would reach disk. Before this intent existed the envelope simply
+    /// survived that transition, so blanking it would turn a documented identity change into
+    /// a destructive one.
+    ///
+    /// The consequence, stated rather than discovered later: an id-less legacy slot keeps
+    /// handing its demoted envelope to the widget, exactly as it does today. That is the
+    /// pre-existing exposure, not a new one, and it closes when the slot gains an identity —
+    /// or wholesale when the identity protocol lands. Trading a leak for a destroyed value
+    /// is the trade this pipeline has refused three times already.
+    /// </remarks>
+    private static bool Blankable(LayoutSlot slot, string? value) =>
+        Blankable(slot.InstanceId, value);
+
+    private static bool Blankable(string? instanceId, string? value) =>
+        !string.IsNullOrEmpty(instanceId) && SecretStore.CanUnprotect(value);
+
     private static void Walk(DashboardLayout layout, SecretPlan plan,
         Action<LayoutSlot, string, SecretIntent> visit)
     {

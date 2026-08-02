@@ -381,6 +381,7 @@
         }
         const merged = Object.assign({}, slot, { settings });
         if (prior.secretsSet) merged.secretsSet = prior.secretsSet;
+        if (prior.secretsRestorable) merged.secretsRestorable = prior.secretsRestorable;
         return merged;
       }),
     }));
@@ -1393,6 +1394,7 @@
       // (`token` is the obvious collision) as "saved · encrypted" for a widget that has
       // never had one.
       delete slot.secretsSet;
+      delete slot.secretsRestorable;
       const w = widgetsById.get(slot.widgetId);
       const widths = offeredWidths(w);
       const current = parseSize(slot.size);
@@ -2170,6 +2172,37 @@
         if (prop.placeholder) input.placeholder = String(prop.placeholder);
         input.value = current != null ? String(current) : '';
         input.oninput = () => set(input.value);
+        // A DEMOTED secret (#66): the manifest calls this `text` now, but a value from when
+        // it was `secret` is still stored and cannot be shown. The host blanked it and will
+        // put it back if this field comes home untouched — so an empty box means "unchanged",
+        // and without an explicit way to say otherwise the field could never be emptied.
+        // That is the uneditable-field failure this whole intent exists to avoid, and it
+        // lands here rather than in the host: only the editor knows the user pressed Clear.
+        if (Array.isArray(slot.secretsRestorable) && slot.secretsRestorable.includes(prop.name)) {
+          const wrap = document.createElement('div');
+          wrap.className = 'picker-wrap';
+          input.placeholder = 'A previous value is stored — type to replace it';
+          const clear = document.createElement('button');
+          clear.type = 'button';
+          clear.className = 'ghost';
+          clear.textContent = 'Clear';
+          clear.title = 'Remove the stored value from a time when this field was a secret';
+          clear.onclick = () => {
+            input.value = '';
+            set('__ww_secret_cleared__');
+            // One shot: once cleared there is nothing left to restore, so the affordance
+            // goes and the field behaves like the ordinary text input it now is.
+            if (Array.isArray(slot.secretsRestorable))
+              slot.secretsRestorable = slot.secretsRestorable.filter((n) => n !== prop.name);
+            clear.remove();
+            input.placeholder = prop.placeholder ? String(prop.placeholder) : '';
+          };
+          // Typing is itself an unambiguous replacement, so the marker must not survive it.
+          input.oninput = () => set(input.value);
+          wrap.appendChild(input);
+          wrap.appendChild(clear);
+          return wrap;
+        }
         if (prop.picker) {
           // picker:'emoji' / picker:'file' on a top-level text property (#48).
           const wrap = document.createElement('div');
