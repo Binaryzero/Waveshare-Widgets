@@ -713,12 +713,28 @@ WidgetManifest? DemotedLookup(string id) => id == "test.widget" ? demotedManifes
 
 var revealed28 = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(demotedStored))!;
 SecretPolicy.Reveal(revealed28, DemotedLookup);
-Check("P28b KNOWN GAP (#66): a demoted secret still reaches the widget as ciphertext",
-    Value(revealed28, "apiToken") == demotedCipher, Value(revealed28, "apiToken"));
-// The property that makes the gap tolerable, and that any fix must preserve: the stored
-// value is INTACT, so the user can retype the field and it saves as ordinary text.
-Check("P28c but the stored value is intact, so the situation self-heals on the next edit",
-    SecretStore.Unprotect(Value(revealed28, "apiToken")) == Token);
+// FIXED (#66, #105). This asserted the exposure as current behaviour until
+// RestoreIfUntouched landed; the issue called that out as the worst part of the gap — "a
+// probe that blesses a regression is worse than no probe" — so it is turned around here
+// rather than deleted, and P28c below still pins the property that made the gap tolerable.
+Check("P28b a demoted secret no longer reaches the widget as ciphertext",
+    Value(revealed28, "apiToken") == "", Value(revealed28, "apiToken"));
+Check("P28b2 and nothing envelope-shaped is left anywhere in the payload",
+    !JsonSerializer.Serialize(revealed28).Contains("dpapi:v1:"), JsonSerializer.Serialize(revealed28));
+// The property the gap had and the fix must not lose: the STORED value is untouched, so
+// the credential is still there to be re-promoted or restored. Blanking is a payload
+// decision, never a disk one.
+Check("P28c the stored value is intact — this blanked a copy, not the credential",
+    SecretStore.Unprotect(Value(demotedStored, "apiToken")) == Token,
+    Value(demotedStored, "apiToken"));
+// ...and the round trip proves it: the shell posts the blank back and Seal puts it back.
+var demotedSaved = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(revealed28))!;
+SecretPolicy.Seal(demotedSaved, demotedStored, DemotedLookup);
+Check("P28c2 the blank round-trips: an untouched demoted field keeps its stored value",
+    Value(demotedSaved, "apiToken") == demotedCipher, Value(demotedSaved, "apiToken"));
+Check("P28c3 and it is NOT re-encrypted — the manifest calls this property ordinary now",
+    SecretStore.Unprotect(Value(demotedSaved, "apiToken")) == Token,
+    Value(demotedSaved, "apiToken"));
 Check("P28d an ordinary setting beside it is untouched",
     Value(revealed28, "repo") == "owner/name", Value(revealed28, "repo"));
 
@@ -1118,6 +1134,7 @@ foreach (var a in intents)
 // to a value that must be stored verbatim.
 var rank = new Dictionary<SecretIntent, int>
 {
+    [SecretIntent.RestoreIfUntouched] = 0,
     [SecretIntent.Protect] = 1,
     [SecretIntent.ProtectWithoutReveal] = 2,
 };
@@ -1143,6 +1160,150 @@ Check("P35v nothing may be revealed that is not also masked and encrypted",
 Check("P35w and ProtectWithoutReveal is on the masking side of that line — it is not a bypass",
     SecretIntents.Protects(SecretIntent.ProtectWithoutReveal)
         && !SecretIntents.Reveals(SecretIntent.ProtectWithoutReveal));
+
+// ---- P36 · #66/#105/#120: RestoreIfUntouched ------------------------------------------
+// The intent is planned for EVERY ordinary declared property, because nothing anywhere
+// records that a property used to be `secret` — a manifest states the present tense only.
+// So the plan means "might be one of ours" and the VALUE decides. Every probe below is a
+// way that broad planning could destroy an ordinary setting if the value check were wrong.
+
+static DashboardLayout TwoInstances(JsonObject a, JsonObject b, string? idA = "i1", string? idB = "i2") => new()
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = idA, Size = "half", Settings = a },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = idB, Size = "half", Settings = b },
+    ] }],
+};
+static string? ValueAt(DashboardLayout l, int slot, string name) =>
+    l.Pages[0].Slots[slot].Settings?[name] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+var p36Plan = SecretPlan.FromManifests(DemotedLookup).For(Slot(LayoutWith(new JsonObject())));
+Check("P36 a declared ordinary property is planned RestoreIfUntouched",
+    p36Plan.TryGetValue("apiToken", out var p36i) && p36i == SecretIntent.RestoreIfUntouched,
+    p36i.ToString());
+Check("P36b a property the manifest still calls `secret` is NOT — it would be blanked one "
+    + "line after being decrypted correctly",
+    SecretPlan.FromManifests(Lookup).For(Slot(LayoutWith(new JsonObject())))["apiToken"]
+        == SecretIntent.Protect);
+
+// A `list` is excluded for the reason CredentialPropertyNames excludes it: this pipeline
+// walks top-level properties, so Mask would put a placeholder STRING where the array is and
+// Seal, finding no stored string, would take the whole list with it. The value check would
+// also spare it — an array is not a decryptable string — but relying on that would make the
+// exclusion look removable, and a credential inside a row is #62's problem, not this one.
+var listManifest = new WidgetManifest
+{
+    Id = "test.widget",
+    Name = "Test",
+    Properties = [new WidgetProperty { Name = "endpoints", Label = "Endpoints", Type = "list" }],
+};
+Check("P36b2 a list property is not planned at all",
+    SecretPlan.FromManifests(id => id == "test.widget" ? listManifest : null)
+        .For(Slot(LayoutWith(new JsonObject()))).Count == 0);
+
+// ---- P36c · an id-LESS slot is never blanked -----------------------------------------
+// shell.js mints an instanceId on the first unrelated on-panel edit while the stored copy
+// is still id-less, and SlotKey deliberately refuses that mismatch (#68). Blanking such a
+// slot would turn a documented identity change into a destructive one: the restore misses
+// and the blank reaches disk. Before this intent existed the envelope simply survived.
+// Built from an already-sealed value rather than by sealing here: Seal STAMPS an id onto
+// any slot it leaves holding a credential, precisely so the next save matches by id. The
+// slot under test is the legacy one that predates that stamping.
+var idlessCipher = demotedCipher;
+var idless = LayoutWith(new JsonObject { ["apiToken"] = idlessCipher }, instanceId: null);
+Check("P36c setup: an id-less slot holds one of our envelopes",
+    SecretStore.CanUnprotect(idlessCipher) && string.IsNullOrEmpty(Slot(idless).InstanceId));
+var idlessRevealed = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(idless))!;
+SecretPolicy.Reveal(idlessRevealed, DemotedLookup);
+Check("P36c2 an id-less slot's demoted envelope is NOT blanked — it could not be restored",
+    Value(idlessRevealed, "apiToken") == idlessCipher, Value(idlessRevealed, "apiToken"));
+// The whole sequence: the shell mints an id on the copy it holds and saves it back.
+var idlessMinted = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(idlessRevealed))!;
+Slot(idlessMinted).InstanceId = "s-minted-by-shell";
+SecretPolicy.Seal(idlessMinted, idless, DemotedLookup);
+Check("P36c3 ...so a shell-minted id does not destroy it",
+    Value(idlessMinted, "apiToken") == idlessCipher, Value(idlessMinted, "apiToken"));
+
+// ---- P36d · two instances of one widget can be in different states -------------------
+// The intent is per widget id because the retype is, but one instance can still hold the
+// envelope while the other has already been retyped to ordinary text. Blanking on the
+// intent alone withheld the second one's perfectly displayable value from everybody.
+// The cipher is placed directly. Sealing the pair here would encrypt BOTH — `Lookup` calls
+// the property `secret` — and the sibling under test is the one that has already been
+// retyped, so its value must never have been through the cipher.
+var mixed = TwoInstances(
+    new JsonObject { ["apiToken"] = demotedCipher },
+    new JsonObject { ["apiToken"] = "plain-text-now" });
+SecretPolicy.Reveal(mixed, DemotedLookup);
+Check("P36d the instance holding an envelope is blanked",
+    ValueAt(mixed, 0, "apiToken") == "", ValueAt(mixed, 0, "apiToken"));
+Check("P36e ...while a sibling instance holding ordinary text keeps it",
+    ValueAt(mixed, 1, "apiToken") == "plain-text-now", ValueAt(mixed, 1, "apiToken"));
+
+// ---- P36f · decryptability, not shape -------------------------------------------------
+// `dpapi:v1:YWJj` is a string a user can type into a text field. Blanking on shape would
+// eat it, and the user would watch their own input vanish.
+var typedShape = LayoutWith(new JsonObject { ["apiToken"] = MarkerShaped });
+SecretPolicy.Reveal(typedShape, DemotedLookup);
+Check("P36f a user-typed marker-shaped value in a demoted field is left alone",
+    Value(typedShape, "apiToken") == MarkerShaped, Value(typedShape, "apiToken"));
+
+// ---- P36g · #120, the settings-preview twin -------------------------------------------
+// Same trigger, different exit: the replica hosts real widget iframes, so a demoted
+// envelope in the editor payload is handed to widget code exactly as the dashboard's is.
+var p36Node = JsonSerializer.SerializeToNode(demotedStored);
+SecretPolicy.Mask(p36Node, SecretPlan.FromManifests(DemotedLookup));
+Check("P36g the editor payload holds no envelope for a demoted property",
+    !p36Node!.ToJsonString().Contains("dpapi:v1:"), p36Node.ToJsonString());
+Check("P36g2 and the editor is told WHICH field is holding a blank it did not type",
+    p36Node["pages"]![0]!["slots"]![0]!["secretsRestorable"] is JsonArray r36
+        && r36.Count == 1 && r36[0]!.GetValue<string>() == "apiToken",
+    p36Node["pages"]![0]!["slots"]![0]!["secretsRestorable"]?.ToJsonString() ?? "(absent)");
+Check("P36g3 an ordinary setting beside it is neither blanked nor listed",
+    p36Node["pages"]![0]!["slots"]![0]!["settings"]!["repo"]!.GetValue<string>() == "owner/name");
+Check("P36g4 the marker is projection-only and cannot reach layout.json",
+    JsonSerializer.Deserialize<DashboardLayout>(p36Node.ToJsonString()) is { } rt
+        && !JsonSerializer.Serialize(rt).Contains("secretsRestorable"));
+
+// ---- P36h · the three write cases ------------------------------------------------------
+// Read semantics blanked it; write semantics must not follow. The manifest calls this
+// property ordinary now, so what the user types is saved as typed.
+var p36Typed = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(demotedStored))!;
+Slot(p36Typed).Settings!["apiToken"] = "typed-by-hand";
+SecretPolicy.Seal(p36Typed, demotedStored, DemotedLookup);
+Check("P36h new text is saved VERBATIM, not encrypted — that is what `text` means",
+    Value(p36Typed, "apiToken") == "typed-by-hand", Value(p36Typed, "apiToken"));
+
+var p36Cleared = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(demotedStored))!;
+Slot(p36Cleared).Settings!["apiToken"] = SecretStore.ClearMarker;
+SecretPolicy.Seal(p36Cleared, demotedStored, DemotedLookup);
+Check("P36h2 the clear marker removes it, so the field CAN be emptied",
+    Slot(p36Cleared).Settings?["apiToken"] is null,
+    Value(p36Cleared, "apiToken") ?? "(removed)");
+
+// ---- P36i · the uneditable-field failure, from the other side -------------------------
+// An id-less slot is never blanked (P36c), so a blank arriving from one is the USER's.
+// Restoring it would make the field impossible to empty — the exact failure PR #65 hit
+// three times. The restore is gated on the same predicate that decides the blanking.
+var p36UserBlank = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
+SecretPolicy.Seal(p36UserBlank, idless, DemotedLookup);
+Check("P36i a blank we did not cause is the user's clear, and survives the save",
+    Value(p36UserBlank, "apiToken") == "", Value(p36UserBlank, "apiToken") ?? "(removed)");
+
+// ---- P36j · the blast radius of planning every ordinary property ----------------------
+// This is the one that matters if the value check is ever weakened: EVERY text setting in
+// every layout now carries this intent, so an ordinary value must be untouched end to end.
+var p36Ordinary = LayoutWith(new JsonObject { ["repo"] = "owner/name" });
+SecretPolicy.Reveal(p36Ordinary, DemotedLookup);
+Check("P36j an ordinary setting is not blanked on reveal", Value(p36Ordinary, "repo") == "owner/name");
+var p36Emptied = LayoutWith(new JsonObject { ["repo"] = "" });
+SecretPolicy.Seal(p36Emptied, LayoutWith(new JsonObject { ["repo"] = "owner/name" }), DemotedLookup);
+Check("P36j2 and emptying one saves as empty rather than being restored",
+    Value(p36Emptied, "repo") == "", Value(p36Emptied, "repo") ?? "(removed)");
+var p36Absent = LayoutWith(new JsonObject());
+SecretPolicy.Seal(p36Absent, LayoutWith(new JsonObject { ["repo"] = "owner/name" }), DemotedLookup);
+Check("P36j3 and an absent one is not conjured back into existence",
+    Slot(p36Absent).Settings?["repo"] is null, Value(p36Absent, "repo") ?? "(absent)");
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;

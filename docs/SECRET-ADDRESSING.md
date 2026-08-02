@@ -272,14 +272,37 @@ is the same channel — once identity flows both ways, both halves are the same 
    - **The union direction is the fix, not a tidiness choice.** If `Protect` could beat
      `ProtectWithoutReveal`, declaring the shadowed name `secret` in the loaded manifest
      would be the entire #104 exploit. `SecretIntents.MostProtective` and `P35i`.
-5. **`RestoreIfUntouched`** — closes #66. Note it is LESS protective than either intent
-   above (it does not encrypt), so placing it in `MostProtective` is a decision, not a
-   default: the fallback there is `Protect`, which is right for a member above `Protect`
-   and wrong for one below it. `P35x` holds an explicit rank table every member must
-   appear in and cross-checks it against `MostProtective` for every pair, so a new intent
-   fails the suite until it is placed. (`P35r`–`P35t` do NOT do this — they are invariant
-   checks that any sane function satisfies. An earlier version of this line claimed they
-   forced placement; adding a member and running the suite showed nothing failed.)
+5. ~~**`RestoreIfUntouched`**~~ **Done.** Closes #66, #105 and #120's dashboard and editor
+   halves. It is the LEAST protective intent — it does not encrypt — so it loses every
+   collision in `MostProtective`, which is what stops it being planned for a name the
+   manifest still calls `secret` and blanking a credential one line after decrypting it.
+   Placement is forced by `P35x`, an explicit rank table cross-checked against the code
+   for every pair. (`P35r`–`P35t` do NOT force it — they are invariant checks any sane
+   function satisfies. An earlier version of this line claimed otherwise; adding a member
+   and running the suite showed nothing failed.)
+
+   Three things the write-up did not anticipate:
+   - **The plan cannot be narrow.** Nothing anywhere records that a property *used to be*
+     `secret` — a manifest states the present tense only. So every declared non-`secret`,
+     non-`list` property carries the intent, and the VALUE decides. That makes the value
+     check load-bearing for every ordinary setting in every layout, which is what `P36j`
+     exists to police.
+   - **Blanking needs two conditions, not one.** `CanUnprotect` (never
+     `LooksLikeEnvelope` — a user can type `dpapi:v1:…`) AND a stably addressable slot.
+     An id-less slot gets an id minted by `shell.js` on its first unrelated on-panel edit
+     while the stored copy is still id-less, `SlotKey` refuses that mismatch (#68), the
+     restore misses, and the blank reaches disk. `Blankable` is both, and `Seal` consults
+     the same predicate so the restore and the blank can never disagree.
+   - **`Seal`'s empty case must be gated the same way.** A blank from a slot we did not
+     blank is the user's clear. Restoring it is the uneditable-field failure PR #65 hit
+     three times, and with a broad plan it would hit every text input in the product.
+
+   **Not covered: the on-panel editor.** `Mask` emits `secretsRestorable` so `settings.js`
+   can offer a Clear; `Reveal` has no equivalent channel, so `shell.js` cannot tell an
+   untouched blank from a deliberate one and a demoted credential cannot be deleted from
+   the panel. Narrower than what shipped before — the value no longer reaches the widget
+   either way — but it is a gap, and it is the `Reveal`-side metadata field this document
+   has wanted since the beginning.
 6. **Row addressing** — closes #62's remaining half.
 
 Still to delete, once nothing needs them: `_maskedManifests`, `_revealedManifests` and

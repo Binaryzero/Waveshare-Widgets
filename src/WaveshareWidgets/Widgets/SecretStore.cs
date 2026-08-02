@@ -181,6 +181,28 @@ public enum SecretIntent
     /// only reader the reveal would have created is a same-id widget receiving a
     /// credential the user typed for a different one.</summary>
     ProtectWithoutReveal,
+
+    /// <summary>A property the manifest declares as ordinary — <c>text</c>, <c>number</c>,
+    /// anything but <c>secret</c> — whose stored value may nevertheless still be a
+    /// credential this pipeline encrypted while the manifest called it <c>secret</c>
+    /// (#66, #105, #120).
+    ///
+    /// This is the intent that separates READ semantics from WRITE semantics, and it
+    /// exists because manifest classification welds them together. The value must be kept
+    /// out of the payload — a widget receiving `dpapi:v1:…` is the reported exposure — but
+    /// it must NOT acquire secret write semantics, because the manifest now says the
+    /// property is ordinary and the user must be able to type into it, empty it, and have
+    /// what they typed saved verbatim.
+    ///
+    /// Blank on the way out, and on the way back: <c>""</c> means untouched (restore),
+    /// <see cref="SecretStore.ClearMarker"/> means cleared (remove), anything else is new
+    /// text (save as-is, unencrypted).
+    ///
+    /// It is the LEAST protective intent — it does not encrypt at all — so it loses every
+    /// collision in <see cref="SecretIntents.MostProtective"/>. That is deliberate and
+    /// load-bearing: planning it for a name the manifest still calls <c>secret</c> would
+    /// blank a credential immediately after decrypting it correctly.</summary>
+    RestoreIfUntouched,
 }
 
 /// <summary>Which values the secret pipeline acts on, and what it may do with each.
@@ -289,9 +311,26 @@ public sealed class SecretPlan
         var intents = new Dictionary<string, SecretIntent>(StringComparer.Ordinal);
         foreach (var prop in manifest?.Properties ?? [])
         {
-            if (!string.IsNullOrEmpty(prop.Name) &&
-                string.Equals(prop.Type, "secret", StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrEmpty(prop.Name))
+                continue;
+            if (string.Equals(prop.Type, "secret", StringComparison.OrdinalIgnoreCase))
+            {
                 Merge(intents, prop.Name, SecretIntent.Protect);
+                continue;
+            }
+            // Every OTHER declared property is a candidate for #66's demotion, because a
+            // manifest cannot say "this used to be a secret" and nothing else records it
+            // either. So the plan says "this address MAY hold one of ours" and the value
+            // decides — see Blankable. Planning narrowly is not an option: the only
+            // evidence of a demotion is the stored bytes, which a plan never sees.
+            //
+            // Lists are excluded for the reason CredentialPropertyNames excludes them:
+            // this pipeline walks top-level properties, so Mask would replace the array
+            // with a placeholder string and Seal, finding no stored string, would take the
+            // whole list with it. Refusing to blank is the lesser harm; a credential
+            // inside a row is #62.
+            if (!string.Equals(prop.Type, "list", StringComparison.OrdinalIgnoreCase))
+                Merge(intents, prop.Name, SecretIntent.RestoreIfUntouched);
         }
         // A refusal's names come SECOND but do not simply overwrite: `Merge` is what makes
         // the collision rule the documented one rather than an accident of ordering.
@@ -319,6 +358,23 @@ public static class SecretPolicy
     /// stored, readable value. <see cref="LayoutSlot"/> deliberately has no matching
     /// member, so it is dropped on deserialize and can never reach layout.json.</summary>
     public const string SetMarkerKey = "secretsSet";
+
+    /// <summary>Transient projection key listing the properties this payload BLANKED under
+    /// <see cref="SecretIntent.RestoreIfUntouched"/>. Like <see cref="SetMarkerKey"/>,
+    /// <see cref="LayoutSlot"/> has no matching member, so it is dropped on deserialize and
+    /// can never reach layout.json.
+    ///
+    /// The editor cannot do without it, and this is the part PR #65 got wrong three times.
+    /// A demoted property renders as an ordinary text input, which sends <c>""</c> when the
+    /// user empties it — the same <c>""</c> an untouched blanked field sends. Comparing
+    /// against the blank alone restores the old value over a deliberate clear, and the
+    /// field becomes impossible to empty. So the editor needs to know WHICH fields are
+    /// holding a blank it did not put there, in order to offer a Clear that sends
+    /// <see cref="SecretStore.ClearMarker"/> and makes the three cases distinguishable.
+    ///
+    /// It is per SLOT and not per property name, because two instances of one widget can
+    /// disagree — one still holding an envelope, the other already retyped.</summary>
+    public const string RestorableMarkerKey = "secretsRestorable";
 
     /// <summary>A hand-edited layout can hold a number/object/array where a secret
     /// belongs. <c>GetValue&lt;string&gt;()</c> would THROW on those, and this code runs
@@ -364,9 +420,17 @@ public static class SecretPolicy
     {
         Walk(layout, plan, (slot, name, intent) =>
         {
+            var stored = AsString(slot.Settings?[name]);
+            if (intent is SecretIntent.RestoreIfUntouched)
+            {
+                // #105: a demoted property still holding an envelope hands `dpapi:v1:…` to
+                // the widget verbatim. Blank it where the restore is guaranteed.
+                if (Blankable(slot.InstanceId, stored))
+                    slot.Settings![name] = "";
+                return;
+            }
             if (!SecretIntents.Protects(intent))
                 return;
-            var stored = AsString(slot.Settings?[name]);
             if (!SecretIntents.Reveals(intent))
             {
                 Withhold(slot, name, stored);
@@ -422,6 +486,37 @@ public static class SecretPolicy
         slot.Settings[name] = "";
     }
 
+    /// <summary>May THIS slot's <see cref="SecretIntent.RestoreIfUntouched"/> value be
+    /// blanked for a payload?
+    ///
+    /// The intent is planned for every ordinary property, because nothing records that a
+    /// property used to be `secret`. So the intent alone means "might be one of ours" and
+    /// this answers "is it, and can we put it back". Both halves are required, and each
+    /// one is a way an earlier attempt destroyed data.
+    ///
+    /// <list type="bullet">
+    /// <item><b>It is actually one of ours.</b> `CanUnprotect`, never `LooksLikeEnvelope`:
+    ///   `dpapi:v1:YWJj` is a string a user can legitimately type into a text field. And
+    ///   the check is per VALUE, not per intent — two instances of one widget can be in
+    ///   different states, one still holding the envelope while the other has already been
+    ///   retyped to ordinary text, and blanking on the intent alone withheld the second
+    ///   one's perfectly displayable value from both the widget and the editor.</item>
+    /// <item><b>The slot is stably addressable.</b> Blanking is only safe because Seal can
+    ///   put the value back, and that lookup is keyed by slot. `shell.js` mints an
+    ///   instanceId for a legacy id-less slot on its first unrelated on-panel edit while
+    ///   the stored copy is still id-less, and `SlotKey` deliberately refuses that
+    ///   mismatch (#68) — so the restore would miss and the blank would reach disk. Before
+    ///   this intent existed the envelope simply survived that transition.</item>
+    /// </list>
+    ///
+    /// The cost of the second condition, stated rather than found later: an id-less legacy
+    /// slot keeps handing its demoted envelope to the widget, exactly as it does today.
+    /// That is the pre-existing exposure rather than a new one, and it closes when the slot
+    /// gains an identity — or wholesale when the identity protocol lands. Trading a leak
+    /// for a destroyed value is the trade this pipeline has refused three times.</summary>
+    private static bool Blankable(string? instanceId, string? value) =>
+        !string.IsNullOrEmpty(instanceId) && SecretStore.CanUnprotect(value);
+
     /// <summary>Blanks every secret and records which ones are set AND readable here.
     /// Mutates the JSON projection (not the model) because <c>secretsSet</c> is
     /// projection-only.</summary>
@@ -442,8 +537,20 @@ public static class SecretPolicy
                 if (secrets.Count == 0)
                     continue;
                 var set = new JsonArray();
+                var restorable = new JsonArray();
                 foreach (var (name, intent) in secrets)
                 {
+                    if (intent is SecretIntent.RestoreIfUntouched)
+                    {
+                        // #120, the settings-preview twin of #105: the replica hosts real
+                        // widget iframes, so a demoted envelope left in this payload is
+                        // handed to widget code exactly as the dashboard's is.
+                        if (!Blankable(AsString(slot["instanceId"]), AsString(slot["settings"]?[name])))
+                            continue;
+                        restorable.Add(name);
+                        slot["settings"]![name] = SecretStore.EditorPlaceholder;
+                        continue;
+                    }
                     if (!SecretIntents.Protects(intent))
                         continue;
                     var node = slot["settings"]?[name];
@@ -467,6 +574,8 @@ public static class SecretPolicy
                 }
                 if (set.Count > 0)
                     slot[SetMarkerKey] = set;
+                if (restorable.Count > 0)
+                    slot[RestorableMarkerKey] = restorable;
             }
         }
     }
@@ -512,12 +621,18 @@ public static class SecretPolicy
 
         Walk(layout, plan, (slot, name, intent) =>
         {
-            if (!SecretIntents.Protects(intent))
-                return;
             if (!keyOf.TryGetValue(slot, out var key))
                 keyOf[slot] = key = SlotKey(slot, storedCounts, incomingCounts);
             var node = slot.Settings?[name];
             var value = AsString(node);
+
+            if (intent is SecretIntent.RestoreIfUntouched)
+            {
+                RestoreOrKeep(slot, name, value, key);
+                return;
+            }
+            if (!SecretIntents.Protects(intent))
+                return;
 
             // Explicit clear: drop the key so the widget sees an unset secret and the
             // ciphertext is gone from disk.
@@ -664,6 +779,40 @@ public static class SecretPolicy
             return key is not null && previous.TryGetValue((key, name), out found);
         }
 
+        // The write half of RestoreIfUntouched (#66). Read semantics blanked this address;
+        // write semantics must NOT follow, because the manifest now calls the property
+        // ordinary and the user has to be able to type into it and empty it.
+        //
+        // Three cases, and the empty one is where PR #65 died three times:
+        //
+        //   ClearMarker  -> the user pressed Clear. Remove the key.
+        //   ""           -> ambiguous ON ITS OWN. An untouched blanked field and a text
+        //                   input the user just emptied send byte-identical payloads, so
+        //                   this restores ONLY where Mask/Reveal would have blanked —
+        //                   the same Blankable predicate, evaluated against the STORED
+        //                   value. If we did not blank it, the blank is the user's and
+        //                   restoring it would make the field impossible to empty.
+        //   anything else-> new text. Saved verbatim, unencrypted, because that is what
+        //                   an ordinary property means.
+        //
+        // Never Remove on a failed restore: a blank we cannot match is a blank we cannot
+        // prove we caused, and removing would destroy a value on the strength of a guess.
+        void RestoreOrKeep(LayoutSlot slot, string name, string? value, string? key)
+        {
+            if (value == SecretStore.ClearMarker)
+            {
+                slot.Settings!.Remove(name);
+                return;
+            }
+            if (!string.IsNullOrEmpty(value))
+                return;
+            if (!TryPrevious(key, slot, name, out var kept) || kept is null)
+                return;
+            if (!Blankable(slot.InstanceId, AsString(kept)))
+                return;
+            slot.Settings![name] = kept.DeepClone();
+        }
+
         // A slot that stores a credential gets a stable identity, so the next save
         // matches it by id instead of by its position on the page.
         void Stamp(LayoutSlot slot)
@@ -712,7 +861,11 @@ public static class SecretPolicy
         var seen = new HashSet<(string, string)>();
         Walk(stored, plan, (slot, name, intent) =>
         {
-            if (!SecretIntents.Protects(intent))
+            // Withholds, not Protects: RestoreIfUntouched is not encrypted, but its whole
+            // safety argument is that Seal can put the blanked value back, and this index
+            // IS that lookup. Indexing only the encrypted intents would blank on the way
+            // out and find nothing on the way in.
+            if (!SecretIntents.Withholds(intent))
                 return;
             var key = SlotKey(slot, storedCounts, incomingCounts);
             // Register the identity BEFORE the value check: a colliding slot whose secret
