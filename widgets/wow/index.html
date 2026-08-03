@@ -107,14 +107,84 @@
   // configured when it was asked for, and appending it to the new region's series is
   // exactly the mixed-market trend the per-region key was added to prevent.
   let generation = 0;
+  let failures = 0;           // consecutive whole-tick failures — drives the retry backoff
+  let gameOn = false;
+  let activeController = null;
+  let dueAt = 0;              // when the next tick is due, tracked even while paused
+
+  // PER REQUEST, not per tick. This widget calls four independent sources — the token
+  // exchange, the token price, the affix list and the character profile — and a per-tick
+  // budget would let a slow affix server eat the character call's time. It is also the
+  // only reason a hung source cannot pin `inFlight` forever: the direct fetch tier has no
+  // deadline of its own, so a server that accepts and then stalls would freeze the tile
+  // with no error and no retry.
+  const REQUEST_DEADLINE = 15000;
+  const MAX_EXTRA_WAIT = 3600000;   // backoff ceiling bounds the EXTRA wait, never the total
 
   const el = (id) => document.getElementById(id);
+
+  // One predicate for every gate. Two copies of this rule drift, and the drift always
+  // looks like a tile still polling in a state it was supposed to stop in.
+  const paused = () => gameOn || document.hidden;
+
+  /** Runs `job` under an abort deadline covering the BODY read too — a resolved WW.fetch
+   *  only means the headers arrived, so a source that then dribbles its body would hang
+   *  on res.json() with no timer left running. */
+  function withDeadline(ms, controller, job) {
+    let t;
+    return Promise.race([
+      job().finally(() => clearTimeout(t)),
+      new Promise((_, reject) => {
+        t = setTimeout(() => {
+          try { controller.abort(); } catch (e) { /* already gone */ }
+          reject(new Error('timed out'));
+        }, ms);
+      }),
+    ]);
+  }
+
+  /** Every network call goes through here: one deadline, one abort signal, one place
+   *  where a non-2xx is turned into a message and its body released. An unread body on
+   *  an error response leaves the stream open, and one per refresh accumulates. */
+  async function ask(label, url, init) {
+    const controller = new AbortController();
+    activeController = controller;
+    return withDeadline(REQUEST_DEADLINE, controller, async () => {
+      const res = await WW.fetch(url, Object.assign({ signal: controller.signal }, init || {}));
+      if (!res.ok) {
+        try { if (res.body && !res.body.locked) await res.body.cancel(); } catch (e) { /* gone */ }
+        const err = new Error(label + ' ' + res.status);
+        err.status = res.status;
+        throw err;
+      }
+      return res.json();
+    });
+  }
   const sparkColors = { accent: '', line: '' };
   function readSparkColors() {
     const cs = getComputedStyle(document.documentElement);
     sparkColors.accent = cs.getPropertyValue('--accent').trim();
     sparkColors.line = cs.getPropertyValue('--line').trim();
   }
+
+  // Form-encode each half BEFORE the colon join (RFC 6749 §2.3.1), so a client id or
+  // secret containing ':' cannot be misparsed, and round-trip through UTF-8 so btoa
+  // cannot throw on a non-Latin-1 secret and kill the request before it is sent.
+  const formEnc = (v) => encodeURIComponent(String(v == null ? '' : v)).replace(/%20/g, '+');
+  const b64 = (str) => {
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin);
+  };
+
+  /** How long before expiry a token stops being offered: headroom so one expiring
+   *  in flight is not a 401, but never more than half its own life, or a short-lived
+   *  token is never fresh enough to use and every tick buys another. */
+  const freshnessMargin = (b) => {
+    const life = Number(b && b.lifetimeMs);
+    return Number.isFinite(life) && life > 0 ? Math.min(60000, life / 2) : 60000;
+  };
 
   // Weekly reset is arithmetic, not an API call: the region's reset weekday and hour
   // in UTC are fixed. US Tuesday 15:00, EU Wednesday 07:00, KR/TW Wednesday 22:00
@@ -165,8 +235,12 @@
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
     readSparkColors();
 
+    // onGame reports TRANSITIONS only, so a tile that boots while a game already owns
+    // the screen never hears about it. ww-init carries the current state.
+    gameOn = !!(s0.game && s0.game.active);
     const prevKey = cfg.clientId + '\n' + cfg.clientSecret;
     const prevRegion = cfg.region;
+    const prevRealm = cfg.realm, prevChar = cfg.character, prevRefreshMs = cfg.refreshMs;
     cfg.region = ['us', 'eu', 'kr', 'tw'].includes(s.region) ? s.region : 'us';
     cfg.realm = String(s.realm || '').trim().toLowerCase().replace(/\s+/g, '-');
     cfg.character = String(s.character || '').trim();
@@ -176,7 +250,11 @@
     if (prevKey !== cfg.clientId + '\n' + cfg.clientSecret) bearer = null;
     // A region change swaps which market the series describes, so reload it from that
     // region's own key rather than carrying the previous one's points forward.
-    if (prevRegion !== cfg.region) { generation++; inFlight = false; series = []; loadSeries(); }
+    const regionChanged = prevRegion !== cfg.region;
+    if (regionChanged) { retire(); series = []; loadSeries(); }
+    const cadenceChanged = prevRefreshMs !== cfg.refreshMs;
+    const queryChanged = regionChanged || prevRealm !== cfg.realm || prevChar !== cfg.character
+      || prevKey !== cfg.clientId + '\n' + cfg.clientSecret;
 
     if (!started) {
       started = true;
@@ -186,39 +264,99 @@
       // and costs nothing.
       resetTimer = setInterval(paintReset, 30000);
       tick();
-    } else { clearTimeout(timer); tick(); }
+    } else if (queryChanged) {
+      // A different character, region or account. Retire anything still in flight so its
+      // answer cannot land afterwards and be rendered under the new settings.
+      if (!regionChanged) retire();
+      clearTimeout(timer);
+      tick();
+    } else {
+      // Same query — a theme push, a rename, a background change. Refetching here would
+      // hit four APIs on every settings keystroke and reset the refresh anchor so the
+      // real refresh never arrived. Repaint what is already held.
+      if (lastOk) render([]);
+      paintReset();
+      // The interval is not part of the query, so it must not refetch — but the timer
+      // already ticking was armed under the old one, and re-arming from the current
+      // deadline would just restore it. Derive from the cadence now configured.
+      if (cadenceChanged) schedule(Math.max(0, (lastOk || Date.now()) + nextDelayMs() - Date.now()));
+    }
+  });
+
+  WW.onGame((g) => {
+    const was = gameOn;
+    gameOn = !!(g && g.active);
+    if (gameOn === was) return;
+    if (gameOn) {
+      // A game owns the screen: stop the network AND retire what is already out, which
+      // cancelling the timer alone does not do. Its success path would otherwise repaint
+      // a screen nobody can see, having spent four API calls to do it.
+      retire();
+      clearTimeout(timer);
+      timer = null;
+      clearInterval(resetTimer);
+      resetTimer = null;
+      return;
+    }
+    if (!started) return;
+    resetTimer = setInterval(paintReset, 30000);
+    paintReset();
+    if (Date.now() >= dueAt) { clearTimeout(timer); tick(); }
+    else schedule(remainingWait());
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { clearInterval(resetTimer); resetTimer = null; return; }
+    if (paused() || !started) return;
+    if (!resetTimer) resetTimer = setInterval(paintReset, 30000);
+    paintReset();
+    if (Date.now() >= dueAt) { clearTimeout(timer); tick(); }
+    else schedule(remainingWait());
   });
 
   WW.onTheme(() => { readSparkColors(); drawSpark(); });
 
+  // The bearer stays in MEMORY. It is deliberately not persisted beside the price
+  // series below: that series is public market data, while this is a working credential
+  // bought with a secret held under DPAPI, and localStorage is a plaintext file in the
+  // WebView profile. Writing it there would hand back exactly what that protection
+  // withholds. Filed as #175 — there is no widget-facing protected store to use instead.
   async function getBearer() {
-    if (bearer && bearer.expiresAt - Date.now() > 60000) return bearer.token;
-    const res = await WW.fetch('https://oauth.battle.net/token', {
+    if (bearer && bearer.expiresAt - Date.now() > freshnessMargin(bearer)) return bearer.token;
+    // Proxy-first, and never natively. Token endpoints are server-to-server and send no
+    // CORS headers — and a CORS block does not stop the request, it only stops the page
+    // reading the reply. WW.fetch cannot tell that from a transport failure, so it would
+    // replay the POST through the host and Blizzard would grant a SECOND token for one
+    // sign-in. A request that must not be sent twice does not belong on a retrying ladder.
+    const json = await ask('sign-in', 'https://oauth.battle.net/token', {
       method: 'POST',
+      proxy: 'always',
       headers: {
-        Authorization: 'Basic ' + btoa(cfg.clientId + ':' + cfg.clientSecret),
+        Authorization: 'Basic ' + b64(formEnc(cfg.clientId) + ':' + formEnc(cfg.clientSecret)),
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: 'grant_type=client_credentials',
     });
-    if (!res.ok) throw new Error('sign-in ' + res.status);
-    const json = await res.json();
     if (!json || !json.access_token) throw new Error('no access token');
+    // RFC 6749 §5.1: token_type states HOW the token must be presented, and Bearer is the
+    // only scheme this widget can honour. Sending a DPoP or MAC token as "Bearer <token>"
+    // is not using it, it is misusing it for a 401 that names nothing. An ABSENT type is
+    // treated as bearer, because the field is required by the RFC and widely omitted.
+    const kind = json.token_type == null ? '' : String(json.token_type).trim();
+    if (kind && kind.toLowerCase() !== 'bearer') {
+      throw new Error('sign-in returned a "' + kind + '" token, which this tile cannot use');
+    }
     const ttl = Number(json.expires_in);
-    bearer = {
-      token: String(json.access_token),
-      expiresAt: Date.now() + (Number.isFinite(ttl) && ttl > 0 ? ttl * 1000 : 3600000),
-    };
+    const lifetimeMs = Number.isFinite(ttl) && ttl > 0 ? ttl * 1000 : 3600000;
+    bearer = { token: String(json.access_token), expiresAt: Date.now() + lifetimeMs, lifetimeMs };
     return bearer.token;
   }
 
   async function fetchPrice() {
     const token = await getBearer();
     const host = 'https://' + cfg.region + '.api.blizzard.com';
-    const res = await WW.fetch(host + '/data/wow/token/index?namespace=dynamic-' + cfg.region,
+    const json = await ask('token price', host + '/data/wow/token/index?namespace=dynamic-' + cfg.region,
       { headers: { Authorization: 'Bearer ' + token } });
-    if (!res.ok) throw new Error('token price ' + res.status);
-    const json = await res.json();
     const price = Number(json && json.price);
     if (!Number.isFinite(price)) throw new Error('no price in response');
     return price;
@@ -228,9 +366,7 @@
   // rating and raid progress. Blizzard's profile namespace would need the character
   // and its equipment separately, plus an authenticated call each.
   async function fetchAffixes() {
-    const res = await WW.fetch(RIO + '/mythic-plus/affixes?region=' + cfg.region + '&locale=en');
-    if (!res.ok) throw new Error('affixes ' + res.status);
-    const json = await res.json();
+    const json = await ask('affixes', RIO + '/mythic-plus/affixes?region=' + cfg.region + '&locale=en');
     return Array.isArray(json && json.affix_details) ? json.affix_details.map((a) => String(a.name || '')).filter(Boolean) : [];
   }
 
@@ -238,9 +374,7 @@
     const url = RIO + '/characters/profile?region=' + encodeURIComponent(cfg.region) +
       '&realm=' + encodeURIComponent(cfg.realm) + '&name=' + encodeURIComponent(cfg.character) +
       '&fields=gear,mythic_plus_scores_by_season:current,raid_progression';
-    const res = await WW.fetch(url);
-    if (!res.ok) throw new Error('character ' + res.status);
-    const json = await res.json();
+    const json = await ask('character', url);
     const gear = json && json.gear;
     const scores = json && json.mythic_plus_scores_by_season && json.mythic_plus_scores_by_season[0];
     const prog = json && json.raid_progression;
@@ -260,7 +394,10 @@
   }
 
   async function tick() {
-    if (document.hidden || inFlight) { schedule(); return; }
+    // A tick that comes due while paused STAYS due: calling schedule() here would push
+    // `dueAt` a whole interval forward, and the resume gates ask exactly that question.
+    if (paused()) return;
+    if (inFlight) { schedule(); return; }
     inFlight = true;
     const gen = generation;
     const problems = [];
@@ -280,16 +417,26 @@
             if (series.length > SERIES_MAX) series = series.slice(-SERIES_MAX);
             saveSeries();
           }
-        } catch (e) { problems.push(e.message); }
+        } catch (e) { if (gen !== generation) return; problems.push(e.message); }
       } else { data.price = null; problems.push('no Battle.net credentials'); }
 
-      try { data.affixes = await fetchAffixes(); } catch (e) { problems.push(e.message); }
+      try {
+        const affixes = await fetchAffixes();
+        // Every await needs this, not just the price one. An affix list or a character
+        // profile that lands after the region changed describes the region it was asked
+        // for, and rendering it under the new one is the same mistake the price check
+        // was added to prevent — just at a call site that did not have it.
+        if (gen !== generation) return;
+        data.affixes = affixes;
+      } catch (e) { if (gen !== generation) return; problems.push(e.message); }
 
       if (cfg.realm && cfg.character) {
         try {
           const c = await fetchCharacter();
+          if (gen !== generation) return;
           data.ilvl = c.ilvl; data.mplus = c.mplus; data.raid = c.raid;
         } catch (e) {
+          if (gen !== generation) return;
           // Clear it. Leaving the previous character's numbers under the NEW name is
           // worse than the half-populated tile this widget deliberately allows — it is
           // not missing data, it is another character's data wearing this one's label.
@@ -300,22 +447,65 @@
 
       const gotSomething = data.price != null || data.affixes.length || data.ilvl != null;
       if (!gotSomething) throw new Error(problems.join('; ') || 'nothing available');
+      failures = 0;
       lastOk = Date.now();
       document.body.classList.toggle('stale', problems.length > 0);
       render(problems);
     } catch (e) {
+      // A retired tick belongs to a query the user has already moved off: charging its
+      // failure to the new one's backoff, or painting its card, is the same mistake.
+      if (gen !== generation) return;
+      failures++;
       if (lastOk) { document.body.classList.add('stale'); render(problems); }
       else showError(problems.join('; ') || e.message);
       WW.log('wow: ' + e.message);
     } finally {
-      if (gen === generation) inFlight = false;
-      schedule();
+      if (gen === generation) {
+        inFlight = false;
+        activeController = null;
+        schedule();
+      }
     }
   }
 
-  function schedule() {
+  /** Retry cadence. A source that is down should not be hit on the dot for hours: each
+   *  consecutive failed tick doubles the wait, and any answer puts it back to the
+   *  configured interval. The ceiling bounds the EXTRA wait, never the total — capping
+   *  the total inverts the point above the cap, since a panel set to refresh every four
+   *  hours would answer its first failure by switching to hourly. */
+  function nextDelayMs() {
+    if (!failures) return cfg.refreshMs;
+    const grown = cfg.refreshMs * Math.pow(2, Math.min(failures, 4));
+    return Math.min(grown, cfg.refreshMs + MAX_EXTRA_WAIT);
+  }
+
+  function schedule(delayMs) {
     clearTimeout(timer);
-    timer = setTimeout(tick, cfg.refreshMs);
+    timer = null;
+    const wait = delayMs === undefined ? nextDelayMs() : Math.max(0, delayMs);
+    // Recorded even while paused, so the resume gates read one due time rather than
+    // asking "how long since the last success" — a different question whose answer is
+    // wrong during backoff, and which threw the backoff away on every resume.
+    dueAt = Date.now() + wait;
+    if (paused()) return;
+    timer = setTimeout(tick, wait);
+  }
+
+  const remainingWait = () => Math.max(0, dueAt - Date.now());
+
+  /** Back to a clean slate for a genuinely different query. Retires whatever is still in
+   *  flight against the old one, because its answer would otherwise land afterwards and
+   *  be rendered under the new configuration — and clears `dueAt`, so the next tick is
+   *  due immediately even if this happened while paused. That last part is what the
+   *  Next Event slice got wrong: resetting everything except the deadline left a resume
+   *  re-arming the OLD one. */
+  function retire() {
+    generation++;
+    if (activeController) { try { activeController.abort(); } catch (e) { /* gone */ } }
+    activeController = null;
+    inFlight = false;
+    failures = 0;
+    dueAt = 0;
   }
 
   function paintReset() {
