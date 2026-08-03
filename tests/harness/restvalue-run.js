@@ -102,13 +102,34 @@ const TOKEN = 'Bearer super-secret-probe-token';
   await prepare(page);
   await page.goto('https://widget.test/index.html');
 
+  // The manifest's declared defaults go UNDER whatever a probe passes, because that is
+  // what the widget actually receives: shell.js seeds every property with its default
+  // before overlaying stored settings, so absent and explicitly-chosen are the same
+  // string by the time a widget sees them. Posting a probe's settings verbatim models a
+  // payload the panel never sends.
+  //
+  // This is not cosmetic. `authMode` declares "header" in the manifest but falls back to
+  // "none" in the widget's own cfg, so without the seed the tile suppressed its static
+  // auth header — and R4 read that as the widget failing to send a configured
+  // credential. It was the probe handing it a payload the host would never produce.
+  const manifestDefaults = (() => {
+    const out = {};
+    try {
+      const m = JSON.parse(fs.readFileSync(path.join(WIDGET, 'manifest.json'), 'utf8'));
+      for (const prop of m.properties || []) {
+        if (prop && prop.name && prop.default !== undefined) out[prop.name] = prop.default;
+      }
+    } catch (e) { /* a manifest this probe cannot read is the validator's business */ }
+    return out;
+  })();
+
   // `game` mirrors what the host puts in a real ww-init: the CURRENT game state, not
   // a transition. A widget that ignores it only learns about game mode on the next flip.
   const init = (settings, game) => page.evaluate(([s, g]) => {
     window.postMessage({ type: 'ww-init', settings: s, sensors: [], media: null, theme: null,
       game: g || { active: false, process: '' },
       status: { elevated: false, apiVersion: 1 } }, '*');
-  }, [settings, game]);
+  }, [Object.assign({}, manifestDefaults, settings), game]);
 
   const gameEvent = (active) => page.evaluate((a) => {
     window.postMessage({ type: 'ww-game', game: { active: a, process: a ? 'game.exe' : '' } }, '*');
