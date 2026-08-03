@@ -434,7 +434,11 @@
     // Is this a character profile at all? Every field below is optional on its own, so
     // without this a `{}` or `null` body reads as "a character with nothing filled in"
     // — blanking the tile, clearing the outage backoff and reporting Live.
-    const shaped = (v) => v != null && typeof v === 'object';
+    // typeof [] is 'object', so the round-5 shape guard accepted `gear: []` and
+    // `raid_progression: []` as profiles — three blank metrics, backoff cleared, tile
+    // Live, which is the failure that guard exists to prevent. The ARRAY field is
+    // checked with Array.isArray below; these two must not be arrays.
+    const shaped = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
     if (!json || typeof json !== 'object'
       || !(shaped(json.gear) || Array.isArray(json.mythic_plus_scores_by_season)
            || shaped(json.raid_progression))) {
