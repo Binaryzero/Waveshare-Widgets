@@ -149,7 +149,16 @@ public sealed partial class WidgetLibrary : IDisposable
         // The saved layout must shed retired slots too, or the panel renders a
         // permanent "not installed" card in the grid cells the widget held.
         if (retiredIds.Count > 0)
+        {
             LayoutStore.RemoveWidgets(retiredIds);
+            // ...and so must the protected store (#188). A widget the app has removed
+            // should not leave working credentials behind: the id is the store's whole
+            // scope, and an id is reserved permanently, so whatever is installed under
+            // that id next reads what the last one left. This is the ONE removal the app
+            // performs and knows it performed, which is why the purge is here rather
+            // than inferred from a scan — see ForgetSecrets.
+            ForgetSecrets(retiredIds);
+        }
 
         if (!Directory.Exists(AppPaths.StockWidgetsDir))
         {
@@ -210,6 +219,42 @@ public sealed partial class WidgetLibrary : IDisposable
         // when a field report says widget changes "aren't there" after an update.
         Log.Info($"Stock widget seeding: {seeded} refreshed, {current} already current" +
                  (failed.Count > 0 ? $", {failed.Count} FAILED ({string.Join(", ", failed)})" : ""));
+    }
+
+    /// <summary>Drop the protected-store entries of widgets the app has removed (#188).
+    ///
+    /// <para>Called only from the retired-stock path, and deliberately not from a scan.
+    /// "This id was not seen this time" is not the same fact as "this widget was
+    /// removed": a folder can be briefly unreadable, a manifest can fail to parse, a
+    /// drive can be slow to mount. Purging on absence would destroy a credential for
+    /// every one of those, and this file already refuses that reasoning elsewhere — an
+    /// unreadable host map is neither overwritten nor served from, for the same reason.
+    /// So the purge fires where the app itself did the deleting and knows which ids went
+    /// with it.</para>
+    ///
+    /// <para>A failure here is logged and swallowed. The widget is already gone and the
+    /// layout has already shed it; taking the seeding pass down over a store write would
+    /// trade a stale secret for a panel that does not start.</para>
+    /// </summary>
+    private static void ForgetSecrets(IEnumerable<string> widgetIds)
+    {
+        try
+        {
+            var path = AppPaths.WidgetSecretsFile;
+            if (!File.Exists(path)) return;
+            var doc = WidgetSecrets.Load(File.ReadAllText(path));
+            var dropped = 0;
+            foreach (var id in widgetIds)
+                if (WidgetSecrets.Forget(doc, id)) dropped++;
+            if (dropped == 0) return;
+            DurableStore.Write(path, WidgetSecrets.Serialize(doc));
+            Log.Info($"Cleared stored credentials for {dropped} removed widget(s)");
+        }
+        catch (Exception ex)
+        {
+            // The id is NOT logged: it names a widget whose credentials this was about.
+            Log.Warn($"Could not clear stored credentials for removed widgets: {ex.GetType().Name}");
+        }
     }
 
     /// <summary>Recursive delete that survives what Windows actually does to installed
