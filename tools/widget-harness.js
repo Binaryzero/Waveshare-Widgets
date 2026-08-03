@@ -384,6 +384,19 @@ function loadPlaywright() {
         try { openAbs = new URL(String(m.url || '')); } catch (e) { openAbs = null; }
         if (openAbs && (openAbs.protocol === 'http:' || openAbs.protocol === 'https:'))
           window.__wwHostCalls.push('ww-open-url ' + openAbs.href);
+      } else if (m.type === 'ww-action') {
+        // The sibling of ww-open-url, and the same mistake if only the reported one were
+        // covered. DeckAction.Execute's `url` branch Process.Starts an absolute http(s)
+        // target; its `launch` branch Process.Starts ANY target with UseShellExecute,
+        // which opens the browser just the same when that target happens to be a URL.
+        // Both are counted, on the http(s) test the url branch itself applies — a launch
+        // of an .exe is not network and is not counted.
+        const kind = String(m.kind || '');
+        let actAbs = null;
+        try { actAbs = new URL(String(m.target || '')); } catch (e) { actAbs = null; }
+        if ((kind === 'url' || kind === 'launch') && actAbs
+            && (actAbs.protocol === 'http:' || actAbs.protocol === 'https:'))
+          window.__wwHostCalls.push('ww-action ' + kind + ' ' + actAbs.href);
       } else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
       else if (m.type === 'ww-audio-get') reply({ type: 'ww-audio-result', id: m.id, available: false });
       // The Stream Deck pair must be answered, and answering them is only necessary now.
