@@ -415,7 +415,17 @@
   // bought with a secret held under DPAPI, and localStorage is a plaintext file in the
   // WebView profile. Writing it there would hand back exactly what that protection
   // withholds. Filed as #175 — there is no widget-facing protected store to use instead.
+  /** Throws with `.tokenExchange` set, always, so the caller can tell WHICH call failed.
+   *  Without it the price path's 401 retry could not tell "the API rejected the token"
+   *  from "the token endpoint rejected the client secret" — both arrive as status 401 —
+   *  and a wrong secret bought a second sign-in on every single tick, which is precisely
+   *  the hammering that retry is bounded to avoid. */
   async function getBearer() {
+    try { return await signIn(); }
+    catch (e) { e.tokenExchange = true; throw e; }
+  }
+
+  async function signIn() {
     if (bearer && bearer.key === credKey()
       && bearer.expiresAt - Date.now() > freshnessMargin(bearer)) return bearer.token;
     // The identity this exchange is FOR, captured BEFORE awaiting anything. An exchange
@@ -472,7 +482,12 @@
       // which can be an hour of an error card that one fresh exchange would have cleared.
       // Drop it and retry EXACTLY once: a loop here would hammer the token endpoint for
       // credentials that are simply wrong.
-      if (e.status !== 401) throw e;
+      //
+      // `tokenExchange` is what tells the two 401s apart. Blizzard answers a bad client
+      // secret with 401 as well, so without it a wrong secret sent this straight back
+      // into a second sign-in — two token-endpoint hits per tick, forever, which is the
+      // hammering this branch is bounded to prevent.
+      if (e.tokenExchange || e.status !== 401) throw e;
       bearer = null;
       json = await read();
     }
