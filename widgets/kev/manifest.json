@@ -2,7 +2,7 @@
   "id": "ws.stock.kev",
   "name": "CISA KEV",
   "author": "Waveshare Widgets",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "CISA's Known Exploited Vulnerabilities catalog as a glance tile: how many landed this week, and the newest entries by vendor and product. Public feed, no key needed.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
