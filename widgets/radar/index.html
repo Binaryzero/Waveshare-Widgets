@@ -113,6 +113,17 @@
     try {
       await resolveLocation(s.location);
     } catch (e) {
+      // A failure OBSERVED DURING A GAME is owed work, not a verdict. The gates on the
+      // success path sit after each await; a rejection jumps straight here and skipped
+      // them, so nothing was recorded — and because this returns before arming
+      // refreshTimer, the resume found no work and the error card stayed up forever. A
+      // transient blip during a game became permanent.
+      if (gameOn) {
+        pendingInit = true;
+        missedRefresh = true;
+        showMessage('Paused', 'A game is running.');
+        return;
+      }
       showMessage('Set a location in the widget settings', String(e.message || e));
       return;
     }

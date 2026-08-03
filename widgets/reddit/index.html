@@ -156,6 +156,15 @@
       const res = await WW.fetch(url, { maxBytes: LISTING_MAX_BYTES });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const json = await res.json();
+      // The response is the expensive half: parsing up to LISTING_MAX_BYTES, walking the
+      // listing, replacing posts, and on a first load arming the slideshow. A game that
+      // started while the request was in flight gets none of it.
+      if (gameOn) {
+        missedWhilePaused = true;
+        missedListing = true;
+        missedFirstLoad = missedFirstLoad || !!firstLoad;
+        return;
+      }
       const found = extractImagePosts(json);
       if (found.length === 0) {
         if (firstLoad) showMessage('No image posts found', 'r/' + cfg.subreddit + ' (' + cfg.sort + ') has no direct images right now.');
@@ -169,6 +178,13 @@
         scheduleAdvance();
       }
     } catch (e) {
+      // A failure observed during a game is owed work, not a verdict.
+      if (gameOn) {
+        missedWhilePaused = true;
+        missedListing = true;
+        missedFirstLoad = missedFirstLoad || !!firstLoad;
+        return;
+      }
       WW.log('reddit: listing failed: ' + e.message);
       // "Too large" is not "could not load": the subreddit name is right and the network is
       // fine, so pointing at either sends the user to check something that works.

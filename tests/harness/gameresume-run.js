@@ -60,6 +60,13 @@ const PLACES = {
 // alone would pass a resume that fetched diligently for the wrong city.
 let geocoded = [];
 let mapHits = 0;
+// Flipped by scenario C: the geocoder REFUSES, which sends radar down its catch path
+// rather than its await-gate path. That is the branch the gate was never on.
+let geocodeFails = false;
+// Held open so a game can START while the request is in flight. Without that the failure
+// happens outside the game and the catch path is never the one under test — the first
+// version of scenario C made exactly that mistake and passed against the unfixed widget.
+let geocodeHold = null;
 
 // One mounted widget, with the game either already running or not. Two scenarios need
 // this because the two halves of the gate fail independently: seeding covers a game that
@@ -83,9 +90,11 @@ async function mount(browser, gameAtInit) {
   await page.route('https://shell.test/**', (r) =>
     r.fulfill({ contentType: 'text/html', body: SHELL_PAGE }));
 
-  await page.route('https://geocoding-api.open-meteo.com/**', (r) => {
+  await page.route('https://geocoding-api.open-meteo.com/**', async (r) => {
     const name = new URL(r.request().url()).searchParams.get('name') || '';
     geocoded.push(name);
+    if (geocodeHold) { await geocodeHold; }
+    if (geocodeFails) return r.abort();
     const hit = PLACES[name];
     return r.fulfill({
       status: 200, contentType: 'application/json',
@@ -242,6 +251,49 @@ async function mount(browser, gameAtInit) {
   check('S4 ...and the Paused card is taken down, so the recovered map is visible',
     resumedHidden && !/paused/i.test(resumedText),
     `overlay hidden: ${resumedHidden}, text: ${JSON.stringify(resumedText.slice(0, 90))}`);
+
+  // ===== Scenario C · the request FAILS while a game is running =========================
+  // The gates added for #201 sit after each await on the SUCCESS path. A rejection jumps
+  // straight to catch, skipping them — so the failure is painted during the game and
+  // nothing records that anything is owed. For radar's initial geocode that is terminal:
+  // the setup returns before arming refreshTimer, so the resume finds no work and the
+  // error card stays up forever. A transient blip during a game becomes permanent.
+  //
+  // The ORDER is what makes this the catch path: the request is held open, the game starts
+  // while it is in flight, and only then does it fail.
+  await b.page.close();
+  geocoded = [];
+  mapHits = 0;
+  geocodeFails = true;
+  let releaseGeocode;
+  geocodeHold = new Promise((res) => { releaseGeocode = res; });
+
+  const c = await mount(browser, false);   // no game: the setup runs and the geocode hangs
+  check('C1 setup: the geocode is in flight',
+    geocoded.length === 1 && mapHits === 0, `${JSON.stringify(geocoded)}, ${mapHits} map fetch(es)`);
+
+  // A game starts WHILE it is in flight, and only then does the request fail.
+  await c.page.evaluate(() => window.__wwPush({ type: 'ww-game', game: { active: true, process: 'game' } }));
+  await c.page.waitForTimeout(200);
+  geocodeHold = null;
+  releaseGeocode();
+  await c.page.waitForTimeout(1200);
+  check('C2 setup: it failed during the game, and nothing else was requested',
+    geocoded.length === 1 && mapHits === 0, `${JSON.stringify(geocoded)}, ${mapHits} map fetch(es)`);
+
+  // The game ends. A widget that recorded the failure as owed work retries; one whose
+  // catch path skipped the gate sits on the error card until it is reinitialised.
+  geocodeFails = false;
+  await c.page.evaluate(() => window.__wwPush({ type: 'ww-game', game: { active: false, process: '' } }));
+  await c.page.waitForTimeout(2500);
+  check('C3 a failure observed during a game is retried when the game ends',
+    geocoded.length === 2, JSON.stringify(geocoded));
+  check('C4 ...and the retry completes the setup rather than leaving the error card up',
+    mapHits > 0, `${mapHits} map fetch(es)`);
+  const recovered = await c.frame.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').trim());
+  check('C5 ...and the tile shows neither the error nor the pause any more',
+    !/paused/i.test(recovered) && !/set a location/i.test(recovered),
+    JSON.stringify(recovered.slice(0, 110)));
 
   await browser.close();
   console.log(failures > 0 ? `\n${failures} FAILURES` : '\nALL PASS');

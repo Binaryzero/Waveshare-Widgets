@@ -209,6 +209,7 @@
       return;
     }
 
+    if (gen !== connectGen) return;   // a newer connect() owns the widget now
     // Re-checked BETWEEN the two awaits, not only after both: discovery is a cloud round
     // trip, and a game starting during it would otherwise be followed by the /api/config
     // validation request below.
@@ -224,7 +225,20 @@
     // households), which can point at a router instead of a bridge. Every real
     // bridge answers the unauthenticated /api/config with JSON carrying its
     // bridgeid; anything else is not a Hue Bridge.
-    if (!(await isHueBridge(cfg.ip))) {
+    const validated = await isHueBridge(cfg.ip);
+    // A late continuation from a connection that is over must not speak for the current
+    // one: it validated the OLD bridge, and everything below writes global state and UI
+    // for whatever address is current now.
+    if (gen !== connectGen) return;
+    if (!validated) {
+      // A validation that failed DURING a game is owed work, not a verdict — this is the
+      // terminal card, and without recording anything the resume had nothing to retry.
+      if (gameOn) {
+        pendingInit = true;
+        missedWhilePaused = true;
+        showMessage('Paused', 'A game is running.');
+        return;
+      }
       showMessage(cfg.ip + ' is not a Hue Bridge', discovered
         ? 'Auto-discovery returned a wrong address (stale cloud cache or a shared ISP IP). Enter the bridge IP in the widget settings — the Hue app shows it under Settings → My Hue system → ⓘ.'
         : 'Nothing at that address answers like a Hue Bridge. Check the IP in the Hue app under Settings → My Hue system → ⓘ.');
