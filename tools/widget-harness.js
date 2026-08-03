@@ -129,10 +129,17 @@ function loadPlaywright() {
   // listener that answers it is registered before it can exist. Its own origin is
   // distinct from the widget's, exactly as on the panel, where each widget is served
   // from a virtual host of its own.
+  // The backdrop is the THEME's, not black. shell.css:7 paints the panel with
+  // `var(--bg)`, and a glass or transparent widget composites against it — so a
+  // hardcoded black here would show a light-theme tile against a background the device
+  // never puts behind it, and --shot would produce a screenshot that reads as legible
+  // (or illegible) for the wrong reason.
+  const shellBg = /^#[0-9a-fA-F]{3,8}$/.test(String(theme['--bg'] || '')) ? theme['--bg'] : '#000';
   await page.route('https://shell.test/**', (route) => route.fulfill({
     contentType: 'text/html',
     body: '<!doctype html><meta charset="utf-8"><title>ww shell</title>'
-      + '<style>html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#000}'
+      + '<style>html,body{margin:0;padding:0;height:100%;overflow:hidden;background:'
+      + shellBg + '}'
       + 'iframe{display:block;border:0;width:100vw;height:100vh}</style>',
   }));
   // Anything else (widget data fetches) fails fast and deterministically — the
@@ -140,8 +147,13 @@ function loadPlaywright() {
   // The exclusions need a HOST BOUNDARY. Without one `https://app.wswevil.com/` starts
   // with `app.wsw`, so it escaped the abort while matching no local route, and the
   // browser made a real network request out of a runner whose whole contract is that
-  // unmatched requests are deterministic. Same defect widget-datapath.js already fixed.
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[:/?#]|$)).*/,
+  // unmatched requests are deterministic.
+  // The boundary deliberately does NOT include ':'. Every local route above is
+  // portless (`https://app.wsw/**`), so a port-bearing `https://app.wsw:444/x` matches
+  // none of them — and treating ':' as a boundary would exempt it from the abort as
+  // well, leaving the one URL shape that reaches the real network. Exempt only what a
+  // local route can actually serve.
+  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)).*/,
     (route) => route.abort());
 
   // Errors are collected IN each document as well as through page.on('pageerror'). The
@@ -238,19 +250,23 @@ function loadPlaywright() {
   // ww-ready normally carries the init already; this covers a widget whose document
   // failed to run the shim at all, so the run reports its real state rather than hanging.
   await page.evaluate(() => window.__wwSendInit());
-  // One follow-up push, because only onInit replays. widget-api's onInit calls back
-  // immediately when an init has already arrived (`if (state.ready) cb(state)`), but
+  // One follow-up SENSORS push, because only onInit replays. widget-api's onInit calls
+  // back immediately when an init has already arrived (`if (state.ready) cb(state)`), but
   // onSensors/onMedia/onTheme/onNotifications/onGame do not. Answering ww-ready lands
   // the init DURING document parse — while the widget-api script tag still blocks the
   // parser — so a widget that registers WW.onSensors further down its own script misses
-  // the init's sensors emit permanently. The panel never shows this because shell.js
-  // pushes ww-sensors on every poll; a single-shot runner has no second chance, and
-  // widgets/gpu silently lost its "No GPU sensors found" line to exactly this.
+  // the init's sensors emit permanently. widgets/gpu silently lost its "No GPU sensors
+  // found" line to exactly this.
+  //
+  // Sensors ONLY, and the asymmetry is the point: SensorHub pushes a sensor frame every
+  // poll (SensorHub.cs:60-65) but emits media strictly on change — `if (media !=
+  // LatestMedia)`, SensorHub.cs:67. So replaying sensors models what the panel does,
+  // while replaying media would invent an update the panel never sends, and let a
+  // late-registered media handler paint here while the same widget stays blank on the
+  // device. The panel's opening media value is also MediaState.None, a truthy object,
+  // not the null this used to synthesize — so that push was wrong twice over.
   await page.waitForTimeout(150);
-  await page.evaluate(() => {
-    window.__wwPush({ type: 'ww-sensors', sensors: [] });
-    window.__wwPush({ type: 'ww-media', media: null });
-  });
+  await page.evaluate(() => window.__wwPush({ type: 'ww-sensors', sensors: [] }));
   await page.waitForTimeout(1200);
 
   const frameErrors = await frame.evaluate(() => window.__wwErrors || []).catch(() => []);

@@ -197,7 +197,11 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // starts with `app.wsw`, so it was excluded from the abort handler while matching
   // neither local route — and the browser then made a real network request out of a
   // runner whose whole contract is that unmatched requests are deterministic.
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[:/?#]|$)).*/, (route) => {
+  // The boundary deliberately omits ':' — every local route above is portless, so a
+  // port-bearing `https://app.wsw:444/x` matches none of them, and treating ':' as a
+  // boundary would exempt it from the abort too: the one URL shape that still reaches
+  // the real network out of a runner whose contract is that it never does.
+  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)).*/, (route) => {
     const url = route.request().url();
     // A CORS preflight is not the data request — it is the browser ASKING to make one.
     // Counting it as served let a widget whose real call was then blocked satisfy the
