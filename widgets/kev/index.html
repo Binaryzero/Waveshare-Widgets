@@ -30,6 +30,19 @@
     #list { display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: minmax(24px, 46px);
       column-gap: 8px; align-content: space-between; }
   }
+  /* The same two columns, asked for by MEASUREMENT rather than by width (#163). A half
+   * slot is 640×400, which leaves the list about 293px — ten rows at their 24px minimum
+   * plus the 4px gaps. maxItems goes to 12, so eleven sliced a row through the middle
+   * and twelve dropped one off the tile entirely, while the count above still said 12.
+   * Splitting the list halves the height it needs and shows every row the reader asked
+   * for; `.who` leans harder on the ellipsis it already has, which is the better trade.
+   * The 470px floor is the same one that decides the list is shown at all — narrower
+   * than that a second column would be too tight to read, and the quarter layout makes
+   * the count the tile instead. */
+  @media (min-width: 470px) and (min-height: 241px) {
+    #list.two-col { display: grid; grid-template-columns: 1fr 1fr;
+      grid-auto-rows: minmax(24px, 46px); column-gap: 8px; align-content: space-between; }
+  }
   @media (max-width: 469px), (max-height: 240px) {
     main { justify-content: center; }
     #count { flex-direction: column; align-items: flex-start; gap: 0; }
@@ -411,6 +424,26 @@
     return cfg.watch.some((term) => hay.includes(term));
   }
 
+  /// Split the list into two columns when one cannot hold the rows (#163).
+  ///
+  /// Asked as a MEASUREMENT rather than as a row count. The tile's own arithmetic says
+  /// ten rows fit a half slot — twelve at their 24px minimum plus the 4px gaps come to
+  /// 332px against about 293px of list — but that arithmetic is a product of the row's
+  /// min-height, the gap, the header, the count block and the footer, and any of those
+  /// moving would leave a hardcoded threshold quietly wrong in whichever direction it
+  /// was not updated. The browser already knows whether the rows fit; ask it.
+  ///
+  /// The class comes OFF before measuring, so a widget that no longer needs two columns
+  /// goes back to one — otherwise the first crowded render would pin the layout there
+  /// for the life of the document, including after maxItems is lowered.
+  function fitRows(list) {
+    list.classList.remove('two-col');
+    // scrollHeight past clientHeight is exactly "overflow: hidden is cutting something
+    // off". The 1px slack keeps sub-pixel row heights from asking for a second column
+    // the reader does not need.
+    if (list.scrollHeight > list.clientHeight + 1) list.classList.add('two-col');
+  }
+
   function render() {
     // First, because it depends on the catalog and the window rather than on anything
     // painted below, and because two of render()'s exits are early returns.
@@ -490,6 +523,10 @@
 
     el('state').hidden = true;
     el('data').hidden = false;
+    // AFTER the data pane is shown, not with the rows that produced it: a hidden
+    // ancestor has no layout, so measuring there reports 0 against 0 and the list never
+    // asks for the second column it needs.
+    fitRows(list);
   }
 
   function showError(message) {
