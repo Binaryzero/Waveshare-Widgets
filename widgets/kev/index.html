@@ -553,6 +553,30 @@
     retry.className = 'btn';
     retry.textContent = 'Retry';
     retry.addEventListener('click', () => {
+      clearTimeout(timer);
+      // An explicit Retry is a person saying the outage is over, so it clears the
+      // backoff as a success would: the next automatic poll goes back to the chosen
+      // interval instead of inheriting a stretch this attempt was meant to end.
+      failures = 0;
+      // The poll is now DUE, and saying so is what makes the retry survive the game gate
+      // (#164). tick() returns early while a game is running, so pressing Retry used to
+      // leave nothing behind: onGame re-arms the EXISTING deadline, which is still an
+      // untouched interval from the last attempt, and at refreshMinutes 1440 that is a
+      // day. An anchor of 0 is overdue by definition, and arm(), the visibility handler
+      // and the onGame transition all read the same expression — so every one of them
+      // now finds this retry waiting instead of only the path that happened to set it.
+      pollAnchor = 0;
+      if (gameOn) {
+        // Keep the card, and say what is actually true. A spinner here promises work
+        // this widget has deliberately gated: nothing will run until the game ends, so
+        // painting one claims progress that cannot happen and is the state this tile has
+        // spent several rounds learning not to show. The pill stays on Error for the
+        // same reason — the feed is still unavailable.
+        body.textContent = 'Retry queued — the feed is left alone while a game is running,'
+          + ' and this will run the moment the game ends.';
+        retry.disabled = true;
+        return;
+      }
       state.className = 'state-card';
       state.textContent = '';
       const sp = document.createElement('div');
@@ -562,11 +586,6 @@
       const p = el('pill');
       p.textContent = 'Loading';
       p.className = 'pill muted';
-      clearTimeout(timer);
-      // An explicit Retry is a person saying the outage is over, so it clears the
-      // backoff as a success would: the next automatic poll goes back to the chosen
-      // interval instead of inheriting a stretch this attempt was meant to end.
-      failures = 0;
       tick();
     });
     state.append(icon, title, body, retry);
