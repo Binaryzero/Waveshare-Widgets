@@ -140,6 +140,18 @@ jobs:
       - name: Proxy header rules
         run: dotnet run --project tools/ProxyHeaders
 
+      # A widget's long-lived credential is sealed at rest; the SHORT-lived one it buys
+      # with that had nowhere to go but localStorage — a plaintext file in the same
+      # WebView profile, which hands back exactly what the sealing withholds (#175). The
+      # store that closes it is mostly pure decisions: which scopes and keys are
+      # accepted, what the caps are, that one widget cannot reach another's bucket, and
+      # above all that an unavailable cipher writes NOTHING rather than degrading to
+      # plaintext. None of that needs Windows or DPAPI, and the last one is the case
+      # worth a CI step of its own: silent degradation would leave the widget believing
+      # it is protected with the credential on disk in the clear.
+      - name: Widget protected store
+        run: dotnet run --project tools/WidgetSecrets
+
       # A private ICS or webhook link IS the credential (WIDGET-SPEC), and app.log is
       # plaintext, outside the DPAPI work in #15, and the first file attached to a bug
       # report. This asserts both halves: that SafeUrl discloses nothing, and that the

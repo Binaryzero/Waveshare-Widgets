@@ -148,6 +148,9 @@ WW.log(message)                                // writes to the host app.log
 
 // Network
 WW.fetch(url, init)  // -> Promise<Response>; fetch with bot-wall/CORS relief
+WW.secureGet(key)          // -> Promise<string|null>   protected store, per widget
+WW.secureSet(key, value)   // -> Promise<{ok, error}>   CHECK ok — see below
+WW.secureDelete(key)       // -> Promise<{ok}>
 WW.ping(hosts)       // -> Promise<[{host, ok, rttMs?, error?}]>; real ICMP via the host
 
 // Local media library (the user's media folder; "Open media folder" in Settings)
@@ -289,6 +292,7 @@ Widget → shell:
 | `ww-media-list` | `id` | list the user's media folder (images + videos) |
 | `ww-audio-get` | `id` | snapshot the Windows volume mixer (master + per-app sessions) |
 | `ww-audio-set` | `target, level?, muted?` | set master or per-session volume/mute |
+| `ww-secure-get` / `ww-secure-set` / `ww-secure-delete` | `id, key, value?` | the widget's protected store; the shell stamps `widgetId` from the sending slot |
 | `ww-sd-profile` | `profileName, hideWindow, live` | request the Virtual Stream Deck mirror; `live` adds a window screenshot |
 | `ww-sd-capture` | – | capture-only fast path (no profile re-parse; host dedups unchanged frames) |
 | `ww-sd-click` | `row, col, rows, cols` | trigger the VSD key at that grid cell |
@@ -304,6 +308,7 @@ Shell → widget:
 | `ww-ping-result` | `id, results: [{host, ok, rttMs?, error?}]` | ping reply (routed to the requesting widget) |
 | `ww-media-list-result` | `id, files: [{name, url, kind}]` | media folder listing; `url` is on `https://media.wsw/` |
 | `ww-audio-result` | `id, available, master, sessions` | volume mixer snapshot reply |
+| `ww-secure-result` | `id, ok, value, error` | protected-store reply; `error` is `unavailable`, `too-large`, `too-many-keys`, `bad-key` or `bad-scope` |
 | `ww-sd-profile` | `profile: {available, name, rows, cols, buttons, profiles, capture?}` | VSD mirror; `capture` = `{image, w, h}` live window screenshot (only when requested with `live` and capturable) |
 | `ww-sd-capture-result` | `data: {image,w,h} \| {unchanged:true} \| {available:false}` | fast-path capture reply (JPEG data URI) |
 

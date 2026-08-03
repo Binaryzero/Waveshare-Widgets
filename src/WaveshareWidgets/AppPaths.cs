@@ -22,6 +22,13 @@ internal static class AppPaths
     /// change or be handed to a different widget.</summary>
     public static string HostMapFile { get; } = Path.Combine(DataDir, "widget-hosts.json");
 
+    /// <summary>Credentials widgets DERIVE at runtime — an OAuth bearer bought with a
+    /// `secret` property — sealed with the same DPAPI envelope those properties get
+    /// (#175). Its own file rather than a corner of layout.json: layout.json is copied,
+    /// synced and pasted into issues, and nothing in it is meant to be a live credential
+    /// store. See WidgetSecrets.</summary>
+    public static string WidgetSecretsFile { get; } = Path.Combine(DataDir, "widget-secrets.json");
+
     /// <summary>Web assets for the dashboard shell page, shipped next to the exe.</summary>
     public static string ShellDir { get; } = Path.Combine(AppContext.BaseDirectory, "Shell");
 

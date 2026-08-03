@@ -108,6 +108,26 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   like `icsUrl` or `feedUrl`, which may be a public feed or a secret address; if yours
   is secret, declare it `secret` regardless of what the validator says.
 
+  **A credential your widget DERIVES goes in the protected store, never in
+  `localStorage`.** A `secret` property is sealed at rest so a stolen `layout.json`
+  carries nothing usable — but a bearer token bought with that secret is a working
+  credential too, and `localStorage` is a plaintext file in the same WebView profile.
+  Putting it there hands back exactly what the sealing withholds. Use `WW.secureSet` /
+  `WW.secureGet` / `WW.secureDelete`, which seal the value with the same DPAPI envelope
+  and scope it to your widget id.
+
+  Two rules that come with it. **Check the `ok` a set resolves with**: `error:
+  'unavailable'` means protection is not working on this machine and *nothing was
+  written*, so keep the value in memory and carry on — there is deliberately no
+  plaintext fallback, because a store that silently degrades is worse than none. And
+  **a store is not a cache to lean on**: treat a missing value as normal (another
+  machine, a cleared store, an expired entry) and be able to re-authenticate.
+
+  The store is scoped **per widget id**, matching the origin your virtual host already
+  gives you — two tiles of your widget share it, another widget can never read it.
+  Values are capped at 8 KiB and 16 keys per widget; keys are letters, digits, `.`, `-`
+  and `_`, up to 64 characters.
+
   **`color` properties are reserved for data colors** — colors that are *content*, such
   as a per-series line color, where two instances legitimately differ as data. Never
   declare color properties for appearance (text, labels, accents, backgrounds, state
