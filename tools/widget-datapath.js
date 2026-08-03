@@ -263,6 +263,19 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
       body: bodyOf(stub),
     });
   });
+  // A WebSocket passes through NONE of the routes above — page.route intercepts HTTP(S)
+  // only, so `new WebSocket('wss://…')` left this runner for the real network. That is a
+  // hole in the contract that every unmatched request here is deterministic and offline,
+  // not merely a blind spot in the game gate. Nothing this handler receives is connected
+  // upstream (a socket is only forwarded if connectToServer() is called), so all of them
+  // are refused; the non-local ones are counted, with the same host boundary the catch-all
+  // uses. Stubs are HTTP fixtures, so there is nothing to serve a widget here — a widget
+  // that needs a live socket needs a purpose-built runner.
+  await page.routeWebSocket(/.*/, (ws) => {
+    const url = ws.url();
+    if (!/^wss?:\/\/(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)/.test(url)) attempted.push('WS ' + url);
+    ws.close();
+  });
 
   // Errors are collected IN each document as well as via page.on('pageerror'). The
   // widget now lives in a cross-origin child frame, which Chromium may host in a
@@ -421,7 +434,13 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         });
       }
       if (m.type === 'ww-ping') {
-        window.__wwHostCalls.push('ww-ping ' + (m.hosts || []).join(','));
+        // The host trims each target, drops the empties and keeps at most 16
+        // (HandlePingAsync). WW.ping([]) — a legal call — and a list of blanks both start
+        // zero Ping tasks and put nothing on the wire, so neither is an attempt and
+        // recording one would fail a gate the widget never crossed.
+        const targets = (Array.isArray(m.hosts) ? m.hosts : [])
+          .map((h) => String(h == null ? '' : h).trim()).filter((h) => h).slice(0, 16);
+        if (targets.length) window.__wwHostCalls.push('ww-ping ' + targets.join(','));
         reply({ type: 'ww-ping-result', id: m.id, results: [] });
       } else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
       else if (m.type === 'ww-audio-get') reply({ type: 'ww-audio-result', id: m.id, available: false });

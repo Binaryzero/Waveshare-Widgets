@@ -177,6 +177,18 @@ function loadPlaywright() {
       attempted.push(route.request().method() + ' ' + route.request().url());
       return route.abort();
     });
+  // A WebSocket passes through NONE of the above. page.route intercepts HTTP(S) only, so
+  // `new WebSocket('wss://…')` left this runner and reached the real network — not merely
+  // unseen by the game gate, but a hole in the contract that every unmatched request here
+  // is deterministic and offline. Nothing this handler receives is connected upstream
+  // (the socket is only forwarded if connectToServer() is called), so every one is
+  // refused; the non-local ones are also counted, with the same host boundary the abort
+  // route uses.
+  await page.routeWebSocket(/.*/, (ws) => {
+    const url = ws.url();
+    if (!/^wss?:\/\/(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)/.test(url)) attempted.push('WS ' + url);
+    ws.close();
+  });
 
   // Errors are collected IN each document as well as through page.on('pageerror'). The
   // widget now lives in a cross-origin child frame, which Chromium may host in its own
@@ -241,16 +253,25 @@ function loadPlaywright() {
       const reply = (obj) => { try { ev.source.postMessage(obj, target); } catch (e) { /* frame gone */ } };
       if (m.type === 'ww-ready') { window.__wwReady = true; window.__wwSendInit(true); return; }
       if (m.type === 'ww-fetch') {
-        // Counted only once the host's OWN admission test passes (absolute http(s) —
-        // DashboardWindow.HandleProxyFetchAsync), because a call the host refuses before
-        // it dials is not a network call in production either.
+        // Counted only once the host's OWN admission tests pass, BOTH of them —
+        // DashboardWindow.HandleProxyFetchAsync refuses a non-absolute or non-http(s)
+        // URL and any method outside GET/POST/PUT/HEAD before it dials. A call the host
+        // throws out is not a network call in production, so counting one here would
+        // fail the game gate for a widget that never crossed it.
         let abs = null;
         try { abs = new URL(String(m.url || '')); } catch (e) { abs = null; }
-        if (abs && (abs.protocol === 'http:' || abs.protocol === 'https:'))
-          window.__wwHostCalls.push('ww-fetch ' + abs.href);
+        const method = String(m.method || 'GET').toUpperCase();
+        if (abs && (abs.protocol === 'http:' || abs.protocol === 'https:')
+            && ['GET', 'POST', 'PUT', 'HEAD'].includes(method))
+          window.__wwHostCalls.push('ww-fetch ' + method + ' ' + abs.href);
         reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
       } else if (m.type === 'ww-ping') {
-        window.__wwHostCalls.push('ww-ping ' + (m.hosts || []).join(','));
+        // Same rule, from HandlePingAsync: each target is trimmed, empties are dropped,
+        // and at most 16 survive. WW.ping([]) — a legal call — and a list of blanks both
+        // start zero Ping tasks and put nothing on the wire, so neither is an attempt.
+        const targets = (Array.isArray(m.hosts) ? m.hosts : [])
+          .map((h) => String(h == null ? '' : h).trim()).filter((h) => h).slice(0, 16);
+        if (targets.length) window.__wwHostCalls.push('ww-ping ' + targets.join(','));
         reply({ type: 'ww-ping-result', id: m.id, results: [] });
       } else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
       else if (m.type === 'ww-audio-get') reply({ type: 'ww-audio-result', id: m.id, available: false });
