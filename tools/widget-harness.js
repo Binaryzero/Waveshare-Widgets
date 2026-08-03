@@ -254,8 +254,14 @@ function loadPlaywright() {
         // empty while the same code reaches ICE setup in production. The prototype is
         // kept for the same reason: an instanceof or a prototype probe must not be what
         // decides whether this wrapper is reachable.
+        // Only a constructor that is ACTUALLY PRESENT is replaced. Defining the
+        // wrapper unconditionally synthesized `mozRTCPeerConnection` on a Chromium that
+        // has no such alias, which can send a widget's feature detection down a legacy
+        // path that does not exist on the panel — a false result manufactured by the
+        // instrument, in either direction.
         const native = window[name];
-        if (native) {
+        if (!native) continue;
+        {
           for (const key of Object.getOwnPropertyNames(native)) {
             if (['length', 'name', 'prototype', 'caller', 'arguments'].includes(key)) continue;
             try {
