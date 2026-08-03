@@ -582,6 +582,41 @@ const CASES = [
     expect: { best: null, dropped: 1, unreadable: 1 },
   },
   {
+    name: 'a RECURRENCE-ID whose zone cannot be resolved refuses the parent series',
+    // Which occurrence does the child replace? Unreadable. The moved child was still
+    // shown at its new time AND the parent went on advertising the old slot, with
+    // dropped at 0 — two versions of one meeting, neither of them marked.
+    ics: cal(
+      ...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY', 'SUMMARY:Standup'),
+      ...ev('UID:a', 'RECURRENCE-ID;TZID=Customized Time Zone:20300611T080000',
+        'DTSTART:20300611T113000Z', 'SUMMARY:Standup (moved)')),
+    expect: { summary: 'Standup (moved)', start: '2030-06-11T11:30:00Z', dropped: 1, unreadable: 1 },
+  },
+  {
+    name: '...and a STARTLESS cancellation with an unreadable one refuses it too',
+    // This child has no DTSTART either, so before the fix it was discarded outright and
+    // the parent kept advertising the cancelled meeting with nothing dropped.
+    ics: cal(
+      ...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY', 'SUMMARY:Standup'),
+      ...ev('UID:a', 'RECURRENCE-ID;TZID=Customized Time Zone:20300611T080000',
+        'STATUS:CANCELLED')),
+    expect: { best: null, dropped: 1, unreadable: 1 },
+  },
+  {
+    name: 'an UNTIL that cannot be read refuses the series rather than becoming no UNTIL',
+    // A stated end date that fails to parse fell back to the query window, so a series
+    // that had ENDED went on emitting to the end of the lookahead, silently.
+    ics: cal(...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY;UNTIL=notadate',
+      'SUMMARY:Standup')),
+    expect: { best: null, dropped: 1 },
+  },
+  {
+    name: '...while a readable UNTIL still ends the series where it says',
+    ics: cal(...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY;UNTIL=20300605T080000Z',
+      'SUMMARY:Standup')),
+    expect: { best: null, dropped: 0 },
+  },
+  {
     name: 'a refused RECURRENCE and an unreadable TIME are counted apart',
     // They need different sentences: "only daily and weekly repeats are read" is untrue
     // of a one-off with an Exchange-style TZID, and sends someone to inspect a recurrence

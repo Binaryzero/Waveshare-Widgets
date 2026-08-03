@@ -299,7 +299,13 @@
 
     const interval = Math.max(1, parseInt(rule.INTERVAL, 10) || 1);
     const count = rule.COUNT ? parseInt(rule.COUNT, 10) : null;
+    // A stated UNTIL that cannot be read is not the same as no UNTIL. Falling back to the
+    // query window let a series that ENDED go on emitting to the end of the lookahead,
+    // silently — the fourth site where an unreadable date used to be skipped rather than
+    // refused, and the reason this pass enumerated all of them instead of fixing the one
+    // that was reported.
     const untilRule = rule.UNTIL ? parseDate(rule.UNTIL, {}) : null;
+    if (rule.UNTIL && (!untilRule || untilRule.ms == null)) return null;
     const hardUntil = Math.min(until, untilRule && untilRule.ms != null ? untilRule.ms : until);
 
     const byDay = freq === 'WEEKLY' && rule.BYDAY
@@ -404,7 +410,11 @@
         // dropped and nothing said, which is the failure this reader ranks worst of all.
         // Leaving the parent to emit it at its stated time is both safer and correct.
         const cancels = cur && cur.override && cur.overrideOf != null && cur.status === 'CANCELLED';
-        if (cur && (cur.start || cancels)) events.push(cur);
+        // ...and one whose RECURRENCE-ID could not be READ is kept for the same reason:
+        // only reconciliation knows which parent it belongs to, and that parent has to be
+        // refused rather than left emitting an occurrence something replaced.
+        const unreadableId = cur && cur.override && cur.overrideUnreadable;
+        if (cur && (cur.start || cancels || unreadableId)) events.push(cur);
         cur = null;
         nested = 0;
         continue;
@@ -458,6 +468,12 @@
         cur.overrideRange = String((params && params.RANGE) || '').trim().toUpperCase();
         const d = parseDate(value, params);
         if (d && d.ms != null) cur.overrideOf = d.ms;
+        // WHICH occurrence this replaces, unreadable. Leaving it unset let the parent go
+        // on emitting the slot: a moved child appeared at its new time AND the parent
+        // still advertised the old one, and a startless cancellation was discarded
+        // outright so the cancelled meeting stayed on the tile — both with dropped at 0.
+        // The parent is marked in the reconciliation below, because it is not known here.
+        else cur.overrideUnreadable = true;
       }
     }
     // Reconcile over EVERY parsed component, including the startless cancellations kept
@@ -469,6 +485,14 @@
       if (!e.override) continue;
       const parent = byUid.get(e.uid);
       if (!parent) continue;
+      if (e.overrideUnreadable) {
+        // Something replaces one of this series' occurrences and the reader cannot tell
+        // which. Every occurrence the parent would emit is therefore suspect, so it is
+        // refused and counted rather than guessed at — the same rule the unresolvable
+        // DTSTART and EXDATE take, applied at the third place a date names an occurrence.
+        parent.unreadable = true;
+        continue;
+      }
       if (e.overrideRange === 'THISANDFUTURE') {
         // RANGE=THISANDFUTURE replaces the named occurrence AND every one after it — a
         // series rescheduled from a date forward, which is how "move our standup to
