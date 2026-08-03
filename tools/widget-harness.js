@@ -63,6 +63,15 @@ const settings = (() => {
 const shot = opt('shot', null);
 const asJson = args.includes('--json');
 
+// The slot fragment shell.js puts on every frame src. The iCUE shim reads its property
+// globals out of ww-settings BEFORE the widget's own scripts run, and uniqueId — the
+// per-instance storage key — out of ww-slot; a frame mounted without it hands ported
+// widgets defaults where the panel hands them their settings.
+const slotHash = (() => {
+  try { return '#ww-slot=p0s0&ww-settings=' + encodeURIComponent(JSON.stringify(settings)); }
+  catch (e) { return '#ww-slot=p0s0'; }   // unserializable: ww-init still applies them
+})();
+
 function loadPlaywright() {
   const candidates = ['playwright', '/opt/node22/lib/node_modules/playwright',
     path.join(process.env.HOME || '', 'node_modules/playwright')];
@@ -86,7 +95,9 @@ function loadPlaywright() {
   page.on('pageerror', (e) => consoleErrors.push(String(e).slice(0, 300)));
 
   // The widget's own files + the shell foundation, all from disk.
-  // Contained like the widget.test route below. `new URL().pathname` normalizes dot
+  // Contained the same way the widget.test route below is — the two now agree, which
+  // the comment used to claim while that route checked a bare prefix.
+  // `new URL().pathname` normalizes dot
   // segments (including the %2e spelling), so the previous raw join could not be walked
   // out of — but an encoded slash (`..%2f..%2f`) survives normalization, so any decode
   // of that pathname makes traversal expressible again. The decode and this check go
@@ -100,46 +111,150 @@ function loadPlaywright() {
     return route.fulfill({ status: 404, body: '' });
   });
   await page.route('https://widget.test/**', (route) => {
-    const rel = decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\//, '') || 'index.html';
-    const file = path.join(path.resolve(folder), rel);
-    if (file.startsWith(path.resolve(folder)) && fs.existsSync(file) && fs.statSync(file).isFile())
+    // Root PLUS SEPARATOR, not a bare prefix: `widgets/rest` is a string-prefix of
+    // `widgets/rest-private`, so a decoded traversal into a sibling whose name merely
+    // starts with this folder's name passed the old test — the same defect the app.wsw
+    // route above already guards against, in the route that looked guarded. Fixed in
+    // widget-datapath.js when it was found there; this copy still had it.
+    // path.resolve, not path.join, so the comparison is against a normalized path.
+    const widgetRoot = path.resolve(folder);
+    const rel = decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\/+/, '') || 'index.html';
+    const file = path.resolve(widgetRoot, rel);
+    if ((file === widgetRoot || file.startsWith(widgetRoot + path.sep))
+        && fs.existsSync(file) && fs.statSync(file).isFile())
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   });
+  // The shell page. Markup only — the iframe is created from script (__wwMount) so the
+  // listener that answers it is registered before it can exist. Its own origin is
+  // distinct from the widget's, exactly as on the panel, where each widget is served
+  // from a virtual host of its own.
+  await page.route('https://shell.test/**', (route) => route.fulfill({
+    contentType: 'text/html',
+    body: '<!doctype html><meta charset="utf-8"><title>ww shell</title>'
+      + '<style>html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#000}'
+      + 'iframe{display:block;border:0;width:100vw;height:100vh}</style>',
+  }));
   // Anything else (widget data fetches) fails fast and deterministically — the
   // standard requires a graceful state for exactly this.
-  await page.route(/https?:\/\/(?!app\.wsw|widget\.test).*/, (route) => route.abort());
+  // The exclusions need a HOST BOUNDARY. Without one `https://app.wswevil.com/` starts
+  // with `app.wsw`, so it escaped the abort while matching no local route, and the
+  // browser made a real network request out of a runner whose whole contract is that
+  // unmatched requests are deterministic. Same defect widget-datapath.js already fixed.
+  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[:/?#]|$)).*/,
+    (route) => route.abort());
 
-  await page.addInitScript(shim);
-  // Answer host-bound requests so widgets waiting on data settle quickly.
+  // Errors are collected IN each document as well as through page.on('pageerror'). The
+  // widget now lives in a cross-origin child frame, which Chromium may host in its own
+  // process; a runner whose only error channel is the page-level event is one
+  // browser-internals change away from reporting a clean run for a widget that threw.
   await page.addInitScript(() => {
+    window.__wwErrors = [];
+    window.addEventListener('error', (ev) => {
+      window.__wwErrors.push(String((ev && (ev.message || ev.error)) || 'error').slice(0, 300));
+    });
+    window.addEventListener('unhandledrejection', (ev) => {
+      const r = ev && ev.reason;
+      window.__wwErrors.push(('unhandled rejection: ' + ((r && (r.stack || r.message)) || r)).slice(0, 300));
+    });
+  });
+  await page.addInitScript(shim);
+  // Host-bound messages, answered by the SHELL document. The widget's shim drops any
+  // message whose ev.source is not window.parent, so a reply the widget's own document
+  // posts to itself is discarded — which is exactly what the previous top-level harness
+  // relied on, and why it had to run the widget unframed to work at all (#161).
+  await page.addInitScript(({ widgetUrl, widgetOrigin, slotHash, initMessage }) => {
+    if (window.top !== window) return;   // shell-side only; the widget frame gets the shim
+    window.__wwReady = false;
+    window.__wwInitSent = false;
+    let frame = null;
+    window.__wwMount = () => {
+      frame = document.createElement('iframe');
+      // Mirrors shell.js buildSlot: allow-same-origin keeps the widget on its own
+      // virtual host rather than an opaque origin, and the fragment carries the slot tag
+      // plus merged settings so the iCUE shim can inject property globals before the
+      // widget's own scripts run.
+      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+      frame.src = widgetUrl + slotHash;
+      const attach = () => (document.body || document.documentElement).appendChild(frame);
+      if (document.body) attach();
+      else document.addEventListener('DOMContentLoaded', attach, { once: true });
+    };
+    // The panel answers ww-ready with the init (shell.js), and so does this: a widget
+    // that registers WW.onInit after its scripts load must not race a fixed timer.
+    window.__wwSendInit = (force) => {
+      if (!frame || !frame.contentWindow) return false;
+      if (window.__wwInitSent && !force) return false;
+      window.__wwInitSent = true;
+      frame.contentWindow.postMessage(initMessage, widgetOrigin);
+      return true;
+    };
     window.addEventListener('message', (ev) => {
+      // Identity AND origin, both, exactly as shell.js does. Identity says WHICH frame
+      // is speaking; origin says whether the widget is still the one in it. Three stock
+      // widgets frame third-party content and one frames a URL the user types, so a
+      // runner that answered nested frames would be answering pages the panel ignores.
+      if (!frame || ev.source !== frame.contentWindow || ev.origin !== widgetOrigin) return;
       const m = ev.data || {};
-      const reply = (obj) => window.postMessage(obj, window.location.origin);
+      const target = ev.origin && ev.origin !== 'null' ? ev.origin : '*';
+      const reply = (obj) => { try { ev.source.postMessage(obj, target); } catch (e) { /* frame gone */ } };
+      if (m.type === 'ww-ready') { window.__wwReady = true; window.__wwSendInit(true); return; }
       if (m.type === 'ww-fetch') reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
       else if (m.type === 'ww-ping') reply({ type: 'ww-ping-result', id: m.id, results: [] });
       else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
       else if (m.type === 'ww-audio-get') reply({ type: 'ww-audio-result', id: m.id, available: false });
     });
+  }, {
+    widgetUrl: 'https://widget.test/index.html',
+    widgetOrigin: 'https://widget.test',
+    slotHash,
+    initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme, status: { elevated: false, apiVersion: 1 } },
   });
 
-  await page.goto('https://widget.test/index.html');
-  await page.evaluate(({ settings, theme }) => {
-    window.postMessage({ type: 'ww-init', settings, sensors: [], media: null, theme, status: { elevated: false, apiVersion: 1 } }, window.location.origin);
-  }, { settings, theme });
+  await page.goto('https://shell.test/host.html');
+  await page.evaluate(() => window.__wwMount());
+  const frameEl = await page.waitForSelector('iframe', { timeout: 10000 });
+  const frame = await frameEl.contentFrame();
+  if (!frame) {
+    console.error('widget frame never attached');
+    await browser.close();
+    process.exit(1);
+  }
+  await frame.waitForLoadState('domcontentloaded').catch(() => { /* asserted below */ });
+  // ww-ready normally carries the init already; this covers a widget whose document
+  // failed to run the shim at all, so the run reports its real state rather than hanging.
+  await page.evaluate(() => window.__wwSendInit());
   await page.waitForTimeout(1200);
 
+  const frameErrors = await frame.evaluate(() => window.__wwErrors || []).catch(() => []);
+  for (const e of frameErrors) if (!consoleErrors.includes(e)) consoleErrors.push(e);
   check('no page errors', consoleErrors.length === 0, consoleErrors.join(' | '));
-  check('visible content rendered', await page.evaluate(() =>
+
+  // ---- setup: the topology is the one production uses -------------------------------
+  // Every check below reads from inside the frame, and each would pass just as happily
+  // against the SHELL document, which has no widget in it and nothing to overflow. These
+  // two say the frame is real and the widget is living in it.
+  check('shim reached the widget (ww-ready, framed topology)',
+    await page.evaluate(() => window.__wwReady === true));
+  // The point of #161. icue-compat.js sets __wwIcue immediately after its
+  // `window.top === window` guard, so this is true only when the widget is genuinely
+  // framed — which is what the whole iCUE surface (property globals, uniqueId,
+  // window.plugins, the lifecycle events) is gated behind. Mounting a frame and
+  // asserting nothing about the shim would leave the harness able to regress silently
+  // back to a topology that never occurs on the panel.
+  check('iCUE compatibility shim ran (framed topology)',
+    await frame.evaluate(() => window.__wwIcue === true));
+
+  check('visible content rendered', await frame.evaluate(() =>
     [...document.body.querySelectorAll('*')].some((el) => {
       const r = el.getBoundingClientRect();
       return r.width > 4 && r.height > 4 && getComputedStyle(el).visibility !== 'hidden';
     })));
 
-  const themed = await page.evaluate(() => document.documentElement.style.getPropertyValue('--accent').trim());
+  const themed = await frame.evaluate(() => document.documentElement.style.getPropertyValue('--accent').trim());
   check('theme tokens landed on :root', themed === theme['--accent'], `${themed} vs ${theme['--accent']}`);
 
-  const bg = await page.evaluate(() => ({
+  const bg = await frame.evaluate(() => ({
     color: getComputedStyle(document.body).backgroundColor,
     cls: document.body.className,
   }));
@@ -154,10 +269,10 @@ function loadPlaywright() {
   check('bgStyle contract (body background)', expected.some((e) => bg.color === e),
     `got ${bg.color} (class "${bg.cls}"), expected ${expected.join(' or ')}`);
 
-  check('no horizontal overflow', await page.evaluate(() =>
+  check('no horizontal overflow', await frame.evaluate(() =>
     document.documentElement.scrollWidth <= window.innerWidth &&
     document.body.scrollWidth <= window.innerWidth),
-    await page.evaluate(() => document.body.scrollWidth + 'w vs viewport ' + window.innerWidth));
+    await frame.evaluate(() => document.body.scrollWidth + 'w vs viewport ' + window.innerWidth));
 
   if (shot) await page.screenshot({ path: shot });
   await browser.close();

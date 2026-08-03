@@ -84,7 +84,12 @@ Read these first, in order (they are the authority; this skill is the workflow):
    (pass settings that give the widget real content), not just the setup state.
    The harness merges manifest defaults under `--settings` exactly like the host, and
    aborts real network calls — your widget must settle into its designed offline
-   state, not a blank tile or console errors. Data-path behavior (stubbed API
+   state, not a blank tile or console errors. It mounts your widget in a shell-owned
+   iframe, the way the panel does, so the iCUE compatibility shim is live (property
+   globals, `uniqueId`, `window.plugins`, the lifecycle events) and the init arrives
+   in answer to `ww-ready` rather than on a timer — which means an init handler
+   registered above the declarations it reaches will throw here exactly as it would
+   on the device. Data-path behavior (stubbed API
    responses, stale/retry flows) needs a purpose-built runner: copy the route-fulfill
    pattern from `tools/widget-harness.js` and stub your API's responses. LOOK at the
    screenshots: the harness proves the contract, your eyes prove the design.
