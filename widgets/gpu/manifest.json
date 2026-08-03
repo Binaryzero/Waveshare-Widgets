@@ -2,7 +2,7 @@
   "id": "ws.stock.gpu",
   "name": "GPU Monitor",
   "author": "Waveshare Widgets",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "GPU load ring with temperature, clock and VRAM readouts.",
   "min_api_version": 1,
   "supported_slots": [
