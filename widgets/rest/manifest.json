@@ -93,7 +93,7 @@
         "header",
         "oauth2"
       ],
-      "default": "none"
+      "default": "header"
     },
     {
       "name": "tokenEndpoint",

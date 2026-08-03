@@ -347,18 +347,28 @@
     } catch (e) { return {}; }
   }
 
+  /** How long before expiry a token stops being offered. Fixed headroom is right for the
+   *  hour-long tokens most services issue, but a server that issues SHORT ones had every
+   *  single token rejected as too close to expiry the moment it arrived — so the cache
+   *  re-exchanged on every poll, which at the 5 s floor is twelve exchanges a minute from
+   *  the code meant to avoid exactly that. Never give up more than half a token's life. */
+  const freshnessMargin = (b) => {
+    const life = Number(b && b.lifetimeMs);
+    return Number.isFinite(life) && life > 0 ? Math.min(60000, life / 2) : 60000;
+  };
+
   function loadBearer() {
     const c = readCache()[tokenKey()];
     if (!c || typeof c !== 'object' || typeof c.token !== 'string' || !c.token) return null;
     const expiresAt = Number(c.expiresAt);
     if (!Number.isFinite(expiresAt)) return null;
-    return { token: c.token, expiresAt: expiresAt, key: tokenKey() };
+    return { token: c.token, expiresAt: expiresAt, lifetimeMs: Number(c.lifetimeMs), key: tokenKey() };
   }
 
   function saveBearer(entry) {
     try {
       const all = readCache();
-      all[entry.key] = { token: entry.token, expiresAt: entry.expiresAt };
+      all[entry.key] = { token: entry.token, expiresAt: entry.expiresAt, lifetimeMs: entry.lifetimeMs };
       // Expired entries are dead weight and the map must not grow with every endpoint
       // this tile is ever pointed at. Keep the one just bought unconditionally, then the
       // longest-lived of the rest — evicting a token that is about to expire anyway
@@ -391,9 +401,10 @@
   async function getBearer(force, signal) {
     if (!force) {
       if (!bearer) bearer = loadBearer();
-      // 60s of headroom: a token that expires between this check and the request
-      // arriving is a 401 the user sees as a broken tile.
-      if (bearer && bearer.expiresAt - Date.now() > 60000) return bearer.token;
+      // Headroom, so a token that expires between this check and the request arriving
+      // is not a 401 the user sees as a broken tile — but bounded by the token's own
+      // life, or a short-lived one is never fresh enough to use at all.
+      if (bearer && bearer.expiresAt - Date.now() > freshnessMargin(bearer)) return bearer.token;
     }
     const body = new URLSearchParams({ grant_type: 'client_credentials' });
     if (cfg.scope) body.set('scope', cfg.scope);
@@ -452,11 +463,16 @@
       err.tokenExchange = true;
       throw err;
     }
+    // A server that omits expires_in gets a conservative hour; the reactive 401
+    // retry below is what actually keeps this correct.
+    const lifetimeMs = Number.isFinite(ttl) && ttl > 0 ? ttl * 1000 : 3600000;
     bearer = {
       token: String(token),
-      // A server that omits expires_in gets a conservative hour; the reactive 401
-      // retry below is what actually keeps this correct.
-      expiresAt: Date.now() + (Number.isFinite(ttl) && ttl > 0 ? ttl * 1000 : 3600000),
+      expiresAt: Date.now() + lifetimeMs,
+      // Kept because the headroom is a fraction of it, and by the time the cache is
+      // read back the difference between a 60 s token and an hour-long one is
+      // otherwise gone — both are just a timestamp.
+      lifetimeMs: lifetimeMs,
       key: forKey,
     };
     saveBearer(bearer);
@@ -483,14 +499,30 @@
       // each of them the full budget meant a tile documented to give up after 30 s could
       // sit frozen for two minutes with nothing on screen but the last reading. The cap is
       // a promise about how long this tile can be out of date; only an absolute one keeps it.
-      const deadlineAt = Date.now() + budget;
-      const remaining = () => deadlineAt - Date.now();
+      // performance.now(), not Date.now(): this measures ELAPSED time, and the wall
+      // clock is not a measure of elapsed time. A backward step — a manual correction,
+      // a stepped NTP sync — adds itself to `remaining()`, so the very guarantee this
+      // deadline exists to make would be extended by exactly the amount the clock moved.
+      // (The token's `expiresAt` stays on Date.now() on purpose: that one is a point in
+      // time, compared across reloads, and performance.now() restarts with the document.)
+      const deadlineAt = performance.now() + budget;
+      const remaining = () => deadlineAt - performance.now();
       const headers = {};
       // The secret arrives decrypted, exactly like a text setting. An unset or
       // unreadable one is "" — send no header at all rather than an empty one.
-      // Applied whenever it is filled in, independent of authMode, so a tile
-      // configured before OAuth existed keeps working untouched.
-      if (cfg.headerName && cfg.headerValue) headers[cfg.headerName] = cfg.headerValue;
+      //
+      // Choosing "none" now actually stops it. That needed the MANIFEST DEFAULT to move,
+      // not this test: shell.js seeds every property with its declared default before
+      // overlaying stored settings, so a tile configured before this option existed
+      // arrives with authMode already reading whatever the default says — absent and
+      // explicitly-chosen are the same string by the time a widget sees them. With the
+      // default at "none" there was no way to honour the choice without silently
+      // dropping the header of every tile that predates it. With the default at
+      // "header", the legacy tile keeps sending exactly what it sends today, a fresh
+      // tile has both fields empty so it sends nothing either way, and "none" is free
+      // to mean what it says. OAuth tiles still send it: an API key alongside a bearer
+      // is a normal pairing, and setAuthHeader replaces it only if it IS the bearer's.
+      if (cfg.authMode !== 'none' && cfg.headerName && cfg.headerValue) headers[cfg.headerName] = cfg.headerValue;
       if (cfg.authMode === 'oauth2') {
         // Refuse before the request, not after: the only way to keep a credential off a
         // plaintext hop is to never hand it to one. Both legs are checked because both
@@ -499,11 +531,21 @@
         // refuse an OAuth tile: `authMode` is new in 1.1.0 and defaults to none, so no
         // configuration that works today starts failing, and the long-standing static
         // header stays exactly as permissive as it has always been.
-        // An UNSET token endpoint is not an insecure one, and saying so would send the
-        // user hunting for an https:// they never typed. `cfg.url` needs no such case:
+        // An UNSET field is not an insecure one, and saying so would send the user
+        // hunting for an https:// they never typed. `cfg.url` needs no such case:
         // poll() has already returned above when it is empty.
-        if (!cfg.tokenEndpoint) {
-          showState('◎', 'No token endpoint set',
+        //
+        // All three are required before anything is sent. client_credentials is defined
+        // only for confidential clients (RFC 6749 §4.4), so an exchange missing the id
+        // or the secret cannot succeed — it can only spend a failed authentication
+        // against a service that may well count them and lock the client. Nor is that
+        // state rare: the settings preview is handed stored secrets as "" by design, so
+        // without this the preview alone would post empty credentials to the real token
+        // endpoint on every poll.
+        const missing = !cfg.tokenEndpoint ? 'token endpoint'
+          : !cfg.clientId ? 'client ID' : !cfg.clientSecret ? 'client secret' : '';
+        if (missing) {
+          showState('◎', 'No ' + missing + ' set',
             'OAuth2 needs the URL of the token endpoint, plus the client ID and secret, in this widget’s settings.', false);
           return;
         }
