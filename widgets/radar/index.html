@@ -208,6 +208,10 @@
       WW.log('radar: frame list failed: ' + e.message);
       return;
     }
+    // Re-checked after the frame-list request: rebuildFrameLayers below attaches a
+    // screenful of tile images per frame and re-arms the animation chain, so a game that
+    // started while this was in flight would get all of it anyway.
+    if (gameOn) { missedWhilePaused = true; return; }
     const host = json.host || 'https://tilecache.rainviewer.com';
     const past = (json.radar && json.radar.past) || [];
     const wanted = cfg.animate ? past.slice(-7) : past.slice(-1);
@@ -221,15 +225,22 @@
     }));
     frameIndex = frames.length - 1;
     rebuildFrameLayers();
-    if (cfg.animate && frames.length > 1) {
-      // Cycle oldest -> newest, lingering on the newest frame before looping.
-      const tick = () => {
-        frameIndex = (frameIndex + 1) % frames.length;
-        showFrame(frameIndex);
-        animTimer = setTimeout(tick, frameIndex === frames.length - 1 ? 1800 : 650);
-      };
-      animTimer = setTimeout(tick, 1800);
-    }
+    restartAnimation();
+  }
+
+  // Lifted out of refreshRadar so a resume can re-arm the loop on the frames already
+  // built, without refetching a frame list that is still current.
+  function restartAnimation() {
+    clearTimeout(animTimer);
+    animTimer = null;
+    if (!cfg.animate || frames.length <= 1) return;
+    // Cycle oldest -> newest, lingering on the newest frame before looping.
+    const tick = () => {
+      frameIndex = (frameIndex + 1) % frames.length;
+      showFrame(frameIndex);
+      animTimer = setTimeout(tick, frameIndex === frames.length - 1 ? 1800 : 650);
+    };
+    animTimer = setTimeout(tick, 1800);
   }
 
   // (Re)creates the per-frame tile layers for the current viewport size.
@@ -292,7 +303,12 @@
       clearTimeout(animTimer);
       animTimer = null;
     }
-    if (gameOn || !missedWhilePaused) return;
+    if (gameOn) return;
+    // The animation was stopped on entry whatever else happened, so it has to be restored
+    // whatever else happens — a game that started and ended inside one five-minute refresh
+    // window set nothing pending, took the early return, and left the radar frozen on one
+    // frame until the next refresh.
+    if (!missedWhilePaused) { restartAnimation(); return; }
     missedWhilePaused = false;
     // What was missed decides what to run. An init refused while paused owes a full
     // setup — NOT a refresh — because its settings may name a different location, and
@@ -301,9 +317,15 @@
     // game, and the resume refreshed tiles for the old coordinates and never resolved
     // the new ones.
     if (pendingInit && pendingSettings) { pendingInit = false; start(pendingSettings); }
-    // refreshRadar rebuilds the frame layers and re-arms the animation chain itself,
-    // so stopping the timer on entry needs no separate restart here.
-    else refreshRadar();
+    else {
+      // Restart the cadence FROM the catch-up: the five-minute interval kept its deadline
+      // through the game, and refreshRadar has no in-flight guard, so a game ending just
+      // before it produced two overlapping frame-list fetches and tile rebuilds.
+      // refreshRadar re-arms the animation chain itself as it rebuilds the layers.
+      clearInterval(refreshTimer);
+      refreshRadar();
+      refreshTimer = setInterval(refreshRadar, 5 * 60 * 1000);
+    }
   });
 
 </script>

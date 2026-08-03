@@ -231,6 +231,17 @@ async function mount(browser, gameAtInit) {
   check('S3 ...and the setup runs once the game ends',
     geocoded.length === 1 && geocoded[0] === 'Dallas' && mapHits > 0,
     `${JSON.stringify(geocoded)}, ${mapHits} map fetch(es)`);
+  // S4 is the USER-VISIBLE half, and S3 does not imply it: the fetches can all succeed
+  // behind a Paused card that nothing ever took down, leaving a recovered map the reader
+  // cannot see. Deleting hideMessage() satisfies S3 and fails only this.
+  const resumedHidden = await b.frame.evaluate(() => {
+    const el = document.getElementById('message');
+    return !!(el && (el.hidden || getComputedStyle(el).display === 'none'));
+  });
+  const resumedText = await b.frame.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').trim());
+  check('S4 ...and the Paused card is taken down, so the recovered map is visible',
+    resumedHidden && !/paused/i.test(resumedText),
+    `overlay hidden: ${resumedHidden}, text: ${JSON.stringify(resumedText.slice(0, 90))}`);
 
   await browser.close();
   console.log(failures > 0 ? `\n${failures} FAILURES` : '\nALL PASS');

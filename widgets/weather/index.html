@@ -161,6 +161,11 @@
     const s = WW.settings;
     try {
       const place = await resolvePlace(s);
+      // Re-checked after the await: an uncached city name goes to the geocoder first, and
+      // a game starting during that would otherwise be answered by the forecast request
+      // below. The gate has to hold at every point where new work would START, not only
+      // at the door.
+      if (gameOn) { missedWhilePaused = true; return; }
       document.getElementById('place').textContent = place.label;
 
       const url = 'https://api.open-meteo.com/v1/forecast' +
@@ -251,7 +256,14 @@
   // waiting out whatever remained of the interval.
   WW.onGame((g) => {
     gameOn = !!(g && g.active);
-    if (!gameOn && missedWhilePaused) { missedWhilePaused = false; refresh(); }
+    if (gameOn || !missedWhilePaused) return;
+    missedWhilePaused = false;
+    // Restart the cadence FROM the catch-up: the ten-minute interval kept its deadline
+    // through the game, so one ending just before it produced two forecast requests
+    // seconds apart, and refresh() has no in-flight guard to absorb that.
+    clearInterval(refreshTimer);
+    refresh();
+    refreshTimer = setInterval(refresh, 10 * 60 * 1000);
   });
 
 </script>

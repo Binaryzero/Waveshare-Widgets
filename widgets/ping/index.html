@@ -200,6 +200,10 @@
     let results;
     try {
       results = await WW.ping(cfg.targets.map((t) => t.host));
+      // The ICMP cannot be recalled, but the per-host history append, the card repaint and
+      // every sparkline canvas can still be skipped — that is the frame budget this gate
+      // exists to protect, and it is spent after the answer arrives, not before.
+      if (gameOn) { missedWhilePaused = true; return; }
     } catch (e) {
       WW.log('ping: ' + e.message);
       return;

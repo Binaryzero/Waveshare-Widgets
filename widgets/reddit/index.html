@@ -228,6 +228,11 @@
     // Try a few posts in case some images fail to fetch.
     let refusedForSize = 0;
     for (let attempts = 0; attempts < Math.min(5, posts.length); attempts++) {
+      // Re-checked per attempt, not once at the door: a failed image sends the loop round
+      // again, so a game starting during the first download would otherwise be followed by
+      // up to four more. A manual advance is exempt for the same reason it is at the top —
+      // a person asked for it.
+      if (gameOn && !direction) { missedWhilePaused = true; break; }
       index = (index + (direction || 1) + posts.length) % posts.length;
       const post = posts[index];
       try {

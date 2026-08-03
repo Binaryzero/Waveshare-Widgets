@@ -287,6 +287,9 @@
     if (!hasData) showState('loading');
     try {
       const place = await resolvePlace(loc);
+    // Re-checked after the await, as in weather: the geocoder runs first for an uncached
+    // name, and a game starting during it must not be followed by the forecast request.
+    if (gameOn) { pendingRefresh = true; return; }
       const data = await fetchForecast(place, s.units);
       renderDays(data);
       els.place.textContent = place.label;

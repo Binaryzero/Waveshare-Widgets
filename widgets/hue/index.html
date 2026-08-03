@@ -148,6 +148,18 @@
 
   async function connect(s) {
     hideMessage();   // a resumed connect must take the Paused card down before it draws
+    // STOP the previous bridge's poll loop before doing anything else, and forget its
+    // credential. cfg.ip is already the NEW address by the time this runs, so a retained
+    // four-second tick — armed for the old bridge, and no longer refused once gameOn has
+    // flipped false — would send the old bridge's application key to an address that has
+    // not been validated yet. connect() re-reads the key for the new IP from localStorage
+    // further down, so nothing is lost by clearing it here.
+    clearInterval(pollTimer);
+    pollTimer = null;
+    clearTimeout(probeTimer);
+    probeTimer = null;
+    username = null;
+    mode = null;
     let discovered = false;
     if (!cfg.ip) {
       // Cloud discovery is rate-limited by Philips and CORS-noisy (the browser-first
@@ -288,6 +300,7 @@
   // and that is the move no unauthenticated party gets to make on the user's behalf.
   const PROBE_RETRY_MS = 15000;
   let probeTimer = null;
+  let probing = false;   // a probeV2 request is in the air right now
 
   async function begin() {
     if (mode !== null) { startPolling(); return; }
@@ -297,6 +310,11 @@
   }
 
   async function probeV2() {
+    // A game that starts while this request is in the air leaves probeTimer null, so the
+    // onGame handler sees nothing to clear — and the failure path below would arm a fresh
+    // retry that then runs for the whole game. The probe itself records that it was
+    // running, so a game entered mid-probe is caught by the flag rather than by the timer.
+    probing = true;
     let confirmed = false;
     try {
       const res = await v2fetch('/resource/room');
@@ -309,7 +327,12 @@
     // arriving after that would either put the question back on screen seconds after the
     // user answered it, or quietly move the session to v2 while v1 polling is already
     // running. Whoever decided first decided.
+    probing = false;
     if (mode !== null) return;
+    // A game that started while this was on the wire: stop here rather than arming the
+    // 15-second retry below, which would then run for the whole session. The paused init
+    // owes a full connect, and connect() owns the probe.
+    if (gameOn) { missedWhilePaused = true; pendingInit = true; return; }
     if (confirmed) {
       clearTimeout(probeTimer);
       probeTimer = null;
@@ -377,6 +400,11 @@
     let rooms;
     try {
       rooms = mode === 'v2' ? await pollV2() : await pollV1();
+      // Both pollV1 and pollV2 issue their requests SEQUENTIALLY — scenes after rooms for
+      // v1; zones, grouped lights and scenes after rooms for v2 — so a game starting
+      // mid-sequence had every remaining request still to come. They re-check the gate
+      // between awaits and return null, which lands here.
+      if (rooms === null) { missedWhilePaused = true; return; }
       if (mode === 'v2') rememberV2();
     } catch (e) {
       // No demotion here, deliberately. This used to drop to v1 after two TypeErrors, and
@@ -401,6 +429,10 @@
     const res = await v1fetch(v1api('/groups'));
     const groups = await res.json();
     if (groups && groups[0] && groups[0].error) throw new Error(groups[0].error.description);
+    // A game can start between these requests. The one already sent cannot be recalled,
+    // but the scenes request has not left yet — null tells pollOnce the poll was
+    // abandoned mid-sequence rather than that the bridge returned nothing.
+    if (gameOn) return null;
     let scenes = {};
     if (cfg.showScenes) {
       const sr = await v1fetch(v1api('/scenes'));
@@ -428,8 +460,11 @@
     // Sequential on purpose: the bridge's embedded TLS server mishandles
     // parallel handshakes, so concurrent requests fail intermittently.
     const rr = await v2fetch('/resource/room');
+    if (gameOn) return null;   // three more requests still to come — see pollV1
     const zr = await v2fetch('/resource/zone');
+    if (gameOn) return null;
     const gr = await v2fetch('/resource/grouped_light');
+    if (gameOn) return null;
     // Surface bridge errors (revoked app key, bridge restarting) instead of
     // rendering the misleading "No rooms" empty state from an error body.
     const bad = !rr.ok ? rr : !zr.ok ? zr : !gr.ok ? gr : null;
@@ -695,7 +730,7 @@
     // Only when that probe was actually IN FLIGHT does this force a reconnect: an
     // established widget owes a poll, not a rediscovery, and re-running the bridge hunt
     // after every game would be a heavier change than the one being made here.
-    if (gameOn && probeTimer) {
+    if (gameOn && (probeTimer || probing)) {
       clearTimeout(probeTimer);
       probeTimer = null;
       missedWhilePaused = true;
