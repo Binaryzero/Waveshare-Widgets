@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Next Event</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Layout only — colors, background, bgStyle and the typography base come from
+   * widget-base.css. */
+  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+  main { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: 4px; min-height: 0; }
+  #countdown {
+    line-height: 1;
+    font-size: min(20vw, 15vh);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  #countdown.soon { color: var(--warn); }
+  #countdown.now { color: var(--ok); }
+  #title {
+    color: var(--text); font-weight: 650;
+    font-size: clamp(13px, 4.5vh, 20px);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #when {
+    color: var(--text-muted); font-size: clamp(11px, 3vh, 14px);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #where {
+    color: var(--text-dim); font-size: 11px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  footer { color: var(--text-dim); font-size: 11px; flex: none; }
+  #state { position: fixed; inset: 0; }
+  body.stale main { opacity: 0.6; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="kicker">Next</span>
+    <span class="pill muted" id="pill">Loading</span>
+  </header>
+
+  <main id="data" hidden>
+    <div class="value hero" id="countdown">--</div>
+    <div id="title"></div>
+    <div id="when"></div>
+    <div id="where"></div>
+  </main>
+
+  <footer id="meta"></footer>
+
+  <div class="state-card" id="state">
+    <div class="spinner"></div>
+  </div>
+
+<script src="ics.js"></script>
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const cfg = { url: '', lookaheadDays: 30, ignoreAllDay: false, refreshMs: 1800000 };
+  let current = null;      // {event, start}
+  let dropped = 0;
+  let started = false;
+  let fetchTimer = null;
+  let tickTimer = null;
+  let inFlight = false;
+  let lastOk = 0;
+
+  const el = (id) => document.getElementById(id);
+
+  WW.onInit((s0) => {
+    const s = s0.settings;
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+
+    // An unset or unreadable secret arrives as "" — setup state, never a spinner.
+    cfg.url = String(s.icsUrl == null ? '' : s.icsUrl).trim();
+    cfg.lookaheadDays = Math.min(90, Math.max(1, Number(s.lookaheadDays) || 30));
+    cfg.ignoreAllDay = s.ignoreAllDay === 'ignore';
+    cfg.refreshMs = Math.min(720, Math.max(5, Number(s.refreshMinutes) || 30)) * 60000;
+
+    if (!cfg.url) {
+      // Stop everything. Without this the chain keeps running against an empty URL,
+      // which resolves to the widget's OWN document, parses as a calendar with no
+      // events, and replaces the setup card with "Nothing scheduled".
+      clearTimeout(fetchTimer);
+      clearInterval(tickTimer);
+      tickTimer = null;
+      current = null;
+      lastOk = 0;
+      started = false;
+      showSetup();
+      return;
+    }
+    if (!started) {
+      started = true;
+      load();
+      // The countdown is its own 1 Hz loop; refetching the calendar every second to
+      // move a clock would be absurd, and a minute-granularity countdown that jumps
+      // 60 seconds at a time reads as broken.
+      tickTimer = setInterval(paint, 1000);
+    } else { clearTimeout(fetchTimer); load(); }
+  });
+
+  async function load() {
+    if (document.hidden || inFlight) { schedule(); return; }
+    inFlight = true;
+    try {
+      const res = await WW.fetch(cfg.url, { maxBytes: 4 * 1024 * 1024 });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const text = await res.text();
+      // From an hour AGO, not from now: paint() deliberately keeps an event on screen
+      // for an hour after it starts, but asking only for future starts meant the next
+      // refresh replaced it — so a meeting vanished one refresh after beginning rather
+      // than at the end of the hour it was promised.
+      const found = ICS.next(text, Date.now() - 3600000, cfg.lookaheadDays * 86400000 + 3600000,
+        { ignoreAllDay: cfg.ignoreAllDay });
+      current = found.best;
+      dropped = found.dropped;
+      lastOk = Date.now();
+      document.body.classList.remove('stale');
+      paint();
+    } catch (e) {
+      if (current) { document.body.classList.add('stale'); paint(); }
+      else showError(e instanceof RangeError
+        ? 'That calendar is larger than the panel will load.'
+        : "Couldn't load the calendar. Check the link is still valid.");
+      WW.log('nextevent: ' + e.message);
+    } finally {
+      inFlight = false;
+      schedule();
+    }
+  }
+
+  function schedule() {
+    clearTimeout(fetchTimer);
+    fetchTimer = setTimeout(load, cfg.refreshMs);
+  }
+
+  function countdownText(ms) {
+    if (ms <= 0) return 'now';
+    const mins = Math.floor(ms / 60000);
+    if (mins < 60) return mins + 'm';
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + 'h ' + String(mins % 60).padStart(2, '0') + 'm';
+    const days = Math.floor(hours / 24);
+    return days + 'd ' + (hours % 24) + 'h';
+  }
+
+  function whenText(start, allDay) {
+    const d = new Date(start);
+    const today = new Date();
+    const sameDay = d.toDateString() === today.toDateString();
+    const tomorrow = new Date(today.getTime() + 86400000).toDateString() === d.toDateString();
+    const day = sameDay ? 'Today' : tomorrow ? 'Tomorrow'
+      : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    if (allDay) return day + ' · all day';
+    return day + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+
+  // Repaints from cached data only — no network, no parsing. Safe at 1 Hz forever.
+  function paint() {
+    if (!current) {
+      if (lastOk) {
+        el('state').hidden = false;
+        el('data').hidden = true;
+        stateCard('', '○', 'Nothing scheduled',
+          'No events in the next ' + cfg.lookaheadDays + ' day' + (cfg.lookaheadDays === 1 ? '' : 's') + '.' +
+          (dropped ? ' ' + dropped + ' repeating event' + (dropped === 1 ? '' : 's') +
+            ' could not be read — only daily and weekly repeats are supported.' : ''));
+        // The footer normally carries this, and the footer is hidden behind the state
+        // card. A calendar containing ONLY unsupported repeats would otherwise claim
+        // outright that nothing is scheduled, which is what the counter exists to stop.
+        el('meta').textContent = '';
+      }
+      return;
+    }
+    const left = current.start - Date.now();
+    // An event that started less than an hour ago is the one you are in; past that,
+    // the calendar has moved on and so should the tile.
+    if (left < -3600000) { current = null; clearTimeout(fetchTimer); load(); return; }
+
+    const cd = el('countdown');
+    cd.textContent = countdownText(left);
+    cd.className = 'value hero' + (left <= 0 ? ' now' : left < 900000 ? ' soon' : '');
+
+    el('title').textContent = current.event.summary || '(no title)';
+    el('when').textContent = whenText(current.start, current.event.start.allDay);
+    el('where').textContent = current.event.location || '';
+
+    const stale = document.body.classList.contains('stale');
+    const pill = el('pill');
+    pill.textContent = stale ? 'Stale' : left <= 0 ? 'Now' : left < 900000 ? 'Soon' : 'Scheduled';
+    pill.className = 'pill ' + (stale ? 'muted' : left <= 0 ? 'ok' : left < 900000 ? 'warn' : '');
+
+    // Never silently drop events: a monthly repeat this reader refuses to expand is
+    // said out loud, because the alternative is a calendar that looks emptier than it
+    // is and no way to tell.
+    el('meta').textContent = dropped
+      ? dropped + ' repeating event' + (dropped === 1 ? '' : 's') + ' not shown (only daily and weekly repeats are read)'
+      : '';
+
+    el('state').hidden = true;
+    el('data').hidden = false;
+  }
+
+  function stateCard(cls, icon, title, body, onRetry) {
+    const pill = el('pill');
+    pill.textContent = cls === 'err' ? 'Error' : 'Setup';
+    pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
+    const s = el('state');
+    s.className = 'state-card' + (cls ? ' ' + cls : '');
+    s.textContent = '';
+    const i = document.createElement('div');
+    i.className = 'state-icon';
+    i.textContent = icon;
+    const t = document.createElement('div');
+    t.className = 'state-title';
+    t.textContent = title;
+    const b = document.createElement('div');
+    b.className = 'state-body';
+    b.textContent = body;
+    s.append(i, t, b);
+    if (onRetry) {
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.textContent = 'Retry';
+      btn.addEventListener('click', onRetry);
+      s.append(btn);
+    }
+    s.hidden = false;
+    el('data').hidden = true;
+  }
+
+  function showSetup() {
+    stateCard('', '◎', 'No calendar linked',
+      "Paste your calendar's private ICS address in the widget settings. It is stored encrypted, like a password.");
+  }
+
+  function showError(message) {
+    stateCard('err', '!', 'Calendar unavailable', message, () => {
+      stateCard('', '', 'Retrying', '');
+      clearTimeout(fetchTimer);
+      load();
+    });
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !started) return;
+    paint();
+    if (Date.now() - lastOk >= cfg.refreshMs) { clearTimeout(fetchTimer); load(); }
+  });
+</script>
+</body>
+</html>
