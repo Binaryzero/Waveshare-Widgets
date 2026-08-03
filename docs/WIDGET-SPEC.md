@@ -128,6 +128,12 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   Values are capped at 8 KiB and 16 keys per widget; keys are letters, digits, `.`, `-`
   and `_`, up to 64 characters.
 
+  **In the settings preview the store is always empty**, and says so immediately: a get
+  reads as a miss and a set answers `unavailable`. The preview is a layout editor, and
+  it neither reads nor writes your real credentials. This is not a special case to code
+  for — it is the same "treat a missing value as normal" rule above — but it is why your
+  tile shows its signed-out state there while the panel shows it signed in.
+
   **`color` properties are reserved for data colors** — colors that are *content*, such
   as a per-series line color, where two instances legitimately differ as data. Never
   declare color properties for appearance (text, labels, accents, backgrounds, state

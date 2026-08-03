@@ -889,8 +889,11 @@ public sealed class DashboardWindow : Form
                         {
                             // Named rather than collapsed into false: the widget's
                             // fallback differs. "unavailable" means keep it in memory and
-                            // carry on; the rest are the widget's own bug.
-                            result["error"] = wrote.ToString().ToLowerInvariant();
+                            // carry on; the rest are the widget's own bug. The names come
+                            // from WireName, not from the enum member — the documented
+                            // vocabulary is kebab-case, and a rename must not quietly
+                            // change what widgets branch on.
+                            result["error"] = WidgetSecrets.WireName(wrote);
                         }
                         break;
 

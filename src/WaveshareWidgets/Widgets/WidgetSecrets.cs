@@ -63,6 +63,33 @@ public static class WidgetSecrets
         Unavailable,
     }
 
+    /// <summary>The name a refusal travels under, as the widget sees it in
+    /// <c>ww-secure-result.error</c>.
+    ///
+    /// <para>Spelled out rather than derived from the member name, because
+    /// <c>ToString().ToLowerInvariant()</c> yields <c>toolarge</c> while the documented
+    /// contract is <c>too-large</c> — and, more to the point, because a member RENAME
+    /// would then silently change a wire protocol widgets branch on. This is the whole
+    /// vocabulary; the probe asserts it stays that and that no member is missing from it.
+    /// </para>
+    ///
+    /// <para><see cref="WriteResult.Ok"/> maps to the empty string: success carries no
+    /// error and the reply omits the member entirely.</para>
+    /// </summary>
+    public static string WireName(WriteResult result) => result switch
+    {
+        WriteResult.Ok => "",
+        WriteResult.BadKey => "bad-key",
+        WriteResult.BadScope => "bad-scope",
+        WriteResult.TooLarge => "too-large",
+        WriteResult.TooManyKeys => "too-many-keys",
+        WriteResult.Unavailable => "unavailable",
+        // Total on purpose: a member added without a name here reads as "" and the
+        // probe's exhaustiveness check fails, rather than this throwing on the one
+        // machine where the new case happens to come up.
+        _ => "",
+    };
+
     /// <summary>A key a widget may use: letters, digits, dot, dash, underscore, bounded.
     ///
     /// Keys are object members in a JSON file and never touch the filesystem, so this is

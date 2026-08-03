@@ -352,6 +352,24 @@
       // origin says the widget is still the one in it.
       const widgetId = sender.def && sender.def.widgetId;
       if (!widgetId) return;
+      // The settings preview answers here and forwards NOTHING. Two reasons, and the
+      // second is why it is answered rather than dropped: the replica must never read
+      // or write a live credential (it is a layout editor, and its widgets run outside
+      // a real slot), and settings.js relays only fetch/ping/media-list/audio-get — so
+      // a forwarded secure-* would be dropped silently and settle only on secureCall's
+      // 10s timeout, leaving an OAuth widget that awaits secureGet before its first
+      // paint blank for ten seconds on every preview reload. Same shape as the
+      // notifications-watch answer settings.js already gives, and for the same reason.
+      //
+      // The answers are the honest ones, not placeholders: the preview really does have
+      // nothing stored (a miss, which the spec tells widgets to treat as normal), and a
+      // set really did not write (`unavailable` — keep it in memory and carry on).
+      if (PREVIEW) {
+        const reply = { type: 'ww-secure-result', id: msg.id, value: null, ok: true };
+        if (msg.type === 'ww-secure-set') { reply.ok = false; reply.error = 'unavailable'; }
+        try { ev.source.postMessage(reply, ev.origin); } catch (e) { /* frame gone */ }
+        return;
+      }
       secureRoutes.set(msg.id, { win: ev.source, origin: ev.origin });
       setTimeout(() => secureRoutes.delete(msg.id), 15000);
       // The value crosses unmodified. Truncating an over-long credential here would

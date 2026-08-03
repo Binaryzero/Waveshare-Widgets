@@ -25,8 +25,9 @@
   const pendingPings = new Map();
   const pendingMediaLists = new Map();
   const pendingAudioGets = new Map();
-  const pendingSecure = new Map();      // protected-store request id -> {resolve, reject}
-
+  // {resolve} only, no reject: a refusal from the protected store is an ANSWER the
+  // widget branches on, never a throw. See secureCall.
+  const pendingSecure = new Map();      // protected-store request id -> {resolve}
   const pendingAudioSets = new Map();
 
   /** One request/reply round trip to the protected store. Resolves rather than rejects on

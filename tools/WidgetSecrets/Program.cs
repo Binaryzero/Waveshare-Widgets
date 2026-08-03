@@ -15,6 +15,7 @@
 //   W5  an UNAVAILABLE cipher writes nothing — never a plaintext fallback
 //   W6  a damaged document degrades to empty rather than throwing
 //   W7  delete and forget remove what they say, and nothing else
+//   W8  a refusal travels under the name the API reference documents, exhaustively
 //
 // W5 is the one that matters most. A store that silently degrades to plaintext when
 // sealing fails is worse than no store: the widget believes it is protected, the value is
@@ -224,6 +225,46 @@ WidgetSecrets.Delete(emptied, "w", "only");
 Check("W7d removing the last key removes the widget's bucket too",
     !WidgetSecrets.Serialize(emptied).Contains("\"w\"", StringComparison.Ordinal),
     WidgetSecrets.Serialize(emptied).Replace("\n", " "));
+
+// ---- W8: the refusal vocabulary a widget branches on --------------------------------
+// docs/WAVESHARE-API-REFERENCE.md names these five in the ww-secure-result row, and a
+// widget's whole fallback hangs on telling `unavailable` (keep it in memory, protection
+// is off on this machine) from the rest (fix the widget). The host used to derive them
+// from the enum member, which yields `toolarge` where the contract says `too-large` — so
+// four of the five documented names were never emitted and no branch on them could fire.
+// Pinned here rather than left to inspection, because it is a WIRE protocol: it now
+// survives a member rename, and a member ADDED without a name fails W8c instead of
+// reaching a widget as "".
+var documented = new Dictionary<WidgetSecrets.WriteResult, string>
+{
+    [WidgetSecrets.WriteResult.BadKey] = "bad-key",
+    [WidgetSecrets.WriteResult.BadScope] = "bad-scope",
+    [WidgetSecrets.WriteResult.TooLarge] = "too-large",
+    [WidgetSecrets.WriteResult.TooManyKeys] = "too-many-keys",
+    [WidgetSecrets.WriteResult.Unavailable] = "unavailable",
+};
+foreach (var (refusal, name) in documented)
+    Check($"W8 {refusal} travels as '{name}'", WidgetSecrets.WireName(refusal) == name);
+Check("W8b success carries no error name",
+    WidgetSecrets.WireName(WidgetSecrets.WriteResult.Ok) == "");
+// Exhaustive: every member is either Ok or documented above. A new refusal added to the
+// enum without being named here lands in neither set and fails, which is the point —
+// silently reaching a widget as an empty string is what this is here to prevent.
+var unnamed = Enum.GetValues<WidgetSecrets.WriteResult>()
+    .Where(r => r != WidgetSecrets.WriteResult.Ok && !documented.ContainsKey(r))
+    .ToList();
+Check("W8c every refusal the enum can produce has a documented name",
+    unnamed.Count == 0, unnamed.Count == 0 ? "" : string.Join(", ", unnamed));
+// ...and the names stay distinct, since a widget switches on them.
+Check("W8d the names are distinct",
+    documented.Values.Distinct(StringComparer.Ordinal).Count() == documented.Count);
+// The real refusals reach WireName as themselves — this is the path the host takes, not
+// a hand-built enum value: an over-long write really does answer 'too-large'.
+Check("W8e a refused write's own result names itself",
+    WidgetSecrets.WireName(WidgetSecrets.Set(fresh(), "w", "k", new string('x', WidgetSecrets.MaxValueBytes + 1)))
+        == "too-large"
+    && WidgetSecrets.WireName(WidgetSecrets.Set(fresh(), "w", "bad key", "v")) == "bad-key"
+    && WidgetSecrets.WireName(WidgetSecrets.Set(fresh(), "", "k", "v")) == "bad-scope");
 
 Console.WriteLine(failures > 0 ? $"{failures} FAILURES" : "ALL PASS");
 return failures > 0 ? 1 : 0;
