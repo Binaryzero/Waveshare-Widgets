@@ -1,0 +1,11 @@
+[
+ { "match": "oauth.battle.net/token", "json": { "access_token": "bnet", "expires_in": 86399 } },
+ { "match": "/data/wow/token/index", "json": { "lastUpdatedTimestamp": 1785600000000, "price": 2841230000 } },
+ { "match": "mythic-plus/affixes", "json": { "affix_details": [
+    {"name":"Fortified"},{"name":"Storming"},{"name":"Raging"},{"name":"Xal'atath's Bargain"} ] } },
+ { "match": "characters/profile", "json": {
+    "name":"Thrall",
+    "gear": { "item_level_equipped": 639 },
+    "mythic_plus_scores_by_season": [ { "scores": { "all": 2814.7 } } ],
+    "raid_progression": { "nerubar-palace": {"summary":"8/8 H"}, "liberation-of-undermine": {"summary":"3/8 M"} } } }
+]

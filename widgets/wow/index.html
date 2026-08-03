@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>WoW Panel</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Layout only — colors, background, bgStyle and the typography base come from
+   * widget-base.css. */
+  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+  main { flex: 1 1 auto; display: grid; gap: 8px; min-height: 0; grid-template-columns: 1.15fr 1fr; }
+  /* This widget starts at half (640px), so the two-column split is the normal case —
+   * a breakpoint above 640 would have meant it never fired. The single column is the
+   * safety net for a narrower host, not the layout half actually gets. */
+  @media (max-width: 520px) { main { grid-template-columns: 1fr; } }
+  /* In a 200px band the character lines are what has to give: the price, the reset
+   * countdown and the affixes are the glance, the gear stats are the detail. */
+  @media (max-height: 240px) { #charCard { display: none; } }
+  .card { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; min-width: 0; min-height: 0; }
+
+  /* Top-aligned like the cards beside it — centring left the kicker floating at half
+   * height while the right column started at the top, which read as a misalignment
+   * rather than emphasis. The sparkline owns the bottom of the card. */
+  #tokenCard { position: relative; overflow: hidden; }
+  #price { line-height: 1; font-size: clamp(24px, 8vh, 44px); }
+  #trend { font-size: 12px; font-variant-numeric: tabular-nums; }
+  #trend.up { color: var(--err); }      /* a rising token price costs the player gold */
+  #trend.down { color: var(--ok); }
+  #spark { position: absolute; inset: auto 0 0 0; width: 100%; height: 34%; opacity: 0.8; }
+
+  #right { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  #resetCard { flex: none; }
+  #reset { font-size: clamp(16px, 5vh, 26px); line-height: 1.1; font-variant-numeric: tabular-nums; }
+  #charCard { flex: 1 1 auto; justify-content: center; }
+  .line { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+  .line .k { color: var(--text-muted); font-size: 11px; letter-spacing: 0.05em; flex: none; }
+  .line .v {
+    color: var(--text); font-weight: 650; font-size: clamp(12px, 3.4vh, 16px);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  #affixes { display: flex; flex-wrap: wrap; gap: 4px; }
+  footer { color: var(--text-dim); font-size: 11px; flex: none; }
+  #state { position: fixed; inset: 0; }
+  body.stale main { opacity: 0.6; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="kicker">Azeroth</span>
+    <span class="pill muted" id="pill">Loading</span>
+  </header>
+
+  <main id="data" hidden>
+    <div class="card" id="tokenCard">
+      <span class="kicker">WoW Token</span>
+      <div class="value hero" id="price">--</div>
+      <div id="trend"></div>
+      <canvas id="spark"></canvas>
+    </div>
+    <div id="right">
+      <div class="card" id="resetCard">
+        <span class="kicker">Weekly reset</span>
+        <div class="value" id="reset">--</div>
+        <div id="affixes"></div>
+      </div>
+      <div class="card" id="charCard">
+        <span class="kicker" id="charName">Character</span>
+        <div class="line"><span class="k">ILVL</span><span class="v" id="ilvl">--</span></div>
+        <div class="line"><span class="k">M+</span><span class="v" id="mplus">--</span></div>
+        <div class="line"><span class="k">RAID</span><span class="v" id="raid">--</span></div>
+      </div>
+    </div>
+  </main>
+
+  <footer id="meta"></footer>
+
+  <div class="state-card" id="state">
+    <div class="spinner"></div>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  // AFFIX SOURCE DECISION (issue #25's decision AC):
+  // Raider.IO's unauthenticated, CORS-friendly /mythic-plus/affixes is the source.
+  // The official route is /data/wow/mythic-keystone/period/{id} to find the current
+  // period, then a leaderboard call to read the affix set off it — two authenticated
+  // calls, against a token budget already spent on the price, to obtain a value that
+  // is identical, public, and the same for every player in the region. Purity buys
+  // nothing here and costs a call per refresh.
+  const RIO = 'https://raider.io/api/v1';
+  const CACHE_BASE = 'wow.series.v1';
+  const SERIES_MAX = 96;      // ~48h at the 30-minute floor; enough for a readable line
+
+  const cfg = { region: 'us', realm: '', character: '', clientId: '', clientSecret: '', refreshMs: 1800000 };
+  let bearer = null;
+  let series = [];            // [{t, price}] — the API only serves NOW, history is ours
+  let data = { price: null, ilvl: null, mplus: null, raid: null, affixes: [] };
+  let started = false;
+  let timer = null;
+  let resetTimer = null;
+  let inFlight = false;
+  let lastOk = 0;
+  // Bumped on a region change: the price in flight belongs to the market that was
+  // configured when it was asked for, and appending it to the new region's series is
+  // exactly the mixed-market trend the per-region key was added to prevent.
+  let generation = 0;
+
+  const el = (id) => document.getElementById(id);
+  const sparkColors = { accent: '', line: '' };
+  function readSparkColors() {
+    const cs = getComputedStyle(document.documentElement);
+    sparkColors.accent = cs.getPropertyValue('--accent').trim();
+    sparkColors.line = cs.getPropertyValue('--line').trim();
+  }
+
+  // Weekly reset is arithmetic, not an API call: the region's reset weekday and hour
+  // in UTC are fixed. US Tuesday 15:00, EU Wednesday 07:00, KR/TW Wednesday 22:00
+  // (Thursday morning local).
+  const RESETS = { us: [2, 15], eu: [3, 7], kr: [3, 22], tw: [3, 22] };
+  function nextReset(region) {
+    const [day, hour] = RESETS[region] || RESETS.us;
+    const now = new Date();
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, 0, 0));
+    // Walk forward to the right weekday; if today IS the day but the hour has passed,
+    // the loop's first step moves us to next week, which is what we want.
+    while (d.getUTCDay() !== day || d.getTime() <= now.getTime()) {
+      d.setUTCDate(d.getUTCDate() + 1);
+      d.setUTCHours(hour, 0, 0, 0);
+    }
+    return d.getTime();
+  }
+
+  function fmtGold(copper) {
+    const g = Math.floor(Number(copper) / 10000);
+    if (!Number.isFinite(g)) return '--';
+    if (g >= 1000000) return (g / 1000000).toFixed(2) + 'M';
+    if (g >= 1000) return Math.round(g / 1000) + 'k';
+    return String(g);
+  }
+
+  // Token prices are per region and are not comparable across them. One shared key
+  // meant switching US->EU (or two tiles side by side) appended two different markets
+  // into one line and reported a percentage move that never happened.
+  const cacheKey = () => CACHE_BASE + '.' + cfg.region;
+
+  function loadSeries() {
+    try {
+      const raw = localStorage.getItem(cacheKey());
+      const c = raw ? JSON.parse(raw) : null;
+      if (c && Array.isArray(c.series)) series = c.series.filter((p) => p && Number.isFinite(p.t) && Number.isFinite(p.price));
+    } catch (e) { series = []; }
+  }
+  function saveSeries() {
+    try { localStorage.setItem(cacheKey(), JSON.stringify({ series })); } catch (e) { /* quota */ }
+  }
+
+  WW.onInit((s0) => {
+    const s = s0.settings;
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+    readSparkColors();
+
+    const prevKey = cfg.clientId + '\n' + cfg.clientSecret;
+    const prevRegion = cfg.region;
+    cfg.region = ['us', 'eu', 'kr', 'tw'].includes(s.region) ? s.region : 'us';
+    cfg.realm = String(s.realm || '').trim().toLowerCase().replace(/\s+/g, '-');
+    cfg.character = String(s.character || '').trim();
+    cfg.clientId = String(s.clientId || '').trim();
+    cfg.clientSecret = String(s.clientSecret == null ? '' : s.clientSecret);
+    cfg.refreshMs = Math.min(240, Math.max(20, Number(s.refreshMinutes) || 30)) * 60000;
+    if (prevKey !== cfg.clientId + '\n' + cfg.clientSecret) bearer = null;
+    // A region change swaps which market the series describes, so reload it from that
+    // region's own key rather than carrying the previous one's points forward.
+    if (prevRegion !== cfg.region) { generation++; inFlight = false; series = []; loadSeries(); }
+
+    if (!started) {
+      started = true;
+      loadSeries();
+      paintReset();
+      // The countdown is its own slow clock — a minute is plenty for a week-long timer
+      // and costs nothing.
+      resetTimer = setInterval(paintReset, 30000);
+      tick();
+    } else { clearTimeout(timer); tick(); }
+  });
+
+  WW.onTheme(() => { readSparkColors(); drawSpark(); });
+
+  async function getBearer() {
+    if (bearer && bearer.expiresAt - Date.now() > 60000) return bearer.token;
+    const res = await WW.fetch('https://oauth.battle.net/token', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Basic ' + btoa(cfg.clientId + ':' + cfg.clientSecret),
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: 'grant_type=client_credentials',
+    });
+    if (!res.ok) throw new Error('sign-in ' + res.status);
+    const json = await res.json();
+    if (!json || !json.access_token) throw new Error('no access token');
+    const ttl = Number(json.expires_in);
+    bearer = {
+      token: String(json.access_token),
+      expiresAt: Date.now() + (Number.isFinite(ttl) && ttl > 0 ? ttl * 1000 : 3600000),
+    };
+    return bearer.token;
+  }
+
+  async function fetchPrice() {
+    const token = await getBearer();
+    const host = 'https://' + cfg.region + '.api.blizzard.com';
+    const res = await WW.fetch(host + '/data/wow/token/index?namespace=dynamic-' + cfg.region,
+      { headers: { Authorization: 'Bearer ' + token } });
+    if (!res.ok) throw new Error('token price ' + res.status);
+    const json = await res.json();
+    const price = Number(json && json.price);
+    if (!Number.isFinite(price)) throw new Error('no price in response');
+    return price;
+  }
+
+  // One unauthenticated call covers affixes; one more covers the character's gear,
+  // rating and raid progress. Blizzard's profile namespace would need the character
+  // and its equipment separately, plus an authenticated call each.
+  async function fetchAffixes() {
+    const res = await WW.fetch(RIO + '/mythic-plus/affixes?region=' + cfg.region + '&locale=en');
+    if (!res.ok) throw new Error('affixes ' + res.status);
+    const json = await res.json();
+    return Array.isArray(json && json.affix_details) ? json.affix_details.map((a) => String(a.name || '')).filter(Boolean) : [];
+  }
+
+  async function fetchCharacter() {
+    const url = RIO + '/characters/profile?region=' + encodeURIComponent(cfg.region) +
+      '&realm=' + encodeURIComponent(cfg.realm) + '&name=' + encodeURIComponent(cfg.character) +
+      '&fields=gear,mythic_plus_scores_by_season:current,raid_progression';
+    const res = await WW.fetch(url);
+    if (!res.ok) throw new Error('character ' + res.status);
+    const json = await res.json();
+    const gear = json && json.gear;
+    const scores = json && json.mythic_plus_scores_by_season && json.mythic_plus_scores_by_season[0];
+    const prog = json && json.raid_progression;
+    let raid = null;
+    if (prog) {
+      // The most recently listed raid is the current tier; its summary is the short
+      // "3/8 M" form players actually quote.
+      const keys = Object.keys(prog);
+      const latest = keys.length ? prog[keys[keys.length - 1]] : null;
+      if (latest && latest.summary) raid = String(latest.summary);
+    }
+    return {
+      ilvl: gear && Number.isFinite(Number(gear.item_level_equipped)) ? Number(gear.item_level_equipped) : null,
+      mplus: scores && scores.scores && Number.isFinite(Number(scores.scores.all)) ? Math.round(Number(scores.scores.all)) : null,
+      raid,
+    };
+  }
+
+  async function tick() {
+    if (document.hidden || inFlight) { schedule(); return; }
+    inFlight = true;
+    const gen = generation;
+    const problems = [];
+    try {
+      // Each source is independent: a bad character name must not blank the token
+      // price, and missing Battle.net credentials must not hide the affixes.
+      if (cfg.clientId && cfg.clientSecret) {
+        try {
+          const price = await fetchPrice();
+          if (gen !== generation) return;   // a different region asked for this
+          data.price = price;
+          const lastPoint = series[series.length - 1];
+          // Only append a genuinely new observation — the API updates every ~20
+          // minutes and a re-init must not stamp a duplicate into the history.
+          if (!lastPoint || lastPoint.price !== price || Date.now() - lastPoint.t > 600000) {
+            series.push({ t: Date.now(), price });
+            if (series.length > SERIES_MAX) series = series.slice(-SERIES_MAX);
+            saveSeries();
+          }
+        } catch (e) { problems.push(e.message); }
+      } else { data.price = null; problems.push('no Battle.net credentials'); }
+
+      try { data.affixes = await fetchAffixes(); } catch (e) { problems.push(e.message); }
+
+      if (cfg.realm && cfg.character) {
+        try {
+          const c = await fetchCharacter();
+          data.ilvl = c.ilvl; data.mplus = c.mplus; data.raid = c.raid;
+        } catch (e) {
+          // Clear it. Leaving the previous character's numbers under the NEW name is
+          // worse than the half-populated tile this widget deliberately allows — it is
+          // not missing data, it is another character's data wearing this one's label.
+          data.ilvl = null; data.mplus = null; data.raid = null;
+          problems.push('character not found');
+        }
+      }
+
+      const gotSomething = data.price != null || data.affixes.length || data.ilvl != null;
+      if (!gotSomething) throw new Error(problems.join('; ') || 'nothing available');
+      lastOk = Date.now();
+      document.body.classList.toggle('stale', problems.length > 0);
+      render(problems);
+    } catch (e) {
+      if (lastOk) { document.body.classList.add('stale'); render(problems); }
+      else showError(problems.join('; ') || e.message);
+      WW.log('wow: ' + e.message);
+    } finally {
+      if (gen === generation) inFlight = false;
+      schedule();
+    }
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(tick, cfg.refreshMs);
+  }
+
+  function paintReset() {
+    const left = nextReset(cfg.region) - Date.now();
+    const days = Math.floor(left / 86400000);
+    const hours = Math.floor((left % 86400000) / 3600000);
+    const mins = Math.floor((left % 3600000) / 60000);
+    el('reset').textContent = days > 0 ? days + 'd ' + hours + 'h' : hours + 'h ' + String(mins).padStart(2, '0') + 'm';
+  }
+
+  function render(problems) {
+    el('price').textContent = data.price != null ? fmtGold(data.price) : '--';
+
+    const trend = el('trend');
+    if (series.length >= 2) {
+      const first = series[0].price, last = series[series.length - 1].price;
+      const delta = last - first;
+      const pct = first ? (delta / first) * 100 : 0;
+      trend.textContent = (delta >= 0 ? '▲ ' : '▼ ') + Math.abs(pct).toFixed(1) + '% over ' +
+        Math.max(1, Math.round((series[series.length - 1].t - series[0].t) / 3600000)) + 'h';
+      trend.className = delta > 0 ? 'up' : delta < 0 ? 'down' : '';
+    } else {
+      // Honest about what it does not have yet: the history is recorded locally, so a
+      // fresh install genuinely has no trend and should say so rather than draw a flat
+      // line that looks like a stable market.
+      trend.textContent = 'building history…';
+      trend.className = '';
+    }
+    drawSpark();
+
+    const box = el('affixes');
+    box.textContent = '';
+    for (const a of data.affixes.slice(0, 4)) {
+      const pill = document.createElement('span');
+      pill.className = 'pill muted';
+      pill.textContent = a;
+      box.appendChild(pill);
+    }
+
+    el('charName').textContent = cfg.character || 'Character';
+    el('ilvl').textContent = data.ilvl != null ? String(data.ilvl) : '--';
+    el('mplus').textContent = data.mplus != null ? String(data.mplus) : '--';
+    el('raid').textContent = data.raid || '--';
+
+    const stale = document.body.classList.contains('stale');
+    const pill = el('pill');
+    pill.textContent = stale ? 'Partial' : 'Live';
+    pill.className = 'pill ' + (stale ? 'warn' : 'ok');
+
+    el('meta').textContent = (problems && problems.length)
+      ? problems.slice(0, 2).join(' · ')
+      : (lastOk ? 'updated ' + new Date(lastOk).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '');
+
+    el('state').hidden = true;
+    el('data').hidden = false;
+  }
+
+  function drawSpark() {
+    const canvas = el('spark');
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h || series.length < 2) return;
+    if (canvas.width !== w * 2) { canvas.width = w * 2; canvas.height = h * 2; }
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const prices = series.map((p) => p.price);
+    const min = Math.min(...prices), max = Math.max(...prices);
+    const span = max - min || 1;
+    ctx.beginPath();
+    for (let i = 0; i < series.length; i++) {
+      const x = (i / (series.length - 1)) * canvas.width;
+      const y = canvas.height - ((series[i].price - min) / span) * (canvas.height * 0.85) - canvas.height * 0.08;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = sparkColors.accent;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+  }
+
+  function showError(message) {
+    const pill = el('pill');
+    pill.textContent = 'Error';
+    pill.className = 'pill err';
+    const s = el('state');
+    s.className = 'state-card err';
+    s.textContent = '';
+    const i = document.createElement('div');
+    i.className = 'state-icon';
+    i.textContent = '!';
+    const t = document.createElement('div');
+    t.className = 'state-title';
+    t.textContent = 'Nothing to show yet';
+    const b = document.createElement('div');
+    b.className = 'state-body';
+    b.textContent = message + '. Add your Battle.net client ID and secret, and a realm and character, in the widget settings.';
+    const btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.textContent = 'Retry';
+    btn.addEventListener('click', () => { clearTimeout(timer); tick(); });
+    s.append(i, t, b, btn);
+    s.hidden = false;
+    el('data').hidden = true;
+  }
+
+  window.addEventListener('resize', drawSpark);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !started) return;
+    paintReset();
+    if (Date.now() - lastOk >= cfg.refreshMs) { clearTimeout(timer); tick(); }
+  });
+</script>
+</body>
+</html>
