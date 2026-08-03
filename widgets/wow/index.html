@@ -111,6 +111,7 @@
   let gameOn = false;
   let activeController = null;
   let dueAt = 0;              // when the next tick is due, tracked even while paused
+  let lastProblems = [];      // why the last refresh was Partial, so a repaint can say so
 
   // PER REQUEST, not per tick. This widget calls four independent sources — the token
   // exchange, the token price, the affix list and the character profile — and a per-tick
@@ -281,22 +282,32 @@
       // A different character, region or account. Retire anything still in flight so its
       // answer cannot land afterwards and be rendered under the new settings.
       if (!regionChanged) retire();
-      // And drop what is already rendered. Clearing `series` alone left the previous
-      // region's price and affixes in `data`, so if one replacement request failed while
-      // another succeeded the tile went on showing the old market under the new region's
-      // name — indefinitely, during an outage. Kept out of retire() on purpose: that also
-      // runs when a game starts, and blanking a tile nobody is looking at only means it
-      // comes back empty.
-      data = { price: null, ilvl: null, mplus: null, raid: null, affixes: [] };
+      // Drop what the edit actually invalidated, and no more. A region change retires the
+      // price and affixes; a character change retires the character lines; credentials
+      // only buy the price. Blanking everything meant a character rename replaced a
+      // perfectly good token price with "--" until the next refresh — which at the
+      // four-hour ceiling is a long time to punish an unrelated edit.
+      const credsChanged = prevKey !== cfg.clientId + '\n' + cfg.clientSecret;
+      if (regionChanged || credsChanged) data.price = null;
+      if (regionChanged) data.affixes = [];
+      if (regionChanged || prevRealm !== cfg.realm || prevChar !== cfg.character) {
+        data.ilvl = null; data.mplus = null; data.raid = null;
+      }
+      lastProblems = [];
       lastOk = 0;
       document.body.classList.remove('stale');
+      // And repaint, because clearing the MODEL leaves the previous query's numbers on
+      // SCREEN until the replacement tick finishes — tens of seconds under the
+      // per-request deadlines. This is the same fix the Next Event slice needed, and I
+      // did the model half here without the view half.
+      showLoadingCard();
       clearTimeout(timer);
       tick();
     } else {
       // Same query — a theme push, a rename, a background change. Refetching here would
       // hit four APIs on every settings keystroke and reset the refresh anchor so the
       // real refresh never arrived. Repaint what is already held.
-      if (lastOk) render([]);
+      if (lastOk) render(lastProblems);
       paintReset();
       // The interval is not part of the query, so it must not refetch — but the timer
       // already ticking was armed under the old one, and re-arming from the current
@@ -322,6 +333,9 @@
       return;
     }
     if (!started) return;
+    // Still hidden? Then the game ending changes nothing that can be seen. The other
+    // resume path already tests this; this one asserted only that the game had ended.
+    if (paused()) return;
     startResetTimer();
     paintReset();
     if (Date.now() >= dueAt) { clearTimeout(timer); tick(); }
@@ -395,7 +409,11 @@
   // and its equipment separately, plus an authenticated call each.
   async function fetchAffixes() {
     const json = await ask('affixes', RIO + '/mythic-plus/affixes?region=' + cfg.region + '&locale=en');
-    return Array.isArray(json && json.affix_details) ? json.affix_details.map((a) => String(a.name || '')).filter(Boolean) : [];
+    // A genuine `affix_details: []` is a real answer and stays acceptable. A missing or
+    // non-array field is a malformed body, and treating it as "no affixes this week"
+    // let a broken response clear the outage backoff and mark the tile Live.
+    if (!json || !Array.isArray(json.affix_details)) throw new Error('affixes: unexpected response');
+    return json.affix_details.map((a) => String((a && a.name) || '')).filter(Boolean);
   }
 
   async function fetchCharacter() {
@@ -498,6 +516,7 @@
       failures = 0;
       lastOk = Date.now();
       document.body.classList.toggle('stale', problems.length > 0);
+      lastProblems = problems.slice();
       render(problems);
     } catch (e) {
       // A retired tick belongs to a query the user has already moved off: charging its
@@ -625,7 +644,7 @@
     const canvas = el('spark');
     const w = canvas.clientWidth, h = canvas.clientHeight;
     if (!w || !h) return;
-    if (canvas.width !== w * 2) { canvas.width = w * 2; canvas.height = h * 2; }
+    if (canvas.width !== w * 2 || canvas.height !== h * 2) { canvas.width = w * 2; canvas.height = h * 2; }
     const ctx = canvas.getContext('2d');
     // Clear BEFORE the short-history return. Canvas pixels persist, so switching to a
     // region with fewer than two recorded points left the previous region's trend line
@@ -645,6 +664,22 @@
     ctx.strokeStyle = sparkColors.accent;
     ctx.lineWidth = 2.5;
     ctx.stroke();
+  }
+
+  /** Back to the opening state while a replacement query runs. */
+  function showLoadingCard() {
+    const st = el('state');
+    st.className = 'state-card';
+    st.textContent = '';
+    const spin = document.createElement('div');
+    spin.className = 'spinner';
+    st.append(spin);
+    st.hidden = false;
+    el('data').hidden = true;
+    el('meta').textContent = '';
+    const pill = el('pill');
+    pill.textContent = 'Loading';
+    pill.className = 'pill muted';
   }
 
   function showError(message) {
