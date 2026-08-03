@@ -44,6 +44,14 @@ jobs:
       - name: Credential rule agrees with the fixture (validator)
         run: node tools/validate-widget.js --self-test
 
+      # Next Event ships its own ICS reader, and every question it answers is "which
+      # event is next" — which is meaningless without saying next FROM WHEN. The runner
+      # pins both the clock and the timezone, so a case can assert "this weekly repeat
+      # resolves to Tuesday the 11th" and keep meaning it, instead of encoding the day it
+      # was written and failing on its own months later.
+      - name: ICS reader agrees with its cases
+        run: node tests/harness/ics-run.js
+
       # A widget's virtual host is its browser ORIGIN — its localStorage, its stored
       # credentials. Two inputs to that assignment were choosable by an untrusted
       # manifest: the VERSION that decided which of two same-id folders won (issue #94),

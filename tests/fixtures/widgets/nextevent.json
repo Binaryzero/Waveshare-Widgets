@@ -1,7 +1,8 @@
 [
  {
+  "_comment": "Anchored in the PAST and repeating, deliberately. A fixture with fixed future dates cannot populate this widget: it looks ahead at most 90 days from the real clock, so dates picked to stay 'in the future' when the fixture was written fall out of range long before they arrive, and the tile then correctly renders 'Nothing scheduled' — which reads as a widget bug and is really an expired fixture. This one started in 2020 and repeats daily, so there is always a next occurrence whenever it runs. The monthly repeat exercises the dropped-repeat counter, which is the reader's promise never to make a calendar look emptier than it is.",
   "match": "cal.example",
-  "body": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:x1\r\nDTSTART:20301115T170000Z\r\nSUMMARY:Design review\r\nLOCATION:Meet room 2\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:x2\r\nDTSTART:20300901T090000Z\r\nRRULE:FREQ=MONTHLY\r\nSUMMARY:Monthly ops\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+  "body": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:x1\r\nDTSTART:20200106T170000Z\r\nRRULE:FREQ=DAILY\r\nSUMMARY:Design review\r\nLOCATION:Meet room 2\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:x2\r\nDTSTART:20200901T090000Z\r\nRRULE:FREQ=MONTHLY\r\nSUMMARY:Monthly ops\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
   "contentType": "text/calendar"
  }
 ]
