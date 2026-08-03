@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>WoW Panel</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Layout only — colors, background, bgStyle and the typography base come from
+   * widget-base.css. */
+  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+  main { flex: 1 1 auto; display: grid; gap: 8px; min-height: 0; grid-template-columns: 1.15fr 1fr; }
+  /* This widget starts at half (640px), so the two-column split is the normal case —
+   * a breakpoint above 640 would have meant it never fired. The single column is the
+   * safety net for a narrower host, not the layout half actually gets. */
+  @media (max-width: 520px) { main { grid-template-columns: 1fr; } }
+  /* In a 200px band the character lines are what has to give: the price, the reset
+   * countdown and the affixes are the glance, the gear stats are the detail. */
+  @media (max-height: 240px) { #charCard { display: none; } }
+  .card { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; min-width: 0; min-height: 0; }
+
+  /* Top-aligned like the cards beside it — centring left the kicker floating at half
+   * height while the right column started at the top, which read as a misalignment
+   * rather than emphasis. The sparkline owns the bottom of the card. */
+  #tokenCard { position: relative; overflow: hidden; }
+  #price { line-height: 1; font-size: clamp(24px, 8vh, 44px); }
+  #trend { font-size: 12px; font-variant-numeric: tabular-nums; }
+  #trend.up { color: var(--err); }      /* a rising token price costs the player gold */
+  #trend.down { color: var(--ok); }
+  #spark { position: absolute; inset: auto 0 0 0; width: 100%; height: 34%; opacity: 0.8; }
+
+  #right { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  #resetCard { flex: none; }
+  #reset { font-size: clamp(16px, 5vh, 26px); line-height: 1.1; font-variant-numeric: tabular-nums; }
+  #charCard { flex: 1 1 auto; justify-content: center; }
+  .line { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+  .line .k { color: var(--text-muted); font-size: 11px; letter-spacing: 0.05em; flex: none; }
+  .line .v {
+    color: var(--text); font-weight: 650; font-size: clamp(12px, 3.4vh, 16px);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  #affixes { display: flex; flex-wrap: wrap; gap: 4px; }
+  footer { color: var(--text-dim); font-size: 11px; flex: none; }
+  #state { position: fixed; inset: 0; }
+  body.stale main { opacity: 0.6; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="kicker">Azeroth</span>
+    <span class="pill muted" id="pill">Loading</span>
+  </header>
+
+  <main id="data" hidden>
+    <div class="card" id="tokenCard">
+      <span class="kicker">WoW Token</span>
+      <div class="value hero" id="price">--</div>
+      <div id="trend"></div>
+      <canvas id="spark"></canvas>
+    </div>
+    <div id="right">
+      <div class="card" id="resetCard">
+        <span class="kicker">Weekly reset</span>
+        <div class="value" id="reset">--</div>
+        <div id="affixes"></div>
+      </div>
+      <div class="card" id="charCard">
+        <span class="kicker" id="charName">Character</span>
+        <div class="line"><span class="k">ILVL</span><span class="v" id="ilvl">--</span></div>
+        <div class="line"><span class="k">M+</span><span class="v" id="mplus">--</span></div>
+        <div class="line"><span class="k">RAID</span><span class="v" id="raid">--</span></div>
+      </div>
+    </div>
+  </main>
+
+  <footer id="meta"></footer>
+
+  <div class="state-card" id="state">
+    <div class="spinner"></div>
+  </div>
+
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  // AFFIX SOURCE DECISION (issue #25's decision AC):
+  // Raider.IO's unauthenticated, CORS-friendly /mythic-plus/affixes is the source.
+  // The official route is /data/wow/mythic-keystone/period/{id} to find the current
+  // period, then a leaderboard call to read the affix set off it — two authenticated
+  // calls, against a token budget already spent on the price, to obtain a value that
+  // is identical, public, and the same for every player in the region. Purity buys
+  // nothing here and costs a call per refresh.
+  const RIO = 'https://raider.io/api/v1';
+  const CACHE_BASE = 'wow.series.v1';
+  const SERIES_MAX = 96;      // ~48h at the 30-minute floor; enough for a readable line
+
+  const cfg = { region: 'us', realm: '', character: '', clientId: '', clientSecret: '', refreshMs: 1800000 };
+  let bearer = null;
+  let series = [];            // [{t, price}] — the API only serves NOW, history is ours
+  let data = { price: null, ilvl: null, mplus: null, raid: null, affixes: [] };
+  let started = false;
+  let timer = null;
+  let resetTimer = null;
+  let inFlight = false;
+  let lastOk = 0;
+  // Bumped on a region change: the price in flight belongs to the market that was
+  // configured when it was asked for, and appending it to the new region's series is
+  // exactly the mixed-market trend the per-region key was added to prevent.
+  let generation = 0;
+  let failures = 0;           // consecutive whole-tick failures — drives the retry backoff
+  let gameOn = false;
+  let activeController = null;
+  let dueAt = 0;              // when the next tick is due, tracked even while paused
+  let lastProblems = [];      // why the last refresh was Partial, so a repaint can say so
+
+  // PER REQUEST, not per tick. This widget calls four independent sources — the token
+  // exchange, the token price, the affix list and the character profile — and a per-tick
+  // budget would let a slow affix server eat the character call's time. It is also the
+  // only reason a hung source cannot pin `inFlight` forever: the direct fetch tier has no
+  // deadline of its own, so a server that accepts and then stalls would freeze the tile
+  // with no error and no retry.
+  const REQUEST_DEADLINE = 15000;
+  const MAX_EXTRA_WAIT = 3600000;   // backoff ceiling bounds the EXTRA wait, never the total
+
+  const el = (id) => document.getElementById(id);
+
+  /** Is there ANYTHING worth showing? Every field, named once. Spelling this out inline
+   *  is how it came to check `ilvl` and neither `mplus` nor `raid`, so a character with a
+   *  rating but no item level counted as nothing at all. */
+  const hasAnyData = () => data.price != null || data.affixes.length > 0
+    || data.ilvl != null || data.mplus != null || data.raid != null;
+
+  // One predicate for every gate. Two copies of this rule drift, and the drift always
+  // looks like a tile still polling in a state it was supposed to stop in.
+  const paused = () => gameOn || document.hidden;
+
+  /** Runs `job` under an abort deadline covering the BODY read too — a resolved WW.fetch
+   *  only means the headers arrived, so a source that then dribbles its body would hang
+   *  on res.json() with no timer left running. */
+  function withDeadline(ms, controller, job) {
+    let t;
+    return Promise.race([
+      job().finally(() => clearTimeout(t)),
+      new Promise((_, reject) => {
+        t = setTimeout(() => {
+          try { controller.abort(); } catch (e) { /* already gone */ }
+          reject(new Error('timed out'));
+        }, ms);
+      }),
+    ]);
+  }
+
+  /** Every network call goes through here: one deadline, one abort signal, one place
+   *  where a non-2xx is turned into a message and its body released. An unread body on
+   *  an error response leaves the stream open, and one per refresh accumulates. */
+  async function ask(label, url, init) {
+    const controller = new AbortController();
+    activeController = controller;
+    return withDeadline(REQUEST_DEADLINE, controller, async () => {
+      const res = await WW.fetch(url, Object.assign({ signal: controller.signal }, init || {}));
+      if (!res.ok) {
+        try { if (res.body && !res.body.locked) await res.body.cancel(); } catch (e) { /* gone */ }
+        const err = new Error(label + ' ' + res.status);
+        err.status = res.status;
+        throw err;
+      }
+      return res.json();
+    });
+  }
+  const sparkColors = { accent: '', line: '' };
+  function readSparkColors() {
+    const cs = getComputedStyle(document.documentElement);
+    sparkColors.accent = cs.getPropertyValue('--accent').trim();
+    sparkColors.line = cs.getPropertyValue('--line').trim();
+  }
+
+  // Form-encode each half BEFORE the colon join (RFC 6749 §2.3.1), so a client id or
+  // secret containing ':' cannot be misparsed, and round-trip through UTF-8 so btoa
+  // cannot throw on a non-Latin-1 secret and kill the request before it is sent.
+  const formEnc = (v) => encodeURIComponent(String(v == null ? '' : v)).replace(/%20/g, '+');
+  const b64 = (str) => {
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin);
+  };
+
+  /** How long before expiry a token stops being offered: headroom so one expiring
+   *  in flight is not a 401, but never more than half its own life, or a short-lived
+   *  token is never fresh enough to use and every tick buys another. */
+  const freshnessMargin = (b) => {
+    const life = Number(b && b.lifetimeMs);
+    return Number.isFinite(life) && life > 0 ? Math.min(60000, life / 2) : 60000;
+  };
+
+  // Weekly reset is arithmetic, not an API call: the region's reset weekday and hour
+  // in UTC are fixed. US Tuesday 15:00, EU Wednesday 07:00, KR/TW Wednesday 22:00
+  // (Thursday morning local).
+  const RESETS = { us: [2, 15], eu: [3, 7], kr: [3, 22], tw: [3, 22] };
+  function nextReset(region) {
+    const [day, hour] = RESETS[region] || RESETS.us;
+    const now = new Date();
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, 0, 0));
+    // Walk forward to the right weekday; if today IS the day but the hour has passed,
+    // the loop's first step moves us to next week, which is what we want.
+    while (d.getUTCDay() !== day || d.getTime() <= now.getTime()) {
+      d.setUTCDate(d.getUTCDate() + 1);
+      d.setUTCHours(hour, 0, 0, 0);
+    }
+    return d.getTime();
+  }
+
+  /** A number the source actually stated. Number(null) and Number('') are both 0 and
+   *  both pass a finite check, so an unranked or incomplete profile rendered an item
+   *  level of 0 and counted as a good reading — the same coercion the price path was
+   *  fixed for, at the sibling site that did not get it. */
+  function num(raw) {
+    if (raw == null || raw === '') return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function fmtGold(copper) {
+    const g = Math.floor(Number(copper) / 10000);
+    if (!Number.isFinite(g)) return '--';
+    if (g >= 1000000) return (g / 1000000).toFixed(2) + 'M';
+    if (g >= 1000) return Math.round(g / 1000) + 'k';
+    return String(g);
+  }
+
+  // Token prices are per region and are not comparable across them. One shared key
+  // meant switching US->EU (or two tiles side by side) appended two different markets
+  // into one line and reported a percentage move that never happened.
+  const cacheKey = () => CACHE_BASE + '.' + cfg.region;
+
+  function loadSeries() {
+    try {
+      const raw = localStorage.getItem(cacheKey());
+      const c = raw ? JSON.parse(raw) : null;
+      if (c && Array.isArray(c.series)) series = c.series.filter((p) => p && Number.isFinite(p.t) && Number.isFinite(p.price));
+    } catch (e) { series = []; }
+  }
+  function saveSeries() {
+    try { localStorage.setItem(cacheKey(), JSON.stringify({ series })); } catch (e) { /* quota */ }
+  }
+
+  WW.onInit((s0) => {
+    const s = s0.settings;
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+    readSparkColors();
+
+    // onGame reports TRANSITIONS only, so a tile that boots while a game already owns
+    // the screen never hears about it. ww-init carries the current state.
+    gameOn = !!(s0.game && s0.game.active);
+    const prevKey = cfg.clientId + '\n' + cfg.clientSecret;
+    const prevRegion = cfg.region;
+    const prevRealm = cfg.realm, prevChar = cfg.character, prevRefreshMs = cfg.refreshMs;
+    cfg.region = ['us', 'eu', 'kr', 'tw'].includes(s.region) ? s.region : 'us';
+    cfg.realm = String(s.realm || '').trim().toLowerCase().replace(/\s+/g, '-');
+    cfg.character = String(s.character || '').trim();
+    cfg.clientId = String(s.clientId || '').trim();
+    cfg.clientSecret = String(s.clientSecret == null ? '' : s.clientSecret);
+    cfg.refreshMs = Math.min(240, Math.max(20, Number(s.refreshMinutes) || 30)) * 60000;
+    if (prevKey !== cfg.clientId + '\n' + cfg.clientSecret) bearer = null;
+    // A region change swaps which market the series describes, so reload it from that
+    // region's own key rather than carrying the previous one's points forward.
+    const regionChanged = prevRegion !== cfg.region;
+    if (regionChanged) { retire(); series = []; loadSeries(); }
+    const cadenceChanged = prevRefreshMs !== cfg.refreshMs;
+    const queryChanged = regionChanged || prevRealm !== cfg.realm || prevChar !== cfg.character
+      || prevKey !== cfg.clientId + '\n' + cfg.clientSecret;
+
+    if (!started) {
+      started = true;
+      loadSeries();
+      paintReset();
+      // The countdown is its own slow clock — a minute is plenty for a week-long timer
+      // and costs nothing. Only armed when something can be seen: arming it while a game
+      // already owned the screen left a handle no game-start transition would ever clear,
+      // and the game-end path then wrote a second interval over it, orphaning the first
+      // to tick through every future pause.
+      if (!paused()) startResetTimer();
+      tick();
+    } else if (queryChanged) {
+      // A different character, region or account. Retire anything still in flight so its
+      // answer cannot land afterwards and be rendered under the new settings.
+      if (!regionChanged) retire();
+      // Drop what the edit actually invalidated, and no more. A region change retires the
+      // price and affixes; a character change retires the character lines; credentials
+      // only buy the price. Blanking everything meant a character rename replaced a
+      // perfectly good token price with "--" until the next refresh — which at the
+      // four-hour ceiling is a long time to punish an unrelated edit.
+      const credsChanged = prevKey !== cfg.clientId + '\n' + cfg.clientSecret;
+      if (regionChanged || credsChanged) data.price = null;
+      if (regionChanged) data.affixes = [];
+      if (regionChanged || prevRealm !== cfg.realm || prevChar !== cfg.character) {
+        data.ilvl = null; data.mplus = null; data.raid = null;
+      }
+      lastProblems = [];
+      // Keep the last-success marker if anything survived the edit. Zeroing it
+      // unconditionally sent an all-fail replacement tick down the showError() path,
+      // hiding perfectly good retained sources behind "Nothing to show yet" until the
+      // backoff elapsed — undoing the point of clearing per source in the first place.
+      if (!hasAnyData()) lastOk = 0;
+      document.body.classList.remove('stale');
+      // And repaint, because clearing the MODEL leaves the previous query's numbers on
+      // SCREEN until the replacement tick finishes — tens of seconds under the
+      // per-request deadlines. This is the same fix the Next Event slice needed, and I
+      // did the model half here without the view half.
+      showLoadingCard();
+      clearTimeout(timer);
+      tick();
+    } else {
+      // Same query — a theme push, a rename, a background change. Refetching here would
+      // hit four APIs on every settings keystroke and reset the refresh anchor so the
+      // real refresh never arrived. Repaint what is already held.
+      if (lastOk) render(lastProblems);
+      paintReset();
+      // The interval is not part of the query, so it must not refetch — but the timer
+      // already ticking was armed under the old one, and re-arming from the current
+      // deadline would just restore it. Derive from the cadence now configured.
+      if (cadenceChanged) schedule(Math.max(0, (lastOk || Date.now()) + nextDelayMs() - Date.now()));
+    }
+  });
+
+  WW.onGame((g) => {
+    const was = gameOn;
+    gameOn = !!(g && g.active);
+    if (gameOn === was) return;
+    if (gameOn) {
+      // A game owns the screen: stop the network AND retire what is already out, which
+      // cancelling the timer alone does not do. Its success path would otherwise repaint
+      // a screen nobody can see, having spent four API calls to do it. The retry state
+      // survives, because a pause interrupts the wait rather than ending it.
+      retire(true);
+      clearTimeout(timer);
+      timer = null;
+      clearInterval(resetTimer);
+      resetTimer = null;
+      return;
+    }
+    if (!started) return;
+    // Still hidden? Then the game ending changes nothing that can be seen. The other
+    // resume path already tests this; this one asserted only that the game had ended.
+    if (paused()) return;
+    startResetTimer();
+    paintReset();
+    if (Date.now() >= dueAt) { clearTimeout(timer); tick(); }
+    else schedule(remainingWait());
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { clearInterval(resetTimer); resetTimer = null; return; }
+    if (paused() || !started) return;
+    startResetTimer();
+    paintReset();
+    if (Date.now() >= dueAt) { clearTimeout(timer); tick(); }
+    else schedule(remainingWait());
+  });
+
+  WW.onTheme(() => { readSparkColors(); drawSpark(); });
+
+  // The bearer stays in MEMORY. It is deliberately not persisted beside the price
+  // series below: that series is public market data, while this is a working credential
+  // bought with a secret held under DPAPI, and localStorage is a plaintext file in the
+  // WebView profile. Writing it there would hand back exactly what that protection
+  // withholds. Filed as #175 — there is no widget-facing protected store to use instead.
+  async function getBearer() {
+    if (bearer && bearer.expiresAt - Date.now() > freshnessMargin(bearer)) return bearer.token;
+    // Proxy-first, and never natively. Token endpoints are server-to-server and send no
+    // CORS headers — and a CORS block does not stop the request, it only stops the page
+    // reading the reply. WW.fetch cannot tell that from a transport failure, so it would
+    // replay the POST through the host and Blizzard would grant a SECOND token for one
+    // sign-in. A request that must not be sent twice does not belong on a retrying ladder.
+    const json = await ask('sign-in', 'https://oauth.battle.net/token', {
+      method: 'POST',
+      proxy: 'always',
+      headers: {
+        Authorization: 'Basic ' + b64(formEnc(cfg.clientId) + ':' + formEnc(cfg.clientSecret)),
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: 'grant_type=client_credentials',
+    });
+    if (!json || !json.access_token) throw new Error('no access token');
+    // RFC 6749 §5.1: token_type states HOW the token must be presented, and Bearer is the
+    // only scheme this widget can honour. Sending a DPoP or MAC token as "Bearer <token>"
+    // is not using it, it is misusing it for a 401 that names nothing. An ABSENT type is
+    // treated as bearer, because the field is required by the RFC and widely omitted.
+    const kind = json.token_type == null ? '' : String(json.token_type).trim();
+    if (kind && kind.toLowerCase() !== 'bearer') {
+      throw new Error('sign-in returned a "' + kind + '" token, which this tile cannot use');
+    }
+    const ttl = Number(json.expires_in);
+    const lifetimeMs = Number.isFinite(ttl) && ttl > 0 ? ttl * 1000 : 3600000;
+    bearer = { token: String(json.access_token), expiresAt: Date.now() + lifetimeMs, lifetimeMs };
+    return bearer.token;
+  }
+
+  async function fetchPrice() {
+    const token = await getBearer();
+    const host = 'https://' + cfg.region + '.api.blizzard.com';
+    const json = await ask('token price', host + '/data/wow/token/index?namespace=dynamic-' + cfg.region,
+      { headers: { Authorization: 'Bearer ' + token } });
+    const raw = json == null ? null : json.price;
+    // Number(null) is 0 and Number('') is 0, and both pass a finite check. A free WoW
+    // token is not a plausible reading; it is a missing one, and persisting it into the
+    // series draws a ~100% crash that stays in the trend long after the API recovers.
+    if (raw == null || raw === '') throw new Error('no price in response');
+    const price = Number(raw);
+    if (!Number.isFinite(price) || price <= 0) throw new Error('no price in response');
+    return price;
+  }
+
+  // One unauthenticated call covers affixes; one more covers the character's gear,
+  // rating and raid progress. Blizzard's profile namespace would need the character
+  // and its equipment separately, plus an authenticated call each.
+  async function fetchAffixes() {
+    const json = await ask('affixes', RIO + '/mythic-plus/affixes?region=' + cfg.region + '&locale=en');
+    // A genuine `affix_details: []` is a real answer and stays acceptable. A missing or
+    // non-array field is a malformed body, and treating it as "no affixes this week"
+    // let a broken response clear the outage backoff and mark the tile Live.
+    if (!json || !Array.isArray(json.affix_details)) throw new Error('affixes: unexpected response');
+    return json.affix_details.map((a) => String((a && a.name) || '')).filter(Boolean);
+  }
+
+  async function fetchCharacter() {
+    const url = RIO + '/characters/profile?region=' + encodeURIComponent(cfg.region) +
+      '&realm=' + encodeURIComponent(cfg.realm) + '&name=' + encodeURIComponent(cfg.character) +
+      '&fields=gear,mythic_plus_scores_by_season:current,raid_progression';
+    const json = await ask('character', url);
+    // Is this a character profile at all? Every field below is optional on its own, so
+    // without this a `{}` or `null` body reads as "a character with nothing filled in"
+    // — blanking the tile, clearing the outage backoff and reporting Live.
+    // typeof [] is 'object', so the round-5 shape guard accepted `gear: []` and
+    // `raid_progression: []` as profiles — three blank metrics, backoff cleared, tile
+    // Live, which is the failure that guard exists to prevent. The ARRAY field is
+    // checked with Array.isArray below; these two must not be arrays.
+    const shaped = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
+    if (!json || typeof json !== 'object'
+      || !(shaped(json.gear) || Array.isArray(json.mythic_plus_scores_by_season)
+           || shaped(json.raid_progression))) {
+      throw new Error('character: unexpected response');
+    }
+    const gear = json && json.gear;
+    const scores = json && json.mythic_plus_scores_by_season && json.mythic_plus_scores_by_season[0];
+    const prog = json && json.raid_progression;
+    let raid = null;
+    if (prog) {
+      // The most recently listed raid is the current tier; its summary is the short
+      // "3/8 M" form players actually quote.
+      const keys = Object.keys(prog);
+      const latest = keys.length ? prog[keys[keys.length - 1]] : null;
+      if (latest && latest.summary) raid = String(latest.summary);
+    }
+    return {
+      ilvl: num(gear && gear.item_level_equipped),
+      mplus: (() => { const v = num(scores && scores.scores && scores.scores.all); return v == null ? null : Math.round(v); })(),
+      raid,
+    };
+  }
+
+  async function tick() {
+    // Whether THIS tick got anything, as opposed to whether the tile has something on
+    // screen from a previous one. Testing `data` conflated the two.
+    let gotAny = false;
+    // A tick that comes due while paused STAYS due: calling schedule() here would push
+    // `dueAt` a whole interval forward, and the resume gates ask exactly that question.
+    if (paused()) return;
+    if (inFlight) { schedule(); return; }
+    inFlight = true;
+    const gen = generation;
+    const problems = [];
+    try {
+      // Each source is independent: a bad character name must not blank the token
+      // price, and missing Battle.net credentials must not hide the affixes.
+      if (cfg.clientId && cfg.clientSecret) {
+        try {
+          const price = await fetchPrice();
+          if (gen !== generation) return;   // a different region asked for this
+          data.price = price;
+          gotAny = true;
+          const lastPoint = series[series.length - 1];
+          // Only append a genuinely new observation — the API updates every ~20
+          // minutes and a re-init must not stamp a duplicate into the history.
+          if (!lastPoint || lastPoint.price !== price || Date.now() - lastPoint.t > 600000) {
+            series.push({ t: Date.now(), price });
+            if (series.length > SERIES_MAX) series = series.slice(-SERIES_MAX);
+            saveSeries();
+          }
+        } catch (e) { if (gen !== generation) return; problems.push(e.message); }
+      } else { data.price = null; problems.push('no Battle.net credentials'); }
+
+      try {
+        const affixes = await fetchAffixes();
+        // Every await needs this, not just the price one. An affix list or a character
+        // profile that lands after the region changed describes the region it was asked
+        // for, and rendering it under the new one is the same mistake the price check
+        // was added to prevent — just at a call site that did not have it.
+        if (gen !== generation) return;
+        data.affixes = affixes;
+        // The REQUEST succeeded; whether the list has entries is the answer, not the
+        // outcome. Testing length made a legitimately empty week look like an outage to
+        // an affix-only tile and put it on backoff.
+        gotAny = true;
+      } catch (e) { if (gen !== generation) return; problems.push(e.message); }
+
+      if (cfg.realm && cfg.character) {
+        try {
+          const c = await fetchCharacter();
+          if (gen !== generation) return;
+          data.ilvl = c.ilvl; data.mplus = c.mplus; data.raid = c.raid;
+          gotAny = true;
+        } catch (e) {
+          if (gen !== generation) return;
+          // Clear it. Leaving the previous character's numbers under the NEW name is
+          // worse than the half-populated tile this widget deliberately allows — it is
+          // not missing data, it is another character's data wearing this one's label.
+          data.ilvl = null; data.mplus = null; data.raid = null;
+          // Only a 400/404 means the name is wrong. A timeout, a 429 or a 500 is
+          // Raider.IO having a bad day, and telling someone their settings are broken
+          // during an outage sends them editing a correct configuration.
+          problems.push(e.status === 400 || e.status === 404
+            ? 'character not found' : e.message);
+        }
+      } else {
+        // No character configured any more. Same rule as the failure path above: another
+        // character's numbers wearing this one's label is worse than blanks.
+        data.ilvl = null; data.mplus = null; data.raid = null;
+      }
+
+      // Nothing NEW arrived: every source this tick failed. The tile may still be
+      // showing a perfectly good previous reading, and that is what `stale` is for — but
+      // it is not a refresh, so it must not reset the backoff or move the freshness
+      // anchor to now.
+      if (!gotAny) throw new Error(problems.join('; ') || 'nothing available');
+      failures = 0;
+      lastOk = Date.now();
+      document.body.classList.toggle('stale', problems.length > 0);
+      lastProblems = problems.slice();
+      render(problems);
+    } catch (e) {
+      // A retired tick belongs to a query the user has already moved off: charging its
+      // failure to the new one's backoff, or painting its card, is the same mistake.
+      if (gen !== generation) return;
+      failures++;
+      // Record these too. Only the success path did, so a repaint after a wholly failed
+      // tick restored an older reason — or none — while the tile still said Partial.
+      lastProblems = problems.slice();
+      if (lastOk) { document.body.classList.add('stale'); render(problems); }
+      else showError(problems.join('; ') || e.message);
+      WW.log('wow: ' + e.message);
+    } finally {
+      if (gen === generation) {
+        inFlight = false;
+        activeController = null;
+        schedule();
+      }
+    }
+  }
+
+  /** Retry cadence. A source that is down should not be hit on the dot for hours: each
+   *  consecutive failed tick doubles the wait, and any answer puts it back to the
+   *  configured interval. The ceiling bounds the EXTRA wait, never the total — capping
+   *  the total inverts the point above the cap, since a panel set to refresh every four
+   *  hours would answer its first failure by switching to hourly. */
+  function nextDelayMs() {
+    if (!failures) return cfg.refreshMs;
+    const grown = cfg.refreshMs * Math.pow(2, Math.min(failures, 4));
+    return Math.min(grown, cfg.refreshMs + MAX_EXTRA_WAIT);
+  }
+
+  function schedule(delayMs) {
+    clearTimeout(timer);
+    timer = null;
+    const wait = delayMs === undefined ? nextDelayMs() : Math.max(0, delayMs);
+    // Recorded even while paused, so the resume gates read one due time rather than
+    // asking "how long since the last success" — a different question whose answer is
+    // wrong during backoff, and which threw the backoff away on every resume.
+    dueAt = Date.now() + wait;
+    if (paused()) return;
+    timer = setTimeout(tick, wait);
+  }
+
+  const remainingWait = () => Math.max(0, dueAt - Date.now());
+
+  /** One place that arms the reset clock, and it always replaces rather than adds. Two
+   *  call sites each doing `resetTimer = setInterval(...)` is how a handle gets orphaned. */
+  function startResetTimer() {
+    clearInterval(resetTimer);
+    resetTimer = setInterval(paintReset, 30000);
+  }
+
+  /** Back to a clean slate for a genuinely different query. Retires whatever is still in
+   *  flight against the old one, because its answer would otherwise land afterwards and
+   *  be rendered under the new configuration — and clears `dueAt`, so the next tick is
+   *  due immediately even if this happened while paused. That last part is what the
+   *  Next Event slice got wrong: resetting everything except the deadline left a resume
+   *  re-arming the OLD one. */
+  function retire(keepRetryState) {
+    generation++;
+    if (activeController) { try { activeController.abort(); } catch (e) { /* gone */ } }
+    activeController = null;
+    inFlight = false;
+    // A GAME PAUSE is not a new query. Clearing the backoff here meant ending even a
+    // short game satisfied `Date.now() >= dueAt` and ticked immediately, throwing away
+    // the outage cadence — the same defeat as the duplicate visibility handler removed
+    // last round, at a different call site. Only a genuine query change resets these.
+    if (!keepRetryState) { failures = 0; dueAt = 0; }
+  }
+
+  function paintReset() {
+    const left = nextReset(cfg.region) - Date.now();
+    const days = Math.floor(left / 86400000);
+    const hours = Math.floor((left % 86400000) / 3600000);
+    const mins = Math.floor((left % 3600000) / 60000);
+    el('reset').textContent = days > 0 ? days + 'd ' + hours + 'h' : hours + 'h ' + String(mins).padStart(2, '0') + 'm';
+  }
+
+  function render(problems) {
+    el('price').textContent = data.price != null ? fmtGold(data.price) : '--';
+
+    const trend = el('trend');
+    if (series.length >= 2) {
+      const first = series[0].price, last = series[series.length - 1].price;
+      const delta = last - first;
+      const pct = first ? (delta / first) * 100 : 0;
+      trend.textContent = (delta >= 0 ? '▲ ' : '▼ ') + Math.abs(pct).toFixed(1) + '% over ' +
+        Math.max(1, Math.round((series[series.length - 1].t - series[0].t) / 3600000)) + 'h';
+      trend.className = delta > 0 ? 'up' : delta < 0 ? 'down' : '';
+    } else {
+      // Honest about what it does not have yet: the history is recorded locally, so a
+      // fresh install genuinely has no trend and should say so rather than draw a flat
+      // line that looks like a stable market.
+      trend.textContent = 'building history…';
+      trend.className = '';
+    }
+    drawSpark();
+
+    const box = el('affixes');
+    box.textContent = '';
+    for (const a of data.affixes.slice(0, 4)) {
+      const pill = document.createElement('span');
+      pill.className = 'pill muted';
+      pill.textContent = a;
+      box.appendChild(pill);
+    }
+
+    el('charName').textContent = cfg.character || 'Character';
+    el('ilvl').textContent = data.ilvl != null ? String(data.ilvl) : '--';
+    el('mplus').textContent = data.mplus != null ? String(data.mplus) : '--';
+    el('raid').textContent = data.raid || '--';
+
+    const stale = document.body.classList.contains('stale');
+    const pill = el('pill');
+    pill.textContent = stale ? 'Partial' : 'Live';
+    pill.className = 'pill ' + (stale ? 'warn' : 'ok');
+
+    el('meta').textContent = (problems && problems.length)
+      ? problems.slice(0, 2).join(' · ')
+      : (lastOk ? 'updated ' + new Date(lastOk).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '');
+
+    el('state').hidden = true;
+    el('data').hidden = false;
+  }
+
+  function drawSpark() {
+    const canvas = el('spark');
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    if (canvas.width !== w * 2 || canvas.height !== h * 2) { canvas.width = w * 2; canvas.height = h * 2; }
+    const ctx = canvas.getContext('2d');
+    // Clear BEFORE the short-history return. Canvas pixels persist, so switching to a
+    // region with fewer than two recorded points left the previous region's trend line
+    // drawn under the words "building history…" — a line for a market this tile is no
+    // longer showing, next to a label saying it has no history yet.
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (series.length < 2) return;
+    const prices = series.map((p) => p.price);
+    const min = Math.min(...prices), max = Math.max(...prices);
+    const span = max - min || 1;
+    ctx.beginPath();
+    for (let i = 0; i < series.length; i++) {
+      const x = (i / (series.length - 1)) * canvas.width;
+      const y = canvas.height - ((series[i].price - min) / span) * (canvas.height * 0.85) - canvas.height * 0.08;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = sparkColors.accent;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+  }
+
+  /** Back to the opening state while a replacement query runs. */
+  function showLoadingCard() {
+    const st = el('state');
+    st.className = 'state-card';
+    st.textContent = '';
+    const spin = document.createElement('div');
+    spin.className = 'spinner';
+    st.append(spin);
+    st.hidden = false;
+    el('data').hidden = true;
+    el('meta').textContent = '';
+    const pill = el('pill');
+    pill.textContent = 'Loading';
+    pill.className = 'pill muted';
+  }
+
+  function showError(message) {
+    const pill = el('pill');
+    pill.textContent = 'Error';
+    pill.className = 'pill err';
+    const s = el('state');
+    s.className = 'state-card err';
+    s.textContent = '';
+    const i = document.createElement('div');
+    i.className = 'state-icon';
+    i.textContent = '!';
+    const t = document.createElement('div');
+    t.className = 'state-title';
+    t.textContent = 'Nothing to show yet';
+    const b = document.createElement('div');
+    b.className = 'state-body';
+    b.textContent = message + '. Add your Battle.net client ID and secret, and a realm and character, in the widget settings.';
+    const btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.textContent = 'Retry';
+    btn.addEventListener('click', () => { clearTimeout(timer); tick(); });
+    s.append(i, t, b, btn);
+    s.hidden = false;
+    el('data').hidden = true;
+  }
+
+  // The visibility handler lives above, with the game gate, and resumes from `dueAt`.
+  // There used to be a SECOND one here that compared against the plain refresh interval:
+  // the first re-armed the remaining backoff and this one immediately cleared it and
+  // ticked, so any hide/show defeated the retry cadence. Two handlers for one event is
+  // two answers to one question.
+  window.addEventListener('resize', drawSpark);
+</script>
+</body>
+</html>
