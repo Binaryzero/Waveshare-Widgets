@@ -115,12 +115,18 @@
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
 
     const prevSource = cfg.url + '\n' + cfg.lookaheadDays + '\n' + cfg.ignoreAllDay;
+    const prevRefreshMs = cfg.refreshMs;
     // An unset or unreadable secret arrives as "" — setup state, never a spinner.
     cfg.url = String(s.icsUrl == null ? '' : s.icsUrl).trim();
     cfg.lookaheadDays = Math.min(90, Math.max(1, Number(s.lookaheadDays) || 30));
     cfg.ignoreAllDay = s.ignoreAllDay === 'ignore';
     cfg.refreshMs = Math.min(720, Math.max(5, Number(s.refreshMinutes) || 30)) * 60000;
     const sourceChanged = prevSource !== cfg.url + '\n' + cfg.lookaheadDays + '\n' + cfg.ignoreAllDay;
+    // The refresh interval is NOT part of the source — changing it must not refetch or
+    // throw the reading away — but it does have to re-arm, because the timer already
+    // ticking was armed under the old one. Cutting 12 hours to 5 minutes otherwise took
+    // effect only after the 12 hours it was meant to replace had elapsed.
+    const cadenceChanged = prevRefreshMs !== cfg.refreshMs;
 
     if (!cfg.url) {
       // Stop everything. Without this the chain keeps running against an empty URL,
@@ -160,6 +166,12 @@
       lastOk = 0;
       failures = 0;
       document.body.classList.remove('stale');
+      // Clear what is on SCREEN, not just the model behind it. Nulling `current` alone
+      // left the old calendar's event rendered — under the new configuration, and for as
+      // long as the new request takes, which is up to the full deadline. A tile showing
+      // one calendar's meeting while labelled with another's settings is worse than a
+      // spinner, because nothing about it looks wrong.
+      showSpinner();
       clearTimeout(fetchTimer);
       load();
     } else {
@@ -169,6 +181,7 @@
       // from what is already held instead; the countdown is time-relative, so this is
       // a recompute rather than a replay of formatted text.
       paint();
+      if (cadenceChanged) schedule(remainingWait());
     }
   });
 
@@ -178,7 +191,16 @@
     if (gameOn === was) return;
     if (gameOn) {
       // Stop the network AND the 1 Hz repaint: a game owns the screen, so both are work
-      // nobody can see.
+      // nobody can see. Cancelling the TIMER alone left a request already in flight to
+      // finish on its own — up to 4 MiB pulled and parsed behind a game, and a success
+      // path that repaints a screen the game owns. Retire it the same way a source
+      // change does: bump the generation so the abort is read as superseded rather than
+      // as a failure worth a card, then clear the flags by hand, because a superseded
+      // unwind deliberately does not.
+      generation++;
+      if (activeController) { try { activeController.abort(); } catch (e) { /* already gone */ } }
+      activeController = null;
+      inFlight = false;
       clearTimeout(fetchTimer);
       fetchTimer = null;
       clearInterval(tickTimer);
@@ -191,7 +213,7 @@
     // Whatever was held is now as old as the game was long. Refresh if it is due,
     // rather than waiting out a timer that was cancelled when the game started.
     if (Date.now() - lastOk >= cfg.refreshMs) { clearTimeout(fetchTimer); load(); }
-    else schedule();
+    else schedule(remainingWait());
   });
 
   function startTick() {
@@ -235,8 +257,12 @@
       // for an hour after it starts, but asking only for future starts meant the next
       // refresh replaced it — so a meeting vanished one refresh after beginning rather
       // than at the end of the hour it was promised.
+      // Two different windows, because two kinds of event stop being "next" at different
+      // moments. A timed one is still the one you are in for an hour after it starts; an
+      // all-day one is on for the whole of its day. `startOfDay` is what keeps today's
+      // all-day event on the tile after 01:00 instead of skipping to tomorrow's.
       const found = ICS.next(text, Date.now() - 3600000, cfg.lookaheadDays * 86400000 + 3600000,
-        { ignoreAllDay: cfg.ignoreAllDay });
+        { ignoreAllDay: cfg.ignoreAllDay, allDayFrom: startOfDay(Date.now()) });
       current = found.best;
       dropped = found.dropped;
       lastOk = Date.now();
@@ -289,18 +315,40 @@
     return Math.min(grown, cfg.refreshMs + MAX_EXTRA_WAIT);
   }
 
-  function schedule() {
+  /** Arms the next fetch. `delayMs` is for resuming: a pause does not restart the
+   *  refresh interval, it interrupts it, so coming back from a game or an unhidden panel
+   *  owes only the REMAINDER. Arming a fresh full interval there meant a 30-second game
+   *  could add a whole refresh period to how stale the tile is allowed to be. */
+  function schedule(delayMs) {
     clearTimeout(fetchTimer);
     fetchTimer = null;
     // A paused tile arms nothing. onGame and visibilitychange re-arm on the way back,
     // so this cannot strand the chain.
     if (paused() || !cfg.url) return;
-    fetchTimer = setTimeout(load, nextDelayMs());
+    const wait = delayMs === undefined ? nextDelayMs() : Math.max(0, delayMs);
+    fetchTimer = setTimeout(load, wait);
+  }
+
+  /** What is still owed on the current interval, for the resume paths. */
+  const remainingWait = () => Math.max(0, nextDelayMs() - (Date.now() - lastOk));
+
+  /** Local midnight of the day `ms` falls in. All-day events are anchored to it, so it
+   *  is what "today" means for eligibility on this panel. */
+  function startOfDay(ms) {
+    const d = new Date(ms);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
   }
 
   function countdownText(ms) {
     if (ms <= 0) return 'now';
     const mins = Math.floor(ms / 60000);
+    // Under a minute, count SECONDS. Flooring to whole minutes meant an event 45 seconds
+    // away read "0m" and a tile repainting every second changed once a minute — the 1 Hz
+    // loop paying for a clock that could not show it. Seconds are also the only part of
+    // this anyone watches: the last minute before a meeting is when the tile is being
+    // looked at.
+    if (mins < 1) return Math.floor(ms / 1000) + 's';
     if (mins < 60) return mins + 'm';
     const hours = Math.floor(mins / 60);
     if (hours < 24) return hours + 'h ' + String(mins % 60).padStart(2, '0') + 'm';
@@ -337,9 +385,14 @@
       return;
     }
     const left = current.start - Date.now();
-    // An event that started less than an hour ago is the one you are in; past that,
-    // the calendar has moved on and so should the tile.
-    if (left < -3600000) { current = null; clearTimeout(fetchTimer); load(); return; }
+    // When this event stops being the next one, and it MUST agree with the window the
+    // query used — a tile that discards an event the next query would pick again spins
+    // between the two forever. A timed event is the one you are in for an hour after it
+    // starts; an all-day event is on until its day ends.
+    const expiry = current.event.start.allDay
+      ? startOfDay(current.start) + 86400000
+      : current.start + 3600000;
+    if (Date.now() > expiry) { current = null; clearTimeout(fetchTimer); load(); return; }
 
     const cd = el('countdown');
     cd.textContent = countdownText(left);
@@ -393,6 +446,22 @@
     el('data').hidden = true;
   }
 
+  /** Back to the opening state: the spinner, and nothing claiming to be data. */
+  function showSpinner() {
+    const s = el('state');
+    s.className = 'state-card';
+    s.textContent = '';
+    const spin = document.createElement('div');
+    spin.className = 'spinner';
+    s.append(spin);
+    s.hidden = false;
+    el('data').hidden = true;
+    el('meta').textContent = '';
+    const pill = el('pill');
+    pill.textContent = 'Loading';
+    pill.className = 'pill muted';
+  }
+
   function showSetup() {
     stateCard('', '◎', 'No calendar linked',
       "Paste your calendar's private ICS address in the widget settings. It is stored encrypted, like a password.");
@@ -420,7 +489,7 @@
     startTick();
     paint();
     if (Date.now() - lastOk >= cfg.refreshMs) { clearTimeout(fetchTimer); load(); }
-    else schedule();
+    else schedule(remainingWait());
   });
 </script>
 </body>

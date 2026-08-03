@@ -239,15 +239,26 @@
     const lines = unfold(text).split('\n');
     const events = [];
     let cur = null;
+    let nested = 0;      // depth of components nested INSIDE the current VEVENT
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed === 'BEGIN:VEVENT') { cur = { exdates: [] }; continue; }
+      if (trimmed === 'BEGIN:VEVENT') { cur = { exdates: [] }; nested = 0; continue; }
       if (trimmed === 'END:VEVENT') {
         if (cur && cur.start) events.push(cur);
         cur = null;
+        nested = 0;
         continue;
       }
       if (!cur) continue;
+      // A VEVENT can CONTAIN components — VALARM, most commonly — and they have
+      // properties with the same names. An email reminder carries its own SUMMARY, so
+      // without this the event's title was overwritten by the alarm's subject and the
+      // tile displayed "Calendar reminder" instead of the meeting. Depth rather than a
+      // VALARM check, because the rule is "properties of the VEVENT itself", and the
+      // next nested component to appear should not need this fixing again.
+      if (trimmed.startsWith('BEGIN:')) { nested++; continue; }
+      if (trimmed.startsWith('END:')) { if (nested > 0) nested--; continue; }
+      if (nested > 0) continue;
       const colon = trimmed.indexOf(':');
       if (colon < 0) continue;
       const head = trimmed.slice(0, colon);
@@ -312,7 +323,14 @@
       // one-off rather than thrown away. Dropping it was what left the moved meeting
       // invisible while the parent still advertised the time it moved from.
       if (options.ignoreAllDay && ev.start.allDay) continue;
-      const hits = expand(ev, from, until);
+      // An all-day event may be eligible from EARLIER than a timed one. It starts at
+      // local midnight, so a window opening an hour before now excludes today's all-day
+      // event from 01:00 onwards — a one-off vanishes into "Nothing scheduled" and a
+      // repeat jumps to tomorrow, for the whole of the day it is actually on. The caller
+      // supplies the earlier bound because only it knows what "today" means on the panel.
+      const evFrom = (ev.start.allDay && options.allDayFrom !== undefined)
+        ? options.allDayFrom : from;
+      const hits = expand(ev, evFrom, until);
       if (hits === null) { dropped++; continue; }
       for (const ms of hits) {
         if (!best || ms < best.start) best = { event: ev, start: ms };

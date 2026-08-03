@@ -68,7 +68,12 @@ const nowMs = (iso) => {
 // else: if it ever reaches for a DOM or a network it should fail here, loudly, rather
 // than in a widget frame where the symptom is a blank tile.
 const ICS = (() => {
-  const src = fs.readFileSync(path.join(__dirname, '../../widgets/nextevent/ics.js'), 'utf8');
+  // --reader points at a DIFFERENT copy of ics.js. That is how a change to the reader
+  // gets falsified: run the same cases against the version before it and require the
+  // ones it fixes to fail there. A probe that only ever sees the fixed build cannot
+  // tell a fix from a case that was always going to pass.
+  const readerPath = opt('reader', path.join(__dirname, '../../widgets/nextevent/ics.js'));
+  const src = fs.readFileSync(readerPath, 'utf8');
   const sandbox = { window: {} };
   vm.createContext(sandbox);
   new vm.Script(src, { filename: 'ics.js' }).runInContext(sandbox);
@@ -78,6 +83,14 @@ const ICS = (() => {
   }
   return sandbox.window.ICS;
 })();
+
+/** Local midnight of the day an instant falls in — the same computation the widget uses
+ *  for `allDayFrom`, because an all-day event is anchored to the local calendar. */
+const localMidnight = (iso) => {
+  const d = new Date(Date.parse(iso));
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+};
 
 const cal = (...lines) => ['BEGIN:VCALENDAR', 'VERSION:2.0', ...lines, 'END:VCALENDAR'].join('\r\n') + '\r\n';
 const ev = (...lines) => ['BEGIN:VEVENT', ...lines, 'END:VEVENT'];
@@ -184,6 +197,45 @@ const CASES = [
       ...ev('UID:a', 'SUMMARY:No start at all'),
       ...ev('UID:b', 'DTSTART:20300610T170000Z', 'SUMMARY:Real one')),
     expect: { summary: 'Real one' },
+  },
+  {
+    name: 'a VALARM inside a VEVENT does not overwrite the event title',
+    // An email reminder carries its own SUMMARY. Keeping `cur` active through the nested
+    // component meant the tile displayed the alarm's subject as the meeting name.
+    ics: cal(...ev('UID:a', 'DTSTART:20300610T170000Z', 'SUMMARY:Design review',
+      'BEGIN:VALARM', 'ACTION:EMAIL', 'SUMMARY:Calendar reminder',
+      'DESCRIPTION:Do not read this as the location', 'TRIGGER:-PT15M', 'END:VALARM')),
+    expect: { summary: 'Design review' },
+  },
+  {
+    name: "today's all-day event is still eligible after 01:00, given allDayFrom",
+    // SUITE_NOW is midday, so a window opening an hour earlier (11:00) already excludes
+    // an event anchored to local midnight. Without allDayFrom this returns tomorrow's.
+    ics: cal(...ev('UID:a', 'DTSTART;VALUE=DATE:20300610', 'SUMMARY:Company holiday'),
+      ...ev('UID:b', 'DTSTART;VALUE=DATE:20300611', 'SUMMARY:Tomorrow instead')),
+    // LOCAL midnight, computed exactly as the widget computes it. Hard-coding the UTC
+    // instant instead made this case fail under --tz Asia/Tokyo, because an all-day
+    // event is anchored to local midnight and that is a different instant there — the
+    // test was wrong about the zone, not the reader.
+    options: { allDayFrom: localMidnight(SUITE_NOW) },
+    expect: { summary: 'Company holiday', allDay: true },
+  },
+  {
+    name: '...and without allDayFrom it is the pre-fix behaviour, tomorrow',
+    // Pinned deliberately: this is what the widget did all day, every day, and the case
+    // exists so a future change to the default window is a visible decision.
+    ics: cal(...ev('UID:a', 'DTSTART;VALUE=DATE:20300610', 'SUMMARY:Company holiday'),
+      ...ev('UID:b', 'DTSTART;VALUE=DATE:20300611', 'SUMMARY:Tomorrow instead')),
+    expect: { summary: 'Tomorrow instead' },
+  },
+  {
+    name: 'allDayFrom does not drag TIMED events back into the window',
+    // The bound is per-kind. If it leaked to timed events the widget would keep picking
+    // a meeting from this morning, discard it as expired, refetch, and pick it again.
+    ics: cal(...ev('UID:a', 'DTSTART:20300610T090000Z', 'SUMMARY:This morning'),
+      ...ev('UID:b', 'DTSTART:20300610T170000Z', 'SUMMARY:This afternoon')),
+    options: { allDayFrom: Date.parse('2030-06-10T00:00:00Z') },
+    expect: { summary: 'This afternoon' },
   },
   {
     name: 'a body that is not a calendar at all yields nothing',
