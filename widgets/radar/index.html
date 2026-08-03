@@ -63,10 +63,17 @@
   let frames = [];          // [{time, urlTemplate}] oldest -> newest
   let frameEls = [];
   let frameIndex = 0;
+  // WIDGET-SPEC: JS work is yours to gate. Seeded from state.game at init AND flipped by
+  // onGame, because onGame reports later flips only — a widget that just listens polls
+  // straight through a game that was already running when it loaded.
+  let gameOn = false;
+  let pendingSettings = null;   // the settings a paused init was holding
+  let missedWhilePaused = false;   // something was due while the game had the foreground
   let animTimer = null;
   let refreshTimer = null;
 
   WW.onInit(async (state) => {
+    gameOn = !!(state.game && state.game.active);
     const s = state.settings;
     // bgStyle drives the widget-base panel-opacity classes; anything that isn't
     // explicitly glass/transparent renders solid, matching the pre-token look for
@@ -85,6 +92,16 @@
     // per-slot style override) — legacy textColor keys are ignored.
     document.body.style.setProperty('--text-scale', (Number(s.textSize) || 100) / 100);
 
+    // The SETUP is network too, and gating only the refresh left it uncovered:
+    // resolveLocation geocodes, which is a request like any other. Held here with the
+    // settings that were current when it was held, so a game that ends re-enters with
+    // what the user actually configured rather than with a stale closure.
+    pendingSettings = s;
+    if (gameOn) { missedWhilePaused = true; showMessage('Paused', 'A game is running.'); return; }
+    await start(s);
+  });
+
+  async function start(s) {
     try {
       await resolveLocation(s.location);
     } catch (e) {
@@ -96,7 +113,7 @@
     // A theme edit re-delivers ww-init without a reload — re-arm, never stack.
     clearInterval(refreshTimer);
     refreshTimer = setInterval(refreshRadar, 5 * 60 * 1000);  // RainViewer updates every ~10 min
-  });
+  }
 
   async function resolveLocation(loc) {
     if (loc && typeof loc === 'object' && isFinite(loc.latitude) && isFinite(loc.longitude)) {
@@ -163,6 +180,7 @@
   // --- radar frames -------------------------------------------------------------
 
   async function refreshRadar() {
+    if (gameOn) { missedWhilePaused = true; return; }
     let json;
     try {
       const res = await WW.fetch('https://api.rainviewer.com/public/weather-maps.json');
@@ -236,6 +254,18 @@
     document.getElementById('messageBody').textContent = detail || '';
     document.getElementById('message').hidden = false;
   }
+
+  // A game ending is the user coming back to the panel: catch up at once rather than
+  // waiting out whatever remained of the interval.
+  WW.onGame((g) => {
+    gameOn = !!(g && g.active);
+    if (gameOn || !missedWhilePaused) return;
+    missedWhilePaused = false;
+    // If the map was never built the setup is what was missed, not the refresh.
+    if (pendingSettings && !refreshTimer) start(pendingSettings);
+    else refreshRadar();
+  });
+
 </script>
 </body>
 </html>

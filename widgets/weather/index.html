@@ -86,10 +86,16 @@
   };
   const wmo = (code) => WMO[code] || ['—', '🌡️'];
 
+  // WIDGET-SPEC: JS work is yours to gate. Seeded from state.game at init AND flipped by
+  // onGame, because onGame reports later flips only — a widget that just listens polls
+  // straight through a game that was already running when it loaded.
+  let gameOn = false;
+  let missedWhilePaused = false;   // something was due while the game had the foreground
   let refreshTimer = null;
 
 
   WW.onInit((state) => {
+    gameOn = !!(state.game && state.game.active);
     const s = state.settings;
     // Anything that isn't explicitly glass/transparent renders solid, matching the
     // pre-token behavior for unset AND out-of-spec values.
@@ -151,6 +157,7 @@
   }
 
   async function refresh() {
+    if (gameOn) { missedWhilePaused = true; return; }
     const s = WW.settings;
     try {
       const place = await resolvePlace(s);
@@ -239,6 +246,14 @@
     }
     return items;
   }
+
+  // A game ending is the user coming back to the panel: catch up at once rather than
+  // waiting out whatever remained of the interval.
+  WW.onGame((g) => {
+    gameOn = !!(g && g.active);
+    if (!gameOn && missedWhilePaused) { missedWhilePaused = false; refresh(); }
+  });
+
 </script>
 </body>
 </html>

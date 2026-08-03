@@ -75,6 +75,11 @@
   const cfg = { targets: [], interval: 3, goodMs: 50, badMs: 120 };
   const history = new Map();    // host -> [{ok, rtt}]
   let cards = new Map();        // host -> {dot, rtt, loss, canvas}
+  // WIDGET-SPEC: JS work is yours to gate. Seeded from state.game at init AND flipped by
+  // onGame, because onGame reports later flips only — a widget that just listens polls
+  // straight through a game that was already running when it loaded.
+  let gameOn = false;
+  let missedWhilePaused = false;   // something was due while the game had the foreground
   let pollTimer = null;
 
   // Sparkline colors for the canvas — canvases can't resolve var(), so read the
@@ -117,6 +122,7 @@
   }
 
   WW.onInit((state) => {
+    gameOn = !!(state.game && state.game.active);
     const s = state.settings;
     // Anything that isn't explicitly glass/transparent renders solid, matching the
     // pre-token behavior for unset AND out-of-spec values.
@@ -190,6 +196,7 @@
   }
 
   async function poll() {
+    if (gameOn) { missedWhilePaused = true; return; }
     let results;
     try {
       results = await WW.ping(cfg.targets.map((t) => t.host));
@@ -269,6 +276,14 @@
   }
 
   window.addEventListener('resize', () => { for (const host of cards.keys()) renderCard(host); });
+
+  // A game ending is the user coming back to the panel: catch up at once rather than
+  // waiting out whatever remained of the interval.
+  WW.onGame((g) => {
+    gameOn = !!(g && g.active);
+    if (!gameOn && missedWhilePaused) { missedWhilePaused = false; poll(); }
+  });
+
 </script>
 </body>
 </html>

@@ -91,6 +91,12 @@
   const cfg = { ip: '', showScenes: true };
   let username = null;
   let mode = null;   // 'v2' (CLIP v2) or 'v1' (legacy /api) — probed once per session
+  // WIDGET-SPEC: JS work is yours to gate. Seeded from state.game at init AND flipped by
+  // onGame, because onGame reports later flips only — a widget that just listens polls
+  // straight through a game that was already running when it loaded.
+  let gameOn = false;
+  let pendingSettings = null;   // the settings a paused connect was holding
+  let missedWhilePaused = false;   // something was due while the game had the foreground
   let pollTimer = null;
   let holdoff = 0;   // suppress poll rendering briefly after a local action
   const BRI_STEP = 15; // brightness step, percent
@@ -111,6 +117,7 @@
   };
 
   WW.onInit(async (state) => {
+    gameOn = !!(state.game && state.game.active);
     const s = state.settings;
     // bgStyle drives the widget-base panel-opacity classes (default = solid).
     document.body.classList.toggle('bg-solid', s.bgStyle !== 'transparent' && s.bgStyle !== 'glass');
@@ -123,6 +130,20 @@
     cfg.showScenes = s.showScenes !== 'off';
 
     cfg.ip = String(s.bridgeIp || '').trim();
+    // Finding the bridge is network work too: cloud discovery, then the /api/config
+    // probe. Gating only poll() left both running through a game, which is how this
+    // widget kept reaching discovery.meethue.com while paused. Held with the settings
+    // that were current, so a game ending re-enters with what the user configured.
+    pendingSettings = s;
+    if (gameOn) {
+      missedWhilePaused = true;
+      showMessage('Paused', 'A game is running.');
+      return;
+    }
+    await connect(s);
+  });
+
+  async function connect(s) {
     let discovered = false;
     if (!cfg.ip) {
       // Cloud discovery is rate-limited by Philips and CORS-noisy (the browser-first
@@ -167,7 +188,7 @@
     try { username = localStorage.getItem('hue-user-' + cfg.ip); } catch (e) { /* private mode */ }
     if (username) begin();
     else showPairing();
-  });
+  }
 
   async function isHueBridge(ip) {
     try {
@@ -329,6 +350,7 @@
   let polling = false; // slow polls must not overlap the 4 s interval
 
   async function poll() {
+    if (gameOn) { missedWhilePaused = true; return; }
     if (polling || Date.now() < holdoff) return;
     polling = true;
     try {
@@ -639,6 +661,18 @@
       msg.appendChild(sm);
     }
   }
+
+  // A game ending is the user coming back to the panel: catch up at once rather than
+  // waiting out whatever remained of the interval.
+  WW.onGame((g) => {
+    gameOn = !!(g && g.active);
+    if (gameOn || !missedWhilePaused) return;
+    missedWhilePaused = false;
+    // If the bridge was never found, the SETUP is what was missed, not a poll.
+    if (pendingSettings && !pollTimer) connect(pendingSettings);
+    else poll();
+  });
+
 </script>
 </body>
 </html>

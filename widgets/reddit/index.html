@@ -71,6 +71,11 @@
   let posts = [];              // [{imageUrl, title, author, score}]
   let index = -1;
   let paused = false;
+  // WIDGET-SPEC: JS work is yours to gate. Seeded from state.game at init AND flipped by
+  // onGame, because onGame reports later flips only — a widget that just listens polls
+  // straight through a game that was already running when it loaded.
+  let gameOn = false;
+  let missedWhilePaused = false;   // something was due while the game had the foreground
   let advanceTimer = null;
   let advancing = false;       // guards against overlapping loads (slow proxy fetches)
   const LISTING_REFRESH_MS = 10 * 60 * 1000;
@@ -106,6 +111,7 @@
   const isTooLarge = (e) => e instanceof RangeError && /too large/i.test((e && e.message) || '');
 
   WW.onInit((state) => {
+    gameOn = !!(state.game && state.game.active);
     const s = state.settings;
     cfg.subreddit = String(s.subreddit || 'landscapephotography').replace(/^\/?(r\/)?/i, '').trim();
     cfg.sort = ['hot', 'top', 'new'].includes(s.sort) ? s.sort : 'hot';
@@ -133,6 +139,7 @@
   }
 
   async function refreshListing(firstLoad) {
+    if (gameOn) { missedWhilePaused = true; return; }
     try {
       const url = 'https://www.reddit.com/r/' + encodeURIComponent(cfg.subreddit) +
         '/' + cfg.sort + '.json?limit=60&raw_json=1';
@@ -317,6 +324,14 @@
       document.getElementById('paused').style.display = paused ? 'block' : 'none';
     }
   });
+
+  // A game ending is the user coming back to the panel: catch up at once rather than
+  // waiting out whatever remained of the interval.
+  WW.onGame((g) => {
+    gameOn = !!(g && g.active);
+    if (!gameOn && missedWhilePaused) { missedWhilePaused = false; refreshListing(false); }
+  });
+
 </script>
 </body>
 </html>
