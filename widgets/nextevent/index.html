@@ -63,6 +63,10 @@
   const cfg = { url: '', lookaheadDays: 30, ignoreAllDay: false, refreshMs: 1800000 };
   let current = null;      // {event, start}
   let dropped = 0;
+  // How many of `dropped` were refused because a TIME could not be read rather than
+  // because a RECURRENCE could not be expanded. One sentence cannot describe both, and
+  // the recurrence wording is actively wrong about a one-off with an unreadable zone.
+  let unreadable = 0;
   let started = false;
   let fetchTimer = null;
   let tickTimer = null;
@@ -281,6 +285,7 @@
         { ignoreAllDay: cfg.ignoreAllDay, allDayFrom: startOfDay(Date.now()) });
       current = found.best;
       dropped = found.dropped;
+      unreadable = found.unreadable || 0;
       lastOk = Date.now();
       failures = 0;
       document.body.classList.remove('stale');
@@ -376,6 +381,23 @@
     return d.getTime();
   }
 
+  /** What to say about the events this reader would not show. Never nothing: a calendar
+   *  that looks emptier than it is, with no way to tell, is the failure the counter
+   *  exists to prevent. But "only daily and weekly repeats are read" is untrue of a
+   *  ONE-OFF whose time zone could not be resolved — it sends someone to inspect a
+   *  recurrence rule that does not exist — so the reason is worded from what was
+   *  actually refused. */
+  function droppedText() {
+    if (!dropped) return '';
+    const one = dropped === 1;
+    const n = dropped + ' event' + (one ? '' : 's') + ' not shown';
+    if (unreadable >= dropped) {
+      return n + (one ? ' (its time zone could not be read)' : ' (their time zones could not be read)');
+    }
+    if (unreadable > 0) return n + ' (unsupported repeats, or time zones that could not be read)';
+    return n + ' (only daily and weekly repeats are read)';
+  }
+
   function countdownText(ms) {
     if (ms <= 0) return 'now';
     const mins = Math.floor(ms / 60000);
@@ -392,10 +414,15 @@
     return days + 'd ' + (hours % 24) + 'h';
   }
 
-  function whenText(start, allDay) {
+  function whenText(start, allDay, allDayEnd) {
     const d = new Date(start);
     const today = new Date();
-    const sameDay = d.toDateString() === today.toDateString();
+    // A multi-day all-day event that is ALREADY RUNNING is on today, whatever day it
+    // began. Labelling it by its start date put a date in the past on a tile whose
+    // countdown said "now" — which reads as a bug rather than as a conference that
+    // started yesterday.
+    const inProgress = !!(allDay && allDayEnd && Date.now() >= start && Date.now() < allDayEnd);
+    const sameDay = inProgress || d.toDateString() === today.toDateString();
     const tomorrow = new Date(today.getTime() + 86400000).toDateString() === d.toDateString();
     const day = sameDay ? 'Today' : tomorrow ? 'Tomorrow'
       : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
@@ -411,8 +438,7 @@
         el('data').hidden = true;
         stateCard('', '○', 'Nothing scheduled',
           'No events in the next ' + cfg.lookaheadDays + ' day' + (cfg.lookaheadDays === 1 ? '' : 's') + '.' +
-          (dropped ? ' ' + dropped + ' repeating event' + (dropped === 1 ? '' : 's') +
-            ' could not be read — only daily and weekly repeats are supported.' : ''),
+          (dropped ? ' ' + droppedText() + '.' : ''),
           null, 'Clear');
         // The footer normally carries this, and the footer is hidden behind the state
         // card. A calendar containing ONLY unsupported repeats would otherwise claim
@@ -426,8 +452,12 @@
     // query used — a tile that discards an event the next query would pick again spins
     // between the two forever. A timed event is the one you are in for an hour after it
     // starts; an all-day event is on until its day ends.
+    // A MULTI-DAY all-day event runs to its DTEND, not to the end of the day it started
+    // on, and the reader hands that instant back as `allDayEnd` precisely so the two
+    // cannot disagree. `nextMidnight` remains the answer for the single-day form and for
+    // a reader that did not supply one.
     const expiry = current.event.start.allDay
-      ? nextMidnight(current.start)
+      ? (current.allDayEnd || nextMidnight(current.start))
       : current.start + 3600000;
     if (Date.now() > expiry) { current = null; clearTimeout(fetchTimer); load(); return; }
 
@@ -436,7 +466,7 @@
     cd.className = 'value hero' + (left <= 0 ? ' now' : left < 900000 ? ' soon' : '');
 
     el('title').textContent = current.event.summary || '(no title)';
-    el('when').textContent = whenText(current.start, current.event.start.allDay);
+    el('when').textContent = whenText(current.start, current.event.start.allDay, current.allDayEnd);
     el('where').textContent = current.event.location || '';
 
     const stale = document.body.classList.contains('stale');
@@ -448,7 +478,7 @@
     // said out loud, because the alternative is a calendar that looks emptier than it
     // is and no way to tell.
     el('meta').textContent = dropped
-      ? dropped + ' repeating event' + (dropped === 1 ? '' : 's') + ' not shown (only daily and weekly repeats are read)'
+      ? droppedText()
       : '';
 
     el('state').hidden = true;

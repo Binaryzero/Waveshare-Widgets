@@ -24,18 +24,24 @@
 // instant in a different zone. The runner pins TZ=UTC unless told otherwise, which is
 // what stops a green suite here from failing in a contributor's timezone.
 //
-// KNOWN DIVERGENCE, and `--tz` is how to see it:
+// The suite is expected GREEN IN EVERY ZONE. It is worth running that way after any
+// change to recurrence or to date parsing, because the whole class of bug this file
+// exists for looks identical to a passing test until the panel is somewhere else:
 //
-//   node tests/harness/ics-run.js --tz Asia/Tokyo
-//   FAIL weekly repeat lands on the right weekday
-//         start: expected 2030-06-11T15:00:00Z, got 2030-06-10T15:00:00Z
+//   for tz in UTC Asia/Tokyo America/New_York Europe/Berlin Pacific/Auckland; do
+//     node tests/harness/ics-run.js --tz "$tz" || echo "FAILED under $tz"
+//   done
 //
-// expand() evaluates BYDAY against the LOCAL weekday even when DTSTART is UTC-anchored.
-// RFC 5545 evaluates it in DTSTART's own zone, which for a `...Z` time is UTC, so a
-// UTC-anchored weekly series resolves to the wrong day for anyone far enough from UTC.
-// Fixing that is a change to recurrence semantics and wants its own falsification pass,
-// so it is filed rather than folded into this one. The suite stays at UTC so CI reports
-// regressions rather than this.
+// It once documented a known divergence here — BYDAY evaluated against the LOCAL
+// weekday, so a UTC-anchored weekly series landed a day early under Asia/Tokyo. That is
+// fixed, and the cases below now pin every anchoring (UTC, TZID, floating) so it cannot
+// come back quietly. Cases involving all-day or floating times derive their dates with
+// `localStamp`/`localMidnight` rather than hard-coding them, because those two anchor to
+// the LOCAL calendar and a hard-coded date silently asserts that the panel's zone agrees
+// with UTC — which it does not at ±12, where a hard-coded case failed under
+// Pacific/Auckland for a reason that had nothing to do with the reader.
+//
+// The default stays UTC so CI is deterministic.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -92,8 +98,59 @@ const localMidnight = (iso) => {
   return d.getTime();
 };
 
+/** Local midnight `days` days from the day `iso` falls in. Calendar arithmetic, so it
+ *  stays correct across a DST transition. */
+const localMidnightPlus = (iso, days) => {
+  const d = new Date(Date.parse(iso));
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + (days || 0));
+  return d.getTime();
+};
+
+/** `YYYY-MM-DD` of the LOCAL date `days` days from the one `iso` falls in. */
+const localDay = (iso, days) => {
+  const d = new Date(localMidnightPlus(iso, days));
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+};
+
+/** The same date as the YYYYMMDD stamp an all-day DTSTART/DTEND takes. Hard-coding a
+ *  stamp instead asserts that the panel's zone agrees with UTC about what day it is,
+ *  which is false at ±12 and is why a case with nothing to do with zones failed under
+ *  Pacific/Auckland. */
+const localStamp = (iso, days) => localDay(iso, days).replace(/-/g, '');
+
+/** Local NOON of the day `days` days from the one `iso` falls in. Some cases need an
+ *  instant that is strictly INSIDE a local day in every zone, which no fixed UTC instant
+ *  is: SUITE_NOW is exactly local midnight at +12, and a case asserting that today's
+ *  all-day event has already fallen out of the default window is simply not true at the
+ *  moment that day begins. */
+const localNoon = (iso, days) => {
+  const d = new Date(localMidnightPlus(iso, days));
+  d.setHours(12, 0, 0, 0);
+  return d.getTime();
+};
+
+/** `YYYY-MM-DDTHH:MM` of an instant read on the LOCAL clock. Floating times resolve to
+ *  a different UTC instant in every zone but the same WALL time in all of them, so that
+ *  is what a floating case has to assert. */
+const localWall = (ms) => {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+    + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+};
+
 const cal = (...lines) => ['BEGIN:VCALENDAR', 'VERSION:2.0', ...lines, 'END:VCALENDAR'].join('\r\n') + '\r\n';
 const ev = (...lines) => ['BEGIN:VEVENT', ...lines, 'END:VEVENT'];
+
+// Instants some cases run at instead of SUITE_NOW, named so the expectations read.
+const DAY2 = '2030-06-11T12:00:00Z';        // the day after SUITE_NOW, midday UTC
+const DAY3 = '2030-06-12T12:00:00Z';
+const BEFORE_SPRING = '2030-03-01T12:00:00Z';   // America/New_York springs forward 2030-03-10
+const MID_SPRING = '2030-03-09T12:00:00Z';
+const BEFORE_FALL = '2030-11-01T12:00:00Z';     // ...and falls back 2030-11-03
+const BEFORE_EU_SPRING = '2030-03-25T12:00:00Z';// Europe/Berlin springs forward 2030-03-31
 
 // ---- cases ----------------------------------------------------------------------
 // `now` defaults to SUITE_NOW. `expect.start` is an ISO instant; `expect.best: null` asserts
@@ -156,12 +213,12 @@ const CASES = [
   },
   {
     name: 'all-day events are included by default',
-    ics: cal(...ev('UID:a', 'DTSTART;VALUE=DATE:20300611', 'SUMMARY:Company holiday')),
+    ics: cal(...ev('UID:a', 'DTSTART;VALUE=DATE:' + localStamp(SUITE_NOW, 1), 'SUMMARY:Company holiday')),
     expect: { summary: 'Company holiday', allDay: true },
   },
   {
     name: 'all-day events are skipped when told to ignore them',
-    ics: cal(...ev('UID:a', 'DTSTART;VALUE=DATE:20300611', 'SUMMARY:Company holiday')),
+    ics: cal(...ev('UID:a', 'DTSTART;VALUE=DATE:' + localStamp(SUITE_NOW, 1), 'SUMMARY:Company holiday')),
     options: { ignoreAllDay: true },
     expect: { best: null },
   },
@@ -211,21 +268,27 @@ const CASES = [
     name: "today's all-day event is still eligible after 01:00, given allDayFrom",
     // SUITE_NOW is midday, so a window opening an hour earlier (11:00) already excludes
     // an event anchored to local midnight. Without allDayFrom this returns tomorrow's.
-    ics: cal(...ev('UID:a', 'DTSTART;VALUE=DATE:20300610', 'SUMMARY:Company holiday'),
-      ...ev('UID:b', 'DTSTART;VALUE=DATE:20300611', 'SUMMARY:Tomorrow instead')),
+    ics: cal(...ev('UID:a', 'DTSTART;VALUE=DATE:' + localStamp(SUITE_NOW, 0), 'SUMMARY:Company holiday'),
+      ...ev('UID:b', 'DTSTART;VALUE=DATE:' + localStamp(SUITE_NOW, 1), 'SUMMARY:Tomorrow instead')),
     // LOCAL midnight, computed exactly as the widget computes it. Hard-coding the UTC
     // instant instead made this case fail under --tz Asia/Tokyo, because an all-day
     // event is anchored to local midnight and that is a different instant there — the
-    // test was wrong about the zone, not the reader.
+    // test was wrong about the zone, not the reader. The DATE stamps are derived for the
+    // same reason: at +12 the local date is not the UTC date at all.
+    nowMs: localNoon(SUITE_NOW, 0),
     options: { allDayFrom: localMidnight(SUITE_NOW) },
-    expect: { summary: 'Company holiday', allDay: true },
+    expect: { summary: 'Company holiday', allDay: true, allDayEndMs: localMidnightPlus(SUITE_NOW, 1) },
   },
   {
     name: '...and without allDayFrom it is the pre-fix behaviour, tomorrow',
     // Pinned deliberately: this is what the widget did all day, every day, and the case
-    // exists so a future change to the default window is a visible decision.
-    ics: cal(...ev('UID:a', 'DTSTART;VALUE=DATE:20300610', 'SUMMARY:Company holiday'),
-      ...ev('UID:b', 'DTSTART;VALUE=DATE:20300611', 'SUMMARY:Tomorrow instead')),
+    // exists so a future change to the default window is a visible decision. Local noon
+    // rather than SUITE_NOW, because the claim is "today's all-day event is already
+    // behind the default window" and at +12 SUITE_NOW is the very instant that day
+    // begins — where the reader is right to still offer it and the CASE is what is wrong.
+    nowMs: localNoon(SUITE_NOW, 0),
+    ics: cal(...ev('UID:a', 'DTSTART;VALUE=DATE:' + localStamp(SUITE_NOW, 0), 'SUMMARY:Company holiday'),
+      ...ev('UID:b', 'DTSTART;VALUE=DATE:' + localStamp(SUITE_NOW, 1), 'SUMMARY:Tomorrow instead')),
     expect: { summary: 'Tomorrow instead' },
   },
   {
@@ -254,6 +317,336 @@ const CASES = [
     ics: '<!doctype html><html><body>Sign in to view this calendar</body></html>',
     expect: { best: null, total: 0 },
   },
+
+  // ---- recurrence is evaluated in DTSTART's OWN frame, per anchoring ---------------
+  // The UTC-anchored weekly case lives above ('weekly repeat lands on the right
+  // weekday') and used to fail under Asia/Tokyo. These pin the other two anchorings so
+  // a future change cannot fix one frame by breaking another.
+  {
+    name: 'BYDAY on a TZID series is the weekday in THAT zone, not the panel-local one',
+    // 23:00 Tuesday in New York is 03:00 WEDNESDAY in UTC. Reading the weekday off the
+    // resolved instant therefore matched the day BEFORE — a Monday in New York — so the
+    // series fired a day early for everyone. The next Tuesday after SUITE_NOW is the
+    // 11th, 23:00 EDT.
+    ics: cal(...ev('UID:a', 'DTSTART;TZID=America/New_York:20300604T230000',
+      'RRULE:FREQ=WEEKLY;BYDAY=TU', 'SUMMARY:NY weekly')),
+    expect: { summary: 'NY weekly', start: '2030-06-12T03:00:00Z' },
+  },
+  {
+    name: 'BYDAY on a FLOATING series is the local weekday, because that is what floating means',
+    // The case a careless "make it all UTC" fix breaks. A floating time is the same wall
+    // clock wherever the calendar is read, so the assertion is a wall clock.
+    ics: cal(...ev('UID:a', 'DTSTART:20300604T150000', 'RRULE:FREQ=WEEKLY;BYDAY=TU',
+      'SUMMARY:Floating weekly')),
+    expect: { summary: 'Floating weekly', startLocal: '2030-06-11T15:00' },
+  },
+  {
+    name: 'a TZID series keeps its WALL time across a spring-forward',
+    // 09:00 on the 3rd is EST (-5); on the 10th the same wall time is EDT (-4). The
+    // occurrence keeps 09:00 and changes instant, which is what a zoned series means.
+    now: '2030-03-04T12:00:00Z',
+    ics: cal(...ev('UID:a', 'DTSTART;TZID=America/New_York:20300303T090000',
+      'RRULE:FREQ=WEEKLY;BYDAY=SU', 'SUMMARY:Sunday sync')),
+    expect: { summary: 'Sunday sync', start: '2030-03-10T13:00:00Z' },
+  },
+  {
+    name: 'a UTC-anchored series keeps its OFFSET across the same transition',
+    // The mirror of the case above: `...Z` names an instant, so a DST transition in
+    // whatever zone the panel sits in must not move it.
+    now: '2030-03-04T12:00:00Z',
+    ics: cal(...ev('UID:a', 'DTSTART:20300303T140000Z', 'RRULE:FREQ=WEEKLY;BYDAY=SU',
+      'SUMMARY:UTC sunday')),
+    expect: { summary: 'UTC sunday', start: '2030-03-10T14:00:00Z' },
+  },
+  {
+    name: 'a FLOATING series keeps its wall time across the same transition',
+    now: '2030-03-04T12:00:00Z',
+    ics: cal(...ev('UID:a', 'DTSTART:20300303T090000', 'RRULE:FREQ=WEEKLY;BYDAY=SU',
+      'SUMMARY:Floating sunday')),
+    expect: { summary: 'Floating sunday', startLocal: '2030-03-10T09:00' },
+  },
+
+  // ---- INTERVAL counts weeks from the WKST boundary, not from DTSTART --------------
+  {
+    name: 'a fortnightly rule counts weeks from the WKST boundary, not from DTSTART',
+    // DTSTART is WEDNESDAY the 5th. Its week (Mon 3rd – Sun 9th) is week 0, so the
+    // following Monday the 10th is in week 1 and is NOT active — the next active Monday
+    // is the 17th. Counting seven-day blocks from DTSTART put the 10th in block 0 and
+    // emitted it, so a fortnightly review appeared a week early.
+    now: '2030-06-05T12:00:00Z',
+    ics: cal(...ev('UID:a', 'DTSTART:20300605T090000Z', 'RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO',
+      'SUMMARY:Fortnightly review')),
+    expect: { summary: 'Fortnightly review', start: '2030-06-17T09:00:00Z', dropped: 0 },
+  },
+  {
+    name: '...and INTERVAL=1 still fires every week, so the fix is not "always skip one"',
+    now: '2030-06-05T12:00:00Z',
+    ics: cal(...ev('UID:a', 'DTSTART:20300605T090000Z', 'RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=MO',
+      'SUMMARY:Weekly review')),
+    expect: { summary: 'Weekly review', start: '2030-06-10T09:00:00Z' },
+  },
+  {
+    name: 'WKST moves the boundary, and the same calendar answers differently because of it',
+    // DTSTART is SUNDAY the 9th. Under the default WKST=MO it sits at the END of week 0,
+    // so the Monday of the 10th opens week 1 — inactive. Under WKST=SU it OPENS week 0,
+    // so that same Monday is still week 0 — active. Two different right answers, which is
+    // why the boundary cannot be assumed.
+    now: '2030-06-09T12:00:00Z',
+    ics: cal(...ev('UID:a', 'DTSTART:20300609T090000Z', 'RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO',
+      'SUMMARY:Default WKST')),
+    expect: { summary: 'Default WKST', start: '2030-06-17T09:00:00Z' },
+  },
+  {
+    name: '...the same rule with WKST=SU fires a week earlier, and is no longer refused',
+    now: '2030-06-09T12:00:00Z',
+    ics: cal(...ev('UID:a', 'DTSTART:20300609T090000Z',
+      'RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO;WKST=SU', 'SUMMARY:Sunday WKST')),
+    expect: { summary: 'Sunday WKST', start: '2030-06-10T09:00:00Z', dropped: 0 },
+  },
+  {
+    name: 'a WKST this reader cannot read is refused rather than assumed to be Monday',
+    ics: cal(...ev('UID:a', 'DTSTART:20300605T090000Z',
+      'RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO;WKST=XX', 'SUMMARY:Nonsense WKST')),
+    expect: { best: null, dropped: 1 },
+  },
+
+  // ---- an unresolvable TZID is refused and counted, never re-read locally ----------
+  {
+    name: 'a TZID Intl cannot resolve is DROPPED and counted, not silently read as local time',
+    // Exchange and Notes exports define their own identifiers via VTIMEZONE. Re-reading
+    // the wall time in the panel's zone produced an event hours off with nothing marking
+    // it — and crucially not counted, so the tile's one honesty mechanism stayed quiet.
+    ics: cal(...ev('UID:a', 'DTSTART;TZID=Customized Time Zone:20300610T170000',
+      'SUMMARY:Unknown zone')),
+    expect: { best: null, dropped: 1 },
+  },
+  {
+    name: '...while a FLOATING time still resolves locally, which is correct and different',
+    // The thing a careless fix to the case above breaks: floating is not "unknown zone",
+    // it is "whatever the local wall clock says", and it must keep meaning that. The date
+    // is derived because a hard-coded 17:00 on SUITE_NOW's UTC date is already in the
+    // PAST at +9, where midday UTC is evening — the event would be missing for a reason
+    // that has nothing to do with what the case is testing.
+    ics: cal(...ev('UID:a', 'DTSTART:' + localStamp(SUITE_NOW, 1) + 'T170000',
+      'SUMMARY:Floating one-off')),
+    expect: { summary: 'Floating one-off', startLocal: localDay(SUITE_NOW, 1) + 'T17:00', dropped: 0 },
+  },
+
+  // ---- RANGE=THISANDFUTURE ---------------------------------------------------------
+  {
+    name: 'a THISANDFUTURE reschedule shows the new time and REFUSES the obsolete parent',
+    ics: cal(
+      ...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY', 'SUMMARY:Standup'),
+      ...ev('UID:a', 'RECURRENCE-ID;RANGE=THISANDFUTURE:20300611T080000Z',
+        'DTSTART:20300611T103000Z', 'SUMMARY:Standup (rescheduled)')),
+    expect: { summary: 'Standup (rescheduled)', start: '2030-06-11T10:30:00Z', dropped: 1 },
+  },
+  {
+    name: '...so no LATER occurrence is offered at the time the series moved away from',
+    // The failure the refusal exists for: read as a single move, the parent went on
+    // emitting 08:00 every day after the reschedule, presenting the old schedule as
+    // current indefinitely. Refusing costs the rest of the series and says so.
+    now: DAY2,
+    ics: cal(
+      ...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY', 'SUMMARY:Standup'),
+      ...ev('UID:a', 'RECURRENCE-ID;RANGE=THISANDFUTURE:20300611T080000Z',
+        'DTSTART:20300611T103000Z', 'SUMMARY:Standup (rescheduled)')),
+    expect: { best: null, dropped: 1 },
+  },
+
+  // ---- multi-day all-day events ----------------------------------------------------
+  {
+    name: 'a multi-day all-day event is still on during its SECOND day',
+    // DTEND is exclusive, so start+2 covers two days. Eligibility tested only the start,
+    // so at midnight on day two the event dropped off the tile while it was still running
+    // — vacations and conferences silently became one-day entries.
+    now: DAY2,
+    ics: cal(...ev('UID:a', 'DTSTART;VALUE=DATE:' + localStamp(DAY2, -1),
+      'DTEND;VALUE=DATE:' + localStamp(DAY2, 1), 'SUMMARY:Conference')),
+    options: { allDayFrom: localMidnight(DAY2) },
+    expect: { summary: 'Conference', allDay: true, allDayEndMs: localMidnightPlus(DAY2, 1) },
+  },
+  {
+    name: '...and is NOT on the day after DTEND, because DTEND is exclusive',
+    // The off-by-one is the whole risk here: reading DTEND as inclusive keeps the event
+    // one day past its own calendar.
+    now: DAY3,
+    ics: cal(...ev('UID:a', 'DTSTART;VALUE=DATE:' + localStamp(DAY3, -2),
+      'DTEND;VALUE=DATE:' + localStamp(DAY3, 0), 'SUMMARY:Conference')),
+    options: { allDayFrom: localMidnight(DAY3) },
+    expect: { best: null },
+  },
+  {
+    name: '...and a single-day all-day event with no DTEND is unaffected',
+    now: DAY2,
+    ics: cal(...ev('UID:a', 'DTSTART;VALUE=DATE:' + localStamp(DAY2, -1), 'SUMMARY:Yesterday only'),
+      ...ev('UID:b', 'DTSTART;VALUE=DATE:' + localStamp(DAY2, 0), 'SUMMARY:Today')),
+    options: { allDayFrom: localMidnight(DAY2) },
+    expect: { summary: 'Today', allDay: true, allDayEndMs: localMidnightPlus(DAY2, 1) },
+  },
+
+  // ---- a cancellation that carries no DTSTART of its own ---------------------------
+  {
+    name: 'a startless CANCELLED override still cancels its occurrence',
+    // An iCalendar object with a METHOD may identify the removed occurrence with
+    // UID + RECURRENCE-ID + STATUS:CANCELLED and nothing else. Discarded at parse time
+    // for having no DTSTART, it never reached reconciliation and the parent kept
+    // advertising a meeting that had been called off.
+    ics: cal(
+      ...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY', 'SUMMARY:Standup'),
+      ...ev('UID:a', 'RECURRENCE-ID:20300611T080000Z', 'STATUS:CANCELLED')),
+    expect: { summary: 'Standup', start: '2030-06-12T08:00:00Z', dropped: 0 },
+  },
+
+  // ---- escaping --------------------------------------------------------------------
+  {
+    name: 'an escaped backslash before an n stays a backslash',
+    // `\\` is the escape for a literal backslash. Replacing `\n` first matched the SECOND
+    // backslash plus the n and produced `Path \ etwork`; UNC and Windows paths in a
+    // LOCATION are the everyday case.
+    ics: cal(...ev('UID:a', 'DTSTART:20300610T170000Z', 'SUMMARY:Deploy',
+      'LOCATION:Path \\\\network')),
+    expect: { summary: 'Deploy', location: 'Path \\network' },
+  },
+  {
+    name: 'an escape this reader does not define keeps both characters',
+    ics: cal(...ev('UID:a', 'DTSTART:20300610T170000Z', 'SUMMARY:Tab \\t here')),
+    expect: { summary: 'Tab \\t here' },
+  },
+
+  // ---- wall times that happen twice, or not at all ---------------------------------
+  {
+    name: 'a wall time inside the spring-forward GAP takes the offset before it',
+    // 02:30 does not exist on 2030-03-10 in New York. The old fixed-point iteration
+    // oscillated between the offsets either side and returned whichever pass two landed
+    // on — 06:30Z, the wrong side, advertising the event two hours early.
+    now: BEFORE_SPRING,
+    ics: cal(...ev('UID:a', 'DTSTART;TZID=America/New_York:20300310T023000', 'SUMMARY:Gap time')),
+    expect: { summary: 'Gap time', start: '2030-03-10T07:30:00Z' },
+  },
+  {
+    name: '...an hour before the gap is untouched',
+    now: BEFORE_SPRING,
+    ics: cal(...ev('UID:a', 'DTSTART;TZID=America/New_York:20300310T013000', 'SUMMARY:Before')),
+    expect: { summary: 'Before', start: '2030-03-10T06:30:00Z' },
+  },
+  {
+    name: '...and an hour after it is untouched',
+    now: BEFORE_SPRING,
+    ics: cal(...ev('UID:a', 'DTSTART;TZID=America/New_York:20300310T033000', 'SUMMARY:After')),
+    expect: { summary: 'After', start: '2030-03-10T07:30:00Z' },
+  },
+  {
+    name: 'a wall time that happens TWICE takes the earlier of the two',
+    // 01:30 occurs at both -04:00 and -05:00 on 2030-11-03. RFC 5545 §3.3.5 takes the
+    // offset in effect before the transition, which is the earlier instant.
+    // A GUARD, not a fix: the old iteration happened to land here too. It is pinned
+    // because the gap rule and this one are opposite halves of the same paragraph, and a
+    // rewrite that gets the gap right by taking "the other side" everywhere breaks this.
+    now: BEFORE_FALL,
+    ics: cal(...ev('UID:a', 'DTSTART;TZID=America/New_York:20301103T013000', 'SUMMARY:Twice')),
+    expect: { summary: 'Twice', start: '2030-11-03T05:30:00Z' },
+  },
+  {
+    name: 'the gap rule holds where the offset is POSITIVE, not just west of UTC',
+    // Europe/Berlin springs forward 2030-03-31: 02:30 CET does not exist, and the offset
+    // before it is +01:00. Picking "the smaller offset" has to mean the same thing on
+    // both sides of the prime meridian.
+    // The old iteration ALSO answered this one correctly — which is the point. It got
+    // Berlin right and New York wrong from the same code, because it was landing on
+    // whichever side pass two reached rather than deciding. Pinned so the rule is held
+    // to both signs rather than tuned until the one failing case goes green.
+    now: BEFORE_EU_SPRING,
+    ics: cal(...ev('UID:a', 'DTSTART;TZID=Europe/Berlin:20300331T023000', 'SUMMARY:Berlin gap')),
+    expect: { summary: 'Berlin gap', start: '2030-03-31T01:30:00Z' },
+  },
+  {
+    name: 'a startless override that is NOT cancelled leaves the occurrence alone',
+    // A partial occurrence update — a changed SUMMARY, say — also carries UID and
+    // RECURRENCE-ID and no DTSTART, and means "this occurrence, at its original time,
+    // amended". Treating every startless override as a cancellation excluded the parent
+    // and made the occurrence vanish outright, with nothing dropped and nothing said,
+    // which is worse than either showing it or refusing it out loud.
+    ics: cal(
+      ...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY', 'SUMMARY:Standup'),
+      ...ev('UID:a', 'RECURRENCE-ID:20300611T080000Z', 'SUMMARY:Standup (agenda updated)')),
+    expect: { summary: 'Standup', start: '2030-06-11T08:00:00Z', dropped: 0 },
+  },
+  {
+    name: 'an EXDATE whose zone cannot be resolved refuses the SERIES rather than the exclusion',
+    // The parent start here is perfectly resolvable, so silently discarding an exclusion
+    // whose instant is unknown left the series emitting the very occurrence the calendar
+    // removed — with dropped at 0, so the tile said nothing about it either.
+    ics: cal(...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY',
+      'EXDATE;TZID=Customized Time Zone:20300611T080000', 'SUMMARY:Standup')),
+    expect: { best: null, dropped: 1, unreadable: 1 },
+  },
+  {
+    name: 'a RECURRENCE-ID whose zone cannot be resolved refuses the parent series',
+    // Which occurrence does the child replace? Unreadable. The moved child was still
+    // shown at its new time AND the parent went on advertising the old slot, with
+    // dropped at 0 — two versions of one meeting, neither of them marked.
+    ics: cal(
+      ...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY', 'SUMMARY:Standup'),
+      ...ev('UID:a', 'RECURRENCE-ID;TZID=Customized Time Zone:20300611T080000',
+        'DTSTART:20300611T113000Z', 'SUMMARY:Standup (moved)')),
+    expect: { summary: 'Standup (moved)', start: '2030-06-11T11:30:00Z', dropped: 1, unreadable: 1 },
+  },
+  {
+    name: '...and a STARTLESS cancellation with an unreadable one refuses it too',
+    // This child has no DTSTART either, so before the fix it was discarded outright and
+    // the parent kept advertising the cancelled meeting with nothing dropped.
+    ics: cal(
+      ...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY', 'SUMMARY:Standup'),
+      ...ev('UID:a', 'RECURRENCE-ID;TZID=Customized Time Zone:20300611T080000',
+        'STATUS:CANCELLED')),
+    expect: { best: null, dropped: 1, unreadable: 1 },
+  },
+  {
+    name: 'an UNTIL that cannot be read refuses the series rather than becoming no UNTIL',
+    // A stated end date that fails to parse fell back to the query window, so a series
+    // that had ENDED went on emitting to the end of the lookahead, silently.
+    ics: cal(...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY;UNTIL=notadate',
+      'SUMMARY:Standup')),
+    expect: { best: null, dropped: 1 },
+  },
+  {
+    name: '...while a readable UNTIL still ends the series where it says',
+    ics: cal(...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY;UNTIL=20300605T080000Z',
+      'SUMMARY:Standup')),
+    expect: { best: null, dropped: 0 },
+  },
+  {
+    name: 'a refused RECURRENCE and an unreadable TIME are counted apart',
+    // They need different sentences: "only daily and weekly repeats are read" is untrue
+    // of a one-off with an Exchange-style TZID, and sends someone to inspect a recurrence
+    // rule that does not exist.
+    ics: cal(
+      ...ev('UID:a', 'DTSTART:20300601T090000Z', 'RRULE:FREQ=MONTHLY', 'SUMMARY:Monthly ops'),
+      ...ev('UID:b', 'DTSTART;TZID=Customized Time Zone:20300610T170000', 'SUMMARY:Unknown zone'),
+      ...ev('UID:c', 'DTSTART:20300610T170000Z', 'SUMMARY:Design review')),
+    expect: { summary: 'Design review', dropped: 2, unreadable: 1 },
+  },
+  {
+    name: 'a SOUTHERN-hemisphere fall-back also takes the earlier of the two',
+    // Named separately from the sweep below because this is the shape that got past a
+    // rewrite which handled New York and Berlin: Australia/Sydney falls back on
+    // 2030-04-07, and 02:30 there happens at both +11:00 and +10:00. A resolver that
+    // probes the offset at the naive instant lands AFTER the transition on both probes
+    // here, agrees with itself, and confidently returns the later of the two.
+    now: '2030-04-01T12:00:00Z',
+    ics: cal(...ev('UID:a', 'DTSTART;TZID=Australia/Sydney:20300407T023000', 'SUMMARY:Sydney twice')),
+    expect: { summary: 'Sydney twice', start: '2030-04-06T15:30:00Z' },
+  },
+  {
+    name: 'a RECURRING series still SKIPS the nonexistent occurrence rather than shifting it',
+    // Existing behaviour, pinned: the round-trip guard in instantAt drops the occurrence
+    // on the gap morning, and resolving one-off gap times correctly must not change that.
+    now: MID_SPRING,
+    ics: cal(...ev('UID:a', 'DTSTART;TZID=America/New_York:20300308T023000',
+      'RRULE:FREQ=DAILY', 'SUMMARY:Early standup')),
+    expect: { summary: 'Early standup', start: '2030-03-11T06:30:00Z' },
+  },
 ];
 
 // ---- run ------------------------------------------------------------------------
@@ -263,7 +656,9 @@ let ran = 0;
 
 function check(c) {
   ran++;
-  const from = nowMs(c.now || SUITE_NOW);
+  // `nowMs` is for cases that must run at an instant derived from the LOCAL clock, which
+  // no fixed ISO string can be in every zone.
+  const from = c.nowMs !== undefined ? c.nowMs : nowMs(c.now || SUITE_NOW);
   const lookaheadDays = c.lookaheadDays === undefined ? 30 : c.lookaheadDays;
   let got;
   try {
@@ -287,11 +682,22 @@ function check(c) {
       problems.push('location: expected ' + JSON.stringify(e.location) + ', got ' + JSON.stringify(got.best.event.location || ''));
     if (e.start !== undefined && got.best.start !== nowMs(e.start))
       problems.push('start: expected ' + e.start + ', got ' + iso(got.best.start));
+    // A floating occurrence is a different UTC instant in every zone and the SAME wall
+    // clock in all of them, so that is the only assertion that can be right everywhere.
+    if (e.startLocal !== undefined && localWall(got.best.start) !== e.startLocal)
+      problems.push('local start: expected ' + e.startLocal + ', got ' + localWall(got.best.start));
     if (e.allDay !== undefined && !!got.best.event.start.allDay !== e.allDay)
       problems.push('allDay: expected ' + e.allDay + ', got ' + !!got.best.event.start.allDay);
+    // When a multi-day all-day occurrence stops being current. The widget's expiry reads
+    // this, so a wrong value is a tile that discards an event the next query picks again.
+    if (e.allDayEndMs !== undefined && got.best.allDayEnd !== e.allDayEndMs)
+      problems.push('allDayEnd: expected ' + iso(e.allDayEndMs) + ', got '
+        + (got.best.allDayEnd == null ? 'null' : iso(got.best.allDayEnd)));
   }
   if (e.dropped !== undefined && got.dropped !== e.dropped)
     problems.push('dropped: expected ' + e.dropped + ', got ' + got.dropped);
+  if (e.unreadable !== undefined && got.unreadable !== e.unreadable)
+    problems.push('unreadable: expected ' + e.unreadable + ', got ' + got.unreadable);
   if (e.total !== undefined && got.total !== e.total)
     problems.push('total: expected ' + e.total + ', got ' + got.total);
 
@@ -327,8 +733,134 @@ if (file) {
   process.exit(0);
 }
 
-console.log('ics reader — ' + CASES.length + ' cases at ' + iso(nowMs(SUITE_NOW)) + ', TZ=' + process.env.TZ);
+/** A busy TZID calendar, read once, timed.
+ *
+ *  Every zone conversion used to construct its own Intl.DateTimeFormat, and a single
+ *  candidate occurrence costs three of them, so this grew with the number of occurrences
+ *  rather than with the number of events: 400 unbounded daily America/New_York events
+ *  over a 90-day lookahead took ~11.9 s here, on what in the widget is the main thread —
+ *  the 1 Hz countdown frozen for the duration, and paid again on every poll. With one
+ *  formatter memoised per zone the same read is ~1.0 s.
+ *
+ *  The threshold is deliberately loose. It is not a benchmark; it is a tripwire for a
+ *  return to per-call construction, which costs an order of magnitude and would blow any
+ *  figure in this range even on a slow runner. The RESULT is asserted alongside it,
+ *  because a cache that handed back the wrong zone's offsets would also look like a
+ *  speedup. */
+function checkPerf() {
+  ran++;
+  const N = 400;
+  const MAX_MS = 5000;
+  const lines = [];
+  for (let i = 0; i < N; i++) {
+    lines.push(...ev('UID:e' + i, 'DTSTART;TZID=America/New_York:20300601T0' + (i % 9) + '0000',
+      'RRULE:FREQ=DAILY', 'SUMMARY:Ev' + i));
+  }
+  const from = nowMs(SUITE_NOW);
+  const t0 = Date.now();
+  const got = ICS.next(cal(...lines), from, 90 * 86400000, {});
+  const took = Date.now() - t0;
+  const problems = [];
+  if (took > MAX_MS) problems.push('took ' + took + ' ms, over the ' + MAX_MS + ' ms ceiling');
+  if (got.total !== N) problems.push('total: expected ' + N + ', got ' + got.total);
+  if (got.dropped !== 0) problems.push('dropped: expected 0, got ' + got.dropped);
+  if (!got.best) problems.push('expected an event, got none');
+  else if (got.best.start < from) problems.push('picked an occurrence before `from`: ' + iso(got.best.start));
+  const name = 'a busy TZID calendar is read without rebuilding a formatter per occurrence';
+  if (problems.length) {
+    console.log('  FAIL ' + name);
+    for (const p of problems) console.log('        ' + p);
+    failures++;
+  } else {
+    console.log('  ok   ' + name + ' (' + N + ' events, ' + took + ' ms)');
+  }
+}
+
+/** EVERY DST transition of 2030, in fourteen zones, against a reference derived from the
+ *  zone data rather than from the reader.
+ *
+ *  This exists because hand-picked transition cases are not enough and I have the scar to
+ *  prove it: a rewrite of the wall-time resolver passed New York and Berlin — the two
+ *  zones I had thought to write cases for — and was wrong in Europe/Dublin,
+ *  Australia/Sydney, Pacific/Auckland and Australia/Lord_Howe, because in those the
+ *  probes it took both landed on the same side of the transition, agreed with each other,
+ *  and short-circuited. Eleven wall times wrong, none of them in the case list.
+ *
+ *  The reference is one line of RFC 5545 §3.3.5: a wall time that happens TWICE and one
+ *  that happens NOT AT ALL both take the offset in effect BEFORE the transition. So for
+ *  any affected wall time W the answer is `W - offsetBefore`, and for an unaffected one
+ *  there is only one offset to apply. Neither derivation consults the reader. */
+function checkTransitions() {
+  ran++;
+  const ZONES = ['America/New_York', 'America/Los_Angeles', 'America/Sao_Paulo', 'Europe/London',
+    'Europe/Berlin', 'Europe/Dublin', 'Australia/Sydney', 'Pacific/Auckland', 'Asia/Tehran',
+    'America/Santiago', 'Australia/Lord_Howe', 'Asia/Tokyo', 'Asia/Kolkata', 'UTC'];
+  const offsetAt = (t, tz) => {
+    const dtf = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const m = {};
+    for (const p of dtf.formatToParts(new Date(t))) m[p.type] = p.value;
+    return Date.UTC(+m.year, +m.month - 1, +m.day, (+m.hour) % 24, +m.minute, +m.second) - t;
+  };
+  // zonedToUtc is internal; parseDate is the exported door to it.
+  const resolve = (naive, tz) => {
+    const d = new Date(naive);
+    const p = (n) => String(n).padStart(2, '0');
+    const r = ICS.parseDate(d.getUTCFullYear() + p(d.getUTCMonth() + 1) + p(d.getUTCDate())
+      + 'T' + p(d.getUTCHours()) + p(d.getUTCMinutes()) + '00', { TZID: tz });
+    return r ? r.ms : null;
+  };
+
+  const YEAR = Date.UTC(2030, 0, 1), END = Date.UTC(2031, 0, 1);
+  const problems = [];
+  let probed = 0, transitions = 0;
+  for (const tz of ZONES) {
+    let prev = offsetAt(YEAR, tz);
+    for (let t = YEAR; t < END; t += 3600000) {
+      const o = offsetAt(t, tz);
+      if (o === prev) continue;
+      // Bisect to the minute so the affected wall-time range is exact.
+      let lo = t - 3600000, hi = t;
+      while (hi - lo > 60000) {
+        const mid = lo + Math.floor((hi - lo) / 2 / 60000) * 60000;
+        if (mid === lo) break;
+        if (offsetAt(mid, tz) === prev) lo = mid; else hi = mid;
+      }
+      const at = hi, before = prev, after = o;
+      prev = o;
+      transitions++;
+      // Wall times the transition affects, plus a control an hour clear on either side.
+      const from = Math.min(at + before, at + after), to = Math.max(at + before, at + after);
+      const probes = [{ w: from - 3600000, hit: false }, { w: to + 3600000, hit: false }];
+      for (let w = from; w < to; w += 1800000) probes.push({ w, hit: true });
+      for (const { w, hit } of probes) {
+        probed++;
+        const want = hit ? w - before : w - offsetAt(w - before, tz);
+        const got = resolve(w, tz);
+        if (got !== want) {
+          problems.push(tz + ' @' + iso(at) + ' (' + (before / 3600000) + 'h→' + (after / 3600000)
+            + 'h) wall ' + iso(w).slice(0, 16) + ': expected ' + iso(want) + ', got '
+            + (got == null ? 'null' : iso(got)));
+        }
+      }
+    }
+  }
+  const name = 'every 2030 DST transition in ' + ZONES.length + ' zones resolves per RFC 5545 §3.3.5';
+  if (problems.length) {
+    console.log('  FAIL ' + name);
+    for (const p of problems.slice(0, 12)) console.log('        ' + p);
+    if (problems.length > 12) console.log('        ...and ' + (problems.length - 12) + ' more');
+    failures++;
+  } else {
+    console.log('  ok   ' + name + ' (' + transitions + ' transitions, ' + probed + ' wall times)');
+  }
+}
+
+console.log('ics reader — ' + (CASES.length + 2) + ' cases at ' + iso(nowMs(SUITE_NOW)) + ', TZ=' + process.env.TZ);
 for (const c of CASES) check(c);
+checkTransitions();
+checkPerf();
 if (failures) {
   console.log('\n' + failures + ' of ' + ran + ' cases failed');
   process.exit(1);
