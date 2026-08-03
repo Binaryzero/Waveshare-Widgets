@@ -63,7 +63,7 @@ const opt = (name, dflt) => {
 if (!folder) {
   console.error('usage: widget-datapath.js <widget-folder> --stubs <file.json> [--slot half] '
     + '[--theme dark|light] [--settings {json}] [--expect "text"] [--reject "text"] [--allow-state] '
-    + '[--wait 1500] [--shot out.png] [--json]');
+    + '[--wait 1500] [--shot out.png] [--game] [--json]');
   process.exit(1);
 }
 
@@ -119,6 +119,9 @@ if (args.includes('--allow-state') && expects.length === 0) {
 const waitMs = Number(opt('wait', 1500));
 const shot = opt('shot', null);
 const asJson = args.includes('--json');
+// Drive the game-mode gate. Several widgets suspend polling while a fullscreen game is
+// foreground, and with no way to say so offline that branch was unreachable here.
+const gameActive = args.includes('--game');
 
 function loadPlaywright() {
   const candidates = ['playwright', '/opt/node22/lib/node_modules/playwright',
@@ -398,7 +401,15 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     widgetUrl: 'https://widget.test/index.html',
     widgetOrigin: 'https://widget.test',
     slotHash,
-    initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme, status: { elevated: false, apiVersion: 1 } },
+    // The panel's ww-init carries EIGHT fields (shell.js initMessage); this used to send
+    // six. `game` was the gap that mattered: shell.js always sends it, so a widget reading
+    // state.game got an object there and undefined here, and the game-mode gate several
+    // widgets now use could not be exercised offline at all. `notifications` is null
+    // unless a slot subscribed, which is what a non-subscribing widget gets on the panel
+    // too — stated rather than omitted, so the difference is a decision.
+    initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme,
+      notifications: null, game: { active: gameActive, process: gameActive ? 'game.exe' : '' },
+      status: { elevated: false, apiVersion: 1 } },
     table: stubs.map((s) => ({
       match: s.match, status: s.status, statusText: s.statusText,
       contentType: s.contentType, json: s.json, bodyText: bodyOf(s),

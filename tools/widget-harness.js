@@ -39,7 +39,7 @@ const opt = (name, dflt) => {
   return i >= 0 ? args[i + 1] : dflt;
 };
 if (!folder) {
-  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--shot out.png] [--json]');
+  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--shot out.png] [--game] [--json]');
   process.exit(1);
 }
 
@@ -62,6 +62,9 @@ const settings = (() => {
 })();
 const shot = opt('shot', null);
 const asJson = args.includes('--json');
+// Drive the game-mode gate. Several widgets suspend polling while a fullscreen game is
+// foreground, and with no way to say so offline that branch was unreachable here.
+const gameActive = args.includes('--game');
 
 // The slot fragment shell.js puts on every frame src. The iCUE shim reads its property
 // globals out of ww-settings BEFORE the widget's own scripts run, and uniqueId — the
@@ -234,7 +237,15 @@ function loadPlaywright() {
     widgetUrl: 'https://widget.test/index.html',
     widgetOrigin: 'https://widget.test',
     slotHash,
-    initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme, status: { elevated: false, apiVersion: 1 } },
+    // The panel's ww-init carries EIGHT fields (shell.js initMessage); this used to send
+    // six. `game` was the gap that mattered: shell.js always sends it, so a widget reading
+    // state.game got an object there and undefined here, and the game-mode gate several
+    // widgets now use could not be exercised offline at all. `notifications` is null
+    // unless a slot subscribed, which is what a non-subscribing widget gets on the panel
+    // too — stated rather than omitted, so the difference is a decision.
+    initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme,
+      notifications: null, game: { active: gameActive, process: gameActive ? 'game.exe' : '' },
+      status: { elevated: false, apiVersion: 1 } },
   });
 
   await page.goto('https://shell.test/host.html');
