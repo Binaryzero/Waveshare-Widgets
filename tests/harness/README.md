@@ -161,3 +161,19 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   relay by DROPPING everything outside that allow-list — a friendlier stand-in would hide
   the whole defect — and a fetch is pushed through first to prove the relay works at all.
   The timings are the witness: 10001 ms before, single-digit ms after. Port used: 8964.
+- `kevretry-run.js` — pressing Retry while a game is running (issue #164). The game-mode
+  gate suspends polling because the tile parses a multi-megabyte catalog on a machine
+  whose frame budget is spoken for, and Retry did not account for it: it painted a
+  spinner and called the poll, which returned through the gate without recording that a
+  retry had been asked for, so the tile could spin for a day at the maximum interval
+  while the deadline it was waiting on stayed an untouched interval from the last
+  attempt. Drives the real sequence — the feed fails, a game starts, Retry is pressed,
+  the game ends — and counts feed REQUESTS rather than reading what was drawn. Half its
+  checks must fail before the fix and pass after; the other half must pass in BOTH, and
+  those are the load-bearing ones: the plain no-game Retry still fetches at once, the
+  gate still refuses while a game runs, and a game ending with nothing pending still
+  does not poll early. Without that last one, "the retry runs when the game ends" would
+  be satisfied just as well by deleting the gate. The loading assertion holds the
+  stubbed request open, because a refused fetch resolves in microseconds and the
+  in-flight state is gone before it can be observed. `KEV_SHOT=<path>` captures the
+  queued card. No static server — every origin is route-fulfilled.
