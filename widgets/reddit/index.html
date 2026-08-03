@@ -78,6 +78,7 @@
   let missedWhilePaused = false;   // something was due while the game had the foreground
   let missedFirstLoad = false;     // ...and whether what was missed was the INITIAL load
   let missedAdvance = false;       // ...and whether a slideshow advance was what was refused
+  let missedListing = false;       // ...and whether a listing refresh was refused too
   let advanceTimer = null;
   let advancing = false;       // guards against overlapping loads (slow proxy fetches)
   const LISTING_REFRESH_MS = 10 * 60 * 1000;
@@ -141,7 +142,12 @@
   }
 
   async function refreshListing(firstLoad) {
-    if (gameOn) { missedWhilePaused = true; missedFirstLoad = missedFirstLoad || !!firstLoad; return; }
+    if (gameOn) {
+      missedWhilePaused = true;
+      missedListing = true;
+      missedFirstLoad = missedFirstLoad || !!firstLoad;
+      return;
+    }
     try {
       const url = 'https://www.reddit.com/r/' + encodeURIComponent(cfg.subreddit) +
         '/' + cfg.sort + '.json?limit=60&raw_json=1';
@@ -238,10 +244,17 @@
       const post = posts[index];
       try {
         const blobUrl = await loadImage(post.imageUrl);
+        // A game that started while this image was downloading: decoding and painting it
+        // is exactly the work being deferred, and the blob is discarded rather than shown.
+        if (gameOn && !direction) { missedWhilePaused = true; missedAdvance = true; advancing = false; return; }
         show(post, blobUrl);
         advancing = false;
         return;
       } catch (e) {
+        // ...and on the failure side, leave BEFORE the loop's "images are not loading"
+        // verdict: the remaining posts were skipped on purpose, so that message would be
+        // blaming the images for a pause.
+        if (gameOn && !direction) { missedWhilePaused = true; missedAdvance = true; advancing = false; return; }
         if (isTooLarge(e)) refusedForSize++;
         WW.log('reddit: image failed (' + e.message + '): ' + post.imageUrl);
       }
@@ -349,13 +362,18 @@
     // the slideshow — the tile sat on "Loading" forever, with data it never showed.
     const wasFirst = missedFirstLoad;
     const wasAdvance = missedAdvance;
+    const wasListing = missedListing;
     missedFirstLoad = false;
     missedAdvance = false;
+    missedListing = false;
     // A missed ADVANCE is not a missed listing. Resuming it as a refresh updated `posts`
     // and left the same picture on screen until the retained dwell timer came round — up
     // to two minutes — and spent a listing request nobody needed on the way.
-    if (wasAdvance && !wasFirst) { scheduleAdvance(); advance(); return; }
-    refreshListing(wasFirst);
+    // Both can be owed at once: a long game outlasts the dwell timer AND the ten-minute
+    // listing timer. Resuming only the advance discarded the refused listing, leaving the
+    // posts stale until the retained interval came round again.
+    if (wasAdvance) { scheduleAdvance(); advance(); }
+    if (wasListing || wasFirst) refreshListing(wasFirst);
   });
 
 </script>

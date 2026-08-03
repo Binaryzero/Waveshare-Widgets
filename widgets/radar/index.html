@@ -69,6 +69,7 @@
   let gameOn = false;
   let pendingSettings = null;   // the settings a paused init was holding
   let pendingInit = false;      // ...and whether that init still owes a full setup
+  let pendingResize = false;    // ...and whether a resize rebuild was deferred
   let missedWhilePaused = false;   // something was due while the game had the foreground
   let animTimer = null;
   let refreshTimer = null;
@@ -270,7 +271,7 @@
       // setup. A display, DPI or slot-size change during a game reaches here, so the gate
       // has to be consulted at the point the rebuild would start. Deferred, not dropped:
       // the resume rebuilds against whatever geometry is current then.
-      if (gameOn) { missedWhilePaused = true; return; }
+      if (gameOn) { missedWhilePaused = true; pendingResize = true; return; }
       buildBaseMap();
       rebuildFrameLayers();
     }, 300);
@@ -324,7 +325,25 @@
     // instead got this wrong in the case that matters: change the location during a
     // game, and the resume refreshed tiles for the old coordinates and never resolved
     // the new ones.
-    if (pendingInit && pendingSettings) { pendingInit = false; start(pendingSettings); }
+    // A deferred resize is not a refresh: refreshRadar rebuilds the RainViewer frame
+    // layers but never buildBaseMap, so the OpenStreetMap tiles would keep the viewport
+    // they were built for until the next resize or re-init.
+    if (pendingResize && !pendingInit) {
+      pendingResize = false;
+      buildBaseMap();
+      rebuildFrameLayers();
+    }
+    if (pendingInit && pendingSettings) {
+      pendingInit = false;
+      pendingResize = false;   // start() rebuilds both
+      // Stop the OLD interval BEFORE the setup begins. start() clears it only after the
+      // geocode and the frame-list request have both returned, so a retained five-minute
+      // deadline landing inside either await fetched and rebuilt tiles concurrently —
+      // against the previous coordinates.
+      clearInterval(refreshTimer);
+      refreshTimer = null;
+      start(pendingSettings);
+    }
     else {
       // Restart the cadence FROM the catch-up: the five-minute interval kept its deadline
       // through the game, and refreshRadar has no in-flight guard, so a game ending just

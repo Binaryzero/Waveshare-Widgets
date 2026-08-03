@@ -178,6 +178,9 @@
       const response = await fetch(url);
       if (!response.ok) throw new Error('forecast HTTP ' + response.status);
       const data = await response.json();
+      // The render is the expensive half — current conditions plus the whole forecast
+      // strip — and a game can start while the request is in flight.
+      if (gameOn) { missedWhilePaused = true; return; }
 
       const [label, emoji] = wmo(data.current.weather_code);
       document.getElementById('icon').textContent = emoji;

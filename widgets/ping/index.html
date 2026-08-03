@@ -80,6 +80,7 @@
   // straight through a game that was already running when it loaded.
   let gameOn = false;
   let missedWhilePaused = false;   // something was due while the game had the foreground
+  let polling = false;             // a WW.ping batch is in the air right now
   let pollTimer = null;
 
   // Sparkline colors for the canvas — canvases can't resolve var(), so read the
@@ -197,6 +198,11 @@
 
   async function poll() {
     if (gameOn) { missedWhilePaused = true; return; }
+    // One batch at a time. At the supported one-second interval a batch can still be in
+    // the air when the next tick arrives, and the catch-up on game exit is one more
+    // caller — two overlapping batches double the ICMP and interleave their samples.
+    if (polling) { missedWhilePaused = true; return; }
+    polling = true;
     let results;
     try {
       results = await WW.ping(cfg.targets.map((t) => t.host));
@@ -207,6 +213,10 @@
     } catch (e) {
       WW.log('ping: ' + e.message);
       return;
+    } finally {
+      // Released on EVERY exit, including the two returns above — a flag left set by an
+      // early return would silence the widget for the rest of the session.
+      polling = false;
     }
     for (const r of results) {
       const samples = history.get(r.host);
@@ -293,7 +303,7 @@
     // supported one-second interval, with host pings allowed two seconds, that is
     // overlapping ICMP batches for the same targets.
     clearInterval(pollTimer);
-    poll();
+    poll();   // refused by the in-flight guard if a pre-game batch is still resolving
     if (cfg.targets.length) pollTimer = setInterval(poll, cfg.interval * 1000);
   });
 

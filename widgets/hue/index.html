@@ -106,6 +106,12 @@
   // "Cannot access 'probeTimer' before initialization".
   let probeTimer = null;
   let probing = false;   // a probeV2 request is in the air right now
+  // Bumped by every connect(). An in-flight probeV2 cannot be cancelled, and it reads the
+  // CURRENT cfg.ip when it completes — so a probe started against the old bridge could
+  // answer after a switch, call rememberV2() for the NEW address and start v2 polling
+  // there, permanently misclassifying a v1-only replacement. The token lets a late answer
+  // recognise that it belongs to a connection that is over.
+  let connectGen = 0;
   let holdoff = 0;   // suppress poll rendering briefly after a local action
   const BRI_STEP = 15; // brightness step, percent
 
@@ -154,7 +160,14 @@
   });
 
   async function connect(s) {
+    const gen = ++connectGen;
     hideMessage();   // a resumed connect must take the Paused card down before it draws
+    // ...and the SETUP overlays too. Pair and the legacy-http choice are full-screen
+    // cards belonging to the bridge that was current when they went up; switching
+    // bridges left one covering the new bridge's rooms permanently, because the paths
+    // that hide them only run when that same flow completes.
+    document.getElementById('pair').style.display = 'none';
+    document.getElementById('legacy').style.display = 'none';
     // STOP the previous bridge's poll loop before doing anything else, and forget its
     // credential. cfg.ip is already the NEW address by the time this runs, so a retained
     // four-second tick — armed for the old bridge, and no longer refused once gameOn has
@@ -324,7 +337,7 @@
     await probeV2();
   }
 
-  async function probeV2() {
+  async function probeV2(gen = connectGen) {
     // A game that starts while this request is in the air leaves probeTimer null, so the
     // onGame handler sees nothing to clear — and the failure path below would arm a fresh
     // retry that then runs for the whole game. The probe itself records that it was
@@ -343,6 +356,10 @@
     // user answered it, or quietly move the session to v2 while v1 polling is already
     // running. Whoever decided first decided.
     probing = false;
+    // A connect() happened while this was on the wire: this answer describes a bridge the
+    // widget is no longer talking to, and acting on it would settle the mode — and
+    // rememberV2 — for whatever address is current now.
+    if (gen !== connectGen) return;
     if (mode !== null) return;
     // A game that started while this was on the wire: stop here rather than arming the
     // 15-second retry below, which would then run for the whole session. The paused init
@@ -364,7 +381,7 @@
     // that really have no https, and resolves itself for the ones that do.
     showLegacyChoice();
     clearTimeout(probeTimer);
-    probeTimer = setTimeout(probeV2, PROBE_RETRY_MS);
+    probeTimer = setTimeout(() => probeV2(gen), PROBE_RETRY_MS);
   }
 
   function showLegacyChoice() {
@@ -451,6 +468,7 @@
     let scenes = {};
     if (cfg.showScenes) {
       const sr = await v1fetch(v1api('/scenes'));
+      if (gameOn) return null;   // same final-await gap on the v1 path
       scenes = await sr.json();
     }
     const scenesByGroup = new Map();
@@ -498,6 +516,7 @@
     const scenesByGroup = new Map();
     if (cfg.showScenes) {
       const sr = await v2fetch('/resource/scene');
+      if (gameOn) return null;   // the LAST await is a gap as much as the middle ones
       for (const sc of (await sr.json()).data || []) {
         const gid = sc.group && sc.group.rid;   // matches the room/zone id
         if (!gid) continue;
