@@ -89,8 +89,6 @@
   // panel that restarts overnight does not re-authenticate against every API it holds.
   // Keyed by endpoint+client so changing either cannot resurrect the old token.
   let bearer = null;      // { token, expiresAt, key }
-  let tokenFailed = '';   // why the LAST exchange failed — a different sentence from a
-                          // data-fetch failure, and the user fixes a different setting.
   // False until the first onInit has applied real settings. Before that, `cfg` holds
   // defaults that differ from every saved configuration, so a comparison against them
   // reports an edit that never happened.
@@ -112,20 +110,6 @@
    * Both are offered because users reach for the dotted form and being strict about
    * it buys nothing. Returns undefined for any miss — the caller renders "no value
    * at that path" rather than guessing. */
-  /** Sets Authorization, removing any existing entry whatever its casing. HTTP header
-   *  names are case-insensitive, but a plain object's keys are not: a legacy tile whose
-   *  custom header is spelled `authorization` kept that key alongside the `Authorization`
-   *  written here, and both native Headers and serializeProxyInit COMBINE duplicates —
-   *  so the API received `Bearer old, Bearer new` and rejected the lot. Unrelated custom
-   *  headers are left alone. */
-  function setAuthHeader(headers, value) {
-    for (const k of Object.keys(headers)) {
-      if (k.toLowerCase() === 'authorization') delete headers[k];
-    }
-    headers.Authorization = value;
-    return headers;
-  }
-
   function resolvePath(doc, path) {
     // Leading whitespace is never part of either syntax, and stripping it is what
     // decides WHICH syntax this is — " /a/b" pasted with a stray space would otherwise
@@ -298,21 +282,108 @@
     return btoa(bin);
   };
 
+  /** Sets Authorization, removing any existing entry whatever its casing. HTTP header
+   *  names are case-insensitive, but a plain object's keys are not: a legacy tile whose
+   *  custom header is spelled `authorization` kept that key alongside the `Authorization`
+   *  written here, and both native Headers and serializeProxyInit COMBINE duplicates —
+   *  so the API received `Bearer old, Bearer new` and rejected the lot. Unrelated custom
+   *  headers are left alone. */
+  function setAuthHeader(headers, value) {
+    for (const k of Object.keys(headers)) {
+      if (k.toLowerCase() === 'authorization') delete headers[k];
+    }
+    headers.Authorization = value;
+    return headers;
+  }
+
+  /** Whether a URL may be trusted with OAuth credentials.
+   *
+   *  Plain `http://` cannot: the client secret rides the token exchange as HTTP Basic,
+   *  and the bearer it buys rides every poll. Neither is protected by this widget living
+   *  on an https origin — a mixed-content block is not a refusal to send, it is a refusal
+   *  to send DIRECTLY. WW.fetch treats that failure as "the browser is in the way" and
+   *  escalates to the host proxy (widget-api.js, the catch that memoises the origin), the
+   *  POST body is a string so it replays faithfully, HandleProxyFetchAsync accepts
+   *  `Uri.UriSchemeHttp` outright, and `authorization` is absent from
+   *  ProxyHeaderRules.SharedRefusals — so the header is forwarded. The end of that path is
+   *  a durable credential crossing the network in the clear, with nothing on screen
+   *  suggesting it did.
+   *
+   *  Loopback is the one exception, and it is exempt for a reason rather than by habit:
+   *  the browser treats 127.0.0.0/8, ::1 and `localhost` as potentially trustworthy, so
+   *  those fetches are never blocked, never escalate, and never leave the machine. A
+   *  self-hosted token endpoint on the same PC is a real setup and stays supported. */
+  function secureForCredentials(url) {
+    let u;
+    try { u = new URL(url); } catch (e) { return false; }
+    if (u.protocol === 'https:') return true;
+    if (u.protocol !== 'http:') return false;
+    // URL keeps IPv6 hosts in brackets; the literal is what has to be compared.
+    const host = u.hostname.replace(/^\[/, '').replace(/\]$/, '').toLowerCase();
+    return host === 'localhost' || host === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+  }
+
   // Scope belongs in the KEY, not just the invalidation check: two REST tiles share one
   // origin and one localStorage, so the same client used at different scopes would have
   // had the second tile silently accept the first tile's token — either failing against
   // its resource or running with privileges it was not configured for.
   const tokenKey = () => cfg.tokenEndpoint + '\n' + cfg.clientId + '\n' + cfg.scope;
-  const CACHE = 'rest.oauth.v1';
+  // A MAP of identity -> token, not a single entry. One origin is shared by every REST
+  // tile on the panel, so a lone entry meant each OAuth tile's exchange overwrote the
+  // last one's: only the final identity survived a reload, and the rest re-authenticated
+  // on every start — the exact cost the cache exists to avoid, scaled by tile count.
+  const CACHE = 'rest.oauth.v2';
+  const CACHE_MAX = 8;    // identities kept; a panel holds a handful of REST tiles at most
+  // v1 held one entry in a shape this cannot read, and an unreadable blob holding a
+  // bearer would otherwise sit in storage forever. Drop it on the way past.
+  try { localStorage.removeItem('rest.oauth.v1'); } catch (e) { /* storage off */ }
 
-  function loadBearer() {
+  function readCache() {
     try {
       const raw = localStorage.getItem(CACHE);
-      if (!raw) return null;
-      const c = JSON.parse(raw);
-      if (!c || c.key !== tokenKey() || !c.token) return null;
-      return c;
-    } catch (e) { return null; }
+      if (!raw) return {};
+      const all = JSON.parse(raw);
+      return all && typeof all === 'object' && !Array.isArray(all) ? all : {};
+    } catch (e) { return {}; }
+  }
+
+  function loadBearer() {
+    const c = readCache()[tokenKey()];
+    if (!c || typeof c !== 'object' || typeof c.token !== 'string' || !c.token) return null;
+    const expiresAt = Number(c.expiresAt);
+    if (!Number.isFinite(expiresAt)) return null;
+    return { token: c.token, expiresAt: expiresAt, key: tokenKey() };
+  }
+
+  function saveBearer(entry) {
+    try {
+      const all = readCache();
+      all[entry.key] = { token: entry.token, expiresAt: entry.expiresAt };
+      // Expired entries are dead weight and the map must not grow with every endpoint
+      // this tile is ever pointed at. Keep the one just bought unconditionally, then the
+      // longest-lived of the rest — evicting a token that is about to expire anyway
+      // costs at most one exchange, while evicting a fresh one costs a sibling its cache.
+      const now = Date.now();
+      const others = Object.keys(all)
+        .filter((k) => k !== entry.key && Number(all[k] && all[k].expiresAt) > now)
+        .sort((a, b) => Number(all[b].expiresAt) - Number(all[a].expiresAt))
+        .slice(0, CACHE_MAX - 1);
+      const kept = {};
+      kept[entry.key] = all[entry.key];
+      for (const k of others) kept[k] = all[k];
+      localStorage.setItem(CACHE, JSON.stringify(kept));
+    } catch (e) { /* quota / storage off */ }
+  }
+
+  /** Forgets ONE identity's token. Never the whole map: the entries belong to whichever
+   *  tiles use those credentials, not to the tile doing the forgetting. */
+  function dropBearer(key) {
+    try {
+      const all = readCache();
+      if (!(key in all)) return;
+      delete all[key];
+      localStorage.setItem(CACHE, JSON.stringify(all));
+    } catch (e) { /* storage off */ }
   }
 
   /** A valid bearer, exchanging for one if the cache is empty or close to expiry.
@@ -388,7 +459,7 @@
       expiresAt: Date.now() + (Number.isFinite(ttl) && ttl > 0 ? ttl * 1000 : 3600000),
       key: forKey,
     };
-    try { localStorage.setItem(CACHE, JSON.stringify(bearer)); } catch (e) { /* quota */ }
+    saveBearer(bearer);
     return bearer.token;
   }
 
@@ -404,11 +475,16 @@
     activeController = controller;
     try {
       const init = { cache: 'no-store', signal: controller.signal };
-      // Declared up here because the OAuth exchange below runs inside the same
-      // deadline as the request it authenticates.
       // Never wait longer than the poll period (floor 10 s, cap 30 s): a request still
       // outstanding when the next one is due has already failed in every way that matters.
       const budget = Math.min(30000, Math.max(10000, cfg.pollSeconds * 1000));
+      // ONE deadline for the WHOLE authenticated sequence, not one per leg. An OAuth poll
+      // can make four requests — exchange, fetch, forced re-exchange, retry — and handing
+      // each of them the full budget meant a tile documented to give up after 30 s could
+      // sit frozen for two minutes with nothing on screen but the last reading. The cap is
+      // a promise about how long this tile can be out of date; only an absolute one keeps it.
+      const deadlineAt = Date.now() + budget;
+      const remaining = () => deadlineAt - Date.now();
       const headers = {};
       // The secret arrives decrypted, exactly like a text setting. An unset or
       // unreadable one is "" — send no header at all rather than an empty one.
@@ -416,6 +492,32 @@
       // configured before OAuth existed keeps working untouched.
       if (cfg.headerName && cfg.headerValue) headers[cfg.headerName] = cfg.headerValue;
       if (cfg.authMode === 'oauth2') {
+        // Refuse before the request, not after: the only way to keep a credential off a
+        // plaintext hop is to never hand it to one. Both legs are checked because both
+        // carry a credential — the secret goes to the token endpoint, and the bearer it
+        // buys goes to the data endpoint on every poll after that. This can only ever
+        // refuse an OAuth tile: `authMode` is new in 1.1.0 and defaults to none, so no
+        // configuration that works today starts failing, and the long-standing static
+        // header stays exactly as permissive as it has always been.
+        // An UNSET token endpoint is not an insecure one, and saying so would send the
+        // user hunting for an https:// they never typed. `cfg.url` needs no such case:
+        // poll() has already returned above when it is empty.
+        if (!cfg.tokenEndpoint) {
+          showState('◎', 'No token endpoint set',
+            'OAuth2 needs the URL of the token endpoint, plus the client ID and secret, in this widget’s settings.', false);
+          return;
+        }
+        const plaintext = !secureForCredentials(cfg.tokenEndpoint) ? 'token endpoint'
+          : !secureForCredentials(cfg.url) ? 'endpoint' : '';
+        if (plaintext) {
+          // A settings problem, so it reads like one: no Retry (the same request would
+          // fail the same way) and no backoff charge (nothing here is a service being
+          // slow). Naming which of the two URLs is at fault is the whole value of the card.
+          showState('◎', 'Insecure ' + plaintext,
+            'OAuth2 sends your client secret and access token to this URL, so it must be https:// ' +
+            '(or a http://localhost address on this PC). Update the ' + plaintext + ' in settings.', false);
+          return;
+        }
         // "Could not get a token" and "the API refused the request" are different
         // failures with different fixes, and collapsing them into one card is what
         // sends people editing the wrong setting.
@@ -423,15 +525,13 @@
           // Inside the deadline, not before it: a token endpoint that accepts the
           // connection and then stalls held inFlight for the whole of WW.fetch's own
           // timeout, and every poll behind it waited on that.
-          setAuthHeader(headers, 'Bearer ' + await withDeadline(budget, controller, () => getBearer(false, controller.signal)));
-          tokenFailed = '';
+          setAuthHeader(headers, 'Bearer ' + await withDeadline(remaining(), controller, () => getBearer(false, controller.signal)));
         } catch (e) {
           // Before ANY shared state moves, not after. A retired exchange belongs to a
           // source the user has already moved off: charging its failure to the new one's
-          // backoff, or recording its message as the new one's reason, is the same
-          // mistake as painting its card — it was just happening one line earlier.
+          // backoff, or painting its card, is the same mistake — it was just happening
+          // one line earlier.
           if (superseded()) return;
-          tokenFailed = e.message;
           failures++;
           if (!showStale('sign-in failed')) {
             showState('⚠', 'Sign-in failed',
@@ -458,25 +558,28 @@
         }
         return { ok: true, status: res.status, statusText: res.statusText, text: await res.text() };
       };
-      let answer = await withDeadline(budget, controller, doFetch);
+      let answer = await withDeadline(remaining(), controller, doFetch);
       if (superseded()) return;
       // A 401 on an OAuth tile means the token died before its stated expiry —
       // revoked, rotated, or the server's clock disagrees with ours. Force one fresh
       // exchange and retry exactly once; a loop here would hammer the token endpoint
       // on every poll for a credential that is simply wrong.
       if (!answer.ok && answer.status === 401 && cfg.authMode === 'oauth2') {
+        let fresh;
+        // ONLY the exchange sits in this try. The retried request used to sit here too,
+        // so an API that went unreachable — or dribbled its body past the deadline —
+        // between the 401 and the retry was reported as "a new token could not be
+        // obtained", sending the user to check a client secret that had just worked.
+        // Out here its failure reaches the endpoint handler below, which is the one
+        // that describes what actually went wrong.
         try {
-          init.headers = setAuthHeader(Object.assign({}, init.headers),
-            'Bearer ' + await withDeadline(budget, controller, () => getBearer(true, controller.signal)));
-          answer = await withDeadline(budget, controller, doFetch);
-          if (superseded()) return;
+          fresh = await withDeadline(remaining(), controller, () => getBearer(true, controller.signal));
         } catch (e) {
           // Retargeting the tile aborts this exchange, and the rejection that follows
           // describes the OLD credentials. This catch had no generation check at all,
           // so it could charge the new source's backoff and paint "Sign-in failed" over
           // a tile that had just been pointed somewhere else entirely.
           if (superseded()) return;
-          tokenFailed = e.message;
           failures++;
           if (!showStale('sign-in failed')) {
             showState('⚠', 'Sign-in failed',
@@ -484,6 +587,9 @@
           }
           return;
         }
+        init.headers = setAuthHeader(Object.assign({}, init.headers), 'Bearer ' + fresh);
+        answer = await withDeadline(remaining(), controller, doFetch);
+        if (superseded()) return;
       }
       if (!answer.ok) {
         failures++;
@@ -661,6 +767,7 @@
     cfg.headerValue = String(s.headerValue || '');
 
     const prevAuth = cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope;
+    const prevKey = tokenKey(), prevSecret = cfg.clientSecret;
     cfg.authMode = s.authMode === 'oauth2' ? 'oauth2' : s.authMode === 'header' ? 'header' : 'none';
     cfg.tokenEndpoint = String(s.tokenEndpoint || '').trim();
     cfg.clientId = String(s.clientId || '').trim();
@@ -680,8 +787,13 @@
     // client and scope, so a token from other credentials can never be used regardless.
     if (inited && prevAuth !== cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope) {
       bearer = null;
-      tokenFailed = '';
-      try { localStorage.removeItem(CACHE); } catch (e) { /* quota/private mode */ }
+      // Forget the STORED token only when it was bought under credentials that just
+      // changed beneath it: same endpoint, client and scope, different secret — the one
+      // case where the key still matches so loadBearer would hand the old token straight
+      // back. A change of identity needs no removal and must not do one: loadBearer
+      // already refuses an entry whose key does not match, and that entry may be the
+      // live cache of another tile still configured for those credentials.
+      if (tokenKey() === prevKey && cfg.clientSecret !== prevSecret) dropBearer(prevKey);
     }
 
     el('title').textContent = String(s.label || '').trim() || 'REST';
