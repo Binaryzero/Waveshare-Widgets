@@ -177,3 +177,19 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   stubbed request open, because a refused fetch resolves in microseconds and the
   in-flight state is gone before it can be observed. `KEV_SHOT=<path>` captures the
   queued card. No static server — every origin is route-fulfilled.
+- `listprims-run.js` — list settings whose entries may be bare values (issue #167). Both
+  settings editors filtered a list down to objects before rendering, so a widget's
+  primitive shorthand — endpoints accepts `"nas.lan"` and expands it itself — got no row:
+  invisible, uneditable, undeletable, and silently deleted on save because each editor
+  writes back only what it rendered. The entry is now preserved as the primitive it was,
+  NOT expanded into the field shape, because what a bare string means differs per widget
+  and no manifest states the rule: endpoints reads it as both label and URL, while the
+  neighbouring comma-string branch reads a bare token as `fields[0]` alone, which for
+  endpoints leaves the URL empty and the widget drops it. Guessing picks one widget's
+  meaning and corrupts the rest. Runs on plain Node against the real source text of both
+  files rather than a copy, so an editor that loses the handling fails here. Covers the
+  round trip, that the value keeps its TYPE (stringifying at read time made a numeric
+  entry come back as its decimal spelling — the same silent rewrite, committed by the fix
+  for it), editing, deleting, and that junk is still refused so no permanent blank row
+  appears. Against the pre-fix files it reports 16 failures showing the entry simply
+  absent from the saved array.
