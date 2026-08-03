@@ -465,8 +465,19 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     return { visible: shown.length > 0, text: shown.map((el) => el.innerText || '').join(' ').replace(/\s+/g, ' ').trim() };
   });
   const allowState = args.includes('--allow-state');
-  if (!allowState) check('state layer cleared (data is showing, not a spinner or error card)', !stateLayer.visible);
-  else check('a state layer is showing (--allow-state asserts one)', stateLayer.visible);
+  // Under --game, what the tile shows is per-widget (spinner, retained data, or a full
+  // grid), so neither "state cleared" nor "state showing" is a rule that holds across
+  // widgets. Assert it with --expect where it matters.
+  // Under --game NEITHER branch runs. Guarding only the first one would have left the
+  // else asserting that a state layer IS showing, which is the same defect moved: a
+  // widget that keeps its grid while paused (endpoints) would fail for behaving well.
+  if (gameActive) {
+    // nothing to assert generically — see the note above
+  } else if (!allowState) {
+    check('state layer cleared (data is showing, not a spinner or error card)', !stateLayer.visible);
+  } else {
+    check('a state layer is showing (--allow-state asserts one)', stateLayer.visible);
+  }
 
   // Scope matters here. --allow-state runs exist to pin down WHICH state card appears —
   // "not configured", not "rate limited" — and matching the expectation against the whole
@@ -489,7 +500,20 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // --allow-state, where not reaching the network IS the expected outcome (an
   // unconfigured widget makes no request at all).
   const proxyServed = await page.evaluate(() => window.__wwProxyServed || []);
-  if (!allowState) {
+  if (gameActive) {
+    // Under --game the expectation INVERTS. A gated widget is supposed to make no
+    // network call at all, so requiring one would fail every widget that behaves
+    // correctly — and exempting the check instead would assert nothing about the only
+    // thing this mode exists to establish. Not reaching the network IS the result here.
+    //
+    // What the tile DRAWS while paused is deliberately not asserted: some show a
+    // spinner, some keep the data they already had, and endpoints keeps its whole grid.
+    // That is per-widget, so it belongs in --expect rather than in a blanket rule; the
+    // state-layer check below is skipped for the same reason.
+    check('no endpoint was requested while a game is running',
+      served.length + proxyServed.length === 0,
+      served.length + ' direct, ' + proxyServed.length + ' proxied');
+  } else if (!allowState) {
     check('a stubbed endpoint was actually requested (direct or proxy tier)',
       served.length + proxyServed.length > 0,
       served.length + ' direct, ' + proxyServed.length + ' proxied');
