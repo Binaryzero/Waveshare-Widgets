@@ -81,6 +81,7 @@
   let gameOn = false;
   let missedWhilePaused = false;   // something was due while the game had the foreground
   let polling = false;             // a WW.ping batch is in the air right now
+  let queuedPoll = false;          // ...and a caller asked for another while it was
   let pollTimer = null;
 
   // Sparkline colors for the canvas — canvases can't resolve var(), so read the
@@ -201,7 +202,11 @@
     // One batch at a time. At the supported one-second interval a batch can still be in
     // the air when the next tick arrives, and the catch-up on game exit is one more
     // caller — two overlapping batches double the ICMP and interleave their samples.
-    if (polling) { missedWhilePaused = true; return; }
+    // Busy is not paused. Recording this as game-missed work meant a live settings change
+    // arriving mid-batch was only ever resumed by a game ENDING — with no game running, a
+    // new target sat at "--" until the replacement interval came round. Queued instead,
+    // and run when the batch in flight finishes.
+    if (polling) { queuedPoll = true; return; }
     polling = true;
     let results;
     try {
@@ -217,6 +222,7 @@
       // Released on EVERY exit, including the two returns above — a flag left set by an
       // early return would silence the widget for the rest of the session.
       polling = false;
+      if (queuedPoll && !gameOn) { queuedPoll = false; setTimeout(poll, 0); }
     }
     for (const r of results) {
       const samples = history.get(r.host);

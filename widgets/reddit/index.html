@@ -80,6 +80,7 @@
   let missedAdvance = false;       // ...and whether a slideshow advance was what was refused
   let missedListing = false;       // ...and whether a listing refresh was refused too
   let advanceTimer = null;
+  let listingTimer = null;   // held so the catch-up can restart the cadence from itself
   let advancing = false;       // guards against overlapping loads (slow proxy fetches)
   const LISTING_REFRESH_MS = 10 * 60 * 1000;
 
@@ -138,7 +139,8 @@
   async function start() {
     showMessage('Loading r/' + cfg.subreddit + '…', null);
     await refreshListing(true);
-    setInterval(() => refreshListing(false), LISTING_REFRESH_MS);
+    clearInterval(listingTimer);
+    listingTimer = setInterval(() => refreshListing(false), LISTING_REFRESH_MS);
   }
 
   async function refreshListing(firstLoad) {
@@ -381,7 +383,14 @@
     // listing timer. Resuming only the advance discarded the refused listing, leaving the
     // posts stale until the retained interval came round again.
     if (wasAdvance) { scheduleAdvance(); advance(); }
-    if (wasListing || wasFirst) refreshListing(wasFirst);
+    if (wasListing || wasFirst) {
+      // Restart the cadence FROM the catch-up: the ten-minute interval kept its deadline
+      // through the game, and refreshListing has no in-flight guard, so a game ending just
+      // before it started a second listing request whose answer would win.
+      clearInterval(listingTimer);
+      refreshListing(wasFirst);
+      listingTimer = setInterval(() => refreshListing(false), LISTING_REFRESH_MS);
+    }
   });
 
 </script>

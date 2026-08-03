@@ -70,7 +70,7 @@
   let pendingSettings = null;   // the settings a paused init was holding
   let pendingInit = false;      // ...and whether that init still owes a full setup
   let pendingResize = false;    // ...and whether a resize rebuild was deferred
-  let missedWhilePaused = false;   // something was due while the game had the foreground
+  let missedRefresh = false;    // a radar refresh was refused while a game had the foreground
   let animTimer = null;
   let refreshTimer = null;
 
@@ -101,7 +101,7 @@
     pendingSettings = s;
     if (gameOn) {
       pendingInit = true;
-      missedWhilePaused = true;
+      missedRefresh = true;
       showMessage('Paused', 'A game is running.');
       return;
     }
@@ -121,7 +121,7 @@
     // was guarded, so the tiles went out anyway — a gate that returns before the slow
     // part but not after it is not a gate.
     if (gameOn) {
-      missedWhilePaused = true;
+      missedRefresh = true;
       pendingInit = true;
       showMessage('Paused', 'A game is running.');
       return;
@@ -199,7 +199,7 @@
   // --- radar frames -------------------------------------------------------------
 
   async function refreshRadar() {
-    if (gameOn) { missedWhilePaused = true; return; }
+    if (gameOn) { missedRefresh = true; return; }
     let json;
     try {
       const res = await WW.fetch('https://api.rainviewer.com/public/weather-maps.json');
@@ -212,7 +212,7 @@
     // Re-checked after the frame-list request: rebuildFrameLayers below attaches a
     // screenful of tile images per frame and re-arms the animation chain, so a game that
     // started while this was in flight would get all of it anyway.
-    if (gameOn) { missedWhilePaused = true; return; }
+    if (gameOn) { missedRefresh = true; return; }
     const host = json.host || 'https://tilecache.rainviewer.com';
     const past = (json.radar && json.radar.past) || [];
     const wanted = cfg.animate ? past.slice(-7) : past.slice(-1);
@@ -266,12 +266,16 @@
     if (cfg.lat == null) return;
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
+      // The handle is cleared as the callback BEGINS. Left set, a long-finished debounce
+      // still looked armed, so every later game entry recorded a historical resize as
+      // pending and every exit rebuilt the map for it.
+      resizeTimer = null;
       // buildBaseMap and rebuildFrameLayers assign a screenful of OpenStreetMap and
       // RainViewer tile URLs — network work, from a path that is neither the poll nor the
       // setup. A display, DPI or slot-size change during a game reaches here, so the gate
       // has to be consulted at the point the rebuild would start. Deferred, not dropped:
       // the resume rebuilds against whatever geometry is current then.
-      if (gameOn) { missedWhilePaused = true; pendingResize = true; return; }
+      if (gameOn) { pendingResize = true; return; }
       buildBaseMap();
       rebuildFrameLayers();
     }, 300);
@@ -319,46 +323,47 @@
       resizeTimer = null;
     }
     if (gameOn) return;
-    // The animation was stopped on entry whatever else happened, so it has to be restored
-    // whatever else happens — a game that started and ended inside one five-minute refresh
-    // window set nothing pending, took the early return, and left the radar frozen on one
-    // frame until the next refresh.
-    if (!missedWhilePaused && !pendingResize) { restartAnimation(); return; }
-    missedWhilePaused = false;
-    // What was missed decides what to run. An init refused while paused owes a full
-    // setup — NOT a refresh — because its settings may name a different location, and
-    // resolveLocation is the only thing that reads it. Testing "was a timer ever armed"
-    // instead got this wrong in the case that matters: change the location during a
-    // game, and the resume refreshed tiles for the old coordinates and never resolved
-    // the new ones.
-    // A deferred resize is not a refresh: refreshRadar rebuilds the RainViewer frame
-    // layers but never buildBaseMap, so the OpenStreetMap tiles would keep the viewport
-    // they were built for until the next resize or re-init.
-    if (pendingResize && !pendingInit) {
+    // Each owed job is resumed by whatever actually owes it, and none of them implies
+    // another. Folding them into one flag meant a resize-only pause also fell through to
+    // refreshRadar — a second frame-list fetch and a second full tile rebuild on a game
+    // exit where nothing had expired.
+    //
+    // An init refused while paused owes a full SETUP, not a refresh: its settings may name
+    // a different location, and resolveLocation is the only thing that reads them. The
+    // interval is stopped BEFORE that setup begins, because start() clears it only after
+    // two awaits, and a retained five-minute deadline landing inside either one fetched
+    // and rebuilt against the previous coordinates.
+    if (pendingInit && pendingSettings) {
+      pendingInit = false;
+      pendingResize = false;   // start() rebuilds both
+      missedRefresh = false;
+      clearInterval(refreshTimer);
+      refreshTimer = null;
+      start(pendingSettings);
+      return;
+    }
+    // A deferred resize is not a refresh: refreshRadar rebuilds the RainViewer layers but
+    // never buildBaseMap, so the OpenStreetMap tiles would keep the viewport they were
+    // built for.
+    if (pendingResize) {
       pendingResize = false;
       buildBaseMap();
       rebuildFrameLayers();
     }
-    if (pendingInit && pendingSettings) {
-      pendingInit = false;
-      pendingResize = false;   // start() rebuilds both
-      // Stop the OLD interval BEFORE the setup begins. start() clears it only after the
-      // geocode and the frame-list request have both returned, so a retained five-minute
-      // deadline landing inside either await fetched and rebuilt tiles concurrently —
-      // against the previous coordinates.
+    // Restart the cadence FROM the catch-up: the interval kept its deadline through the
+    // game, and refreshRadar has no in-flight guard, so a game ending just before it
+    // produced two overlapping frame-list fetches.
+    if (missedRefresh) {
+      missedRefresh = false;
       clearInterval(refreshTimer);
-      refreshTimer = null;
-      start(pendingSettings);
-    }
-    else {
-      // Restart the cadence FROM the catch-up: the five-minute interval kept its deadline
-      // through the game, and refreshRadar has no in-flight guard, so a game ending just
-      // before it produced two overlapping frame-list fetches and tile rebuilds.
-      // refreshRadar re-arms the animation chain itself as it rebuilds the layers.
-      clearInterval(refreshTimer);
-      refreshRadar();
+      refreshRadar();   // re-arms the animation itself as it rebuilds the layers
       refreshTimer = setInterval(refreshRadar, 5 * 60 * 1000);
+      return;
     }
+    // The animation was stopped on entry whatever else happened, so it comes back
+    // whatever else happens — a game that started and ended inside one refresh window
+    // owes nothing else, and used to leave the radar frozen on a single frame.
+    restartAnimation();
   });
 
 </script>

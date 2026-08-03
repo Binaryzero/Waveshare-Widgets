@@ -458,7 +458,13 @@
   }
 
   async function pollV1() {
+    // clearInterval stops future ticks; a poll already awaiting the PREVIOUS bridge is
+    // untouched by it. Its answer arriving after the resume would pass the gameOn checks,
+    // send the rest of its sequence to the new cfg.ip, and paint the old bridge's rooms
+    // over the new one — room ids a tap would then act on.
+    const gen = connectGen;
     const res = await v1fetch(v1api('/groups'));
+    if (gen !== connectGen) return null;
     const groups = await res.json();
     if (groups && groups[0] && groups[0].error) throw new Error(groups[0].error.description);
     // A game can start between these requests. The one already sent cannot be recalled,
@@ -468,7 +474,7 @@
     let scenes = {};
     if (cfg.showScenes) {
       const sr = await v1fetch(v1api('/scenes'));
-      if (gameOn) return null;   // same final-await gap on the v1 path
+      if (gameOn || gen !== connectGen) return null;   // same final-await gap on the v1 path
       scenes = await sr.json();
     }
     const scenesByGroup = new Map();
@@ -492,12 +498,13 @@
   async function pollV2() {
     // Sequential on purpose: the bridge's embedded TLS server mishandles
     // parallel handshakes, so concurrent requests fail intermittently.
+    const gen = connectGen;   // see pollV1: a reconnect invalidates an in-flight sequence
     const rr = await v2fetch('/resource/room');
-    if (gameOn) return null;   // three more requests still to come — see pollV1
+    if (gameOn || gen !== connectGen) return null;   // three more requests still to come
     const zr = await v2fetch('/resource/zone');
-    if (gameOn) return null;
+    if (gameOn || gen !== connectGen) return null;
     const gr = await v2fetch('/resource/grouped_light');
-    if (gameOn) return null;
+    if (gameOn || gen !== connectGen) return null;
     // Surface bridge errors (revoked app key, bridge restarting) instead of
     // rendering the misleading "No rooms" empty state from an error body.
     const bad = !rr.ok ? rr : !zr.ok ? zr : !gr.ok ? gr : null;
@@ -516,7 +523,7 @@
     const scenesByGroup = new Map();
     if (cfg.showScenes) {
       const sr = await v2fetch('/resource/scene');
-      if (gameOn) return null;   // the LAST await is a gap as much as the middle ones
+      if (gameOn || gen !== connectGen) return null;   // the LAST await is a gap too
       for (const sc of (await sr.json()).data || []) {
         const gid = sc.group && sc.group.rid;   // matches the room/zone id
         if (!gid) continue;
