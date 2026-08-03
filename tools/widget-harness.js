@@ -218,6 +218,28 @@ function loadPlaywright() {
       window.__wwErrors.push(('unhandled rejection: ' + ((r && (r.stack || r.message)) || r)).slice(0, 300));
     });
   });
+  // WebRTC is the third way out that no HTTP interception sees: an RTCPeerConnection
+  // gathering ICE candidates against a STUN or TURN server emits UDP with no HTTP
+  // request, no WebSocket and no host-bridge message, so page.route, routeWebSocket and
+  // __wwHostCalls are all blind to it. Recorded AND refused — the constructor is where
+  // that traffic is committed to, and refusing at the constructor is what makes this a
+  // containment rather than a tally. Registered before any document script runs, so a
+  // widget cannot capture the real constructor first.
+  await page.addInitScript(() => {
+    const seen = (window.__wwRtc = []);
+    const refuse = function RTCPeerConnection(config) {
+      const servers = (config && config.iceServers) || [];
+      let where = '';
+      try { where = JSON.stringify(servers).slice(0, 100); } catch (e) { where = '(unserializable)'; }
+      seen.push('RTCPeerConnection ' + where);
+      throw new TypeError('WebRTC is not available in the offline runner');
+    };
+    for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection']) {
+      try {
+        Object.defineProperty(window, name, { value: refuse, configurable: true, writable: true });
+      } catch (e) { /* not present in this build */ }
+    }
+  });
   await page.addInitScript(shim);
   // Host-bound messages, answered by the SHELL document. The widget's shim drops any
   // message whose ev.source is not window.parent, so a reply the widget's own document
@@ -411,11 +433,15 @@ function loadPlaywright() {
     // have made on the widget's behalf (ww-fetch, ww-ping). Asserting on the first alone
     // let a proxy-first widget ignore the gate and still report zero.
     const hostCalls = await page.evaluate(() => window.__wwHostCalls || []);
-    const net = attempted.concat(hostCalls);
+    // ...plus WebRTC, which is read from the WIDGET frame because that is the document
+    // that would have constructed it — the shell's globals are a different origin.
+    const rtc = await frame.evaluate(() => window.__wwRtc || []).catch(() => []);
+    const net = attempted.concat(hostCalls, rtc);
     check('no network request while a game is running',
       net.length === 0,
       net.length + ' attempted (' + attempted.length + ' by the browser, '
-        + hostCalls.length + ' via the host)' + (net.length ? ': ' + net[0].slice(0, 80) : ''));
+        + hostCalls.length + ' via the host, ' + rtc.length + ' via WebRTC)'
+        + (net.length ? ': ' + net[0].slice(0, 80) : ''));
   }
 
   check('no horizontal overflow', await frame.evaluate(() =>

@@ -301,6 +301,28 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
       window.__wwErrors.push(('unhandled rejection: ' + ((r && (r.stack || r.message)) || r)).slice(0, 300));
     });
   });
+  // WebRTC is the third way out that no HTTP interception sees: an RTCPeerConnection
+  // gathering ICE candidates against a STUN or TURN server emits UDP with no HTTP
+  // request, no WebSocket and no host-bridge message, so page.route, routeWebSocket and
+  // __wwHostCalls are all blind to it. Recorded AND refused — the constructor is where
+  // that traffic is committed to, and refusing at the constructor is what makes this a
+  // containment rather than a tally. Registered before any document script runs, so a
+  // widget cannot capture the real constructor first.
+  await page.addInitScript(() => {
+    const seen = (window.__wwRtc = []);
+    const refuse = function RTCPeerConnection(config) {
+      const servers = (config && config.iceServers) || [];
+      let where = '';
+      try { where = JSON.stringify(servers).slice(0, 100); } catch (e) { where = '(unserializable)'; }
+      seen.push('RTCPeerConnection ' + where);
+      throw new TypeError('WebRTC is not available in the offline runner');
+    };
+    for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection']) {
+      try {
+        Object.defineProperty(window, name, { value: refuse, configurable: true, writable: true });
+      } catch (e) { /* not present in this build */ }
+    }
+  });
   await page.addInitScript(shim);
   // Host-bound messages, answered by the SHELL document — the widget's shim drops any
   // message whose ev.source is not window.parent, so a reply the widget's own document
@@ -585,11 +607,15 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     // failure line could read "0 attempted (0 direct, 1 proxied)" while the widget had
     // gone to the network twice.
     const hostCalls = await page.evaluate(() => window.__wwHostCalls || []);
-    const net = attempted.concat(hostCalls);
+    // ...plus WebRTC, read from the WIDGET frame — the document that would have
+    // constructed it; the shell is a different origin.
+    const rtc = await frame.evaluate(() => window.__wwRtc || []).catch(() => []);
+    const net = attempted.concat(hostCalls, rtc);
     check('no endpoint was requested while a game is running',
       net.length === 0,
       net.length + ' attempted (' + attempted.length + ' by the browser, '
-        + hostCalls.length + ' via the host)' + (net.length ? ': ' + net[0].slice(0, 80) : ''));
+        + hostCalls.length + ' via the host, ' + rtc.length + ' via WebRTC)'
+        + (net.length ? ': ' + net[0].slice(0, 80) : ''));
   } else if (!allowState) {
     check('a stubbed endpoint was actually requested (direct or proxy tier)',
       served.length + proxyServed.length > 0,
