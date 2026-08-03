@@ -39,7 +39,7 @@ const opt = (name, dflt) => {
   return i >= 0 ? args[i + 1] : dflt;
 };
 if (!folder) {
-  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--shot out.png] [--json]');
+  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--shot out.png] [--game] [--json]');
   process.exit(1);
 }
 
@@ -62,6 +62,9 @@ const settings = (() => {
 })();
 const shot = opt('shot', null);
 const asJson = args.includes('--json');
+// Drive the game-mode gate. Several widgets suspend polling while a fullscreen game is
+// foreground, and with no way to say so offline that branch was unreachable here.
+const gameActive = args.includes('--game');
 
 // The slot fragment shell.js puts on every frame src. The iCUE shim reads its property
 // globals out of ww-settings BEFORE the widget's own scripts run, and uniqueId — the
@@ -87,7 +90,21 @@ function loadPlaywright() {
   const shim = fs.readFileSync(path.join(SHELL, 'widget-api.js'), 'utf8') + '\n' +
                fs.readFileSync(path.join(SHELL, 'icue-compat.js'), 'utf8');
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
-  const page = await browser.newPage({ viewport: { width: W, height: H } });
+  // serviceWorkers: 'block' — a request a service worker makes does NOT pass through
+  // page.route, so a widget that registered one has a way out of this runner that the
+  // abort, the stub table and the game gate are all blind to. This is Playwright's own
+  // mechanism for that and costs nothing, so it is on.
+  //
+  // What it is NOT is a demonstrated containment, and this comment will not claim one.
+  // A probe widget in the real (sandboxed, cross-origin) frame topology still had
+  // navigator.serviceWorker.register() RESOLVE with this set. The worker did not go on
+  // to activate — but it did not activate with serviceWorkers:'allow' either, so that
+  // observation distinguishes nothing and is not evidence the setting did the work.
+  // Establishing whether worker traffic can actually escape needs a probe that can tell
+  // the two settings apart; until one exists, treat the WebSocket route below as the
+  // proven half of this and the service-worker case as open.
+  const context = await browser.newContext({ viewport: { width: W, height: H }, serviceWorkers: 'block' });
+  const page = await context.newPage();
 
   const checks = [];
   const consoleErrors = [];
@@ -125,6 +142,17 @@ function loadPlaywright() {
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   });
+  // media.wsw and backgrounds.wsw are LOCAL virtual hosts, not the network:
+  // DashboardWindow.MapVirtualHosts maps them to AppPaths.MediaDir and
+  // AppPaths.BackgroundsDir, and WW.listMedia() hands widgets URLs on the first of them.
+  // Without a route here they fell through to the catch-all, which counted a widget's
+  // local media I/O as a network attempt and failed the game gate for a gallery doing
+  // exactly what its API told it to do. 404 rather than a file: this runner has no media
+  // library, and ww-media-list answers [] to match — a widget must handle a missing file
+  // either way, and the answer is deterministic and local, which is what the contract
+  // requires.
+  await page.route(/^https:\/\/(?:media|backgrounds)\.wsw(?:[/?#]|$)/,
+    (route) => route.fulfill({ status: 404, body: '' }));
   // The shell page. Markup only — the iframe is created from script (__wwMount) so the
   // listener that answers it is registered before it can exist. Its own origin is
   // distinct from the widget's, exactly as on the panel, where each widget is served
@@ -153,8 +181,39 @@ function loadPlaywright() {
   // none of them — and treating ':' as a boundary would exempt it from the abort as
   // well, leaving the one URL shape that reaches the real network. Exempt only what a
   // local route can actually serve.
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)).*/,
-    (route) => route.abort());
+  // Counted before the abort, because the abort is what makes an ungated widget look
+  // identical to a gated one here: a widget that ignores state.game keeps fetching, every
+  // request fails, it renders its ordinary offline card, and every remaining check passes.
+  // Without this the --game flag only changed the payload and could not tell a working
+  // gate from a regression.
+  // EVERY method counts, including OPTIONS. Measured first: Playwright's interception
+  // hands this handler the real request and never delivers a CORS preflight at all —
+  // checked on this Chromium both ways (aborting, and fulfilling with the allow-headers
+  // a preflight wants) against a custom-header GET and an application/json POST, and no
+  // OPTIONS appeared in any of the six. So the method filter that used to sit here was
+  // discarding nothing today. It is gone because it is a trap if that ever changes: an
+  // ABORTED preflight is the end of the exchange — the request it was asking permission
+  // for is never issued — so a filtered OPTIONS would hide every non-simple cross-origin
+  // call completely, in the one runner that aborts everything. The method is kept in the
+  // string so a failure line says which half was seen.
+  const attempted = [];
+  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test|media\.wsw|backgrounds\.wsw)(?:[/?#]|$)).*/,
+    (route) => {
+      attempted.push(route.request().method() + ' ' + route.request().url());
+      return route.abort();
+    });
+  // A WebSocket passes through NONE of the above. page.route intercepts HTTP(S) only, so
+  // `new WebSocket('wss://…')` left this runner and reached the real network — not merely
+  // unseen by the game gate, but a hole in the contract that every unmatched request here
+  // is deterministic and offline. Nothing this handler receives is connected upstream
+  // (the socket is only forwarded if connectToServer() is called), so every one is
+  // refused; the non-local ones are also counted, with the same host boundary the abort
+  // route uses.
+  await page.routeWebSocket(/.*/, (ws) => {
+    const url = ws.url();
+    if (!/^wss?:\/\/(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)/.test(url)) attempted.push('WS ' + url);
+    ws.close();
+  });
 
   // Errors are collected IN each document as well as through page.on('pageerror'). The
   // widget now lives in a cross-origin child frame, which Chromium may host in its own
@@ -170,6 +229,76 @@ function loadPlaywright() {
       window.__wwErrors.push(('unhandled rejection: ' + ((r && (r.stack || r.message)) || r)).slice(0, 300));
     });
   });
+  // WebRTC is the third way out that no HTTP interception sees: an RTCPeerConnection
+  // gathering ICE candidates against a STUN or TURN server emits UDP with no HTTP
+  // request, no WebSocket and no host-bridge message, so page.route, routeWebSocket and
+  // __wwHostCalls are all blind to it. Recorded AND refused — the constructor is where
+  // that traffic is committed to, and refusing at the constructor is what makes this a
+  // containment rather than a tally. Registered before any document script runs, so a
+  // widget cannot capture the real constructor first.
+  await page.addInitScript(() => {
+    const seen = (window.__wwRtc = []);
+    const refuse = function RTCPeerConnection(config) {
+      const servers = (config && config.iceServers) || [];
+      let where = '';
+      try { where = JSON.stringify(servers).slice(0, 100); } catch (e) { where = '(unserializable)'; }
+      seen.push('RTCPeerConnection ' + where);
+      throw new TypeError('WebRTC is not available in the offline runner');
+    };
+    for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection']) {
+      try {
+        // The native STATIC surface is carried over. Feature-detecting code calls
+        // RTCPeerConnection.generateCertificate() before it ever constructs, and a bare
+        // function has no statics — so such a widget threw or took an
+        // unsupported-browser branch, never reached the constructor, and left the record
+        // empty while the same code reaches ICE setup in production. The prototype is
+        // kept for the same reason: an instanceof or a prototype probe must not be what
+        // decides whether this wrapper is reachable.
+        // Only a constructor that is ACTUALLY PRESENT is replaced. Defining the
+        // wrapper unconditionally synthesized `mozRTCPeerConnection` on a Chromium that
+        // has no such alias, which can send a widget's feature detection down a legacy
+        // path that does not exist on the panel — a false result manufactured by the
+        // instrument, in either direction.
+        const native = window[name];
+        if (!native) continue;
+        {
+          for (const key of Object.getOwnPropertyNames(native)) {
+            if (['length', 'name', 'prototype', 'caller', 'arguments'].includes(key)) continue;
+            try {
+              Object.defineProperty(refuse, key, Object.getOwnPropertyDescriptor(native, key));
+            } catch (e) { /* non-configurable */ }
+          }
+          try { refuse.prototype = native.prototype; } catch (e) { /* frozen */ }
+        }
+        Object.defineProperty(window, name, { value: refuse, configurable: true, writable: true });
+      } catch (e) { /* not present in this build */ }
+    }
+    // WebTransport is the same class of hole: HTTP/3 over QUIC, which page.route does not
+    // intercept either. Recorded and refused in the same place and for the same reason,
+    // rather than waiting to be found the way WebSocket and WebRTC each were.
+    try {
+      const nativeWT = window.WebTransport;
+      if (nativeWT) {
+        const refuseWT = function WebTransport(url) {
+          seen.push('WebTransport ' + String(url).slice(0, 100));
+          throw new TypeError('WebTransport is not available in the offline runner');
+        };
+        // Statics and prototype carried over for the same reason as the peer connection
+        // above: a widget that checks WebTransport.prototype.createBidirectionalStream
+        // before constructing would otherwise see an empty prototype, take its
+        // unsupported-browser path, and record nothing — while production passes that
+        // check and opens the QUIC session.
+        for (const key of Object.getOwnPropertyNames(nativeWT)) {
+          if (['length', 'name', 'prototype', 'caller', 'arguments'].includes(key)) continue;
+          try {
+            Object.defineProperty(refuseWT, key, Object.getOwnPropertyDescriptor(nativeWT, key));
+          } catch (e) { /* non-configurable */ }
+        }
+        try { refuseWT.prototype = nativeWT.prototype; } catch (e) { /* frozen */ }
+        Object.defineProperty(window, 'WebTransport', { value: refuseWT, configurable: true, writable: true });
+      }
+    } catch (e) { /* not present in this build */ }
+  });
   await page.addInitScript(shim);
   // Host-bound messages, answered by the SHELL document. The widget's shim drops any
   // message whose ev.source is not window.parent, so a reply the widget's own document
@@ -177,6 +306,13 @@ function loadPlaywright() {
   // relied on, and why it had to run the widget unframed to work at all (#161).
   await page.addInitScript(({ widgetUrl, widgetOrigin, slotHash, initMessage }) => {
     if (window.top !== window) return;   // shell-side only; the widget frame gets the shim
+    // The two channels that leave the machine WITHOUT passing page.route: the shim posts
+    // them to the shell and the HOST dials out. `WW.fetch(url, { proxy: 'always' })`
+    // skips the browser fetch entirely, and WW.ping is real ICMP — so a game gate built
+    // on the route alone was blind to both. Everything else a widget can post
+    // (ww-media-list, ww-audio-*, ww-sd-*, ww-secure-*, ww-log, ww-action, ww-open-url)
+    // is answered inside the host process and reaches no network.
+    window.__wwHostCalls = [];
     window.__wwReady = false;
     window.__wwInitSent = false;
     let frame = null;
@@ -211,9 +347,57 @@ function loadPlaywright() {
       const target = ev.origin && ev.origin !== 'null' ? ev.origin : '*';
       const reply = (obj) => { try { ev.source.postMessage(obj, target); } catch (e) { /* frame gone */ } };
       if (m.type === 'ww-ready') { window.__wwReady = true; window.__wwSendInit(true); return; }
-      if (m.type === 'ww-fetch') reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
-      else if (m.type === 'ww-ping') reply({ type: 'ww-ping-result', id: m.id, results: [] });
-      else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
+      if (m.type === 'ww-fetch') {
+        // Counted only once the host's OWN admission tests pass, BOTH of them —
+        // DashboardWindow.HandleProxyFetchAsync refuses a non-absolute or non-http(s)
+        // URL and any method outside GET/POST/PUT/HEAD before it dials. A call the host
+        // throws out is not a network call in production, so counting one here would
+        // fail the game gate for a widget that never crossed it.
+        let abs = null;
+        try { abs = new URL(String(m.url || '')); } catch (e) { abs = null; }
+        const method = String(m.method || 'GET').toUpperCase();
+        // The SHELL's admission test comes first (shell.js:324): it forwards ww-fetch
+        // only when msg.id is truthy, so an id-less message never reaches the host at all
+        // and cannot be a network call.
+        if (m.id && abs && (abs.protocol === 'http:' || abs.protocol === 'https:')
+            && ['GET', 'POST', 'PUT', 'HEAD'].includes(method))
+          window.__wwHostCalls.push('ww-fetch ' + method + ' ' + abs.href);
+        reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
+      } else if (m.type === 'ww-ping') {
+        // Same rule, from HandlePingAsync: each target is trimmed, empties are dropped,
+        // and at most 16 survive. WW.ping([]) — a legal call — and a list of blanks both
+        // start zero Ping tasks and put nothing on the wire, so neither is an attempt.
+        const targets = (Array.isArray(m.hosts) ? m.hosts : [])
+          .map((h) => String(h == null ? '' : h).trim()).filter((h) => h).slice(0, 16);
+        // ...behind the shell's own gate, which forwards ww-ping only with a truthy id
+        // (shell.js:334).
+        if (m.id && targets.length) window.__wwHostCalls.push('ww-ping ' + targets.join(','));
+        reply({ type: 'ww-ping-result', id: m.id, results: [] });
+      } else if (m.type === 'ww-open-url') {
+        // NOT host-local, which is what an earlier pass of this enumeration called it.
+        // shell.js forwards it and DashboardWindow.OpenExternalUrl runs Process.Start on
+        // the URL with UseShellExecute — the system browser then fetches it, which is
+        // external network activity the widget initiated, and a browser window thrown in
+        // front of a running game besides. Counted behind the host's own admission test:
+        // absolute http(s) only, exactly as OpenExternalUrl requires.
+        let openAbs = null;
+        try { openAbs = new URL(String(m.url || '')); } catch (e) { openAbs = null; }
+        if (openAbs && (openAbs.protocol === 'http:' || openAbs.protocol === 'https:'))
+          window.__wwHostCalls.push('ww-open-url ' + openAbs.href);
+      } else if (m.type === 'ww-action') {
+        // The sibling of ww-open-url, and the same mistake if only the reported one were
+        // covered. DeckAction.Execute's `url` branch Process.Starts an absolute http(s)
+        // target; its `launch` branch Process.Starts ANY target with UseShellExecute,
+        // which opens the browser just the same when that target happens to be a URL.
+        // Both are counted, on the http(s) test the url branch itself applies — a launch
+        // of an .exe is not network and is not counted.
+        const kind = String(m.kind || '');
+        let actAbs = null;
+        try { actAbs = new URL(String(m.target || '')); } catch (e) { actAbs = null; }
+        if ((kind === 'url' || kind === 'launch') && actAbs
+            && (actAbs.protocol === 'http:' || actAbs.protocol === 'https:'))
+          window.__wwHostCalls.push('ww-action ' + kind + ' ' + actAbs.href);
+      } else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
       else if (m.type === 'ww-audio-get') reply({ type: 'ww-audio-result', id: m.id, available: false });
       // The Stream Deck pair must be answered, and answering them is only necessary now.
       // At top level `parent === window`, so a widget's own ww-sd-profile echoed back
@@ -234,7 +418,19 @@ function loadPlaywright() {
     widgetUrl: 'https://widget.test/index.html',
     widgetOrigin: 'https://widget.test',
     slotHash,
-    initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme, status: { elevated: false, apiVersion: 1 } },
+    // The panel's ww-init carries EIGHT fields (shell.js initMessage); this used to send
+    // six. `game` was the gap that mattered: shell.js always sends it, so a widget reading
+    // state.game got an object there and undefined here, and the game-mode gate several
+    // widgets now use could not be exercised offline at all. `notifications` is null
+    // unless a slot subscribed, which is what a non-subscribing widget gets on the panel
+    // too — stated rather than omitted, so the difference is a decision.
+    initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme,
+      notifications: null, // The process name is EXTENSIONLESS: GameModeWatcher fills it from
+      // Process.ProcessName, which is also what its ignored-process list matches against,
+      // so a widget that displays or branches on state.game.process must be exercised
+      // with that shape rather than with a filename.
+      game: { active: gameActive, process: gameActive ? 'game' : '' },
+      status: { elevated: false, apiVersion: 1 } },
   });
 
   await page.goto('https://shell.test/host.html');
@@ -311,6 +507,32 @@ function loadPlaywright() {
     : [`rgba(${rgb}, ${alpha})`];
   check('bgStyle contract (body background)', expected.some((e) => bg.color === e),
     `got ${bg.color} (class "${bg.cls}"), expected ${expected.join(' or ')}`);
+
+  // The game gate, asserted rather than merely enabled. Only under --game: without it a
+  // widget is SUPPOSED to reach the network, and the offline routes refusing it is the
+  // designed state this runner tests everywhere else.
+  if (gameActive) {
+    // Both routes out: HTTP the browser made (page.route) and HTTP/ICMP the HOST would
+    // have made on the widget's behalf (ww-fetch, ww-ping). Asserting on the first alone
+    // let a proxy-first widget ignore the gate and still report zero.
+    const hostCalls = await page.evaluate(() => window.__wwHostCalls || []);
+    // ...plus WebRTC, which is read from the WIDGET frame because that is the document
+    // that would have constructed it — the shell's globals are a different origin.
+    // EVERY frame, not just the slot's. The init script runs in each document, so a
+    // child iframe the widget creates records into its OWN __wwRtc — reading only the
+    // slot frame returned zero while a descendant was opening STUN/TURN or QUIC, which
+    // is traffic the panel would carry just the same. Three stock widgets frame
+    // third-party content and one frames a URL the user types, so a descendant is the
+    // ordinary case here, not an exotic one.
+    const peerApis = (await Promise.all(page.frames().map((f) =>
+      f.evaluate(() => window.__wwRtc || []).catch(() => [])))).flat();
+    const net = attempted.concat(hostCalls, peerApis);
+    check('no network request while a game is running',
+      net.length === 0,
+      net.length + ' attempted (' + attempted.length + ' by the browser, '
+        + hostCalls.length + ' via the host, ' + peerApis.length + ' via WebRTC/WebTransport)'
+        + (net.length ? ': ' + net[0].slice(0, 80) : ''));
+  }
 
   check('no horizontal overflow', await frame.evaluate(() =>
     document.documentElement.scrollWidth <= window.innerWidth &&
