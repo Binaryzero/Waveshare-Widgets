@@ -161,10 +161,20 @@ function loadPlaywright() {
   // request fails, it renders its ordinary offline card, and every remaining check passes.
   // Without this the --game flag only changed the payload and could not tell a working
   // gate from a regression.
+  // EVERY method counts, including OPTIONS. Measured first: Playwright's interception
+  // hands this handler the real request and never delivers a CORS preflight at all —
+  // checked on this Chromium both ways (aborting, and fulfilling with the allow-headers
+  // a preflight wants) against a custom-header GET and an application/json POST, and no
+  // OPTIONS appeared in any of the six. So the method filter that used to sit here was
+  // discarding nothing today. It is gone because it is a trap if that ever changes: an
+  // ABORTED preflight is the end of the exchange — the request it was asking permission
+  // for is never issued — so a filtered OPTIONS would hide every non-simple cross-origin
+  // call completely, in the one runner that aborts everything. The method is kept in the
+  // string so a failure line says which half was seen.
   const attempted = [];
   await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)).*/,
     (route) => {
-      if (route.request().method() !== 'OPTIONS') attempted.push(route.request().url());
+      attempted.push(route.request().method() + ' ' + route.request().url());
       return route.abort();
     });
 
@@ -189,6 +199,13 @@ function loadPlaywright() {
   // relied on, and why it had to run the widget unframed to work at all (#161).
   await page.addInitScript(({ widgetUrl, widgetOrigin, slotHash, initMessage }) => {
     if (window.top !== window) return;   // shell-side only; the widget frame gets the shim
+    // The two channels that leave the machine WITHOUT passing page.route: the shim posts
+    // them to the shell and the HOST dials out. `WW.fetch(url, { proxy: 'always' })`
+    // skips the browser fetch entirely, and WW.ping is real ICMP — so a game gate built
+    // on the route alone was blind to both. Everything else a widget can post
+    // (ww-media-list, ww-audio-*, ww-sd-*, ww-secure-*, ww-log, ww-action, ww-open-url)
+    // is answered inside the host process and reaches no network.
+    window.__wwHostCalls = [];
     window.__wwReady = false;
     window.__wwInitSent = false;
     let frame = null;
@@ -223,9 +240,19 @@ function loadPlaywright() {
       const target = ev.origin && ev.origin !== 'null' ? ev.origin : '*';
       const reply = (obj) => { try { ev.source.postMessage(obj, target); } catch (e) { /* frame gone */ } };
       if (m.type === 'ww-ready') { window.__wwReady = true; window.__wwSendInit(true); return; }
-      if (m.type === 'ww-fetch') reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
-      else if (m.type === 'ww-ping') reply({ type: 'ww-ping-result', id: m.id, results: [] });
-      else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
+      if (m.type === 'ww-fetch') {
+        // Counted only once the host's OWN admission test passes (absolute http(s) —
+        // DashboardWindow.HandleProxyFetchAsync), because a call the host refuses before
+        // it dials is not a network call in production either.
+        let abs = null;
+        try { abs = new URL(String(m.url || '')); } catch (e) { abs = null; }
+        if (abs && (abs.protocol === 'http:' || abs.protocol === 'https:'))
+          window.__wwHostCalls.push('ww-fetch ' + abs.href);
+        reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
+      } else if (m.type === 'ww-ping') {
+        window.__wwHostCalls.push('ww-ping ' + (m.hosts || []).join(','));
+        reply({ type: 'ww-ping-result', id: m.id, results: [] });
+      } else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
       else if (m.type === 'ww-audio-get') reply({ type: 'ww-audio-result', id: m.id, available: false });
       // The Stream Deck pair must be answered, and answering them is only necessary now.
       // At top level `parent === window`, so a widget's own ww-sd-profile echoed back
@@ -336,9 +363,15 @@ function loadPlaywright() {
   // widget is SUPPOSED to reach the network, and the offline routes refusing it is the
   // designed state this runner tests everywhere else.
   if (gameActive) {
+    // Both routes out: HTTP the browser made (page.route) and HTTP/ICMP the HOST would
+    // have made on the widget's behalf (ww-fetch, ww-ping). Asserting on the first alone
+    // let a proxy-first widget ignore the gate and still report zero.
+    const hostCalls = await page.evaluate(() => window.__wwHostCalls || []);
+    const net = attempted.concat(hostCalls);
     check('no network request while a game is running',
-      attempted.length === 0,
-      attempted.length + ' attempted' + (attempted.length ? ': ' + attempted[0].slice(0, 80) : ''));
+      net.length === 0,
+      net.length + ' attempted (' + attempted.length + ' by the browser, '
+        + hostCalls.length + ' via the host)' + (net.length ? ': ' + net[0].slice(0, 80) : ''));
   }
 
   check('no horizontal overflow', await frame.evaluate(() =>

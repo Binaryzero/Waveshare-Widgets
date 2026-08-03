@@ -213,11 +213,21 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     // unstubbed or renamed endpoint left both empty — and "no endpoint was requested"
     // passed while the widget had gone to the network. The attempt is the fact the game
     // gate is about, not whether a fixture happened to answer it.
-    if (route.request().method() !== 'OPTIONS') attempted.push(url);
+    // Every method, including OPTIONS — for the reasons written out in widget-harness.js,
+    // which measured it: Playwright hands this handler the real request and delivers no
+    // CORS preflight, so the filter that used to be here dropped nothing, and both runners
+    // now count the same event. Should preflights ever arrive, one plus its request is two
+    // entries, which changes the number a failure prints and never whether it fails.
+    attempted.push(route.request().method() + ' ' + url);
     // A CORS preflight is not the data request — it is the browser ASKING to make one.
     // Counting it as served let a widget whose real call was then blocked satisfy the
     // data-path check on the preflight alone, and answering it without the allow-
     // headers/methods is what blocked that call in the first place.
+    // KEPT although it is not reached on this Chromium: interception delivers the real
+    // request and no OPTIONS ever arrives here (measured — see widget-harness.js). It
+    // stays because it is the right answer if a future build does deliver one, and
+    // because a fixture author reading `served` needs to know a preflight would not be
+    // in it. Nothing else in this runner depends on it firing.
     if (route.request().method() === 'OPTIONS') {
       return route.fulfill({
         status: 204,
@@ -279,6 +289,14 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     if (window.top !== window) return;   // shell-side only; the widget frame gets the shim
     const proxyForwardable = new Set(forwardable);
     window.__wwProxyServed = [];
+    // Distinct from __wwProxyServed, which records only a MATCHED fixture. This records
+    // the two channels that leave the machine WITHOUT passing page.route — the shim posts
+    // them to the shell and the HOST dials out. `WW.fetch(url, { proxy: 'always' })` skips
+    // the browser fetch entirely, and WW.ping is real ICMP, so a game gate built on the
+    // route alone was blind to both. Everything else a widget can post (ww-media-list,
+    // ww-audio-*, ww-sd-*, ww-secure-*, ww-log, ww-action, ww-open-url) is answered inside
+    // the host process and reaches no network.
+    window.__wwHostCalls = [];
     window.__wwReady = false;
     window.__wwInitSent = false;
     let frame = null;
@@ -351,6 +369,9 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         // for a call the browser would have made directly. The host parses the URL too,
         // so canonical is also what it would send.
         const canonical = abs.href;
+        // Recorded once the host's own admission tests have passed and BEFORE the stub
+        // lookup — an unmatched fixture still means the widget asked the host to dial.
+        window.__wwHostCalls.push('ww-fetch ' + canonical);
         const stub = table.find((s) => canonical.includes(s.match));
         if (!stub) return reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
         window.__wwProxyServed.push(String(m.url || ''));
@@ -399,8 +420,10 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
           })(),
         });
       }
-      if (m.type === 'ww-ping') reply({ type: 'ww-ping-result', id: m.id, results: [] });
-      else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
+      if (m.type === 'ww-ping') {
+        window.__wwHostCalls.push('ww-ping ' + (m.hosts || []).join(','));
+        reply({ type: 'ww-ping-result', id: m.id, results: [] });
+      } else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
       else if (m.type === 'ww-audio-get') reply({ type: 'ww-audio-result', id: m.id, available: false });
     });
   }, {
@@ -518,9 +541,17 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     // spinner, some keep the data they already had, and endpoints keeps its whole grid.
     // That is per-widget, so it belongs in --expect rather than in a blanket rule; the
     // state-layer check below is skipped for the same reason.
+    // Both routes out: HTTP the browser made (page.route) and HTTP/ICMP the HOST would
+    // have made on the widget's behalf (ww-fetch, ww-ping). `served`/`proxyServed` were
+    // the wrong pair to report here — they count only fixtures that MATCHED, so the
+    // failure line could read "0 attempted (0 direct, 1 proxied)" while the widget had
+    // gone to the network twice.
+    const hostCalls = await page.evaluate(() => window.__wwHostCalls || []);
+    const net = attempted.concat(hostCalls);
     check('no endpoint was requested while a game is running',
-      attempted.length === 0,
-      attempted.length + ' attempted (' + served.length + ' direct, ' + proxyServed.length + ' proxied)');
+      net.length === 0,
+      net.length + ' attempted (' + attempted.length + ' by the browser, '
+        + hostCalls.length + ' via the host)' + (net.length ? ': ' + net[0].slice(0, 80) : ''));
   } else if (!allowState) {
     check('a stubbed endpoint was actually requested (direct or proxy tier)',
       served.length + proxyServed.length > 0,
