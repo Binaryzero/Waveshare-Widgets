@@ -301,8 +301,14 @@ if (file) {
   // assertions — this is for looking at an export that behaves oddly in the field.
   const from = nowMs(FILE_NOW);
   const lookaheadDays = Number(opt('lookahead', 30));
-  const got = ICS.next(fs.readFileSync(file, 'utf8'), from, lookaheadDays * 86400000,
-    { ignoreAllDay: args.includes('--ignore-all-day') });
+  // The SAME bounds load() uses, or this mode answers a different question from the one
+  // it claims to. Timed events are eligible from an hour ago, all-day ones from local
+  // midnight; querying from the bare instant reported tomorrow's all-day event, or none,
+  // for an export whose tile would have shown today's — which is exactly the confusion
+  // someone reaches for this mode to resolve.
+  const got = ICS.next(fs.readFileSync(file, 'utf8'), from - 3600000,
+    lookaheadDays * 86400000 + 3600000,
+    { ignoreAllDay: args.includes('--ignore-all-day'), allDayFrom: localMidnight(FILE_NOW) });
   console.log('at ' + iso(from) + ' (TZ=' + process.env.TZ + '), looking ahead ' + lookaheadDays + ' days:');
   console.log('  events parsed: ' + got.total + ' | repeats dropped: ' + got.dropped);
   console.log(got.best

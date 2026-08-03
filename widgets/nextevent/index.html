@@ -72,6 +72,7 @@
   let gameOn = false;
   let generation = 0;      // bumped when the source changes; older answers are discarded
   let activeController = null;
+  let dueAt = 0;           // when the next fetch is due, tracked even while paused
 
   // A calendar can be several megabytes and the direct fetch tier has no deadline of its
   // own, so a server that accepts the connection and then stalls would pin `inFlight`
@@ -212,7 +213,7 @@
     paint();
     // Whatever was held is now as old as the game was long. Refresh if it is due,
     // rather than waiting out a timer that was cancelled when the game started.
-    if (Date.now() - lastOk >= cfg.refreshMs) { clearTimeout(fetchTimer); load(); }
+    if (Date.now() >= dueAt) { clearTimeout(fetchTimer); load(); }
     else schedule(remainingWait());
   });
 
@@ -322,21 +323,41 @@
   function schedule(delayMs) {
     clearTimeout(fetchTimer);
     fetchTimer = null;
+    const wait = delayMs === undefined ? nextDelayMs() : Math.max(0, delayMs);
+    // WHEN the next fetch is due, recorded even while paused. The resume paths used to
+    // ask "how long since the last SUCCESS", which is a different question with a wrong
+    // answer during backoff: after a failure `lastOk` is already older than the interval,
+    // so every game or unhide fired an immediate retry and threw the backoff away — the
+    // one situation the backoff exists for. A due time is the same quantity for both
+    // gates, so they cannot disagree about it.
+    dueAt = Date.now() + wait;
     // A paused tile arms nothing. onGame and visibilitychange re-arm on the way back,
     // so this cannot strand the chain.
     if (paused() || !cfg.url) return;
-    const wait = delayMs === undefined ? nextDelayMs() : Math.max(0, delayMs);
     fetchTimer = setTimeout(load, wait);
   }
 
-  /** What is still owed on the current interval, for the resume paths. */
-  const remainingWait = () => Math.max(0, nextDelayMs() - (Date.now() - lastOk));
+  /** What is still owed before the next fetch is due. */
+  const remainingWait = () => Math.max(0, dueAt - Date.now());
 
   /** Local midnight of the day `ms` falls in. All-day events are anchored to it, so it
    *  is what "today" means for eligibility on this panel. */
   function startOfDay(ms) {
     const d = new Date(ms);
     d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  }
+
+  /** The next local midnight after `ms`. Deliberately calendar arithmetic, not
+   *  `startOfDay(ms) + 86400000`: a local day is only 86400000 ms long on days without a
+   *  DST transition. On a fall-back day that sum lands at 23:00, an hour SHORT of the
+   *  next midnight — and since the query window still offers the event, paint() would
+   *  discard it and the next answer would offer it again, once a second, each time with
+   *  a fetch. Advancing the date lets Date normalise the transition. */
+  function nextMidnight(ms) {
+    const d = new Date(ms);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + 1);
     return d.getTime();
   }
 
@@ -390,7 +411,7 @@
     // between the two forever. A timed event is the one you are in for an hour after it
     // starts; an all-day event is on until its day ends.
     const expiry = current.event.start.allDay
-      ? startOfDay(current.start) + 86400000
+      ? nextMidnight(current.start)
       : current.start + 3600000;
     if (Date.now() > expiry) { current = null; clearTimeout(fetchTimer); load(); return; }
 
@@ -488,7 +509,7 @@
     if (paused() || !started) return;
     startTick();
     paint();
-    if (Date.now() - lastOk >= cfg.refreshMs) { clearTimeout(fetchTimer); load(); }
+    if (Date.now() >= dueAt) { clearTimeout(fetchTimer); load(); }
     else schedule(remainingWait());
   });
 </script>
