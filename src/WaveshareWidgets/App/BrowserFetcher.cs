@@ -63,7 +63,9 @@ public sealed class BrowserFetcher : IDisposable
     /// keep that 403 — so a body whose only problem is its size is reported to the field as
     /// an authorization failure, and the ceiling the ladder advertises goes unmentioned.
     /// </summary>
-    public readonly record struct BrowserFetch(int Status, string? ContentType, byte[] Body, bool TooLarge)
+    public readonly record struct BrowserFetch(
+        int Status, string? ContentType, byte[] Body, bool TooLarge,
+        IReadOnlyDictionary<string, string>? Headers = null)
     {
         public static BrowserFetch Refused(long size) => new(0, null, Array.Empty<byte>(), true);
     }
@@ -155,7 +157,20 @@ public sealed class BrowserFetcher : IDisposable
                     byte[] bodyBytes;
                     try { bodyBytes = Convert.FromBase64String(b64); }
                     catch (FormatException) { bodyBytes = Array.Empty<byte>(); }
-                    return new BrowserFetch(status == 0 ? 200 : status, contentType, bodyBytes, false);
+                    // The allow-listed response headers the page collected (#169). This tier
+                    // answers the same WW.fetch call the proxy tier does, so a widget has to
+                    // be able to read the same metadata whichever one served it — and this is
+                    // the tier that answers a bot wall's 403, where a Retry-After is most
+                    // likely to be the only thing worth reading.
+                    Dictionary<string, string>? headerMapOut = null;
+                    if (root.TryGetProperty("headers", out var hs) && hs.ValueKind == JsonValueKind.Object)
+                    {
+                        headerMapOut = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var h in hs.EnumerateObject())
+                            if (h.Value.ValueKind == JsonValueKind.String)
+                                headerMapOut[h.Name] = h.Value.GetString() ?? "";
+                    }
+                    return new BrowserFetch(status == 0 ? 200 : status, contentType, bodyBytes, false, headerMapOut);
                 }
                 Log.Warn($"browser fetch timed out ({SafeUrl.Describe(url)})");
                 return null;

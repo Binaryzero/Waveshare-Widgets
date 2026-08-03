@@ -95,4 +95,57 @@ public static class ProxyHeaderRules
             or "date" or "dnt" or "expect")
             && !lower.StartsWith("access-control-", StringComparison.Ordinal);
     }
+
+    // ---- the RESPONSE direction (#169) ---------------------------------------------
+
+    /// <summary>Response headers the host carries back across the proxy hop.
+    ///
+    /// <para>The hop used to return four fields — status, statusText, contentType and the
+    /// body — so a widget that read any response header saw nothing the moment its
+    /// request escalated. That is not a rare path: the shim escalates EVERY direct 403 or
+    /// 429 through the proxy, on the reasoning that bot walls serve their block page with
+    /// CORS headers. So the responses most likely to carry meaningful metadata — rate
+    /// limits — were exactly the ones routed through the tier that discarded it. A
+    /// primary rate limit answering 403 with <c>x-ratelimit-remaining: 0</c> arrived as a
+    /// bare "Forbidden", which reads as a permissions problem, so a widget kept polling
+    /// instead of waiting for the reset.</para>
+    ///
+    /// <para>An ALLOW-LIST rather than a copy, for two reasons. Response headers are
+    /// unbounded in size and count, and this payload crosses a postMessage hop that
+    /// already carries the whole body. And some names must not cross at all:
+    /// <c>Set-Cookie</c> above all — the proxy holds cookies the page cannot see, and
+    /// handing their values to widget script would undo that — along with the transport's
+    /// own framing, which describes the host's connection and not the widget's.</para>
+    ///
+    /// <para><c>Content-Type</c> is deliberately absent: it rides its own field and the
+    /// shim applies it, so listing it here would be a second source for one value.</para>
+    /// </summary>
+    private static readonly HashSet<string> ResponseAllowed = new(StringComparer.Ordinal)
+    {
+        // Conditional requests. Without these a widget can only do conditional GETs on
+        // the direct tier and silently loses its own caching the moment it escalates.
+        "etag", "last-modified",
+        // The one standard way a server says how long to wait, and RFC 8288 pagination —
+        // how GitHub and many others express "there is more".
+        "retry-after", "link",
+        // Rate limits. Not standardised, but near-universal in this spelling, and the
+        // reason this issue was filed.
+        "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset",
+        "x-ratelimit-used", "x-ratelimit-resource",
+    };
+
+    /// <summary>The forwarded names, lowercase. Exported so the host, the hidden-browser
+    /// script and the probe all read ONE list — the request direction learned three times
+    /// over that a rule kept as two hand-written copies drifts, and the drift is invisible
+    /// until a widget on one tier behaves differently from the same widget on the other.
+    /// </summary>
+    public static IEnumerable<string> ResponseAllowList => ResponseAllowed;
+
+    /// <summary>Whether a response header is carried back to the widget.</summary>
+    /// <param name="name">Header name; compared case-insensitively.</param>
+    public static bool IsForwardableResponseHeader(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        return ResponseAllowed.Contains(name.ToLowerInvariant());
+    }
 }

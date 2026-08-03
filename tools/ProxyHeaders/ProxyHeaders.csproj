@@ -21,5 +21,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../src/WaveshareWidgets/ProxyHeaderRules.cs" />
+    <!-- R6 asserts the generated page script carries the same response-header list, so the
+         probe needs the generator as well as the rules. -->
+    <Compile Include="../../src/WaveshareWidgets/FetchLimits.cs" />
   </ItemGroup>
 </Project>

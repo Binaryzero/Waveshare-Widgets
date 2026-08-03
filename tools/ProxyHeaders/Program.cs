@@ -10,6 +10,7 @@
 // P5-P6  ...without taking the headers real APIs need
 // P7     the two tiers agree about host-owned names — the drift that WAS the finding
 // P8     name handling is case- and junk-proof
+using System.Text.Json;
 using WaveshareWidgets;
 
 var failures = 0;
@@ -107,6 +108,103 @@ Check("P8c the sec- prefix covers the reserved namespace and stops there",
     !ProxyHeaderRules.IsWidgetSuppliable("Sec-Custom-Thing")
     && ProxyHeaderRules.IsWidgetSuppliable("Security-Token")
     && ProxyHeaderRules.IsWidgetSuppliable("Secret-Handshake"));
+
+// ---- R1-R6: the RESPONSE direction (#169) -----------------------------------------
+//
+// The proxy hop returned status, statusText, contentType and the body, so a widget that
+// read any response header saw nothing once its request escalated — and the shim
+// escalates every direct 403 and 429, which is exactly where a rate limit lives. The
+// forwarding is an allow-list, and the same reasoning as the request direction applies:
+// the danger is not one missing name, it is the two TIERS disagreeing, so R6 derives its
+// parity check from the exported list rather than restating it.
+
+// The names from the issue, spelled out so the intent is legible in the output.
+string[] wanted = [
+    "ETag", "Last-Modified", "Retry-After", "Link",
+    "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset",
+    "X-RateLimit-Used", "X-RateLimit-Resource",
+];
+Check("R1 the metadata a widget cannot get any other way is forwarded",
+    wanted.All(ProxyHeaderRules.IsForwardableResponseHeader),
+    string.Join(", ", wanted.Where(h => !ProxyHeaderRules.IsForwardableResponseHeader(h))));
+
+// An allow-list, not a copy. Set-Cookie is the one that matters most: the proxy holds
+// cookies the page cannot see, and handing their values to widget script would undo
+// exactly that. The rest describe the HOST's connection, not the widget's.
+string[] mustNotCross = [
+    "Set-Cookie", "Set-Cookie2", "Authorization", "WWW-Authenticate", "Proxy-Authenticate",
+    "Connection", "Keep-Alive", "Transfer-Encoding", "Content-Length", "Trailer", "Upgrade",
+    "Server", "Strict-Transport-Security", "Content-Security-Policy",
+];
+Check("R2 nothing outside the list crosses the hop — cookies above all",
+    mustNotCross.All(h => !ProxyHeaderRules.IsForwardableResponseHeader(h)),
+    string.Join(", ", mustNotCross.Where(ProxyHeaderRules.IsForwardableResponseHeader)));
+
+// Content-Type rides its own field and the shim applies it after the map. Listing it
+// here as well would be two sources for one value, and the shim would have to decide
+// which wins — a decision with no right answer that is better not to create.
+Check("R3 Content-Type is NOT in the list, because it has its own field",
+    !ProxyHeaderRules.IsForwardableResponseHeader("Content-Type"));
+
+Check("R4 matching is case-insensitive, because header names are",
+    ProxyHeaderRules.IsForwardableResponseHeader("etag")
+    && ProxyHeaderRules.IsForwardableResponseHeader("ETAG")
+    && ProxyHeaderRules.IsForwardableResponseHeader("X-RateLimit-REMAINING"));
+
+Check("R4b a missing or blank name is not a header",
+    !ProxyHeaderRules.IsForwardableResponseHeader(null)
+    && !ProxyHeaderRules.IsForwardableResponseHeader("")
+    && !ProxyHeaderRules.IsForwardableResponseHeader("   "));
+
+// The list is exact, not a prefix rule: `x-ratelimit-` is a family, but forwarding
+// whatever else happens to start with it is how an allow-list stops being one.
+Check("R5 the list is exact rather than prefix-matched",
+    !ProxyHeaderRules.IsForwardableResponseHeader("X-RateLimit-Secret")
+    && !ProxyHeaderRules.IsForwardableResponseHeader("ETag-Internal")
+    && !ProxyHeaderRules.IsForwardableResponseHeader("Linkage"));
+
+// R6 is the point of this block, and the counterpart of P7. The hidden-browser tier
+// collects its headers in a script GENERATED from the same property, so a name added to
+// ProxyHeaderRules reaches both tiers or neither. Restating the list in the script is
+// the drift the request direction suffered three times.
+var listed = ProxyHeaderRules.ResponseAllowList.ToArray();
+Check("R6 setup: the exported list is non-trivial", listed.Length >= 9, $"{listed.Length} names");
+Check("R6 setup: the list is lowercase, which is what the script's header.get calls assume",
+    listed.All(n => n == n.ToLowerInvariant()),
+    string.Join(", ", listed.Where(n => n != n.ToLowerInvariant())));
+
+var script = FetchLimits.BrowserFetchScript("\"https://example.test/\"", "{}", FetchLimits.MaxBodyBytes);
+Check("R6 every forwarded name reaches the generated page script",
+    listed.All(n => script.Contains($"\"{n}\"", StringComparison.Ordinal)),
+    string.Join(", ", listed.Where(n => !script.Contains($"\"{n}\"", StringComparison.Ordinal))));
+Check("R6b ...and the script actually reads them off the response",
+    script.Contains("r.headers.get(k)", StringComparison.Ordinal)
+    && script.Contains("headers: readHeaders(r)", StringComparison.Ordinal));
+// A refusal carries no headers because it carries no response — but a SUCCESS on either
+// tier must, including the null-body statuses, which take their own branch in the script.
+Check("R6c ...on the null-body branch too, which is a separate assignment",
+    script.Split("readHeaders(r)").Length - 1 >= 2,
+    (script.Split("readHeaders(r)").Length - 1) + " assignment(s)");
+
+// R7: the JSON fixture the Node harness reads is the SAME set. A harness with its own
+// copy of the list would go on proving tier parity for a list the host no longer
+// forwards — a probe passing because it is testing itself.
+var fixtureFile = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "proxy-response-headers.json");
+if (!File.Exists(fixtureFile))
+{
+    Check("R7 setup: tools/proxy-response-headers.json exists", false, fixtureFile);
+}
+else
+{
+    using var fixture = JsonDocument.Parse(File.ReadAllText(fixtureFile));
+    var fromFixture = fixture.RootElement.GetProperty("forward")
+        .EnumerateArray().Select(e => e.GetString() ?? "").ToHashSet(StringComparer.Ordinal);
+    var fromRules = ProxyHeaderRules.ResponseAllowList.ToHashSet(StringComparer.Ordinal);
+    Check("R7 the harness fixture and the host's list are the same set",
+        fromFixture.SetEquals(fromRules),
+        "only in fixture: [" + string.Join(", ", fromFixture.Except(fromRules))
+        + "] only in rules: [" + string.Join(", ", fromRules.Except(fromFixture)) + "]");
+}
 
 Console.WriteLine(failures > 0 ? $"{failures} FAILURES" : "ALL PASS");
 return failures > 0 ? 1 : 0;

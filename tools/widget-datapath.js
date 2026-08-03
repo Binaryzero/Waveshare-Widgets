@@ -90,6 +90,12 @@ const slotHash = (() => {
   try { return '#ww-slot=p0s0&ww-settings=' + encodeURIComponent(JSON.stringify(settings)); }
   catch (e) { return '#ww-slot=p0s0'; }   // unserializable: ww-init still applies them
 })();
+// The response headers the host proxy carries back. One shared fixture, checked against
+// ProxyHeaderRules in CI — see tools/proxy-response-headers.json.
+const proxyForwardable = new Set(
+  JSON.parse(fs.readFileSync(path.join(__dirname, 'proxy-response-headers.json'), 'utf8'))
+    .forward.map((n) => String(n).toLowerCase()));
+
 const stubs = (() => {
   const file = opt('stubs', null);
   if (!file) return [];
@@ -215,10 +221,20 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     // failure as its cue to escalate, which is exactly what a CORS-refusing API causes.
     if (stub.tier === 'proxy') return route.abort();
     served.push(url);
+    // Access-Control-Expose-Headers, derived from whatever the stub sets. A cross-origin
+    // read only exposes the CORS-safelisted names unless the server says otherwise, so
+    // without this the DIRECT tier would show a widget nothing but Content-Type — and a
+    // fixture asserting the two tiers agree about a header would "pass" by both of them
+    // being blank. Real APIs whose rate limits are meant to be read (GitHub among them)
+    // send this header; the harness models one that does.
+    const exposed = Object.keys(stub.headers || {});
     return route.fulfill({
       status: stub.status || 200,
       contentType: stub.contentType || (stub.json !== undefined ? 'application/json' : 'text/plain'),
-      headers: Object.assign({ 'access-control-allow-origin': '*' }, stub.headers || {}),
+      headers: Object.assign(
+        { 'access-control-allow-origin': '*' },
+        exposed.length ? { 'access-control-expose-headers': exposed.join(', ') } : {},
+        stub.headers || {}),
       body: bodyOf(stub),
     });
   });
@@ -244,8 +260,9 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // direct route uses, because a widget that escalates to the host proxy must reach the
   // same data it would have reached directly — otherwise the stub only covers whichever
   // tier happened to win.
-  await page.addInitScript(({ table, ceiling, widgetUrl, widgetOrigin, slotHash, initMessage }) => {
+  await page.addInitScript(({ table, ceiling, widgetUrl, widgetOrigin, slotHash, initMessage, forwardable }) => {
     if (window.top !== window) return;   // shell-side only; the widget frame gets the shim
+    const proxyForwardable = new Set(forwardable);
     window.__wwProxyServed = [];
     window.__wwReady = false;
     window.__wwInitSent = false;
@@ -322,11 +339,12 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         const stub = table.find((s) => canonical.includes(s.match));
         if (!stub) return reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
         window.__wwProxyServed.push(String(m.url || ''));
-        // The proxy tier's contract is bodyBase64 + contentType, NOT a body string and
-        // a headers map — the shim rebuilds a Response from exactly those fields. Note
-        // it carries no response headers beyond Content-Type, so anything reading an
-        // ETag off a proxied call legitimately sees nothing; that is the host's shape,
-        // and a widget has to survive it.
+        // The proxy tier's contract is bodyBase64 + contentType + an ALLOW-LISTED header
+        // map — the shim rebuilds a Response from exactly those fields. The allow-list is
+        // read from tools/proxy-response-headers.json rather than written here, and
+        // tools/ProxyHeaders asserts that file and the host's own list are the same set:
+        // a harness carrying its own copy would go on proving the two tiers agree about a
+        // list the host no longer forwards (#169).
         // Chunked: String.fromCharCode(...bytes) blows the argument limit long before
         // the 5 MiB body ceiling, so a realistic full-size fixture threw inside the
         // responder instead of exercising the widget's proxy path.
@@ -354,6 +372,16 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
           statusText: stub.statusText || '',
           contentType: stub.contentType || (stub.json !== undefined ? 'application/json' : 'text/plain'),
           bodyBase64: b64,
+          // Filtered exactly as the host filters, so a stub that sets Set-Cookie proves
+          // it does NOT reach the widget rather than silently arriving here.
+          headers: (() => {
+            const out = {};
+            for (const name of Object.keys(stub.headers || {})) {
+              if (!proxyForwardable.has(String(name).toLowerCase())) continue;
+              out[name] = String(stub.headers[name]);
+            }
+            return out;
+          })(),
         });
       }
       if (m.type === 'ww-ping') reply({ type: 'ww-ping-result', id: m.id, results: [] });
@@ -362,6 +390,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     });
   }, {
     ceiling: 5 * 1024 * 1024,   // the host's own body ceiling; init.maxBytes only LOWERS it
+    forwardable: [...proxyForwardable],
     widgetUrl: 'https://widget.test/index.html',
     widgetOrigin: 'https://widget.test',
     slotHash,
@@ -369,6 +398,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     table: stubs.map((s) => ({
       match: s.match, status: s.status, statusText: s.statusText,
       contentType: s.contentType, json: s.json, bodyText: bodyOf(s),
+      headers: s.headers,
     })),
   });
 

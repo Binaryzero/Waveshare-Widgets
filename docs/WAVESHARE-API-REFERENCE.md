@@ -193,6 +193,18 @@ self-signed certs like the Philips Hue bridge. Public hostnames always validate.
 Insecure LAN requests use HTTP/1.1 and are serialized through one connection per
 device — embedded TLS servers mishandle h2 offers and parallel handshakes.
 
+**Response headers survive the proxy hop, but only an allow-list of them.** The host
+carries back `ETag`, `Last-Modified`, `Retry-After`, `Link` and the `X-RateLimit-*`
+family; everything else is dropped, `Set-Cookie` above all — the proxy holds cookies the
+page cannot see. The list lives in `tools/proxy-response-headers.json`, and CI checks the
+host, the hidden-browser script and that file are one set. This matters more than it
+looks: `WW.fetch` escalates *every* direct 403 and 429 through the proxy, so the
+responses most likely to carry a rate limit are exactly the ones the proxy serves — and
+before the allow-list existed a rate limit arrived as a bare `Forbidden`, which reads as
+a permissions problem. A header outside the list is unreadable once a call escalates, so
+do not build behaviour on one; anything a widget must have should be checked for on both
+tiers, or read from the body.
+
 Response bodies are capped at **5 MiB** on every tier. Each reader — `text()`, `json()`,
 `blob()`, `arrayBuffer()`, `bytes()`, `formData()`, and the `body` stream — refuses past
 the ceiling with a `RangeError` and cancels the transfer rather than abandoning it (an
@@ -288,7 +300,7 @@ Shell → widget:
 | `ww-init` | `settings, sensors, media, status, theme` | first delivery + on settings change; `theme` is the design-token map (`--surface`, `--accent`, …) the API applies to `:root` and stamps as `data-appearance` |
 | `ww-sensors` | `sensors` | per-tick sensor snapshot |
 | `ww-media` | `media` | now-playing changed |
-| `ww-fetch-result` | `id, status, contentType, bodyBase64, error` | proxied fetch reply |
+| `ww-fetch-result` | `id, status, statusText, contentType, headers, bodyBase64, error` | proxied fetch reply; `headers` is the allow-listed response headers (see `tools/proxy-response-headers.json`) |
 | `ww-ping-result` | `id, results: [{host, ok, rttMs?, error?}]` | ping reply (routed to the requesting widget) |
 | `ww-media-list-result` | `id, files: [{name, url, kind}]` | media folder listing; `url` is on `https://media.wsw/` |
 | `ww-audio-result` | `id, available, master, sessions` | volume mixer snapshot reply |
