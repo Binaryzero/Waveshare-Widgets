@@ -203,7 +203,21 @@ function loadPlaywright() {
       else if (m.type === 'ww-ping') reply({ type: 'ww-ping-result', id: m.id, results: [] });
       else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
       else if (m.type === 'ww-audio-get') reply({ type: 'ww-audio-result', id: m.id, available: false });
+      // The Stream Deck pair must be answered, and answering them is only necessary now.
+      // At top level `parent === window`, so a widget's own ww-sd-profile echoed back
+      // into its own document, matched its own tracked id, and self-delivered — which is
+      // how the unframed harness produced Stream Deck's "No Virtual Stream Deck found"
+      // card by accident. Framed, that echo is gone, and a request nobody answers means
+      // onStreamDeck never fires and the tile renders EMPTY while every check passes.
+      // A null profile/data is what widget-api turns into { available: false }, so this
+      // is the honest offline answer rather than a stub.
+      else if (m.type === 'ww-sd-profile') reply({ type: 'ww-sd-profile', id: m.id, profile: null });
+      else if (m.type === 'ww-sd-capture') reply({ type: 'ww-sd-capture-result', id: m.id, data: null });
     });
+    // Deliver a message into the widget after mount — see the follow-up push below.
+    window.__wwPush = (msg) => {
+      if (frame && frame.contentWindow) frame.contentWindow.postMessage(msg, widgetOrigin);
+    };
   }, {
     widgetUrl: 'https://widget.test/index.html',
     widgetOrigin: 'https://widget.test',
@@ -224,6 +238,19 @@ function loadPlaywright() {
   // ww-ready normally carries the init already; this covers a widget whose document
   // failed to run the shim at all, so the run reports its real state rather than hanging.
   await page.evaluate(() => window.__wwSendInit());
+  // One follow-up push, because only onInit replays. widget-api's onInit calls back
+  // immediately when an init has already arrived (`if (state.ready) cb(state)`), but
+  // onSensors/onMedia/onTheme/onNotifications/onGame do not. Answering ww-ready lands
+  // the init DURING document parse — while the widget-api script tag still blocks the
+  // parser — so a widget that registers WW.onSensors further down its own script misses
+  // the init's sensors emit permanently. The panel never shows this because shell.js
+  // pushes ww-sensors on every poll; a single-shot runner has no second chance, and
+  // widgets/gpu silently lost its "No GPU sensors found" line to exactly this.
+  await page.waitForTimeout(150);
+  await page.evaluate(() => {
+    window.__wwPush({ type: 'ww-sensors', sensors: [] });
+    window.__wwPush({ type: 'ww-media', media: null });
+  });
   await page.waitForTimeout(1200);
 
   const frameErrors = await frame.evaluate(() => window.__wwErrors || []).catch(() => []);
