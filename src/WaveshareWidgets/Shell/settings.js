@@ -1769,6 +1769,51 @@
     });
   }
 
+  // >>> ww-list-mapping — extracted and RUN by tests/harness/listprims-run.js
+  // The two halves of a list setting's round trip live here as named functions on
+  // purpose. The probe loads this block out of the file and executes it, so it exercises
+  // the editor's own mapping instead of a copy in the test that can drift away from it —
+  // which is what the first version of that harness did, leaving every behavioural check
+  // green against a transcription while the real commit could have regressed freely.
+
+  /** The key marking a row that came in as a bare value. A SYMBOL, not a string: settings
+   * arrive as JSON and a manifest may legally declare a field called anything at all, so
+   * a string marker like "__raw" is a name a widget can collide with. An object row
+   * carrying that field would then be read as a wrapper, rendered as one input, and
+   * written back as the bare value — silently dropping its other fields, which is the
+   * very bug this file is fixing. A symbol cannot appear in parsed JSON, so the collision
+   * stops being unlikely and becomes impossible. */
+  const LIST_RAW = Symbol('ww-list-raw');
+
+  /** Is this list entry a bare value a widget accepts as shorthand? (#167)
+   *
+   * Strings and finite numbers only. null, undefined, booleans, NaN and blanks are NOT
+   * shorthand — they are junk in a settings file, and preserving junk as an editable row
+   * would put a permanent blank in front of the reader that does nothing and cannot be
+   * told apart from one they are midway through typing. */
+  function isListPrimitive(x) {
+    if (typeof x === 'string') return x.trim() !== '';
+    return typeof x === 'number' && Number.isFinite(x);
+  }
+
+  /** Stored array -> editor rows. Primitives are KEPT, marked rather than expanded. */
+  function listRowsFrom(arr) {
+    return (arr || [])
+      .filter((x) => (x && typeof x === 'object') || isListPrimitive(x))
+      .map((x) => {
+        if (!isListPrimitive(x)) return Object.assign({}, x);
+        const row = {};
+        row[LIST_RAW] = x;   // the value's own type is kept; String() is for display only
+        return row;
+      });
+  }
+
+  /** Editor rows -> stored array. A marked row goes back out as the value it arrived as. */
+  function listValueFrom(items) {
+    return (items || []).map((x) => (x && LIST_RAW in x) ? x[LIST_RAW] : Object.assign({}, x));
+  }
+  // <<< ww-list-mapping
+
   function attachFieldPicker(container, spec, input) {
     if (spec.picker === 'emoji' || spec.picker === 'emoji-prefix')
       container.appendChild(makeEmojiBtn(input, spec.picker === 'emoji-prefix'));
@@ -2188,7 +2233,20 @@
           if (!Array.isArray(legacyJson)) legacyJson = null;
         }
         if (Array.isArray(current) || legacyJson) {
-          items = (legacyJson || current).filter((x) => x && typeof x === 'object').map((x) => Object.assign({}, x));
+          // A PRIMITIVE entry is kept, not discarded (#167). Several widgets accept a bare
+          // string as shorthand in a list — endpoints takes "nas.lan" and expands it
+          // itself — and filtering those away meant they got no row, so the editor wrote
+          // back only what it had rendered and silently deleted every one of them the
+          // moment anyone opened this panel and saved.
+          //
+          // Kept AS a primitive rather than expanded into the field shape, deliberately.
+          // What a bare string means is the widget's business and differs between them:
+          // endpoints reads it as both the label and the URL, while the comma-string
+          // branch just below reads a bare token as fields[0] alone — which for endpoints
+          // would leave the URL empty and the entry would then be dropped by the widget
+          // instead of by the editor. With no rule the manifest can state, guessing picks
+          // one widget's meaning and corrupts the rest.
+          items = listRowsFrom(legacyJson || current);
         } else if (typeof current === 'string' && current.trim()) {
           items = current.split(',').map((pair) => {
             const eq = pair.indexOf('=');
@@ -2201,7 +2259,10 @@
           items = [];
         }
 
-        const commit = () => set(items.map((x) => Object.assign({}, x)));
+        // A marked row goes back out as the value it came in as, so a shorthand entry
+        // survives an edit unchanged rather than being rewritten into a shape its widget
+        // never asked for. See listValueFrom.
+        const commit = () => set(listValueFrom(items));
         // A legacy string value renders as rows immediately, but only writes back as an
         // array once the user touches the editor — untouched layouts stay byte-identical.
         const renderList = () => {
@@ -2209,6 +2270,27 @@
           items.forEach((item, i) => {
             const row = document.createElement('div');
             row.className = 'factory-row';
+            if (LIST_RAW in item) {
+              // One input, because the value genuinely is one value — rendering the field
+              // pair would ask which half of it goes where, which is the question this
+              // deliberately does not answer. It stays editable and removable, which is
+              // the whole complaint: the entry was invisible, so it could not be
+              // corrected or deleted either.
+              const input = document.createElement('input');
+              input.type = 'text';
+              // String() for DISPLAY only. The stored value keeps the type it arrived with —
+              // a numeric entry that nobody touches must go back out as a number, not as its
+              // decimal spelling, which is the same silent rewriting this set out to stop.
+              input.value = String(item[LIST_RAW]);
+              input.setAttribute('aria-label', (prop.itemLabel || 'item') + ' ' + (i + 1));
+              input.oninput = () => { item[LIST_RAW] = input.value; commit(); };
+              row.appendChild(input);
+              row.appendChild(iconButton('✕', 'Remove ' + (prop.itemLabel || 'item'), () => {
+                items.splice(i, 1); commit(); renderList();
+              }, true));
+              wrap.appendChild(row);
+              return;
+            }
             for (const field of fields) {
               const input = document.createElement('input');
               if (field.type === 'color') {
