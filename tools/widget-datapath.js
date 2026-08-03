@@ -144,6 +144,8 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
 
   const checks = [];
   const consoleErrors = [];
+  // Every non-local request the widget TRIED, matched or not — see the catch-all route.
+  const attempted = [];
   const served = [];
   const check = (name, ok, detail) => checks.push({ name, ok: !!ok, detail: detail === undefined ? null : String(detail) });
   page.on('pageerror', (e) => consoleErrors.push(String(e).slice(0, 300)));
@@ -206,6 +208,12 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // the real network out of a runner whose contract is that it never does.
   await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)).*/, (route) => {
     const url = route.request().url();
+    // Counted HERE, before any stub matching and before the abort. `served` and
+    // __wwProxyServed only ever record a MATCHED fixture, so a widget that requests an
+    // unstubbed or renamed endpoint left both empty — and "no endpoint was requested"
+    // passed while the widget had gone to the network. The attempt is the fact the game
+    // gate is about, not whether a fixture happened to answer it.
+    if (route.request().method() !== 'OPTIONS') attempted.push(url);
     // A CORS preflight is not the data request — it is the browser ASKING to make one.
     // Counting it as served let a widget whose real call was then blocked satisfy the
     // data-path check on the preflight alone, and answering it without the allow-
@@ -511,8 +519,8 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     // That is per-widget, so it belongs in --expect rather than in a blanket rule; the
     // state-layer check below is skipped for the same reason.
     check('no endpoint was requested while a game is running',
-      served.length + proxyServed.length === 0,
-      served.length + ' direct, ' + proxyServed.length + ' proxied');
+      attempted.length === 0,
+      attempted.length + ' attempted (' + served.length + ' direct, ' + proxyServed.length + ' proxied)');
   } else if (!allowState) {
     check('a stubbed endpoint was actually requested (direct or proxy tier)',
       served.length + proxyServed.length > 0,

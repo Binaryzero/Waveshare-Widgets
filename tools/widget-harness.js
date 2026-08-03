@@ -156,8 +156,17 @@ function loadPlaywright() {
   // none of them — and treating ':' as a boundary would exempt it from the abort as
   // well, leaving the one URL shape that reaches the real network. Exempt only what a
   // local route can actually serve.
+  // Counted before the abort, because the abort is what makes an ungated widget look
+  // identical to a gated one here: a widget that ignores state.game keeps fetching, every
+  // request fails, it renders its ordinary offline card, and every remaining check passes.
+  // Without this the --game flag only changed the payload and could not tell a working
+  // gate from a regression.
+  const attempted = [];
   await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)).*/,
-    (route) => route.abort());
+    (route) => {
+      if (route.request().method() !== 'OPTIONS') attempted.push(route.request().url());
+      return route.abort();
+    });
 
   // Errors are collected IN each document as well as through page.on('pageerror'). The
   // widget now lives in a cross-origin child frame, which Chromium may host in its own
@@ -322,6 +331,15 @@ function loadPlaywright() {
     : [`rgba(${rgb}, ${alpha})`];
   check('bgStyle contract (body background)', expected.some((e) => bg.color === e),
     `got ${bg.color} (class "${bg.cls}"), expected ${expected.join(' or ')}`);
+
+  // The game gate, asserted rather than merely enabled. Only under --game: without it a
+  // widget is SUPPOSED to reach the network, and the offline routes refusing it is the
+  // designed state this runner tests everywhere else.
+  if (gameActive) {
+    check('no network request while a game is running',
+      attempted.length === 0,
+      attempted.length + ' attempted' + (attempted.length ? ': ' + attempted[0].slice(0, 80) : ''));
+  }
 
   check('no horizontal overflow', await frame.evaluate(() =>
     document.documentElement.scrollWidth <= window.innerWidth &&
