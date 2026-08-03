@@ -392,10 +392,15 @@
     return days + 'd ' + (hours % 24) + 'h';
   }
 
-  function whenText(start, allDay) {
+  function whenText(start, allDay, allDayEnd) {
     const d = new Date(start);
     const today = new Date();
-    const sameDay = d.toDateString() === today.toDateString();
+    // A multi-day all-day event that is ALREADY RUNNING is on today, whatever day it
+    // began. Labelling it by its start date put a date in the past on a tile whose
+    // countdown said "now" — which reads as a bug rather than as a conference that
+    // started yesterday.
+    const inProgress = !!(allDay && allDayEnd && Date.now() >= start && Date.now() < allDayEnd);
+    const sameDay = inProgress || d.toDateString() === today.toDateString();
     const tomorrow = new Date(today.getTime() + 86400000).toDateString() === d.toDateString();
     const day = sameDay ? 'Today' : tomorrow ? 'Tomorrow'
       : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
@@ -426,8 +431,12 @@
     // query used — a tile that discards an event the next query would pick again spins
     // between the two forever. A timed event is the one you are in for an hour after it
     // starts; an all-day event is on until its day ends.
+    // A MULTI-DAY all-day event runs to its DTEND, not to the end of the day it started
+    // on, and the reader hands that instant back as `allDayEnd` precisely so the two
+    // cannot disagree. `nextMidnight` remains the answer for the single-day form and for
+    // a reader that did not supply one.
     const expiry = current.event.start.allDay
-      ? nextMidnight(current.start)
+      ? (current.allDayEnd || nextMidnight(current.start))
       : current.start + 3600000;
     if (Date.now() > expiry) { current = null; clearTimeout(fetchTimer); load(); return; }
 
@@ -436,7 +445,7 @@
     cd.className = 'value hero' + (left <= 0 ? ' now' : left < 900000 ? ' soon' : '');
 
     el('title').textContent = current.event.summary || '(no title)';
-    el('when').textContent = whenText(current.start, current.event.start.allDay);
+    el('when').textContent = whenText(current.start, current.event.start.allDay, current.allDayEnd);
     el('where').textContent = current.event.location || '';
 
     const stale = document.body.classList.contains('stale');
