@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Next Event</title>
+<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<style>
+  /* Layout only — colors, background, bgStyle and the typography base come from
+   * widget-base.css. */
+  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+  main { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: 4px; min-height: 0; }
+  #countdown {
+    line-height: 1;
+    font-size: min(20vw, 15vh);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  #countdown.soon { color: var(--warn); }
+  #countdown.now { color: var(--ok); }
+  #title {
+    color: var(--text); font-weight: 650;
+    font-size: clamp(13px, 4.5vh, 20px);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #when {
+    color: var(--text-muted); font-size: clamp(11px, 3vh, 14px);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #where {
+    color: var(--text-dim); font-size: 11px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  footer { color: var(--text-dim); font-size: 11px; flex: none; }
+  #state { position: fixed; inset: 0; }
+  body.stale main { opacity: 0.6; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="kicker">Next</span>
+    <span class="pill muted" id="pill">Loading</span>
+  </header>
+
+  <main id="data" hidden>
+    <div class="value hero" id="countdown">--</div>
+    <div id="title"></div>
+    <div id="when"></div>
+    <div id="where"></div>
+  </main>
+
+  <footer id="meta"></footer>
+
+  <div class="state-card" id="state">
+    <div class="spinner"></div>
+  </div>
+
+<script src="ics.js"></script>
+<script src="https://app.wsw/widget-api.js"></script>
+<script>
+  'use strict';
+  const cfg = { url: '', lookaheadDays: 30, ignoreAllDay: false, refreshMs: 1800000 };
+  let current = null;      // {event, start}
+  let dropped = 0;
+  let started = false;
+  let fetchTimer = null;
+  let tickTimer = null;
+  let inFlight = false;
+  let lastOk = 0;
+  let failures = 0;        // consecutive failures — drives the retry backoff
+  let gameOn = false;
+  let generation = 0;      // bumped when the source changes; older answers are discarded
+  let activeController = null;
+  let dueAt = 0;           // when the next fetch is due, tracked even while paused
+
+  // A calendar can be several megabytes and the direct fetch tier has no deadline of its
+  // own, so a server that accepts the connection and then stalls would pin `inFlight`
+  // forever: no error, no retry, a countdown frozen at whatever it last read. 20s is well
+  // clear of a large ICS over a slow link and well short of the 5-minute minimum refresh.
+  const REQUEST_DEADLINE = 20000;
+  const MAX_EXTRA_WAIT = 3600000;   // the backoff ceiling bounds the EXTRA wait, never the total
+
+  const el = (id) => document.getElementById(id);
+
+  // One predicate, used by every gate. Two copies of this rule drift, and the shape of
+  // the drift is always a tile that keeps polling in a state it was supposed to stop in.
+  const paused = () => gameOn || document.hidden;
+
+  /** Runs `job` under an abort deadline that covers the BODY too. A resolved WW.fetch
+   *  only means the headers arrived; a calendar that then dribbles its body would hang
+   *  on res.text() with no timer left running — the same permanent freeze, moved one
+   *  await later. */
+  function withDeadline(ms, controller, job) {
+    let t;
+    return Promise.race([
+      job().finally(() => clearTimeout(t)),
+      new Promise((_, reject) => {
+        t = setTimeout(() => {
+          try { controller.abort(); } catch (e) { /* already gone */ }
+          reject(new Error('timed out'));
+        }, ms);
+      }),
+    ]);
+  }
+
+  WW.onInit((s0) => {
+    const s = s0.settings;
+    // onGame reports TRANSITIONS only, so a tile that boots while a game already owns
+    // the screen never hears about it. ww-init carries the current state: seed from it,
+    // or this widget is the one thing still fetching during a game.
+    gameOn = !!(s0.game && s0.game.active);
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+
+    const prevSource = cfg.url + '\n' + cfg.lookaheadDays + '\n' + cfg.ignoreAllDay;
+    const prevRefreshMs = cfg.refreshMs;
+    // An unset or unreadable secret arrives as "" — setup state, never a spinner.
+    cfg.url = String(s.icsUrl == null ? '' : s.icsUrl).trim();
+    cfg.lookaheadDays = Math.min(90, Math.max(1, Number(s.lookaheadDays) || 30));
+    cfg.ignoreAllDay = s.ignoreAllDay === 'ignore';
+    cfg.refreshMs = Math.min(720, Math.max(5, Number(s.refreshMinutes) || 30)) * 60000;
+    const sourceChanged = prevSource !== cfg.url + '\n' + cfg.lookaheadDays + '\n' + cfg.ignoreAllDay;
+    // The refresh interval is NOT part of the source — changing it must not refetch or
+    // throw the reading away — but it does have to re-arm, because the timer already
+    // ticking was armed under the old one. Cutting 12 hours to 5 minutes otherwise took
+    // effect only after the 12 hours it was meant to replace had elapsed.
+    const cadenceChanged = prevRefreshMs !== cfg.refreshMs;
+
+    if (!cfg.url) {
+      // Stop everything. Without this the chain keeps running against an empty URL,
+      // which resolves to the widget's OWN document, parses as a calendar with no
+      // events, and replaces the setup card with "Nothing scheduled".
+      generation++;
+      if (activeController) { try { activeController.abort(); } catch (e) { /* already gone */ } }
+      activeController = null;
+      inFlight = false;
+      clearTimeout(fetchTimer);
+      clearInterval(tickTimer);
+      tickTimer = null;
+      current = null;
+      lastOk = 0;
+      failures = 0;
+      started = false;
+      showSetup();
+      return;
+    }
+    if (!started) {
+      started = true;
+      load();
+      // The countdown is its own 1 Hz loop; refetching the calendar every second to
+      // move a clock would be absurd, and a minute-granularity countdown that jumps
+      // 60 seconds at a time reads as broken.
+      startTick();
+    } else if (sourceChanged) {
+      // A DIFFERENT calendar. Retire anything still in flight against the old one —
+      // otherwise its answer lands afterwards and is rendered as this calendar's next
+      // event — and drop the reading, which describes a calendar this tile no longer
+      // points at.
+      generation++;
+      if (activeController) { try { activeController.abort(); } catch (e) { /* already gone */ } }
+      activeController = null;
+      inFlight = false;
+      current = null;
+      lastOk = 0;
+      failures = 0;
+      document.body.classList.remove('stale');
+      // Clear what is on SCREEN, not just the model behind it. Nulling `current` alone
+      // left the old calendar's event rendered — under the new configuration, and for as
+      // long as the new request takes, which is up to the full deadline. A tile showing
+      // one calendar's meeting while labelled with another's settings is worse than a
+      // spinner, because nothing about it looks wrong.
+      showSpinner();
+      clearTimeout(fetchTimer);
+      load();
+    } else {
+      // Same calendar — a theme push, a rename, a background change. Re-fetching here
+      // meant every settings keystroke and every theme broadcast hit the calendar
+      // server, and reset the refresh anchor so the real refresh never arrived. Repaint
+      // from what is already held instead; the countdown is time-relative, so this is
+      // a recompute rather than a replay of formatted text.
+      paint();
+      // Recompute from the NEW cadence, not from what is left of the old one.
+      // `remainingWait()` reads `dueAt`, which still holds the deadline the previous
+      // interval produced — so re-arming with it just restored the same deadline and
+      // cutting 12 hours to 5 minutes still took 12 hours. The due time belongs to the
+      // last answer plus the interval now configured; if that is already past, it is due.
+      if (cadenceChanged) {
+        schedule(Math.max(0, (lastOk || Date.now()) + nextDelayMs() - Date.now()));
+      }
+    }
+  });
+
+  WW.onGame((g) => {
+    const was = gameOn;
+    gameOn = !!(g && g.active);
+    if (gameOn === was) return;
+    if (gameOn) {
+      // Stop the network AND the 1 Hz repaint: a game owns the screen, so both are work
+      // nobody can see. Cancelling the TIMER alone left a request already in flight to
+      // finish on its own — up to 4 MiB pulled and parsed behind a game, and a success
+      // path that repaints a screen the game owns. Retire it the same way a source
+      // change does: bump the generation so the abort is read as superseded rather than
+      // as a failure worth a card, then clear the flags by hand, because a superseded
+      // unwind deliberately does not.
+      generation++;
+      if (activeController) { try { activeController.abort(); } catch (e) { /* already gone */ } }
+      activeController = null;
+      inFlight = false;
+      clearTimeout(fetchTimer);
+      fetchTimer = null;
+      clearInterval(tickTimer);
+      tickTimer = null;
+      return;
+    }
+    if (!started) return;
+    startTick();
+    paint();
+    // Whatever was held is now as old as the game was long. Refresh if it is due,
+    // rather than waiting out a timer that was cancelled when the game started.
+    if (Date.now() >= dueAt) { clearTimeout(fetchTimer); load(); }
+    else schedule(remainingWait());
+  });
+
+  function startTick() {
+    clearInterval(tickTimer);
+    tickTimer = setInterval(paint, 1000);
+  }
+
+  async function load() {
+    // A load that comes due while paused stays due. Calling schedule() here would push
+    // `dueAt` a whole fresh interval into the future, and the resume handlers — which
+    // ask exactly that question — would then decline to fetch: at the 12-hour cadence a
+    // tile could sit on stale data for another 12 hours after the game ended. Leaving
+    // `dueAt` in the past is what makes the resume path pick it up immediately.
+    if (paused()) return;
+    // Already fetching is different: something IS in progress, so re-arming normally is
+    // right rather than leaving the chain unarmed.
+    if (inFlight) { schedule(); return; }
+    inFlight = true;
+    // Everything below belongs to the calendar as it was when the request left.
+    const gen = generation;
+    const superseded = () => gen !== generation;
+    const controller = new AbortController();
+    activeController = controller;
+    try {
+      const text = await withDeadline(REQUEST_DEADLINE, controller, async () => {
+        const res = await WW.fetch(cfg.url, { maxBytes: 4 * 1024 * 1024, signal: controller.signal });
+        if (!res.ok) {
+          // An unread body leaves the response open, and a server that answers with
+          // error headers and then dribbles accumulates one live stream per refresh.
+          try { if (res.body && !res.body.locked) await res.body.cancel(); } catch (e) { /* already gone */ }
+          const err = new Error('HTTP ' + res.status);
+          err.status = res.status;
+          throw err;
+        }
+        return res.text();
+      });
+      if (superseded()) return;
+      // Is this a CALENDAR? The reader is tolerant by design — it looks for VEVENTs and
+      // ignores everything else — so an expired share link answering with a sign-in page,
+      // or a captive portal, parses as a calendar containing no events. Without this the
+      // tile would state "Nothing scheduled" about a calendar it never actually read,
+      // which is the one wrong answer worse than an error card.
+      if (!/BEGIN:VCALENDAR/i.test(text)) {
+        const err = new Error('not a calendar');
+        err.notCalendar = true;
+        throw err;
+      }
+      // From an hour AGO, not from now: paint() deliberately keeps an event on screen
+      // for an hour after it starts, but asking only for future starts meant the next
+      // refresh replaced it — so a meeting vanished one refresh after beginning rather
+      // than at the end of the hour it was promised.
+      // Two different windows, because two kinds of event stop being "next" at different
+      // moments. A timed one is still the one you are in for an hour after it starts; an
+      // all-day one is on for the whole of its day. `startOfDay` is what keeps today's
+      // all-day event on the tile after 01:00 instead of skipping to tomorrow's.
+      const found = ICS.next(text, Date.now() - 3600000, cfg.lookaheadDays * 86400000 + 3600000,
+        { ignoreAllDay: cfg.ignoreAllDay, allDayFrom: startOfDay(Date.now()) });
+      current = found.best;
+      dropped = found.dropped;
+      lastOk = Date.now();
+      failures = 0;
+      document.body.classList.remove('stale');
+      paint();
+    } catch (e) {
+      // An abort we caused by retargeting is not a failure of anything, and the state it
+      // would paint describes a calendar the user has already moved off.
+      if (superseded()) return;
+      failures++;
+      WW.log('nextevent: ' + (e && e.message ? e.message : e));
+      if (current) { document.body.classList.add('stale'); paint(); return; }
+      // Three different problems with three different fixes. Collapsing them into
+      // "check the link is still valid" sends someone to re-copy a link that is fine.
+      if (e instanceof RangeError) {
+        showError('That calendar is larger than the panel will load.');
+      } else if (e && e.notCalendar) {
+        showError('That link answered, but not with a calendar — it may have expired, '
+          + 'or be asking for a sign-in. Re-copy the private ICS address from your calendar.');
+      } else if (e && e.status) {
+        showError(e.status === 401 || e.status === 403
+          ? 'The calendar refused the link (HTTP ' + e.status + '). Private ICS addresses '
+            + 'are revoked when you reset them — re-copy it from your calendar.'
+          : 'The calendar answered with HTTP ' + e.status + '.');
+      } else {
+        showError("Couldn't reach the calendar. Check the link, and that this PC can reach it.");
+      }
+    } finally {
+      // A superseded request must not clear the flag or re-arm: the re-init already did
+      // both, and a late unwind would unlock a load that is legitimately in flight.
+      if (!superseded()) {
+        inFlight = false;
+        if (activeController === controller) activeController = null;
+        schedule();
+      }
+    }
+  }
+
+  /** Retry cadence. A calendar that is down should not be re-fetched on the dot for
+   *  hours: each consecutive failure doubles the wait, and any success (or Retry) puts
+   *  it straight back to the configured interval. */
+  function nextDelayMs() {
+    if (!failures) return cfg.refreshMs;
+    // The ceiling bounds the EXTRA wait, never the total. Capping the total inverts the
+    // whole point above the cap: a calendar set to refresh every 12 hours would answer
+    // its first failure by switching to hourly — twelve times the traffic, from the code
+    // meant to reduce it. Backoff can only ever slow this tile down.
+    const grown = cfg.refreshMs * Math.pow(2, Math.min(failures, 5));
+    return Math.min(grown, cfg.refreshMs + MAX_EXTRA_WAIT);
+  }
+
+  /** Arms the next fetch. `delayMs` is for resuming: a pause does not restart the
+   *  refresh interval, it interrupts it, so coming back from a game or an unhidden panel
+   *  owes only the REMAINDER. Arming a fresh full interval there meant a 30-second game
+   *  could add a whole refresh period to how stale the tile is allowed to be. */
+  function schedule(delayMs) {
+    clearTimeout(fetchTimer);
+    fetchTimer = null;
+    const wait = delayMs === undefined ? nextDelayMs() : Math.max(0, delayMs);
+    // WHEN the next fetch is due, recorded even while paused. The resume paths used to
+    // ask "how long since the last SUCCESS", which is a different question with a wrong
+    // answer during backoff: after a failure `lastOk` is already older than the interval,
+    // so every game or unhide fired an immediate retry and threw the backoff away — the
+    // one situation the backoff exists for. A due time is the same quantity for both
+    // gates, so they cannot disagree about it.
+    dueAt = Date.now() + wait;
+    // A paused tile arms nothing. onGame and visibilitychange re-arm on the way back,
+    // so this cannot strand the chain.
+    if (paused() || !cfg.url) return;
+    fetchTimer = setTimeout(load, wait);
+  }
+
+  /** What is still owed before the next fetch is due. */
+  const remainingWait = () => Math.max(0, dueAt - Date.now());
+
+  /** Local midnight of the day `ms` falls in. All-day events are anchored to it, so it
+   *  is what "today" means for eligibility on this panel. */
+  function startOfDay(ms) {
+    const d = new Date(ms);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  }
+
+  /** The next local midnight after `ms`. Deliberately calendar arithmetic, not
+   *  `startOfDay(ms) + 86400000`: a local day is only 86400000 ms long on days without a
+   *  DST transition. On a fall-back day that sum lands at 23:00, an hour SHORT of the
+   *  next midnight — and since the query window still offers the event, paint() would
+   *  discard it and the next answer would offer it again, once a second, each time with
+   *  a fetch. Advancing the date lets Date normalise the transition. */
+  function nextMidnight(ms) {
+    const d = new Date(ms);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + 1);
+    return d.getTime();
+  }
+
+  function countdownText(ms) {
+    if (ms <= 0) return 'now';
+    const mins = Math.floor(ms / 60000);
+    // Under a minute, count SECONDS. Flooring to whole minutes meant an event 45 seconds
+    // away read "0m" and a tile repainting every second changed once a minute — the 1 Hz
+    // loop paying for a clock that could not show it. Seconds are also the only part of
+    // this anyone watches: the last minute before a meeting is when the tile is being
+    // looked at.
+    if (mins < 1) return Math.floor(ms / 1000) + 's';
+    if (mins < 60) return mins + 'm';
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + 'h ' + String(mins % 60).padStart(2, '0') + 'm';
+    const days = Math.floor(hours / 24);
+    return days + 'd ' + (hours % 24) + 'h';
+  }
+
+  function whenText(start, allDay) {
+    const d = new Date(start);
+    const today = new Date();
+    const sameDay = d.toDateString() === today.toDateString();
+    const tomorrow = new Date(today.getTime() + 86400000).toDateString() === d.toDateString();
+    const day = sameDay ? 'Today' : tomorrow ? 'Tomorrow'
+      : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    if (allDay) return day + ' · all day';
+    return day + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+
+  // Repaints from cached data only — no network, no parsing. Safe at 1 Hz forever.
+  function paint() {
+    if (!current) {
+      if (lastOk) {
+        el('state').hidden = false;
+        el('data').hidden = true;
+        stateCard('', '○', 'Nothing scheduled',
+          'No events in the next ' + cfg.lookaheadDays + ' day' + (cfg.lookaheadDays === 1 ? '' : 's') + '.' +
+          (dropped ? ' ' + dropped + ' repeating event' + (dropped === 1 ? '' : 's') +
+            ' could not be read — only daily and weekly repeats are supported.' : ''),
+          null, 'Clear');
+        // The footer normally carries this, and the footer is hidden behind the state
+        // card. A calendar containing ONLY unsupported repeats would otherwise claim
+        // outright that nothing is scheduled, which is what the counter exists to stop.
+        el('meta').textContent = '';
+      }
+      return;
+    }
+    const left = current.start - Date.now();
+    // When this event stops being the next one, and it MUST agree with the window the
+    // query used — a tile that discards an event the next query would pick again spins
+    // between the two forever. A timed event is the one you are in for an hour after it
+    // starts; an all-day event is on until its day ends.
+    const expiry = current.event.start.allDay
+      ? nextMidnight(current.start)
+      : current.start + 3600000;
+    if (Date.now() > expiry) { current = null; clearTimeout(fetchTimer); load(); return; }
+
+    const cd = el('countdown');
+    cd.textContent = countdownText(left);
+    cd.className = 'value hero' + (left <= 0 ? ' now' : left < 900000 ? ' soon' : '');
+
+    el('title').textContent = current.event.summary || '(no title)';
+    el('when').textContent = whenText(current.start, current.event.start.allDay);
+    el('where').textContent = current.event.location || '';
+
+    const stale = document.body.classList.contains('stale');
+    const pill = el('pill');
+    pill.textContent = stale ? 'Stale' : left <= 0 ? 'Now' : left < 900000 ? 'Soon' : 'Scheduled';
+    pill.className = 'pill ' + (stale ? 'muted' : left <= 0 ? 'ok' : left < 900000 ? 'warn' : '');
+
+    // Never silently drop events: a monthly repeat this reader refuses to expand is
+    // said out loud, because the alternative is a calendar that looks emptier than it
+    // is and no way to tell.
+    el('meta').textContent = dropped
+      ? dropped + ' repeating event' + (dropped === 1 ? '' : 's') + ' not shown (only daily and weekly repeats are read)'
+      : '';
+
+    el('state').hidden = true;
+    el('data').hidden = false;
+  }
+
+  function stateCard(cls, icon, title, body, onRetry, pillText) {
+    const pill = el('pill');
+    // "Setup" is a claim that something still needs configuring, so it belongs only to
+    // cards that mean it. A successfully refreshed calendar that simply has nothing in
+    // it was labelled Setup beside "Nothing scheduled", telling the user to go and fix a
+    // configuration that is already correct.
+    pill.textContent = pillText || (cls === 'err' ? 'Error' : 'Setup');
+    pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
+    const s = el('state');
+    s.className = 'state-card' + (cls ? ' ' + cls : '');
+    s.textContent = '';
+    const i = document.createElement('div');
+    i.className = 'state-icon';
+    i.textContent = icon;
+    const t = document.createElement('div');
+    t.className = 'state-title';
+    t.textContent = title;
+    const b = document.createElement('div');
+    b.className = 'state-body';
+    b.textContent = body;
+    s.append(i, t, b);
+    if (onRetry) {
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.textContent = 'Retry';
+      btn.addEventListener('click', onRetry);
+      s.append(btn);
+    }
+    s.hidden = false;
+    el('data').hidden = true;
+  }
+
+  /** Back to the opening state: the spinner, and nothing claiming to be data. */
+  function showSpinner() {
+    const s = el('state');
+    s.className = 'state-card';
+    s.textContent = '';
+    const spin = document.createElement('div');
+    spin.className = 'spinner';
+    s.append(spin);
+    s.hidden = false;
+    el('data').hidden = true;
+    el('meta').textContent = '';
+    const pill = el('pill');
+    pill.textContent = 'Loading';
+    pill.className = 'pill muted';
+  }
+
+  function showSetup() {
+    stateCard('', '◎', 'No calendar linked',
+      "Paste your calendar's private ICS address in the widget settings. It is stored encrypted, like a password.");
+  }
+
+  function showError(message) {
+    stateCard('err', '!', 'Calendar unavailable', message, () => {
+      // An explicit tap means "try properly now", not "keep backing off".
+      failures = 0;
+      stateCard('', '', 'Retrying', '');
+      clearTimeout(fetchTimer);
+      load();
+    });
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      // Nothing to repaint for, so stop the 1 Hz loop too — a minimised panel ticking a
+      // countdown forever is the same waste as polling one.
+      clearInterval(tickTimer);
+      tickTimer = null;
+      return;
+    }
+    if (paused() || !started) return;
+    startTick();
+    paint();
+    if (Date.now() >= dueAt) { clearTimeout(fetchTimer); load(); }
+    else schedule(remainingWait());
+  });
+</script>
+</body>
+</html>
