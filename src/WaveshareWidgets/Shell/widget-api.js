@@ -425,8 +425,13 @@
       // carries even if the same name somehow arrives in the map. Anything unusable in
       // the map is skipped rather than thrown on: a header cannot be worth failing an
       // otherwise good response over, and Headers rejects invalid names outright.
+      // An ARRAY is not a header map, and typeof an array is 'object' — so the obvious
+      // test admits one, whereupon Object.keys yields indices and a stray entry lands as
+      // a header literally named "0" (digits are valid token characters, so Headers
+      // accepts it). Nothing the host sends can be an array; this is about not being the
+      // kind of check that only looks like one.
       const headers = {};
-      if (msg.headers && typeof msg.headers === 'object') {
+      if (msg.headers && typeof msg.headers === 'object' && !Array.isArray(msg.headers)) {
         for (const name of Object.keys(msg.headers)) {
           const value = msg.headers[name];
           if (typeof value !== 'string') continue;
