@@ -193,23 +193,6 @@
     return { items, hidden };
   }
 
-  WW.onInit((state) => {
-    const s = state.settings;
-    // Anything that isn't explicitly glass/transparent renders solid, matching the
-    // stock default for unset AND out-of-spec values (no class = glass in base).
-    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
-    document.body.classList.toggle('bg-solid', bg === 'solid');
-    document.body.classList.toggle('bg-glass', bg === 'glass');
-    document.body.classList.toggle('bg-transparent', bg === 'transparent');
-    // Appearance comes from the theme tokens (global theme or the per-slot style
-    // override) — legacy labelColor keys in old layouts are deliberately ignored.
-    document.body.style.setProperty('--label-scale', String((Number(s.labelSize) || 100) / 100));
-    cfg.columns = Math.max(0, Math.min(8, Math.round(Number(s.columns) || 0)));
-    const parsed = normalizeButtons(s.buttons);
-    buttons = parsed.items || [];
-    lastBuild = { error: parsed.error, hidden: parsed.hidden || 0 };
-    build(lastBuild.error, lastBuild.hidden);
-  });
 
   // Restartable state-theater flash (from widget-base): remove, force reflow,
   // re-add — otherwise back-to-back taps on a key show nothing.
@@ -372,6 +355,36 @@
     const icon = Math.max(14, Math.min(cellH * 0.44, cellW * 0.6, 96));
     document.body.style.setProperty('--icon-size', Math.round(icon) + 'px');
   }
+
+  // Registered LAST, after every declaration it reaches (#191).
+  //
+  // widget-api replays an init that has already arrived, synchronously, at the moment
+  // of registration: `onInit(cb) { listeners.init.push(cb); if (state.ready) cb(state); }`.
+  // And it has already arrived — the shim posts ww-ready at document-start and the
+  // shell answers every ww-ready with the payload, so by the time this script runs
+  // state.ready is true and the callback fires HERE, not later. Registered above the
+  // const/let this callback reaches through build(), it threw ReferenceError out of
+  // the temporal dead zone, build() never ran, and the deck rendered empty on the
+  // panel. Hoisting the one name the error happened to report only moved the throw to
+  // the next one; registering after the declarations is what makes the whole shape
+  // impossible rather than fixing one instance of it.
+  WW.onInit((state) => {
+    const s = state.settings;
+    // Anything that isn't explicitly glass/transparent renders solid, matching the
+    // stock default for unset AND out-of-spec values (no class = glass in base).
+    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
+    document.body.classList.toggle('bg-solid', bg === 'solid');
+    document.body.classList.toggle('bg-glass', bg === 'glass');
+    document.body.classList.toggle('bg-transparent', bg === 'transparent');
+    // Appearance comes from the theme tokens (global theme or the per-slot style
+    // override) — legacy labelColor keys in old layouts are deliberately ignored.
+    document.body.style.setProperty('--label-scale', String((Number(s.labelSize) || 100) / 100));
+    cfg.columns = Math.max(0, Math.min(8, Math.round(Number(s.columns) || 0)));
+    const parsed = normalizeButtons(s.buttons);
+    buttons = parsed.items || [];
+    lastBuild = { error: parsed.error, hidden: parsed.hidden || 0 };
+    build(lastBuild.error, lastBuild.hidden);
+  });
 
   // A resize changes the fit capacity, not just the arrangement — rebuild.
   window.addEventListener('resize', () => build(lastBuild.error, lastBuild.hidden));
