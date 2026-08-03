@@ -88,26 +88,34 @@
    *  approached. */
   function zonedToUtc(y, mo, d, h, mi, s, tz) {
     const naive = Date.UTC(y, mo - 1, d, h, mi, s);
-    const o1 = tzOffsetMs(naive, tz);
-    const t1 = naive - o1;
-    const o2 = tzOffsetMs(t1, tz);
-    // One offset governs this date: no transition is in reach and t1 is the answer.
-    if (o1 === o2) return t1;
-    // naive and t1 straddle a transition, so o1 and o2 ARE the offsets either side of it.
-    const t2 = naive - o2;
+    const DAY = 86400000;
+    // The offsets a day either side of this wall time. A day is wider than any zone
+    // offset and far narrower than the months between transitions, so these bracket at
+    // most one transition and are unambiguously the offsets BEFORE and AFTER it.
+    //
+    // Probing at `naive` itself — and again at whatever that produced — is what the
+    // first version of this did, and it is wrong for a whole class of zone. Where the
+    // offset is small or the transition falls late in the UTC day, BOTH probes land on
+    // the same side, agree with each other, and the "no transition in reach" shortcut
+    // returns the later instant for a wall time that happens twice. It answered New York
+    // and Berlin correctly and Europe/Dublin, Australia/Sydney, Pacific/Auckland and
+    // Australia/Lord_Howe wrongly, which is exactly what picking a side rather than
+    // deciding looks like when the sample happens to agree with you.
+    const oBefore = tzOffsetMs(naive - DAY, tz);
+    const oAfter = tzOffsetMs(naive + DAY, tz);
+    if (oBefore === oAfter) return naive - oBefore;   // one offset governs; done
+
+    const tBefore = naive - oBefore, tAfter = naive - oAfter;
     const reads = (t) => {
       const p = partsInZone(t, tz);
       return p.y === y && p.mo === mo && p.d === d && p.h === h && p.mi === mi;
     };
-    const r1 = reads(t1), r2 = reads(t2);
-    // Both read back: the wall time happens twice. The earlier instant is the one under
-    // the pre-transition offset.
-    if (r1 && r2) return Math.min(t1, t2);
-    if (r1) return t1;
-    if (r2) return t2;
-    // Neither: the clock skips this wall time. A gap means the offset INCREASES, so the
-    // offset in effect before it is the smaller of the two.
-    return naive - Math.min(o1, o2);
+    // RFC 5545 §3.3.5 gives the SAME answer for both hard cases — the offset in effect
+    // before the transition — so a wall time that happens twice and one that happens not
+    // at all both resolve to `tBefore`. The read-back only has to separate those from an
+    // ordinary wall time that merely sits within a day of a transition, where exactly one
+    // of the two candidates is real.
+    return (reads(tBefore) || !reads(tAfter)) ? tBefore : tAfter;
   }
 
   /** The wall-clock fields DTSTART actually names, in the event's own frame. */
@@ -120,18 +128,6 @@
     return { y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, d: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes(), s: d.getUTCSeconds() };
   }
 
-  /** The instant `dayOffset` days after DTSTART, at DTSTART's WALL-CLOCK time.
-   *
-   * Iterating on the resolved instant was wrong twice over. Stepping it by 86,400,000 ms
-   * drifts an hour across a DST transition; stepping it through the zone and then using
-   * the RESULT as the next baseline lets one bad conversion poison every step after it.
-   * A 02:30 America/New_York daily series hit both: 02:30 does not exist on the spring
-   * -forward morning, so it resolved to 01:30 and then stayed 01:30 for good.
-   *
-   * Recurrence is defined on the CALENDAR, so the calendar is what advances: the day is
-   * offset from DTSTART's own date and the time comes from DTSTART every single step.
-   * Returns null for an instant that does not exist (the gap), which the caller skips
-   * rather than rendering at a shifted time. */
   /** The calendar date `dayOffset` days after DTSTART's own date, and its weekday.
    *
    *  Everything a recurrence rule reasons about lives on THIS calendar. BYDAY used to be
@@ -152,6 +148,18 @@
     };
   }
 
+  /** The instant on calendar date `cal`, at DTSTART's WALL-CLOCK time.
+   *
+   * Iterating on the resolved instant was wrong twice over. Stepping it by 86,400,000 ms
+   * drifts an hour across a DST transition; stepping it through the zone and then using
+   * the RESULT as the next baseline lets one bad conversion poison every step after it.
+   * A 02:30 America/New_York daily series hit both: 02:30 does not exist on the spring
+   * -forward morning, so it resolved to 01:30 and then stayed 01:30 for good.
+   *
+   * Recurrence is defined on the CALENDAR, so the calendar is what advances: the date
+   * comes from calendarAt() and the time comes from DTSTART every single step.
+   * Returns null for an instant that does not exist (the gap), which the caller skips
+   * rather than rendering at a shifted time. */
   function instantAt(anchor, cal, frame) {
     const y = cal.y, mo = cal.mo, d = cal.d;
     if (frame.tz) {
@@ -267,10 +275,10 @@
   /** Occurrences of one event at or after `from`, up to `until`, newest-last.
    *  Returns null for a rule this reader cannot expand EXACTLY. */
   function expand(event, from, until) {
-    // A start this reader could not resolve — today that is only an unresolvable TZID.
-    // Refusing here is what routes it to the caller's `dropped` counter, which is the
-    // tile's one way of saying an event exists that it will not show.
-    if (!event.start || event.start.ms == null) return null;
+    // A time this reader could not resolve — today that is only an unresolvable TZID, on
+    // the start or on an EXDATE. Refusing here is what routes it to the caller's counter,
+    // which is the tile's one way of saying an event exists that it will not show.
+    if (!event.start || event.start.ms == null || event.unreadable) return null;
     // RANGE=THISANDFUTURE reschedules the series from an occurrence forward, so every
     // later occurrence of the PARENT is obsolete. See the reconciliation in parse().
     if (event.unsupportedRange) return null;
@@ -388,7 +396,15 @@
         // parent never got the exclusion, and the tile kept advertising a meeting that
         // had been cancelled. It is kept only far enough to cancel — the display filter
         // at the end still requires a start, so it never becomes a candidate itself.
-        if (cur && (cur.start || (cur.override && cur.overrideOf != null))) events.push(cur);
+        //
+        // CANCELLED specifically, not any startless override. A partial occurrence update
+        // — a changed SUMMARY, say — also carries UID and RECURRENCE-ID and no DTSTART,
+        // and it means "this occurrence, at its original time, amended". Excluding the
+        // parent for one of those made the occurrence vanish outright with nothing
+        // dropped and nothing said, which is the failure this reader ranks worst of all.
+        // Leaving the parent to emit it at its stated time is both safer and correct.
+        const cancels = cur && cur.override && cur.overrideOf != null && cur.status === 'CANCELLED';
+        if (cur && (cur.start || cancels)) events.push(cur);
         cur = null;
         nested = 0;
         continue;
@@ -423,7 +439,13 @@
       else if (name === 'EXDATE') {
         for (const one of value.split(',')) {
           const d = parseDate(one, params);
-          if (d && d.ms != null) cur.exdates.push(d.ms);
+          // An exclusion whose instant cannot be read is not an exclusion that can be
+          // skipped — the series would then EMIT the occurrence the calendar explicitly
+          // removed, with nothing dropped and nothing said. The parent's own DTSTART may
+          // be perfectly resolvable, so this has to be refused here rather than falling
+          // out of the start check.
+          if (!d || d.ms == null) cur.unreadable = true;
+          else cur.exdates.push(d.ms);
         }
       }
       // RECURRENCE-ID means this VEVENT replaces ONE occurrence of a series. A real
@@ -498,15 +520,26 @@
     return days >= 1 ? days : 1;
   }
 
-  /** The soonest occurrence at or after `from`. Returns {best, dropped, total}, where
-   *  `best` carries `allDayEnd` — the instant a multi-day all-day occurrence stops being
-   *  current — so the widget's expiry can agree with the window used to find it. */
+  /** The soonest occurrence at or after `from`.
+   *
+   *  Returns `{best, dropped, unreadable, total}`. `best` carries `allDayEnd` — the
+   *  instant a multi-day all-day occurrence stops being current — so the widget's expiry
+   *  can agree with the window used to find it.
+   *
+   *  `dropped` is the total refused, and `unreadable` is how many of those were refused
+   *  because a TIME could not be read rather than because a RECURRENCE could not be
+   *  expanded. The widget words its footer from the two, because "N repeating events not
+   *  shown (only daily and weekly repeats are read)" is simply untrue of a one-off with
+   *  an Exchange-style TZID — it is neither repeating nor refused for that reason, and
+   *  sending someone to look at a recurrence rule that does not exist is worse than the
+   *  vaguer sentence would have been. */
   function next(text, from, lookaheadMs, opts) {
     const options = opts || {};
     const events = parse(text);
     const until = from + lookaheadMs;
     let best = null;
     let dropped = 0;
+    let unreadable = 0;
     for (const ev of events) {
       // An override is a real event at its NEW time — its old slot has already been
       // excluded from the parent above, so it can simply be read as an ordinary
@@ -530,14 +563,22 @@
       const evFrom = (ev.start.allDay && options.allDayFrom !== undefined)
         ? addLocalDays(options.allDayFrom, -(span - 1)) : from;
       const hits = expand(ev, evFrom, until);
-      if (hits === null) { dropped++; continue; }
+      if (hits === null) {
+        dropped++;
+        // WHY it was refused, so the tile can say something true about it. An
+        // unresolvable zone and an unexpandable recurrence are different problems with
+        // different (non-)remedies, and one message for both is wrong for whichever it
+        // was not written about.
+        if (!ev.start || ev.start.ms == null || ev.unreadable) unreadable++;
+        continue;
+      }
       for (const ms of hits) {
         if (!best || ms < best.start) {
           best = { event: ev, start: ms, allDayEnd: ev.start.allDay ? addLocalDays(ms, span) : null };
         }
       }
     }
-    return { best, dropped, total: events.length };
+    return { best, dropped, unreadable, total: events.length };
   }
 
   global.ICS = { parse, expand, next, parseDate, unfold };

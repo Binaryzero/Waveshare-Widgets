@@ -561,6 +561,49 @@ const CASES = [
     expect: { summary: 'Berlin gap', start: '2030-03-31T01:30:00Z' },
   },
   {
+    name: 'a startless override that is NOT cancelled leaves the occurrence alone',
+    // A partial occurrence update — a changed SUMMARY, say — also carries UID and
+    // RECURRENCE-ID and no DTSTART, and means "this occurrence, at its original time,
+    // amended". Treating every startless override as a cancellation excluded the parent
+    // and made the occurrence vanish outright, with nothing dropped and nothing said,
+    // which is worse than either showing it or refusing it out loud.
+    ics: cal(
+      ...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY', 'SUMMARY:Standup'),
+      ...ev('UID:a', 'RECURRENCE-ID:20300611T080000Z', 'SUMMARY:Standup (agenda updated)')),
+    expect: { summary: 'Standup', start: '2030-06-11T08:00:00Z', dropped: 0 },
+  },
+  {
+    name: 'an EXDATE whose zone cannot be resolved refuses the SERIES rather than the exclusion',
+    // The parent start here is perfectly resolvable, so silently discarding an exclusion
+    // whose instant is unknown left the series emitting the very occurrence the calendar
+    // removed — with dropped at 0, so the tile said nothing about it either.
+    ics: cal(...ev('UID:a', 'DTSTART:20300601T080000Z', 'RRULE:FREQ=DAILY',
+      'EXDATE;TZID=Customized Time Zone:20300611T080000', 'SUMMARY:Standup')),
+    expect: { best: null, dropped: 1, unreadable: 1 },
+  },
+  {
+    name: 'a refused RECURRENCE and an unreadable TIME are counted apart',
+    // They need different sentences: "only daily and weekly repeats are read" is untrue
+    // of a one-off with an Exchange-style TZID, and sends someone to inspect a recurrence
+    // rule that does not exist.
+    ics: cal(
+      ...ev('UID:a', 'DTSTART:20300601T090000Z', 'RRULE:FREQ=MONTHLY', 'SUMMARY:Monthly ops'),
+      ...ev('UID:b', 'DTSTART;TZID=Customized Time Zone:20300610T170000', 'SUMMARY:Unknown zone'),
+      ...ev('UID:c', 'DTSTART:20300610T170000Z', 'SUMMARY:Design review')),
+    expect: { summary: 'Design review', dropped: 2, unreadable: 1 },
+  },
+  {
+    name: 'a SOUTHERN-hemisphere fall-back also takes the earlier of the two',
+    // Named separately from the sweep below because this is the shape that got past a
+    // rewrite which handled New York and Berlin: Australia/Sydney falls back on
+    // 2030-04-07, and 02:30 there happens at both +11:00 and +10:00. A resolver that
+    // probes the offset at the naive instant lands AFTER the transition on both probes
+    // here, agrees with itself, and confidently returns the later of the two.
+    now: '2030-04-01T12:00:00Z',
+    ics: cal(...ev('UID:a', 'DTSTART;TZID=Australia/Sydney:20300407T023000', 'SUMMARY:Sydney twice')),
+    expect: { summary: 'Sydney twice', start: '2030-04-06T15:30:00Z' },
+  },
+  {
     name: 'a RECURRING series still SKIPS the nonexistent occurrence rather than shifting it',
     // Existing behaviour, pinned: the round-trip guard in instantAt drops the occurrence
     // on the gap morning, and resolving one-off gap times correctly must not change that.
@@ -618,6 +661,8 @@ function check(c) {
   }
   if (e.dropped !== undefined && got.dropped !== e.dropped)
     problems.push('dropped: expected ' + e.dropped + ', got ' + got.dropped);
+  if (e.unreadable !== undefined && got.unreadable !== e.unreadable)
+    problems.push('unreadable: expected ' + e.unreadable + ', got ' + got.unreadable);
   if (e.total !== undefined && got.total !== e.total)
     problems.push('total: expected ' + e.total + ', got ' + got.total);
 
@@ -696,8 +741,90 @@ function checkPerf() {
   }
 }
 
-console.log('ics reader — ' + (CASES.length + 1) + ' cases at ' + iso(nowMs(SUITE_NOW)) + ', TZ=' + process.env.TZ);
+/** EVERY DST transition of 2030, in fourteen zones, against a reference derived from the
+ *  zone data rather than from the reader.
+ *
+ *  This exists because hand-picked transition cases are not enough and I have the scar to
+ *  prove it: a rewrite of the wall-time resolver passed New York and Berlin — the two
+ *  zones I had thought to write cases for — and was wrong in Europe/Dublin,
+ *  Australia/Sydney, Pacific/Auckland and Australia/Lord_Howe, because in those the
+ *  probes it took both landed on the same side of the transition, agreed with each other,
+ *  and short-circuited. Eleven wall times wrong, none of them in the case list.
+ *
+ *  The reference is one line of RFC 5545 §3.3.5: a wall time that happens TWICE and one
+ *  that happens NOT AT ALL both take the offset in effect BEFORE the transition. So for
+ *  any affected wall time W the answer is `W - offsetBefore`, and for an unaffected one
+ *  there is only one offset to apply. Neither derivation consults the reader. */
+function checkTransitions() {
+  ran++;
+  const ZONES = ['America/New_York', 'America/Los_Angeles', 'America/Sao_Paulo', 'Europe/London',
+    'Europe/Berlin', 'Europe/Dublin', 'Australia/Sydney', 'Pacific/Auckland', 'Asia/Tehran',
+    'America/Santiago', 'Australia/Lord_Howe', 'Asia/Tokyo', 'Asia/Kolkata', 'UTC'];
+  const offsetAt = (t, tz) => {
+    const dtf = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const m = {};
+    for (const p of dtf.formatToParts(new Date(t))) m[p.type] = p.value;
+    return Date.UTC(+m.year, +m.month - 1, +m.day, (+m.hour) % 24, +m.minute, +m.second) - t;
+  };
+  // zonedToUtc is internal; parseDate is the exported door to it.
+  const resolve = (naive, tz) => {
+    const d = new Date(naive);
+    const p = (n) => String(n).padStart(2, '0');
+    const r = ICS.parseDate(d.getUTCFullYear() + p(d.getUTCMonth() + 1) + p(d.getUTCDate())
+      + 'T' + p(d.getUTCHours()) + p(d.getUTCMinutes()) + '00', { TZID: tz });
+    return r ? r.ms : null;
+  };
+
+  const YEAR = Date.UTC(2030, 0, 1), END = Date.UTC(2031, 0, 1);
+  const problems = [];
+  let probed = 0, transitions = 0;
+  for (const tz of ZONES) {
+    let prev = offsetAt(YEAR, tz);
+    for (let t = YEAR; t < END; t += 3600000) {
+      const o = offsetAt(t, tz);
+      if (o === prev) continue;
+      // Bisect to the minute so the affected wall-time range is exact.
+      let lo = t - 3600000, hi = t;
+      while (hi - lo > 60000) {
+        const mid = lo + Math.floor((hi - lo) / 2 / 60000) * 60000;
+        if (mid === lo) break;
+        if (offsetAt(mid, tz) === prev) lo = mid; else hi = mid;
+      }
+      const at = hi, before = prev, after = o;
+      prev = o;
+      transitions++;
+      // Wall times the transition affects, plus a control an hour clear on either side.
+      const from = Math.min(at + before, at + after), to = Math.max(at + before, at + after);
+      const probes = [{ w: from - 3600000, hit: false }, { w: to + 3600000, hit: false }];
+      for (let w = from; w < to; w += 1800000) probes.push({ w, hit: true });
+      for (const { w, hit } of probes) {
+        probed++;
+        const want = hit ? w - before : w - offsetAt(w - before, tz);
+        const got = resolve(w, tz);
+        if (got !== want) {
+          problems.push(tz + ' @' + iso(at) + ' (' + (before / 3600000) + 'h→' + (after / 3600000)
+            + 'h) wall ' + iso(w).slice(0, 16) + ': expected ' + iso(want) + ', got '
+            + (got == null ? 'null' : iso(got)));
+        }
+      }
+    }
+  }
+  const name = 'every 2030 DST transition in ' + ZONES.length + ' zones resolves per RFC 5545 §3.3.5';
+  if (problems.length) {
+    console.log('  FAIL ' + name);
+    for (const p of problems.slice(0, 12)) console.log('        ' + p);
+    if (problems.length > 12) console.log('        ...and ' + (problems.length - 12) + ' more');
+    failures++;
+  } else {
+    console.log('  ok   ' + name + ' (' + transitions + ' transitions, ' + probed + ' wall times)');
+  }
+}
+
+console.log('ics reader — ' + (CASES.length + 2) + ' cases at ' + iso(nowMs(SUITE_NOW)) + ', TZ=' + process.env.TZ);
 for (const c of CASES) check(c);
+checkTransitions();
 checkPerf();
 if (failures) {
   console.log('\n' + failures + ' of ' + ran + ' cases failed');
