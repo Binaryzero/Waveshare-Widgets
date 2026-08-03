@@ -182,7 +182,14 @@
       // from what is already held instead; the countdown is time-relative, so this is
       // a recompute rather than a replay of formatted text.
       paint();
-      if (cadenceChanged) schedule(remainingWait());
+      // Recompute from the NEW cadence, not from what is left of the old one.
+      // `remainingWait()` reads `dueAt`, which still holds the deadline the previous
+      // interval produced — so re-arming with it just restored the same deadline and
+      // cutting 12 hours to 5 minutes still took 12 hours. The due time belongs to the
+      // last answer plus the interval now configured; if that is already past, it is due.
+      if (cadenceChanged) {
+        schedule(Math.max(0, (lastOk || Date.now()) + nextDelayMs() - Date.now()));
+      }
     }
   });
 
@@ -223,7 +230,15 @@
   }
 
   async function load() {
-    if (paused() || inFlight) { schedule(); return; }
+    // A load that comes due while paused stays due. Calling schedule() here would push
+    // `dueAt` a whole fresh interval into the future, and the resume handlers — which
+    // ask exactly that question — would then decline to fetch: at the 12-hour cadence a
+    // tile could sit on stale data for another 12 hours after the game ended. Leaving
+    // `dueAt` in the past is what makes the resume path pick it up immediately.
+    if (paused()) return;
+    // Already fetching is different: something IS in progress, so re-arming normally is
+    // right rather than leaving the chain unarmed.
+    if (inFlight) { schedule(); return; }
     inFlight = true;
     // Everything below belongs to the calendar as it was when the request left.
     const gen = generation;
@@ -397,7 +412,8 @@
         stateCard('', '○', 'Nothing scheduled',
           'No events in the next ' + cfg.lookaheadDays + ' day' + (cfg.lookaheadDays === 1 ? '' : 's') + '.' +
           (dropped ? ' ' + dropped + ' repeating event' + (dropped === 1 ? '' : 's') +
-            ' could not be read — only daily and weekly repeats are supported.' : ''));
+            ' could not be read — only daily and weekly repeats are supported.' : ''),
+          null, 'Clear');
         // The footer normally carries this, and the footer is hidden behind the state
         // card. A calendar containing ONLY unsupported repeats would otherwise claim
         // outright that nothing is scheduled, which is what the counter exists to stop.
@@ -439,9 +455,13 @@
     el('data').hidden = false;
   }
 
-  function stateCard(cls, icon, title, body, onRetry) {
+  function stateCard(cls, icon, title, body, onRetry, pillText) {
     const pill = el('pill');
-    pill.textContent = cls === 'err' ? 'Error' : 'Setup';
+    // "Setup" is a claim that something still needs configuring, so it belongs only to
+    // cards that mean it. A successfully refreshed calendar that simply has nothing in
+    // it was labelled Setup beside "Nothing scheduled", telling the user to go and fix a
+    // configuration that is already correct.
+    pill.textContent = pillText || (cls === 'err' ? 'Error' : 'Setup');
     pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
     const s = el('state');
     s.className = 'state-card' + (cls ? ' ' + cls : '');

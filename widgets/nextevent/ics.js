@@ -242,8 +242,13 @@
     let nested = 0;      // depth of components nested INSIDE the current VEVENT
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed === 'BEGIN:VEVENT') { cur = { exdates: [] }; nested = 0; continue; }
-      if (trimmed === 'END:VEVENT') {
+      // Component names are case-insensitive. Comparing the raw line meant a feed using
+      // lowercase names passed the widget's (case-insensitive) BEGIN:VCALENDAR check and
+      // then parsed as ZERO events — "Nothing scheduled" about a calendar full of them,
+      // with nothing dropped and no error to show.
+      const upper = trimmed.toUpperCase();
+      if (upper === 'BEGIN:VEVENT') { cur = { exdates: [] }; nested = 0; continue; }
+      if (upper === 'END:VEVENT') {
         if (cur && cur.start) events.push(cur);
         cur = null;
         nested = 0;
@@ -256,8 +261,8 @@
       // tile displayed "Calendar reminder" instead of the meeting. Depth rather than a
       // VALARM check, because the rule is "properties of the VEVENT itself", and the
       // next nested component to appear should not need this fixing again.
-      if (trimmed.startsWith('BEGIN:')) { nested++; continue; }
-      if (trimmed.startsWith('END:')) { if (nested > 0) nested--; continue; }
+      if (upper.startsWith('BEGIN:')) { nested++; continue; }
+      if (upper.startsWith('END:')) { if (nested > 0) nested--; continue; }
       if (nested > 0) continue;
       const colon = trimmed.indexOf(':');
       if (colon < 0) continue;

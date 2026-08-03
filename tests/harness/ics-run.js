@@ -238,6 +238,15 @@ const CASES = [
     expect: { summary: 'This afternoon' },
   },
   {
+    name: 'lowercase component names parse, because iCalendar is case-insensitive',
+    // The widget's BEGIN:VCALENDAR guard is case-insensitive, so a lowercase feed passed
+    // validation and then parsed as ZERO events — "Nothing scheduled" about a calendar
+    // full of them, with nothing dropped and no error to show for it.
+    ics: 'begin:vcalendar\r\nversion:2.0\r\nbegin:vevent\r\nuid:a\r\n'
+      + 'dtstart:20300610T170000Z\r\nsummary:Design review\r\nend:vevent\r\nend:vcalendar\r\n',
+    expect: { summary: 'Design review', total: 1 },
+  },
+  {
     name: 'a body that is not a calendar at all yields nothing',
     // The reader's job is to find no events here. The WIDGET's job is to notice that
     // "no events" from a non-calendar is not the same claim as an empty calendar —
