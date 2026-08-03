@@ -124,6 +124,12 @@
 
   const el = (id) => document.getElementById(id);
 
+  /** Is there ANYTHING worth showing? Every field, named once. Spelling this out inline
+   *  is how it came to check `ilvl` and neither `mplus` nor `raid`, so a character with a
+   *  rating but no item level counted as nothing at all. */
+  const hasAnyData = () => data.price != null || data.affixes.length > 0
+    || data.ilvl != null || data.mplus != null || data.raid != null;
+
   // One predicate for every gate. Two copies of this rule drift, and the drift always
   // looks like a tile still polling in a state it was supposed to stop in.
   const paused = () => gameOn || document.hidden;
@@ -298,8 +304,7 @@
       // unconditionally sent an all-fail replacement tick down the showError() path,
       // hiding perfectly good retained sources behind "Nothing to show yet" until the
       // backoff elapsed — undoing the point of clearing per source in the first place.
-      const keptSomething = data.price != null || data.affixes.length || data.ilvl != null;
-      if (!keptSomething) lastOk = 0;
+      if (!hasAnyData()) lastOk = 0;
       document.body.classList.remove('stale');
       // And repaint, because clearing the MODEL leaves the previous query's numbers on
       // SCREEN until the replacement tick finishes — tens of seconds under the
@@ -429,9 +434,10 @@
     // Is this a character profile at all? Every field below is optional on its own, so
     // without this a `{}` or `null` body reads as "a character with nothing filled in"
     // — blanking the tile, clearing the outage backoff and reporting Live.
+    const shaped = (v) => v != null && typeof v === 'object';
     if (!json || typeof json !== 'object'
-      || (json.gear === undefined && json.mythic_plus_scores_by_season === undefined
-          && json.raid_progression === undefined)) {
+      || !(shaped(json.gear) || Array.isArray(json.mythic_plus_scores_by_season)
+           || shaped(json.raid_progression))) {
       throw new Error('character: unexpected response');
     }
     const gear = json && json.gear;
