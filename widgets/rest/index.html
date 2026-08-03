@@ -89,10 +89,6 @@
   // panel that restarts overnight does not re-authenticate against every API it holds.
   // Keyed by endpoint+client so changing either cannot resurrect the old token.
   let bearer = null;      // { token, expiresAt, key }
-  // False until the first onInit has applied real settings. Before that, `cfg` holds
-  // defaults that differ from every saved configuration, so a comparison against them
-  // reports an edit that never happened.
-  let inited = false;
   let timer = null;
   let ageTimer = null;    // refreshes the "how old" label between polls
   let inFlight = false;
@@ -328,28 +324,48 @@
   // had the second tile silently accept the first tile's token — either failing against
   // its resource or running with privileges it was not configured for.
   const tokenKey = () => cfg.tokenEndpoint + '\n' + cfg.clientId + '\n' + cfg.scope;
-  // A MAP of identity -> token, not a single entry. One origin is shared by every REST
-  // tile on the panel, so a lone entry meant each OAuth tile's exchange overwrote the
-  // last one's: only the final identity survived a reload, and the rest re-authenticated
-  // on every start — the exact cost the cache exists to avoid, scaled by tile count.
-  const CACHE = 'rest.oauth.v2';
-  const CACHE_MAX = 8;    // identities kept; a panel holds a handful of REST tiles at most
-  // v1 held one entry in a shape this cannot read, and an unreadable blob holding a
-  // bearer would otherwise sit in storage forever. Drop it on the way past.
-  try { localStorage.removeItem('rest.oauth.v1'); } catch (e) { /* storage off */ }
 
-  function readCache() {
-    try {
-      const raw = localStorage.getItem(CACHE);
-      if (!raw) return {};
-      const all = JSON.parse(raw);
-      return all && typeof all === 'object' && !Array.isArray(all) ? all : {};
-    } catch (e) { return {}; }
+  // The bearer lives in MEMORY ONLY, and deliberately does not survive a reload.
+  //
+  // It was persisted, keyed by identity, until the obvious question got asked: what is it
+  // persisted IN? localStorage is a plaintext file in the WebView profile. The client
+  // secret that buys this token is a `secret` property held under DPAPI precisely so that
+  // reading the profile off disk yields nothing usable — and writing the derived
+  // credential next door in the clear hands back exactly what that protection withholds.
+  // A bearer is a working credential for as long as it lasts, and `expires_in` has no
+  // upper bound, so "it expires eventually" is not an answer.
+  //
+  // There is no widget-facing protected store to move it to: DurableStore has no binding
+  // in widget-api.js, so the only honest choices were plaintext-on-disk or memory. The
+  // cost of memory is one exchange per identity per app start, which is the right price.
+  // Everything the cache was for WITHIN a session — polls not re-authenticating, short
+  // tokens being reused — is unchanged, because that never needed the disk.
+  //
+  // A host-mediated protected store is the real fix and is worth having; it is platform
+  // work, not widget work, and it is filed rather than improvised here.
+
+  /** Renders a failed exchange. Shared by BOTH call sites deliberately: they had already
+   *  drifted once — one checked the generation after mutating shared state and the other
+   *  not at all — and a rule that has to be applied twice is one that will be applied
+   *  once. `detail` is the only thing that differs between them.
+   *
+   *  A token type this tile cannot present is separated out because it is a capability
+   *  mismatch, not a service that is failing: waiting cannot change the answer, so it
+   *  earns no Retry and charges no backoff. */
+  function showSignInError(e, detail) {
+    if (e && e.tokenType) {
+      showState('◎', 'Unsupported token type',
+        'The service issued a "' + e.tokenType + '" access token, and this tile can only present ' +
+        'Bearer tokens. Check whether the service offers a bearer-token client.', false);
+      return;
+    }
+    failures++;
+    if (!showStale('sign-in failed')) showState('⚠', 'Sign-in failed', detail + e.message + '.', true);
   }
 
   /** How long before expiry a token stops being offered. Fixed headroom is right for the
    *  hour-long tokens most services issue, but a server that issues SHORT ones had every
-   *  single token rejected as too close to expiry the moment it arrived — so the cache
+   *  single token rejected as too close to expiry the moment it arrived — so the tile
    *  re-exchanged on every poll, which at the 5 s floor is twelve exchanges a minute from
    *  the code meant to avoid exactly that. Never give up more than half a token's life. */
   const freshnessMargin = (b) => {
@@ -357,50 +373,10 @@
     return Number.isFinite(life) && life > 0 ? Math.min(60000, life / 2) : 60000;
   };
 
-  function loadBearer() {
-    const c = readCache()[tokenKey()];
-    if (!c || typeof c !== 'object' || typeof c.token !== 'string' || !c.token) return null;
-    const expiresAt = Number(c.expiresAt);
-    if (!Number.isFinite(expiresAt)) return null;
-    return { token: c.token, expiresAt: expiresAt, lifetimeMs: Number(c.lifetimeMs), key: tokenKey() };
-  }
-
-  function saveBearer(entry) {
-    try {
-      const all = readCache();
-      all[entry.key] = { token: entry.token, expiresAt: entry.expiresAt, lifetimeMs: entry.lifetimeMs };
-      // Expired entries are dead weight and the map must not grow with every endpoint
-      // this tile is ever pointed at. Keep the one just bought unconditionally, then the
-      // longest-lived of the rest — evicting a token that is about to expire anyway
-      // costs at most one exchange, while evicting a fresh one costs a sibling its cache.
-      const now = Date.now();
-      const others = Object.keys(all)
-        .filter((k) => k !== entry.key && Number(all[k] && all[k].expiresAt) > now)
-        .sort((a, b) => Number(all[b].expiresAt) - Number(all[a].expiresAt))
-        .slice(0, CACHE_MAX - 1);
-      const kept = {};
-      kept[entry.key] = all[entry.key];
-      for (const k of others) kept[k] = all[k];
-      localStorage.setItem(CACHE, JSON.stringify(kept));
-    } catch (e) { /* quota / storage off */ }
-  }
-
-  /** Forgets ONE identity's token. Never the whole map: the entries belong to whichever
-   *  tiles use those credentials, not to the tile doing the forgetting. */
-  function dropBearer(key) {
-    try {
-      const all = readCache();
-      if (!(key in all)) return;
-      delete all[key];
-      localStorage.setItem(CACHE, JSON.stringify(all));
-    } catch (e) { /* storage off */ }
-  }
-
-  /** A valid bearer, exchanging for one if the cache is empty or close to expiry.
+  /** A valid bearer, exchanging for one if there is none or it is close to expiry.
    *  Throws with .tokenExchange set so the caller can tell WHICH call failed. */
   async function getBearer(force, signal) {
     if (!force) {
-      if (!bearer) bearer = loadBearer();
       // Headroom, so a token that expires between this check and the request arriving
       // is not a 401 the user sees as a broken tile — but bounded by the token's own
       // life, or a short-lived one is never fresh enough to use at all.
@@ -418,6 +394,14 @@
     try {
       res = await WW.fetch(cfg.tokenEndpoint, {
         method: 'POST',
+        // Proxy-first, and never natively. Token endpoints are server-to-server and
+        // routinely send no CORS headers — and a CORS block does not stop the request,
+        // it only stops us reading the reply. WW.fetch cannot tell that from a transport
+        // failure, so it would replay the POST through the host and the server would
+        // grant a SECOND token for one sign-in: two grants, two audit entries, and
+        // rate-limit pressure that scales with the number of tiles. A request that must
+        // not be sent twice does not belong on a ladder that retries it.
+        proxy: 'always',
         signal: signal,
         headers: {
           // HTTP Basic is the form every client-credentials server accepts; putting the
@@ -455,6 +439,20 @@
       err.tokenExchange = true;
       throw err;
     }
+    // RFC 6749 §5.1: token_type says HOW the token must be presented, and that is the
+    // server's call rather than ours. Bearer is the only scheme this tile can honour —
+    // MAC and DPoP need a per-request signature or proof it does not compute — so
+    // sending one of those as "Bearer <token>" would not be using the token, it would be
+    // misusing it and collecting a 401 that names nothing. An ABSENT type is treated as
+    // bearer: the RFC requires the field but plenty of servers omit it, and refusing
+    // those would break working configurations to enforce a spec detail nobody sees.
+    const kind = json.token_type == null ? '' : String(json.token_type).trim();
+    if (kind && kind.toLowerCase() !== 'bearer') {
+      const err = new Error('the service issued a "' + kind + '" token');
+      err.tokenExchange = true;
+      err.tokenType = kind;
+      throw err;
+    }
     const ttl = Number(json.expires_in);
     if (forKey !== tokenKey()) {
       // The tile was retargeted while this was in flight. Discard rather than cache:
@@ -475,7 +473,6 @@
       lifetimeMs: lifetimeMs,
       key: forKey,
     };
-    saveBearer(bearer);
     return bearer.token;
   }
 
@@ -574,12 +571,7 @@
           // backoff, or painting its card, is the same mistake — it was just happening
           // one line earlier.
           if (superseded()) return;
-          failures++;
-          if (!showStale('sign-in failed')) {
-            showState('⚠', 'Sign-in failed',
-              'Could not get an access token: ' + e.message +
-              '. Check the token endpoint, client ID and client secret.', true);
-          }
+          showSignInError(e, 'Could not get an access token: ');
           return;
         }
       }
@@ -622,11 +614,7 @@
           // so it could charge the new source's backoff and paint "Sign-in failed" over
           // a tile that had just been pointed somewhere else entirely.
           if (superseded()) return;
-          failures++;
-          if (!showStale('sign-in failed')) {
-            showState('⚠', 'Sign-in failed',
-              'The API rejected the token and a new one could not be obtained: ' + e.message + '.', true);
-          }
+          showSignInError(e, 'The API rejected the token and a new one could not be obtained: ');
           return;
         }
         init.headers = setAuthHeader(Object.assign({}, init.headers), 'Bearer ' + fresh);
@@ -809,33 +797,18 @@
     cfg.headerValue = String(s.headerValue || '');
 
     const prevAuth = cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope;
-    const prevKey = tokenKey(), prevSecret = cfg.clientSecret;
     cfg.authMode = s.authMode === 'oauth2' ? 'oauth2' : s.authMode === 'header' ? 'header' : 'none';
     cfg.tokenEndpoint = String(s.tokenEndpoint || '').trim();
     cfg.clientId = String(s.clientId || '').trim();
     cfg.clientSecret = String(s.clientSecret == null ? '' : s.clientSecret);
     cfg.scope = String(s.scope || '').trim();
-    // Any change to WHO we are invalidates the cached bearer immediately. Leaving it
-    // would authenticate the new credentials' first poll as the old client — which
-    // succeeds, looks correct, and is the wrong account.
-    //
-    // The FIRST init is not such a change. `cfg` still holds the hard-coded none/empty
-    // defaults when prevAuth is captured, so an OAuth tile arriving with its saved
-    // settings always looked like an edit and wiped the cache before getBearer could
-    // read it — every reload of the widget or the app bought a fresh exchange, which is
-    // exactly what the cache exists to avoid, and multiplies by the number of REST tiles.
-    // Skipping the wipe here is safe because it is not what protects correctness:
-    // loadBearer() refuses any entry whose key does not match the current endpoint,
-    // client and scope, so a token from other credentials can never be used regardless.
-    if (inited && prevAuth !== cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope) {
+    // Any change to WHO we are drops the held bearer immediately. Leaving it would
+    // authenticate the new credentials' first poll as the old client — which succeeds,
+    // looks correct, and is the wrong account. No first-init special case is needed now
+    // that nothing is persisted: on the first init `bearer` is already null, so this
+    // costs nothing and there is no stored entry left for it to throw away.
+    if (prevAuth !== cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope) {
       bearer = null;
-      // Forget the STORED token only when it was bought under credentials that just
-      // changed beneath it: same endpoint, client and scope, different secret — the one
-      // case where the key still matches so loadBearer would hand the old token straight
-      // back. A change of identity needs no removal and must not do one: loadBearer
-      // already refuses an entry whose key does not match, and that entry may be the
-      // live cache of another tile still configured for those credentials.
-      if (tokenKey() === prevKey && cfg.clientSecret !== prevSecret) dropBearer(prevKey);
     }
 
     el('title').textContent = String(s.label || '').trim() || 'REST';
@@ -886,8 +859,6 @@
       if (stale) showStale(staleWhy);
       else { paintValue(last.text, last.cls); renderMeta(); }
     }
-    // Last, so every comparison above still sees the real "was this the first one".
-    inited = true;
     startAgeTicker();
     restart();
   });
