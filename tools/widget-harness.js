@@ -445,7 +445,14 @@ function loadPlaywright() {
     const hostCalls = await page.evaluate(() => window.__wwHostCalls || []);
     // ...plus WebRTC, which is read from the WIDGET frame because that is the document
     // that would have constructed it — the shell's globals are a different origin.
-    const peerApis = await frame.evaluate(() => window.__wwRtc || []).catch(() => []);
+    // EVERY frame, not just the slot's. The init script runs in each document, so a
+    // child iframe the widget creates records into its OWN __wwRtc — reading only the
+    // slot frame returned zero while a descendant was opening STUN/TURN or QUIC, which
+    // is traffic the panel would carry just the same. Three stock widgets frame
+    // third-party content and one frames a URL the user types, so a descendant is the
+    // ordinary case here, not an exotic one.
+    const peerApis = (await Promise.all(page.frames().map((f) =>
+      f.evaluate(() => window.__wwRtc || []).catch(() => [])))).flat();
     const net = attempted.concat(hostCalls, peerApis);
     check('no network request while a game is running',
       net.length === 0,
