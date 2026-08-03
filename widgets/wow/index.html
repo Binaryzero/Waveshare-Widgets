@@ -203,6 +203,16 @@
     return d.getTime();
   }
 
+  /** A number the source actually stated. Number(null) and Number('') are both 0 and
+   *  both pass a finite check, so an unranked or incomplete profile rendered an item
+   *  level of 0 and counted as a good reading — the same coercion the price path was
+   *  fixed for, at the sibling site that did not get it. */
+  function num(raw) {
+    if (raw == null || raw === '') return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }
+
   function fmtGold(copper) {
     const g = Math.floor(Number(copper) / 10000);
     if (!Number.isFinite(g)) return '--';
@@ -302,8 +312,9 @@
     if (gameOn) {
       // A game owns the screen: stop the network AND retire what is already out, which
       // cancelling the timer alone does not do. Its success path would otherwise repaint
-      // a screen nobody can see, having spent four API calls to do it.
-      retire();
+      // a screen nobody can see, having spent four API calls to do it. The retry state
+      // survives, because a pause interrupts the wait rather than ending it.
+      retire(true);
       clearTimeout(timer);
       timer = null;
       clearInterval(resetTimer);
@@ -404,8 +415,8 @@
       if (latest && latest.summary) raid = String(latest.summary);
     }
     return {
-      ilvl: gear && Number.isFinite(Number(gear.item_level_equipped)) ? Number(gear.item_level_equipped) : null,
-      mplus: scores && scores.scores && Number.isFinite(Number(scores.scores.all)) ? Math.round(Number(scores.scores.all)) : null,
+      ilvl: num(gear && gear.item_level_equipped),
+      mplus: (() => { const v = num(scores && scores.scores && scores.scores.all); return v == null ? null : Math.round(v); })(),
       raid,
     };
   }
@@ -449,7 +460,10 @@
         // was added to prevent — just at a call site that did not have it.
         if (gen !== generation) return;
         data.affixes = affixes;
-        if (affixes.length) gotAny = true;
+        // The REQUEST succeeded; whether the list has entries is the answer, not the
+        // outcome. Testing length made a legitimately empty week look like an outage to
+        // an affix-only tile and put it on backoff.
+        gotAny = true;
       } catch (e) { if (gen !== generation) return; problems.push(e.message); }
 
       if (cfg.realm && cfg.character) {
@@ -540,13 +554,16 @@
    *  due immediately even if this happened while paused. That last part is what the
    *  Next Event slice got wrong: resetting everything except the deadline left a resume
    *  re-arming the OLD one. */
-  function retire() {
+  function retire(keepRetryState) {
     generation++;
     if (activeController) { try { activeController.abort(); } catch (e) { /* gone */ } }
     activeController = null;
     inFlight = false;
-    failures = 0;
-    dueAt = 0;
+    // A GAME PAUSE is not a new query. Clearing the backoff here meant ending even a
+    // short game satisfied `Date.now() >= dueAt` and ticked immediately, throwing away
+    // the outage cadence — the same defeat as the duplicate visibility handler removed
+    // last round, at a different call site. Only a genuine query change resets these.
+    if (!keepRetryState) { failures = 0; dueAt = 0; }
   }
 
   function paintReset() {
