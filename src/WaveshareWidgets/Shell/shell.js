@@ -2234,18 +2234,50 @@
   /** Structured list (deck buttons, launcher shortcuts): one card per item with
    * labeled fields; the same legacy migrations as the settings window (JSON-array
    * string, "A=B" pairs) so old layouts edit cleanly here too. */
+  // >>> ww-list-mapping — extracted and RUN by tests/harness/listprims-run.js
+  // The two halves of a list setting's round trip live here as named functions on
+  // purpose. The probe loads this block out of the file and executes it, so it exercises
+  // the editor's own mapping instead of a copy in the test that can drift away from it —
+  // which is what the first version of that harness did, leaving every behavioural check
+  // green against a transcription while the real commit could have regressed freely.
+
+  /** The key marking a row that came in as a bare value. A SYMBOL, not a string: settings
+   * arrive as JSON and a manifest may legally declare a field called anything at all, so
+   * a string marker like "__raw" is a name a widget can collide with. An object row
+   * carrying that field would then be read as a wrapper, rendered as one input, and
+   * written back as the bare value — silently dropping its other fields, which is the
+   * very bug this file is fixing. A symbol cannot appear in parsed JSON, so the collision
+   * stops being unlikely and becomes impossible. */
+  const LIST_RAW = Symbol('ww-list-raw');
+
   /** Is this list entry a bare value a widget accepts as shorthand? (#167)
    *
-   * Strings and finite numbers only. null, undefined, booleans, NaN and arrays are NOT
+   * Strings and finite numbers only. null, undefined, booleans, NaN and blanks are NOT
    * shorthand — they are junk in a settings file, and preserving junk as an editable row
-   * would invite someone to keep it. An empty or all-whitespace string is dropped for the
-   * same reason: it renders as a blank row that does nothing and cannot be told apart from
-   * one the user is midway through typing.
-   */
+   * would put a permanent blank in front of the reader that does nothing and cannot be
+   * told apart from one they are midway through typing. */
   function isListPrimitive(x) {
     if (typeof x === 'string') return x.trim() !== '';
     return typeof x === 'number' && Number.isFinite(x);
   }
+
+  /** Stored array -> editor rows. Primitives are KEPT, marked rather than expanded. */
+  function listRowsFrom(arr) {
+    return (arr || [])
+      .filter((x) => (x && typeof x === 'object') || isListPrimitive(x))
+      .map((x) => {
+        if (!isListPrimitive(x)) return Object.assign({}, x);
+        const row = {};
+        row[LIST_RAW] = x;   // the value's own type is kept; String() is for display only
+        return row;
+      });
+  }
+
+  /** Editor rows -> stored array. A marked row goes back out as the value it arrived as. */
+  function listValueFrom(items) {
+    return (items || []).map((x) => (x && LIST_RAW in x) ? x[LIST_RAW] : Object.assign({}, x));
+  }
+  // <<< ww-list-mapping
 
   function psList(prop, cur, set) {
     const wrap = document.createElement('div');
@@ -2274,9 +2306,7 @@
       // no rule the manifest can state, guessing picks one widget's meaning and corrupts
       // the rest, so this preserves the value verbatim and leaves the reading where it
       // already works.
-      items = (legacyJson || current)
-        .filter((x) => (x && typeof x === 'object') || isListPrimitive(x))
-        .map((x) => (isListPrimitive(x) ? { __raw: x } : Object.assign({}, x)));
+      items = listRowsFrom(legacyJson || current);
     } else if (typeof current === 'string' && current.trim()) {
       items = current.split(',').map((pair) => {
         const eq = pair.indexOf('=');
@@ -2288,11 +2318,10 @@
     } else {
       items = [];
     }
-    // A row carrying __raw goes back out as the primitive it came in as, so a shorthand
-    // entry survives an edit unchanged instead of being rewritten into a shape its widget
-    // never asked for.
-    const commit = () => set(prop, items.map((x) =>
-      (x && x.__raw !== undefined) ? x.__raw : Object.assign({}, x)));
+    // A marked row goes back out as the value it came in as, so a shorthand entry
+    // survives an edit unchanged instead of being rewritten into a shape its widget
+    // never asked for. See listValueFrom.
+    const commit = () => set(prop, listValueFrom(items));
     const renderItems = () => {
       wrap.textContent = '';
       items.forEach((item, i) => {
@@ -2310,7 +2339,7 @@
         del.addEventListener('click', () => { items.splice(i, 1); commit(); renderItems(); });
         head.append(tag, del);
         card.appendChild(head);
-        if (item.__raw !== undefined) {
+        if (LIST_RAW in item) {
           // One input, because the value genuinely is one value. Rendering the field pair
           // here would ask which half of it to put where, which is the question this
           // deliberately does not answer — and it stays editable and removable, which is
@@ -2321,9 +2350,9 @@
           // String() for DISPLAY only. The stored value keeps the type it arrived with —
           // a numeric entry that nobody touches must go back out as a number, not as its
           // decimal spelling, which is the same silent rewriting this set out to stop.
-          input.value = String(item.__raw);
+          input.value = String(item[LIST_RAW]);
           input.setAttribute('aria-label', (prop.itemLabel || 'item') + ' ' + (i + 1));
-          input.oninput = () => { item.__raw = input.value; commit(); };
+          input.oninput = () => { item[LIST_RAW] = input.value; commit(); };
           card.appendChild(input);
           wrap.appendChild(card);
           return;
