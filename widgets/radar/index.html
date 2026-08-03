@@ -309,15 +309,21 @@
       // whole game. Stopped here and rebuilt by whichever path resumes.
       clearTimeout(animTimer);
       animTimer = null;
-      // A debounce armed moments before the game started would fire inside it.
+      // A debounce armed moments before the game started would fire inside it — but
+      // cancelling it is only half the job. The callback is what sets pendingResize, so
+      // cancelling it without recording the intent lost the rebuild entirely: the resume
+      // took the no-work path and left both the base map and the radar tiles laid out for
+      // the old viewport until something else happened to rebuild them.
+      if (resizeTimer) pendingResize = true;
       clearTimeout(resizeTimer);
+      resizeTimer = null;
     }
     if (gameOn) return;
     // The animation was stopped on entry whatever else happened, so it has to be restored
     // whatever else happens — a game that started and ended inside one five-minute refresh
     // window set nothing pending, took the early return, and left the radar frozen on one
     // frame until the next refresh.
-    if (!missedWhilePaused) { restartAnimation(); return; }
+    if (!missedWhilePaused && !pendingResize) { restartAnimation(); return; }
     missedWhilePaused = false;
     // What was missed decides what to run. An init refused while paused owes a full
     // setup — NOT a refresh — because its settings may name a different location, and

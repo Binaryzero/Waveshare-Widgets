@@ -245,8 +245,16 @@
       try {
         const blobUrl = await loadImage(post.imageUrl);
         // A game that started while this image was downloading: decoding and painting it
-        // is exactly the work being deferred, and the blob is discarded rather than shown.
-        if (gameOn && !direction) { missedWhilePaused = true; missedAdvance = true; advancing = false; return; }
+        // is exactly the work being deferred. REVOKED, not merely dropped — loadImage has
+        // already created the object URL by now, and letting it fall out of scope keeps
+        // up to IMAGE_MAX_BYTES alive for the life of the widget, once per pause.
+        if (gameOn && !direction) {
+          URL.revokeObjectURL(blobUrl);
+          missedWhilePaused = true;
+          missedAdvance = true;
+          advancing = false;
+          return;
+        }
         show(post, blobUrl);
         advancing = false;
         return;
