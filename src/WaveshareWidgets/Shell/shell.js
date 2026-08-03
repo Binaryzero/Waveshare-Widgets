@@ -51,6 +51,7 @@
   const pingRoutes = new Map();  // ping id -> { win, origin } of the asking widget frame
   const mediaRoutes = new Map(); // media-list id -> { win, origin } of the asking widget frame
   const audioRoutes = new Map(); // audio-get id -> { win, origin } of the asking widget frame
+  const secureRoutes = new Map();// secure-store id -> { win, origin } of the asking widget frame
   // Stream Deck profile AND capture share one map: ids are unique across both, and both
   // are strict request->response. The host never pushes either unsolicited — live mode
   // just bundles a capture into the profile reply and the widget polls — so a route per
@@ -221,6 +222,10 @@
       // A capture is a SCREENSHOT of the user's Stream Deck keys. It goes to the frame
       // whose request produced it and nowhere else.
       routeSd(msg, (data) => ({ type: 'ww-sd-capture-result', data }));
+    } else if (msg.type === 'secure-result') {
+      // A stored credential. It goes to the frame whose request produced it and nowhere
+      // else — routeReply is what makes that true, since the host answers the shell.
+      routeReply(secureRoutes, msg, 'ww-secure-result');
     } else if (msg.type === 'ping-result') {
       routeReply(pingRoutes, msg, 'ww-ping-result');
     } else if (msg.type === 'media-list-result') {
@@ -338,6 +343,45 @@
       audioRoutes.set(msg.id, { win: ev.source, origin: ev.origin });
       setTimeout(() => audioRoutes.delete(msg.id), 15000);
       postToHost({ type: 'audio-get', id: msg.id });
+    } else if ((msg.type === 'ww-secure-get' || msg.type === 'ww-secure-set'
+                || msg.type === 'ww-secure-delete') && msg.id) {
+      // The SCOPE comes from the slot that sent this, never from the message (#175). A
+      // widget naming its own scope could name ANOTHER widget's and read its tokens —
+      // and this is the only place in the system that knows which widget is speaking,
+      // having established it twice over above: WindowProxy identity says which slot,
+      // origin says the widget is still the one in it.
+      const widgetId = sender.def && sender.def.widgetId;
+      if (!widgetId) return;
+      // The settings preview answers here and forwards NOTHING. Two reasons, and the
+      // second is why it is answered rather than dropped: the replica must never read
+      // or write a live credential (it is a layout editor, and its widgets run outside
+      // a real slot), and settings.js relays only fetch/ping/media-list/audio-get — so
+      // a forwarded secure-* would be dropped silently and settle only on secureCall's
+      // 10s timeout, leaving an OAuth widget that awaits secureGet before its first
+      // paint blank for ten seconds on every preview reload. Same shape as the
+      // notifications-watch answer settings.js already gives, and for the same reason.
+      //
+      // The answers are the honest ones, not placeholders: the preview really does have
+      // nothing stored (a miss, which the spec tells widgets to treat as normal), and a
+      // set really did not write (`unavailable` — keep it in memory and carry on).
+      if (PREVIEW) {
+        const reply = { type: 'ww-secure-result', id: msg.id, value: null, ok: true };
+        if (msg.type === 'ww-secure-set') { reply.ok = false; reply.error = 'unavailable'; }
+        try { ev.source.postMessage(reply, ev.origin); } catch (e) { /* frame gone */ }
+        return;
+      }
+      secureRoutes.set(msg.id, { win: ev.source, origin: ev.origin });
+      setTimeout(() => secureRoutes.delete(msg.id), 15000);
+      // The value crosses unmodified. Truncating an over-long credential here would
+      // store a CORRUPTED one — worse than refusing it — so the size cap lives in one
+      // place, on the host, which answers `too-large` and writes nothing.
+      postToHost({
+        type: msg.type.slice(3),          // ww-secure-get -> secure-get
+        id: msg.id,
+        widgetId,
+        key: typeof msg.key === 'string' ? msg.key : '',
+        value: typeof msg.value === 'string' ? msg.value : '',
+      });
     } else if (msg.type === 'ww-notifications-watch') {
       // Demand is tracked per slot and only on/off TRANSITIONS reach the host —
       // otherwise nothing would ever send watch(false) when the last watching

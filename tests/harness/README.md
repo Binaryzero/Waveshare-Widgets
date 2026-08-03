@@ -147,3 +147,17 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   lets polling reach v2) and, in the other direction, that a genuinely v1-only bridge
   still works. Bridge traffic is proxy-only, so the fixture answers `ww-fetch` messages
   rather than routing network requests.
+- `securepreview-run.js` — the protected store as reached from the SETTINGS PREVIEW
+  (issue #175). The preview is a real `shell.js?preview` hosting real widget iframes, and
+  it must never touch a live credential — but the shell still forwarded `secure-*` up to
+  `settings.js`, which relays only fetch / ping / media-list / audio-get and drops the
+  rest with no reply. The request vanished and settled only when `secureCall`'s
+  ten-second timeout fired, so an OAuth widget that awaits `secureGet` before its first
+  paint sat blank for ten seconds on every preview reload, on the surface the user edits
+  in. Answering in the shell is the fix, and every check here needs its other half:
+  "nothing was posted to the host" is also what a branch that never runs looks like, so
+  the same widget code is driven a second time in a real panel shell, where the call must
+  reach the host carrying the widget id the SHELL stamped. The parent models the settings
+  relay by DROPPING everything outside that allow-list — a friendlier stand-in would hide
+  the whole defect — and a fetch is pushed through first to prove the relay works at all.
+  The timings are the witness: 10001 ms before, single-digit ms after. Port used: 8964.

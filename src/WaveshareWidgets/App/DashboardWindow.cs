@@ -405,6 +405,12 @@ public sealed class DashboardWindow : Form
                     HandleAudioGet(message);
                     break;
 
+                case "secure-get":
+                case "secure-set":
+                case "secure-delete":
+                    HandleSecureStore(message);
+                    break;
+
                 case "sd-profiles":
                     // The on-device settings sheet (#48) needs the same discovered
                     // Virtual Stream Deck profile list the desktop editor gets.
@@ -825,6 +831,99 @@ public sealed class DashboardWindow : Form
         {
             // window closed mid-ping
         }
+    }
+
+    /// <summary>Serializes read-modify-write on the secrets file. Every operation reads
+    /// the whole document, changes one member and writes it back, so two widgets saving
+    /// at once would otherwise lose one of the two writes.</summary>
+    private static readonly object SecureStoreGate = new();
+
+    /// <summary>
+    /// The widget-scoped protected store (#175): secure-get / secure-set / secure-delete.
+    ///
+    /// <para>THE SCOPE COMES FROM THE SHELL, never from the widget. `widgetId` on this
+    /// message is stamped by shell.js from the SLOT that sent it — a slot it identified by
+    /// WindowProxy identity and re-checked by origin — because a widget naming its own
+    /// scope could name another widget's and read its tokens. That is the whole security
+    /// property here, and it is the same reasoning the shell's bridge already applies to
+    /// every other channel; the host cannot re-derive it, because by the time a message
+    /// arrives here the sender is the shell.</para>
+    ///
+    /// <para>Deliberately NOT routed in <see cref="HandlePreviewRequest"/>. The settings
+    /// preview runs widget code outside a slot, so it has no trustworthy scope to be given
+    /// — and a preview must not read or write live credentials in any case.</para>
+    /// </summary>
+    private void HandleSecureStore(JsonNode? message)
+    {
+        var id = message?["id"]?.GetValue<string>() ?? "";
+        var type = message?["type"]?.GetValue<string>() ?? "";
+        var widgetId = message?["widgetId"]?.GetValue<string>();
+        var key = message?["key"]?.GetValue<string>();
+        var result = new JsonObject { ["id"] = id };
+
+        try
+        {
+            lock (SecureStoreGate)
+            {
+                var path = AppPaths.WidgetSecretsFile;
+                var doc = WidgetSecrets.Load(File.Exists(path) ? File.ReadAllText(path) : null);
+                switch (type)
+                {
+                    case "secure-get":
+                        var value = WidgetSecrets.Get(doc, widgetId, key);
+                        result["ok"] = true;
+                        // Absent and unreadable are one answer on purpose: in both cases
+                        // the widget's next move is to go and get a new credential.
+                        result["value"] = value;
+                        break;
+
+                    case "secure-set":
+                        var wrote = WidgetSecrets.Set(doc, widgetId, key, message?["value"]?.GetValue<string>());
+                        result["ok"] = wrote == WidgetSecrets.WriteResult.Ok;
+                        if (wrote == WidgetSecrets.WriteResult.Ok)
+                        {
+                            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                            DurableStore.Write(path, WidgetSecrets.Serialize(doc));
+                        }
+                        else
+                        {
+                            // Named rather than collapsed into false: the widget's
+                            // fallback differs. "unavailable" means keep it in memory and
+                            // carry on; the rest are the widget's own bug. The names come
+                            // from WireName, not from the enum member — the documented
+                            // vocabulary is kebab-case, and a rename must not quietly
+                            // change what widgets branch on.
+                            result["error"] = WidgetSecrets.WireName(wrote);
+                        }
+                        break;
+
+                    case "secure-delete":
+                        if (WidgetSecrets.Delete(doc, widgetId, key))
+                        {
+                            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                            DurableStore.Write(path, WidgetSecrets.Serialize(doc));
+                        }
+                        // Deleting something absent is not a failure — the caller's
+                        // intent ("this must not be stored") holds either way.
+                        result["ok"] = true;
+                        break;
+
+                    default:
+                        result["ok"] = false;
+                        result["error"] = "unsupported";
+                        break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Never the key, never the value: this runs on a path whose entire purpose is
+            // that credentials do not end up somewhere they can be read.
+            Log.Warn($"secure store {type} failed for '{widgetId}': {ex.GetType().Name}");
+            result["ok"] = false;
+            result["error"] = "unavailable";
+        }
+        PostToShell("secure-result", result);
     }
 
     /// <summary>

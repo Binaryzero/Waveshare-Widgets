@@ -25,7 +25,31 @@
   const pendingPings = new Map();
   const pendingMediaLists = new Map();
   const pendingAudioGets = new Map();
+  // {resolve} only, no reject: a refusal from the protected store is an ANSWER the
+  // widget branches on, never a throw. See secureCall.
+  const pendingSecure = new Map();      // protected-store request id -> {resolve}
   const pendingAudioSets = new Map();
+
+  /** One request/reply round trip to the protected store. Resolves rather than rejects on
+   *  a refusal, because "it was not saved, and here is why" is an ANSWER a widget has to
+   *  branch on — a rejection would push every caller into a catch block that cannot tell
+   *  'unavailable' (keep it in memory) from 'too-large' (a bug in the widget). A host with
+   *  no such channel at all still settles, via the timeout, as unavailable. */
+  function secureCall(type, extra) {
+    return new Promise((resolve) => {
+      const id = reqId('s');
+      pendingSecure.set(id, { resolve });
+      setTimeout(() => {
+        if (pendingSecure.delete(id)) resolve({ ok: false, value: null, error: 'unavailable' });
+      }, 10000);
+      try {
+        parent.postMessage(Object.assign({ type, id }, extra), shellTarget());
+      } catch (e) {
+        if (pendingSecure.delete(id)) resolve({ ok: false, value: null, error: 'unavailable' });
+      }
+    });
+  }
+
   // Stream Deck replies are emitted to listeners rather than resolving a promise, so
   // unlike fetch/ping/media/audio there is no per-document pending map to make a stale
   // answer harmless. A reloaded slot keeps its WindowProxy, so a request the PREVIOUS
@@ -385,6 +409,18 @@
         pendingAudioGets.delete(msg.id);
         pending.resolve({ available: msg.available !== false, master: msg.master || null, sessions: msg.sessions || [] });
       }
+    } else if (msg.type === 'ww-secure-result') {
+      const pending = pendingSecure.get(msg.id);
+      if (!pending) return;
+      pendingSecure.delete(msg.id);
+      pending.resolve({
+        ok: msg.ok !== false,
+        // null for absent, for a value this machine cannot decrypt, and for a scope with
+        // nothing in it. One answer on purpose: in every case the widget's next move is
+        // to go and get a new credential.
+        value: typeof msg.value === 'string' ? msg.value : null,
+        error: typeof msg.error === 'string' ? msg.error : null,
+      });
     } else if (msg.type === 'ww-fetch-result') {
       const pending = pendingFetches.get(msg.id);
       if (!pending) return;
@@ -845,6 +881,45 @@
         setTimeout(() => { if (pendingAudioGets.delete(id)) reject(new TypeError('audio get timed out')); }, 10000);
         parent.postMessage({ type: 'ww-audio-get', id }, shellTarget());
       });
+    },
+
+    /** The widget's own PROTECTED store, for credentials it derives at runtime (#175).
+     *
+     * A `secret` property is sealed at rest so a stolen layout file carries nothing
+     * usable — but the bearer token a widget BUYS with that secret had nowhere to go but
+     * localStorage, which is a plaintext file in the same profile and hands back exactly
+     * what the sealing withholds. These three put a derived credential under the same
+     * protection, so an OAuth widget no longer has to choose between re-authenticating
+     * on every start and leaking its token to disk.
+     *
+     * SCOPED PER WIDGET, not per instance or per slot: two tiles of the same widget see
+     * the same entries, two different widgets never see each other's. The scope is
+     * stamped by the shell from the slot that asked; a widget cannot name it, and
+     * therefore cannot name anyone else's.
+     *
+     * `secureSet` resolves `{ok, error}`. Check `ok` — and honour it: `error:
+     * 'unavailable'` means protection is not working on this machine and NOTHING was
+     * written, so keep the value in memory and carry on rather than assuming it is
+     * saved. There is deliberately no plaintext fallback; a store that silently degrades
+     * is worse than none, because the widget believes it is protected.
+     *
+     * Values are capped at 8 KiB and 16 keys per widget; keys are letters, digits, dot,
+     * dash and underscore, up to 64 characters. */
+    secureGet(key) {
+      return secureCall('ww-secure-get', { key: String(key == null ? '' : key) })
+        .then((r) => (r.ok ? r.value : null));
+    },
+
+    secureSet(key, value) {
+      return secureCall('ww-secure-set', {
+        key: String(key == null ? '' : key),
+        value: String(value == null ? '' : value),
+      });
+    },
+
+    secureDelete(key) {
+      return secureCall('ww-secure-delete', { key: String(key == null ? '' : key) })
+        .then((r) => ({ ok: r.ok }));
     },
 
     /** Set master ('master') or per-app (pid) volume/mute. opts: {level? 0..1, muted?}.
