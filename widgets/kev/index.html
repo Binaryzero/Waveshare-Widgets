@@ -584,6 +584,26 @@
     if (started) arm();
   });
 
+  // Geometry can change with no render behind it. The on-panel editor resizes a slot's
+  // iframe in place without sending another init, and moving the panel to a display of a
+  // different resolution resizes every frame at once — in both cases the choice between
+  // one column and two was made against a box that no longer exists. Nothing else would
+  // correct it until the next poll, which at the 1440-minute maximum is a day away: a
+  // tile grown out of a crowded slot would keep two columns it no longer needs, and one
+  // shrunk into a smaller slot would go back to clipping the rows this exists to save.
+  // Debounced because resize fires continuously through an editor drag; re-fitting is a
+  // class toggle and a layout read, so once per settle costs nothing.
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      // Only while the data pane is up. Measuring behind the spinner or the error card
+      // reads zero against zero — the same mistake that made the first version of this
+      // render identically to the bug — and render() re-fits anyway when data returns.
+      if (!el('data').hidden) fitRows(el('list'));
+    }, 150);
+  });
+
   document.addEventListener('visibilitychange', () => {
     if (document.hidden || !started || inFlight) return;
     // Measured against the deadline the chain is actually waiting on. The old test used
