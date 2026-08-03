@@ -99,6 +99,13 @@
   let pendingInit = false;      // ...and whether that init still owes a full connect
   let missedWhilePaused = false;   // something was due while the game had the foreground
   let pollTimer = null;
+  // Declared HERE, above the WW.onInit registration below, not beside probeV2 where they
+  // are used. onInit replays synchronously at registration, so connect() — which clears
+  // both — runs during script evaluation: left further down, they were still in the
+  // temporal dead zone and every hue run threw
+  // "Cannot access 'probeTimer' before initialization".
+  let probeTimer = null;
+  let probing = false;   // a probeV2 request is in the air right now
   let holdoff = 0;   // suppress poll rendering briefly after a local action
   const BRI_STEP = 15; // brightness step, percent
 
@@ -299,8 +306,6 @@
   // buys an attacker nothing it does not already have. A non-200 moves the key to cleartext,
   // and that is the move no unauthenticated party gets to make on the user's behalf.
   const PROBE_RETRY_MS = 15000;
-  let probeTimer = null;
-  let probing = false;   // a probeV2 request is in the air right now
 
   async function begin() {
     if (mode !== null) { startPolling(); return; }
