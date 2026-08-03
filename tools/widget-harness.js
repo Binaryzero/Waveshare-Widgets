@@ -239,6 +239,16 @@ function loadPlaywright() {
         Object.defineProperty(window, name, { value: refuse, configurable: true, writable: true });
       } catch (e) { /* not present in this build */ }
     }
+    // WebTransport is the same class of hole: HTTP/3 over QUIC, which page.route does not
+    // intercept either. Recorded and refused in the same place and for the same reason,
+    // rather than waiting to be found the way WebSocket and WebRTC each were.
+    try {
+      const refuseWT = function WebTransport(url) {
+        seen.push('WebTransport ' + String(url).slice(0, 100));
+        throw new TypeError('WebTransport is not available in the offline runner');
+      };
+      Object.defineProperty(window, 'WebTransport', { value: refuseWT, configurable: true, writable: true });
+    } catch (e) { /* not present in this build */ }
   });
   await page.addInitScript(shim);
   // Host-bound messages, answered by the SHELL document. The widget's shim drops any
@@ -435,12 +445,12 @@ function loadPlaywright() {
     const hostCalls = await page.evaluate(() => window.__wwHostCalls || []);
     // ...plus WebRTC, which is read from the WIDGET frame because that is the document
     // that would have constructed it — the shell's globals are a different origin.
-    const rtc = await frame.evaluate(() => window.__wwRtc || []).catch(() => []);
-    const net = attempted.concat(hostCalls, rtc);
+    const peerApis = await frame.evaluate(() => window.__wwRtc || []).catch(() => []);
+    const net = attempted.concat(hostCalls, peerApis);
     check('no network request while a game is running',
       net.length === 0,
       net.length + ' attempted (' + attempted.length + ' by the browser, '
-        + hostCalls.length + ' via the host, ' + rtc.length + ' via WebRTC)'
+        + hostCalls.length + ' via the host, ' + peerApis.length + ' via WebRTC/WebTransport)'
         + (net.length ? ': ' + net[0].slice(0, 80) : ''));
   }
 
