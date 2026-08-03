@@ -364,7 +364,17 @@
   WW.onGame((g) => {
     gameOn = !!(g && g.active);
     if (gameOn || !started) return;
-    if (pendingRefresh || !hasData) { pendingRefresh = false; refresh(); }
+    if (pendingRefresh || !hasData) {
+      pendingRefresh = false;
+      // clearTimeout + tick(), exactly as the visibilitychange handler above does, and
+      // for the same reason. A tick refused during the game still armed the NEXT timeout
+      // before returning, so calling refresh() directly here left that deadline standing:
+      // the widget could fetch on the flip and again seconds later, and if the first was
+      // still in flight the second only set queuedRefresh and forced a third. Restarting
+      // the chain from the catch-up is what keeps one cadence.
+      clearTimeout(timer);
+      tick();
+    }
   });
 </script>
 </body>

@@ -56,15 +56,18 @@ const PLACES = {
   Reykjavik: { latitude: 64.15, longitude: -21.94, name: 'Reykjavik' },
 };
 
-(async () => {
-  const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
+// The witnesses. Which NAME was geocoded is the whole point of R4 — counting requests
+// alone would pass a resume that fetched diligently for the wrong city.
+let geocoded = [];
+let mapHits = 0;
+
+// One mounted widget, with the game either already running or not. Two scenarios need
+// this because the two halves of the gate fail independently: seeding covers a game that
+// was ALREADY running at init, and onGame covers one that starts later. A single mount
+// can only ever test one of them.
+async function mount(browser, gameAtInit) {
   const page = await browser.newPage({ viewport: { width: 640, height: 400 } });
   page.on('pageerror', (e) => { failures++; console.log('[pageerror]', String(e).slice(0, 300)); });
-
-  // The witnesses. Which NAME was geocoded is the whole point of R4 — counting requests
-  // alone would pass a resume that fetched diligently for the wrong city.
-  const geocoded = [];
-  let mapHits = 0;
 
   const serve = (route, dir, rel) => {
     const root = path.resolve(dir);
@@ -127,22 +130,32 @@ const PLACES = {
   }, {
     widgetUrl: 'https://widget.test/index.html',
     widgetOrigin: 'https://widget.test',
-    // NO game at init, deliberately: the widget has to complete a normal session and arm
-    // its refresh interval, because "an interval is already armed" is precisely the state
-    // in which the resume decision can go wrong. A run that starts paused never reaches it.
     initMessage: { type: 'ww-init',
       settings: { location: 'Dallas', zoom: 7, animate: 'off', mapDim: 0, textSize: 100, bgStyle: 'solid' },
-      sensors: [], media: null, theme: {}, game: { active: false, process: '' },
+      sensors: [], media: null, theme: {}, game: { active: gameAtInit, process: gameAtInit ? 'game' : '' },
       status: { elevated: false, apiVersion: 1 } },
-  });
+  }, gameAtInit);
 
   await page.goto('https://shell.test/host.html');
   await page.evaluate(() => window.__wwMount());
   const frameEl = await page.waitForSelector('iframe', { timeout: 10000 });
   const frame = await frameEl.contentFrame();
-  if (!frame) { console.log('  FAIL R0 widget frame never attached'); await browser.close(); process.exit(1); }
+  if (!frame) { console.log('  FAIL mount: widget frame never attached'); await browser.close(); process.exit(1); }
   await frame.waitForLoadState('domcontentloaded').catch(() => {});
   await page.waitForTimeout(1500);
+  return { page, frame };
+}
+
+(async () => {
+  const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
+
+  // ===== Scenario A · a game that starts AFTER a healthy session =====================
+  // NO game at init, deliberately: the widget has to complete a normal session and arm
+  // its refresh interval, because "an interval is already armed" is precisely the state
+  // in which the resume decision can go wrong. A run that starts paused never reaches it.
+  const a = await mount(browser, false);
+  const page = a.page;
+  const frame = a.frame;
 
   // ---- R0 · the session that arms the interval ---------------------------------------
   // Asserted, not assumed: if this did not happen there is no armed interval, and R4
@@ -195,6 +208,29 @@ const PLACES = {
   check('R6 a game ending with nothing held does not re-run the setup',
     geocoded.length === geoBefore && mapHits === mapBefore,
     `+${geocoded.length - geoBefore} geocode(s), +${mapHits - mapBefore} map fetch(es)`);
+
+  // ===== Scenario B · a game ALREADY running at init ================================
+  // The half the reorder above took away. Scenario A only ever sets gameOn through a
+  // ww-game transition, so deleting the `state.game` seeding from the widget would leave
+  // every one of its checks green — the seeding needs a mount that starts paused.
+  await page.close();
+  geocoded = [];
+  mapHits = 0;
+  const b = await mount(browser, true);
+  check('S1 a game already running at init means no request at all, setup included',
+    geocoded.length === 0 && mapHits === 0,
+    `${JSON.stringify(geocoded)}, ${mapHits} map fetch(es)`);
+  const startedPaused = await b.frame.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').trim());
+  check('S2 ...and the tile says it is paused rather than sitting blank',
+    /paused/i.test(startedPaused), JSON.stringify(startedPaused.slice(0, 120)));
+
+  // ...and it recovers: a seeded pause has to be re-enterable, or S1 would be satisfied
+  // by a widget that simply never works when a game was running at load.
+  await b.page.evaluate(() => window.__wwPush({ type: 'ww-game', game: { active: false, process: '' } }));
+  await b.page.waitForTimeout(2000);
+  check('S3 ...and the setup runs once the game ends',
+    geocoded.length === 1 && geocoded[0] === 'Dallas' && mapHits > 0,
+    `${JSON.stringify(geocoded)}, ${mapHits} map fetch(es)`);
 
   await browser.close();
   console.log(failures > 0 ? `\n${failures} FAILURES` : '\nALL PASS');

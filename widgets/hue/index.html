@@ -147,6 +147,7 @@
   });
 
   async function connect(s) {
+    hideMessage();   // a resumed connect must take the Paused card down before it draws
     let discovered = false;
     if (!cfg.ip) {
       // Cloud discovery is rate-limited by Philips and CORS-noisy (the browser-first
@@ -188,6 +189,15 @@
       return;
     }
 
+    // Re-checked after the awaits above, for the reason radar's start() is: cloud
+    // discovery and the /api/config validation are both slow, and a game starting during
+    // either would otherwise be answered by begin() opening the polling stream.
+    if (gameOn) {
+      missedWhilePaused = true;
+      pendingInit = true;
+      showMessage('Paused', 'A game is running.');
+      return;
+    }
     try { username = localStorage.getItem('hue-user-' + cfg.ip); } catch (e) { /* private mode */ }
     if (username) begin();
     else showPairing();
@@ -649,6 +659,14 @@
     poll();
   }
 
+  // Every other showMessage caller is terminal — no bridge, not a bridge. "Paused" is the
+  // first RECOVERABLE one, and the message overlay follows the pairing overlay in the DOM:
+  // left up, it covers the Pair button, so a first-time user could not pair after the game
+  // ended without reloading the widget.
+  function hideMessage() {
+    document.getElementById('message').style.display = 'none';
+  }
+
   function showMessage(title, detail) {
     const msg = document.getElementById('message');
     msg.style.display = 'flex';
@@ -669,6 +687,20 @@
   // waiting out whatever remained of the interval.
   WW.onGame((g) => {
     gameOn = !!(g && g.active);
+    // The CLIP-v2 setup probe retries on its own timer every PROBE_RETRY_MS. Gating
+    // poll() never touched it, so a game starting while setup was still settling left
+    // this widget probing the bridge for the whole session — the exact work the gate
+    // exists to stop.
+    //
+    // Only when that probe was actually IN FLIGHT does this force a reconnect: an
+    // established widget owes a poll, not a rediscovery, and re-running the bridge hunt
+    // after every game would be a heavier change than the one being made here.
+    if (gameOn && probeTimer) {
+      clearTimeout(probeTimer);
+      probeTimer = null;
+      missedWhilePaused = true;
+      pendingInit = true;   // setup never finished, so the resume owes the whole thing
+    }
     if (gameOn || !missedWhilePaused) return;
     missedWhilePaused = false;
     // What was missed decides what to run. An init refused while paused owes a full

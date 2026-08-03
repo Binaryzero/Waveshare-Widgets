@@ -281,7 +281,16 @@
   // waiting out whatever remained of the interval.
   WW.onGame((g) => {
     gameOn = !!(g && g.active);
-    if (!gameOn && missedWhilePaused) { missedWhilePaused = false; poll(); }
+    if (gameOn || !missedWhilePaused) return;
+    missedWhilePaused = false;
+    // Restart the cadence FROM the catch-up. The interval kept ticking through the game
+    // (its handler returned at the gate), so its next deadline is wherever it happened to
+    // land — and a game ending just before it produced two polls seconds apart. At the
+    // supported one-second interval, with host pings allowed two seconds, that is
+    // overlapping ICMP batches for the same targets.
+    clearInterval(pollTimer);
+    poll();
+    if (cfg.targets.length) pollTimer = setInterval(poll, cfg.interval * 1000);
   });
 
 </script>
