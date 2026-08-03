@@ -277,11 +277,26 @@ function loadPlaywright() {
     // intercept either. Recorded and refused in the same place and for the same reason,
     // rather than waiting to be found the way WebSocket and WebRTC each were.
     try {
-      const refuseWT = function WebTransport(url) {
-        seen.push('WebTransport ' + String(url).slice(0, 100));
-        throw new TypeError('WebTransport is not available in the offline runner');
-      };
-      Object.defineProperty(window, 'WebTransport', { value: refuseWT, configurable: true, writable: true });
+      const nativeWT = window.WebTransport;
+      if (nativeWT) {
+        const refuseWT = function WebTransport(url) {
+          seen.push('WebTransport ' + String(url).slice(0, 100));
+          throw new TypeError('WebTransport is not available in the offline runner');
+        };
+        // Statics and prototype carried over for the same reason as the peer connection
+        // above: a widget that checks WebTransport.prototype.createBidirectionalStream
+        // before constructing would otherwise see an empty prototype, take its
+        // unsupported-browser path, and record nothing — while production passes that
+        // check and opens the QUIC session.
+        for (const key of Object.getOwnPropertyNames(nativeWT)) {
+          if (['length', 'name', 'prototype', 'caller', 'arguments'].includes(key)) continue;
+          try {
+            Object.defineProperty(refuseWT, key, Object.getOwnPropertyDescriptor(nativeWT, key));
+          } catch (e) { /* non-configurable */ }
+        }
+        try { refuseWT.prototype = nativeWT.prototype; } catch (e) { /* frozen */ }
+        Object.defineProperty(window, 'WebTransport', { value: refuseWT, configurable: true, writable: true });
+      }
     } catch (e) { /* not present in this build */ }
   });
   await page.addInitScript(shim);
@@ -358,6 +373,17 @@ function loadPlaywright() {
         // (shell.js:334).
         if (m.id && targets.length) window.__wwHostCalls.push('ww-ping ' + targets.join(','));
         reply({ type: 'ww-ping-result', id: m.id, results: [] });
+      } else if (m.type === 'ww-open-url') {
+        // NOT host-local, which is what an earlier pass of this enumeration called it.
+        // shell.js forwards it and DashboardWindow.OpenExternalUrl runs Process.Start on
+        // the URL with UseShellExecute — the system browser then fetches it, which is
+        // external network activity the widget initiated, and a browser window thrown in
+        // front of a running game besides. Counted behind the host's own admission test:
+        // absolute http(s) only, exactly as OpenExternalUrl requires.
+        let openAbs = null;
+        try { openAbs = new URL(String(m.url || '')); } catch (e) { openAbs = null; }
+        if (openAbs && (openAbs.protocol === 'http:' || openAbs.protocol === 'https:'))
+          window.__wwHostCalls.push('ww-open-url ' + openAbs.href);
       } else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
       else if (m.type === 'ww-audio-get') reply({ type: 'ww-audio-result', id: m.id, available: false });
       // The Stream Deck pair must be answered, and answering them is only necessary now.
