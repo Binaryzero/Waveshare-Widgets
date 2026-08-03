@@ -196,6 +196,17 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   });
+  // media.wsw and backgrounds.wsw are LOCAL virtual hosts, not the network:
+  // DashboardWindow.MapVirtualHosts maps them to AppPaths.MediaDir and
+  // AppPaths.BackgroundsDir, and WW.listMedia() hands widgets URLs on the first of them.
+  // Without a route here they fell through to the catch-all, which counted a widget's
+  // local media I/O as a network attempt and failed the game gate for a gallery doing
+  // exactly what its API told it to do. 404 rather than a file: this runner has no media
+  // library, and ww-media-list answers [] to match — a widget must handle a missing file
+  // either way, and the answer is deterministic and local, which is what the contract
+  // requires.
+  await page.route(/^https:\/\/(?:media|backgrounds)\.wsw(?:[/?#]|$)/,
+    (route) => route.fulfill({ status: 404, body: '' }));
   // The shell page. Markup only — the iframe is created from script (see __wwMount) so
   // the message listener that answers it is registered before it can exist, and so the
   // frame is never half-built by the HTML parser. Its own origin is distinct from the
@@ -216,7 +227,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // port-bearing `https://app.wsw:444/x` matches none of them, and treating ':' as a
   // boundary would exempt it from the abort too: the one URL shape that still reaches
   // the real network out of a runner whose contract is that it never does.
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)).*/, (route) => {
+  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test|media\.wsw|backgrounds\.wsw)(?:[/?#]|$)).*/, (route) => {
     const url = route.request().url();
     // Counted HERE, before any stub matching and before the abort. `served` and
     // __wwProxyServed only ever record a MATCHED fixture, so a widget that requests an
@@ -319,6 +330,23 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     };
     for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection']) {
       try {
+        // The native STATIC surface is carried over. Feature-detecting code calls
+        // RTCPeerConnection.generateCertificate() before it ever constructs, and a bare
+        // function has no statics — so such a widget threw or took an
+        // unsupported-browser branch, never reached the constructor, and left the record
+        // empty while the same code reaches ICE setup in production. The prototype is
+        // kept for the same reason: an instanceof or a prototype probe must not be what
+        // decides whether this wrapper is reachable.
+        const native = window[name];
+        if (native) {
+          for (const key of Object.getOwnPropertyNames(native)) {
+            if (['length', 'name', 'prototype', 'caller', 'arguments'].includes(key)) continue;
+            try {
+              Object.defineProperty(refuse, key, Object.getOwnPropertyDescriptor(native, key));
+            } catch (e) { /* non-configurable */ }
+          }
+          try { refuse.prototype = native.prototype; } catch (e) { /* frozen */ }
+        }
         Object.defineProperty(window, name, { value: refuse, configurable: true, writable: true });
       } catch (e) { /* not present in this build */ }
     }

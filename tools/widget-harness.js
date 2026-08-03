@@ -142,6 +142,17 @@ function loadPlaywright() {
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   });
+  // media.wsw and backgrounds.wsw are LOCAL virtual hosts, not the network:
+  // DashboardWindow.MapVirtualHosts maps them to AppPaths.MediaDir and
+  // AppPaths.BackgroundsDir, and WW.listMedia() hands widgets URLs on the first of them.
+  // Without a route here they fell through to the catch-all, which counted a widget's
+  // local media I/O as a network attempt and failed the game gate for a gallery doing
+  // exactly what its API told it to do. 404 rather than a file: this runner has no media
+  // library, and ww-media-list answers [] to match — a widget must handle a missing file
+  // either way, and the answer is deterministic and local, which is what the contract
+  // requires.
+  await page.route(/^https:\/\/(?:media|backgrounds)\.wsw(?:[/?#]|$)/,
+    (route) => route.fulfill({ status: 404, body: '' }));
   // The shell page. Markup only — the iframe is created from script (__wwMount) so the
   // listener that answers it is registered before it can exist. Its own origin is
   // distinct from the widget's, exactly as on the panel, where each widget is served
@@ -186,7 +197,7 @@ function loadPlaywright() {
   // call completely, in the one runner that aborts everything. The method is kept in the
   // string so a failure line says which half was seen.
   const attempted = [];
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)).*/,
+  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test|media\.wsw|backgrounds\.wsw)(?:[/?#]|$)).*/,
     (route) => {
       attempted.push(route.request().method() + ' ' + route.request().url());
       return route.abort();
@@ -236,6 +247,23 @@ function loadPlaywright() {
     };
     for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection']) {
       try {
+        // The native STATIC surface is carried over. Feature-detecting code calls
+        // RTCPeerConnection.generateCertificate() before it ever constructs, and a bare
+        // function has no statics — so such a widget threw or took an
+        // unsupported-browser branch, never reached the constructor, and left the record
+        // empty while the same code reaches ICE setup in production. The prototype is
+        // kept for the same reason: an instanceof or a prototype probe must not be what
+        // decides whether this wrapper is reachable.
+        const native = window[name];
+        if (native) {
+          for (const key of Object.getOwnPropertyNames(native)) {
+            if (['length', 'name', 'prototype', 'caller', 'arguments'].includes(key)) continue;
+            try {
+              Object.defineProperty(refuse, key, Object.getOwnPropertyDescriptor(native, key));
+            } catch (e) { /* non-configurable */ }
+          }
+          try { refuse.prototype = native.prototype; } catch (e) { /* frozen */ }
+        }
         Object.defineProperty(window, name, { value: refuse, configurable: true, writable: true });
       } catch (e) { /* not present in this build */ }
     }
