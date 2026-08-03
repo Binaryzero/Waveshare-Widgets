@@ -140,7 +140,17 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   const shim = fs.readFileSync(path.join(SHELL, 'widget-api.js'), 'utf8') + '\n' +
                fs.readFileSync(path.join(SHELL, 'icue-compat.js'), 'utf8');
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
-  const page = await browser.newPage({ viewport: { width: W, height: H } });
+  // serviceWorkers: 'block' — a service worker's requests do not pass through page.route,
+  // so a widget that registered one could reach the network past the stub table and past
+  // the game gate. Playwright's mechanism for that, set here because it costs nothing.
+  //
+  // NOT a demonstrated containment: with this set, a probe widget in the real sandboxed
+  // cross-origin frame still had register() resolve, and the worker's failure to activate
+  // was identical under serviceWorkers:'allow' — so nothing in that run distinguishes the
+  // setting from its absence. See the fuller note in widget-harness.js. The WebSocket
+  // route below is the proven half; this one is open.
+  const context = await browser.newContext({ viewport: { width: W, height: H }, serviceWorkers: 'block' });
+  const page = await context.newPage();
 
   const checks = [];
   const consoleErrors = [];
@@ -384,7 +394,10 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         const canonical = abs.href;
         // Recorded once the host's own admission tests have passed and BEFORE the stub
         // lookup — an unmatched fixture still means the widget asked the host to dial.
-        window.__wwHostCalls.push('ww-fetch ' + canonical);
+        // ...and behind the SHELL's own admission test, which comes first: shell.js:324
+        // forwards ww-fetch only when msg.id is truthy, so an id-less message never
+        // reaches the host and cannot be a network call.
+        if (m.id) window.__wwHostCalls.push('ww-fetch ' + canonical);
         const stub = table.find((s) => canonical.includes(s.match));
         if (!stub) return reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
         window.__wwProxyServed.push(String(m.url || ''));
@@ -440,7 +453,9 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         // recording one would fail a gate the widget never crossed.
         const targets = (Array.isArray(m.hosts) ? m.hosts : [])
           .map((h) => String(h == null ? '' : h).trim()).filter((h) => h).slice(0, 16);
-        if (targets.length) window.__wwHostCalls.push('ww-ping ' + targets.join(','));
+        // Behind the shell's gate too — ww-ping is forwarded only with a truthy id
+        // (shell.js:334).
+        if (m.id && targets.length) window.__wwHostCalls.push('ww-ping ' + targets.join(','));
         reply({ type: 'ww-ping-result', id: m.id, results: [] });
       } else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
       else if (m.type === 'ww-audio-get') reply({ type: 'ww-audio-result', id: m.id, available: false });
@@ -458,7 +473,11 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     // unless a slot subscribed, which is what a non-subscribing widget gets on the panel
     // too — stated rather than omitted, so the difference is a decision.
     initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme,
-      notifications: null, game: { active: gameActive, process: gameActive ? 'game.exe' : '' },
+      notifications: null, // The process name is EXTENSIONLESS: GameModeWatcher fills it from
+      // Process.ProcessName, which is also what its ignored-process list matches against,
+      // so a widget that displays or branches on state.game.process must be exercised
+      // with that shape rather than with a filename.
+      game: { active: gameActive, process: gameActive ? 'game' : '' },
       status: { elevated: false, apiVersion: 1 } },
     table: stubs.map((s) => ({
       match: s.match, status: s.status, statusText: s.statusText,

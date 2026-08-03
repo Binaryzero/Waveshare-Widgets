@@ -90,7 +90,21 @@ function loadPlaywright() {
   const shim = fs.readFileSync(path.join(SHELL, 'widget-api.js'), 'utf8') + '\n' +
                fs.readFileSync(path.join(SHELL, 'icue-compat.js'), 'utf8');
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
-  const page = await browser.newPage({ viewport: { width: W, height: H } });
+  // serviceWorkers: 'block' — a request a service worker makes does NOT pass through
+  // page.route, so a widget that registered one has a way out of this runner that the
+  // abort, the stub table and the game gate are all blind to. This is Playwright's own
+  // mechanism for that and costs nothing, so it is on.
+  //
+  // What it is NOT is a demonstrated containment, and this comment will not claim one.
+  // A probe widget in the real (sandboxed, cross-origin) frame topology still had
+  // navigator.serviceWorker.register() RESOLVE with this set. The worker did not go on
+  // to activate — but it did not activate with serviceWorkers:'allow' either, so that
+  // observation distinguishes nothing and is not evidence the setting did the work.
+  // Establishing whether worker traffic can actually escape needs a probe that can tell
+  // the two settings apart; until one exists, treat the WebSocket route below as the
+  // proven half of this and the service-worker case as open.
+  const context = await browser.newContext({ viewport: { width: W, height: H }, serviceWorkers: 'block' });
+  const page = await context.newPage();
 
   const checks = [];
   const consoleErrors = [];
@@ -261,7 +275,10 @@ function loadPlaywright() {
         let abs = null;
         try { abs = new URL(String(m.url || '')); } catch (e) { abs = null; }
         const method = String(m.method || 'GET').toUpperCase();
-        if (abs && (abs.protocol === 'http:' || abs.protocol === 'https:')
+        // The SHELL's admission test comes first (shell.js:324): it forwards ww-fetch
+        // only when msg.id is truthy, so an id-less message never reaches the host at all
+        // and cannot be a network call.
+        if (m.id && abs && (abs.protocol === 'http:' || abs.protocol === 'https:')
             && ['GET', 'POST', 'PUT', 'HEAD'].includes(method))
           window.__wwHostCalls.push('ww-fetch ' + method + ' ' + abs.href);
         reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
@@ -271,7 +288,9 @@ function loadPlaywright() {
         // start zero Ping tasks and put nothing on the wire, so neither is an attempt.
         const targets = (Array.isArray(m.hosts) ? m.hosts : [])
           .map((h) => String(h == null ? '' : h).trim()).filter((h) => h).slice(0, 16);
-        if (targets.length) window.__wwHostCalls.push('ww-ping ' + targets.join(','));
+        // ...behind the shell's own gate, which forwards ww-ping only with a truthy id
+        // (shell.js:334).
+        if (m.id && targets.length) window.__wwHostCalls.push('ww-ping ' + targets.join(','));
         reply({ type: 'ww-ping-result', id: m.id, results: [] });
       } else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
       else if (m.type === 'ww-audio-get') reply({ type: 'ww-audio-result', id: m.id, available: false });
@@ -301,7 +320,11 @@ function loadPlaywright() {
     // unless a slot subscribed, which is what a non-subscribing widget gets on the panel
     // too — stated rather than omitted, so the difference is a decision.
     initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme,
-      notifications: null, game: { active: gameActive, process: gameActive ? 'game.exe' : '' },
+      notifications: null, // The process name is EXTENSIONLESS: GameModeWatcher fills it from
+      // Process.ProcessName, which is also what its ignored-process list matches against,
+      // so a widget that displays or branches on state.game.process must be exercised
+      // with that shape rather than with a filename.
+      game: { active: gameActive, process: gameActive ? 'game' : '' },
       status: { elevated: false, apiVersion: 1 } },
   });
 
