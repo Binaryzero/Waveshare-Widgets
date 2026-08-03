@@ -196,6 +196,16 @@
       return;
     }
 
+    // Re-checked BETWEEN the two awaits, not only after both: discovery is a cloud round
+    // trip, and a game starting during it would otherwise be followed by the /api/config
+    // validation request below.
+    if (gameOn) {
+      missedWhilePaused = true;
+      pendingInit = true;
+      showMessage('Paused', 'A game is running.');
+      return;
+    }
+
     // Never trust an address blindly: cloud discovery hands out stale or wrong
     // IPs (the bridge moved on DHCP, or the ISP shares one public IP between
     // households), which can point at a router instead of a bridge. Every real

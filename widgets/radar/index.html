@@ -265,6 +265,12 @@
     if (cfg.lat == null) return;
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
+      // buildBaseMap and rebuildFrameLayers assign a screenful of OpenStreetMap and
+      // RainViewer tile URLs — network work, from a path that is neither the poll nor the
+      // setup. A display, DPI or slot-size change during a game reaches here, so the gate
+      // has to be consulted at the point the rebuild would start. Deferred, not dropped:
+      // the resume rebuilds against whatever geometry is current then.
+      if (gameOn) { missedWhilePaused = true; return; }
       buildBaseMap();
       rebuildFrameLayers();
     }, 300);
@@ -302,6 +308,8 @@
       // whole game. Stopped here and rebuilt by whichever path resumes.
       clearTimeout(animTimer);
       animTimer = null;
+      // A debounce armed moments before the game started would fire inside it.
+      clearTimeout(resizeTimer);
     }
     if (gameOn) return;
     // The animation was stopped on entry whatever else happened, so it has to be restored

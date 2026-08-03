@@ -77,6 +77,7 @@
   let gameOn = false;
   let missedWhilePaused = false;   // something was due while the game had the foreground
   let missedFirstLoad = false;     // ...and whether what was missed was the INITIAL load
+  let missedAdvance = false;       // ...and whether a slideshow advance was what was refused
   let advanceTimer = null;
   let advancing = false;       // guards against overlapping loads (slow proxy fetches)
   const LISTING_REFRESH_MS = 10 * 60 * 1000;
@@ -222,7 +223,7 @@
     // game — a picture fetched and repainted every dwell interval for a panel nobody is
     // looking at. A manual direction (the tap targets) is still honoured, because that
     // is a person asking.
-    if (gameOn && !direction) { missedWhilePaused = true; return; }
+    if (gameOn && !direction) { missedWhilePaused = true; missedAdvance = true; return; }
     if (advancing || posts.length === 0) return;
     advancing = true;
     // Try a few posts in case some images fail to fetch.
@@ -232,7 +233,7 @@
       // again, so a game starting during the first download would otherwise be followed by
       // up to four more. A manual advance is exempt for the same reason it is at the top —
       // a person asked for it.
-      if (gameOn && !direction) { missedWhilePaused = true; break; }
+      if (gameOn && !direction) { missedWhilePaused = true; missedAdvance = true; break; }
       index = (index + (direction || 1) + posts.length) % posts.length;
       const post = posts[index];
       try {
@@ -347,7 +348,13 @@
     // an ordinary refresh populated `posts` but skipped the firstLoad block that starts
     // the slideshow — the tile sat on "Loading" forever, with data it never showed.
     const wasFirst = missedFirstLoad;
+    const wasAdvance = missedAdvance;
     missedFirstLoad = false;
+    missedAdvance = false;
+    // A missed ADVANCE is not a missed listing. Resuming it as a refresh updated `posts`
+    // and left the same picture on screen until the retained dwell timer came round — up
+    // to two minutes — and spent a listing request nobody needed on the way.
+    if (wasAdvance && !wasFirst) { scheduleAdvance(); advance(); return; }
     refreshListing(wasFirst);
   });
 
