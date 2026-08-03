@@ -294,7 +294,12 @@
         data.ilvl = null; data.mplus = null; data.raid = null;
       }
       lastProblems = [];
-      lastOk = 0;
+      // Keep the last-success marker if anything survived the edit. Zeroing it
+      // unconditionally sent an all-fail replacement tick down the showError() path,
+      // hiding perfectly good retained sources behind "Nothing to show yet" until the
+      // backoff elapsed — undoing the point of clearing per source in the first place.
+      const keptSomething = data.price != null || data.affixes.length || data.ilvl != null;
+      if (!keptSomething) lastOk = 0;
       document.body.classList.remove('stale');
       // And repaint, because clearing the MODEL leaves the previous query's numbers on
       // SCREEN until the replacement tick finishes — tens of seconds under the
@@ -421,6 +426,14 @@
       '&realm=' + encodeURIComponent(cfg.realm) + '&name=' + encodeURIComponent(cfg.character) +
       '&fields=gear,mythic_plus_scores_by_season:current,raid_progression';
     const json = await ask('character', url);
+    // Is this a character profile at all? Every field below is optional on its own, so
+    // without this a `{}` or `null` body reads as "a character with nothing filled in"
+    // — blanking the tile, clearing the outage backoff and reporting Live.
+    if (!json || typeof json !== 'object'
+      || (json.gear === undefined && json.mythic_plus_scores_by_season === undefined
+          && json.raid_progression === undefined)) {
+      throw new Error('character: unexpected response');
+    }
     const gear = json && json.gear;
     const scores = json && json.mythic_plus_scores_by_season && json.mythic_plus_scores_by_season[0];
     const prog = json && json.raid_progression;
@@ -523,6 +536,9 @@
       // failure to the new one's backoff, or painting its card, is the same mistake.
       if (gen !== generation) return;
       failures++;
+      // Record these too. Only the success path did, so a repaint after a wholly failed
+      // tick restored an older reason — or none — while the tile still said Partial.
+      lastProblems = problems.slice();
       if (lastOk) { document.body.classList.add('stale'); render(problems); }
       else showError(problems.join('; ') || e.message);
       WW.log('wow: ' + e.message);
