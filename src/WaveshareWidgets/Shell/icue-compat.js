@@ -522,11 +522,33 @@
     // timeout can't fire. Build them bodyless, and reject on any construction
     // failure instead of hanging.
     const nullBody = msg.status === 204 || msg.status === 205 || msg.status === 304;
+    // The allow-listed response headers the host carried back (#169). This shim and
+    // widget-api.js are injected independently and each rebuilds the proxied Response, so
+    // there are TWO of these and fixing one leaves an iCUE or marketplace widget — which
+    // reaches the ladder through plain window.fetch — reading nothing but Content-Type
+    // once its request escalates. Kept deliberately identical to widget-api.js's copy;
+    // tests/harness/icuefetch-run.js asserts both shims answer the same, because separate
+    // scripts cannot share a helper and only a check keeps them together.
+    //
+    // Content-Type is applied AFTER, so the dedicated field stays the single source. A
+    // header that Headers refuses is skipped rather than thrown on: one bad name is not
+    // worth failing an otherwise good response over. An ARRAY is not a header map, and
+    // typeof an array is 'object', so the obvious test would admit one.
+    const headers = {};
+    if (msg.headers && typeof msg.headers === 'object' && !Array.isArray(msg.headers)) {
+      for (const name of Object.keys(msg.headers)) {
+        const value = msg.headers[name];
+        if (typeof value !== 'string') continue;
+        try { new Headers({ [name]: value }); } catch (e) { continue; }
+        headers[name] = value;
+      }
+    }
+    if (msg.contentType) headers['Content-Type'] = msg.contentType;
     try {
       pending.resolve(new Response(nullBody ? null : bytes, {
         status: msg.status || 200,
         statusText: msg.statusText || '',
-        headers: msg.contentType ? { 'Content-Type': msg.contentType } : {},
+        headers,
       }));
     } catch (e) {
       pending.reject(new TypeError('proxy fetch result invalid: ' + e));

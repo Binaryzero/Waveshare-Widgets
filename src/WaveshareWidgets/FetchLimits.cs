@@ -22,6 +22,15 @@ public static class FetchLimits
     /// tier now has to agree with it.</remarks>
     public const int MaxBodyBytes = 5 * 1024 * 1024;
 
+    /// <summary>The forwarded response-header names as a JS array literal, for the
+    /// generated page script. Derived from <see cref="ProxyHeaderRules.ResponseAllowList"/>
+    /// so the browser tier cannot fall behind the host's own list — the same reason
+    /// tools/ProxyHeaders derives its parity check from that property rather than from a
+    /// copy.</summary>
+    private static string ResponseHeaderNamesJs =>
+        "[" + string.Join(",", ProxyHeaderRules.ResponseAllowList
+            .Select(n => System.Text.Json.JsonSerializer.Serialize(n))) + "]";
+
     /// <summary>The ceiling for one request: what the caller asked for, but never above
     /// <see cref="MaxBodyBytes"/>.</summary>
     /// <remarks>
@@ -79,6 +88,16 @@ public static class FetchLimits
         (() => {
           window.__wwResult = null;
           const MAX = {{EffectiveCap(maxBytes)}};
+          // GENERATED from ProxyHeaderRules.ResponseAllowList, never typed out here. This
+          // tier and the proxy tier answer the same WW.fetch call, so a widget must be able
+          // to read the same headers whichever one served it — and a list kept in two
+          // places is a list that drifts, which on the REQUEST side it did three times.
+          const KEEP = {{ResponseHeaderNamesJs}};
+          const readHeaders = (r) => {
+            const out = {};
+            for (const k of KEEP) { const v = r.headers.get(k); if (v !== null) out[k] = v; }
+            return out;
+          };
           const fail = (e) => { window.__wwResult = { status: 0, ct: '', b64: '', error: String(e) }; };
           fetch({{jsUrl}}, { credentials: 'include', headers: {{jsHeaders}} })
             .then(async (r) => {
@@ -98,7 +117,7 @@ public static class FetchLimits
               // leave the widget holding the 403 the proxy tier got. An empty body is an
               // answer, not a failure.
               if (!r.body) {
-                window.__wwResult = { status: r.status, ct: r.headers.get('content-type') || '', b64: '' };
+                window.__wwResult = { status: r.status, ct: r.headers.get('content-type') || '', b64: '', headers: readHeaders(r) };
                 return;
               }
               const chunks = [];
@@ -121,7 +140,7 @@ public static class FetchLimits
               let bin = '';
               for (let i = 0; i < bytes.length; i += 0x8000)
                 bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-              window.__wwResult = { status: r.status, ct: r.headers.get('content-type') || '', b64: btoa(bin) };
+              window.__wwResult = { status: r.status, ct: r.headers.get('content-type') || '', b64: btoa(bin), headers: readHeaders(r) };
             })
             .catch(fail);
         })();

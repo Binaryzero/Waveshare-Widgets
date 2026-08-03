@@ -1,0 +1,32 @@
+{
+  "$comment": [
+    "Shared fixture for the response headers the host proxy carries back to a widget",
+    "(issue #169). THREE things read this list and all three are checked against this",
+    "file in CI:",
+    "",
+    "  - ProxyHeaderRules.ResponseAllowList (C#) — what DashboardWindow actually forwards",
+    "  - the generated hidden-browser page script — asserted by tools/ProxyHeaders R6",
+    "  - tools/widget-datapath.js — so the harness's proxy tier mirrors the real one",
+    "",
+    "The harness is the reason this file exists rather than the C# property alone. A Node",
+    "runner cannot read a C# HashSet, and a hand-copied list in the harness would let the",
+    "harness go on 'proving' tier parity for a list the host no longer forwards — a probe",
+    "that passes because it is testing its own copy. tools/ProxyHeaders asserts this file",
+    "and ProxyHeaderRules are the same set, so editing one without the other fails CI.",
+    "",
+    "Add a name here and to ProxyHeaderRules together. Anything NOT listed does not cross",
+    "the hop: Set-Cookie above all — the proxy holds cookies the page cannot see, and",
+    "handing their values to widget script would undo exactly that."
+  ],
+  "forward": [
+    "etag",
+    "last-modified",
+    "retry-after",
+    "link",
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "x-ratelimit-reset",
+    "x-ratelimit-used",
+    "x-ratelimit-resource"
+  ]
+}

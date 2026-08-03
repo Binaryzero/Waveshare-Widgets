@@ -175,6 +175,23 @@ window.__done = false;
     push('bodyless', { status: res.status });
   } catch (e) { push('bodyless', { error: String(e) }); }
 
+  // 18 · the forwarded RESPONSE headers (#169). This shim rebuilds the proxied
+  // Response independently of widget-api.js, so it has its own copy of the
+  // reconstruction — and the first version of that fix changed only the other one,
+  // leaving exactly this path (plain window.fetch, which is how an iCUE or
+  // marketplace widget reaches the ladder) reading nothing but Content-Type.
+  try {
+    const res = await fetch('http://127.0.0.1:8931/hdrs.bin');
+    push('hdrs', {
+      status: res.status,
+      etag: res.headers.get('ETag'),
+      retry: res.headers.get('Retry-After'),
+      rl: res.headers.get('X-RateLimit-Remaining'),
+      ct: res.headers.get('Content-Type'),
+      cookie: res.headers.get('Set-Cookie'),
+    });
+  } catch (e) { push('hdrs', { error: String(e) }); }
+
   window.__done = true;
 })();
 </script>

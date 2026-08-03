@@ -140,6 +140,14 @@ const widgets = [
         bodyBase64: (isFeed
           ? Buffer.from(Array.from({ length: 256 }, (_, i) => i))
           : Buffer.from(is204 ? '' : isGate ? 'proxy-blocked' : 'rescued')).toString('base64'),
+        // The allow-listed response headers the host carries back (#169), plus one it
+        // must NOT: the host filters before sending, so a name outside the list reaching
+        // a widget would mean the shim invented it. See tools/proxy-response-headers.json.
+        headers: {
+          'ETag': 'W/"rescued-1"',
+          'Retry-After': '90',
+          'X-RateLimit-Remaining': '0',
+        },
       };
       const send = () =>
         page.evaluate((d) => window.__hostPush(d), JSON.stringify({ type: 'fetch-result', data })).catch(() => {});
@@ -283,6 +291,28 @@ const widgets = [
   check('S15 escalation retries the headers that were SENT, not the mutated live object',
     header(snapMsg, 'Authorization') === 'Bearer LIVE' && byName(icue, 'snap').status === 200,
     JSON.stringify({ headers: snapMsg.headers, result: byName(icue, 'snap') }));
+
+  // ---- S26 · both shims rebuild the proxied response's headers, identically ------
+  //
+  // widget-api.js and icue-compat.js are injected independently and EACH rebuilds the
+  // Response the host proxy describes. Fixing one and not the other is not hypothetical:
+  // it is what happened, and the shim missed was the one an iCUE or marketplace widget
+  // reaches the ladder through — plain window.fetch — so that widget went on reading
+  // nothing but Content-Type. Nothing lets these two share a helper, so this asserts they
+  // answer the same. Driven from the FIXTURE FRAMES, because icue-compat.js returns
+  // immediately at top level and a fetch from the shell page exercises neither shim.
+  const shimHdrs = byName(icue, 'hdrs');
+  const apiHdrs = byName(stock, 'hdrs');
+  check('S26 the icue shim rebuilds the forwarded response headers',
+    shimHdrs.etag === 'W/"rescued-1"' && shimHdrs.retry === '90' && shimHdrs.rl === '0',
+    JSON.stringify(shimHdrs));
+  check('S26b ...and widget-api answers identically, so the two cannot drift',
+    !!shimHdrs.etag && shimHdrs.etag === apiHdrs.etag && shimHdrs.retry === apiHdrs.retry
+    && shimHdrs.rl === apiHdrs.rl,
+    'shim=' + JSON.stringify(shimHdrs) + ' api=' + JSON.stringify(apiHdrs));
+  check('S26c a header the host never forwards is absent on both',
+    shimHdrs.cookie == null && apiHdrs.cookie == null,
+    JSON.stringify([shimHdrs.cookie, apiHdrs.cookie]));
 
   // ---- S16 · WW.fetch's async retry sends the entry-time snapshot too
   const wsnapMsg = fetchMsgs.find((m) => String(m.url).includes('wsnap=1')) || {};

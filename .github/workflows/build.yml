@@ -78,9 +78,11 @@ jobs:
       # ...and that it BEHAVES: text cannot tell a budget checked before appending a chunk
       # from one checked after, and the second has already paid for the bytes. This runs the
       # real generated script against a paced local server and watches whether the transfer
-      # is actually cut off. Plain Node, no browser — the other nine harnesses need
-      # Playwright and run on the maintainer's machine, so a CI step that needed it too
-      # would just be a step that never ran.
+      # is actually cut off. Plain Node, no browser — the other Playwright harnesses run on
+      # the maintainer's machine, so a CI step that needed a browser would just be a step
+      # that never ran. tests/harness/proxy-headers-run.js is one of those: it drives the
+      # real shim in a real renderer to check the two fetch tiers show a widget the same
+      # response headers, and the C# probe above covers the part that CI can run.
       - name: Fetch body ceiling holds against a real server
         run: node tests/harness/bodycap-run.js browser-fetch.generated.js browser-fetch.lowered.js
 
@@ -126,6 +128,15 @@ jobs:
       # exercised without WebView2 and a real network, so the decision is a pure
       # predicate and this covers it — including that the proxy and browser tiers cannot
       # drift apart on host-owned names, which is the shape the bug actually had.
+      #
+      # It now covers the RESPONSE direction too (#169). The hop returned status, body and
+      # content type and nothing else, so a widget that read any header lost it the moment
+      # its request escalated — and the shim escalates every 403 and 429, which is exactly
+      # where a rate limit lives. The forwarding is an allow-list, and the same shape of
+      # failure applies: the danger is the two tiers disagreeing, so the probe derives its
+      # parity checks from the exported list and from the generated page script rather
+      # than restating either. It also asserts tools/proxy-response-headers.json — which
+      # the Node harness reads, because it cannot read a C# HashSet — is that same set.
       - name: Proxy header rules
         run: dotnet run --project tools/ProxyHeaders
 

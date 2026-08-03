@@ -687,6 +687,11 @@ public sealed class DashboardWindow : Form
             result["statusText"] = response.ReasonPhrase ?? "";
             result["contentType"] = response.Content.Headers.ContentType?.ToString();
             result["bodyBase64"] = Convert.ToBase64String(bytes);
+            // The allow-listed response headers (#169). Without these the escalation
+            // silently downgraded what a widget could read: rate-limit and pagination
+            // metadata exists only in headers, and this tier answers precisely the
+            // requests most likely to carry it.
+            result["headers"] = ForwardableResponseHeaders(response);
             Log.Info($"proxy fetch {SafeUrl.Describe(uri)} -> {(int)response.StatusCode} ({bytes.Length} bytes)");
 
             // TLS-fingerprinting bot walls (Reddit) 403 every .NET client; retry those
@@ -716,6 +721,12 @@ public sealed class DashboardWindow : Form
                     result["statusText"] = "";
                     result["contentType"] = browser.ContentType;
                     result["bodyBase64"] = Convert.ToBase64String(browser.Body);
+                    // REPLACED, never merged. Every other field here describes the browser's
+                    // answer; leaving the proxy's headers beside them would hand the widget
+                    // a 200 carrying the 403's Retry-After — metadata about a response that
+                    // is no longer the one being reported. Assigned unconditionally so an
+                    // empty collection still clears what the proxy tier put there.
+                    result["headers"] = ToHeaderNode(browser.Headers);
                     Log.Info($"browser fetch {SafeUrl.Describe(uri)} -> {browser.Status} ({browser.Body.Length} bytes)");
                 }
                 else if (alt is { } blocked)
@@ -814,6 +825,54 @@ public sealed class DashboardWindow : Form
         {
             // window closed mid-ping
         }
+    }
+
+    /// <summary>
+    /// The allow-listed response headers of a proxied response, as a JSON object (#169).
+    ///
+    /// Both collections are walked, because .NET splits them: <c>ETag</c> and
+    /// <c>Retry-After</c> live on the message while <c>Last-Modified</c> lives on the
+    /// content, and reading only one silently drops half the list.
+    ///
+    /// Repeated names are joined with ", " per RFC 9110 §5.3 — <c>Link</c> is routinely
+    /// sent as several lines and a widget parsing pagination needs all of them, not
+    /// whichever arrived last.
+    /// </summary>
+    private static JsonObject ForwardableResponseHeaders(HttpResponseMessage response)
+    {
+        var pairs = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        void Collect(IEnumerable<KeyValuePair<string, IEnumerable<string>>> from)
+        {
+            foreach (var (name, values) in from)
+            {
+                if (!ProxyHeaderRules.IsForwardableResponseHeader(name)) continue;
+                if (!pairs.TryGetValue(name, out var list)) pairs[name] = list = new List<string>();
+                list.AddRange(values);
+            }
+        }
+        Collect(response.Headers);
+        Collect(response.Content.Headers);
+
+        var node = new JsonObject();
+        foreach (var (name, values) in pairs) node[name] = string.Join(", ", values);
+        return node;
+    }
+
+    /// <summary>The hidden-browser tier's headers, already filtered in the page, as the
+    /// same JSON shape. Kept separate from the collection above because that tier reads
+    /// its response through a page fetch rather than an HttpResponseMessage.</summary>
+    private static JsonObject ToHeaderNode(IReadOnlyDictionary<string, string>? headers)
+    {
+        var node = new JsonObject();
+        if (headers is null) return node;
+        foreach (var (name, value) in headers)
+        {
+            // Filtered again on this side. The page script is generated from the same
+            // list, but it runs in a document the remote site controls, so what comes
+            // back is the site's word for it rather than the host's.
+            if (ProxyHeaderRules.IsForwardableResponseHeader(name)) node[name] = value;
+        }
+        return node;
     }
 
     private static async Task<byte[]> ReadCappedAsync(HttpResponseMessage response, int maxBytes)

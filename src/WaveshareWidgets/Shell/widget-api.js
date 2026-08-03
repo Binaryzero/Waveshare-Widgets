@@ -414,11 +414,37 @@
       // even the timeout can't fire. Build them bodyless, and reject on any
       // construction failure instead of hanging.
       const nullBody = msg.status === 204 || msg.status === 205 || msg.status === 304;
+      // The allow-listed response headers the host carried back (#169). Without them a
+      // widget that read ANY header saw nothing the moment its request escalated — and
+      // the shim escalates every direct 403 and 429, so the responses most likely to
+      // carry rate-limit or pagination metadata were exactly the ones served by the tier
+      // that dropped it. A rate limit arrived as a bare "Forbidden" and read as a
+      // permissions problem.
+      //
+      // Content-Type is applied AFTER, so it stays the single value the dedicated field
+      // carries even if the same name somehow arrives in the map. Anything unusable in
+      // the map is skipped rather than thrown on: a header cannot be worth failing an
+      // otherwise good response over, and Headers rejects invalid names outright.
+      // An ARRAY is not a header map, and typeof an array is 'object' — so the obvious
+      // test admits one, whereupon Object.keys yields indices and a stray entry lands as
+      // a header literally named "0" (digits are valid token characters, so Headers
+      // accepts it). Nothing the host sends can be an array; this is about not being the
+      // kind of check that only looks like one.
+      const headers = {};
+      if (msg.headers && typeof msg.headers === 'object' && !Array.isArray(msg.headers)) {
+        for (const name of Object.keys(msg.headers)) {
+          const value = msg.headers[name];
+          if (typeof value !== 'string') continue;
+          try { new Headers({ [name]: value }); } catch (e) { continue; }
+          headers[name] = value;
+        }
+      }
+      if (msg.contentType) headers['Content-Type'] = msg.contentType;
       try {
         pending.resolve(new Response(nullBody ? null : bytes, {
           status: msg.status || 200,
           statusText: msg.statusText || '',
-          headers: msg.contentType ? { 'Content-Type': msg.contentType } : {},
+          headers,
         }));
       } catch (e) {
         pending.reject(new TypeError('proxy fetch result invalid: ' + e));
