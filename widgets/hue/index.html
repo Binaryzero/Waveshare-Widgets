@@ -96,6 +96,7 @@
   // straight through a game that was already running when it loaded.
   let gameOn = false;
   let pendingSettings = null;   // the settings a paused connect was holding
+  let pendingInit = false;      // ...and whether that init still owes a full connect
   let missedWhilePaused = false;   // something was due while the game had the foreground
   let pollTimer = null;
   let holdoff = 0;   // suppress poll rendering briefly after a local action
@@ -136,10 +137,12 @@
     // that were current, so a game ending re-enters with what the user configured.
     pendingSettings = s;
     if (gameOn) {
+      pendingInit = true;
       missedWhilePaused = true;
       showMessage('Paused', 'A game is running.');
       return;
     }
+    pendingInit = false;
     await connect(s);
   });
 
@@ -668,8 +671,12 @@
     gameOn = !!(g && g.active);
     if (gameOn || !missedWhilePaused) return;
     missedWhilePaused = false;
-    // If the bridge was never found, the SETUP is what was missed, not a poll.
-    if (pendingSettings && !pollTimer) connect(pendingSettings);
+    // What was missed decides what to run. An init refused while paused owes a full
+    // connect — NOT a poll — because its settings may name a different bridge IP, and
+    // connect is the only thing that reads it. Testing "was a timer ever armed" instead
+    // got this wrong in the case that matters: change the bridge IP during a game, and
+    // the resume polled the old address and never looked at the new one.
+    if (pendingInit && pendingSettings) { pendingInit = false; connect(pendingSettings); }
     else poll();
   });
 

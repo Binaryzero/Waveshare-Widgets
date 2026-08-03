@@ -68,6 +68,7 @@
   // straight through a game that was already running when it loaded.
   let gameOn = false;
   let pendingSettings = null;   // the settings a paused init was holding
+  let pendingInit = false;      // ...and whether that init still owes a full setup
   let missedWhilePaused = false;   // something was due while the game had the foreground
   let animTimer = null;
   let refreshTimer = null;
@@ -97,7 +98,13 @@
     // settings that were current when it was held, so a game that ends re-enters with
     // what the user actually configured rather than with a stale closure.
     pendingSettings = s;
-    if (gameOn) { missedWhilePaused = true; showMessage('Paused', 'A game is running.'); return; }
+    if (gameOn) {
+      pendingInit = true;
+      missedWhilePaused = true;
+      showMessage('Paused', 'A game is running.');
+      return;
+    }
+    pendingInit = false;
     await start(s);
   });
 
@@ -261,8 +268,13 @@
     gameOn = !!(g && g.active);
     if (gameOn || !missedWhilePaused) return;
     missedWhilePaused = false;
-    // If the map was never built the setup is what was missed, not the refresh.
-    if (pendingSettings && !refreshTimer) start(pendingSettings);
+    // What was missed decides what to run. An init refused while paused owes a full
+    // setup — NOT a refresh — because its settings may name a different location, and
+    // resolveLocation is the only thing that reads it. Testing "was a timer ever armed"
+    // instead got this wrong in the case that matters: change the location during a
+    // game, and the resume refreshed tiles for the old coordinates and never resolved
+    // the new ones.
+    if (pendingInit && pendingSettings) { pendingInit = false; start(pendingSettings); }
     else refreshRadar();
   });
 
