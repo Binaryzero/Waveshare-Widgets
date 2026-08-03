@@ -74,6 +74,22 @@ window.__done = false;
     window.__results.push({ name: 'ww-cred', status: res.status });
   } catch (e) { window.__results.push({ name: 'ww-cred', error: String(e) }); }
 
+  // The same forwarded response headers, through WW.fetch (#169). Compared against the
+  // iCUE shim's answer in the runner: nothing lets the two shims share a helper, so only
+  // a check keeps their two copies of the reconstruction together.
+  try {
+    const res = await WW.fetch('http://127.0.0.1:8931/hdrs.bin', { proxy: 'always' });
+    window.__results.push({
+      name: 'hdrs',
+      status: res.status,
+      etag: res.headers.get('ETag'),
+      retry: res.headers.get('Retry-After'),
+      rl: res.headers.get('X-RateLimit-Remaining'),
+      ct: res.headers.get('Content-Type'),
+      cookie: res.headers.get('Set-Cookie'),
+    });
+  } catch (e) { window.__results.push({ name: 'hdrs', error: String(e) }); }
+
   window.__done = true;
 })();
 </script>
