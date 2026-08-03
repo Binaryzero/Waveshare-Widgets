@@ -71,7 +71,16 @@
   let posts = [];              // [{imageUrl, title, author, score}]
   let index = -1;
   let paused = false;
+  // WIDGET-SPEC: JS work is yours to gate. Seeded from state.game at init AND flipped by
+  // onGame, because onGame reports later flips only — a widget that just listens polls
+  // straight through a game that was already running when it loaded.
+  let gameOn = false;
+  let missedWhilePaused = false;   // something was due while the game had the foreground
+  let missedFirstLoad = false;     // ...and whether what was missed was the INITIAL load
+  let missedAdvance = false;       // ...and whether a slideshow advance was what was refused
+  let missedListing = false;       // ...and whether a listing refresh was refused too
   let advanceTimer = null;
+  let listingTimer = null;   // held so the catch-up can restart the cadence from itself
   let advancing = false;       // guards against overlapping loads (slow proxy fetches)
   const LISTING_REFRESH_MS = 10 * 60 * 1000;
 
@@ -106,6 +115,7 @@
   const isTooLarge = (e) => e instanceof RangeError && /too large/i.test((e && e.message) || '');
 
   WW.onInit((state) => {
+    gameOn = !!(state.game && state.game.active);
     const s = state.settings;
     cfg.subreddit = String(s.subreddit || 'landscapephotography').replace(/^\/?(r\/)?/i, '').trim();
     cfg.sort = ['hot', 'top', 'new'].includes(s.sort) ? s.sort : 'hot';
@@ -129,10 +139,17 @@
   async function start() {
     showMessage('Loading r/' + cfg.subreddit + '…', null);
     await refreshListing(true);
-    setInterval(() => refreshListing(false), LISTING_REFRESH_MS);
+    clearInterval(listingTimer);
+    listingTimer = setInterval(() => refreshListing(false), LISTING_REFRESH_MS);
   }
 
   async function refreshListing(firstLoad) {
+    if (gameOn) {
+      missedWhilePaused = true;
+      missedListing = true;
+      missedFirstLoad = missedFirstLoad || !!firstLoad;
+      return;
+    }
     try {
       const url = 'https://www.reddit.com/r/' + encodeURIComponent(cfg.subreddit) +
         '/' + cfg.sort + '.json?limit=60&raw_json=1';
@@ -209,19 +226,45 @@
   }
 
   async function advance(direction) {
+    // The slideshow is this widget's most expensive work: every advance downloads
+    // another image. Gating only the listing refresh left that running for the whole
+    // game — a picture fetched and repainted every dwell interval for a panel nobody is
+    // looking at. A manual direction (the tap targets) is still honoured, because that
+    // is a person asking.
+    if (gameOn && !direction) { missedWhilePaused = true; missedAdvance = true; return; }
     if (advancing || posts.length === 0) return;
     advancing = true;
     // Try a few posts in case some images fail to fetch.
     let refusedForSize = 0;
     for (let attempts = 0; attempts < Math.min(5, posts.length); attempts++) {
+      // Re-checked per attempt, not once at the door: a failed image sends the loop round
+      // again, so a game starting during the first download would otherwise be followed by
+      // up to four more. A manual advance is exempt for the same reason it is at the top —
+      // a person asked for it.
+      if (gameOn && !direction) { missedWhilePaused = true; missedAdvance = true; break; }
       index = (index + (direction || 1) + posts.length) % posts.length;
       const post = posts[index];
       try {
         const blobUrl = await loadImage(post.imageUrl);
+        // A game that started while this image was downloading: decoding and painting it
+        // is exactly the work being deferred. REVOKED, not merely dropped — loadImage has
+        // already created the object URL by now, and letting it fall out of scope keeps
+        // up to IMAGE_MAX_BYTES alive for the life of the widget, once per pause.
+        if (gameOn && !direction) {
+          URL.revokeObjectURL(blobUrl);
+          missedWhilePaused = true;
+          missedAdvance = true;
+          advancing = false;
+          return;
+        }
         show(post, blobUrl);
         advancing = false;
         return;
       } catch (e) {
+        // ...and on the failure side, leave BEFORE the loop's "images are not loading"
+        // verdict: the remaining posts were skipped on purpose, so that message would be
+        // blaming the images for a pause.
+        if (gameOn && !direction) { missedWhilePaused = true; missedAdvance = true; advancing = false; return; }
         if (isTooLarge(e)) refusedForSize++;
         WW.log('reddit: image failed (' + e.message + '): ' + post.imageUrl);
       }
@@ -317,6 +360,39 @@
       document.getElementById('paused').style.display = paused ? 'block' : 'none';
     }
   });
+
+  // A game ending is the user coming back to the panel: catch up at once rather than
+  // waiting out whatever remained of the interval.
+  WW.onGame((g) => {
+    gameOn = !!(g && g.active);
+    if (gameOn || !missedWhilePaused) return;
+    missedWhilePaused = false;
+    // WHICH load was missed has to survive the pause. Resuming a refused initial load as
+    // an ordinary refresh populated `posts` but skipped the firstLoad block that starts
+    // the slideshow — the tile sat on "Loading" forever, with data it never showed.
+    const wasFirst = missedFirstLoad;
+    const wasAdvance = missedAdvance;
+    const wasListing = missedListing;
+    missedFirstLoad = false;
+    missedAdvance = false;
+    missedListing = false;
+    // A missed ADVANCE is not a missed listing. Resuming it as a refresh updated `posts`
+    // and left the same picture on screen until the retained dwell timer came round — up
+    // to two minutes — and spent a listing request nobody needed on the way.
+    // Both can be owed at once: a long game outlasts the dwell timer AND the ten-minute
+    // listing timer. Resuming only the advance discarded the refused listing, leaving the
+    // posts stale until the retained interval came round again.
+    if (wasAdvance) { scheduleAdvance(); advance(); }
+    if (wasListing || wasFirst) {
+      // Restart the cadence FROM the catch-up: the ten-minute interval kept its deadline
+      // through the game, and refreshListing has no in-flight guard, so a game ending just
+      // before it started a second listing request whose answer would win.
+      clearInterval(listingTimer);
+      refreshListing(wasFirst);
+      listingTimer = setInterval(() => refreshListing(false), LISTING_REFRESH_MS);
+    }
+  });
+
 </script>
 </body>
 </html>

@@ -86,10 +86,16 @@
   };
   const wmo = (code) => WMO[code] || ['—', '🌡️'];
 
+  // WIDGET-SPEC: JS work is yours to gate. Seeded from state.game at init AND flipped by
+  // onGame, because onGame reports later flips only — a widget that just listens polls
+  // straight through a game that was already running when it loaded.
+  let gameOn = false;
+  let missedWhilePaused = false;   // something was due while the game had the foreground
   let refreshTimer = null;
 
 
   WW.onInit((state) => {
+    gameOn = !!(state.game && state.game.active);
     const s = state.settings;
     // Anything that isn't explicitly glass/transparent renders solid, matching the
     // pre-token behavior for unset AND out-of-spec values.
@@ -151,9 +157,15 @@
   }
 
   async function refresh() {
+    if (gameOn) { missedWhilePaused = true; return; }
     const s = WW.settings;
     try {
       const place = await resolvePlace(s);
+      // Re-checked after the await: an uncached city name goes to the geocoder first, and
+      // a game starting during that would otherwise be answered by the forecast request
+      // below. The gate has to hold at every point where new work would START, not only
+      // at the door.
+      if (gameOn) { missedWhilePaused = true; return; }
       document.getElementById('place').textContent = place.label;
 
       const url = 'https://api.open-meteo.com/v1/forecast' +
@@ -166,6 +178,9 @@
       const response = await fetch(url);
       if (!response.ok) throw new Error('forecast HTTP ' + response.status);
       const data = await response.json();
+      // The render is the expensive half — current conditions plus the whole forecast
+      // strip — and a game can start while the request is in flight.
+      if (gameOn) { missedWhilePaused = true; return; }
 
       const [label, emoji] = wmo(data.current.weather_code);
       document.getElementById('icon').textContent = emoji;
@@ -239,6 +254,21 @@
     }
     return items;
   }
+
+  // A game ending is the user coming back to the panel: catch up at once rather than
+  // waiting out whatever remained of the interval.
+  WW.onGame((g) => {
+    gameOn = !!(g && g.active);
+    if (gameOn || !missedWhilePaused) return;
+    missedWhilePaused = false;
+    // Restart the cadence FROM the catch-up: the ten-minute interval kept its deadline
+    // through the game, so one ending just before it produced two forecast requests
+    // seconds apart, and refresh() has no in-flight guard to absorb that.
+    clearInterval(refreshTimer);
+    refresh();
+    refreshTimer = setInterval(refresh, 10 * 60 * 1000);
+  });
+
 </script>
 </body>
 </html>

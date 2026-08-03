@@ -177,6 +177,19 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   stubbed request open, because a refused fetch resolves in microseconds and the
   in-flight state is gone before it can be observed. `KEV_SHOT=<path>` captures the
   queued card. No static server — every origin is route-fulfilled.
+- `gameresume-run.js` — resuming from game mode when the SETUP, not a poll, is what was
+  paused (issue #201). Most gated widgets pause a poll and resume by fetching again;
+  `radar` geocodes its configured location inside `onInit` before it can draw anything,
+  and `hue` hunts for a bridge the same way, so gating only the refresh left both
+  reaching out through a game. Holding the setup is the easy half — resuming it is where
+  this went wrong. The run drives a SUCCESSFUL session first so the refresh interval is
+  armed, then starts a game, then changes the location mid-pause, then ends the game, and
+  asserts on which NAME was geocoded rather than on request counts. Both details are
+  load-bearing and were learned the hard way: the first version paused at init, so no
+  interval was ever armed and the check passed against the buggy logic too; and a
+  count-based assertion passes while the resume fetches diligently for the wrong city.
+  R6 — a flip with nothing held makes no request — keeps R4 from being satisfied by a
+  gate that simply reopens. No static server; every origin is route-fulfilled.
 - `listprims-run.js` — list settings whose entries may be bare values (issue #167). Both
   settings editors filtered a list down to objects before rendering, so a widget's
   primitive shorthand — endpoints accepts `"nas.lan"` and expands it itself — got no row:

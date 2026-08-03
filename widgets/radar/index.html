@@ -63,10 +63,19 @@
   let frames = [];          // [{time, urlTemplate}] oldest -> newest
   let frameEls = [];
   let frameIndex = 0;
+  // WIDGET-SPEC: JS work is yours to gate. Seeded from state.game at init AND flipped by
+  // onGame, because onGame reports later flips only — a widget that just listens polls
+  // straight through a game that was already running when it loaded.
+  let gameOn = false;
+  let pendingSettings = null;   // the settings a paused init was holding
+  let pendingInit = false;      // ...and whether that init still owes a full setup
+  let pendingResize = false;    // ...and whether a resize rebuild was deferred
+  let missedRefresh = false;    // a radar refresh was refused while a game had the foreground
   let animTimer = null;
   let refreshTimer = null;
 
   WW.onInit(async (state) => {
+    gameOn = !!(state.game && state.game.active);
     const s = state.settings;
     // bgStyle drives the widget-base panel-opacity classes; anything that isn't
     // explicitly glass/transparent renders solid, matching the pre-token look for
@@ -85,18 +94,45 @@
     // per-slot style override) — legacy textColor keys are ignored.
     document.body.style.setProperty('--text-scale', (Number(s.textSize) || 100) / 100);
 
+    // The SETUP is network too, and gating only the refresh left it uncovered:
+    // resolveLocation geocodes, which is a request like any other. Held here with the
+    // settings that were current when it was held, so a game that ends re-enters with
+    // what the user actually configured rather than with a stale closure.
+    pendingSettings = s;
+    if (gameOn) {
+      pendingInit = true;
+      missedRefresh = true;
+      showMessage('Paused', 'A game is running.');
+      return;
+    }
+    pendingInit = false;
+    await start(s);
+  });
+
+  async function start(s) {
     try {
       await resolveLocation(s.location);
     } catch (e) {
       showMessage('Set a location in the widget settings', String(e.message || e));
       return;
     }
+    // Re-checked AFTER the await: a game can start while the geocode is in flight, and
+    // buildBaseMap below fetches a screenful of OpenStreetMap tiles. Only refreshRadar
+    // was guarded, so the tiles went out anyway — a gate that returns before the slow
+    // part but not after it is not a gate.
+    if (gameOn) {
+      missedRefresh = true;
+      pendingInit = true;
+      showMessage('Paused', 'A game is running.');
+      return;
+    }
+    hideMessage();
     buildBaseMap();
     await refreshRadar();
     // A theme edit re-delivers ww-init without a reload — re-arm, never stack.
     clearInterval(refreshTimer);
     refreshTimer = setInterval(refreshRadar, 5 * 60 * 1000);  // RainViewer updates every ~10 min
-  });
+  }
 
   async function resolveLocation(loc) {
     if (loc && typeof loc === 'object' && isFinite(loc.latitude) && isFinite(loc.longitude)) {
@@ -163,6 +199,7 @@
   // --- radar frames -------------------------------------------------------------
 
   async function refreshRadar() {
+    if (gameOn) { missedRefresh = true; return; }
     let json;
     try {
       const res = await WW.fetch('https://api.rainviewer.com/public/weather-maps.json');
@@ -172,6 +209,10 @@
       WW.log('radar: frame list failed: ' + e.message);
       return;
     }
+    // Re-checked after the frame-list request: rebuildFrameLayers below attaches a
+    // screenful of tile images per frame and re-arms the animation chain, so a game that
+    // started while this was in flight would get all of it anyway.
+    if (gameOn) { missedRefresh = true; return; }
     const host = json.host || 'https://tilecache.rainviewer.com';
     const past = (json.radar && json.radar.past) || [];
     const wanted = cfg.animate ? past.slice(-7) : past.slice(-1);
@@ -185,15 +226,22 @@
     }));
     frameIndex = frames.length - 1;
     rebuildFrameLayers();
-    if (cfg.animate && frames.length > 1) {
-      // Cycle oldest -> newest, lingering on the newest frame before looping.
-      const tick = () => {
-        frameIndex = (frameIndex + 1) % frames.length;
-        showFrame(frameIndex);
-        animTimer = setTimeout(tick, frameIndex === frames.length - 1 ? 1800 : 650);
-      };
-      animTimer = setTimeout(tick, 1800);
-    }
+    restartAnimation();
+  }
+
+  // Lifted out of refreshRadar so a resume can re-arm the loop on the frames already
+  // built, without refetching a frame list that is still current.
+  function restartAnimation() {
+    clearTimeout(animTimer);
+    animTimer = null;
+    if (!cfg.animate || frames.length <= 1) return;
+    // Cycle oldest -> newest, lingering on the newest frame before looping.
+    const tick = () => {
+      frameIndex = (frameIndex + 1) % frames.length;
+      showFrame(frameIndex);
+      animTimer = setTimeout(tick, frameIndex === frames.length - 1 ? 1800 : 650);
+    };
+    animTimer = setTimeout(tick, 1800);
   }
 
   // (Re)creates the per-frame tile layers for the current viewport size.
@@ -218,6 +266,16 @@
     if (cfg.lat == null) return;
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
+      // The handle is cleared as the callback BEGINS. Left set, a long-finished debounce
+      // still looked armed, so every later game entry recorded a historical resize as
+      // pending and every exit rebuilt the map for it.
+      resizeTimer = null;
+      // buildBaseMap and rebuildFrameLayers assign a screenful of OpenStreetMap and
+      // RainViewer tile URLs — network work, from a path that is neither the poll nor the
+      // setup. A display, DPI or slot-size change during a game reaches here, so the gate
+      // has to be consulted at the point the rebuild would start. Deferred, not dropped:
+      // the resume rebuilds against whatever geometry is current then.
+      if (gameOn) { pendingResize = true; return; }
       buildBaseMap();
       rebuildFrameLayers();
     }, 300);
@@ -236,6 +294,78 @@
     document.getElementById('messageBody').textContent = detail || '';
     document.getElementById('message').hidden = false;
   }
+
+  // Every other caller of showMessage is terminal — a missing location, a failed
+  // geocode — so nothing ever needed to take the card back down. "Paused" is the first
+  // RECOVERABLE one, and without this the map and frames loaded behind a card still
+  // saying the widget was paused, which is worse than not saying it at all.
+  function hideMessage() {
+    document.getElementById('message').hidden = true;
+  }
+
+  // A game ending is the user coming back to the panel: catch up at once rather than
+  // waiting out whatever remained of the interval.
+  WW.onGame((g) => {
+    gameOn = !!(g && g.active);
+    if (gameOn) {
+      // The frame animation is a setTimeout chain toggling classes, so the panel-wide
+      // CSS pause in widget-base does not reach it: it would keep cycling frames for the
+      // whole game. Stopped here and rebuilt by whichever path resumes.
+      clearTimeout(animTimer);
+      animTimer = null;
+      // A debounce armed moments before the game started would fire inside it — but
+      // cancelling it is only half the job. The callback is what sets pendingResize, so
+      // cancelling it without recording the intent lost the rebuild entirely: the resume
+      // took the no-work path and left both the base map and the radar tiles laid out for
+      // the old viewport until something else happened to rebuild them.
+      if (resizeTimer) pendingResize = true;
+      clearTimeout(resizeTimer);
+      resizeTimer = null;
+    }
+    if (gameOn) return;
+    // Each owed job is resumed by whatever actually owes it, and none of them implies
+    // another. Folding them into one flag meant a resize-only pause also fell through to
+    // refreshRadar — a second frame-list fetch and a second full tile rebuild on a game
+    // exit where nothing had expired.
+    //
+    // An init refused while paused owes a full SETUP, not a refresh: its settings may name
+    // a different location, and resolveLocation is the only thing that reads them. The
+    // interval is stopped BEFORE that setup begins, because start() clears it only after
+    // two awaits, and a retained five-minute deadline landing inside either one fetched
+    // and rebuilt against the previous coordinates.
+    if (pendingInit && pendingSettings) {
+      pendingInit = false;
+      pendingResize = false;   // start() rebuilds both
+      missedRefresh = false;
+      clearInterval(refreshTimer);
+      refreshTimer = null;
+      start(pendingSettings);
+      return;
+    }
+    // A deferred resize is not a refresh: refreshRadar rebuilds the RainViewer layers but
+    // never buildBaseMap, so the OpenStreetMap tiles would keep the viewport they were
+    // built for.
+    if (pendingResize) {
+      pendingResize = false;
+      buildBaseMap();
+      rebuildFrameLayers();
+    }
+    // Restart the cadence FROM the catch-up: the interval kept its deadline through the
+    // game, and refreshRadar has no in-flight guard, so a game ending just before it
+    // produced two overlapping frame-list fetches.
+    if (missedRefresh) {
+      missedRefresh = false;
+      clearInterval(refreshTimer);
+      refreshRadar();   // re-arms the animation itself as it rebuilds the layers
+      refreshTimer = setInterval(refreshRadar, 5 * 60 * 1000);
+      return;
+    }
+    // The animation was stopped on entry whatever else happened, so it comes back
+    // whatever else happens — a game that started and ended inside one refresh window
+    // owes nothing else, and used to leave the radar frozen on a single frame.
+    restartAnimation();
+  });
+
 </script>
 </body>
 </html>
