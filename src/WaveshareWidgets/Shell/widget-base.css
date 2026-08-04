@@ -67,6 +67,19 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  /* A widget document never scrolls — `overflow: hidden` on the line above says so — which
+   * means no pan gesture inside a widget has anywhere local to go. touch-action intersects
+   * up the ancestor chain ACROSS the frame boundary, so without this the browser handed the
+   * gesture to the shell's #pages: a horizontal scroll-snap container holding every page of
+   * the panel. The finger moves a few pixels on its way to a tap, and the panel changes page
+   * instead of the control acting (#206). It was reported against the notifications eye, but
+   * it applies to any control that is not inside a scrollable region — which is most of them.
+   *
+   * Scrollable regions opt back IN with `touch-action: pan-y` (see §8 of WIDGET-STANDARD).
+   * That is deliberately the explicit half: forgetting it makes a list refuse to scroll,
+   * which is visible immediately, while the reverse failure is a gesture quietly stolen from
+   * a control and was in the field for months. */
+  touch-action: none;
 }
 
 body {

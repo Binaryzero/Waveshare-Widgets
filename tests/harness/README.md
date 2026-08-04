@@ -207,6 +207,21 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   already validated the configured bridge and loaded its key. J asserts on the bridge
   address the application key was sent to. No static server; every origin is
   route-fulfilled.
+- `touchpan-run.js` — a tap on a widget control paged the panel instead of acting
+  (issue #206). The report points at a scrollbar next to the notifications eye; there is
+  none — `#list` hides its scrollbar and the eye sits in `<header>`, outside the list. What
+  is actually next to it is the **shell**: `#pages` is a horizontal `scroll-snap` container,
+  widget documents are `overflow: hidden`, and `touch-action` intersects up the ancestor
+  chain across the iframe boundary — so a gesture on a control with nothing local to pan was
+  handed to the panel's pager, and a finger drifting a few pixels on the way to a tap changed
+  page. `widget-base.css` declared no `touch-action` at all and five widgets had each patched
+  it locally, which is what a missing shared rule looks like from outside. Runs with
+  `hasTouch: true` (without it every gesture is a mouse drag, which `touch-action` does not
+  govern, and the whole file would pass regardless) and dispatches real touch drags over CDP,
+  because Playwright's touchscreen only taps and it is the *drag* that turns a tap into a pan.
+  Against the unfixed build T3 reports `pages scrollLeft 0 -> 628` — a full page stolen by a
+  tap. T2 drags inside the list and T4 taps the control, so the fix cannot be bought by
+  forbidding panning everywhere or by killing the button.
 - `pillquiet-run.js` — the header pill reports exceptions, not health (issue #205). Every
   stock tile carried a permanent corner badge reading LIVE, ALL UP, CLEAR, QUIET, LOADED
   or SCHEDULED: true from the moment the widget worked until the moment it stopped, on
