@@ -815,8 +815,11 @@
 
     const stale = document.body.classList.contains('stale');
     const pill = el('pill');
-    pill.textContent = stale ? 'Partial' : 'Live';
-    pill.className = 'pill ' + (stale ? 'warn' : 'ok');
+    // 'Partial' stays — it says some of the numbers below are missing, which the reader
+    // cannot tell by looking. 'Live' said only that the tile was a tile.
+    pill.hidden = !stale;
+    pill.textContent = 'Partial';
+    pill.className = 'pill warn';
 
     el('meta').textContent = (problems && problems.length)
       ? problems.slice(0, 2).join(' · ')
@@ -861,6 +864,8 @@
     el('data').hidden = true;
     el('meta').textContent = '';
     const pill = el('pill');
+    // Explicitly shown: a healthy render may have hidden it (#205).
+    pill.hidden = false;
     pill.textContent = 'Loading';
     pill.className = 'pill muted';
   }
@@ -886,6 +891,8 @@
   function showError(problems, fallback) {
     const message = (problems && problems.length ? problems.join('; ') : '') || fallback || 'nothing available';
     const pill = el('pill');
+    // Explicitly shown: a healthy render may have hidden it (#205).
+    pill.hidden = false;
     pill.textContent = 'Error';
     pill.className = 'pill err';
     const s = el('state');

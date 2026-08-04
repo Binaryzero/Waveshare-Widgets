@@ -207,6 +207,19 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   already validated the configured bridge and loaded its key. J asserts on the bridge
   address the application key was sent to. No static server; every origin is
   route-fulfilled.
+- `pillquiet-run.js` — the header pill reports exceptions, not health (issue #205). Every
+  stock tile carried a permanent corner badge reading LIVE, ALL UP, CLEAR, QUIET, LOADED
+  or SCHEDULED: true from the moment the widget worked until the moment it stopped, on
+  every tile at once. A badge that is always there is furniture, and it teaches the reader
+  to skip the one corner a widget has to speak from. The rule is now hidden-while-healthy,
+  which means the check has to run BOTH ways or it is satisfied by deleting the pill
+  outright — so two cases assert the nominal word is gone and two assert a degraded render
+  still shows one. It drives `widget-datapath.js` rather than Playwright directly, and
+  leans on `--reject` matching `innerText`, which omits hidden elements. `endpoints` and
+  `ollama` carry it because their stock fixtures reach both a healthy and a degraded render
+  without credentials; the other six widgets the rule changed are covered for rendering by
+  the stock sweep but are **not** asserted here, which the file says out loud rather than
+  implying coverage it does not have.
 - `listprims-run.js` — list settings whose entries may be bare values (issue #167). Both
   settings editors filtered a list down to objects before rendering, so a widget's
   primitive shorthand — endpoints accepts `"nas.lan"` and expands it itself — got no row:

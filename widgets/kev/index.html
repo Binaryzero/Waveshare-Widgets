@@ -473,6 +473,8 @@
       st.append(icon, title, body);
       const pill = el('pill');
       // Still the last real answer, but say when it stopped being refreshed.
+      // Explicitly shown: a healthy render may have hidden it (#205).
+      pill.hidden = false;
       pill.textContent = document.body.classList.contains('stale') ? 'Stale' : 'Empty';
       pill.className = 'pill muted';
       // The footer describes THIS answer. Returning before the metadata line left the
@@ -515,8 +517,11 @@
 
     const stale = document.body.classList.contains('stale');
     const pill = el('pill');
-    pill.textContent = stale ? 'Stale' : recent.length ? 'New' : 'Quiet';
-    pill.className = 'pill ' + (stale ? 'muted' : recent.length ? 'warn' : 'ok');
+    // 'Quiet' was the state this tile is in almost all of the time, so it was a permanent
+    // badge saying nothing. Hidden while quiet; the pill's appearance now IS the news.
+    pill.hidden = !stale && !recent.length;
+    pill.textContent = stale ? 'Stale' : 'New';
+    pill.className = 'pill ' + (stale ? 'muted' : 'warn');
 
     el('meta').textContent = (cfg.watch.length ? shown.length + ' of ' + entries.length + ' watched · ' : '') +
       (fetchedAt ? 'updated ' + new Date(fetchedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '');
@@ -535,6 +540,8 @@
     // claiming to be loading — indefinitely, since nothing else writes the pill on a
     // cold start that never succeeds.
     const pill = el('pill');
+    // Explicitly shown: a healthy render may have hidden it (#205).
+    pill.hidden = false;
     pill.textContent = 'Error';
     pill.className = 'pill err';
     const state = el('state');

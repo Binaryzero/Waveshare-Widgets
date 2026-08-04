@@ -176,7 +176,9 @@
     cfg.hidden = Math.max(0, n - fit().max);
     el('state').hidden = !!n;
     grid.hidden = !n;
-    if (!n) { el('pill').textContent = 'Idle'; el('pill').className = 'pill muted'; el('meta').textContent = ''; return; }
+    // 'Idle' stays: nothing is configured, which is a thing the reader has to be told
+    // rather than a healthy state to keep quiet about.
+    if (!n) { el('pill').hidden = false; el('pill').textContent = 'Idle'; el('pill').className = 'pill muted'; el('meta').textContent = ''; return; }
 
     applyColumns();
 
@@ -442,10 +444,13 @@
     const down = seen.filter((r) => r.state === 'down').length;
     const slow = seen.filter((r) => r.state === 'slow').length;
     const pill = el('pill');
+    // Set explicitly on every branch: this runs on each sweep, so a pill hidden by the
+    // last healthy one has to come back the moment something goes wrong.
+    pill.hidden = false;
     if (seen.length < cfg.targets.length) { pill.textContent = 'Checking'; pill.className = 'pill muted'; }
     else if (down) { pill.textContent = down + ' down'; pill.className = 'pill err'; }
     else if (slow) { pill.textContent = slow + ' slow'; pill.className = 'pill warn'; }
-    else { pill.textContent = 'All up'; pill.className = 'pill ok'; }
+    else pill.hidden = true;   // healthy: the pill reports exceptions, not health
     const notes = [];
     if (cfg.dropped) notes.push(cfg.dropped + ' more target' + (cfg.dropped === 1 ? '' : 's')
       + ' configured than this widget checks (' + MAX_TARGETS + ' max)');

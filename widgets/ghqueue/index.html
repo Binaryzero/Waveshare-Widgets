@@ -591,12 +591,15 @@
 
     const stale = document.body.classList.contains('stale');
     const pill = el('pill');
+    // Set explicitly on every branch: a pill hidden by the last healthy render has to come
+    // back the moment a queue turns.
+    pill.hidden = false;
     if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
     else if (errored) { pill.textContent = errored + ' unavailable'; pill.className = 'pill err'; }
     else if (failing) { pill.textContent = failing + ' failing'; pill.className = 'pill err'; }
     else if (attention) { pill.textContent = attention + ' needs action'; pill.className = 'pill warn'; }
     else if (waiting) { pill.textContent = waiting + ' to review'; pill.className = 'pill'; }
-    else { pill.textContent = 'Clear'; pill.className = 'pill ok'; }
+    else pill.hidden = true;   // healthy: the pill reports exceptions, not health
 
     // The footer names the FIRST fault it can, rather than assuming a permissions problem
     // for every one of them.
@@ -623,6 +626,8 @@
     // The header stays visible behind the state layer, so a stale "Loading" pill sits
     // next to an error card contradicting it.
     const pill = el('pill');
+    // Explicitly shown: a healthy render may have hidden it (#205).
+    pill.hidden = false;
     pill.textContent = cls === 'err' ? 'Error' : 'Setup';
     pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
     const s = el('state');

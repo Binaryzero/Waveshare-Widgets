@@ -2,7 +2,7 @@
   "id": "ws.stock.homeassistant",
   "name": "Home Assistant",
   "author": "Waveshare Widgets",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Entity states from Home Assistant with touch control for lights and switches. Locks and covers stay display-only until you arm them, and then need a long press.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],

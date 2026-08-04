@@ -329,6 +329,8 @@
     el('data').hidden = true;
     el('meta').textContent = '';
     const pill = el('pill');
+    // Explicitly shown: a healthy render may have hidden it (#205).
+    pill.hidden = false;
     pill.textContent = 'Loading';
     pill.className = 'pill muted';
   }
@@ -469,8 +471,11 @@
     }
 
     const pill = el('pill');
-    pill.textContent = stale ? 'Stale' : models.length ? 'Loaded' : 'Idle';
-    pill.className = 'pill ' + (stale ? 'muted' : models.length ? 'ok' : 'muted');
+    // 'Loaded' with models on screen was a badge restating the list under it. 'Idle' stays:
+    // an empty tile with nothing to explain it is the case that needs a word.
+    pill.hidden = !stale && models.length > 0;
+    pill.textContent = stale ? 'Stale' : 'Idle';
+    pill.className = 'pill muted';
 
     el('meta').textContent = models.length
       ? (lastOk ? 'updated ' + new Date(lastOk).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '')
@@ -486,6 +491,8 @@
     // claiming to be loading, indefinitely, since nothing else writes it on a cold start
     // that never succeeds.
     const pill = el('pill');
+    // Explicitly shown: a healthy render may have hidden it (#205).
+    pill.hidden = false;
     pill.textContent = 'Error';
     pill.className = 'pill err';
     const state = el('state');
