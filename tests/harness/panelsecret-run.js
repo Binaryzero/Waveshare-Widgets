@@ -14,6 +14,7 @@
 //   N6 · typing a replacement sends the new plaintext for the host to encrypt
 //   N7 · a save the host could not protect is reported on the panel, which
 //        otherwise re-renders as if every save succeeded
+//   N14 · a picker:'file' target is CHOSEN from installed apps, not typed (#210)
 //   N13 · a property's `help` reaches THIS sheet too, and survives the field having a
 //         value — the panel is the screen with no second screen to read docs on (#207)
 'use strict';
@@ -68,6 +69,9 @@ const widgets = [{
       help: 'Fine-grained PAT, read-only on Pull requests and Actions.' },
     { name: 'fresh', label: 'Other token', type: 'secret' },
     { name: 'repo', label: 'Repository', type: 'text', default: 'owner/name' },
+    // #210: on the panel this used to render as a bare text box — the file dialog needs a
+    // Win32 owner window, so a full path had to be typed on a touch strip.
+    { name: 'target', label: 'Program', type: 'text', picker: 'file' },
     // DEMOTED: the manifest calls it text now, but layout.json still holds the envelope,
     // so Reveal blanked it and named it in secretsRestorable on the init payload.
     { name: 'legacyToken', label: 'Legacy token', type: 'text' },
@@ -107,6 +111,7 @@ const widgets = [{
   }, narrowSlot] }] };
 
   const saves = [];
+  let appListRequests = 0;
   await page.exposeFunction('__hostRecv', async (json) => {
     const msg = JSON.parse(json);
     if (msg.type === 'ready') {
@@ -116,6 +121,16 @@ const widgets = [{
       })).catch(() => {});
     } else if (msg.type === 'save-layout') {
       saves.push(JSON.parse(JSON.stringify(msg.layout)));
+    } else if (msg.type === 'list-apps') {
+      appListRequests++;
+      page.evaluate((d) => window.__hostPush(d), JSON.stringify({
+        type: 'apps-result',
+        data: { apps: [
+          { name: 'Steam', path: 'C:\\ProgramData\\Start Menu\\Steam.lnk' },
+          { name: 'Visual Studio Code', path: 'C:\\Users\\u\\Start Menu\\Code.lnk' },
+          { name: 'Notepad', path: 'C:\\ProgramData\\Start Menu\\Notepad.lnk' },
+        ] },
+      })).catch(() => {});
     }
   });
   await page.addInitScript(() => {
@@ -214,6 +229,63 @@ const widgets = [{
   check('N13d a property without help grows no empty stub',
     await page.locator('#psRows .ps-field').filter({ hasText: 'Repository' })
       .locator('.ps-help').count() === 0);
+
+  // ---- N14 · a path target is CHOSEN on the panel, not typed (#210)
+  // This surface had no picker at all: the OS file dialog needs a Win32 owner window, so
+  // picker:'file' degraded to free text and the address had to be typed on a touch strip.
+  const targetField = page.locator('#psRows .ps-field').filter({ hasText: 'Program' }).first();
+  check('N14pre the probe is looking at the Program field',
+    (await targetField.locator('label').first().textContent() || '').trim() === 'Program',
+    JSON.stringify((await targetField.locator('label').first().textContent() || '').trim()));
+  // Count before clicking. A click on a locator that matches nothing waits out the
+  // timeout and THROWS, which aborts the file — so removing the picker would report one
+  // FAIL and then silently skip N2 through N12, which have nothing to do with it. This
+  // file has been bitten by exactly that once already; ask whether it exists first.
+  const havePicker = await targetField.locator('.ps-pick').count() === 1;
+  check('N14 the field offers a picker instead of only a text box', havePicker,
+    String(await targetField.locator('.ps-pick').count()));
+
+  if (havePicker) {
+    await targetField.locator('.ps-pick').click();
+    await wait(250);
+  }
+  const appSheet = page.locator('.ps-apps');
+  check('N14b tapping it asks the host and opens the list',
+    havePicker && appListRequests === 1 && await appSheet.count() === 1,
+    JSON.stringify({ requests: appListRequests, sheets: await appSheet.count() }));
+  check('N14c the installed applications are listed',
+    await appSheet.locator('.ps-apps-list button').count() === 3,
+    String(await appSheet.locator('.ps-apps-list button').count()));
+
+  // A real Start Menu runs to hundreds of entries, so the filter is not a nicety.
+  const haveSheet = await appSheet.count() === 1;
+  if (haveSheet) {
+    await appSheet.locator('.ps-apps-head input').fill('code');
+    await wait(120);
+  }
+  check('N14d the filter narrows by name, case-insensitively',
+    haveSheet && await appSheet.locator('.ps-apps-list button').count() === 1
+      && (await appSheet.locator('.ps-apps-list button').first().textContent()) === 'Visual Studio Code',
+    JSON.stringify(await appSheet.locator('.ps-apps-list button').allTextContents()));
+
+  // 44px rows: a 400px strip is touched, not clicked.
+  const rowBox = haveSheet && await appSheet.locator('.ps-apps-list button').count()
+    ? await appSheet.locator('.ps-apps-list button').first().boundingBox() : null;
+  check('N14e the rows are touch-sized', !!rowBox && rowBox.height >= 44,
+    JSON.stringify(rowBox && rowBox.height));
+
+  if (haveSheet && await appSheet.locator('.ps-apps-list button').count()) {
+    await appSheet.locator('.ps-apps-list button').first().click();
+    await wait(900);
+  }
+  check('N14f choosing one writes its PATH into the field, not its name',
+    await targetField.locator('input').first().inputValue() === 'C:\\Users\\u\\Start Menu\\Code.lnk',
+    JSON.stringify(await targetField.locator('input').first().inputValue()));
+  check('N14g and it reaches the saved layout',
+    savedSetting('target') === 'C:\\Users\\u\\Start Menu\\Code.lnk',
+    JSON.stringify(savedSetting('target')));
+  check('N14h the sheet closes on a pick',
+    await page.locator('.ps-apps').count() === 0);
 
   // ---- N2 · Clear is offered only where there is something to remove
   check('N2 a stored secret offers an explicit Clear',

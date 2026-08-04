@@ -216,6 +216,12 @@
       const waiters = psProfileWaiters.splice(0);
       const profiles = ((msg.data && msg.data.profiles) || []).filter((p) => typeof p === 'string');
       waiters.forEach((cb) => { try { cb(profiles); } catch (e) { /* row rebuilt */ } });
+    } else if (msg.type === 'apps-result') {
+      // Installed applications for the sheet's path pickers (#210).
+      const waiters = psAppWaiters.splice(0);
+      const apps = (((msg.data && msg.data.apps) || [])
+        .filter((a) => a && typeof a.name === 'string' && typeof a.path === 'string'));
+      waiters.forEach((cb) => { try { cb(apps); } catch (e) { /* row rebuilt */ } });
     } else if (msg.type === 'sd-profile-result') {
       routeSd(msg, (data) => ({ type: 'ww-sd-profile', profile: data }));
     } else if (msg.type === 'sd-capture-result') {
@@ -1801,6 +1807,7 @@
   let propTarget = null;
   let propPersistTimer = null;
   let psProfileWaiters = []; // callbacks awaiting an sd-profiles-result
+  let psAppWaiters = [];     // callbacks awaiting an apps-result (#210)
   let propReloadSeq = 0;     // cache-busting nonce: fragment-only src changes don't navigate
 
   const PS_EMOJI = [
@@ -2217,7 +2224,19 @@
           wrap.appendChild(psEmojiBtn(input, prop.picker === 'emoji-prefix'));
           return wrap;
         }
-        return input; // picker:'file' stays free-text on-device (no dialog host here)
+        if (prop.picker === 'file') {
+          // The panel cannot show a file dialog — it needs a Win32 owner window — so this
+          // used to be the one place a full path had to be TYPED, on a touch strip, with
+          // no keyboard. The installed-app list needs no dialog, so the surface that had
+          // no picker at all now has the better one (#210). Free text stays for the
+          // targets that are a document or a script rather than a program.
+          const wrap = document.createElement('div');
+          wrap.className = 'ps-inline';
+          wrap.appendChild(input);
+          wrap.appendChild(psAppBtn(input));
+          return wrap;
+        }
+        return input;
       }
     }
   }
@@ -2235,6 +2254,71 @@
         input.value = prefix ? (e + ' ' + input.value.replace(PS_LEAD_EMOJI, '')).trimEnd() : e;
         input.dispatchEvent(new Event('input'));
       });
+    });
+    return btn;
+  }
+
+  /** Installed-application chooser for a path field (#210). A full-height sheet rather
+   * than the emoji popover's grid: the list can run to hundreds of rows, it needs a
+   * filter, and 44px targets do not fit in a popover on a 400px-tall panel. */
+  function psAppBtn(input) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ps-pick';
+    btn.textContent = '🗂';
+    btn.title = 'Choose an installed application';
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (document.querySelector('.ps-apps')) return;
+      const sheet = document.createElement('div');
+      sheet.className = 'ps-apps';
+      const head = document.createElement('div');
+      head.className = 'ps-apps-head';
+      const search = document.createElement('input');
+      search.type = 'text';
+      search.placeholder = 'Search apps…';
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'ps-pick no-pan';
+      close.textContent = '✕';
+      close.title = 'Close';
+      close.addEventListener('click', () => sheet.remove());
+      head.append(search, close);
+      const list = document.createElement('div');
+      list.className = 'ps-apps-list';
+      const status = document.createElement('p');
+      status.className = 'ps-apps-status';
+      status.textContent = 'Looking for installed applications…';
+      sheet.append(head, status, list);
+      document.body.appendChild(sheet);
+
+      let apps = [];
+      const render = () => {
+        const q = search.value.trim().toLowerCase();
+        const shown = q ? apps.filter((a) => a.name.toLowerCase().includes(q)) : apps;
+        list.textContent = '';
+        for (const app of shown.slice(0, 200)) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'no-pan';
+          b.textContent = app.name;
+          b.addEventListener('click', () => {
+            input.value = app.path;
+            input.dispatchEvent(new Event('input'));
+            sheet.remove();
+          });
+          list.appendChild(b);
+        }
+        status.hidden = shown.length > 0;
+        if (!shown.length) status.textContent = apps.length ? 'No application matches that.' : 'No installed applications found.';
+      };
+      search.addEventListener('input', render);
+      psAppWaiters.push((result) => {
+        if (!sheet.isConnected) return;   // dismissed while the host was still walking
+        apps = result;
+        render();
+      });
+      postToHost({ type: 'list-apps' });
     });
     return btn;
   }

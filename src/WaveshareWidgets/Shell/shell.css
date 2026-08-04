@@ -719,3 +719,39 @@ input.toggle-check:checked::after { transform: translateX(22px); }
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
 }
 .panel-notice[hidden] { display: none; }
+
+/* Installed-application chooser (#210). A sheet, not a popover: the list runs to hundreds
+   of rows on a real PC and needs a filter and 44px targets, none of which fit in the
+   emoji grid's footprint on a 400px-tall panel. */
+.ps-apps {
+  position: fixed;
+  z-index: 60;
+  inset: 8px 8px 8px auto;
+  width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--surface, #111418);
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+.ps-apps-head { display: flex; gap: 6px; align-items: center; }
+.ps-apps-head input { flex: 1 1 auto; min-width: 0; min-height: 38px; }
+.ps-apps-status { margin: 0; font-size: 11px; line-height: 1.45; color: var(--text-muted, #8e9196); }
+/* pan-y, not the default: this is a vertical scroller, and without it a horizontal drag
+   from a row chains out to the shell's pager (#206). */
+.ps-apps-list { flex: 1 1 auto; overflow-y: auto; touch-action: pan-y; display: flex; flex-direction: column; gap: 2px; }
+.ps-apps-list button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: color-mix(in srgb, var(--surface, #111418) 70%, transparent);
+  color: var(--text, #e8ecf2);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}

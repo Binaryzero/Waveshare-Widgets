@@ -181,8 +181,11 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   - `"picker": "emoji-prefix"` — the same grid for fields where a *leading* emoji is
     the icon and the rest is text (launcher shortcut names): the pick swaps only the
     leading emoji and keeps the text after it.
-  - `"picker": "file"` — a native file browser that fills the field with the chosen
-    path (desktop settings window only; the on-device editor keeps free text).
+  - `"picker": "file"` — a path target. Both editors offer a searchable list of the
+    applications installed on the PC, read from the Start Menu, and fill the field with
+    the chosen shortcut's path; the desktop settings window adds a native file browser
+    beside it for targets that are a document or a script rather than a program. The
+    value stored is a path either way, so a widget reads it exactly as before.
 
   Field types: `text` and `color`. A widget upgraded from an older text property should
   keep accepting its legacy string form from saved layouts (the editor converts

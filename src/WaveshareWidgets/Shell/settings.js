@@ -57,6 +57,7 @@
   let backgroundHost = 'backgrounds.wsw';
   let pendingBgPick = null;    // callback(source, kind) for the in-flight file dialog
   let sdProfileWaiters = [];   // callbacks awaiting an sd-profiles-result
+  let appWaiters = [];         // callbacks awaiting an apps-result (#210)
   let galleryOpen = false;     // settings-side add-widget gallery (Widget tab)
   let instanceSeq = 0;         // suffix for minted instanceIds (gallery adds)
   // The free region a replica "+" tap named, if any (#84). The panel's add zones are
@@ -270,6 +271,12 @@
     } else if (msg.type === 'background-failed') {
       pendingBgPick = null;
       toast('Could not load background: ' + msg.message, true);
+    } else if (msg.type === 'apps-result') {
+      const waiters = appWaiters.splice(0);
+      const apps = Array.isArray(msg.apps)
+        ? msg.apps.filter((a) => a && typeof a.name === 'string' && typeof a.path === 'string')
+        : [];
+      waiters.forEach((cb) => cb(apps));
     } else if (msg.type === 'sd-profiles-result') {
       const waiters = sdProfileWaiters.splice(0);
       const profiles = Array.isArray(msg.profiles) ? msg.profiles.filter((p) => typeof p === 'string') : [];
@@ -1780,6 +1787,81 @@
     });
   }
 
+  // ---- installed-application picker (#210) --------------------------------------
+  // Browsing for an .exe asks the user where an application LIVES, which nobody knows
+  // for anything installed from a store and which moves under them on an update. The
+  // host reads the Start Menu instead. Free text and Browse both stay: this is the
+  // shortest path, not the only one.
+
+  function closeAppPop() {
+    const pop = document.querySelector('.app-pop');
+    if (pop) pop.remove();
+    document.removeEventListener('pointerdown', onAppOutside, true);
+  }
+  function onAppOutside(ev) {
+    if (!ev.target.closest('.app-pop')) closeAppPop();
+  }
+
+  function makeAppBtn(input) {
+    return iconButton('🗂', 'Choose an installed application', (ev) => {
+      ev.stopPropagation();
+      if (document.querySelector('.app-pop')) { closeAppPop(); return; }
+      const pop = document.createElement('div');
+      pop.className = 'app-pop';
+      const search = document.createElement('input');
+      search.type = 'text';
+      search.className = 'app-pop-search';
+      search.placeholder = 'Search installed apps…';
+      const list = document.createElement('div');
+      list.className = 'app-pop-list';
+      // Says something before the host answers, and keeps saying something if the answer
+      // is empty — a silent empty box reads as a broken picker rather than as "none found".
+      const status = document.createElement('p');
+      status.className = 'app-pop-status';
+      status.textContent = 'Looking for installed applications…';
+      pop.append(search, status, list);
+
+      const place = () => {
+        const r = ev.currentTarget.getBoundingClientRect();
+        pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 320)) + 'px';
+        pop.style.top = Math.min(r.bottom + 6, window.innerHeight - 340) + 'px';
+      };
+      document.body.appendChild(pop);
+      place();
+      document.addEventListener('pointerdown', onAppOutside, true);
+      search.focus();
+
+      let apps = [];
+      const render = () => {
+        const q = search.value.trim().toLowerCase();
+        const shown = q ? apps.filter((a) => a.name.toLowerCase().includes(q)) : apps;
+        list.textContent = '';
+        for (const app of shown.slice(0, 200)) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = app.name;
+          b.title = app.path;
+          b.addEventListener('click', () => {
+            input.value = app.path;
+            input.dispatchEvent(new Event('input')); // commits through the field's handler
+            closeAppPop();
+          });
+          list.appendChild(b);
+        }
+        status.hidden = shown.length > 0;
+        if (!shown.length) status.textContent = apps.length ? 'No application matches that.' : 'No installed applications found.';
+      };
+      search.addEventListener('input', render);
+
+      appWaiters.push((result) => {
+        if (!pop.isConnected) return;   // closed while the host was still walking the menu
+        apps = result;
+        render();
+      });
+      post({ type: 'list-apps' });
+    });
+  }
+
   // >>> ww-list-mapping — extracted and RUN by tests/harness/listprims-run.js
   // The two halves of a list setting's round trip live here as named functions on
   // purpose. The probe loads this block out of the file and executes it, so it exercises
@@ -1828,7 +1910,12 @@
   function attachFieldPicker(container, spec, input) {
     if (spec.picker === 'emoji' || spec.picker === 'emoji-prefix')
       container.appendChild(makeEmojiBtn(input, spec.picker === 'emoji-prefix'));
-    else if (spec.picker === 'file') container.appendChild(makeFileBtn(input));
+    else if (spec.picker === 'file') {
+      // App list first: it is the answer for almost every target, and Browse is the
+      // fallback for the few that are a script or a document rather than a program.
+      container.appendChild(makeAppBtn(input));
+      container.appendChild(makeFileBtn(input));
+    }
   }
 
   // Widths a widget can take: its declared supported widths, plus three-quarter for
