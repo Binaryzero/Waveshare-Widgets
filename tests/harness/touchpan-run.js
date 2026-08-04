@@ -371,82 +371,21 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   check('T10 every control marked .no-pan actually computes to touch-action: none',
     bad.length === 0, bad.join(' | ') || `${OPTED.length} controls checked`);
 
-  // ---- T11 · stop relying on someone remembering ----------------------------------
-  // T10 checks a list a human maintains, which is why #206 needed four rounds and #214
-  // came after all of them: each time, the rule went on the element visible in the file
-  // being edited, and the list grew to match. This inverts it. Load every stock widget
-  // and enumerate what is ACTUALLY interactive, then require each to either compute
-  // touch-action: none or sit inside something that scrolls — a control with neither has
-  // nothing local to pan, so the gesture chains out to the shell's pager.
+  // NO T11. A sweep that enumerates controls instead of checking T10's hand-maintained
+  // list is the right idea — it is what #214 asked for — but it cannot be built here.
+  // Three inventories were tried and all three were narrower than the claim they made:
+  // semantic tags miss Home Assistant's listener-backed `.ent` divs; adding `cursor:
+  // pointer` still misses gallery's and reddit's whole-body click handlers, because
+  // addEventListener changes no computed style; and a static load misses every control a
+  // render path CREATES — streamdeck's own `#picker button` among them, so the guard
+  // could not have caught the defect that prompted it.
   //
-  // Its limit, stated rather than discovered later: a static load has only the controls
-  // the widget ships in its markup. Anything built by JS at render time is invisible here
-  // and is covered only where T10's list names it — which is exactly how #picker button
-  // escaped. This narrows the gap; it does not close it.
-  const widgetDirs = fs.readdirSync(path.join(REPO, 'widgets'))
-    .filter((d) => fs.existsSync(path.join(REPO, 'widgets', d, 'index.html'))).sort();
-  const unguarded = [];
-  let inspected = 0;
-  for (const w of widgetDirs) {
-    const wp = await context.newPage();
-    await wp.route('https://app.wsw/**', (r) =>
-      serve(r, SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '')));
-    await wp.route('https://w.test/**', (r) => r.fulfill({ contentType: 'text/html',
-      body: fs.readFileSync(path.join(REPO, 'widgets', w, 'index.html')) }));
-    await wp.goto('https://w.test/index.html');
-    await wp.waitForTimeout(200);
-    const found = await wp.evaluate(() => {
-      // Semantic elements are not the inventory. Home Assistant wires tap and long-press
-      // onto plain `.ent` divs with no role, and every widget here has some div that acts
-      // like a button — so a fixed tag list is a list of the surfaces someone remembered
-      // to make semantic, which is the same failure as T10's hand-maintained list one
-      // level down. `cursor: pointer` is the honest proxy: it is what the widget itself
-      // says is tappable, and it costs nothing to keep true.
-      const SEL = 'button, [role="button"], input[type="range"], input[type="checkbox"],'
-        + ' a[href], select, [tabindex], [onclick]';
-      const out = [];
-      // The question is only ever about the HORIZONTAL axis: #pages is a horizontal
-      // scroll-snap container, so a control is dangerous exactly when a sideways drag on
-      // it can reach the shell. touch-action INTERSECTS up the chain, so walk it.
-      const blocksHorizontal = (v) => v === 'none' || v === 'pan-y'
-        || (v.includes('pan-y') && !v.includes('pan-x'));
-      const candidates = new Set(document.querySelectorAll(SEL));
-      for (const el of document.querySelectorAll('*')) {
-        if (getComputedStyle(el).cursor === 'pointer') candidates.add(el);
-      }
-      for (const el of candidates) {
-        // Visibility is deliberately NOT a filter. REST's #retry, forecast's retry and
-        // vitals' #cardDone are all hidden at load and all touchable the moment their
-        // state arrives; skipping them meant the sweep reported success over three
-        // controls that can page the panel. The CSS that governs them is the same either
-        // way, so the rules are read regardless of whether they are on screen now.
-        let blocked = false;
-        let consumed = false;
-        for (let n = el; n; n = n.parentElement) {
-          const o = getComputedStyle(n);
-          if (blocksHorizontal(o.touchAction)) { blocked = true; break; }
-          // Only a HORIZONTALLY scrolling ancestor consumes a sideways drag — and only
-          // if it can ACTUALLY scroll. CSS overflow normalisation computes the other axis
-          // of an `overflow-y: auto` element from `visible` up to `auto`, so reading the
-          // keyword alone excused every vertical list and the previous "tightening"
-          // tightened nothing. Range is the only honest test.
-          if (n !== el && /(auto|scroll)/.test(o.overflowX) && n.scrollWidth > n.clientWidth) {
-            consumed = true; break;
-          }
-        }
-        if (blocked || consumed) continue;
-        out.push((el.id ? '#' + el.id : el.tagName.toLowerCase() + (el.className ? '.' + String(el.className).trim().split(/\s+/)[0] : ''))
-          + ' = ' + getComputedStyle(el).touchAction);
-      }
-      return out;
-    });
-    inspected++;
-    for (const f of found) unguarded.push(`${w} ${f}`);
-    await wp.close();
-  }
-  check('T11 no statically-rendered control is left able to page the panel',
-    unguarded.length === 0,
-    unguarded.join(' | ') || `${inspected} widgets swept, every interactive element guarded`);
+  // There is no static signal for "this is tappable". The one that works is instrumenting
+  // addEventListener so surfaces declare themselves at registration, and that belongs in
+  // tools/widget-harness.js, which already mounts every widget with a real ww-init and
+  // already runs 162 times per sweep — covering listener-only surfaces, JS-created ones
+  // and post-init reveals in one place. Filed as its own issue rather than left here as a
+  // check that reads like coverage while provably missing real controls.
 
   await browser.close();
   console.log(failures > 0 ? `\n${failures} FAILURES` : '\nALL PASS');
