@@ -2309,8 +2309,19 @@
           });
           list.appendChild(b);
         }
-        status.hidden = shown.length > 0;
-        if (!shown.length) status.textContent = apps.length ? 'No application matches that.' : 'No installed applications found.';
+        // Same reasoning as the desktop picker: a silent cut reads as a missing app, and
+        // this is the surface where scrolling to find out is most expensive.
+        if (!shown.length) {
+          status.hidden = false;
+          status.textContent = apps.length
+            ? 'No match. This lists Start Menu shortcuts — a packaged Store app may not have one.'
+            : 'No installed applications found.';
+        } else if (shown.length > 200) {
+          status.hidden = false;
+          status.textContent = `Showing 200 of ${shown.length} — type to narrow the list.`;
+        } else {
+          status.hidden = true;
+        }
       };
       search.addEventListener('input', render);
       psAppWaiters.push((result) => {
@@ -2461,11 +2472,17 @@
           }
           input.setAttribute('aria-label', f.label || f.key);
           input.oninput = () => { item[f.key] = input.value; commit(); };
-          if (f.picker === 'emoji' || f.picker === 'emoji-prefix') {
+          // LIST fields are where the pickers actually live: every shipped picker:'file'
+          // is one (launcher items.target, deck buttons.target), and there is no top-level
+          // one anywhere in the catalog. A picker wired only to psControl's text branch
+          // reaches nothing a user owns.
+          if (f.picker === 'emoji' || f.picker === 'emoji-prefix' || f.picker === 'file') {
             const row = document.createElement('div');
             row.className = 'ps-inline';
             row.appendChild(input);
-            row.appendChild(psEmojiBtn(input, f.picker === 'emoji-prefix'));
+            row.appendChild(f.picker === 'file'
+              ? psAppBtn(input)
+              : psEmojiBtn(input, f.picker === 'emoji-prefix'));
             card.appendChild(row);
           } else {
             card.appendChild(input);

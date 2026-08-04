@@ -135,9 +135,12 @@
     // "✕ Close" and can resurface stale gallery content on the next open.
     if (galleryOpen) { galleryOpen = false; renderEditorPanel(); }
     renderSlotStylePanel();   // the Appearance column belongs to the closed card
-    // A body-appended emoji popover must die with the card, or it floats over
-    // the preview mutating a hidden input.
+    // A body-appended popover must die with the card, or it floats over the preview
+    // mutating a hidden input — and a pick then writes into the slot whose inspector the
+    // user just dismissed. BOTH of them: the app chooser was added later and inherited
+    // the hazard without inheriting the cleanup.
     closeEmojiPop();
+    closeAppPop();
   }
   function panelOpen() {
     return el('contextPanel').classList.contains('open');
@@ -1848,8 +1851,20 @@
           });
           list.appendChild(b);
         }
-        status.hidden = shown.length > 0;
-        if (!shown.length) status.textContent = apps.length ? 'No application matches that.' : 'No installed applications found.';
+        // A cap that says nothing reads as "that app is not installed". With an empty
+        // search a long Start Menu is cut at 200 and the missing rows are invisible, so
+        // the line stays up and says what was dropped and how to reach it.
+        if (!shown.length) {
+          status.hidden = false;
+          status.textContent = apps.length
+            ? 'No match. This lists Start Menu shortcuts — a packaged Store app may not have one.'
+            : 'No installed applications found.';
+        } else if (shown.length > 200) {
+          status.hidden = false;
+          status.textContent = `Showing 200 of ${shown.length} — type to narrow the list.`;
+        } else {
+          status.hidden = true;
+        }
       };
       search.addEventListener('input', render);
 

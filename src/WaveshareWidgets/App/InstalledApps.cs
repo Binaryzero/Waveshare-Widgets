@@ -13,7 +13,14 @@ namespace WaveshareWidgets.App;
 /// typed on a touch strip.</para>
 ///
 /// <para>This reads the Start Menu instead, which is where Windows already keeps the
-/// answer. The entries are the SHORTCUTS themselves, not resolved targets: every launch
+/// answer for traditional desktop programs. It is NOT the whole answer: packaged
+/// AppX/MSIX/UWP applications are registered in the AppsFolder namespace and many create
+/// no .lnk anywhere on disk, so they are absent here. Covering them needs COM enumeration
+/// AND a different launch path — an AppUserModelId is started through
+/// `explorer.exe shell:AppsFolder\&lt;aumid&gt;`, not by Process.Start on a path — which is a
+/// second mechanism rather than a wider glob. The pickers say where their list came from
+/// when a search finds nothing, so the absence has an explanation rather than looking
+/// like a broken picker.</para> The entries are the SHORTCUTS themselves, not resolved targets: every launch
 /// path in this app goes through <c>Process.Start(… UseShellExecute = true)</c>, which
 /// starts a .lnk exactly as Explorer does — with the shortcut's own arguments, working
 /// directory and app-id intact. Resolving to the underlying .exe would need COM and would
@@ -21,9 +28,17 @@ namespace WaveshareWidgets.App;
 /// </summary>
 internal static class InstalledApps
 {
-    /// <summary>A bound, not a budget. The two Start Menu trees are small (hundreds of
-    /// entries), but they are user-writable directories walked on a UI thread's request,
-    /// so the walk must terminate on a pathological one rather than trusting the shape.</summary>
+    /// <summary>Bounds, not budgets. The two Start Menu trees are small (hundreds of
+    /// entries), but they are USER-WRITABLE directories walked synchronously from a
+    /// WebView message handler, so a pathological one must stop the walk rather than the
+    /// window.
+    ///
+    /// <para>MaxVisited counts filesystem entries SEEN, not applications kept. Bounding on
+    /// the kept count was wrong in the direction that matters: a menu full of duplicate
+    /// names or `Uninstall …` shortcuts leaves that count near zero while the recursion
+    /// keeps walking, so the advertised bound never fired on precisely the shapes it
+    /// existed for.</para></summary>
+    private const int MaxVisited = 20_000;
     private const int MaxEntries = 800;
     private const int MaxDepth = 6;
 
@@ -36,6 +51,10 @@ internal static class InstalledApps
     {
         var byName = new Dictionary<string, App>(StringComparer.OrdinalIgnoreCase);
 
+        // One counter across BOTH trees: the bound is on the work this call does, and
+        // two separately-bounded walks are not a bound on the pair of them.
+        var visited = 0;
+
         // Machine first so the per-user pass overwrites it, not the other way round.
         foreach (var root in new[] { Environment.SpecialFolder.CommonStartMenu, Environment.SpecialFolder.StartMenu })
         {
@@ -43,8 +62,17 @@ internal static class InstalledApps
             if (string.IsNullOrEmpty(dir))
                 continue;
             var programs = Path.Combine(dir, "Programs");
-            Collect(Directory.Exists(programs) ? programs : dir, 0, byName);
+            Collect(Directory.Exists(programs) ? programs : dir, 0, byName, ref visited);
         }
+
+        if (visited >= MaxVisited)
+            Log.Warn($"Installed-app walk stopped at {MaxVisited} filesystem entries; the picker is showing a partial list");
+
+        // Say so rather than returning a quietly short list: at the cap the answer stops
+        // being "what is installed" and becomes "the first 800 things found", and a user
+        // hunting for a missing application has no other way to learn that.
+        if (byName.Count >= MaxEntries)
+            Log.Warn($"Installed-app list hit its {MaxEntries}-entry cap; the picker is showing a partial list");
 
         return byName.Values
             .OrderBy(a => a.Name, StringComparer.CurrentCultureIgnoreCase)
@@ -62,39 +90,45 @@ internal static class InstalledApps
         return arr;
     }
 
-    private static void Collect(string dir, int depth, Dictionary<string, App> into)
+    private static void Collect(string dir, int depth, Dictionary<string, App> into, ref int visited)
     {
-        if (depth > MaxDepth || into.Count >= MaxEntries)
+        if (depth > MaxDepth || into.Count >= MaxEntries || visited >= MaxVisited)
             return;
-        string[] entries;
+
+        // Enumerate, do not GetFiles: the array form materialises the whole directory
+        // before a single bound is consulted, so one folder with a hundred thousand files
+        // is allocated in full and only then found to be too big. Streaming lets the
+        // counter stop it mid-directory.
         try
         {
-            entries = Directory.GetFiles(dir, "*.lnk");
+            foreach (var file in Directory.EnumerateFiles(dir, "*.lnk"))
+            {
+                if (++visited >= MaxVisited || into.Count >= MaxEntries)
+                    return;
+                var name = Path.GetFileNameWithoutExtension(file);
+                if (string.IsNullOrWhiteSpace(name) || IsNoise(name))
+                    continue;
+                into[name] = new App(name, file);
+            }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
             // One unreadable folder is not a reason to return nothing — a redirected or
             // permission-odd Start Menu is common enough that failing the whole list over
-            // it would leave the picker empty with no explanation.
-            return;
-        }
-
-        foreach (var file in entries)
-        {
-            if (into.Count >= MaxEntries)
-                return;
-            var name = Path.GetFileNameWithoutExtension(file);
-            if (string.IsNullOrWhiteSpace(name) || IsNoise(name))
-                continue;
-            into[name] = new App(name, file);
+            // it would leave the picker empty with no explanation. Enumeration can throw
+            // part-way through, so whatever was already added stays added.
         }
 
         try
         {
-            foreach (var sub in Directory.GetDirectories(dir))
-                Collect(sub, depth + 1, into);
+            foreach (var sub in Directory.EnumerateDirectories(dir))
+            {
+                if (++visited >= MaxVisited)
+                    return;
+                Collect(sub, depth + 1, into, ref visited);
+            }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
             // Same reasoning: keep whatever this level already yielded.
         }

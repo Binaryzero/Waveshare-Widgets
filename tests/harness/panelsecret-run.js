@@ -69,8 +69,18 @@ const widgets = [{
       help: 'Fine-grained PAT, read-only on Pull requests and Actions.' },
     { name: 'fresh', label: 'Other token', type: 'secret' },
     { name: 'repo', label: 'Repository', type: 'text', default: 'owner/name' },
-    // #210: on the panel this used to render as a bare text box — the file dialog needs a
-    // Win32 owner window, so a full path had to be typed on a touch strip.
+    // #210. Shaped like the real ones: EVERY shipped picker:'file' is a field inside a
+    // `list` (launcher items.target, deck buttons.target) and there is no top-level one
+    // in the catalog. The first version of this fixture invented a top-level property,
+    // which is why it passed while the on-device list renderer still had no picker at all
+    // — the check was narrower than the claim it was making.
+    { name: 'items', label: 'Shortcuts', type: 'list', itemLabel: 'shortcut',
+      fields: [
+        { key: 'label', label: 'Name', type: 'text', picker: 'emoji-prefix' },
+        { key: 'target', label: 'Path or URL', type: 'text', picker: 'file' },
+      ], default: [] },
+    // Kept beside it so psControl's own branch stays covered: the spec allows a top-level
+    // picker even though no stock widget declares one today.
     { name: 'target', label: 'Program', type: 'text', picker: 'file' },
     // DEMOTED: the manifest calls it text now, but layout.json still holds the envelope,
     // so Reveal blanked it and named it in secretsRestorable on the init payload.
@@ -106,12 +116,14 @@ const widgets = [{
     // three-quarter. With both reachable, N11 is decided by cycle ORDER; if only one
     // fitted, the probe would pass whichever order the cycler used.
     widgetId: 'test.gh', size: 'quarter',
-    settings: { token: STORED_TOKEN, fresh: '', legacyToken: '', repo: 'binaryzero/waveshare-widgets' },
+    settings: { token: STORED_TOKEN, fresh: '', legacyToken: '', repo: 'binaryzero/waveshare-widgets',
+      items: [{ label: 'Steam', target: '' }] },
     secretsRestorable: ['legacyToken'],
   }, narrowSlot] }] };
 
   const saves = [];
   let appListRequests = 0;
+  let appFlood = false;
   await page.exposeFunction('__hostRecv', async (json) => {
     const msg = JSON.parse(json);
     if (msg.type === 'ready') {
@@ -125,7 +137,11 @@ const widgets = [{
       appListRequests++;
       page.evaluate((d) => window.__hostPush(d), JSON.stringify({
         type: 'apps-result',
-        data: { apps: [
+        // 250 entries once N15 asks for them: the render cap is 200, and a cap that says
+        // nothing is indistinguishable from "that app is not installed".
+        data: appFlood ? { apps: Array.from({ length: 250 }, (_, i) => (
+          { name: 'App ' + String(i).padStart(3, '0'), path: 'C:\\Start Menu\\App' + i + '.lnk' })) }
+        : { apps: [
           { name: 'Steam', path: 'C:\\ProgramData\\Start Menu\\Steam.lnk' },
           { name: 'Visual Studio Code', path: 'C:\\Users\\u\\Start Menu\\Code.lnk' },
           { name: 'Notepad', path: 'C:\\ProgramData\\Start Menu\\Notepad.lnk' },
@@ -233,10 +249,18 @@ const widgets = [{
   // ---- N14 · a path target is CHOSEN on the panel, not typed (#210)
   // This surface had no picker at all: the OS file dialog needs a Win32 owner window, so
   // picker:'file' degraded to free text and the address had to be typed on a touch strip.
-  const targetField = page.locator('#psRows .ps-field').filter({ hasText: 'Program' }).first();
-  check('N14pre the probe is looking at the Program field',
-    (await targetField.locator('label').first().textContent() || '').trim() === 'Program',
-    JSON.stringify((await targetField.locator('label').first().textContent() || '').trim()));
+  // The LIST field — the shape every shipped picker:'file' actually has.
+  // `has:` is resolved RELATIVE to the outer element, so it must be a relative selector —
+  // an absolute `#psRows …` one matches nothing inside a .ps-inline and the filter yields
+  // zero, which reads exactly like a missing picker.
+  const targetField = page.locator('#psRows .ps-item .ps-inline')
+    .filter({ has: page.locator('input[aria-label="Path or URL"]') }).first();
+  const targetInput = targetField.locator('input[aria-label="Path or URL"]');
+  check('N14pre the probe is looking at a list row\'s path field',
+    await targetInput.count() === 1, String(await targetInput.count()));
+  check('N14a and the TOP-LEVEL form gets one too, which psControl renders separately',
+    await page.locator('#psRows .ps-field').filter({ hasText: 'Program' }).first()
+      .locator('.ps-pick').count() === 1);
   // Count before clicking. A click on a locator that matches nothing waits out the
   // timeout and THROWS, which aborts the file — so removing the picker would report one
   // FAIL and then silently skip N2 through N12, which have nothing to do with it. This
@@ -279,13 +303,44 @@ const widgets = [{
     await wait(900);
   }
   check('N14f choosing one writes its PATH into the field, not its name',
-    await targetField.locator('input').first().inputValue() === 'C:\\Users\\u\\Start Menu\\Code.lnk',
-    JSON.stringify(await targetField.locator('input').first().inputValue()));
-  check('N14g and it reaches the saved layout',
-    savedSetting('target') === 'C:\\Users\\u\\Start Menu\\Code.lnk',
-    JSON.stringify(savedSetting('target')));
+    await targetInput.inputValue() === 'C:\\Users\\u\\Start Menu\\Code.lnk',
+    JSON.stringify(await targetInput.inputValue()));
+  const savedRow = () => (savedSetting('items') || [])[0] || {};
+  check('N14g and it reaches the saved layout, on the ROW it belongs to',
+    savedRow().target === 'C:\\Users\\u\\Start Menu\\Code.lnk' && savedRow().label === 'Steam',
+    JSON.stringify(savedRow()));
   check('N14h the sheet closes on a pick',
     await page.locator('.ps-apps').count() === 0);
+
+  // ---- N15 · the render cap says what it dropped (#210)
+  // The list is cut at 200 rows. Cutting it is fine; cutting it silently is not — the
+  // rows that are missing look exactly like applications that are not installed, and
+  // this is the surface where scrolling to find out costs the most.
+  appFlood = true;
+  if (havePicker) {
+    await targetField.locator('.ps-pick').click();
+    await wait(300);
+  }
+  const flood = page.locator('.ps-apps');
+  const floodOpen = await flood.count() === 1;
+  check('N15 a list longer than the cap still renders exactly the cap',
+    floodOpen && await flood.locator('.ps-apps-list button').count() === 200,
+    String(floodOpen ? await flood.locator('.ps-apps-list button').count() : 'no sheet'));
+  check('N15b and it SAYS it was cut, with the real total and what to do about it',
+    floodOpen && /Showing 200 of 250/.test(await flood.locator('.ps-apps-status').textContent() || '')
+      && await flood.locator('.ps-apps-status').isVisible(),
+    JSON.stringify(floodOpen ? await flood.locator('.ps-apps-status').textContent() : 'no sheet'));
+  if (floodOpen) {
+    await flood.locator('.ps-apps-head input').fill('App 24');
+    await wait(120);
+  }
+  check('N15c narrowing under the cap drops the notice rather than leaving it lying',
+    floodOpen && await flood.locator('.ps-apps-list button').count() === 10
+      && await flood.locator('.ps-apps-status').isVisible() === false,
+    JSON.stringify({ rows: floodOpen ? await flood.locator('.ps-apps-list button').count() : null }));
+  if (floodOpen) await flood.locator('.ps-pick').click();   // ✕ — leave the sheet closed
+  await wait(200);
+  appFlood = false;
 
   // ---- N2 · Clear is offered only where there is something to remove
   check('N2 a stored secret offers an explicit Clear',
