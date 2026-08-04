@@ -12,7 +12,8 @@
 //   E6 · a secret with no stored value reads "not set" and offers no Clear
 //   E7 · the saved layout carries exactly what the user typed, and the widget preview
 //        receives it like any other setting
-//   E35 · a property's `help` renders under the control and SURVIVES TYPING — the whole
+//   E35 · a property's `help` renders under the control, SURVIVES TYPING, and is legible
+//         against what is actually painted behind it — the whole
 //        point of the field, since a placeholder disappears the moment a value exists
 //        (#207), and a property without help grows no empty stub
 'use strict';
@@ -20,6 +21,8 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
+
+const { textContrast, AA_NORMAL, LARGE_TEXT_PX } = require('./contrast');
 
 const REPO = path.resolve(__dirname, '..', '..');
 
@@ -180,6 +183,18 @@ const layout = {
   check('E35c a property without help renders no empty help element',
     await noHelpRow.locator('.prop-help').count() === 0,
     String(await noHelpRow.locator('.prop-help').count()));
+
+  // Legible, not merely rendered. `help` is now MANDATORY on every secret, so it is text
+  // the standard insists a user must read — and it shipped in `--text-dim`, a token this
+  // window never defines (the palette pushes it onto the preview element, not the chrome),
+  // so the CSS fallback was the real colour: 3.14:1 on --card, under the 4.5:1 floor for
+  // 11px text. E35-E35c all passed while that was true. Structural checks cannot see a
+  // colour, so this one measures it the way the browser composites it.
+  const helpContrast = await textContrast(secretHelp.locator('.prop-help').first());
+  check(`E35d and it is legible where it is painted (>= ${AA_NORMAL}:1, normal-size text)`,
+    helpContrast.ratio >= AA_NORMAL && helpContrast.fontPx < LARGE_TEXT_PX,
+    JSON.stringify({ ratio: Math.round(helpContrast.ratio * 100) / 100,
+      fontPx: helpContrast.fontPx, color: helpContrast.color }));
 
   // ---- E2 · stored secret: honest "saved" state, nothing readable in the DOM
   check('E2 a stored secret reads as saved+encrypted, not as dots implying readability',

@@ -22,6 +22,8 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 
+const { textContrast, AA_NORMAL, LARGE_TEXT_PX } = require('./contrast');
+
 const REPO = path.resolve(__dirname, '..', '..');
 const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
 const PORT = 8952;
@@ -196,6 +198,18 @@ const widgets = [{
   check('N13c2 and under the control it explains, not above it',
     !!helpBox && !!ctrlBox && helpBox.y >= ctrlBox.y + ctrlBox.height - 1,
     JSON.stringify({ helpY: helpBox && helpBox.y, ctrlBottom: ctrlBox && ctrlBox.y + ctrlBox.height }));
+
+  // Legible, not merely painted. Guidance the standard now REQUIRES on every secret is
+  // guidance somebody has to read, and the first shipped colour was `--text-dim` — the
+  // dimmest derived token, fainter than the label above it, on a strip read from desk
+  // distance. Nothing in this file could see that: every other check here is structural.
+  // So the contrast is computed the way a browser composites it — walk the ancestors
+  // until the colours stop being transparent, then measure.
+  const contrast = await textContrast(tokenHelp);
+  check(`N13e and it is legible where it is painted (>= ${AA_NORMAL}:1, normal-size text)`,
+    contrast.ratio >= AA_NORMAL && contrast.fontPx < LARGE_TEXT_PX,
+    JSON.stringify({ ratio: Math.round(contrast.ratio * 100) / 100,
+      fontPx: contrast.fontPx, color: contrast.color }));
 
   check('N13d a property without help grows no empty stub',
     await page.locator('#psRows .ps-field').filter({ hasText: 'Repository' })

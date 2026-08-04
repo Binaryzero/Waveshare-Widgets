@@ -265,13 +265,15 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 /* The field-level Clear for a demoted property of any type. Aligned left so it reads as
    an action ON the control above it rather than another full-width input. */
 .prop-field > .prop-clear { align-self: flex-start; margin-top: 2px; }
-/* Guidance under a control. Dim and small: it is there when wanted and quiet when not,
-   and it must not compete with the value the user is reading back. */
+/* Guidance under a control. Quiet, not faint: this window defines no --text-dim (the
+   palette pushes that token onto the PREVIEW element, not the chrome), so the fallback
+   was the real colour — #676a6f on --card is 3.14:1, under the 4.5:1 floor for 11px
+   text. --muted is 4.65:1 and is what every other secondary label here already uses. */
 .prop-help {
   margin: 0;
   font-size: 11px;
   line-height: 1.45;
-  color: var(--text-dim, #676a6f);
+  color: var(--muted);
 }
 .prop-field > label {
   font-size: 11px;

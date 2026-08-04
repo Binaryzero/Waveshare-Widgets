@@ -20,6 +20,17 @@ point at it explicitly:
 CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
 ```
 
+## Shared
+
+- `contrast.js` — not a suite. `textContrast(locator)` returns the WCAG ratio of an
+  element's text against what is *actually painted* behind it, compositing translucent
+  ancestors the way a browser does. It exists because #215's review found the same
+  defect on both surfaces and no harness could see it either time: `help` became a
+  required field on every secret and both editors painted it in a token neither document
+  defines, so the CSS fallback was the real colour — 3.14:1 and 3.40:1, under the 4.5:1
+  floor for 11px text, while every structural check on those elements passed. Used by
+  `secretfield-run.js` (E35d) and `panelsecret-run.js` (N13e).
+
 ## Suites
 
 - `secretfield-run.js` — the settings-editor half of the `secret` property contract
