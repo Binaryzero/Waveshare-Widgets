@@ -194,6 +194,11 @@
       renderForecast(data, s.forecast || 'hourly');
       document.getElementById('error').hidden = true;
     } catch (e) {
+      // A failure observed DURING a game is owed work, not a verdict: the gates on the
+      // success path sit after each await, and a rejection skips them, so nothing was
+      // marked and the resume had nothing to retry. The user came back to a transient
+      // error that would sit there for the rest of the retained interval.
+      if (gameOn) { missedWhilePaused = true; return; }
       WW.log('weather failed: ' + e.message);
       document.getElementById('errorBody').textContent =
         e.message + '. Check the location name in Settings.';

@@ -189,7 +189,24 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   interval was ever armed and the check passed against the buggy logic too; and a
   count-based assertion passes while the resume fetches diligently for the wrong city.
   R6 — a flip with nothing held makes no request — keeps R4 from being satisfied by a
-  gate that simply reopens. No static server; every origin is route-fulfilled.
+  gate that simply reopens. Scenario B mounts with the game ALREADY running, because
+  scenario A only ever sets the flag through a transition and would pass with the
+  `state.game` seeding deleted. Scenario C holds the geocoder open so the request FAILS
+  while the game runs: a rejection jumps straight to `catch`, skipping the gates that sit
+  after each await, so nothing was recorded as owed and the error card outlived the game
+  (issue #208). D is the same question one request later, at `refreshRadar`'s own catch,
+  which the fix for C did not reach — recoverable at the next five-minute tick, but on a
+  first load the tile has no frames at all until then. G and J move to `hue`, mounted with
+  its own ww-fetch responder because it speaks to the bridge exclusively through the host
+  proxy, so none of its traffic is a page request and the request LOG is the only witness.
+  G is C's question against the cloud bridge hunt — its terminal "No Hue Bridge found"
+  card sat above the gate, so a discovery that failed during a game was a verdict recorded
+  in neither flag. J needs no game at all: two `connect()` calls overlap when settings
+  change mid-hunt, and discovery was committing to the widget-global `cfg.ip` before the
+  generation check, so the abandoned connection redirected the live one — which had
+  already validated the configured bridge and loaded its key. J asserts on the bridge
+  address the application key was sent to. No static server; every origin is
+  route-fulfilled.
 - `listprims-run.js` — list settings whose entries may be bare values (issue #167). Both
   settings editors filtered a list down to objects before rendering, so a widget's
   primitive shorthand — endpoints accepts `"nas.lan"` and expands it itself — got no row:

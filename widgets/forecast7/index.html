@@ -305,6 +305,11 @@
       setPill('ok', 'Live');
       showState(null);
     } catch (e) {
+      // Same rule as weather: a rejection skips the post-await gates, so a failure seen
+      // during a game has to be recorded as pending rather than counted as a real
+      // failure — failStreak also drives the backoff, and a paused widget has not earned
+      // a stretched interval.
+      if (gameOn) { pendingRefresh = true; return; }
       WW.log('forecast7 refresh failed: ' + e.message);
       failStreak++;
       if (hasData) {

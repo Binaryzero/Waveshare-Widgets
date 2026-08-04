@@ -216,6 +216,7 @@
       // exists to protect, and it is spent after the answer arrives, not before.
       if (gameOn) { missedWhilePaused = true; return; }
     } catch (e) {
+      if (gameOn) { missedWhilePaused = true; return; }
       WW.log('ping: ' + e.message);
       return;
     } finally {
@@ -309,6 +310,10 @@
     // supported one-second interval, with host pings allowed two seconds, that is
     // overlapping ICMP batches for the same targets.
     clearInterval(pollTimer);
+    // This IS the poll the queue was asking for. Leaving the flag set meant the in-flight
+    // release fired a second batch straight after — two back-to-back ICMP runs for targets
+    // the catch-up had already used.
+    queuedPoll = false;
     poll();   // refused by the in-flight guard if a pre-game batch is still resolving
     if (cfg.targets.length) pollTimer = setInterval(poll, cfg.interval * 1000);
   });

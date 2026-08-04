@@ -113,6 +113,17 @@
     try {
       await resolveLocation(s.location);
     } catch (e) {
+      // A failure OBSERVED DURING A GAME is owed work, not a verdict. The gates on the
+      // success path sit after each await; a rejection jumps straight here and skipped
+      // them, so nothing was recorded — and because this returns before arming
+      // refreshTimer, the resume found no work and the error card stayed up forever. A
+      // transient blip during a game became permanent.
+      if (gameOn) {
+        pendingInit = true;
+        missedRefresh = true;
+        showMessage('Paused', 'A game is running.');
+        return;
+      }
       showMessage('Set a location in the widget settings', String(e.message || e));
       return;
     }
@@ -206,6 +217,12 @@
       if (!res.ok) throw new Error('HTTP ' + res.status);
       json = await res.json();
     } catch (e) {
+      // A failure observed during a game is owed work, not a verdict — same rule as
+      // start()'s catch. The success path re-checks after this await; a rejection jumps
+      // straight here and skipped it, so nothing was recorded and the resume took the
+      // no-work path. The interval survives, so this was never permanent — but a game
+      // shorter than the five-minute window left the radar stale for the rest of it.
+      if (gameOn) { missedRefresh = true; return; }
       WW.log('radar: frame list failed: ' + e.message);
       return;
     }
