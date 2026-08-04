@@ -77,7 +77,7 @@ Install via tray → **Install widget…**, or unzip the folder directly into
 
   ```json
   { "name": "apiToken", "label": "API token", "type": "secret",
-    "placeholder": "ghp_…",
+    "placeholder": "github_pat_…",
     "help": "Settings → Developer settings → Tokens (fine-grained). Grant Pull requests: Read-only and Actions: Read-only on the repositories above — nothing here writes." }
   ```
 

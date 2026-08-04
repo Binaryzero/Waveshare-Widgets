@@ -23,8 +23,8 @@
       "name": "apiToken",
       "label": "Personal access token",
       "type": "secret",
-      "placeholder": "Fine-grained PAT with read access to the repos above",
-      "help": "A GitHub fine-grained personal access token (Settings → Developer settings → Tokens (fine-grained)). Give it access to the repositories listed above, then set three permissions to Read-only: Pull requests, for the review queue; Actions, for run status; and Metadata, which GitHub enables for you. Nothing here writes, so Read-only is the whole grant. A classic token also works — private repositories need the repo scope, public ones need none — but repo alone already grants write access to everything it covers."
+      "placeholder": "github_pat_…",
+      "help": "A GitHub fine-grained personal access token (Settings → Developer settings → Tokens (fine-grained)). Give it access to the repositories listed above, then set three permissions to Read-only: Pull requests, for the review queue; Actions, for run status; and Metadata, which GitHub enables for you. Nothing here writes, so Read-only is the whole grant. One fine-grained token covers one account or organisation, so private repositories under more than one owner need either a second tile with its own token, or a classic token carrying the write-capable repo scope."
     },
     {
       "name": "refreshMinutes",

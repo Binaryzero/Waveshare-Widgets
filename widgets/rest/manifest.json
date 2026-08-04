@@ -76,14 +76,15 @@
       "label": "Auth header name",
       "type": "text",
       "default": "",
-      "placeholder": "Authorization"
+      "placeholder": "Authorization",
+      "help": "What the endpoint calls its key header — X-API-Key, api-key, hue-application-key, whatever its docs name. Leave it empty to send none. Authorization is taken by OAuth2's access token when that mode is on, and Cookie, Host, Origin and any Sec- or Proxy- name belong to the host and cannot be supplied here."
     },
     {
       "name": "headerValue",
       "label": "Auth header value",
       "type": "secret",
       "placeholder": "Bearer eyJhbGciOi…",
-      "help": "The value the header is sent with, copied exactly — most APIs want it prefixed, as in \"Bearer eyJhbGciOi…\". Leave it empty if the endpoint needs no auth. It is still sent when Authentication is OAuth2, so an API that wants a key header alongside the bearer works — give the header any name but Authorization, which the access token takes."
+      "help": "The value the header is sent with, copied exactly — most APIs want it prefixed, as in \"Bearer eyJhbGciOi…\". Leave it empty if the endpoint needs no auth. It is still sent when Authentication is OAuth2, so an API that wants a key header alongside the bearer works — fill both."
     },
     {
       "name": "authMode",
