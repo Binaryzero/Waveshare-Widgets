@@ -329,7 +329,8 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   const OPTED = [['hue', '#pairBtn'], ['hue', '#legacyBtn'], ['volume', '#masterMute'],
     ['volume', '#masterSlider'], ['notifications', '#eyeBtn'],
     ['media', '#controls .btn'], ['deck', '.key'], ['launcher', '.tile'],
-    ['streamdeck', '.key'], ['streamdeck', '#live'], ['vitals', '.meter-row']];
+    ['streamdeck', '.key'], ['streamdeck', '#live'], ['streamdeck', '#picker button'],
+    ['vitals', '.meter-row']];
   const bad = [];
   for (const [w, sel] of OPTED) {
     const wp = await context.newPage();
@@ -346,12 +347,21 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     const ta = await wp.evaluate((s2) => {
       let e = document.querySelector(s2);
       if (!e) {
-        const cls = (s2.match(/\.[A-Za-z0-9_-]+/g) || []).map((c) => c.slice(1));
-        if (!cls.length) return '(absent)';
-        const host = document.querySelector(s2.split(' ')[0]) || document.body;
-        e = document.createElement('div');
-        e.className = cls.join(' ');
-        host.appendChild(e);
+        // Build the last segment inside whatever the earlier segments select. The first
+        // version handled only class selectors and returned '(absent)' for a bare tag
+        // like `#picker button` — which reads as "checked and fine" in a list of
+        // controls, the exact silent pass the injection exists to prevent.
+        const parts = s2.trim().split(/\s+/);
+        const leaf = parts[parts.length - 1];
+        const host = parts.length > 1
+          ? document.querySelector(parts.slice(0, -1).join(' ')) : null;
+        if (parts.length > 1 && !host) return '(host absent: ' + parts.slice(0, -1).join(' ') + ')';
+        const cls = (leaf.match(/\.[A-Za-z0-9_-]+/g) || []).map((c) => c.slice(1));
+        const tag = leaf.match(/^[A-Za-z][A-Za-z0-9]*/);
+        if (!cls.length && !tag) return '(absent)';
+        e = document.createElement(tag ? tag[0] : 'div');
+        if (cls.length) e.className = cls.join(' ');
+        (host || document.body).appendChild(e);
       }
       return getComputedStyle(e).touchAction;
     }, sel);
@@ -360,6 +370,58 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   }
   check('T10 every control marked .no-pan actually computes to touch-action: none',
     bad.length === 0, bad.join(' | ') || `${OPTED.length} controls checked`);
+
+  // ---- T11 · stop relying on someone remembering ----------------------------------
+  // T10 checks a list a human maintains, which is why #206 needed four rounds and #214
+  // came after all of them: each time, the rule went on the element visible in the file
+  // being edited, and the list grew to match. This inverts it. Load every stock widget
+  // and enumerate what is ACTUALLY interactive, then require each to either compute
+  // touch-action: none or sit inside something that scrolls — a control with neither has
+  // nothing local to pan, so the gesture chains out to the shell's pager.
+  //
+  // Its limit, stated rather than discovered later: a static load has only the controls
+  // the widget ships in its markup. Anything built by JS at render time is invisible here
+  // and is covered only where T10's list names it — which is exactly how #picker button
+  // escaped. This narrows the gap; it does not close it.
+  const widgetDirs = fs.readdirSync(path.join(REPO, 'widgets'))
+    .filter((d) => fs.existsSync(path.join(REPO, 'widgets', d, 'index.html'))).sort();
+  const unguarded = [];
+  let inspected = 0;
+  for (const w of widgetDirs) {
+    const wp = await context.newPage();
+    await wp.route('https://app.wsw/**', (r) =>
+      serve(r, SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '')));
+    await wp.route('https://w.test/**', (r) => r.fulfill({ contentType: 'text/html',
+      body: fs.readFileSync(path.join(REPO, 'widgets', w, 'index.html')) }));
+    await wp.goto('https://w.test/index.html');
+    await wp.waitForTimeout(200);
+    const found = await wp.evaluate(() => {
+      const SEL = 'button, [role="button"], input[type="range"], input[type="checkbox"], a[href], select';
+      const out = [];
+      for (const el of document.querySelectorAll(SEL)) {
+        // Hidden controls cannot be touched, so they cannot page anything.
+        if (!el.offsetParent && getComputedStyle(el).position !== 'fixed') continue;
+        if (getComputedStyle(el).touchAction === 'none') continue;
+        // A scrolling ancestor gives the gesture something local to do, which is the
+        // other legitimate answer — that is why the list widgets are not violations.
+        let scroller = false;
+        for (let n = el.parentElement; n; n = n.parentElement) {
+          const o = getComputedStyle(n);
+          if (/(auto|scroll)/.test(o.overflowY + ' ' + o.overflowX)) { scroller = true; break; }
+        }
+        if (scroller) continue;
+        out.push((el.id ? '#' + el.id : el.tagName.toLowerCase() + (el.className ? '.' + String(el.className).trim().split(/\s+/)[0] : ''))
+          + ' = ' + getComputedStyle(el).touchAction);
+      }
+      return out;
+    });
+    inspected++;
+    for (const f of found) unguarded.push(`${w} ${f}`);
+    await wp.close();
+  }
+  check('T11 no statically-rendered control is left able to page the panel',
+    unguarded.length === 0,
+    unguarded.join(' | ') || `${inspected} widgets swept, every interactive element guarded`);
 
   await browser.close();
   console.log(failures > 0 ? `\n${failures} FAILURES` : '\nALL PASS');
