@@ -330,7 +330,11 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     ['volume', '#masterSlider'], ['notifications', '#eyeBtn'],
     ['media', '#controls .btn'], ['deck', '.key'], ['launcher', '.tile'],
     ['streamdeck', '.key'], ['streamdeck', '#live'], ['streamdeck', '#picker button'],
-    ['vitals', '.meter-row']];
+    ['vitals', '.meter-row'],
+    // Hidden at load, which is why nothing reported them for so long — but PRESENT, so
+    // their computed value is readable here. Withdrawing T11 took away the only thing
+    // covering them; without these two the fixes in this very commit ship unguarded.
+    ['forecast7', '#retry'], ['rest', '#retry']];
   const bad = [];
   for (const [w, sel] of OPTED) {
     const wp = await context.newPage();
