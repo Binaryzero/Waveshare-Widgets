@@ -420,6 +420,14 @@ public sealed class DashboardWindow : Form
                     });
                     break;
 
+                case "list-apps":
+                    // The on-device sheet's half of #210. It matters more here than on the
+                    // desktop: the file dialog needs a Win32 owner window, so picker:'file'
+                    // had no picker at all on the panel and the path had to be typed on a
+                    // touch strip.
+                    PostToShell("apps-result", InstalledApps.ToJson());
+                    break;
+
                 case "notifications-watch":
                     // The demand interval this instruction belongs to, echoed back on every
                     // push so the shell can tell a payload produced for the demand it has

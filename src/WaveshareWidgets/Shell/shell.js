@@ -216,6 +216,13 @@
       const waiters = psProfileWaiters.splice(0);
       const profiles = ((msg.data && msg.data.profiles) || []).filter((p) => typeof p === 'string');
       waiters.forEach((cb) => { try { cb(profiles); } catch (e) { /* row rebuilt */ } });
+    } else if (msg.type === 'apps-result') {
+      // Installed applications for the sheet's path pickers (#210).
+      const waiters = psAppWaiters.splice(0);
+      const apps = (((msg.data && msg.data.apps) || [])
+        .filter((a) => a && typeof a.name === 'string' && typeof a.path === 'string'));
+      const cut = !!(msg.data && msg.data.truncated);
+      waiters.forEach((cb) => { try { cb(apps, cut); } catch (e) { /* row rebuilt */ } });
     } else if (msg.type === 'sd-profile-result') {
       routeSd(msg, (data) => ({ type: 'ww-sd-profile', profile: data }));
     } else if (msg.type === 'sd-capture-result') {
@@ -1801,6 +1808,7 @@
   let propTarget = null;
   let propPersistTimer = null;
   let psProfileWaiters = []; // callbacks awaiting an sd-profiles-result
+  let psAppWaiters = [];     // callbacks awaiting an apps-result (#210)
   let propReloadSeq = 0;     // cache-busting nonce: fragment-only src changes don't navigate
 
   const PS_EMOJI = [
@@ -1874,6 +1882,13 @@
       }
     }
     closeEmojiPop();
+    // The app chooser is appended to <body>, so nothing about hiding the sheet removes
+    // it. Left behind, it survives leaving edit mode, deleting the page, a layout reload
+    // or switching to another tile's editor — still holding a reference to the old
+    // input, so a later pick writes into and persists a slot whose editor is gone. Same
+    // defect the desktop closePanel() had; fixing one and not the other is how it stayed.
+    const appSheet = document.querySelector('.ps-apps');
+    if (appSheet) appSheet.remove();
     propTarget = null;
     propSheet.hidden = true;
     for (const s of slots) s.el.classList.remove('style-editing');
@@ -2217,7 +2232,19 @@
           wrap.appendChild(psEmojiBtn(input, prop.picker === 'emoji-prefix'));
           return wrap;
         }
-        return input; // picker:'file' stays free-text on-device (no dialog host here)
+        if (prop.picker === 'file') {
+          // The panel cannot show a file dialog — it needs a Win32 owner window — so this
+          // used to be the one place a full path had to be TYPED, on a touch strip, with
+          // no keyboard. The installed-app list needs no dialog, so the surface that had
+          // no picker at all now has the better one (#210). Free text stays for the
+          // targets that are a document or a script rather than a program.
+          const wrap = document.createElement('div');
+          wrap.className = 'ps-inline';
+          wrap.appendChild(input);
+          wrap.appendChild(psAppBtn(input));
+          return wrap;
+        }
+        return input;
       }
     }
   }
@@ -2235,6 +2262,89 @@
         input.value = prefix ? (e + ' ' + input.value.replace(PS_LEAD_EMOJI, '')).trimEnd() : e;
         input.dispatchEvent(new Event('input'));
       });
+    });
+    return btn;
+  }
+
+  /** Installed-application chooser for a path field (#210). A full-height sheet rather
+   * than the emoji popover's grid: the list can run to hundreds of rows, it needs a
+   * filter, and 44px targets do not fit in a popover on a 400px-tall panel. */
+  function psAppBtn(input) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ps-pick';
+    btn.textContent = '🗂';
+    btn.title = 'Choose an installed application';
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (document.querySelector('.ps-apps')) return;
+      const sheet = document.createElement('div');
+      sheet.className = 'ps-apps';
+      const head = document.createElement('div');
+      head.className = 'ps-apps-head';
+      const search = document.createElement('input');
+      search.type = 'text';
+      search.placeholder = 'Search apps…';
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'ps-pick no-pan';
+      close.textContent = '✕';
+      close.title = 'Close';
+      close.addEventListener('click', () => sheet.remove());
+      head.append(search, close);
+      const list = document.createElement('div');
+      list.className = 'ps-apps-list';
+      const status = document.createElement('p');
+      status.className = 'ps-apps-status';
+      status.textContent = 'Looking for installed applications…';
+      sheet.append(head, status, list);
+      document.body.appendChild(sheet);
+
+      let apps = [];
+      let truncated = false;
+      const render = () => {
+        const q = search.value.trim().toLowerCase();
+        const shown = q ? apps.filter((a) => a.name.toLowerCase().includes(q)) : apps;
+        list.textContent = '';
+        for (const app of shown.slice(0, 200)) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'no-pan';
+          b.textContent = app.name;
+          b.addEventListener('click', () => {
+            input.value = app.path;
+            input.dispatchEvent(new Event('input'));
+            // Same hazard as the desktop picker: a migrated deck row carries a hidden
+            // `kind` that classify() consults for a scheme-less target.
+            input.dispatchEvent(new CustomEvent('ww-app-picked'));
+            sheet.remove();
+          });
+          list.appendChild(b);
+        }
+        // Same reasoning as the desktop picker: a silent cut reads as a missing app, and
+        // this is the surface where scrolling to find out is most expensive.
+        if (!shown.length) {
+          status.hidden = false;
+          status.textContent = apps.length
+            ? (truncated
+              ? 'No match — and the list was cut short, so it may simply not have been reached.'
+              : 'No match. This lists Start Menu shortcuts — a packaged Store app may not have one.')
+            : 'No installed applications found.';
+        } else if (shown.length > 200) {
+          status.hidden = false;
+          status.textContent = `Showing 200 of ${shown.length} — type to narrow the list.`;
+        } else {
+          status.hidden = true;
+        }
+      };
+      search.addEventListener('input', render);
+      psAppWaiters.push((result, wasTruncated) => {
+        if (!sheet.isConnected) return;   // dismissed while the host was still walking
+        apps = result;
+        truncated = wasTruncated;
+        render();
+      });
+      postToHost({ type: 'list-apps' });
     });
     return btn;
   }
@@ -2377,11 +2487,20 @@
           }
           input.setAttribute('aria-label', f.label || f.key);
           input.oninput = () => { item[f.key] = input.value; commit(); };
-          if (f.picker === 'emoji' || f.picker === 'emoji-prefix') {
+          input.addEventListener('ww-app-picked', () => {
+            if (item && typeof item === 'object' && 'kind' in item) { delete item.kind; commit(); }
+          });
+          // LIST fields are where the pickers actually live: every shipped picker:'file'
+          // is one (launcher items.target, deck buttons.target), and there is no top-level
+          // one anywhere in the catalog. A picker wired only to psControl's text branch
+          // reaches nothing a user owns.
+          if (f.picker === 'emoji' || f.picker === 'emoji-prefix' || f.picker === 'file') {
             const row = document.createElement('div');
             row.className = 'ps-inline';
             row.appendChild(input);
-            row.appendChild(psEmojiBtn(input, f.picker === 'emoji-prefix'));
+            row.appendChild(f.picker === 'file'
+              ? psAppBtn(input)
+              : psEmojiBtn(input, f.picker === 'emoji-prefix'));
             card.appendChild(row);
           } else {
             card.appendChild(input);
