@@ -83,7 +83,7 @@
       "label": "Auth header value",
       "type": "secret",
       "placeholder": "Bearer eyJhbGciOi…",
-      "help": "The value the header is sent with, copied exactly — most APIs want it prefixed, as in \"Bearer eyJhbGciOi…\". Leave it empty if the endpoint needs no auth, or if you are using the OAuth2 fields instead."
+      "help": "The value the header is sent with, copied exactly — most APIs want it prefixed, as in \"Bearer eyJhbGciOi…\". Leave it empty if the endpoint needs no auth. It is still sent when Authentication is OAuth2, so an API that wants a key header alongside the bearer works — give the header any name but Authorization, which the access token takes."
     },
     {
       "name": "authMode",

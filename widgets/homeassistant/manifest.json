@@ -13,7 +13,7 @@
       "type": "text",
       "default": "",
       "placeholder": "http://homeassistant.local:8123",
-      "help": "The address you open Home Assistant on, including the port — typically http://homeassistant.local:8123. Prefer the LAN address over a Nabu Casa URL: the panel is on the same network and the round trip is shorter."
+      "help": "The address you open Home Assistant on, including the port — typically http://homeassistant.local:8123. Use an https:// address if you have one (a Nabu Casa URL, or a local certificate): every poll sends the token below in an Authorization header, and over plain http that credential crosses your network in the clear."
     },
     {
       "name": "accessToken",
