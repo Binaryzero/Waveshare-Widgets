@@ -367,17 +367,6 @@ input.toggle-check:checked::after { transform: translateX(18px); }
 .style-row output { color: var(--muted); min-width: 40px; text-align: right; font-size: 12px; }
 .prop-error { color: var(--danger); font-size: 12px; }
 
-/* Per-slot "hide during games" toggle. */
-.slot-row .game-hide {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--muted);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
 /* ---- background editor -------------------------------------------------------- */
 .bg-editor { display: flex; flex-direction: column; gap: 8px; }
 .bg-row { display: flex; align-items: center; gap: 10px; }

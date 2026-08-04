@@ -42,7 +42,6 @@
   let latestMedia = null;
   let latestTheme = null;
   let latestNotifications = null;   // last projected payload from the host
-  let gameState = { active: false, process: '' };
   let status = { elevated: false, apiVersion: 1 };
   let dotsIdleTimer = null;
   let bgSettleTimer = null;    // debounces the wallpaper swap during multi-page scrolls
@@ -184,13 +183,6 @@
       //   have no interval to belong to. A late payload is slightly-old sensor data, which
       //   is what a polled feed is, not a staleness bug.
       //
-      //   `game-mode` must NOT be gated. GameModeWatcher.Poll returns early when the state
-      //   is unchanged and raises Changed only on a transition, so the host never re-sends
-      //   the current state. Dropping one push leaves the shell believing the wrong game
-      //   state until the next real transition — possibly hours — hiding or showing every
-      //   hideInGame widget wrongly for the duration. That is a worse bug than the one
-      //   being fixed, manufactured by fixing it.
-      //
       // Correlated replies (fetch/ping/media-list/audio/sd-*) are not gated either: they
       // are already non-stale by construction, since each answers a request this shell has
       // outstanding, and dropping one strands its asker until the request times out.
@@ -203,11 +195,6 @@
       if (!PREVIEW && msg.gen !== notifGen) return;
       latestNotifications = msg.data || null;
       deliverNotifications();
-    }
-    else if (msg.type === 'game-mode') {
-      gameState = { active: !!(msg.data && msg.data.active), process: (msg.data && msg.data.process) || '' };
-      applyGameMode();
-      broadcast({ type: 'ww-game', game: gameState });
     }
     else if (msg.type === 'fetch-result') {
       routeReply(fetchRoutes, msg, 'ww-fetch-result');
@@ -441,7 +428,6 @@
       // name, title, body — to every widget on the panel, subscriber or not, so a
       // widget needed no notification code at all to read the user's notifications.
       notifications: slot.notifWatch ? noteDelivered(slot, latestNotifications) : null,
-      game: gameState,
       status,
     };
   }
@@ -536,16 +522,6 @@
     // exist — and that nothing can carry the stale set, ww-init included (#128).
     if (!on) latestNotifications = null;
     postToHost({ type: 'notifications-watch', on, gen: notifGen });
-  }
-
-  // Game mode: pause the shell's own chrome cost and hide slots the user marked
-  // hide-in-game (their grid cell is kept, so they come back exactly where they were).
-  function applyGameMode() {
-    document.documentElement.dataset.game = gameState.active ? 'on' : 'off';
-    for (const slot of slots) {
-      if (slot.def && slot.def.hideInGame)
-        slot.el.style.visibility = (gameState.active && !editing) ? 'hidden' : '';
-    }
   }
 
   let panelNoticeTimer = null;
@@ -672,7 +648,6 @@
     status = data.status || status;
     // Game state rides init: a game already fullscreen when the shell loads fired
     // its transition before shell-ready, and the host's poll dedups it forever.
-    if (data.game) gameState = { active: !!data.game.active, process: data.game.process || '' };
     applyThemeTokens(data.theme);
 
     layoutData = (data.layout && Array.isArray(data.layout.pages)) ? data.layout : { pages: [] };
@@ -739,7 +714,6 @@
 
     generation++;
     armWatchdog(generation);
-    applyGameMode();
     syncNotificationDemand(); // fresh records carry no demand; rebuilt widgets re-watch
     if (editing) updateEditBar();
   }
@@ -1352,11 +1326,6 @@
   function setEditing(on) {
     editing = on;
     document.body.classList.toggle('editing', on);
-    // Game-mode visibility depends on `editing`, and no game-mode EVENT arrives at
-    // edit enter/exit (the host only posts on change): re-apply here, or a game
-    // running right now leaves hide-in-game slots invisible while editing — and
-    // visible after Done until the game next flips state.
-    applyGameMode();
     editBar.hidden = !on;
     // On-device, entering edit on an empty panel needs a page to drop widgets on.
     // NEVER in the replica: the settings window owns page management there, and
