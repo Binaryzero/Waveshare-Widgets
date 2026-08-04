@@ -586,7 +586,8 @@
       if (!cfg.enabled[m]) continue;
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'meter-row card pressable';
+      // no-pan: these live in #meters, outside the #cardBox scroller (#206).
+      btn.className = 'meter-row card pressable no-pan';
       btn.dataset.meter = m;
       const label = document.createElement('span');
       label.className = 'kicker m-label';

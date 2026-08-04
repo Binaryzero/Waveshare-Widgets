@@ -130,8 +130,10 @@
   <div id="mixer">
     <div id="masterRow" class="row card master">
       <span class="glyph" id="masterGlyph">🔊</span>
-      <button class="mute btn" id="masterMute" title="Mute master" aria-label="Mute master">🔊</button>
-      <input id="masterSlider" type="range" min="0" max="100" step="1" value="50" />
+      <button class="mute btn no-pan" id="masterMute" title="Mute master" aria-label="Mute master">🔊</button>
+      <!-- no-pan: above #sessions, so a drag here has no local scroller and would
+           page the panel; a range input also wants the gesture itself (#206). -->
+      <input class="no-pan" id="masterSlider" type="range" min="0" max="100" step="1" value="50" />
       <span class="pct" id="masterPct">--</span>
     </div>
     <div id="sessions"></div>

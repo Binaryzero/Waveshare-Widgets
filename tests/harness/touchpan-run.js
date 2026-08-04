@@ -227,8 +227,12 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
 
   // ---- T5/T6 · what the shared stylesheet must NOT do ---------------------------------
   // The first version of this fix put `touch-action: none` on the widget document in
-  // widget-base.css. It turned T3 green and broke two populations that are not in this
-  // repository, which is why these two exist as standing guards rather than as a note.
+  // widget-base.css. These checks do NOT show that rule broke anything — run against it,
+  // all three stayed green. The reason it is not shipped is simply that widget-base is an
+  // unversioned stylesheet installed third-party packages also link, so a document-level
+  // rule lands on code that cannot be inspected or tested from here; an opt-in class does
+  // the same job for the controls we can see. These stay as standing guards on the
+  // invariant — third-party and embedded content keep scrolling — not as evidence.
   //
   // T5 · installed third-party .wswidget packages link this same unversioned stylesheet
   //      (WidgetLibrary hot-reloads them), and the standard has always told them to. A
@@ -312,6 +316,32 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   const embTop = await scrollProbe('https://nester.test/w.html', { frame: true });
   check('T6 ...and cross-origin content in a nested iframe widget still scrolls',
     embTop > 10, `scrollTop ${embTop}`);
+
+  // ---- T10 · the opt-in actually took effect ------------------------------------------
+  // `.no-pan` is a CLASS, so any id-level `touch-action` in a widget's own CSS outranks it
+  // and the control stays pannable — silently, because the markup still says no-pan. That
+  // is exactly what hue's `#pairBtn { touch-action: manipulation }` did. Reading the
+  // COMPUTED value is the only way to see it; the class list lies.
+  const OPTED = [['hue', '#pairBtn'], ['hue', '#legacyBtn'], ['volume', '#masterMute'],
+    ['volume', '#masterSlider'], ['notifications', '#eyeBtn']];
+  const bad = [];
+  for (const [w, sel] of OPTED) {
+    const wp = await context.newPage();
+    await wp.route('https://app.wsw/**', (r) =>
+      serve(r, SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '')));
+    await wp.route('https://w.test/**', (r) => r.fulfill({ contentType: 'text/html',
+      body: fs.readFileSync(path.join(REPO, 'widgets', w, 'index.html')) }));
+    await wp.goto('https://w.test/index.html');
+    await wp.waitForTimeout(250);
+    const ta = await wp.evaluate((s2) => {
+      const e = document.querySelector(s2);
+      return e ? getComputedStyle(e).touchAction : '(absent)';
+    }, sel);
+    if (ta !== 'none') bad.push(`${w} ${sel} = ${ta}`);
+    await wp.close();
+  }
+  check('T10 every control marked .no-pan actually computes to touch-action: none',
+    bad.length === 0, bad.join(' | ') || `${OPTED.length} controls checked`);
 
   await browser.close();
   console.log(failures > 0 ? `\n${failures} FAILURES` : '\nALL PASS');
