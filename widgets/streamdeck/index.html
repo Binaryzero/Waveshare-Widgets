@@ -29,7 +29,10 @@
       inset 0 1px 0 rgba(255, 255, 255, calc(var(--panel-border-alpha) * 0.5));
     overflow: hidden;
     cursor: pointer;
-    touch-action: manipulation;
+    /* none, not manipulation: nothing here scrolls, and manipulation still PERMITS a
+     * pan — so horizontal finger drift on a control chained out to the shell pager and
+     * changed page instead of pressing it (#206). */
+    touch-action: none;
     display: flex;
     align-items: center;
     justify-content: center;

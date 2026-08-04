@@ -44,7 +44,10 @@
     width: clamp(46px, 15vh, 68px); height: clamp(46px, 15vh, 68px);
     border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
-    touch-action: manipulation;
+    /* none, not manipulation: nothing here scrolls, and manipulation still PERMITS a
+     * pan — so horizontal finger drift on a control chained out to the shell pager and
+     * changed page instead of pressing it (#206). */
+    touch-action: none;
   }
   #controls .btn svg { width: 44%; height: 44%; fill: currentColor; }
   #controls .btn:active, #controls #toggle { background: var(--accent); color: var(--on-accent); }

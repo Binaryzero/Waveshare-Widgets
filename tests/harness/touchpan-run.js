@@ -235,13 +235,15 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   // invariant — third-party and embedded content keep scrolling — not as evidence.
   //
   // T5 · installed third-party .wswidget packages link this same unversioned stylesheet
-  //      (WidgetLibrary hot-reloads them), and the standard has always told them to. A
-  //      document-wide ban makes any scrollable region they have go dead on a touch panel,
-  //      and nobody here can see their CSS to opt it back in.
+  //      (WidgetLibrary hot-reloads them), and the standard has always told them to — so
+  //      whatever this file does reaches scrollable regions nobody here can see.
   // T6 · the iframe, twitch and youtube widgets host CROSS-ORIGIN content in a nested
-  //      frame. touch-action intersects down into it, and an embedded page cannot override
-  //      an ancestor's restriction — so Twitch chat and any embedded dashboard stop
-  //      scrolling, with no fix available from inside them.
+  //      frame, which cannot override an ancestor's touch-action from the inside.
+  //
+  // Neither is a claim that some past rule broke them: run against the document-wide
+  // version, both stayed green. They pin the INVARIANT — this stylesheet keeps other
+  // people's content scrollable — which is worth holding whether or not any particular
+  // rule would have violated it.
   //
   // Both are synthetic stand-ins on purpose: they encode the CONSTRAINT on widget-base.css
   // rather than the current contents of any one widget.
@@ -322,8 +324,12 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   // and the control stays pannable — silently, because the markup still says no-pan. That
   // is exactly what hue's `#pairBtn { touch-action: manipulation }` did. Reading the
   // COMPUTED value is the only way to see it; the class list lies.
+  // Every stock control that must not pan, however it gets there — the .no-pan class or a
+  // widget's own rule. What matters is the computed value, not which mechanism won.
   const OPTED = [['hue', '#pairBtn'], ['hue', '#legacyBtn'], ['volume', '#masterMute'],
-    ['volume', '#masterSlider'], ['notifications', '#eyeBtn']];
+    ['volume', '#masterSlider'], ['notifications', '#eyeBtn'],
+    ['media', '#controls .btn'], ['deck', '.key'], ['launcher', '.tile'],
+    ['streamdeck', '.key']];
   const bad = [];
   for (const [w, sel] of OPTED) {
     const wp = await context.newPage();
@@ -333,9 +339,21 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
       body: fs.readFileSync(path.join(REPO, 'widgets', w, 'index.html')) }));
     await wp.goto('https://w.test/index.html');
     await wp.waitForTimeout(250);
+    // deck keys, launcher tiles and streamdeck keys are built by JS, so a static load has
+    // none of them. Where the selector matches nothing, inject an element carrying the same
+    // classes and read that: the question is what the widget's RULE computes to, and an
+    // absent element would otherwise read as a silent pass.
     const ta = await wp.evaluate((s2) => {
-      const e = document.querySelector(s2);
-      return e ? getComputedStyle(e).touchAction : '(absent)';
+      let e = document.querySelector(s2);
+      if (!e) {
+        const cls = (s2.match(/\.[A-Za-z0-9_-]+/g) || []).map((c) => c.slice(1));
+        if (!cls.length) return '(absent)';
+        const host = document.querySelector(s2.split(' ')[0]) || document.body;
+        e = document.createElement('div');
+        e.className = cls.join(' ');
+        host.appendChild(e);
+      }
+      return getComputedStyle(e).touchAction;
     }, sel);
     if (ta !== 'none') bad.push(`${w} ${sel} = ${ta}`);
     await wp.close();
