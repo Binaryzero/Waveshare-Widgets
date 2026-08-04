@@ -61,6 +61,10 @@
     width: 100%; min-height: 44px;
     padding: 4px clamp(8px, 2vh, 12px);
     font: inherit; color: inherit; text-align: left; cursor: pointer;
+    /* Here rather than as a .no-pan class: renderMeters() reassigns className wholesale on
+     * every severity change, which stripped the class and left the rows pannable again.
+     * These sit in #meters, outside the #cardBox scroller, so nothing here needs to pan. */
+    touch-action: none;
   }
   .m-label { flex: none; width: 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .segs {
@@ -586,8 +590,7 @@
       if (!cfg.enabled[m]) continue;
       const btn = document.createElement('button');
       btn.type = 'button';
-      // no-pan: these live in #meters, outside the #cardBox scroller (#206).
-      btn.className = 'meter-row card pressable no-pan';
+      btn.className = 'meter-row card pressable';
       btn.dataset.meter = m;
       const label = document.createElement('span');
       label.className = 'kicker m-label';

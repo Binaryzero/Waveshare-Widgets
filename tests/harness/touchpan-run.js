@@ -329,7 +329,7 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   const OPTED = [['hue', '#pairBtn'], ['hue', '#legacyBtn'], ['volume', '#masterMute'],
     ['volume', '#masterSlider'], ['notifications', '#eyeBtn'],
     ['media', '#controls .btn'], ['deck', '.key'], ['launcher', '.tile'],
-    ['streamdeck', '.key']];
+    ['streamdeck', '.key'], ['streamdeck', '#live'], ['vitals', '.meter-row']];
   const bad = [];
   for (const [w, sel] of OPTED) {
     const wp = await context.newPage();
