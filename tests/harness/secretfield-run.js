@@ -194,7 +194,7 @@ const layout = {
   check(`E35d and it is legible where it is painted (>= ${AA_NORMAL}:1, normal-size text)`,
     helpContrast.ratio >= AA_NORMAL && helpContrast.fontPx < LARGE_TEXT_PX,
     JSON.stringify({ ratio: Math.round(helpContrast.ratio * 100) / 100,
-      fontPx: helpContrast.fontPx, color: helpContrast.color }));
+      exact: helpContrast.exact, bounds: helpContrast.bounds, fontPx: helpContrast.fontPx, color: helpContrast.color }));
 
   // ---- E2 · stored secret: honest "saved" state, nothing readable in the DOM
   check('E2 a stored secret reads as saved+encrypted, not as dots implying readability',

@@ -209,7 +209,7 @@ const widgets = [{
   check(`N13e and it is legible where it is painted (>= ${AA_NORMAL}:1, normal-size text)`,
     contrast.ratio >= AA_NORMAL && contrast.fontPx < LARGE_TEXT_PX,
     JSON.stringify({ ratio: Math.round(contrast.ratio * 100) / 100,
-      fontPx: contrast.fontPx, color: contrast.color }));
+      exact: contrast.exact, bounds: contrast.bounds, fontPx: contrast.fontPx, color: contrast.color }));
 
   check('N13d a property without help grows no empty stub',
     await page.locator('#psRows .ps-field').filter({ hasText: 'Repository' })
