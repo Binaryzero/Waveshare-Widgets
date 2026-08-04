@@ -1541,6 +1541,17 @@
         field.className = 'prop-field' + (WIDE_TYPES.has(prop.type) ? ' wide' : '');
         field.append(label, editor);
 
+        // Guidance that STAYS. A placeholder answers "what goes here" only until the first
+        // keystroke, and it is clipped to the control's width — so the one question a
+        // credential field actually has to answer, "which permissions does this token
+        // need", had nowhere to live (#207).
+        if (prop.help) {
+          const help = document.createElement('p');
+          help.className = 'prop-help';
+          help.textContent = String(prop.help);
+          field.appendChild(help);
+        }
+
         // A demoted property can be ANY type — `secret` → `number`, `switch`, `color`,
         // `select` — and the host blanks and lists every one of them. The affordance
         // therefore belongs to the FIELD, not to one control: a Clear that lived in the

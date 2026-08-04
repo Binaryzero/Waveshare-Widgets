@@ -268,6 +268,20 @@ function validate(folder) {
       err('prop-secret', `${where}: a credential must use type "secret" (the host encrypts those with DPAPI); "${type}" stores it as plaintext in layout.json`);
     if (type === 'secret' && prop.default != null && String(prop.default) !== '')
       err('prop-secret-default', `${where}: a secret must not ship a default value`);
+    // A secret is the one field a user cannot guess, cannot see once stored, and cannot
+    // get wrong quietly — the value has to be fetched from some other product's UI. The
+    // placeholder is not the place to say how: it disappears on the first keystroke and is
+    // clipped to the control width, which is how "read access to the repos above" ended up
+    // being all the guidance a GitHub token got (#207). `help` persists under the control.
+    // Typed, not merely truthy. `String({})` is "[object Object]" — non-empty, so a
+    // help-shaped object would satisfy the rule below, render as that literal in both
+    // editors, and then fail the C# projection outright: Help is a `string`, so
+    // System.Text.Json throws on the object and the whole manifest is skipped on scan
+    // and refused on install. The validator must not greenlight what the host cannot load.
+    if (prop.help != null && typeof prop.help !== 'string')
+      err('prop-help-type', `${where}: "help" must be a string (got ${Array.isArray(prop.help) ? 'array' : typeof prop.help}) — the host reads it into a string field and refuses the whole manifest otherwise`);
+    if (type === 'secret' && !(typeof prop.help === 'string' && prop.help.trim()))
+      err('prop-secret-help', `${where}: a secret needs "help" saying where the value comes from and what access it needs — a placeholder cannot, it vanishes as soon as the user types`);
     if (type === 'select' && !Array.isArray(prop.options) && !prop.optionsSource)
       err('prop-select', `${where}: select needs "options" or "optionsSource"`);
     if (type === 'slider' && (typeof prop.min !== 'number' || typeof prop.max !== 'number'))
@@ -520,11 +534,45 @@ if (args.includes('--self-test')) {
       console.log(`  FAIL html "${name}" should raise ${expected}, raised ${rules.join(', ') || 'nothing'}`); htmlBad++;
     }
   }
+  // Property rules, same treatment. `help` is the newest of them and the one whose
+  // failure is quietest: a manifest the validator passes but the host cannot
+  // deserialize is a widget that simply is not there, with no message anywhere the
+  // author will look (#207).
+  const propCases = [
+    ['help-string', { name: 'apiToken', label: 'Token', type: 'secret', help: 'Where to get it.' }, null],
+    ['help-absent-on-text', { name: 'city', label: 'City', type: 'text' }, null],
+    ['help-missing-on-secret', { name: 'apiToken', label: 'Token', type: 'secret' }, 'prop-secret-help'],
+    ['help-blank-on-secret', { name: 'apiToken', label: 'Token', type: 'secret', help: '   ' }, 'prop-secret-help'],
+    // The three shapes String() would have accepted: each is non-empty as a string and
+    // each is a JsonException on the way into WidgetProperty.Help.
+    ['help-object', { name: 'apiToken', label: 'Token', type: 'secret', help: {} }, 'prop-help-type'],
+    ['help-array', { name: 'apiToken', label: 'Token', type: 'secret', help: ['a'] }, 'prop-help-type'],
+    ['help-number', { name: 'city', label: 'City', type: 'text', help: 42 }, 'prop-help-type'],
+    // ...and a secret whose help is an object is BOTH: unloadable and unguided.
+    ['help-object-on-secret', { name: 'apiToken', label: 'Token', type: 'secret', help: {} }, 'prop-secret-help'],
+  ];
+  let propBad = 0;
+  for (const [name, prop, expected] of propCases) {
+    const dir = path.join(tmp, 'prop-' + name);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'manifest.json'),
+      JSON.stringify(Object.assign({}, manifest, { properties: [prop] })));
+    fs.writeFileSync(path.join(dir, 'index.html'), doc(BASE));
+    const rules = validate(dir).errors.map((e) => e.rule);
+    if (expected === null && rules.length) {
+      console.log(`  FAIL prop "${name}" should validate, but raised ${rules.join(', ')}`); propBad++;
+    } else if (expected !== null && !rules.includes(expected)) {
+      console.log(`  FAIL prop "${name}" should raise ${expected}, raised ${rules.join(', ') || 'nothing'}`); propBad++;
+    }
+  }
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(htmlBad
     ? `${htmlBad} of ${htmlCases.length} html rule cases disagree`
     : `html rules agree with all ${htmlCases.length} cases`);
-  process.exit(bad || htmlBad ? 1 : 0);
+  console.log(propBad
+    ? `${propBad} of ${propCases.length} property rule cases disagree`
+    : `property rules agree with all ${propCases.length} cases`);
+  process.exit(bad || htmlBad || propBad ? 1 : 0);
 }
 
 const targets = args.filter((a) => !a.startsWith('--'));

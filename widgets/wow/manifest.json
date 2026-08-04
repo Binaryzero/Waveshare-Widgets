@@ -2,7 +2,7 @@
   "id": "ws.stock.wow",
   "name": "WoW Panel",
   "author": "Waveshare Widgets",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Token price with its own recorded trend, the weekly reset countdown, this week's Mythic+ affixes, and your character's item level and rating.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
@@ -33,13 +33,15 @@
       "label": "Battle.net client ID",
       "type": "text",
       "default": "",
-      "placeholder": "From develop.battle.net — needed for the token price"
+      "placeholder": "From develop.battle.net — needed for the token price",
+      "help": "Create a client at develop.battle.net → API Access. Both the id and the secret are needed, and only for the WoW Token price — the character and affix panels work without them."
     },
     {
       "name": "clientSecret",
       "label": "Battle.net client secret",
       "type": "secret",
-      "placeholder": "From develop.battle.net"
+      "placeholder": "From develop.battle.net",
+      "help": "The client secret for that same Battle.net application. It buys a short-lived token for the token-price call and is never sent anywhere else."
     },
     {
       "name": "refreshMinutes",

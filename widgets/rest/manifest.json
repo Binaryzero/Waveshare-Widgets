@@ -2,7 +2,7 @@
   "id": "ws.stock.rest",
   "name": "REST Value",
   "author": "Waveshare Widgets",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Any JSON endpoint, one number on the panel: give it a URL and a path to the value. Polls on its own schedule, colors itself against warn/crit thresholds, and can authenticate with a static header or an OAuth2 client-credentials exchange.",
   "min_api_version": 1,
   "supported_slots": [
@@ -76,13 +76,15 @@
       "label": "Auth header name",
       "type": "text",
       "default": "",
-      "placeholder": "Authorization"
+      "placeholder": "Authorization",
+      "help": "What the endpoint calls its key header — X-API-Key, api-key, hue-application-key, whatever its docs name. Leave it empty to send none. Two families are not yours to choose: Authorization is taken by OAuth2's access token while that mode is on, and any header that identifies the caller or manages the connection (User-Agent, Referer, Origin, Cookie, Host and the rest) is set by the host, so naming one here means it is dropped rather than sent."
     },
     {
       "name": "headerValue",
       "label": "Auth header value",
       "type": "secret",
-      "placeholder": "Bearer eyJhbGciOi…"
+      "placeholder": "Bearer eyJhbGciOi…",
+      "help": "The value the header is sent with, copied exactly — most APIs want it prefixed, as in \"Bearer eyJhbGciOi…\". Leave it empty if the endpoint needs no auth. It is still sent when Authentication is OAuth2, so an API that wants a key header alongside the bearer works — fill both."
     },
     {
       "name": "authMode",
@@ -100,20 +102,23 @@
       "label": "Token endpoint",
       "type": "text",
       "default": "",
-      "placeholder": "https://oauth.battle.net/token"
+      "placeholder": "https://oauth.battle.net/token",
+      "help": "The provider’s OAuth2 token URL, which is not the data URL. Battle.net uses https://oauth.battle.net/token; most providers document theirs as the \"client credentials\" or \"token\" endpoint."
     },
     {
       "name": "clientId",
       "label": "Client ID",
       "type": "text",
       "default": "",
-      "placeholder": "The application's client id"
+      "placeholder": "The application's client id",
+      "help": "The client id from the application you registered with the API provider — the same place that issued the secret."
     },
     {
       "name": "clientSecret",
       "label": "Client secret",
       "type": "secret",
-      "placeholder": "The application's client secret"
+      "placeholder": "The application's client secret",
+      "help": "The client secret issued alongside the client id. It is exchanged for a short-lived token at the endpoint above; the secret itself is never sent to the data URL."
     },
     {
       "name": "scope",

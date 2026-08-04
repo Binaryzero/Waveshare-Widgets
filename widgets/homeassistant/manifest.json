@@ -2,7 +2,7 @@
   "id": "ws.stock.homeassistant",
   "name": "Home Assistant",
   "author": "Waveshare Widgets",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Entity states from Home Assistant with touch control for lights and switches. Locks and covers stay display-only until you arm them, and then need a long press.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
@@ -12,13 +12,15 @@
       "label": "Home Assistant address",
       "type": "text",
       "default": "",
-      "placeholder": "http://homeassistant.local:8123"
+      "placeholder": "http://homeassistant.local:8123",
+      "help": "The address you open Home Assistant on, including the port — typically http://homeassistant.local:8123. Use an https:// address if you have one (a Nabu Casa URL, or a local certificate): every poll sends the token below in an Authorization header, and over plain http that credential crosses your network in the clear."
     },
     {
       "name": "accessToken",
       "label": "Long-lived access token",
       "type": "secret",
-      "placeholder": "Profile → Security → Long-lived access tokens"
+      "placeholder": "Profile → Security → Long-lived access tokens",
+      "help": "A Home Assistant long-lived access token: click your user name in the sidebar, then Security → Long-lived access tokens → Create token. It carries YOUR account’s permissions, so a token from an admin account can act on anything that account can — consider a limited user for the panel."
     },
     {
       "name": "entities",

@@ -2,7 +2,7 @@
   "id": "ws.stock.nextevent",
   "name": "Next Event",
   "author": "Waveshare Widgets",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "The next thing on your calendar and a live countdown to it, straight from an ICS link — no OAuth, no account connection. Handles daily and weekly repeats.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
@@ -11,7 +11,8 @@
       "name": "icsUrl",
       "label": "Private ICS link",
       "type": "secret",
-      "placeholder": "The secret iCal address from your calendar's sharing settings"
+      "placeholder": "The secret iCal address from your calendar's sharing settings",
+      "help": "The private iCal address of the calendar, not its web page. Google Calendar: Settings for that calendar → \"Secret address in iCal format\". Outlook: Settings → Calendar → Shared calendars → Publish, then take the ICS link. Stored as a secret because anyone holding it can read the whole calendar."
     },
     {
       "name": "lookaheadDays",

@@ -14,11 +14,15 @@
 //   N6 · typing a replacement sends the new plaintext for the host to encrypt
 //   N7 · a save the host could not protect is reported on the panel, which
 //        otherwise re-renders as if every save succeeded
+//   N13 · a property's `help` reaches THIS sheet too, and survives the field having a
+//         value — the panel is the screen with no second screen to read docs on (#207)
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
+
+const { textContrast, AA_NORMAL, LARGE_TEXT_PX } = require('./contrast');
 
 const REPO = path.resolve(__dirname, '..', '..');
 const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
@@ -57,7 +61,11 @@ const widgets = [{
   url: `http://127.0.0.1:${PORT}/widgets/clock/index.html`,
   supportedSlots: ['quarter', 'half'],
   properties: [
-    { name: 'token', label: 'Token', type: 'secret', placeholder: 'ghp_…' },
+    // The only property here carrying `help`, so N13c has a subject that must NOT grow a
+    // stub. The text is deliberately unlike every other label in this fixture — N12 finds
+    // its rows with hasText filters, and help text is row text too.
+    { name: 'token', label: 'Token', type: 'secret', placeholder: 'ghp_…',
+      help: 'Fine-grained PAT, read-only on Pull requests and Actions.' },
     { name: 'fresh', label: 'Other token', type: 'secret' },
     { name: 'repo', label: 'Repository', type: 'text', default: 'owner/name' },
     // DEMOTED: the manifest calls it text now, but layout.json still holds the envelope,
@@ -148,6 +156,64 @@ const widgets = [{
     await tokenRow.locator('input').getAttribute('type') === 'password');
   check('N1c it holds the REAL credential (the host decrypts for the dashboard)',
     await tokenRow.locator('input').inputValue() === STORED_TOKEN);
+
+  // ---- N13 · guidance reaches the ON-DEVICE sheet (#207)
+  // The settings window has secretfield's E35; this side had nothing, so deleting the
+  // sheet's help block failed no check at all. It is also the side that matters more —
+  // the panel is where a value gets typed with no second screen to read docs on.
+  // By structure, not by text: `hasText` is a case-insensitive substring, so "Token"
+  // also matches "Other token" and "Legacy token". The token field is the first one
+  // holding a credential control — and the probe checks it landed on the right row
+  // before drawing any conclusion from what is inside it.
+  const tokenField = page.locator('#psRows .ps-field')
+    .filter({ has: page.locator('.ps-secret') }).first();
+  const tokenHelp = tokenField.locator('.ps-help');
+  check('N13pre the probe is looking at the Token field',
+    (await tokenField.locator('label').first().textContent() || '').trim() === 'Token',
+    JSON.stringify((await tokenField.locator('label').first().textContent() || '').trim()));
+  check('N13 a property with help renders it under the control on the panel',
+    await tokenHelp.count() === 1, String(await tokenHelp.count()));
+  check('N13a and it says what the manifest said',
+    (await tokenHelp.count()) === 1
+      && (await tokenHelp.textContent() || '').includes('read-only on Pull requests'),
+    (await tokenHelp.count()) === 1 ? JSON.stringify(await tokenHelp.textContent()) : 'no element');
+
+  // The whole difference from a placeholder: a placeholder is gone the moment a value
+  // exists, and on this sheet a stored credential means a value ALWAYS exists.
+  check('N13b it is still there while the field holds a value',
+    (await tokenHelp.count()) === 1 && await tokenHelp.isVisible()
+      && (await tokenRow.locator('input').inputValue()) !== '',
+    JSON.stringify({ shown: (await tokenHelp.count()) === 1 && await tokenHelp.isVisible(),
+      value: (await tokenRow.locator('input').inputValue()) !== '' }));
+
+  // Rendered, not merely present: a 400px-tall strip is where text goes to get clipped,
+  // and a paragraph pushed outside the sheet's own box is help nobody can read.
+  const helpBox = (await tokenHelp.count()) === 1 ? await tokenHelp.boundingBox() : null;
+  const rowsBox = await page.locator('#psRows').boundingBox();
+  const ctrlBox = await tokenField.locator('.ps-secret').boundingBox();
+  check('N13c it is laid out inside the sheet, not clipped off the side of it',
+    !!helpBox && !!rowsBox && helpBox.width > 0 && helpBox.height > 0
+      && helpBox.x >= rowsBox.x - 1 && helpBox.x + helpBox.width <= rowsBox.x + rowsBox.width + 1,
+    JSON.stringify({ help: helpBox, rows: rowsBox }));
+  check('N13c2 and under the control it explains, not above it',
+    !!helpBox && !!ctrlBox && helpBox.y >= ctrlBox.y + ctrlBox.height - 1,
+    JSON.stringify({ helpY: helpBox && helpBox.y, ctrlBottom: ctrlBox && ctrlBox.y + ctrlBox.height }));
+
+  // Legible, not merely painted. Guidance the standard now REQUIRES on every secret is
+  // guidance somebody has to read, and the first shipped colour was `--text-dim` — the
+  // dimmest derived token, fainter than the label above it, on a strip read from desk
+  // distance. Nothing in this file could see that: every other check here is structural.
+  // So the contrast is computed the way a browser composites it — walk the ancestors
+  // until the colours stop being transparent, then measure.
+  const contrast = await textContrast(tokenHelp);
+  check(`N13e and it is legible where it is painted (>= ${AA_NORMAL}:1, normal-size text)`,
+    contrast.ratio >= AA_NORMAL && contrast.fontPx < LARGE_TEXT_PX,
+    JSON.stringify({ ratio: Math.round(contrast.ratio * 100) / 100,
+      exact: contrast.exact, bounds: contrast.bounds, fontPx: contrast.fontPx, color: contrast.color }));
+
+  check('N13d a property without help grows no empty stub',
+    await page.locator('#psRows .ps-field').filter({ hasText: 'Repository' })
+      .locator('.ps-help').count() === 0);
 
   // ---- N2 · Clear is offered only where there is something to remove
   check('N2 a stored secret offers an explicit Clear',

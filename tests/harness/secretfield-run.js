@@ -12,11 +12,17 @@
 //   E6 · a secret with no stored value reads "not set" and offers no Clear
 //   E7 · the saved layout carries exactly what the user typed, and the widget preview
 //        receives it like any other setting
+//   E35 · a property's `help` renders under the control, SURVIVES TYPING, and is legible
+//         against what is actually painted behind it — the whole
+//        point of the field, since a placeholder disappears the moment a value exists
+//        (#207), and a property without help grows no empty stub
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
+
+const { textContrast, AA_NORMAL, LARGE_TEXT_PX } = require('./contrast');
 
 const REPO = path.resolve(__dirname, '..', '..');
 
@@ -43,9 +49,12 @@ const check = (name, ok, detail) => {
 const widgets = [{
   id: 'test.gh', name: 'GitHub Queue', supportedSlots: ['half'],
   properties: [
-    { name: 'token', label: 'Personal access token', type: 'secret', placeholder: 'ghp_…' },
+    { name: 'token', label: 'Personal access token', type: 'secret', placeholder: 'ghp_…',
+      // #207: guidance that must OUTLIVE the first keystroke, unlike the placeholder.
+      help: 'Needs Pull requests: Read-only and Actions: Read-only.' },
     { name: 'fresh', label: 'Other token', type: 'secret' },
-    { name: 'repo', label: 'Repository', type: 'text', default: 'owner/name' },
+    { name: 'repo', label: 'Repository', type: 'text', default: 'owner/name',
+      help: 'One row per repository, as owner/name.' },
     // A DEMOTED property (#66): the manifest calls it `text` now, but layout.json still
     // holds the envelope from when it was `secret`. The host blanks it and names it in
     // secretsRestorable.
@@ -144,6 +153,48 @@ const layout = {
     await stored.locator('input').getAttribute('type') === 'password');
   check('E1c autocomplete is off so the browser never stores the credential',
     await stored.locator('input').getAttribute('autocomplete') === 'off');
+
+  // ---- E35 · guidance that outlives the first keystroke (#207) ------------------------
+  // A placeholder answers "what goes here" only until a value exists, and is clipped to the
+  // control's width — which is why a GitHub token's entire guidance had been "read access to
+  // the repos above", with no room to name the permissions. `help` renders under the control
+  // and stays.
+  //
+  // The survives-typing half deliberately uses the plain TEXT row, not the secret: typing
+  // into a stored credential and clearing it again leaves it in "will be removed on save",
+  // which is a state E2 asserts on further down. The first version of this check did exactly
+  // that and broke E2 — the fixture is shared, so a probe that mutates it is not free.
+  // Count BEFORE reading text: textContent() on a locator that matches nothing waits out
+  // the timeout and throws, which aborts the whole file rather than reporting one FAIL —
+  // and every check after this one then never runs. Ask whether it exists first.
+  const secretHelp = page.locator('#slotDetail .prop-field', { hasText: 'Personal access token' });
+  const secretHelpText = await secretHelp.locator('.prop-help').count()
+    ? (await secretHelp.locator('.prop-help').textContent() || '') : '(no .prop-help rendered)';
+  check('E35 a secret renders its help under the control',
+    secretHelpText.includes('Read-only'), secretHelpText);
+  const textHelp = page.locator('#slotDetail .prop-field', { hasText: 'Repository' });
+  await textHelp.locator('input').first().fill('binaryzero/waveshare-widgets');
+  await page.waitForTimeout(120);
+  check('E35b ...and help is still there once the field has a value',
+    await textHelp.locator('.prop-help').count() === 1,
+    String(await textHelp.locator('.prop-help').count()));
+  // The other secret declares no help: the row must not grow an empty stub for it.
+  const noHelpRow = page.locator('#slotDetail .prop-field', { hasText: 'Other token' });
+  check('E35c a property without help renders no empty help element',
+    await noHelpRow.locator('.prop-help').count() === 0,
+    String(await noHelpRow.locator('.prop-help').count()));
+
+  // Legible, not merely rendered. `help` is now MANDATORY on every secret, so it is text
+  // the standard insists a user must read — and it shipped in `--text-dim`, a token this
+  // window never defines (the palette pushes it onto the preview element, not the chrome),
+  // so the CSS fallback was the real colour: 3.14:1 on --card, under the 4.5:1 floor for
+  // 11px text. E35-E35c all passed while that was true. Structural checks cannot see a
+  // colour, so this one measures it the way the browser composites it.
+  const helpContrast = await textContrast(secretHelp.locator('.prop-help').first());
+  check(`E35d and it is legible where it is painted (>= ${AA_NORMAL}:1, normal-size text)`,
+    helpContrast.ratio >= AA_NORMAL && helpContrast.fontPx < LARGE_TEXT_PX,
+    JSON.stringify({ ratio: Math.round(helpContrast.ratio * 100) / 100,
+      exact: helpContrast.exact, bounds: helpContrast.bounds, fontPx: helpContrast.fontPx, color: helpContrast.color }));
 
   // ---- E2 · stored secret: honest "saved" state, nothing readable in the DOM
   check('E2 a stored secret reads as saved+encrypted, not as dots implying readability',

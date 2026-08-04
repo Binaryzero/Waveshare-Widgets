@@ -522,6 +522,14 @@ body.editing.dragging .edge { pointer-events: auto; }
 /* Settings sheet controls: touch-first (40px+ targets), token-styled. */
 .ps-field { display: flex; flex-direction: column; gap: 4px; }
 .ps-field > label { font-size: 11px; font-weight: 700; color: var(--text-muted, #8e9196); }
+/* Guidance under a control in the on-device sheet (#207). Dim and small — present when
+   wanted, quiet when not. */
+/* --text-muted, matching the label directly above it and every other secondary label on
+   this sheet. --text-dim is the dimmest derived token and made the help fainter than the
+   field it explains (3.40:1 vs 5.84:1 at the fallbacks) on a strip read from desk
+   distance. Same defect as .prop-help; the settings window just happened to be the one
+   review looked at. */
+.ps-help { margin: 0; font-size: 11px; line-height: 1.45; color: var(--text-muted, #8e9196); }
 .ps-field input[type="text"], .ps-field input[type="number"], .ps-field select {
   min-height: 38px;
   padding: 0 10px;
