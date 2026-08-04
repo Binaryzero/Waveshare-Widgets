@@ -227,6 +227,21 @@ body.bg-transparent {
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+/* A control that must never pan (#206). Opt-in, and deliberately NOT a rule on the
+ * document: installed third-party .wswidget packages link this same unversioned sheet, so
+ * anything set at document level lands on code nobody here can see or test. An opt-in
+ * class cannot.
+ *
+ * Use it on a control with no scrollable ancestor inside the frame. Such a gesture has
+ * nothing local to pan, so touch-action intersects up across the iframe boundary and the
+ * shell's #pages — a horizontal scroll-snap container — takes it: a finger drifting a few
+ * pixels on the way to a tap changes page instead of pressing the control.
+ *
+ * Do NOT put it on a control inside a scrolling region; that stops the region scrolling
+ * whenever a finger lands on the control. Those regions want `touch-action: pan-y`
+ * instead — see the four stock scrollers. */
+.no-pan { touch-action: none; }
+
 /* State theater: no tap may be a silent no-op.
  * .pressable      — pressed physicality for interactive tiles that aren't .btn
  * .fail-flash     — red flash when an action fails or is refused

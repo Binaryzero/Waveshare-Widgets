@@ -44,6 +44,11 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    /* pan-y, not auto: a HORIZONTAL drag starting on a control inside this list has
+     * this element as its nearest scrolling ancestor, so a document-level rule never
+     * sees it — and with the default the pan chains out to the shell's #pages and
+     * changes page (measured: scrollLeft 0 -> 612). Vertical scrolling is unaffected. */
+    touch-action: pan-y;
     display: flex;
     flex-direction: column;
     gap: clamp(8px, 2vh, 12px);
@@ -135,7 +140,7 @@
   <header>
     <span class="kicker">Notifications</span>
     <span class="pill" id="countPill" hidden>0</span>
-    <button class="btn" id="eyeBtn" aria-label="Hide notification text" aria-pressed="false" hidden>
+    <button class="btn no-pan" id="eyeBtn" aria-label="Hide notification text" aria-pressed="false" hidden>
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/>
@@ -333,7 +338,9 @@
     bar.appendChild(label);
     for (const [key, name] of muted) {
       const chip = document.createElement('button');
-      chip.className = 'btn chip';
+      // no-pan: #muteBar sits above the list, outside it, so a drag here has nothing
+      // local to scroll and would page the panel instead of unmuting (#206).
+      chip.className = 'btn chip no-pan';
       chip.setAttribute('aria-label', 'Unmute ' + name);
       const n = document.createElement('span');
       n.className = 'n';

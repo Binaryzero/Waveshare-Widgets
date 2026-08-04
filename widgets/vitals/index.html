@@ -61,6 +61,10 @@
     width: 100%; min-height: 44px;
     padding: 4px clamp(8px, 2vh, 12px);
     font: inherit; color: inherit; text-align: left; cursor: pointer;
+    /* Here rather than as a .no-pan class: renderMeters() reassigns className wholesale on
+     * every severity change, which stripped the class and left the rows pannable again.
+     * These sit in #meters, outside the #cardBox scroller, so nothing here needs to pan. */
+    touch-action: none;
   }
   .m-label { flex: none; width: 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .segs {
@@ -113,6 +117,11 @@
     position: relative;
     width: min(440px, 94%); max-height: 100%;
     overflow-y: auto; scrollbar-width: none;
+    /* pan-y, not auto: a HORIZONTAL drag starting on a control inside this list has
+     * this element as its nearest scrolling ancestor, so a document-level rule never
+     * sees it — and with the default the pan chains out to the shell's #pages and
+     * changes page (measured: scrollLeft 0 -> 612). Vertical scrolling is unaffected. */
+    touch-action: pan-y;
     display: flex; flex-direction: column; gap: clamp(4px, 1.4vh, 8px);
     padding: clamp(10px, 3vh, 18px);
   }

@@ -14,6 +14,11 @@
     width: 100%;
     height: 100%;
     overflow-y: auto;
+    /* pan-y, not auto: a HORIZONTAL drag starting on a control inside this list has
+     * this element as its nearest scrolling ancestor, so a document-level rule never
+     * sees it — and with the default the pan chains out to the shell's #pages and
+     * changes page (measured: scrollLeft 0 -> 612). Vertical scrolling is unaffected. */
+    touch-action: pan-y;
     scrollbar-width: none;
   }
   .room {
@@ -68,20 +73,22 @@
   /* Pairing / message overlays: .state-card anatomy, shown via inline display. */
   #pair, #message, #legacy { position: fixed; inset: 0; display: none; }
   #pair .state-title, #message .state-title { font-size: clamp(13px, 5vh, 19px); }
-  #pairBtn { font-size: clamp(14px, 5.5vh, 22px); padding: 10px 30px; touch-action: manipulation; }
+  /* No touch-action here: it is an ID rule and would outrank the .no-pan class on the
+   * button itself, silently leaving it pannable. The class carries the policy. */
+  #pairBtn { font-size: clamp(14px, 5.5vh, 22px); padding: 10px 30px; }
 </style>
 </head>
 <body>
   <div id="rooms"></div>
   <div id="pair" class="state-card">
     <div class="state-title">Press the round <b>link button</b> on your Hue Bridge…</div>
-    <button id="pairBtn" class="btn primary">…then tap here to pair</button>
+    <button id="pairBtn" class="btn primary no-pan">…then tap here to pair</button>
     <small id="pairHint" class="state-body"></small>
   </div>
   <div id="message" class="state-card"></div>
   <div id="legacy" class="state-card">
     <div class="state-title">This bridge did not answer over HTTPS</div>
-    <button id="legacyBtn" class="btn">Use the legacy API anyway</button>
+    <button id="legacyBtn" class="btn no-pan">Use the legacy API anyway</button>
     <small id="legacyHint" class="state-body"></small>
   </div>
 
