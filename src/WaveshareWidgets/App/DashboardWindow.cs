@@ -425,10 +425,7 @@ public sealed class DashboardWindow : Form
                     // desktop: the file dialog needs a Win32 owner window, so picker:'file'
                     // had no picker at all on the panel and the path had to be typed on a
                     // touch strip.
-                    PostToShell("apps-result", new JsonObject
-                    {
-                        ["apps"] = InstalledApps.ToJson(),
-                    });
+                    PostToShell("apps-result", InstalledApps.ToJson());
                     break;
 
                 case "notifications-watch":

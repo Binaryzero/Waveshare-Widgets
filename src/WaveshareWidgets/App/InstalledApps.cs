@@ -47,7 +47,11 @@ internal static class InstalledApps
     /// <summary>Machine-wide and per-user Start Menu programs, merged, de-duplicated by
     /// display name and sorted. Per-user wins a tie: if someone has their own shortcut for
     /// a name the machine also publishes, theirs is the one they see in their own menu.</summary>
-    public static IReadOnlyList<App> List()
+    public static IReadOnlyList<App> List() => List(out _);
+
+    /// <param name="truncated">True when a bound stopped the walk, so the caller can say
+    /// so instead of presenting a partial list as the whole answer.</param>
+    public static IReadOnlyList<App> List(out bool truncated)
     {
         var byName = new Dictionary<string, App>(StringComparer.OrdinalIgnoreCase);
 
@@ -65,29 +69,31 @@ internal static class InstalledApps
             Collect(Directory.Exists(programs) ? programs : dir, 0, byName, ref visited);
         }
 
-        if (visited >= MaxVisited)
-            Log.Warn($"Installed-app walk stopped at {MaxVisited} filesystem entries; the picker is showing a partial list");
-
-        // Say so rather than returning a quietly short list: at the cap the answer stops
-        // being "what is installed" and becomes "the first 800 things found", and a user
-        // hunting for a missing application has no other way to learn that.
-        if (byName.Count >= MaxEntries)
-            Log.Warn($"Installed-app list hit its {MaxEntries}-entry cap; the picker is showing a partial list");
+        truncated = visited >= MaxVisited || byName.Count >= MaxEntries;
+        if (truncated)
+            Log.Warn($"Installed-app walk stopped early ({byName.Count} apps, {visited} entries seen); the picker is showing a partial list");
 
         return byName.Values
             .OrderBy(a => a.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
     }
 
-    /// <summary>The same list as a payload for either WebView. Shared so the desktop
-    /// editor and the on-device sheet cannot drift into showing different applications —
-    /// the panel is the surface that needs this most, and it is the one nobody re-checks.</summary>
-    public static JsonArray ToJson()
+    /// <summary>The same payload for either WebView. Shared so the desktop editor and the
+    /// on-device sheet cannot drift into showing different applications — the panel is the
+    /// surface that needs this most, and it is the one nobody re-checks.
+    ///
+    /// <para>It carries `truncated` because the cap is otherwise invisible to the person
+    /// it affects: a log line reaches the developer, while the user searching for the
+    /// application that fell off the end is told "no match — it may be a Store app",
+    /// which is a confident wrong answer. A bound that only the log knows about is a
+    /// silent one.</para></summary>
+    public static JsonObject ToJson()
     {
+        var apps = List(out var truncated);
         var arr = new JsonArray();
-        foreach (var app in List())
+        foreach (var app in apps)
             arr.Add(new JsonObject { ["name"] = app.Name, ["path"] = app.Path });
-        return arr;
+        return new JsonObject { ["apps"] = arr, ["truncated"] = truncated };
     }
 
     private static void Collect(string dir, int depth, Dictionary<string, App> into, ref int visited)

@@ -195,11 +195,9 @@ public sealed class SettingsWindow : Form
                     // picked rather than known (#210). Enumerated per request instead of
                     // cached: the editor asks once when a picker opens, and a list built
                     // at startup would miss anything installed since.
-                    Post(new JsonObject
-                    {
-                        ["type"] = "apps-result",
-                        ["apps"] = InstalledApps.ToJson(),
-                    });
+                    var appsPayload = InstalledApps.ToJson();
+                    appsPayload["type"] = "apps-result";
+                    Post(appsPayload);
                     break;
             }
         }

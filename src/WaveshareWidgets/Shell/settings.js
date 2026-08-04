@@ -279,7 +279,7 @@
       const apps = Array.isArray(msg.apps)
         ? msg.apps.filter((a) => a && typeof a.name === 'string' && typeof a.path === 'string')
         : [];
-      waiters.forEach((cb) => cb(apps));
+      waiters.forEach((cb) => cb(apps, msg.truncated === true));
     } else if (msg.type === 'sd-profiles-result') {
       const waiters = sdProfileWaiters.splice(0);
       const profiles = Array.isArray(msg.profiles) ? msg.profiles.filter((p) => typeof p === 'string') : [];
@@ -1835,6 +1835,7 @@
       search.focus();
 
       let apps = [];
+      let truncated = false;
       const render = () => {
         const q = search.value.trim().toLowerCase();
         const shown = q ? apps.filter((a) => a.name.toLowerCase().includes(q)) : apps;
@@ -1847,6 +1848,12 @@
           b.addEventListener('click', () => {
             input.value = app.path;
             input.dispatchEvent(new Event('input')); // commits through the field's handler
+            // A deck row migrated from the old JSON config can still carry a hidden
+            // `kind` (url/media/hotkey) that the list mapping preserves because no field
+            // renders it. classify() consults it for a scheme-less target, so a picked
+            // .lnk would come out as "url target must be http(s)" or be parsed as a
+            // hotkey. The row's own handler retires it.
+            input.dispatchEvent(new CustomEvent('ww-app-picked'));
             closeAppPop();
           });
           list.appendChild(b);
@@ -1857,7 +1864,9 @@
         if (!shown.length) {
           status.hidden = false;
           status.textContent = apps.length
-            ? 'No match. This lists Start Menu shortcuts — a packaged Store app may not have one.'
+            ? (truncated
+              ? 'No match — and the list was cut short, so it may simply not have been reached.'
+              : 'No match. This lists Start Menu shortcuts — a packaged Store app may not have one.')
             : 'No installed applications found.';
         } else if (shown.length > 200) {
           status.hidden = false;
@@ -1868,9 +1877,10 @@
       };
       search.addEventListener('input', render);
 
-      appWaiters.push((result) => {
+      appWaiters.push((result, wasTruncated) => {
         if (!pop.isConnected) return;   // closed while the host was still walking the menu
         apps = result;
+        truncated = wasTruncated;
         render();
       });
       post({ type: 'list-apps' });
@@ -2416,6 +2426,9 @@
               }
               input.setAttribute('aria-label', field.label || field.key);
               input.oninput = () => { item[field.key] = input.value; commit(); };
+              input.addEventListener('ww-app-picked', () => {
+                if (item && typeof item === 'object' && 'kind' in item) { delete item.kind; commit(); }
+              });
               row.appendChild(input);
               attachFieldPicker(row, field, input); // picker:'emoji' / picker:'file' (#48)
             }

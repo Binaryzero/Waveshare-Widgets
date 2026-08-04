@@ -221,7 +221,8 @@
       const waiters = psAppWaiters.splice(0);
       const apps = (((msg.data && msg.data.apps) || [])
         .filter((a) => a && typeof a.name === 'string' && typeof a.path === 'string'));
-      waiters.forEach((cb) => { try { cb(apps); } catch (e) { /* row rebuilt */ } });
+      const cut = !!(msg.data && msg.data.truncated);
+      waiters.forEach((cb) => { try { cb(apps, cut); } catch (e) { /* row rebuilt */ } });
     } else if (msg.type === 'sd-profile-result') {
       routeSd(msg, (data) => ({ type: 'ww-sd-profile', profile: data }));
     } else if (msg.type === 'sd-capture-result') {
@@ -1881,6 +1882,13 @@
       }
     }
     closeEmojiPop();
+    // The app chooser is appended to <body>, so nothing about hiding the sheet removes
+    // it. Left behind, it survives leaving edit mode, deleting the page, a layout reload
+    // or switching to another tile's editor — still holding a reference to the old
+    // input, so a later pick writes into and persists a slot whose editor is gone. Same
+    // defect the desktop closePanel() had; fixing one and not the other is how it stayed.
+    const appSheet = document.querySelector('.ps-apps');
+    if (appSheet) appSheet.remove();
     propTarget = null;
     propSheet.hidden = true;
     for (const s of slots) s.el.classList.remove('style-editing');
@@ -2293,6 +2301,7 @@
       document.body.appendChild(sheet);
 
       let apps = [];
+      let truncated = false;
       const render = () => {
         const q = search.value.trim().toLowerCase();
         const shown = q ? apps.filter((a) => a.name.toLowerCase().includes(q)) : apps;
@@ -2305,6 +2314,9 @@
           b.addEventListener('click', () => {
             input.value = app.path;
             input.dispatchEvent(new Event('input'));
+            // Same hazard as the desktop picker: a migrated deck row carries a hidden
+            // `kind` that classify() consults for a scheme-less target.
+            input.dispatchEvent(new CustomEvent('ww-app-picked'));
             sheet.remove();
           });
           list.appendChild(b);
@@ -2314,7 +2326,9 @@
         if (!shown.length) {
           status.hidden = false;
           status.textContent = apps.length
-            ? 'No match. This lists Start Menu shortcuts — a packaged Store app may not have one.'
+            ? (truncated
+              ? 'No match — and the list was cut short, so it may simply not have been reached.'
+              : 'No match. This lists Start Menu shortcuts — a packaged Store app may not have one.')
             : 'No installed applications found.';
         } else if (shown.length > 200) {
           status.hidden = false;
@@ -2324,9 +2338,10 @@
         }
       };
       search.addEventListener('input', render);
-      psAppWaiters.push((result) => {
+      psAppWaiters.push((result, wasTruncated) => {
         if (!sheet.isConnected) return;   // dismissed while the host was still walking
         apps = result;
+        truncated = wasTruncated;
         render();
       });
       postToHost({ type: 'list-apps' });
@@ -2472,6 +2487,9 @@
           }
           input.setAttribute('aria-label', f.label || f.key);
           input.oninput = () => { item[f.key] = input.value; commit(); };
+          input.addEventListener('ww-app-picked', () => {
+            if (item && typeof item === 'object' && 'kind' in item) { delete item.kind; commit(); }
+          });
           // LIST fields are where the pickers actually live: every shipped picker:'file'
           // is one (launcher items.target, deck buttons.target), and there is no top-level
           // one anywhere in the catalog. A picker wired only to psControl's text branch

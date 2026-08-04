@@ -105,7 +105,7 @@ const layout = {
       settings: {
         token: '', fresh: '', legacyToken: '', legacyTint: '', legacyProfile: '',
         repo: 'binaryzero/waveshare-widgets',
-        items: [{ label: 'Steam', target: '' }],
+        items: [{ label: 'Steam', target: '', kind: 'hotkey' }],
       },
       secretsSet: ['token'],
       secretsRestorable: ['legacyToken', 'legacyTint', 'legacyProfile'],
@@ -139,7 +139,7 @@ const layout = {
       push({ type: 'saved', seq: msg.seq });
     } else if (msg.type === 'list-apps') {
       appListRequests++;
-      push({ type: 'apps-result', apps: [
+      push({ type: 'apps-result', truncated: false, apps: [
         { name: 'Steam', path: 'C:\\ProgramData\\Start Menu\\Steam.lnk' },
         { name: 'Visual Studio Code', path: 'C:\\Users\\u\\Start Menu\\Code.lnk' },
       ] });
@@ -243,6 +243,16 @@ const layout = {
   // take it too or a later pick writes into a slot the user already dismissed.
   check('E36d and the popover closed with the pick',
     await page.locator('.app-pop').count() === 0);
+  // The same legacy discriminator hazard on this side. Read from the SAVED layout, not
+  // the in-memory row, because the question is what the host is told.
+  // This window saves on an explicit Save, not on every edit — reading the layout before
+  // one has happened measures nothing, which is what 'saves: 0' said the first time.
+  await page.locator('#save').click();
+  await page.waitForTimeout(600);
+  const deskRowSaved = ((saved.length ? saved[saved.length - 1].pages[0].slots[0].settings : {}).items || [])[0] || {};
+  check('E36e picking retires the row\'s legacy action kind',
+    deskRowSaved.target === 'C:\\Users\\u\\Start Menu\\Code.lnk' && !('kind' in deskRowSaved),
+    JSON.stringify({ saves: saved.length, row: deskRowSaved }));
 
   // ---- E2 · stored secret: honest "saved" state, nothing readable in the DOM
   check('E2 a stored secret reads as saved+encrypted, not as dots implying readability',

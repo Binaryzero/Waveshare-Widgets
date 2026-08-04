@@ -117,7 +117,10 @@ const widgets = [{
     // fitted, the probe would pass whichever order the cycler used.
     widgetId: 'test.gh', size: 'quarter',
     settings: { token: STORED_TOKEN, fresh: '', legacyToken: '', repo: 'binaryzero/waveshare-widgets',
-      items: [{ label: 'Steam', target: '' }] },
+      // Carries a legacy `kind` no field renders — the shape a deck row migrated from
+      // the old JSON config still has. classify() consults it for a scheme-less target,
+      // so a picked .lnk would be parsed as a hotkey unless the pick retires it.
+      items: [{ label: 'Steam', target: '', kind: 'hotkey' }] },
     secretsRestorable: ['legacyToken'],
   }, narrowSlot] }] };
 
@@ -139,9 +142,9 @@ const widgets = [{
         type: 'apps-result',
         // 250 entries once N15 asks for them: the render cap is 200, and a cap that says
         // nothing is indistinguishable from "that app is not installed".
-        data: appFlood ? { apps: Array.from({ length: 250 }, (_, i) => (
+        data: appFlood ? { truncated: true, apps: Array.from({ length: 250 }, (_, i) => (
           { name: 'App ' + String(i).padStart(3, '0'), path: 'C:\\Start Menu\\App' + i + '.lnk' })) }
-        : { apps: [
+        : { truncated: false, apps: [
           { name: 'Steam', path: 'C:\\ProgramData\\Start Menu\\Steam.lnk' },
           { name: 'Visual Studio Code', path: 'C:\\Users\\u\\Start Menu\\Code.lnk' },
           { name: 'Notepad', path: 'C:\\ProgramData\\Start Menu\\Notepad.lnk' },
@@ -309,8 +312,31 @@ const widgets = [{
   check('N14g and it reaches the saved layout, on the ROW it belongs to',
     savedRow().target === 'C:\\Users\\u\\Start Menu\\Code.lnk' && savedRow().label === 'Steam',
     JSON.stringify(savedRow()));
+  check('N14j and it retires the row\'s legacy action kind, which would out-rank the path',
+    !('kind' in savedRow()), JSON.stringify(savedRow()));
   check('N14h the sheet closes on a pick',
     await page.locator('.ps-apps').count() === 0);
+
+  // N14i · the sheet must not outlive the editor that opened it. It is appended to
+  // <body>, so hiding the property sheet does nothing to it — and left behind it still
+  // holds the old input, so a pick writes into a slot whose editor is gone.
+  if (havePicker) {
+    await targetField.locator('.ps-pick').click();
+    await wait(250);
+  }
+  const beforeClose = await page.locator('.ps-apps').count();
+  // Dispatched on the element rather than clicked at its coordinates: the chooser is
+  // z-index 60 over the property sheet, so a real click lands on the chooser and the
+  // probe measures nothing. This asserts the LIFECYCLE — that closing the editor takes
+  // the sheet with it — not that #psClose is hit-testable underneath it.
+  await page.evaluate(() => document.getElementById('psClose').click());
+  await wait(300);
+  check('N14i and it does not outlive the property editor that opened it',
+    beforeClose === 1 && await page.locator('.ps-apps').count() === 0,
+    JSON.stringify({ opened: beforeClose, after: await page.locator('.ps-apps').count() }));
+  // reopen for the checks that follow
+  await page.locator('.slot').first().locator('.edit-overlay .gear').click().catch(() => {});
+  await wait(250);
 
   // ---- N15 · the render cap says what it dropped (#210)
   // The list is cut at 200 rows. Cutting it is fine; cutting it silently is not — the
