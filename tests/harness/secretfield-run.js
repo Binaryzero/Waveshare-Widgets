@@ -67,6 +67,15 @@ const widgets = [{
     // removal — "" is the one value that cannot contradict a clear, because it is the
     // shape the host already reads as untouched.
     { name: 'legacyProfile', label: 'Legacy profile', type: 'select', optionsSource: 'sd-profiles' },
+    // #210, shaped like launcher's: every shipped picker:'file' is a LIST FIELD. This side
+    // already routed list fields through attachFieldPicker and so worked by accident,
+    // while the panel's own list renderer did not — an asymmetry that had no check on
+    // either side, which is how the panel shipped with a picker nothing could open.
+    { name: 'items', label: 'Shortcuts', type: 'list', itemLabel: 'shortcut',
+      fields: [
+        { key: 'label', label: 'Name', type: 'text', picker: 'emoji-prefix' },
+        { key: 'target', label: 'Path or URL', type: 'text', picker: 'file' },
+      ], default: [] },
   ],
 }, {
   // A DIFFERENT widget that happens to declare the same secret name — the collision
@@ -96,6 +105,7 @@ const layout = {
       settings: {
         token: '', fresh: '', legacyToken: '', legacyTint: '', legacyProfile: '',
         repo: 'binaryzero/waveshare-widgets',
+        items: [{ label: 'Steam', target: '' }],
       },
       secretsSet: ['token'],
       secretsRestorable: ['legacyToken', 'legacyTint', 'legacyProfile'],
@@ -115,6 +125,7 @@ const layout = {
   page.on('pageerror', (e) => { failures++; console.log('[pageerror]', String(e).slice(0, 300)); });
 
   const saved = [];
+  let appListRequests = 0;
   await page.exposeFunction('__hostRecv', async (json) => {
     const msg = JSON.parse(json);
     const push = (obj) => page.evaluate((d) => window.__hostPush(d), JSON.stringify(obj)).catch(() => {});
@@ -126,6 +137,12 @@ const layout = {
     } else if (msg.type === 'save-layout') {
       saved.push(JSON.parse(JSON.stringify(msg.layout)));
       push({ type: 'saved', seq: msg.seq });
+    } else if (msg.type === 'list-apps') {
+      appListRequests++;
+      push({ type: 'apps-result', apps: [
+        { name: 'Steam', path: 'C:\\ProgramData\\Start Menu\\Steam.lnk' },
+        { name: 'Visual Studio Code', path: 'C:\\Users\\u\\Start Menu\\Code.lnk' },
+      ] });
     }
   });
   await page.addInitScript(() => {
@@ -195,6 +212,37 @@ const layout = {
     helpContrast.ratio >= AA_NORMAL && helpContrast.fontPx < LARGE_TEXT_PX,
     JSON.stringify({ ratio: Math.round(helpContrast.ratio * 100) / 100,
       exact: helpContrast.exact, bounds: helpContrast.bounds, fontPx: helpContrast.fontPx, color: helpContrast.color }));
+
+  // ---- E36 · the desktop side of the app picker (#210)
+  // This side routes list fields through attachFieldPicker, so it worked by accident and
+  // had no check. The panel's list renderer did not, and shipped a picker nothing could
+  // open. An asymmetry with no test on either side is how that happened; this is the
+  // other half.
+  const deskRow = page.locator('#slotDetail .factory-row').filter({ has: page.locator('input[aria-label="Path or URL"]') }).first();
+  const deskInput = deskRow.locator('input[aria-label="Path or URL"]');
+  const deskHasPicker = await deskRow.locator('button').filter({ hasText: '🗂' }).count() === 1;
+  check('E36 a list row\'s path field offers the installed-app picker',
+    deskHasPicker, String(await deskRow.locator('button').filter({ hasText: '🗂' }).count()));
+  if (deskHasPicker) {
+    await deskRow.locator('button').filter({ hasText: '🗂' }).click();
+    await page.waitForTimeout(250);
+  }
+  const pop = page.locator('.app-pop');
+  const popOpen = await pop.count() === 1;
+  check('E36b it asks the host and shows what came back',
+    popOpen && appListRequests >= 1 && await pop.locator('.app-pop-list button').count() === 2,
+    JSON.stringify({ requests: appListRequests, rows: popOpen ? await pop.locator('.app-pop-list button').count() : null }));
+  if (popOpen) {
+    await pop.locator('.app-pop-list button').filter({ hasText: 'Visual Studio Code' }).click();
+    await page.waitForTimeout(250);
+  }
+  check('E36c picking writes the PATH onto that row',
+    popOpen && await deskInput.inputValue() === 'C:\\Users\\u\\Start Menu\\Code.lnk',
+    JSON.stringify(popOpen ? await deskInput.inputValue() : 'no popover'));
+  // The orphan hazard: the popover is appended to <body>, so closing the inspector has to
+  // take it too or a later pick writes into a slot the user already dismissed.
+  check('E36d and the popover closed with the pick',
+    await page.locator('.app-pop').count() === 0);
 
   // ---- E2 · stored secret: honest "saved" state, nothing readable in the DOM
   check('E2 a stored secret reads as saved+encrypted, not as dots implying readability',
