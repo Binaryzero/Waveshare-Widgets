@@ -174,6 +174,20 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   const scrolled = await listTop();
   check('T2 a vertical drag inside the list still scrolls it', scrolled > 10, `scrollTop ${scrolled}`);
 
+  // ---- T7 · the case that decides the whole design ------------------------------------
+  // T2 drags from blank space in the list. The interesting drag starts ON a control that
+  // lives INSIDE the scroller — a mute row here, a scene chip in hue — because that is
+  // where a too-broad touch-action turns a scrollable list into a dead one. Neither the
+  // report nor the review named it, and it is the case that separates "ban panning on the
+  // document" from "opt individual controls out".
+  await frame.evaluate(() => { document.getElementById('list').scrollTop = 0; });
+  await page.waitForTimeout(200);
+  const rowBox = await frame.locator('.app-head').first().boundingBox();
+  await drag(rowBox.x + rowBox.width * 0.4, rowBox.y + rowBox.height / 2, 0, -180);
+  const rowScrolled = await listTop();
+  check('T7 a drag that starts ON a control inside the list still scrolls the list',
+    rowScrolled > 10, `scrollTop ${rowScrolled}`);
+
   // ---- T3 · the reported bug -----------------------------------------------------------
   await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
   await page.waitForTimeout(300);
@@ -193,6 +207,75 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   const pressedAfter = await frame.evaluate(() => document.getElementById('eyeBtn').getAttribute('aria-pressed'));
   check('T4 ...and a tap on it still toggles, so T3 is not a dead control',
     pressedBefore !== pressedAfter, `aria-pressed ${pressedBefore} -> ${pressedAfter}`);
+
+  // ---- T5/T6 · what the shared stylesheet must NOT do ---------------------------------
+  // The first version of this fix put `touch-action: none` on the widget document in
+  // widget-base.css. It turned T3 green and broke two populations that are not in this
+  // repository, which is why these two exist as standing guards rather than as a note.
+  //
+  // T5 · installed third-party .wswidget packages link this same unversioned stylesheet
+  //      (WidgetLibrary hot-reloads them), and the standard has always told them to. A
+  //      document-wide ban makes any scrollable region they have go dead on a touch panel,
+  //      and nobody here can see their CSS to opt it back in.
+  // T6 · the iframe, twitch and youtube widgets host CROSS-ORIGIN content in a nested
+  //      frame. touch-action intersects down into it, and an embedded page cannot override
+  //      an ancestor's restriction — so Twitch chat and any embedded dashboard stop
+  //      scrolling, with no fix available from inside them.
+  //
+  // Both are synthetic stand-ins on purpose: they encode the CONSTRAINT on widget-base.css
+  // rather than the current contents of any one widget.
+  const THIRD_PARTY = '<!doctype html><meta charset="utf-8">'
+    + '<link rel="stylesheet" href="https://app.wsw/widget-base.css">'
+    + '<style>#scroller{height:100%;overflow-y:auto}.tall{height:2000px}</style>'
+    + '<div id="scroller"><div class="tall">third-party content</div></div>';
+  const EMBEDDED = '<!doctype html><meta charset="utf-8">'
+    + '<style>html,body{margin:0}.tall{height:2000px}</style><div class="tall">embedded</div>';
+  // A widget whose content is a nested cross-origin frame, like iframe/twitch/youtube.
+  const NESTER = '<!doctype html><meta charset="utf-8">'
+    + '<link rel="stylesheet" href="https://app.wsw/widget-base.css">'
+    + '<style>iframe{border:0;width:100%;height:100%}</style>'
+    + '<iframe src="https://embedded.test/page.html"></iframe>';
+
+  await page.route('https://thirdparty.test/**', (r) => r.fulfill({ contentType: 'text/html', body: THIRD_PARTY }));
+  await page.route('https://nester.test/**', (r) => r.fulfill({ contentType: 'text/html', body: NESTER }));
+  await page.route('https://embedded.test/**', (r) => r.fulfill({ contentType: 'text/html', body: EMBEDDED }));
+
+  const scrollProbe = async (url, sel) => {
+    const p = await context.newPage();
+    await p.route('https://app.wsw/**', (r) =>
+      serve(r, SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '')));
+    await p.route('https://thirdparty.test/**', (r) => r.fulfill({ contentType: 'text/html', body: THIRD_PARTY }));
+    await p.route('https://nester.test/**', (r) => r.fulfill({ contentType: 'text/html', body: NESTER }));
+    await p.route('https://embedded.test/**', (r) => r.fulfill({ contentType: 'text/html', body: EMBEDDED }));
+    await p.goto(url);
+    await p.waitForTimeout(400);
+    // includes(), not indexOf()===0: the frame's url carries its scheme, so an
+    // anchored match never hits and the probe dies rather than reporting a scroll.
+    const target = sel.frame ? p.frames().find((f) => f.url().includes('embedded.test')) : p;
+    if (sel.frame && !target) { await p.close(); return -1; }
+    const box = { x: 320, y: 200 };
+    const cdp2 = await context.newCDPSession(p);
+    await cdp2.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: box.x, y: box.y, id: 1 }] });
+    for (let i = 1; i <= 10; i++) {
+      await cdp2.send('Input.dispatchTouchEvent', { type: 'touchMove',
+        touchPoints: [{ x: box.x, y: box.y - i * 12, id: 1 }] });
+      await p.waitForTimeout(16);
+    }
+    await cdp2.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await p.waitForTimeout(500);
+    const top = await target.evaluate((s) => (s ? document.querySelector(s).scrollTop
+      : document.scrollingElement.scrollTop), sel.el || null);
+    await p.close();
+    return top;
+  };
+
+  const tpTop = await scrollProbe('https://thirdparty.test/w.html', { el: '#scroller' });
+  check('T5 a third-party widget scroller with no touch-action of its own still scrolls',
+    tpTop > 10, `scrollTop ${tpTop}`);
+
+  const embTop = await scrollProbe('https://nester.test/w.html', { frame: true });
+  check('T6 ...and cross-origin content in a nested iframe widget still scrolls',
+    embTop > 10, `scrollTop ${embTop}`);
 
   await browser.close();
   console.log(failures > 0 ? `\n${failures} FAILURES` : '\nALL PASS');

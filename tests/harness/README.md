@@ -221,7 +221,14 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   because Playwright's touchscreen only taps and it is the *drag* that turns a tap into a pan.
   Against the unfixed build T3 reports `pages scrollLeft 0 -> 628` — a full page stolen by a
   tap. T2 drags inside the list and T4 taps the control, so the fix cannot be bought by
-  forbidding panning everywhere or by killing the button.
+  forbidding panning everywhere or by killing the button. T5-T7 are the review's doing and
+  are the interesting half: a third-party document's own scroller, cross-origin content in a
+  nested iframe, and a drag starting *on a control inside* a list. All three were predicted
+  to break under a document-wide `touch-action: none` and none of them does — the
+  intersection stops at the nearest scrolling ancestor, so the rule never reaches a region
+  that scrolls. They are kept because that is the invariant worth pinning, and because T3
+  responding to the CSS while T5-T7 do not is what shows the gesture pipeline is really
+  evaluating `touch-action` rather than the harness measuring nothing.
 - `pillquiet-run.js` — the header pill reports exceptions, not health (issue #205). Every
   stock tile carried a permanent corner badge reading LIVE, ALL UP, CLEAR, QUIET, LOADED
   or SCHEDULED: true from the moment the widget worked until the moment it stopped, on

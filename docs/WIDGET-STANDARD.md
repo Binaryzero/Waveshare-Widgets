@@ -384,20 +384,24 @@ The panel is touch-only: no cursor, no hover, no tooltips.
   and the `:focus-visible` accent outline for free.
 - Don't fight the shell: page swiping is handled by edge zones; the widget owns the rest
   of its slot for its own touch interactions.
-- **A scrollable region must declare `touch-action: pan-y`.** `widget-base.css` sets
-  `touch-action: none` on the widget document, so nothing inside a widget can pan by
-  default, and a region that wants to scroll has to say it is one. Forget it and the list
-  simply will not scroll — visible the moment you try it.
+- **You do not need to think about `touch-action`.** `widget-base.css` sets
+  `touch-action: none` on the widget document, and that is the end of it — scrollable
+  regions still scroll, and there is nothing to opt in or out of.
 
-  That default is not fussiness. A widget document is `overflow: hidden`, so a gesture
-  starting on a control with no scrollable ancestor *inside the frame* has nothing local
-  to pan — and `touch-action` intersects up the ancestor chain **across the iframe
-  boundary**, which handed the gesture to the shell's `#pages`, the horizontal
-  `scroll-snap` container holding every page of the panel. A finger that drifts a few
-  pixels on its way to a tap changed page instead of pressing the control. It was reported
-  against one widget's toggle (#206) but applied to every control not sitting inside a
-  scroller, which is most of them; before the shared default, five widgets had each patched
-  it locally, which is what a missing rule looks like from the outside.
+  Why the rule exists: a widget document is `overflow: hidden`, so a gesture starting on a
+  control with no scrollable ancestor *inside the frame* has nothing local to pan, and
+  `touch-action` intersects up the ancestor chain **across the iframe boundary**. The
+  browser handed such a gesture to the shell's `#pages` — the horizontal `scroll-snap`
+  container holding every page of the panel — so a finger drifting a few pixels on its way
+  to a tap changed page instead of pressing the control (#206).
+
+  Why it does not break scrolling: the intersection stops at the **nearest scrolling
+  ancestor**. A region that scrolls is that ancestor for gestures inside it, so the
+  document-level value never reaches them. This is measured rather than assumed —
+  `touchpan-run.js` drags inside a list, drags starting *on a control inside* a list, in a
+  third-party document's own scroller, and in cross-origin content inside a nested iframe,
+  all with the rule in force. An earlier revision added `touch-action: pan-y` to four
+  scrollers believing they needed rescuing; they did not, and the grants came out again.
 
 ---
 

@@ -2,7 +2,7 @@
   "id": "ws.stock.vitals",
   "name": "Vitals",
   "author": "Waveshare Widgets",
-  "version": "1.1.0",
+  "version": "1.0.1",
   "description": "A gentle self-care HUD where water, eyes, posture and stretch meters drain while you sit at the PC and a pixel pet's mood tracks the one you've neglected most.",
   "min_api_version": 1,
   "supported_slots": [

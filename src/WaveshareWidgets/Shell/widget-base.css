@@ -68,17 +68,26 @@ html, body {
   height: 100%;
   overflow: hidden;
   /* A widget document never scrolls — `overflow: hidden` on the line above says so — which
-   * means no pan gesture inside a widget has anywhere local to go. touch-action intersects
-   * up the ancestor chain ACROSS the frame boundary, so without this the browser handed the
-   * gesture to the shell's #pages: a horizontal scroll-snap container holding every page of
-   * the panel. The finger moves a few pixels on its way to a tap, and the panel changes page
-   * instead of the control acting (#206). It was reported against the notifications eye, but
-   * it applies to any control that is not inside a scrollable region — which is most of them.
+   * means a pan gesture starting on a control has nowhere local to go. touch-action
+   * intersects up the ancestor chain ACROSS the frame boundary, so without this the browser
+   * handed the gesture to the shell's #pages: the horizontal scroll-snap container holding
+   * every page of the panel. The finger moves a few pixels on its way to a tap, and the
+   * panel changes page instead of the control acting (#206). Reported against the
+   * notifications eye; it applied to any control not inside a scrollable region.
    *
-   * Scrollable regions opt back IN with `touch-action: pan-y` (see §8 of WIDGET-STANDARD).
-   * That is deliberately the explicit half: forgetting it makes a list refuse to scroll,
-   * which is visible immediately, while the reverse failure is a gesture quietly stolen from
-   * a control and was in the field for months. */
+   * THIS DOES NOT DISABLE SCROLLING ANYWHERE, which is the part worth knowing before
+   * touching it. The intersection stops at the NEAREST SCROLLING ANCESTOR: a region that
+   * scrolls is that ancestor for gestures inside it, so this value never reaches them, and
+   * nothing needs to opt back in. Measured four ways in touchpan-run.js rather than
+   * reasoned about — a drag inside a list, a drag starting ON a control inside a list, a
+   * third-party document's own scroller, and cross-origin content in a nested iframe, all
+   * with this rule in force.
+   *
+   * The first revision of this change added `touch-action: pan-y` to four scrollers to
+   * "rescue" them, on the assumption above being false. Review then argued the same
+   * assumption implied this would break installed third-party packages and the embedded
+   * pages in the iframe/twitch/youtube widgets. Both the rescue and the objection came from
+   * the same wrong model; the grants were removed once the behaviour was measured. */
   touch-action: none;
 }
 

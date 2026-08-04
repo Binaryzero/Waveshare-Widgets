@@ -44,10 +44,6 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    /* Opt back in to vertical panning: widget-base sets touch-action:none on the
-     * document so a gesture on a control cannot page the panel (#206), and a
-     * scrollable region has to say it is one. */
-    touch-action: pan-y;
     display: flex;
     flex-direction: column;
     gap: clamp(8px, 2vh, 12px);
