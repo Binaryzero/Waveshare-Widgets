@@ -398,18 +398,26 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     const found = await wp.evaluate(() => {
       const SEL = 'button, [role="button"], input[type="range"], input[type="checkbox"], a[href], select';
       const out = [];
+      // The question is only ever about the HORIZONTAL axis: #pages is a horizontal
+      // scroll-snap container, so a control is dangerous exactly when a sideways drag on
+      // it can reach the shell. touch-action INTERSECTS up the chain, so walk it.
+      const blocksHorizontal = (v) => v === 'none' || v === 'pan-y'
+        || (v.includes('pan-y') && !v.includes('pan-x'));
       for (const el of document.querySelectorAll(SEL)) {
         // Hidden controls cannot be touched, so they cannot page anything.
         if (!el.offsetParent && getComputedStyle(el).position !== 'fixed') continue;
-        if (getComputedStyle(el).touchAction === 'none') continue;
-        // A scrolling ancestor gives the gesture something local to do, which is the
-        // other legitimate answer — that is why the list widgets are not violations.
-        let scroller = false;
-        for (let n = el.parentElement; n; n = n.parentElement) {
+        let blocked = false;
+        let consumed = false;
+        for (let n = el; n; n = n.parentElement) {
           const o = getComputedStyle(n);
-          if (/(auto|scroll)/.test(o.overflowY + ' ' + o.overflowX)) { scroller = true; break; }
+          if (blocksHorizontal(o.touchAction)) { blocked = true; break; }
+          // Only a HORIZONTALLY scrolling ancestor consumes a sideways drag. A vertical
+          // list does not: that is precisely why the four scrollers carry `pan-y`, and
+          // treating any auto|scroll as sufficient would have passed a control inside an
+          // overflow-y list with no pan-y while it still paged the panel.
+          if (n !== el && /(auto|scroll)/.test(o.overflowX)) { consumed = true; break; }
         }
-        if (scroller) continue;
+        if (blocked || consumed) continue;
         out.push((el.id ? '#' + el.id : el.tagName.toLowerCase() + (el.className ? '.' + String(el.className).trim().split(/\s+/)[0] : ''))
           + ' = ' + getComputedStyle(el).touchAction);
       }
