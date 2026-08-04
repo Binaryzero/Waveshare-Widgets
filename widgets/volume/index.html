@@ -22,6 +22,11 @@
     flex-direction: column;
     gap: 7px;
     overflow-y: auto;
+    /* pan-y, not auto: a HORIZONTAL drag starting on a control inside this list has
+     * this element as its nearest scrolling ancestor, so a document-level rule never
+     * sees it — and with the default the pan chains out to the shell's #pages and
+     * changes page (measured: scrollLeft 0 -> 612). Vertical scrolling is unaffected. */
+    touch-action: pan-y;
   }
   #sessions:empty { display: none; }   /* let the empty message center in the full space */
   #sessions::-webkit-scrollbar { width: 4px; }

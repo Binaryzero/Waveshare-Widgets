@@ -67,28 +67,6 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  /* A widget document never scrolls — `overflow: hidden` on the line above says so — which
-   * means a pan gesture starting on a control has nowhere local to go. touch-action
-   * intersects up the ancestor chain ACROSS the frame boundary, so without this the browser
-   * handed the gesture to the shell's #pages: the horizontal scroll-snap container holding
-   * every page of the panel. The finger moves a few pixels on its way to a tap, and the
-   * panel changes page instead of the control acting (#206). Reported against the
-   * notifications eye; it applied to any control not inside a scrollable region.
-   *
-   * THIS DOES NOT DISABLE SCROLLING ANYWHERE, which is the part worth knowing before
-   * touching it. The intersection stops at the NEAREST SCROLLING ANCESTOR: a region that
-   * scrolls is that ancestor for gestures inside it, so this value never reaches them, and
-   * nothing needs to opt back in. Measured four ways in touchpan-run.js rather than
-   * reasoned about — a drag inside a list, a drag starting ON a control inside a list, a
-   * third-party document's own scroller, and cross-origin content in a nested iframe, all
-   * with this rule in force.
-   *
-   * The first revision of this change added `touch-action: pan-y` to four scrollers to
-   * "rescue" them, on the assumption above being false. Review then argued the same
-   * assumption implied this would break installed third-party packages and the embedded
-   * pages in the iframe/twitch/youtube widgets. Both the rescue and the objection came from
-   * the same wrong model; the grants were removed once the behaviour was measured. */
-  touch-action: none;
 }
 
 body {
@@ -248,6 +226,21 @@ body.bg-transparent {
 .btn.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: 700; }
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* A control that must never pan (#206). Opt-in, and deliberately NOT a rule on the
+ * document: installed third-party .wswidget packages link this same unversioned sheet, so
+ * anything set at document level lands on code nobody here can see or test. An opt-in
+ * class cannot.
+ *
+ * Use it on a control with no scrollable ancestor inside the frame. Such a gesture has
+ * nothing local to pan, so touch-action intersects up across the iframe boundary and the
+ * shell's #pages — a horizontal scroll-snap container — takes it: a finger drifting a few
+ * pixels on the way to a tap changes page instead of pressing the control.
+ *
+ * Do NOT put it on a control inside a scrolling region; that stops the region scrolling
+ * whenever a finger lands on the control. Those regions want `touch-action: pan-y`
+ * instead — see the four stock scrollers. */
+.no-pan { touch-action: none; }
 
 /* State theater: no tap may be a silent no-op.
  * .pressable      — pressed physicality for interactive tiles that aren't .btn

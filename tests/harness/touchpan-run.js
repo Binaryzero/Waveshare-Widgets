@@ -188,6 +188,23 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   check('T7 a drag that starts ON a control inside the list still scrolls the list',
     rowScrolled > 10, `scrollTop ${rowScrolled}`);
 
+  // ---- T9 · the axis T7 cannot see ----------------------------------------------------
+  // T7 drags vertically out of a control inside the list and the list scrolls. A HORIZONTAL
+  // drag from the same control is a different question: the list is still the nearest
+  // scrolling ancestor, so a rule on the document is not in the intersection at all — and
+  // with the default `auto` the horizontal pan chains straight out to the shell's pager
+  // (measured: scrollLeft 0 -> 612). `touch-action: pan-y` on the scroller is what stops
+  // it, which is why the four stock scrollers carry it.
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await frame.evaluate(() => { document.getElementById('list').scrollTop = 0; });
+  await page.waitForTimeout(250);
+  const rowBox2 = await frame.locator('.app-head').first().boundingBox();
+  const hBefore = await pagesLeft();
+  await drag(rowBox2.x + rowBox2.width * 0.4, rowBox2.y + rowBox2.height / 2, -160, 0);
+  const hAfter = await pagesLeft();
+  check('T9 a HORIZONTAL drag from a control inside the list does not page the panel',
+    Math.abs(hAfter - hBefore) < 5, `pages scrollLeft ${hBefore} -> ${hAfter}`);
+
   // ---- T3 · the reported bug -----------------------------------------------------------
   await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
   await page.waitForTimeout(300);
@@ -224,6 +241,14 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   //
   // Both are synthetic stand-ins on purpose: they encode the CONSTRAINT on widget-base.css
   // rather than the current contents of any one widget.
+  // A third-party widget that overrides `overflow: hidden` and scrolls the DOCUMENT itself,
+  // rather than a child element as T5 does. Review raised this shape as the case a
+  // document-level rule would kill; the shipped design has no document-level rule, so it is
+  // here as a standing guard rather than as evidence for or against that claim.
+  const ROOT_SCROLLER = '<!doctype html><meta charset="utf-8">'
+    + '<link rel="stylesheet" href="https://app.wsw/widget-base.css">'
+    + '<style>html,body{overflow:auto !important}.tall{height:2000px}</style>'
+    + '<div class="tall">third-party root scroller</div>';
   const THIRD_PARTY = '<!doctype html><meta charset="utf-8">'
     + '<link rel="stylesheet" href="https://app.wsw/widget-base.css">'
     + '<style>#scroller{height:100%;overflow-y:auto}.tall{height:2000px}</style>'
@@ -237,6 +262,7 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     + '<iframe src="https://embedded.test/page.html"></iframe>';
 
   await page.route('https://thirdparty.test/**', (r) => r.fulfill({ contentType: 'text/html', body: THIRD_PARTY }));
+  await page.route('https://rootscroll.test/**', (r) => r.fulfill({ contentType: 'text/html', body: ROOT_SCROLLER }));
   await page.route('https://nester.test/**', (r) => r.fulfill({ contentType: 'text/html', body: NESTER }));
   await page.route('https://embedded.test/**', (r) => r.fulfill({ contentType: 'text/html', body: EMBEDDED }));
 
@@ -245,6 +271,7 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     await p.route('https://app.wsw/**', (r) =>
       serve(r, SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '')));
     await p.route('https://thirdparty.test/**', (r) => r.fulfill({ contentType: 'text/html', body: THIRD_PARTY }));
+    await p.route('https://rootscroll.test/**', (r) => r.fulfill({ contentType: 'text/html', body: ROOT_SCROLLER }));
     await p.route('https://nester.test/**', (r) => r.fulfill({ contentType: 'text/html', body: NESTER }));
     await p.route('https://embedded.test/**', (r) => r.fulfill({ contentType: 'text/html', body: EMBEDDED }));
     await p.goto(url);
@@ -263,8 +290,13 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     }
     await cdp2.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await p.waitForTimeout(500);
+    // Read BOTH roots, not just document.scrollingElement. widget-base sets
+    // `html, body { height: 100% }`, which makes BODY the scrolling box on a page that
+    // opts back into overflow — scrollingElement is <html> and stays 0 there. Reading only
+    // it reported a perfectly scrollable third-party widget as dead, and I revised a design
+    // around that phantom before checking the probe itself.
     const top = await target.evaluate((s) => (s ? document.querySelector(s).scrollTop
-      : document.scrollingElement.scrollTop), sel.el || null);
+      : Math.max(document.documentElement.scrollTop, document.body.scrollTop)), sel.el || null);
     await p.close();
     return top;
   };
@@ -272,6 +304,10 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   const tpTop = await scrollProbe('https://thirdparty.test/w.html', { el: '#scroller' });
   check('T5 a third-party widget scroller with no touch-action of its own still scrolls',
     tpTop > 10, `scrollTop ${tpTop}`);
+
+  const rootTop = await scrollProbe('https://rootscroll.test/w.html', {});
+  check('T8 a third-party widget that scrolls its ROOT document still scrolls',
+    rootTop > 10, `scrollTop ${rootTop}`);
 
   const embTop = await scrollProbe('https://nester.test/w.html', { frame: true });
   check('T6 ...and cross-origin content in a nested iframe widget still scrolls',

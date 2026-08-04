@@ -384,24 +384,30 @@ The panel is touch-only: no cursor, no hover, no tooltips.
   and the `:focus-visible` accent outline for free.
 - Don't fight the shell: page swiping is handled by edge zones; the widget owns the rest
   of its slot for its own touch interactions.
-- **You do not need to think about `touch-action`.** `widget-base.css` sets
-  `touch-action: none` on the widget document, and that is the end of it — scrollable
-  regions still scroll, and there is nothing to opt in or out of.
+- **A control with no scrollable ancestor should carry `.no-pan`**, and **a scrollable
+  region should set `touch-action: pan-y`.** Both exist for the same reason and neither is
+  a document-level default, because this stylesheet is also linked by installed third-party
+  packages.
 
-  Why the rule exists: a widget document is `overflow: hidden`, so a gesture starting on a
-  control with no scrollable ancestor *inside the frame* has nothing local to pan, and
-  `touch-action` intersects up the ancestor chain **across the iframe boundary**. The
-  browser handed such a gesture to the shell's `#pages` — the horizontal `scroll-snap`
-  container holding every page of the panel — so a finger drifting a few pixels on its way
-  to a tap changed page instead of pressing the control (#206).
+  A widget document is `overflow: hidden`, so a gesture starting on a control with nothing
+  local to pan escapes: `touch-action` intersects up the ancestor chain **across the iframe
+  boundary**, and the shell's `#pages` — a horizontal `scroll-snap` container — takes it. A
+  finger drifting a few pixels on the way to a tap changes page instead of pressing the
+  control. `.no-pan` (`touch-action: none`) stops that; `manipulation` does not, because it
+  still permits a pan.
 
-  Why it does not break scrolling: the intersection stops at the **nearest scrolling
-  ancestor**. A region that scrolls is that ancestor for gestures inside it, so the
-  document-level value never reaches them. This is measured rather than assumed —
-  `touchpan-run.js` drags inside a list, drags starting *on a control inside* a list, in a
-  third-party document's own scroller, and in cross-origin content inside a nested iframe,
-  all with the rule in force. An earlier revision added `touch-action: pan-y` to four
-  scrollers believing they needed rescuing; they did not, and the grants came out again.
+  A scroller needs `pan-y` for the *other* axis. Inside a vertical list, the list is the
+  nearest scrolling ancestor, so a document-level rule is not even in the intersection — but
+  the list only scrolls vertically, so a **horizontal** drag starting on a row chains
+  straight out to the pager (measured: `scrollLeft 0 -> 612`). `pan-y` keeps the vertical
+  scroll and refuses the horizontal escape.
+
+  Do not put `.no-pan` on a control *inside* a scrolling region; that stops the region
+  scrolling whenever a finger lands on the control.
+
+  **Known gap:** none of this reaches the shell's own `.edge` overlays — fixed 36px strips
+  at each screen edge, `z-index: 5`, which page on tap. A control within 36px of a screen
+  edge is partly covered by one, and that touch never reaches the widget at all. See #213.
 
 ---
 
