@@ -1054,6 +1054,13 @@
   // Everything below/around the preview, WITHOUT poking the replica — used directly
   // when the replica itself originated the change (capture) and already shows it.
   function renderEditorPanel() {
+    // Every render REPLACES the property controls, so a body-appended chooser opened
+    // against the old ones is now pointed at detached inputs — a pick would write into
+    // whichever slot was selected when it opened, while a different slot's inspector is
+    // on screen. closePanel() is not enough: selecting another slot through the embedded
+    // PREVIEW keeps the panel open and rebuilds it, and the iframe's pointer event never
+    // reaches this document's outside-click handler, so nothing else takes it down.
+    closeAppPop();
     // Every render is a possible context change (page chip select, adoption,
     // gallery toggle): an OPEN inspector must never keep naming the previous
     // context while showing the new one's fields.

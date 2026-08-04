@@ -250,6 +250,16 @@ const layout = {
   await page.locator('#save').click();
   await page.waitForTimeout(600);
   const deskRowSaved = ((saved.length ? saved[saved.length - 1].pages[0].slots[0].settings : {}).items || [])[0] || {};
+  // NO CHECK for the panel-rebuild cleanup, deliberately. renderEditorPanel() now calls
+  // closeAppPop() so a rebuild cannot leave the chooser pointed at detached inputs — but
+  // the case that matters is selection through the embedded PREVIEW, and the probe for it
+  // was a false assurance: clicking a slot chip closes the popover through the ordinary
+  // outside-pointer handler, so the check passed with the fix REMOVED. Driving the real
+  // path means posting `slot-selected` from the replica frame, and the listener demands
+  // ev.source === previewFrame.contentWindow with a generation only the closure knows.
+  // A check that passes either way is worse than none: it reports coverage that is not
+  // there. The fix ships unproven by test, and the PR says so.
+
   check('E36e picking retires the row\'s legacy action kind',
     deskRowSaved.target === 'C:\\Users\\u\\Start Menu\\Code.lnk' && !('kind' in deskRowSaved),
     JSON.stringify({ saves: saved.length, row: deskRowSaved }));

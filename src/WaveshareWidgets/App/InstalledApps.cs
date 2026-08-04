@@ -58,6 +58,10 @@ internal static class InstalledApps
         // One counter across BOTH trees: the bound is on the work this call does, and
         // two separately-bounded walks are not a bound on the pair of them.
         var visited = 0;
+        // Depth is a bound too, and a silent one: a shortcut nested below MaxDepth is
+        // skipped with both counters near zero, so `truncated` would say false and the
+        // picker would tell the user their application is not installed.
+        var depthCut = false;
 
         // Machine first so the per-user pass overwrites it, not the other way round.
         foreach (var root in new[] { Environment.SpecialFolder.CommonStartMenu, Environment.SpecialFolder.StartMenu })
@@ -66,10 +70,10 @@ internal static class InstalledApps
             if (string.IsNullOrEmpty(dir))
                 continue;
             var programs = Path.Combine(dir, "Programs");
-            Collect(Directory.Exists(programs) ? programs : dir, 0, byName, ref visited);
+            Collect(Directory.Exists(programs) ? programs : dir, 0, byName, ref visited, ref depthCut);
         }
 
-        truncated = visited >= MaxVisited || byName.Count >= MaxEntries;
+        truncated = visited >= MaxVisited || byName.Count >= MaxEntries || depthCut;
         if (truncated)
             Log.Warn($"Installed-app walk stopped early ({byName.Count} apps, {visited} entries seen); the picker is showing a partial list");
 
@@ -96,47 +100,55 @@ internal static class InstalledApps
         return new JsonObject { ["apps"] = arr, ["truncated"] = truncated };
     }
 
-    private static void Collect(string dir, int depth, Dictionary<string, App> into, ref int visited)
+    private static void Collect(string dir, int depth, Dictionary<string, App> into,
+        ref int visited, ref bool depthCut)
     {
-        if (depth > MaxDepth || into.Count >= MaxEntries || visited >= MaxVisited)
+        if (depth > MaxDepth) { depthCut = true; return; }
+        if (into.Count >= MaxEntries || visited >= MaxVisited)
             return;
 
-        // Enumerate, do not GetFiles: the array form materialises the whole directory
-        // before a single bound is consulted, so one folder with a hundred thousand files
-        // is allocated in full and only then found to be too big. Streaming lets the
-        // counter stop it mid-directory.
+        // ONE unfiltered enumeration, and every entry is charged to the budget before
+        // anything is filtered. `EnumerateFiles(dir, "*.lnk")` filters in the OS call, so
+        // a folder holding a hundred thousand .txt files is scanned in full while the
+        // counter barely moves — the bound would still have been advertised and still not
+        // have existed, on a synchronous WebView handler. FileSystemInfo also carries the
+        // attributes the enumeration already returned, so telling a directory from a file
+        // costs no extra stat.
+        IEnumerable<FileSystemInfo> entries;
         try
         {
-            foreach (var file in Directory.EnumerateFiles(dir, "*.lnk"))
-            {
-                if (++visited >= MaxVisited || into.Count >= MaxEntries)
-                    return;
-                var name = Path.GetFileNameWithoutExtension(file);
-                if (string.IsNullOrWhiteSpace(name) || IsNoise(name))
-                    continue;
-                into[name] = new App(name, file);
-            }
+            entries = new DirectoryInfo(dir).EnumerateFileSystemInfos();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
             // One unreadable folder is not a reason to return nothing — a redirected or
             // permission-odd Start Menu is common enough that failing the whole list over
-            // it would leave the picker empty with no explanation. Enumeration can throw
-            // part-way through, so whatever was already added stays added.
+            // it would leave the picker empty with no explanation.
+            return;
         }
 
         try
         {
-            foreach (var sub in Directory.EnumerateDirectories(dir))
+            foreach (var info in entries)
             {
-                if (++visited >= MaxVisited)
+                if (++visited >= MaxVisited || into.Count >= MaxEntries)
                     return;
-                Collect(sub, depth + 1, into, ref visited);
+                if ((info.Attributes & FileAttributes.Directory) != 0)
+                {
+                    Collect(info.FullName, depth + 1, into, ref visited, ref depthCut);
+                    continue;
+                }
+                if (!info.Name.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var name = Path.GetFileNameWithoutExtension(info.Name);
+                if (string.IsNullOrWhiteSpace(name) || IsNoise(name))
+                    continue;
+                into[name] = new App(name, info.FullName);
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
-            // Same reasoning: keep whatever this level already yielded.
+            // Lazy enumeration can throw part-way through; whatever was added stays added.
         }
     }
 
