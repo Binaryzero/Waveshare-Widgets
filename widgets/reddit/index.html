@@ -143,28 +143,32 @@
     listingTimer = setInterval(() => refreshListing(false), LISTING_REFRESH_MS);
   }
 
+  // Recorded identically at every gate in refreshListing, so the resume owes the same job
+  // whichever one refused it. A first load stays a first load: it arms the slideshow, and
+  // a later refresh catching up must not silently drop that.
+  function deferListing(firstLoad) {
+    missedWhilePaused = true;
+    missedListing = true;
+    missedFirstLoad = missedFirstLoad || !!firstLoad;
+  }
+
   async function refreshListing(firstLoad) {
-    if (gameOn) {
-      missedWhilePaused = true;
-      missedListing = true;
-      missedFirstLoad = missedFirstLoad || !!firstLoad;
-      return;
-    }
+    if (gameOn) { deferListing(firstLoad); return; }
     try {
       const url = 'https://www.reddit.com/r/' + encodeURIComponent(cfg.subreddit) +
         '/' + cfg.sort + '.json?limit=60&raw_json=1';
       const res = await WW.fetch(url, { maxBytes: LISTING_MAX_BYTES });
+      // Checked the moment the response lands, BEFORE reading its body: the parse is the
+      // expensive half — up to LISTING_MAX_BYTES of JSON — and it was running inside the
+      // game because the only gate sat after it. The bytes were already on the wire, but
+      // the main-thread cost of decoding them was not owed to a paused widget.
+      if (gameOn) { deferListing(firstLoad); return; }
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const json = await res.json();
-      // The response is the expensive half: parsing up to LISTING_MAX_BYTES, walking the
-      // listing, replacing posts, and on a first load arming the slideshow. A game that
-      // started while the request was in flight gets none of it.
-      if (gameOn) {
-        missedWhilePaused = true;
-        missedListing = true;
-        missedFirstLoad = missedFirstLoad || !!firstLoad;
-        return;
-      }
+      // ...and again after it, because reading the body is an await of its own: a game can
+      // start during the parse, and everything below walks the listing, replaces posts, and
+      // on a first load arms the slideshow.
+      if (gameOn) { deferListing(firstLoad); return; }
       const found = extractImagePosts(json);
       if (found.length === 0) {
         if (firstLoad) showMessage('No image posts found', 'r/' + cfg.subreddit + ' (' + cfg.sort + ') has no direct images right now.');
@@ -179,12 +183,7 @@
       }
     } catch (e) {
       // A failure observed during a game is owed work, not a verdict.
-      if (gameOn) {
-        missedWhilePaused = true;
-        missedListing = true;
-        missedFirstLoad = missedFirstLoad || !!firstLoad;
-        return;
-      }
+      if (gameOn) { deferListing(firstLoad); return; }
       WW.log('reddit: listing failed: ' + e.message);
       // "Too large" is not "could not load": the subreddit name is right and the network is
       // fine, so pointing at either sends the user to check something that works.

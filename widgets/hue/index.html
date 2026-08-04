@@ -181,7 +181,14 @@
     username = null;
     mode = null;
     let discovered = false;
-    if (!cfg.ip) {
+    // The address stays LOCAL until the generation check below commits it. connect() runs
+    // concurrently with itself — a settings change starts a new one while this one is still
+    // in the cloud round trip — and v1api/v2fetch interpolate cfg.ip at REQUEST time, not at
+    // connect time. So a late discovery writing straight to cfg.ip would redirect the newer
+    // connection: it validated the address the user configured, read that bridge's
+    // application key, and would then send the key to whatever the cloud handed this one.
+    let ip = cfg.ip;
+    if (!ip) {
       // Cloud discovery is rate-limited by Philips and CORS-noisy (the browser-first
       // attempt logs an error before the proxy fallback) — at most one attempt per
       // 10 minutes, cached in localStorage so every instance and re-init shares it (#36).
@@ -194,31 +201,44 @@
       const fresh = cached && typeof cached.at === 'number' &&
         Date.now() - cached.at < (cached.ip ? 600000 : 60000);
       if (fresh) {
-        if (cached.ip) { cfg.ip = String(cached.ip); discovered = true; }
+        if (cached.ip) { ip = String(cached.ip); discovered = true; }
       } else {
+        let found = null;
         try {
           const res = await v1fetch('https://discovery.meethue.com/');  // no CORS for widget origins: proxy-only
           const list = await res.json();
-          if (list && list[0] && list[0].internalipaddress) { cfg.ip = list[0].internalipaddress; discovered = true; }
+          if (list && list[0] && list[0].internalipaddress) found = String(list[0].internalipaddress);
         } catch (e) { /* fall through to message */ }
-        try { localStorage.setItem(DISCO_KEY, JSON.stringify({ at: Date.now(), ip: cfg.ip || null })); } catch (e) { /* ignore */ }
+        if (found) { ip = found; discovered = true; }
+        // Cached even when this connection turns out to be superseded: the entry is the
+        // shared rate limiter for an endpoint Philips throttles, so the attempt counts
+        // however it ends. It records what discovery ACTUALLY returned — writing cfg.ip
+        // here stamped a concurrent connection's manually configured address into the
+        // cache as though the cloud had returned it.
+        try { localStorage.setItem(DISCO_KEY, JSON.stringify({ at: Date.now(), ip: found })); } catch (e) { /* ignore */ }
       }
     }
-    if (!cfg.ip) {
-      showMessage('No Hue Bridge found', 'Set the bridge IP in the widget settings (it\'s shown in the Hue app under Settings → My Hue system).');
-      return;
-    }
 
+    // Ordered deliberately: superseded first (say nothing, touch nothing), then paused
+    // (owed work), and only then the terminal card.
+    //
+    // Checked BETWEEN the two awaits, not only after both: discovery is a cloud round trip,
+    // and a game starting during it would otherwise be followed by the /api/config
+    // validation request below. Discovery FAILING during one used to reach 'No Hue Bridge
+    // found' above this gate — a verdict, recorded in neither flag, so the resume found no
+    // work and the card stayed up for good.
     if (gen !== connectGen) return;   // a newer connect() owns the widget now
-    // Re-checked BETWEEN the two awaits, not only after both: discovery is a cloud round
-    // trip, and a game starting during it would otherwise be followed by the /api/config
-    // validation request below.
     if (gameOn) {
       missedWhilePaused = true;
       pendingInit = true;
       showMessage('Paused', 'A game is running.');
       return;
     }
+    if (!ip) {
+      showMessage('No Hue Bridge found', 'Set the bridge IP in the widget settings (it\'s shown in the Hue app under Settings → My Hue system).');
+      return;
+    }
+    cfg.ip = ip;   // this connection owns the widget: commit the address it resolved
 
     // Never trust an address blindly: cloud discovery hands out stale or wrong
     // IPs (the bridge moved on DHCP, or the ISP shares one public IP between
@@ -464,6 +484,14 @@
       // the tile says the bridge is unreachable, which is the same thing it says for every
       // other failure and is true. v1-only bridges are untouched — they never reach this
       // branch, because they were never in v2 mode.
+      //
+      // Found by sweeping for siblings rather than reported: it is the last catch in the
+      // gated widgets that painted a verdict without checking the gate. Unlike radar's it
+      // heals itself — poll() runs every four seconds and sets the flag on each tick of the
+      // game — so what this changes is that the failure is no longer PAINTED during the
+      // pause, and a game ending inside that four-second window no longer resumes onto an
+      // error card the next tick has already disproved.
+      if (gameOn) { missedWhilePaused = true; return; }
       showMessage('Hue Bridge unreachable', cfg.ip + ' — ' + (e.message || e));
       return;
     }
