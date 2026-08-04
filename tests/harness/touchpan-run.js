@@ -396,26 +396,43 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     await wp.goto('https://w.test/index.html');
     await wp.waitForTimeout(200);
     const found = await wp.evaluate(() => {
-      const SEL = 'button, [role="button"], input[type="range"], input[type="checkbox"], a[href], select';
+      // Semantic elements are not the inventory. Home Assistant wires tap and long-press
+      // onto plain `.ent` divs with no role, and every widget here has some div that acts
+      // like a button — so a fixed tag list is a list of the surfaces someone remembered
+      // to make semantic, which is the same failure as T10's hand-maintained list one
+      // level down. `cursor: pointer` is the honest proxy: it is what the widget itself
+      // says is tappable, and it costs nothing to keep true.
+      const SEL = 'button, [role="button"], input[type="range"], input[type="checkbox"],'
+        + ' a[href], select, [tabindex], [onclick]';
       const out = [];
       // The question is only ever about the HORIZONTAL axis: #pages is a horizontal
       // scroll-snap container, so a control is dangerous exactly when a sideways drag on
       // it can reach the shell. touch-action INTERSECTS up the chain, so walk it.
       const blocksHorizontal = (v) => v === 'none' || v === 'pan-y'
         || (v.includes('pan-y') && !v.includes('pan-x'));
-      for (const el of document.querySelectorAll(SEL)) {
-        // Hidden controls cannot be touched, so they cannot page anything.
-        if (!el.offsetParent && getComputedStyle(el).position !== 'fixed') continue;
+      const candidates = new Set(document.querySelectorAll(SEL));
+      for (const el of document.querySelectorAll('*')) {
+        if (getComputedStyle(el).cursor === 'pointer') candidates.add(el);
+      }
+      for (const el of candidates) {
+        // Visibility is deliberately NOT a filter. REST's #retry, forecast's retry and
+        // vitals' #cardDone are all hidden at load and all touchable the moment their
+        // state arrives; skipping them meant the sweep reported success over three
+        // controls that can page the panel. The CSS that governs them is the same either
+        // way, so the rules are read regardless of whether they are on screen now.
         let blocked = false;
         let consumed = false;
         for (let n = el; n; n = n.parentElement) {
           const o = getComputedStyle(n);
           if (blocksHorizontal(o.touchAction)) { blocked = true; break; }
-          // Only a HORIZONTALLY scrolling ancestor consumes a sideways drag. A vertical
-          // list does not: that is precisely why the four scrollers carry `pan-y`, and
-          // treating any auto|scroll as sufficient would have passed a control inside an
-          // overflow-y list with no pan-y while it still paged the panel.
-          if (n !== el && /(auto|scroll)/.test(o.overflowX)) { consumed = true; break; }
+          // Only a HORIZONTALLY scrolling ancestor consumes a sideways drag — and only
+          // if it can ACTUALLY scroll. CSS overflow normalisation computes the other axis
+          // of an `overflow-y: auto` element from `visible` up to `auto`, so reading the
+          // keyword alone excused every vertical list and the previous "tightening"
+          // tightened nothing. Range is the only honest test.
+          if (n !== el && /(auto|scroll)/.test(o.overflowX) && n.scrollWidth > n.clientWidth) {
+            consumed = true; break;
+          }
         }
         if (blocked || consumed) continue;
         out.push((el.id ? '#' + el.id : el.tagName.toLowerCase() + (el.className ? '.' + String(el.className).trim().split(/\s+/)[0] : ''))
