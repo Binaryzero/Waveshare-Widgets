@@ -103,7 +103,7 @@
   <header>
     <span class="kicker">7-Day Forecast</span>
     <span id="place"></span>
-    <span class="pill ok" id="pill" hidden>Live</span>
+    <span class="pill" id="pill" hidden></span>
   </header>
 
   <main id="days" hidden>
@@ -302,7 +302,9 @@
       hasData = true;
       failStreak = 0;
       document.body.classList.remove('stale');
-      setPill('ok', 'Live');
+      // Healthy: no pill. It reports exceptions, and a seven-day forecast that is simply
+      // working has none — LIVE on a forecast tile said nothing the forecast did not.
+      els.pill.hidden = true;
       showState(null);
     } catch (e) {
       // Same rule as weather: a rejection skips the post-await gates, so a failure seen

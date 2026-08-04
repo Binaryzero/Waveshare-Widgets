@@ -200,9 +200,21 @@ yourself, do it at `body` scope or below.
 A standard widget has five layers. Not every widget needs all five visible at once, but
 each one that exists uses the standard classes so widgets read as one family.
 
-1. **Header** — identity + health at a glance: a `.kicker` (uppercase section label) on
-   the left, a `.pill` (status badge: default accent, or `.ok` / `.warn` / `.err` /
-   `.muted`) on the right.
+1. **Header** — identity, and an exception if there is one: a `.kicker` (uppercase section
+   label) on the left, a `.pill` (status badge: default accent, or `.ok` / `.warn` /
+   `.err` / `.muted`) on the right.
+
+   **The pill reports exceptions, not health — it is hidden whenever the widget is
+   working.** It appears only for something the reader would act on or would otherwise be
+   misled by: data that has gone stale, a degraded count, an error, a setup that is not
+   finished. A pill reading "Live" or "All up" whenever nothing is wrong is a permanent
+   decoration; it says the same thing on every tile forever, so the reader stops seeing
+   the one place a widget has to speak up. Absence is the healthy signal, and that is
+   what makes an appearance worth a glance.
+
+   This rule replaced an earlier one that specified a `Live` pill in the nominal state.
+   A panel of eight tiles all reading LIVE was the result, and it read as noise from
+   across the room.
 2. **Body** — the data: `.value` (+ `.hero` for the headline number) with its `.unit` on
    the same baseline, `.card` for nested rows and sub-surfaces, `.meter` for compact
    horizontal gauges (`.ok` / `.warn` / `.err` variants recolor the fill).
@@ -220,7 +232,8 @@ Annotated skeleton:
   <!-- 1 · Header: what is this + how is it doing -->
   <header class="row">
     <span class="kicker">Network</span>
-    <span class="pill ok" id="pill">Live</span>
+    <!-- Hidden while healthy; shown only to report stale/degraded/error. -->
+    <span class="pill" id="pill" hidden></span>
   </header>
 
   <!-- 2 · Body: the data -->
@@ -263,6 +276,7 @@ error state should instead name the setting to fix).
 | **Empty / setup** | Widget needs configuration (no API key, no sensor picked, no city set) | `.state-card` with `.state-icon`, `.state-title`, `.state-body` explaining *what to do*, plus a `.btn` CTA where an action exists |
 | **Error** | Fetch failed, device unreachable, API rejected | `.state-card.err` (the icon recolors to `--err`) with a plain-language `.state-body` and a **Retry** `.btn` |
 | **Stale** | Data was fine but stopped updating (source paused, network dropped) | **Keep the last data visible**, dimmed (reduce opacity), and swap the header pill to `.pill.muted` (e.g. "Stale") — old data beats no data on a glanceable panel |
+| **Healthy** | Data is current and nothing is degraded | **No pill.** This is the state the reader spends almost all of their time in, so it is the one that must add nothing. Hide the pill rather than filling it with "Live" |
 
 ```html
 <div class="state-card err">
@@ -438,6 +452,7 @@ Copy this into your widget's PR / release notes and check every line:
 - [ ] Empty/setup: `.state-card` explaining what to do, with a CTA where possible
 - [ ] Error: `.state-card.err` with a Retry button
 - [ ] Stale: keeps last data visible, dimmed, with `.pill.muted`
+- [ ] Healthy: the header pill is **hidden** — it reports exceptions, never "Live"
 - [ ] `null` sensor values render a placeholder, with fallback sensors where applicable
 - [ ] No silent no-op: actions give pressed feedback, failures `.fail-flash` (with
       optimistic flips reverted), invisible successes `.confirm-flash`

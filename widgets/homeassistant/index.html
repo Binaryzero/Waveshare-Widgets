@@ -684,9 +684,12 @@
 
     const stale = document.body.classList.contains('stale');
     const pill = el('pill');
+    // Set explicitly on every branch: a pill hidden by the last healthy render has to come
+    // back the moment an entity drops out.
+    pill.hidden = false;
     if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
     else if (unknown) { pill.textContent = unknown + ' unknown'; pill.className = 'pill warn'; }
-    else { pill.textContent = 'Live'; pill.className = 'pill ok'; }
+    else pill.hidden = true;   // healthy: the pill reports exceptions, not health
 
     const notes = [];
     if (cfg.hidden) notes.push(cfg.hidden + ' more checked but no room to show in this slot');
@@ -703,6 +706,8 @@
 
   function stateCard(cls, icon, title, body, onRetry) {
     const pill = el('pill');
+    // Explicitly shown: a healthy render may have hidden it (#205).
+    pill.hidden = false;
     pill.textContent = cls === 'err' ? 'Error' : 'Setup';
     pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
     const s = el('state');

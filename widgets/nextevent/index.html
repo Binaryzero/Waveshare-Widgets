@@ -471,8 +471,13 @@
 
     const stale = document.body.classList.contains('stale');
     const pill = el('pill');
-    pill.textContent = stale ? 'Stale' : left <= 0 ? 'Now' : left < 900000 ? 'Soon' : 'Scheduled';
-    pill.className = 'pill ' + (stale ? 'muted' : left <= 0 ? 'ok' : left < 900000 ? 'warn' : '');
+    // 'Scheduled' said only what the event row below already says. Now and Soon are worth
+    // a badge because they change how the reader treats the tile; sitting there with an
+    // event some hours away is not.
+    const imminent = left <= 0 ? 'Now' : left < 900000 ? 'Soon' : '';
+    pill.hidden = !stale && !imminent;
+    pill.textContent = stale ? 'Stale' : imminent;
+    pill.className = 'pill ' + (stale ? 'muted' : left <= 0 ? 'ok' : 'warn');
 
     // Never silently drop events: a monthly repeat this reader refuses to expand is
     // said out loud, because the alternative is a calendar that looks emptier than it
@@ -491,6 +496,8 @@
     // cards that mean it. A successfully refreshed calendar that simply has nothing in
     // it was labelled Setup beside "Nothing scheduled", telling the user to go and fix a
     // configuration that is already correct.
+    // Explicitly shown: a healthy render may have hidden it (#205).
+    pill.hidden = false;
     pill.textContent = pillText || (cls === 'err' ? 'Error' : 'Setup');
     pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
     const s = el('state');
@@ -529,6 +536,8 @@
     el('data').hidden = true;
     el('meta').textContent = '';
     const pill = el('pill');
+    // Explicitly shown: a healthy render may have hidden it (#205).
+    pill.hidden = false;
     pill.textContent = 'Loading';
     pill.className = 'pill muted';
   }

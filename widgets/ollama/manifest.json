@@ -2,7 +2,7 @@
   "id": "ws.stock.ollama",
   "name": "Ollama",
   "author": "Waveshare Widgets",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "What Ollama actually has resident on the GPU right now: each loaded model, the VRAM it holds, and how long until it unloads. Pairs with the GPU widget.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
