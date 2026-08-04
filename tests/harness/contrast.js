@@ -62,10 +62,17 @@ async function textContrast(locator) {
       for (let n = node; n; n = n.parentElement) {
         const raw = getComputedStyle(n).backgroundColor;
         const bg = parse(raw);
-        // A colour this cannot read is not a colour that is not there. Skipping one was
-        // the whole failure above, so an unparseable non-transparent background poisons
-        // the result into a worst-case bound instead of quietly leaving the stack short.
-        if (!bg) { if (raw && !/^(transparent|rgba\(0, 0, 0, 0\))$/.test(raw)) unreadable = true; continue; }
+        // A colour this cannot read is not a colour that is not there. `oklab()` and
+        // `color(display-p3 ...)` are both valid computed values this does not parse, and
+        // the first version of this branch flagged them and CARRIED ON — so the walk
+        // still reached an opaque ancestor, which then absorbed both bracket bases and
+        // produced two identical "bounds". That is the same silent layer loss the branch
+        // exists to stop, wearing the flag as cover. Stop here instead: everything deeper
+        // is behind a surface of unknown colour, so the bracket belongs at this point.
+        if (!bg) {
+          if (raw && !/^(transparent|rgba\(0, 0, 0, 0\))$/.test(raw)) { unreadable = true; break; }
+          continue;
+        }
         if (bg.a > 0) { stack.push(bg); if (bg.a === 1) break; }
       }
       return { stack, unreadable };
@@ -81,8 +88,10 @@ async function textContrast(locator) {
     // dropped and the bracket is applied there. Bracketing under <body> instead makes
     // both bounds collapse to the same number — which is how the first attempt at this
     // reported a "bound" of 5.90/5.90 and looked like it had proven something.
+    // `unreadable` means the walk stopped at an unknown surface, so every layer it did
+    // collect sits above that unknown and all of them are kept.
     const lastSheer = stack.reduce((at, l, i) => (l.a < 1 ? i : at), -1);
-    const painted = lastSheer >= 0 ? stack.slice(0, lastSheer + 1) : stack;
+    const painted = unreadable ? stack : (lastSheer >= 0 ? stack.slice(0, lastSheer + 1) : stack);
     const against = (base) => {
       let bg = base;
       for (let i = painted.length - 1; i >= 0; i--) bg = over(painted[i], bg);
