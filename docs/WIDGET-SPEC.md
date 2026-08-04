@@ -77,8 +77,15 @@ Install via tray → **Install widget…**, or unzip the folder directly into
 
   ```json
   { "name": "apiToken", "label": "API token", "type": "secret",
-    "placeholder": "Paste the token from the service's settings page" }
+    "placeholder": "ghp_…",
+    "help": "Settings → Developer settings → Tokens (fine-grained). Grant Pull requests: Read-only and Actions: Read-only on the repositories above — nothing here writes." }
   ```
+
+  **A `secret` must carry `help`, and the validator enforces it.** It is the one field a
+  user cannot guess, cannot read back once stored, and cannot get wrong quietly — the value
+  has to be fetched from some other product's UI, so the manifest has to say which UI and
+  what access. A placeholder cannot carry that: it disappears at the first keystroke and is
+  clipped to the control's width.
 
   **This is enforced at install, not just at build.** The host applies the same rule
   when it installs a package and when it rescans the widgets folder: a manifest that
@@ -157,6 +164,15 @@ Install via tray → **Install widget…**, or unzip the folder directly into
 
   Text properties support a `placeholder` — the sanctioned place to show an expected
   format (e.g. `"2026-12-24 18:00"`); labels must never teach syntax.
+
+  **Any property may declare `help`**: a sentence or two rendered under the control, in
+  both the settings window and the on-device sheet, that stays put once a value is typed.
+  Use it wherever the value has to come from somewhere else, or where getting it wrong
+  fails in a way the user cannot diagnose from the tile — an address format, which
+  permissions a token needs, which of two similar-looking URLs is wanted. Skip it where the
+  label already says everything (a text-size slider needs no paragraph). It is guidance at
+  the point of entry, which is the only place a person configuring a widget is actually
+  looking (#207).
 
   Text properties and list fields may also declare a `picker` to add a picker button
   next to the free-text input (typing always stays available):

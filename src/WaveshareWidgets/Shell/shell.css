@@ -522,6 +522,9 @@ body.editing.dragging .edge { pointer-events: auto; }
 /* Settings sheet controls: touch-first (40px+ targets), token-styled. */
 .ps-field { display: flex; flex-direction: column; gap: 4px; }
 .ps-field > label { font-size: 11px; font-weight: 700; color: var(--text-muted, #8e9196); }
+/* Guidance under a control in the on-device sheet (#207). Dim and small — present when
+   wanted, quiet when not. */
+.ps-help { margin: 0; font-size: 11px; line-height: 1.45; color: var(--text-dim, #676a6f); }
 .ps-field input[type="text"], .ps-field input[type="number"], .ps-field select {
   min-height: 38px;
   padding: 0 10px;

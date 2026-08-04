@@ -268,6 +268,13 @@ function validate(folder) {
       err('prop-secret', `${where}: a credential must use type "secret" (the host encrypts those with DPAPI); "${type}" stores it as plaintext in layout.json`);
     if (type === 'secret' && prop.default != null && String(prop.default) !== '')
       err('prop-secret-default', `${where}: a secret must not ship a default value`);
+    // A secret is the one field a user cannot guess, cannot see once stored, and cannot
+    // get wrong quietly — the value has to be fetched from some other product's UI. The
+    // placeholder is not the place to say how: it disappears on the first keystroke and is
+    // clipped to the control width, which is how "read access to the repos above" ended up
+    // being all the guidance a GitHub token got (#207). `help` persists under the control.
+    if (type === 'secret' && !String(prop.help || '').trim())
+      err('prop-secret-help', `${where}: a secret needs "help" saying where the value comes from and what access it needs — a placeholder cannot, it vanishes as soon as the user types`);
     if (type === 'select' && !Array.isArray(prop.options) && !prop.optionsSource)
       err('prop-select', `${where}: select needs "options" or "optionsSource"`);
     if (type === 'slider' && (typeof prop.min !== 'number' || typeof prop.max !== 'number'))

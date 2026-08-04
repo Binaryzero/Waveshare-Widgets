@@ -2,7 +2,7 @@
   "id": "ws.stock.ghqueue",
   "name": "GitHub Queue",
   "author": "Waveshare Widgets",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Per repo: pull requests waiting on your review, and how the last workflow run finished. Uses conditional requests so it stays well inside the token's rate limit.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
@@ -16,13 +16,15 @@
       "fields": [
         { "key": "repo", "label": "owner/name", "type": "text", "placeholder": "binaryzero/waveshare-widgets" }
       ],
-      "default": []
+      "default": [],
+      "help": "One row per repository, as owner/name — the same text that appears in its URL. The token below must have access to every one of them."
     },
     {
       "name": "apiToken",
       "label": "Personal access token",
       "type": "secret",
-      "placeholder": "Fine-grained PAT with read access to the repos above"
+      "placeholder": "Fine-grained PAT with read access to the repos above",
+      "help": "A GitHub fine-grained personal access token (Settings → Developer settings → Tokens (fine-grained)). Give it access to the repositories listed above, then set three permissions to Read-only: Pull requests, for the review queue; Actions, for run status; and Metadata, which GitHub enables for you. Nothing here writes, so Read-only is the whole grant. A classic token also works with the repo and workflow scopes, but grants far more than this widget uses."
     },
     {
       "name": "refreshMinutes",

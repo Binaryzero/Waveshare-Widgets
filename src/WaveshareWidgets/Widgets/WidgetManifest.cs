@@ -218,6 +218,11 @@ public sealed class WidgetProperty
     /// <summary>Expected-format hint for text inputs — the sanctioned place to teach syntax.</summary>
     [JsonPropertyName("placeholder")] public string? Placeholder { get; set; }
 
+    /// <summary>Persistent guidance for the field: what the value is, and where to get it.
+    /// Distinct from Placeholder, which vanishes on the first keystroke and is clipped to
+    /// the control's width — no use for "which permissions does this token need" (#207).</summary>
+    [JsonPropertyName("help")] public string? Help { get; set; }
+
     /// <summary>Host-provided dropdown source for selects (e.g. "sd-profiles").</summary>
     [JsonPropertyName("optionsSource")] public string? OptionsSource { get; set; }
 

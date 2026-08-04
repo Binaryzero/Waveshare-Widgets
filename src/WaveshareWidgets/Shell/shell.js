@@ -1967,6 +1967,14 @@
       label.textContent = prop.label || prop.name;
       field.appendChild(label);
       field.appendChild(psControl(prop, cur, set));
+      // Same guidance as the settings window — the sheet is where a value is most likely
+      // to be typed on the device itself, with no second screen to read docs on (#207).
+      if (prop.help) {
+        const help = document.createElement('p');
+        help.className = 'ps-help';
+        help.textContent = String(prop.help);
+        field.appendChild(help);
+      }
       // Keyed on the LIST, so it reaches every property type rather than only the one
       // control that happens to render text. The secret control brings its own.
       if (prop.type !== 'secret' && restorable.includes(prop.name)) {
