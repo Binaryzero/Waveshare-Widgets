@@ -2,7 +2,7 @@
   "id": "ws.stock.forecast7",
   "name": "7-Day Forecast",
   "author": "Waveshare Widgets",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Week-ahead outlook from Open-Meteo: seven days of condition, high/low and precipitation chance for any city — no API key. Inspired by DGM Previsión 7 días from the Xenon gallery.",
   "min_api_version": 1,
   "supported_slots": [

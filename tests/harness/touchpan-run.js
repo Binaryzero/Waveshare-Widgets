@@ -329,7 +329,12 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   const OPTED = [['hue', '#pairBtn'], ['hue', '#legacyBtn'], ['volume', '#masterMute'],
     ['volume', '#masterSlider'], ['notifications', '#eyeBtn'],
     ['media', '#controls .btn'], ['deck', '.key'], ['launcher', '.tile'],
-    ['streamdeck', '.key'], ['streamdeck', '#live'], ['vitals', '.meter-row']];
+    ['streamdeck', '.key'], ['streamdeck', '#live'], ['streamdeck', '#picker button'],
+    ['vitals', '.meter-row'],
+    // Hidden at load, which is why nothing reported them for so long — but PRESENT, so
+    // their computed value is readable here. Withdrawing T11 took away the only thing
+    // covering them; without these two the fixes in this very commit ship unguarded.
+    ['forecast7', '#retry'], ['rest', '#retry']];
   const bad = [];
   for (const [w, sel] of OPTED) {
     const wp = await context.newPage();
@@ -346,12 +351,21 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     const ta = await wp.evaluate((s2) => {
       let e = document.querySelector(s2);
       if (!e) {
-        const cls = (s2.match(/\.[A-Za-z0-9_-]+/g) || []).map((c) => c.slice(1));
-        if (!cls.length) return '(absent)';
-        const host = document.querySelector(s2.split(' ')[0]) || document.body;
-        e = document.createElement('div');
-        e.className = cls.join(' ');
-        host.appendChild(e);
+        // Build the last segment inside whatever the earlier segments select. The first
+        // version handled only class selectors and returned '(absent)' for a bare tag
+        // like `#picker button` — which reads as "checked and fine" in a list of
+        // controls, the exact silent pass the injection exists to prevent.
+        const parts = s2.trim().split(/\s+/);
+        const leaf = parts[parts.length - 1];
+        const host = parts.length > 1
+          ? document.querySelector(parts.slice(0, -1).join(' ')) : null;
+        if (parts.length > 1 && !host) return '(host absent: ' + parts.slice(0, -1).join(' ') + ')';
+        const cls = (leaf.match(/\.[A-Za-z0-9_-]+/g) || []).map((c) => c.slice(1));
+        const tag = leaf.match(/^[A-Za-z][A-Za-z0-9]*/);
+        if (!cls.length && !tag) return '(absent)';
+        e = document.createElement(tag ? tag[0] : 'div');
+        if (cls.length) e.className = cls.join(' ');
+        (host || document.body).appendChild(e);
       }
       return getComputedStyle(e).touchAction;
     }, sel);
@@ -360,6 +374,22 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   }
   check('T10 every control marked .no-pan actually computes to touch-action: none',
     bad.length === 0, bad.join(' | ') || `${OPTED.length} controls checked`);
+
+  // NO T11. A sweep that enumerates controls instead of checking T10's hand-maintained
+  // list is the right idea — it is what #214 asked for — but it cannot be built here.
+  // Three inventories were tried and all three were narrower than the claim they made:
+  // semantic tags miss Home Assistant's listener-backed `.ent` divs; adding `cursor:
+  // pointer` still misses gallery's and reddit's whole-body click handlers, because
+  // addEventListener changes no computed style; and a static load misses every control a
+  // render path CREATES — streamdeck's own `#picker button` among them, so the guard
+  // could not have caught the defect that prompted it.
+  //
+  // There is no static signal for "this is tappable". The one that works is instrumenting
+  // addEventListener so surfaces declare themselves at registration, and that belongs in
+  // tools/widget-harness.js, which already mounts every widget with a real ww-init and
+  // already runs 162 times per sweep — covering listener-only surfaces, JS-created ones
+  // and post-init reveals in one place. Filed as its own issue rather than left here as a
+  // check that reads like coverage while provably missing real controls.
 
   await browser.close();
   console.log(failures > 0 ? `\n${failures} FAILURES` : '\nALL PASS');

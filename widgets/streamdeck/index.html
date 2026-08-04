@@ -67,6 +67,11 @@
     font: inherit; font-size: clamp(9px, 3vh, 13px);
     color: var(--text); background: var(--control-bg); border: 1px solid var(--line);
     border-radius: 6px; padding: 4px 10px; cursor: pointer;
+    /* A drag here must not reach the shell's pager (#206, #214). #picker is a SIBLING of
+       #live, so the rule on #live never covered these, and renderPicker() rebuilds them
+       on every profile change — which is why this is a rule and not a class. Nothing
+       inside scrolls, so `none` is the whole answer. */
+    touch-action: none;
   }
   #picker button.active { border-color: var(--accent); color: var(--accent); }
   .key img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 13px; }
