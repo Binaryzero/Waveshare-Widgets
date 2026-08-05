@@ -13,23 +13,6 @@ public sealed class TrayApplicationContext : ApplicationContext
 {
     private const string AutostartValueName = "Plinth";
 
-    /// <summary>What the autostart entry was called before the rename. Removed on
-    /// startup rather than migrated.
-    ///
-    /// <para>The rename deliberately carries nothing over, but a Run value is not the
-    /// app's data — it is an instruction Windows acts on, and leaving it behind is the
-    /// one piece of litter that MISBEHAVES rather than merely going stale. The assembly
-    /// is now Plinth.exe, so the old value points at WaveshareWidgets.exe: if that file
-    /// is still on disk from a previous install, BOTH launch at logon and two processes
-    /// fight over the same panel, each re-placing the window under the other. If it is
-    /// gone, the user instead gets a startup entry that silently fails forever.</para>
-    ///
-    /// <para>Deleted unconditionally at startup, not only when autostart is enabled: the
-    /// stale value is exactly as wrong either way, and someone who turned autostart OFF
-    /// before updating would otherwise keep it forever with no surface that mentions
-    /// it.</para></summary>
-    private const string LegacyAutostartValueName = "WaveshareWidgets";
-
     private readonly AppConfig _config;
     private readonly SensorHub _hub = new();
     private readonly WidgetLibrary _library = new();
@@ -44,7 +27,6 @@ public sealed class TrayApplicationContext : ApplicationContext
         AppPaths.EnsureCreated();
         // Stamp every log with the running build so bug reports are unambiguous.
         Log.Info($"Plinth {AppVersion.Describe} starting");
-        RemoveLegacyAutostart();
         _config = AppConfig.Load();
 
         _library.Initialize();
@@ -266,30 +248,6 @@ public sealed class TrayApplicationContext : ApplicationContext
         catch (Exception ex)
         {
             Log.Warn($"Failed to open '{path}': {ex.Message}");
-        }
-    }
-
-    /// <summary>Drops the pre-rename Run value if it is still there. Opened WRITABLE only
-    /// when something needs removing, so the ordinary case takes a read-only handle and
-    /// the common path touches nothing.</summary>
-    private static void RemoveLegacyAutostart()
-    {
-        try
-        {
-            using (var probe = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))
-            {
-                if (probe?.GetValue(LegacyAutostartValueName) is null)
-                    return;
-            }
-            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
-            key?.DeleteValue(LegacyAutostartValueName, throwOnMissingValue: false);
-            Log.Info("Removed the pre-rename autostart entry");
-        }
-        catch (Exception ex)
-        {
-            // A policy-locked or unreadable Run key is not a reason to fail startup. The
-            // cost of not getting here is a stale entry, which is what we already had.
-            Log.Warn($"Could not remove the pre-rename autostart entry: {ex.Message}");
         }
     }
 
