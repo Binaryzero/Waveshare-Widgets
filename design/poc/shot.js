@@ -2,14 +2,30 @@
 // Regenerates the POC screenshots in design/poc/shots/ — the images the directions are
 // judged from, at exactly 1280x400 CSS px, rendered @2x so they read crisply when zoomed.
 //
-//   CHROMIUM=/opt/pw-browsers/chromium node design/poc/shot.js [outDir]
+//   NODE_PATH=<dir with playwright> CHROMIUM=<chromium binary> node design/poc/shot.js [outDir]
+//
+// Needs Playwright and a Chromium, exactly like the runners in tests/harness/ (see that
+// README): `npm i playwright` anywhere on NODE_PATH, or a global install, satisfies it —
+// the module is resolved through the same candidate list tools/widget-harness.js uses, so
+// any environment that can run the harnesses can regenerate these. There is deliberately
+// no package.json here: the repo's convention is that Playwright is provided by the
+// environment, and a second dependency manifest would drift from the one the harnesses
+// document.
 //
 // Paths derive from THIS FILE's location, not from any absolute checkout path or authoring
 // environment, so the script works from any clone. It writes the SAME filenames that are
 // committed (meter.png, lume.png, ledger.png ...): regenerating updates the images people
 // are choosing from rather than leaving them stale next to fresh duplicates.
 'use strict';
-const { chromium } = require('playwright');
+function loadPlaywright() {
+  const path = require('path');
+  const candidates = ['playwright', '/opt/node22/lib/node_modules/playwright',
+    path.join(process.env.HOME || '', 'node_modules/playwright')];
+  for (const c of candidates) { try { return require(c); } catch (e) { /* next */ } }
+  console.error('playwright not found — npm i playwright (and point CHROMIUM at a chromium binary), as for tests/harness');
+  process.exit(1);
+}
+const { chromium } = loadPlaywright();
 const fs = require('fs');
 const path = require('path');
 

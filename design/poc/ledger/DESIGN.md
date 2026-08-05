@@ -12,7 +12,7 @@ masthead is the clock.
 
 The left column is a masthead, not a widget: "The Plinth Ledger" nameplate over a double
 rule, then the hours stacked over the minutes in Fraunces Black at 130px, separated by a
-short letterpress rule, with the date set beneath as an edition line ("Tue, Aug 5 · Late
+short letterpress rule, with the date set beneath as an edition line ("Wed, Aug 5 · Late
 Edition"). It is structural — the whole page hangs off that column the way a front page
 hangs off its nameplate — and it is the thing you can redraw with your eyes closed.
 

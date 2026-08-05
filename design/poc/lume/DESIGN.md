@@ -33,7 +33,7 @@ weight goes up slightly (500) while brightness drops — small text stays crisp 
 
 ## Spacing & grid
 
-- 1280×400, 8px outer margin, 8px gutters. Grid: `312px | 312px | 1fr(624px)`, two 184px rows,
+- 1280×400, 8px outer margin, 8px gutters. Grid: `312px | 312px | 1fr(624px)`, two 188px rows,
   clock spans both.
 - Pane radius 22px throughout. Inner padding 20–34px — generous; negative space is part of the
   luminous look. Tiles have almost no internal rules: the only hairlines are 1px
