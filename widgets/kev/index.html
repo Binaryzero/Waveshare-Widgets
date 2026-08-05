@@ -141,7 +141,6 @@
   let pollAnchor = 0;      // when the current wait began: the last poll attempt's end
   let failures = 0;        // consecutive failed polls; stretches the interval
   let polled = false;      // has a request ever actually been ATTEMPTED?
-  let gameOn = false;      // a fullscreen game is foreground: WIDGET-SPEC says gate JS work
   let started = false;
   let inFlight = false;
   let answered = false;   // has a cache read or a response actually happened yet?
@@ -166,10 +165,6 @@
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
-
-    // Seeded here, not only listened for: onGame reports later flips, so a widget that
-    // only listens polls straight through a game that was already running when it loaded.
-    gameOn = !!(state.game && state.game.active);
 
     cfg.watch = parseTerms(s.watch);
     cfg.maxItems = Math.min(12, Math.max(3, Number(s.maxItems) || 6));
@@ -256,12 +251,7 @@
     // could come back stale and stay that way for another full interval. arm() leaves the
     // anchor where it was, which keeps an overdue poll overdue; its hidden floor is what
     // stops an already-overdue deadline from spinning this function on a zero timer.
-    // Hidden, or a game is running. WIDGET-SPEC: game mode pauses CSS animation for
-    // every widget, but JS work is the widget's to gate — and this one downloads and
-    // parses a multi-megabyte catalog, on a machine whose whole frame budget is spoken
-    // for. document.hidden does not cover it: the panel is a second screen and stays
-    // visible while the game has the first.
-    if (document.hidden || gameOn) { arm(); return; }
+    if (document.hidden) { arm(); return; }
     if (inFlight) { schedule(); return; }
     inFlight = true;
     polled = true;   // an ATTEMPT, not a success: the hidden branch above returns first
@@ -392,7 +382,7 @@
     // The floor applies only while hidden, where tick() returns without polling: without
     // it an overdue deadline would re-enter on a zero timer forever. Browsers throttle
     // hidden-document timers to about once a minute anyway, so it costs nothing.
-    const floor = (document.hidden || gameOn) ? HIDDEN_RECHECK : 0;
+    const floor = document.hidden ? HIDDEN_RECHECK : 0;
     timer = setTimeout(tick, Math.max(floor, pollAnchor + pollDelay() - Date.now()));
   }
 
@@ -565,25 +555,13 @@
       // backoff as a success would: the next automatic poll goes back to the chosen
       // interval instead of inheriting a stretch this attempt was meant to end.
       failures = 0;
-      // The poll is now DUE, and saying so is what makes the retry survive the game gate
-      // (#164). tick() returns early while a game is running, so pressing Retry used to
-      // leave nothing behind: onGame re-arms the EXISTING deadline, which is still an
-      // untouched interval from the last attempt, and at refreshMinutes 1440 that is a
-      // day. An anchor of 0 is overdue by definition, and arm(), the visibility handler
-      // and the onGame transition all read the same expression — so every one of them
-      // now finds this retry waiting instead of only the path that happened to set it.
+      // The poll is now DUE, and saying so is what makes the retry survive a hidden
+      // document (#164). tick() returns early while the page is hidden, having only
+      // re-armed the EXISTING deadline — still an untouched interval from the last
+      // attempt, and at refreshMinutes 1440 that is a day. An anchor of 0 is overdue by
+      // definition, and arm() and the visibility handler read the same expression, so
+      // both find this retry waiting instead of only the path that happened to set it.
       pollAnchor = 0;
-      if (gameOn) {
-        // Keep the card, and say what is actually true. A spinner here promises work
-        // this widget has deliberately gated: nothing will run until the game ends, so
-        // painting one claims progress that cannot happen and is the state this tile has
-        // spent several rounds learning not to show. The pill stays on Error for the
-        // same reason — the feed is still unavailable.
-        body.textContent = 'Retry queued — the feed is left alone while a game is running,'
-          + ' and this will run the moment the game ends.';
-        retry.disabled = true;
-        return;
-      }
       state.className = 'state-card';
       state.textContent = '';
       const sp = document.createElement('div');
@@ -599,16 +577,6 @@
     state.hidden = false;
     el('data').hidden = true;
   }
-
-  // Browsers throttle timers in hidden documents; cooperate rather than fight it, and
-  // catch up the moment the page comes back.
-  // A flip in either direction just re-arms: while a game is on the floor keeps this
-  // from spinning, and when it ends an overdue deadline computes to zero and the catch-up
-  // poll runs immediately.
-  WW.onGame((g) => {
-    gameOn = !!(g && g.active);
-    if (started) arm();
-  });
 
   // Geometry can change with no render behind it. The on-panel editor resizes a slot's
   // iframe in place without sending another init, and moving the panel to a display of a
@@ -630,6 +598,8 @@
     }, 150);
   });
 
+  // Browsers throttle timers in hidden documents; cooperate rather than fight it, and
+  // catch up the moment the page comes back.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden || !started || inFlight) return;
     // Measured against the deadline the chain is actually waiting on. The old test used

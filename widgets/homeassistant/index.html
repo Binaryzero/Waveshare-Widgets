@@ -119,7 +119,6 @@
   let lastOk = 0;
   let pollAnchor = 0;
   let fails = 0;
-  let gameOn = false;
   // entity id -> the poll sequence current when its command was sent. A guard may only be
   // released by a poll that BEGAN after the command; one already in flight when the
   // command went out carries a snapshot from before it and cannot reconcile anything.
@@ -143,10 +142,8 @@
   const el = (id) => document.getElementById(id);
   const domainOf = (id) => String(id || '').split('.')[0];
 
-  // The two reasons to hold network work, in one predicate so every gate agrees. The
-  // panel is a second screen and stays VISIBLE while a game has the first, so
-  // document.hidden does not cover the game on its own (WIDGET-SPEC.md:200-205).
-  const paused = () => gameOn || document.hidden;
+  // The reason to hold network work, in one predicate so every gate agrees.
+  const paused = () => document.hidden;
 
   // Faults this widget can tell apart. An expired long-lived token and an unplugged
   // server want completely different actions, and a router's captive portal answering
@@ -227,9 +224,6 @@
 
   WW.onInit((s0) => {
     const s = s0.settings;
-    // Seeded here, not left to onGame: onGame reports later flips, so a widget that only
-    // listens polls straight through a game that was already running when it loaded.
-    gameOn = !!(s0.game && s0.game.active);
     const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
@@ -270,21 +264,11 @@
     // build() blanks every tile to "--". The states behind them are still good when the
     // identity has not changed — the shell re-sends an init for a theme change, and
     // waiting for a whole poll to repaint them means an ordinary theme switch empties
-    // the panel, or leaves it empty indefinitely if the widget is paused for a game.
+    // the panel, or leaves it empty indefinitely while the panel is hidden.
     if (states.size) render();
     clearTimeout(timer);
     started = true;
     tick(gen);
-  });
-
-  WW.onGame((g) => {
-    const was = gameOn;
-    gameOn = !!(g && g.active);
-    if (!started || gameOn || !was) return;
-    // The game ended. Someone turning back to the panel wants the house as it is now,
-    // not the schedule the pause left behind.
-    clearTimeout(timer);
-    tick(generation);
   });
 
   // How many tiles the slot can actually hold. Columns followed the entity COUNT alone,
@@ -752,8 +736,7 @@
     stateCard('err', '!', 'Home Assistant unavailable', message, () => {
       stateCard('', '', 'Retrying', '');
       // An explicit retry spends the backoff rather than charging it to the person who
-      // pressed the button. The game gate stays shut: a button cannot consent on their
-      // behalf to work during someone else's game.
+      // pressed the button.
       fails = 0;
       pollAnchor = 0;
       clearTimeout(timer);
@@ -762,7 +745,7 @@
   }
 
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden || !started || gameOn) return;
+    if (document.hidden || !started) return;
     if (Date.now() - lastOk >= pollDelay()) { clearTimeout(timer); tick(generation); }
   });
 </script>

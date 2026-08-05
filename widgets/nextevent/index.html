@@ -73,7 +73,6 @@
   let inFlight = false;
   let lastOk = 0;
   let failures = 0;        // consecutive failures — drives the retry backoff
-  let gameOn = false;
   let generation = 0;      // bumped when the source changes; older answers are discarded
   let activeController = null;
   let dueAt = 0;           // when the next fetch is due, tracked even while paused
@@ -89,7 +88,7 @@
 
   // One predicate, used by every gate. Two copies of this rule drift, and the shape of
   // the drift is always a tile that keeps polling in a state it was supposed to stop in.
-  const paused = () => gameOn || document.hidden;
+  const paused = () => document.hidden;
 
   /** Runs `job` under an abort deadline that covers the BODY too. A resolved WW.fetch
    *  only means the headers arrived; a calendar that then dribbles its body would hang
@@ -110,10 +109,6 @@
 
   WW.onInit((s0) => {
     const s = s0.settings;
-    // onGame reports TRANSITIONS only, so a tile that boots while a game already owns
-    // the screen never hears about it. ww-init carries the current state: seed from it,
-    // or this widget is the one thing still fetching during a game.
-    gameOn = !!(s0.game && s0.game.active);
     const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
@@ -197,37 +192,6 @@
     }
   });
 
-  WW.onGame((g) => {
-    const was = gameOn;
-    gameOn = !!(g && g.active);
-    if (gameOn === was) return;
-    if (gameOn) {
-      // Stop the network AND the 1 Hz repaint: a game owns the screen, so both are work
-      // nobody can see. Cancelling the TIMER alone left a request already in flight to
-      // finish on its own — up to 4 MiB pulled and parsed behind a game, and a success
-      // path that repaints a screen the game owns. Retire it the same way a source
-      // change does: bump the generation so the abort is read as superseded rather than
-      // as a failure worth a card, then clear the flags by hand, because a superseded
-      // unwind deliberately does not.
-      generation++;
-      if (activeController) { try { activeController.abort(); } catch (e) { /* already gone */ } }
-      activeController = null;
-      inFlight = false;
-      clearTimeout(fetchTimer);
-      fetchTimer = null;
-      clearInterval(tickTimer);
-      tickTimer = null;
-      return;
-    }
-    if (!started) return;
-    startTick();
-    paint();
-    // Whatever was held is now as old as the game was long. Refresh if it is due,
-    // rather than waiting out a timer that was cancelled when the game started.
-    if (Date.now() >= dueAt) { clearTimeout(fetchTimer); load(); }
-    else schedule(remainingWait());
-  });
-
   function startTick() {
     clearInterval(tickTimer);
     tickTimer = setInterval(paint, 1000);
@@ -235,9 +199,9 @@
 
   async function load() {
     // A load that comes due while paused stays due. Calling schedule() here would push
-    // `dueAt` a whole fresh interval into the future, and the resume handlers — which
-    // ask exactly that question — would then decline to fetch: at the 12-hour cadence a
-    // tile could sit on stale data for another 12 hours after the game ended. Leaving
+    // `dueAt` a whole fresh interval into the future, and the resume path — which asks
+    // exactly that question — would then decline to fetch: at the 12-hour cadence a tile
+    // could sit on stale data for another 12 hours after the panel came back. Leaving
     // `dueAt` in the past is what makes the resume path pick it up immediately.
     if (paused()) return;
     // Already fetching is different: something IS in progress, so re-arming normally is
@@ -337,21 +301,21 @@
   }
 
   /** Arms the next fetch. `delayMs` is for resuming: a pause does not restart the
-   *  refresh interval, it interrupts it, so coming back from a game or an unhidden panel
-   *  owes only the REMAINDER. Arming a fresh full interval there meant a 30-second game
-   *  could add a whole refresh period to how stale the tile is allowed to be. */
+   *  refresh interval, it interrupts it, so an unhidden panel owes only the REMAINDER.
+   *  Arming a fresh full interval there meant a 30-second hide could add a whole refresh
+   *  period to how stale the tile is allowed to be. */
   function schedule(delayMs) {
     clearTimeout(fetchTimer);
     fetchTimer = null;
     const wait = delayMs === undefined ? nextDelayMs() : Math.max(0, delayMs);
-    // WHEN the next fetch is due, recorded even while paused. The resume paths used to
+    // WHEN the next fetch is due, recorded even while paused. The resume path used to
     // ask "how long since the last SUCCESS", which is a different question with a wrong
     // answer during backoff: after a failure `lastOk` is already older than the interval,
-    // so every game or unhide fired an immediate retry and threw the backoff away — the
-    // one situation the backoff exists for. A due time is the same quantity for both
-    // gates, so they cannot disagree about it.
+    // so every unhide fired an immediate retry and threw the backoff away — the one
+    // situation the backoff exists for. A due time is the same quantity the arming side
+    // records, so the two cannot disagree about it.
     dueAt = Date.now() + wait;
-    // A paused tile arms nothing. onGame and visibilitychange re-arm on the way back,
+    // A paused tile arms nothing. The visibilitychange handler re-arms on the way back,
     // so this cannot strand the chain.
     if (paused() || !cfg.url) return;
     fetchTimer = setTimeout(load, wait);

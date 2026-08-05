@@ -62,7 +62,7 @@
   const RESPONSE_CAP = 262144;
   const CACHE_MAX = 60;          // etag/body entries kept; repo lists change over a session
   const IDLE_FLOOR = 5000;       // a re-armed timer never fires sooner than this
-  const GATED_RECHECK = 60000;   // backstop while paused for a game or a hidden panel
+  const GATED_RECHECK = 60000;   // backstop while paused for a hidden panel
   const MAX_WAIT = 3600000;
   const MAX_REPOS = 10;
   const cfg = { repos: [], token: '', refreshMs: 300000, dropped: 0, hidden: 0, malformed: 0 };
@@ -84,13 +84,12 @@
   let generation = 0;
   let pollAnchor = 0;          // when the current cadence's period began
   let fails = 0;               // consecutive failed polls, for backoff
-  let gameOn = false;
 
   const el = (id) => document.getElementById(id);
 
-  // The two reasons to hold network work, in one predicate so the gate at the top of a
-  // sweep and the gate between its requests cannot drift apart.
-  const paused = () => gameOn || document.hidden;
+  // The reason to hold network work, in one predicate so the gate at the top of a sweep
+  // and the gate between its requests cannot drift apart.
+  const paused = () => document.hidden;
 
   function parseRepos(value) {
     const raw = Array.isArray(value) ? value : [];
@@ -126,12 +125,6 @@
   WW.onInit((s0) => {
     const gen = ++generation;
     const s = s0.settings;
-    // Seeded here, not left to onGame: onGame reports later flips, so a widget that only
-    // listens polls straight through a game that was already running when it loaded
-    // (WIDGET-SPEC.md:200-205). Twenty API calls an interval is exactly the work the spec
-    // asks widgets to hold, and document.hidden does not cover it — the panel is a second
-    // screen and stays visible while the game has the first.
-    gameOn = !!(s0.game && s0.game.active);
     const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
@@ -378,11 +371,11 @@
         // A settings change part-way through a sweep makes the rest of it worthless:
         // those results would be keyed to a repo list nobody is looking at any more.
         if (gen !== generation) return;
-        // The gate at the top of the sweep is not enough. Requests are sequential, so a
-        // game starting — or the panel being hidden — after the first one is already away
-        // would be followed by up to eighteen more calls, the exact work both gates exist
-        // to hold. WIDGET-STANDARD.md asks widgets to skip work while hidden rather than
-        // fight the timer throttle, and a sweep already in flight is still work.
+        // The gate at the top of the sweep is not enough. Requests are sequential, so the
+        // panel being hidden after the first one is already away would be followed by up
+        // to eighteen more calls, the exact work the gate exists to hold.
+        // WIDGET-STANDARD.md asks widgets to skip work while hidden rather than fight the
+        // timer throttle, and a sweep already in flight is still work.
         if (paused()) return;
         const [owner, name] = repo.split('/');
         // Two independent requests, so two independent faults. One combined `error` meant
@@ -671,26 +664,15 @@
       stateCard('', '', 'Retrying', '');
       clearTimeout(timer);
       // A person pressing Retry has asked for a poll now, so the backoff a failing token
-      // earned is spent rather than applied to their request — but the game gate stays
-      // shut, because a button in a widget cannot consent to work during someone's game.
+      // earned is spent rather than applied to their request.
       fails = 0;
       pollAnchor = 0;
       tick(generation);
     });
   }
 
-  WW.onGame((g) => {
-    const was = gameOn;
-    gameOn = !!(g && g.active);
-    if (!started || gameOn || !was) return;
-    // The game ended. Someone turning back to the panel is asking for its current state,
-    // not the stretched schedule the pause left behind.
-    clearTimeout(timer);
-    tick(generation);
-  });
-
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden || !started || gameOn) return;
+    if (document.hidden || !started) return;
     if (Date.now() - lastOk >= pollDelay()) { clearTimeout(timer); tick(generation); }
   });
 </script>

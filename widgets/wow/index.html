@@ -108,7 +108,6 @@
   // exactly the mixed-market trend the per-region key was added to prevent.
   let generation = 0;
   let failures = 0;           // consecutive whole-tick failures — drives the retry backoff
-  let gameOn = false;
   let activeController = null;
   let dueAt = 0;              // when the next tick is due, tracked even while paused
   let lastProblems = [];      // why the last refresh was Partial, so a repaint can say so
@@ -132,7 +131,7 @@
 
   // One predicate for every gate. Two copies of this rule drift, and the drift always
   // looks like a tile still polling in a state it was supposed to stop in.
-  const paused = () => gameOn || document.hidden;
+  const paused = () => document.hidden;
 
   /** Runs `job` under an abort deadline covering the BODY read too — a resolved WW.fetch
    *  only means the headers arrived, so a source that then dribbles its body would hang
@@ -299,9 +298,6 @@
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
     readSparkColors();
 
-    // onGame reports TRANSITIONS only, so a tile that boots while a game already owns
-    // the screen never hears about it. ww-init carries the current state.
-    gameOn = !!(s0.game && s0.game.active);
     const prevKey = credKey();
     const prevRegion = cfg.region;
     const prevRealm = cfg.realm, prevChar = cfg.character, prevRefreshMs = cfg.refreshMs;
@@ -325,10 +321,9 @@
       loadSeries();
       paintReset();
       // The countdown is its own slow clock — a minute is plenty for a week-long timer
-      // and costs nothing. Only armed when something can be seen: arming it while a game
-      // already owned the screen left a handle no game-start transition would ever clear,
-      // and the game-end path then wrote a second interval over it, orphaning the first
-      // to tick through every future pause.
+      // and costs nothing. Only armed when something can be seen: arming it while the
+      // panel is hidden left a handle ticking behind a tab nobody is looking at, and the
+      // resume path then wrote a second interval over it, orphaning the first.
       if (!paused()) startResetTimer();
       tick();
     } else if (queryChanged) {
@@ -373,35 +368,9 @@
     }
   });
 
-  WW.onGame((g) => {
-    const was = gameOn;
-    gameOn = !!(g && g.active);
-    if (gameOn === was) return;
-    if (gameOn) {
-      // A game owns the screen: stop the network AND retire what is already out, which
-      // cancelling the timer alone does not do. Its success path would otherwise repaint
-      // a screen nobody can see, having spent four API calls to do it. The retry state
-      // survives, because a pause interrupts the wait rather than ending it.
-      retire(true);
-      clearTimeout(timer);
-      timer = null;
-      clearInterval(resetTimer);
-      resetTimer = null;
-      return;
-    }
-    if (!started) return;
-    // Still hidden? Then the game ending changes nothing that can be seen. The other
-    // resume path already tests this; this one asserted only that the game had ended.
-    if (paused()) return;
-    startResetTimer();
-    paintReset();
-    if (Date.now() >= dueAt) { clearTimeout(timer); tick(); }
-    else schedule(remainingWait());
-  });
-
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { clearInterval(resetTimer); resetTimer = null; return; }
-    if (paused() || !started) return;
+    if (!started) return;
     startResetTimer();
     paintReset();
     if (Date.now() >= dueAt) { clearTimeout(timer); tick(); }
@@ -592,10 +561,10 @@
    *  The generation half is the familiar one: the query moved on, so this answer
    *  describes a character or a region nobody asked for any more.
    *
-   *  The pause half is new. `paused()` was tested at entry only, so a panel hidden — or a
-   *  game started — a second into a tick still went on to fetch the affixes and the
-   *  character profile behind it and render them where nobody could see them, which is
-   *  the whole point of the gate. Bailing retires what is in flight but KEEPS `failures`
+   *  The pause half is new. `paused()` was tested at entry only, so a panel hidden a
+   *  second into a tick still went on to fetch the affixes and the character profile
+   *  behind it and render them where nobody could see them, which is the whole point of
+   *  the gate. Bailing retires what is in flight but KEEPS `failures`
    *  and `dueAt`: a pause interrupts the wait rather than ending it, and the tick that
    *  was due when it started is still due when the panel comes back. Resetting either is
    *  the trap that produced two earlier findings on this widget. */
@@ -755,10 +724,10 @@
     if (activeController) { try { activeController.abort(); } catch (e) { /* gone */ } }
     activeController = null;
     inFlight = false;
-    // A GAME PAUSE is not a new query. Clearing the backoff here meant ending even a
-    // short game satisfied `Date.now() >= dueAt` and ticked immediately, throwing away
-    // the outage cadence — the same defeat as the duplicate visibility handler removed
-    // last round, at a different call site. Only a genuine query change resets these.
+    // A HIDDEN PANEL is not a new query. Clearing the backoff here meant even a short
+    // hide satisfied `Date.now() >= dueAt` on return and ticked immediately, throwing
+    // away the outage cadence — the same defeat as the duplicate visibility handler
+    // removed last round, at a different call site. Only a real query change resets these.
     if (!keepRetryState) { failures = 0; dueAt = 0; }
   }
 
@@ -916,7 +885,7 @@
     el('data').hidden = true;
   }
 
-  // The visibility handler lives above, with the game gate, and resumes from `dueAt`.
+  // The visibility handler lives above and resumes from `dueAt`.
   // There used to be a SECOND one here that compared against the plain refresh interval:
   // the first re-armed the remaining backoff and this one immediately cleared it and
   // ticked, so any hide/show defeated the retry cadence. Two handlers for one event is
