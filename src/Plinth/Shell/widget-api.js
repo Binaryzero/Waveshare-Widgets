@@ -313,25 +313,39 @@
   /// Unset and unrecognised both mean `solid`, which keeps a widget that never heard of the
   /// setting (an iCUE port, a third-party package) rendering as an ordinary opaque tile
   /// instead of vanishing onto the wallpaper.
+  /// The style the panel last asked for, held so it can be stamped the moment there is a
+  /// <body> to stamp it on. Null until the first ww-init.
+  let backgroundClass = null;
+
+  /// Idempotent, and called from more than one place ON PURPOSE — see stampBackground's
+  /// call site in onInit. Re-running it is three classList.toggle calls with the same
+  /// arguments, which is cheaper than reasoning about whether it already happened.
+  function stampBackground() {
+    const body = document.body;
+    if (!body || !backgroundClass) return;
+    body.classList.toggle('bg-solid', backgroundClass === 'solid');
+    body.classList.toggle('bg-glass', backgroundClass === 'glass');
+    body.classList.toggle('bg-transparent', backgroundClass === 'transparent');
+  }
+
   function applyBackground(settings) {
     const raw = settings && settings.bgStyle;
-    const bg = (raw === 'glass' || raw === 'transparent') ? raw : 'solid';
+    backgroundClass = (raw === 'glass' || raw === 'transparent') ? raw : 'solid';
     // The classes land on <body>, which may not exist yet: ww-init can arrive DURING
     // document parse — the shell answers ww-ready while the widget-api script tag is still
     // blocking the parser — so `document.body` is genuinely null on a first init often
     // enough to matter. Stamping documentElement instead would be wrong rather than late,
     // because widget-base.css re-declares the derived alphas at body scope precisely so the
-    // bg-* override beats them. If body is missing we are mid-parse by definition, so
-    // DOMContentLoaded has not fired and is a safe place to wait.
-    const stamp = () => {
-      const body = document.body;
-      if (!body) return;
-      body.classList.toggle('bg-solid', bg === 'solid');
-      body.classList.toggle('bg-glass', bg === 'glass');
-      body.classList.toggle('bg-transparent', bg === 'transparent');
-    };
-    if (document.body) stamp();
-    else document.addEventListener('DOMContentLoaded', stamp, { once: true });
+    // bg-* override beats them.
+    stampBackground();
+    // DOMContentLoaded is the BACKSTOP, not the mechanism. It fires only after the whole
+    // body has parsed, which is far too late for a widget whose own script runs partway
+    // down that body: WW.onInit replays immediately once state.ready is set, so such a
+    // widget would paint and measure inside a tile whose background class had not landed
+    // yet — a transparent tile getting one frame of solid, and any first-paint measurement
+    // taken against the wrong surface. onInit stamps for that case; this only covers a
+    // document that registers nothing at all.
+    if (!document.body) document.addEventListener('DOMContentLoaded', stampBackground, { once: true });
   }
 
   function applyThemeTokens(theme) {
@@ -679,7 +693,13 @@
     fitText,
 
     /** cb(state) — fires once settings/sensors are first delivered. */
-    onInit(cb) { listeners.init.push(cb); if (state.ready) cb(state); },
+    // The replay path is the one that races the background class. A widget's own script
+    // runs partway down the body, so by the time it registers here the document HAS a body
+    // but DOMContentLoaded has not fired — and because init already arrived, this callback
+    // runs synchronously, right now, before the deferred stamp would have. Stamping first
+    // means the callback's first paint and any measurement it takes are inside the right
+    // tile. No-ops when the class already landed.
+    onInit(cb) { listeners.init.push(cb); if (state.ready) { stampBackground(); cb(state); } },
     /** cb(sensors) — fires on every poll tick (~2 s). */
     onSensors(cb) { listeners.sensors.push(cb); },
     /** cb(media) — fires when now-playing info changes. */

@@ -129,5 +129,39 @@ check(`A6 no stock manifest declares bgStyle on disk (${dirs.length} widgets)`,
 check('A6b every stock widget has exactly one after normalisation',
   normalised.length === 0, normalised.join(', ') || `all ${dirs.length} have exactly one`);
 
+// ---- A7 · the universal row carries its own group ------------------------------------
+// Not cosmetic. The settings window opens a heading whenever a property declares a group
+// and never closes one, so an UNGROUPED property appended after a grouped one renders
+// under whatever heading was last emitted. Eighteen of the thirty-one stock widgets end on
+// a `group: "Text"` property, so a groupless Background is filed as a Text setting on most
+// of the catalog — a wrong label with nothing anywhere throwing to say so.
+const grouped = A.universalProperties();
+check('A7 every shell-owned property declares a group',
+  grouped.every((p) => typeof p.group === 'string' && p.group.length > 0),
+  grouped.map((p) => `${p.name}:${p.group}`).join(', '));
+// The specific shape that broke: a widget whose own last property is grouped.
+const trailing = A.normalizeCatalog([{
+  id: 'test.trailing',
+  properties: [
+    { name: 'url', label: 'URL', type: 'text', default: '' },
+    { name: 'titleSize', label: 'Title size', type: 'slider', default: 100, group: 'Text' },
+  ],
+}])[0];
+const appended = trailing.properties[trailing.properties.length - 1];
+check('A7b ...so it does not inherit the heading of the property before it',
+  appended.name === 'bgStyle' && appended.group && appended.group !== 'Text',
+  `${appended.name} group=${appended.group} (previous row group=Text)`);
+
+// ---- A8 · how many stock widgets this actually protects --------------------------------
+// Reported rather than asserted on a fixed number, which would fail every time a widget
+// gained or lost a grouped property and say nothing about correctness.
+const endsGrouped = dirs.filter((d) => {
+  const props = JSON.parse(fs.readFileSync(path.join(REPO, 'widgets', d, 'manifest.json'), 'utf8')).properties || [];
+  return props.length && props[props.length - 1].group;
+});
+check('A8 the misgrouping this guards is reachable from the shipped catalog',
+  endsGrouped.length > 0,
+  `${endsGrouped.length}/${dirs.length} widgets end on a grouped property`);
+
 console.log(failures > 0 ? `\n${failures} FAILURES` : '\nALL PASS');
 process.exit(failures > 0 ? 1 : 0);

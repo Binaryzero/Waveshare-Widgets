@@ -2,7 +2,7 @@
   "id": "ws.stock.rest",
   "name": "REST Value",
   "author": "Plinth",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Any JSON endpoint, one number on the panel: give it a URL and a path to the value. Polls on its own schedule, colors itself against warn/crit thresholds, and can authenticate with a static header or an OAuth2 client-credentials exchange.",
   "min_api_version": 1,
   "supported_slots": [

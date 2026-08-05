@@ -28,6 +28,13 @@
   /// spliced into the same list the settings editors already render — no renderer needs to
   /// know these are special, which is what keeps the two editors from drifting apart on
   /// them the way the widgets did.
+  /// `group` is load-bearing, not decoration. The settings window opens a heading whenever
+  /// a property declares a group and never closes one, so an UNGROUPED property appended
+  /// after a grouped one renders underneath whatever heading was last emitted. Eighteen of
+  /// the thirty-one stock widgets end on a `group: "Text"` property, so without this the
+  /// panel-owned Background control would have been filed as a Text setting on most of the
+  /// catalog. Giving it its own group is also the honest label: it is not the widget's
+  /// setting, and it should not sit inside the widget's own sections.
   const UNIVERSAL = [
     {
       name: 'bgStyle',
@@ -35,6 +42,7 @@
       type: 'select',
       default: 'solid',
       options: ['solid', 'glass', 'transparent'],
+      group: 'Appearance',
     },
   ];
 

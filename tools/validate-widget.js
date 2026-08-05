@@ -437,8 +437,28 @@ function validate(folder) {
     .map((m) => m[1]).join('\n')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
-  if (/classList\s*\.\s*toggle\s*\(\s*['"]bg-(?:solid|glass|transparent)['"]/.test(scriptJs))
-    err('bgstyle-selfapplied', 'the widget toggles its own bg-* classes — widget-api.js applies the panel\'s background style; remove the local handling');
+  // EVERY way of writing the class, not just the one the stock widgets happened to use.
+  // A rule that named `classList.toggle` only would have been satisfied by `classList.add`,
+  // by assigning `className`, or by `setAttribute('class', …)` — three spellings of the
+  // same defect, and the kind of gap that makes a checklist item feel enforced while it is
+  // not. The class name appearing anywhere in a write to class is enough to flag.
+  // The trailing boundary matters: without it `bg-solid` matches inside a widget's own
+  // `bg-solid-ish`, and the rule fires on a class the panel does not own at all.
+  const BG_CLASS = /bg-(?:solid|glass|transparent)(?![\w-])/;
+  const selfApplied = [
+    /classList\s*\.\s*(?:toggle|add|remove|replace)\s*\([^)]*bg-(?:solid|glass|transparent)(?![\w-])/,
+    /className\s*(?:=|\+=)[^;\n]*bg-(?:solid|glass|transparent)(?![\w-])/,
+    /setAttribute\s*\(\s*['"]class['"][^)]*bg-(?:solid|glass|transparent)(?![\w-])/,
+  ].some((re) => re.test(scriptJs));
+  if (selfApplied)
+    err('bgstyle-selfapplied', 'the widget sets its own bg-* classes — widget-api.js applies the panel\'s background style; remove the local handling');
+  // ...and statically, in the markup. `<body class="bg-solid">` is not a race so much as a
+  // lie: it renders one frame of a tile the panel may not have asked for, and it is the
+  // widget claiming a class it does not own. Checked on the body tag specifically, so a
+  // widget's own `.bg-glass`-named CSS class on some inner element is not caught by this.
+  const bodyTag = (html.match(/<body\b[^>]*>/i) || [''])[0];
+  if (BG_CLASS.test(bodyTag))
+    err('bgstyle-static', 'the <body> tag hard-codes a bg-* class — the panel owns the background style; remove it from the markup');
 
   // Reduced motion: infinite animations should freeze under prefers-reduced-motion.
   if (/animation[^;]*infinite/.test(noComments) && !/prefers-reduced-motion/.test(noComments))
