@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1280, initial-scale=1" />
+<title>Plinth — METER</title>
+<style>
+  /* ============================================================
+     PLINTH / METER — precision instrument direction
+     1280x400 · near-black field · hairline rules · one phosphor
+     Every quantity lives on a machined ruler.
+     ============================================================ */
+  @font-face{font-family:'Rajdhani';font-weight:500;src:url('../fonts/rajdhani-500.woff2') format('woff2')}
+  @font-face{font-family:'Rajdhani';font-weight:600;src:url('../fonts/rajdhani-600.woff2') format('woff2')}
+  @font-face{font-family:'Rajdhani';font-weight:700;src:url('../fonts/rajdhani-700.woff2') format('woff2')}
+  @font-face{font-family:'IBM Plex Mono';font-weight:400;src:url('../fonts/plexmono-400.woff2') format('woff2')}
+  @font-face{font-family:'IBM Plex Mono';font-weight:500;src:url('../fonts/plexmono-500.woff2') format('woff2')}
+  @font-face{font-family:'IBM Plex Mono';font-weight:600;src:url('../fonts/plexmono-600.woff2') format('woff2')}
+
+  :root{
+    --bezel:#040606;              /* outside the plate */
+    --field:#0a0f0d;              /* the machined plate */
+    --line:rgba(151,180,168,.17); /* structural hairline */
+    --line-soft:rgba(151,180,168,.09);
+    --line-bright:rgba(205,232,220,.38);
+    --text:#dde6e0;              /* primary readout — never pure white */
+    --muted:#8da096;
+    --dim:#57645d;
+    --phos:#4de8a4;  --phos-rgb:77,232,164;   /* the one data hue */
+    --amber:#ffae52; --amber-rgb:255,174,82;  /* the one alert hue */
+    --mono:'IBM Plex Mono',monospace;
+    --disp:'Rajdhani','IBM Plex Mono',sans-serif;
+  }
+
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1280px;height:400px;overflow:hidden}
+  body{
+    position:relative;
+    background:
+      radial-gradient(120% 160% at 50% -10%, rgba(77,232,164,.05), transparent 55%),
+      var(--bezel);
+    font-family:var(--mono);
+    color:var(--text);
+    -webkit-font-smoothing:antialiased;
+  }
+  /* CRT discipline: faint scanlines + corner vignette, nothing louder */
+  body::after{
+    content:'';position:absolute;inset:0;z-index:9;pointer-events:none;
+    background:
+      radial-gradient(140% 140% at 50% 50%, transparent 62%, rgba(0,0,0,.42) 100%),
+      repeating-linear-gradient(0deg, transparent 0 2px, rgba(0,0,0,.085) 2px 3px);
+  }
+
+  /* ---------------- plate + engineering grid ---------------- */
+  .panel{
+    position:absolute;inset:8px;               /* 1264 x 384 */
+    background:
+      radial-gradient(circle at 1px 1px, rgba(151,180,168,.045) 1px, transparent 1.4px) 0 0/26px 26px,
+      radial-gradient(140% 130% at 50% 0%, #0c1210 0%, #090e0c 55%, var(--field) 100%);
+    display:grid;
+    grid-template-columns:316px 316px 616px;
+    grid-template-rows:188px 188px;
+    gap:8px;
+  }
+  .panel::before{ /* frame */
+    content:'';position:absolute;inset:0;pointer-events:none;
+    box-shadow:inset 0 0 0 1px var(--line);
+  }
+  .rv{position:absolute;top:6px;bottom:6px;width:1px;background:var(--line)}
+  .rh{position:absolute;left:330px;right:6px;top:192px;height:1px;background:var(--line)}
+  /* registration ticks where rules meet the frame */
+  .tk{position:absolute;background:var(--line-bright)}
+  .tk.v{width:1px;height:5px} .tk.h{width:5px;height:1px}
+  /* corner brackets — machined, slightly brighter than the rules */
+  .cb{position:absolute;width:15px;height:15px;border:0 solid var(--line-bright)}
+  .cb.tl{top:0;left:0;border-top-width:1px;border-left-width:1px}
+  .cb.tr{top:0;right:0;border-top-width:1px;border-right-width:1px}
+  .cb.bl{bottom:0;left:0;border-bottom-width:1px;border-left-width:1px}
+  .cb.br{bottom:0;right:0;border-bottom-width:1px;border-right-width:1px}
+  .etch{ /* plate etching in the bezel */
+    position:absolute;right:16px;bottom:0;height:8px;z-index:10;
+    font:500 7px/8px var(--mono);letter-spacing:.34em;color:rgba(141,160,150,.42);
+  }
+
+  /* ---------------- region chrome ---------------- */
+  .tile{position:relative;display:flex;flex-direction:column;padding:12px 16px 10px;min-width:0}
+  .hd{
+    display:flex;align-items:baseline;justify-content:space-between;flex:none;
+    font:600 9.5px/1 var(--mono);letter-spacing:.24em;text-transform:uppercase;
+    color:var(--muted);
+  }
+  .hd .idx{color:var(--dim);margin-right:9px}
+  .hd .st{color:var(--dim);letter-spacing:.2em}
+  .hd .st.on{color:var(--phos)}
+  .dot{
+    display:inline-block;width:5px;height:5px;border-radius:50%;
+    background:var(--phos);box-shadow:0 0 7px rgba(var(--phos-rgb),.8);
+    margin-right:7px;vertical-align:1px;
+    animation:breathe 2.6s ease-in-out infinite;
+  }
+  @keyframes breathe{0%,100%{opacity:1}50%{opacity:.45}}
+
+  /* ---------------- THE RULER — one grammar for every quantity -------------
+     hairline rail, minor ticks at --pitch, major ticks with min/max labels,
+     phosphor fill = value, phosphor cursor = now, hollow diamond = event   */
+  .scale{position:relative;height:24px;flex:none;margin-top:auto;font-variant-numeric:tabular-nums}
+  .scale .rail{position:absolute;left:0;right:0;top:6px;height:1px;background:var(--line)}
+  .scale .mns{position:absolute;left:0;right:0;top:7px;height:4px;
+    background-image:repeating-linear-gradient(90deg, var(--line-soft) 0 1px, transparent 1px var(--pitch,10%));}
+  .scale .mj{position:absolute;top:7px;width:1px;height:7px;background:var(--line);transform:translateX(-.5px)}
+  .scale .mj b,.scale .mk b{
+    position:absolute;top:9px;left:50%;transform:translateX(-50%);
+    font:500 8px/1 var(--mono);letter-spacing:.12em;color:var(--dim);white-space:nowrap;font-weight:500;
+  }
+  .scale .mk b{color:var(--muted)} /* event labels are data, axis labels are structure */
+  .scale .mj.e-l b{left:0;transform:none}
+  .scale .mj.e-r b{left:auto;right:0;transform:none}
+  .scale .fill{position:absolute;left:0;top:5px;height:3px;background:var(--phos);
+    box-shadow:0 0 7px rgba(var(--phos-rgb),.45)}
+  .scale .cur{position:absolute;top:1px;width:2px;height:10px;background:var(--phos);
+    transform:translateX(-1px);box-shadow:0 0 8px rgba(var(--phos-rgb),.7)}
+  .scale .mk{position:absolute;top:6.5px}
+  .scale .mk i{
+    position:absolute;left:0;top:-2.5px;width:5px;height:5px;transform:translateX(-3px) rotate(45deg);
+    border:1px solid var(--muted);background:var(--field);display:block;
+  }
+  .scale .mk.alert i{border-color:var(--amber);box-shadow:0 0 6px rgba(var(--amber-rgb),.5)}
+  .scale .mk.alert b{color:var(--amber)}
+
+  .num{font-family:var(--disp);font-variant-numeric:tabular-nums}
+
+  /* ================= 01 CHRONO ================= */
+  .clock{grid-column:1;grid-row:1/3;padding-top:14px}
+  .clock .mid{display:flex;flex-direction:column;justify-content:center;flex:1 1 auto;min-height:0}
+  .time{
+    font:700 118px/.92 var(--disp);font-variant-numeric:tabular-nums;
+    letter-spacing:.01em;color:var(--text);white-space:nowrap;
+    text-shadow:0 0 26px rgba(var(--phos-rgb),.10);
+  }
+  .time em{font-style:normal;color:var(--phos);text-shadow:0 0 16px rgba(var(--phos-rgb),.45)}
+  .date{
+    margin-top:16px;font:500 13px/1 var(--mono);letter-spacing:.34em;text-transform:uppercase;
+    color:var(--muted);font-variant-numeric:tabular-nums;
+  }
+  .next{
+    margin-top:26px;padding-top:14px;border-top:1px solid var(--line-soft);
+    display:flex;align-items:center;gap:10px;
+    font:500 12px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;
+    font-variant-numeric:tabular-nums;
+  }
+  .next .dm{width:6px;height:6px;border:1px solid var(--phos);transform:rotate(45deg);flex:none;
+    box-shadow:0 0 6px rgba(var(--phos-rgb),.4)}
+  .next .lbl{color:var(--dim);letter-spacing:.24em;font-size:9.5px;font-weight:600}
+  .next .t{color:var(--phos)}
+  .next .what{color:var(--muted)}
+
+  /* ================= 02 WX ================= */
+  .wx{grid-column:2;grid-row:1}
+  .wx .main{display:flex;align-items:flex-start;gap:16px;margin-top:11px}
+  .wx .t-now{font:600 58px/.86 var(--disp);font-variant-numeric:tabular-nums;letter-spacing:.005em}
+  .wx .t-now sup{font-size:26px;font-weight:500;color:var(--muted);vertical-align:22px}
+  .wx .cond{flex:1;min-width:0;padding-top:3px}
+  .wx .cond .c1{display:flex;align-items:center;gap:8px;
+    font:600 10.5px/1.3 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--text)}
+  .wx .cond svg{flex:none}
+  .wx .hl{margin-top:8px;font:500 11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;
+    color:var(--muted);font-variant-numeric:tabular-nums}
+  .wx .hl b{color:var(--text);font-weight:500}
+  .wx .days{display:grid;grid-template-columns:1fr 1fr 1fr;margin-top:13px}
+  .wx .days>div{display:flex;align-items:baseline;justify-content:center;gap:8px;padding:2px 0}
+  .wx .days>div+div{border-left:1px solid var(--line-soft)}
+  .wx .days .d{font:600 9px/1 var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--dim)}
+  .wx .days .v{font:500 19px/1 var(--disp);font-variant-numeric:tabular-nums;color:var(--muted)}
+
+  /* ================= 03 CPU ================= */
+  .cpu{grid-column:2;grid-row:2}
+  .cpu .main{display:flex;gap:16px;margin-top:10px;flex:1 1 auto;min-height:0}
+  .ro .v{font:600 52px/.86 var(--disp);font-variant-numeric:tabular-nums;letter-spacing:.005em}
+  .ro .v small{font-size:22px;font-weight:500;color:var(--muted)}
+  .ro .l{margin-top:5px;font:600 8.5px/1 var(--mono);letter-spacing:.26em;color:var(--dim)}
+  .ro.sub .v{font-size:27px;line-height:.9}
+  .ro.sub .v small{font-size:14px}
+  .cpu .left{display:flex;flex-direction:column;justify-content:space-between;width:112px;flex:none;padding-top:2px}
+  .cores{flex:1;display:flex;gap:0;min-width:0}
+  .cores .ax{width:20px;flex:none;position:relative;font:500 7.5px/1 var(--mono);color:var(--dim);
+    font-variant-numeric:tabular-nums}
+  .cores .ax b{position:absolute;right:6px;font-weight:500}
+  .cores .plot{flex:1;position:relative;border-left:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .cores .plot .gl{position:absolute;left:0;right:0;top:50%;height:0;
+    border-top:1px dashed rgba(151,180,168,.12)}
+  .cores .bars{position:absolute;inset:0 0 0 0;display:flex;align-items:flex-end;
+    justify-content:space-evenly}
+  .cores .bars b{width:13px;background:linear-gradient(180deg, rgba(var(--phos-rgb),.85), rgba(var(--phos-rgb),.38));
+    box-shadow:0 0 6px rgba(var(--phos-rgb),.22)}
+  .cores .bars b.hot{background:linear-gradient(180deg, rgba(var(--amber-rgb),.95), rgba(var(--amber-rgb),.42));
+    box-shadow:0 0 7px rgba(var(--amber-rgb),.35)}
+  .cpu .scale{margin-top:12px}
+
+  /* ================= 04 AUDIO ================= */
+  .media{grid-column:3;grid-row:1}
+  .media .main{display:flex;align-items:center;gap:16px;margin-top:10px;flex:1 1 auto;min-height:0}
+  .art{width:102px;height:102px;flex:none;position:relative;border:1px solid var(--line);
+    background:#060a09;border-radius:2px;overflow:hidden}
+  .art svg{display:block;width:100%;height:100%}
+  .minfo{flex:1;min-width:0;align-self:center}
+  .minfo .track{font:600 31px/1.02 var(--disp);color:var(--text);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .minfo .by{margin-top:7px;font:500 11px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;
+    color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .minfo .by b{color:var(--text);font-weight:500}
+  .ctrls{display:flex;gap:8px;flex:none}
+  .btn{
+    width:46px;height:46px;border:1px solid var(--line);border-radius:2px;background:transparent;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;
+  }
+  .btn svg{display:block}
+  .btn.play{border-color:rgba(var(--phos-rgb),.55);box-shadow:inset 0 0 12px rgba(var(--phos-rgb),.07)}
+  .prog{display:flex;align-items:flex-start;gap:12px;flex:none}
+  .prog .tm{font:500 12px/1 var(--mono);font-variant-numeric:tabular-nums;padding-top:1px;flex:none}
+  .prog .tm.el{color:var(--phos)}
+  .prog .tm.tot{color:var(--dim)}
+  .prog .scale{flex:1;margin-top:0;height:22px}
+
+  /* ================= 05 CISA KEV ================= */
+  .kev{grid-column:3;grid-row:2}
+  .kev .hd .st b{color:var(--phos);font-weight:600}
+  .rows{margin-top:10px;flex:none}
+  .row{
+    display:grid;grid-template-columns:18px 164px 1fr auto 54px;align-items:center;
+    height:34px;font-variant-numeric:tabular-nums;
+  }
+  .row+.row{border-top:1px solid var(--line-soft)}
+  .row .dm{width:5px;height:5px;border:1px solid var(--muted);transform:rotate(45deg)}
+  .row .cve{font:500 13px/1 var(--mono);color:var(--text);letter-spacing:.02em}
+  .row .who{font:400 12px/1 var(--mono);color:var(--muted);letter-spacing:.06em;text-transform:uppercase;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:12px}
+  .row .due{font:500 11.5px/1 var(--mono);color:var(--muted);letter-spacing:.1em;text-transform:uppercase;text-align:right}
+  .row .tm{font:600 11.5px/1 var(--mono);color:var(--dim);text-align:right;letter-spacing:.06em}
+  .row.alert .dm{border-color:var(--amber);box-shadow:0 0 6px rgba(var(--amber-rgb),.5)}
+  .row.alert .due,.row.alert .tm{color:var(--amber)}
+  .kev .scale .cur.now{box-shadow:0 0 8px rgba(var(--phos-rgb),.7)}
+</style>
+</head>
+<body>
+
+<div class="panel">
+  <!-- engineering grid: rules, registration ticks, corner brackets -->
+  <i class="rv" style="left:320px" aria-hidden="true"></i>
+  <i class="rv" style="left:644px" aria-hidden="true"></i>
+  <i class="rh" aria-hidden="true"></i>
+  <i class="tk v" style="left:320px;top:0" aria-hidden="true"></i>
+  <i class="tk v" style="left:320px;bottom:0" aria-hidden="true"></i>
+  <i class="tk v" style="left:644px;top:0" aria-hidden="true"></i>
+  <i class="tk v" style="left:644px;bottom:0" aria-hidden="true"></i>
+  <i class="tk h" style="right:0;top:192px" aria-hidden="true"></i>
+  <i class="cb tl" aria-hidden="true"></i><i class="cb tr" aria-hidden="true"></i>
+  <i class="cb bl" aria-hidden="true"></i><i class="cb br" aria-hidden="true"></i>
+
+  <!-- ============ 01 CHRONO ============ -->
+  <section class="tile clock">
+    <div class="hd"><span><span class="idx">01</span>Chrono</span><span class="st">24H</span></div>
+    <div class="mid">
+      <div class="time num">14<em>:</em>37</div>
+      <div class="date">Tue, Aug 5</div>
+      <div class="next">
+        <span class="dm" aria-hidden="true"></span>
+        <span class="lbl">Next</span>
+        <span class="t">15:00</span>
+        <span class="what">Standup</span>
+      </div>
+    </div>
+    <!-- day axis 00–24h · fill = elapsed · diamond = 15:00 standup -->
+    <div class="scale" style="--pitch:4.1667%">
+      <i class="mns"></i><i class="rail"></i>
+      <i class="fill" style="width:60.9%"></i>
+      <i class="mj e-l" style="left:0"><b>00</b></i>
+      <i class="mj" style="left:25%"><b>06</b></i>
+      <i class="mj" style="left:50%"><b>12</b></i>
+      <i class="mj" style="left:75%"><b>18</b></i>
+      <i class="mj e-r" style="left:100%"><b>24</b></i>
+      <span class="mk" style="left:62.5%"><i></i></span>
+      <i class="cur" style="left:60.9%"></i>
+    </div>
+  </section>
+
+  <!-- ============ 02 WX ============ -->
+  <section class="tile wx">
+    <div class="hd"><span><span class="idx">02</span>WX</span><span class="st">3-Day</span></div>
+    <div class="main">
+      <div class="t-now num">78<sup>°</sup></div>
+      <div class="cond">
+        <div class="c1">
+          <svg width="26" height="20" viewBox="0 0 26 20" fill="none" aria-hidden="true">
+            <circle cx="9.5" cy="7.5" r="4" stroke="#8da096" stroke-width="1.2"/>
+            <path d="M9.5 1v1.6M3 7.5h1.6M4.9 2.9l1.1 1.1M14.1 2.9 13 4" stroke="#8da096" stroke-width="1.2" stroke-linecap="round"/>
+            <path d="M8 16.5h11.4a3.6 3.6 0 0 0 .6-7.15 5.2 5.2 0 0 0-10-1.2A4.2 4.2 0 0 0 8 16.5Z" fill="#0a0f0d" stroke="#dde6e0" stroke-width="1.2" stroke-linejoin="round"/>
+          </svg>
+          <span>Partly cloudy</span>
+        </div>
+        <div class="hl">H <b>84°</b>&ensp;L <b>66°</b></div>
+      </div>
+    </div>
+    <div class="days">
+      <div><span class="d">Wed</span><span class="v num">81°</span></div>
+      <div><span class="d">Thu</span><span class="v num">79°</span></div>
+      <div><span class="d">Fri</span><span class="v num">85°</span></div>
+    </div>
+    <!-- ambient scale 60–90°F · brackets = today's L/H · cursor = now -->
+    <div class="scale" style="--pitch:8.3333%">
+      <i class="mns"></i><i class="rail"></i>
+      <i class="fill" style="left:20%;width:60%;opacity:.45"></i>
+      <i class="mj e-l" style="left:0"><b>60</b></i>
+      <i class="mj" style="left:33.333%"><b>70</b></i>
+      <i class="mj" style="left:66.667%"><b>80</b></i>
+      <i class="mj e-r" style="left:100%"><b>90</b></i>
+      <span class="mk" style="left:20%"><i></i><b>L66</b></span>
+      <span class="mk" style="left:80%"><i></i><b>H84</b></span>
+      <i class="cur" style="left:60%"></i>
+    </div>
+  </section>
+
+  <!-- ============ 03 CPU ============ -->
+  <section class="tile cpu">
+    <div class="hd"><span><span class="idx">03</span>CPU</span><span class="st">8 Cores</span></div>
+    <div class="main">
+      <div class="left">
+        <div class="ro">
+          <div class="v num">42<small>%</small></div>
+          <div class="l">LOAD</div>
+        </div>
+        <div class="ro sub">
+          <div class="v num">62<small>°C</small></div>
+          <div class="l">TEMP</div>
+        </div>
+      </div>
+      <div class="cores">
+        <div class="ax"><b style="top:-1px">100</b><b style="top:50%;margin-top:-4px">50</b><b style="bottom:11px">0</b></div>
+        <div class="plot">
+          <i class="gl"></i>
+          <div class="bars">
+            <b style="height:35%"></b><b style="height:55%"></b><b style="height:20%"></b><b class="hot" style="height:71%"></b><b style="height:44%"></b><b style="height:12%"></b><b style="height:64%"></b><b style="height:38%"></b>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- load gauge 0–100% · cursor at 42 -->
+    <div class="scale" style="--pitch:5%">
+      <i class="mns"></i><i class="rail"></i>
+      <i class="fill" style="width:42%"></i>
+      <i class="mj e-l" style="left:0"><b>0</b></i>
+      <i class="mj" style="left:25%"><b>25</b></i>
+      <i class="mj" style="left:50%"><b>50</b></i>
+      <i class="mj" style="left:75%"><b>75</b></i>
+      <i class="mj e-r" style="left:100%"><b>100</b></i>
+      <i class="cur" style="left:42%"></i>
+    </div>
+  </section>
+
+  <!-- ============ 04 AUDIO ============ -->
+  <section class="tile media">
+    <div class="hd"><span><span class="idx">04</span>Audio</span><span class="st on"><span class="dot"></span>Playing</span></div>
+    <div class="main">
+      <div class="art" aria-hidden="true">
+        <svg viewBox="0 0 100 100">
+          <!-- midnight skyline, drawn in phosphor -->
+          <rect width="100" height="100" fill="#060a09"/>
+          <circle cx="76" cy="23" r="9" fill="none" stroke="rgba(77,232,164,.55)" stroke-width="1"/>
+          <circle cx="76" cy="23" r="3.5" fill="rgba(77,232,164,.25)"/>
+          <g fill="rgba(77,232,164,.8)">
+            <rect x="8"  y="46" width="5" height="26"/>
+            <rect x="16" y="34" width="6" height="38" opacity=".55"/>
+            <rect x="25" y="52" width="4" height="20" opacity=".85"/>
+            <rect x="32" y="28" width="6" height="44" opacity=".4"/>
+            <rect x="41" y="42" width="5" height="30" opacity=".7"/>
+            <rect x="49" y="56" width="4" height="16" opacity=".9"/>
+            <rect x="56" y="36" width="6" height="36" opacity=".5"/>
+            <rect x="65" y="48" width="5" height="24" opacity=".75"/>
+            <rect x="73" y="40" width="4" height="32" opacity=".45"/>
+            <rect x="80" y="54" width="6" height="18" opacity=".8"/>
+            <rect x="89" y="44" width="4" height="28" opacity=".6"/>
+          </g>
+          <rect x="0" y="72" width="100" height="1" fill="rgba(77,232,164,.6)"/>
+          <g fill="rgba(77,232,164,.14)">
+            <rect x="8"  y="74" width="5" height="14"/>
+            <rect x="16" y="74" width="6" height="18"/>
+            <rect x="32" y="74" width="6" height="21"/>
+            <rect x="41" y="74" width="5" height="14"/>
+            <rect x="56" y="74" width="6" height="17"/>
+            <rect x="73" y="74" width="4" height="15"/>
+            <rect x="80" y="74" width="6" height="9"/>
+          </g>
+        </svg>
+      </div>
+      <div class="minfo">
+        <div class="track">Midnight City</div>
+        <div class="by"><b>M83</b> · Hurry Up, We're Dreaming</div>
+      </div>
+      <div class="ctrls">
+        <button class="btn" aria-label="Previous track">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3.5 2.5v11" stroke="#dde6e0" stroke-width="1.6" stroke-linecap="round"/>
+            <path d="M13 2.8v10.4L5.2 8Z" fill="#dde6e0"/>
+          </svg>
+        </button>
+        <button class="btn play" aria-label="Pause">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="3.4" y="2.5" width="3.1" height="11" fill="#4de8a4"/>
+            <rect x="9.5" y="2.5" width="3.1" height="11" fill="#4de8a4"/>
+          </svg>
+        </button>
+        <button class="btn" aria-label="Next track">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M12.5 2.5v11" stroke="#dde6e0" stroke-width="1.6" stroke-linecap="round"/>
+            <path d="M3 2.8v10.4L10.8 8Z" fill="#dde6e0"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <!-- track axis 0:00–4:03 · minute majors · fill = elapsed 2:14 -->
+    <div class="prog">
+      <span class="tm el">2:14</span>
+      <div class="scale" style="--pitch:6.1728%">
+        <i class="mns"></i><i class="rail"></i>
+        <i class="fill" style="width:55.14%"></i>
+        <i class="mj" style="left:24.691%"></i>
+        <i class="mj" style="left:49.383%"></i>
+        <i class="mj" style="left:74.074%"></i>
+        <i class="mj" style="left:98.765%"></i>
+        <i class="cur" style="left:55.14%"></i>
+      </div>
+      <span class="tm tot">4:03</span>
+    </div>
+  </section>
+
+  <!-- ============ 05 CISA KEV ============ -->
+  <section class="tile kev">
+    <div class="hd"><span><span class="idx">05</span>CISA KEV</span><span class="st"><b>2</b> added this week</span></div>
+    <div class="rows">
+      <div class="row">
+        <span class="dm" aria-hidden="true"></span>
+        <span class="cve">CVE-2026-0871</span>
+        <span class="who">Ivanti Connect Secure</span>
+        <span class="due">due Aug 12</span>
+        <span class="tm">T-07</span>
+      </div>
+      <div class="row alert">
+        <span class="dm" aria-hidden="true"></span>
+        <span class="cve">CVE-2026-0644</span>
+        <span class="who">Chromium V8</span>
+        <span class="due">due Aug 9</span>
+        <span class="tm">T-04</span>
+      </div>
+      <div class="row">
+        <span class="dm" aria-hidden="true"></span>
+        <span class="cve">CVE-2026-1102</span>
+        <span class="who">Fortinet FortiOS</span>
+        <span class="due">due Aug 19</span>
+        <span class="tm">T-14</span>
+      </div>
+    </div>
+    <!-- remediation window Aug 05 → Aug 19 · diamonds = due dates · cursor = today -->
+    <div class="scale" style="--pitch:7.1429%">
+      <i class="mns"></i><i class="rail"></i>
+      <i class="mj e-l" style="left:0"><b>AUG 05</b></i>
+      <span class="mk alert" style="left:28.571%"><i></i><b>09</b></span>
+      <span class="mk" style="left:50%"><i></i><b>12</b></span>
+      <span class="mk" style="left:100%"><i></i></span>
+      <i class="mj e-r" style="left:100%"><b>AUG 19</b></i>
+      <i class="cur now" style="left:1px"></i>
+    </div>
+  </section>
+</div>
+
+<div class="etch">PLINTH · MFD-1280 · REV A</div>
+
+</body>
+</html>
