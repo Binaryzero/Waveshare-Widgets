@@ -1,0 +1,2731 @@
+// Settings editor: edits the layout (pages -> slots -> widget + size + properties)
+// and posts it back to the host, which saves layout.json and reloads the dashboard.
+(function () {
+  'use strict';
+
+  // Page capacity model: a 4-column x 2-row grid = 8 half-height cells.
+  // A size token is a width (quarter=1, half=2, three-quarter=3, full=4 columns)
+  // plus an optional -upper/-lower suffix (one row instead of both).
+  const WIDTHS = ['quarter', 'half', 'three-quarter', 'full'];
+  const WIDTH_COLS = { quarter: 1, half: 2, 'three-quarter': 3, full: 4 };
+  const WIDTH_PX = { quarter: 320, half: 640, 'three-quarter': 960, full: 1280 };
+
+  function parseSize(token) {
+    let t = String(token || 'quarter').toLowerCase();
+    let band = 'full';
+    if (t.endsWith('-upper')) { band = 'upper'; t = t.slice(0, -6); }
+    else if (t.endsWith('-lower')) { band = 'lower'; t = t.slice(0, -6); }
+    if (!WIDTH_COLS[t]) t = 'quarter';
+    return { width: t, band };
+  }
+
+  function sizeCells(token) {
+    const { width, band } = parseSize(token);
+    return WIDTH_COLS[width] * (band === 'full' ? 2 : 1);
+  }
+
+  let state = { layout: { pages: [] }, widgets: [], sensors: [] };
+  // Secrets committed during THIS window session, as "<slotKey>|<prop>". secretsSet is
+  // the host's snapshot from init and is never refreshed, and renderEditor() destroys
+  // and rebuilds every control — so without this, a credential typed and saved reads as
+  // "not set" again after any page/slot action, and emptying the field would send "",
+  // which the host honours by restoring what it just stored.
+  const secretsTypedHere = new Set();
+  const secretKey = (slot, name) => {
+    if (slot.instanceId) return 'i:' + slot.instanceId + '|' + name;
+    // No id: the key must name the SLOT, not just the widget — two id-less instances of
+    // one widget on a page would otherwise share a key, and typing a secret for one
+    // would make the other's empty field claim "saved · encrypted".
+    let at = 'orphan';
+    ((state.layout || {}).pages || []).forEach((pg, pi) => {
+      const si = (pg.slots || []).indexOf(slot);
+      if (si >= 0) at = pi + ':' + si;
+    });
+    return 'p:' + slot.widgetId + '@' + at + '|' + name;
+  };
+  let widgetsById = new Map();
+  let selectedPage = 0;
+  let selectedSlot = null;     // slot index (within the selected page) the detail panel shows
+  let editMode = true;         // replica is the interactive WYSIWYG surface (default on)
+  let dirty = false;           // unsaved edits pending Save & apply
+  let editSeq = 0;             // bumps on every edit; the save ack only clears dirty
+                               // when nothing changed since the acked snapshot
+  let saveSeq = 0;             // request id sent with each save, echoed in the ack
+  const pendingSaves = new Map(); // saveSeq -> editSeq at post time (in-flight saves)
+  let initializing = false;    // suppress dirty-marking during a settings-init render
+  let toastTimer = null;
+  let backgroundHost = 'backgrounds.plinth';
+  let pendingBgPick = null;    // callback(source, kind) for the in-flight file dialog
+  let sdProfileWaiters = [];   // callbacks awaiting an sd-profiles-result
+  let appWaiters = [];         // callbacks awaiting an apps-result (#210)
+  let galleryOpen = false;     // settings-side add-widget gallery (Widget tab)
+  let instanceSeq = 0;         // suffix for minted instanceIds (gallery adds)
+  // The free region a replica "+" tap named, if any (#84). The panel's add zones are
+  // per-hole now, so the tap says WHERE — and the pick that follows has to honour it,
+  // or the settings side quietly fills a different hole from the one touched.
+  //
+  // Bound to the PAGE it was tapped on, not just the coordinates. The replica can
+  // navigate between the tap and the pick (page-changed follows an edge drop or the
+  // capsule arrows), and coordinates alone would then anchor into a cell chosen on a
+  // different page — landing in an occupied spot, or flowing into an unrelated hole.
+  let pendingAddTarget = null;   // { region, page } | null
+
+  const el = (id) => document.getElementById(id);
+
+  // ---- context tabs ----------------------------------------------------------
+  // One panel, one job per tab: Page (name/capacity/delete/background), Widget
+  // (chips + selected slot detail), Theme, Wallpaper. Selection events steer the
+  // tab (a replica tap opens Widget); everything else leaves the user's tab alone.
+
+  const TABS = { page: 'tabPage', widget: 'tabWidget', theme: 'tabTheme', wallpaper: 'tabWallpaper' };
+  const PANES = { page: 'panePage', widget: 'paneWidget', theme: 'paneTheme', wallpaper: 'paneWallpaper' };
+  let activeTab = 'page';
+
+  function setTab(name) {
+    if (!PANES[name]) name = 'page';
+    activeTab = name;
+    for (const key of Object.keys(TABS)) {
+      const on = key === name;
+      el(TABS[key]).classList.toggle('active', on);
+      el(TABS[key]).setAttribute('aria-selected', String(on));
+      el(PANES[key]).hidden = !on;
+    }
+  }
+
+  // The panel is a transient floating INSPECTOR over the WYSIWYG preview, not a
+  // permanent form region: it opens for one job (tapped widget, gallery, page,
+  // theme, wallpaper) and closes out of the way. The preview is the interface.
+  function panelTitleFor(name) {
+    if (name === 'theme') return 'Theme';
+    if (name === 'wallpaper') return 'Wallpaper';
+    if (name === 'page') {
+      const page = state.layout.pages[selectedPage];
+      return page ? ('Page — ' + (page.name || 'Page ' + (selectedPage + 1))) : 'Page';
+    }
+    if (galleryOpen) return 'Add a widget';
+    const page = state.layout.pages[selectedPage];
+    const slot = page && selectedSlot != null ? (page.slots || [])[selectedSlot] : null;
+    const widget = slot && widgetsById.get(slot.widgetId);
+    return widget ? widget.name : 'Widget';
+  }
+  // Keep the canvas and the dock in agreement about who has what height. Runs on
+  // every resize and toolbar reflow, because a window shrink or a page with more
+  // chips changes the dock's height and the preview has to give way or take up
+  // the slack.
+  function positionPanel() {
+    // The panel is docked (#79) — it no longer floats, so it has no top to place
+    // and no viewport-relative height to cap. What DOES need recomputing is the
+    // preview above it, because opening or closing the panel changes the dock's
+    // height and therefore the room the canvas has.
+    fitReplica();
+  }
+  window.addEventListener('resize', positionPanel);
+  if (typeof ResizeObserver !== 'undefined')
+    new ResizeObserver(positionPanel).observe(el('toolbar'));
+  function openPanel(name) {
+    setTab(name);
+    el('panelTitle').textContent = panelTitleFor(name);
+    el('contextPanel').classList.add('open');
+    renderSlotStylePanel();   // tab-dependent, and the tab changes after the render
+    positionPanel();
+  }
+  function closePanel() {
+    el('contextPanel').classList.remove('open');
+    // A gallery left "open" behind a closed card strands the toolbar button on
+    // "✕ Close" and can resurface stale gallery content on the next open.
+    if (galleryOpen) { galleryOpen = false; renderEditorPanel(); }
+    renderSlotStylePanel();   // the Appearance column belongs to the closed card
+    // A body-appended popover must die with the card, or it floats over the preview
+    // mutating a hidden input — and a pick then writes into the slot whose inspector the
+    // user just dismissed. BOTH of them: the app chooser was added later and inherited
+    // the hazard without inheriting the cleanup.
+    closeEmojiPop();
+    closeAppPop();
+  }
+  function panelOpen() {
+    return el('contextPanel').classList.contains('open');
+  }
+  el('panelClose').addEventListener('click', closePanel);
+  el('pageBtn').addEventListener('click', () => openPanel('page'));
+  el('themeBtn').addEventListener('click', () => openPanel('theme'));
+  el('wallpaperBtn').addEventListener('click', () => openPanel('wallpaper'));
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closePanel(); });
+
+  // ---- host bridge -----------------------------------------------------------
+
+  window.chrome.webview.addEventListener('message', (ev) => {
+    const msg = ev.data || {};
+    if (msg.type === 'settings-init') {
+      state = msg.data || state;
+      if (!state.layout || !Array.isArray(state.layout.pages)) state.layout = { pages: [] };
+      backgroundHost = state.backgroundHost || backgroundHost;
+      widgetsById = new Map((state.widgets || []).map((w) => [w.id, w]));
+      // A full init is the one moment the union may be dropped: this layout was
+      // masked by the host against the CURRENT manifests, so no unsaved plaintext
+      // from the previous catalog survives in it for the old names to protect.
+      // Carrying them over would outlive their purpose — a property retyped from
+      // `secret` to ordinary text (a feed URL that stopped being private) would stay
+      // permanently blank in the preview for the life of the window, with no edit that
+      // could clear it. Everything after this point unions, per rememberSecretNames.
+      secretNamesById.clear();
+      rememberSecretNames(state.widgets);
+      // Build stamp in the header: "which version am I running" answered on sight.
+      el('appVersion').textContent = (state.status && state.status.version) || '';
+      selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
+      selectedSlot = null;
+      lastWorkingLayout = replicaLayoutJson(); // loaded state IS the edit baseline
+      initializing = true;
+      renderAll();
+      initializing = false;
+      clearDirty(); // freshly loaded state IS the saved state
+      renderRejectedWidgets(state.rejectedWidgets);
+    } else if (msg.type === 'widgets-changed') {
+      // The widgets folder changed under us (the documented way to fix a refused
+      // widget). Refresh the palette and the banner ONLY — re-seeding the layout here
+      // would silently discard unsaved edits, and the user may well be mid-edit, since
+      // repairing a widget is something they do with this window open.
+      state.widgets = msg.widgets || [];
+      state.rejectedWidgets = msg.rejectedWidgets || [];
+      widgetsById = new Map(state.widgets.map((w) => [w.id, w]));
+      rememberSecretNames(state.widgets);
+      const wasDirty = dirty;
+      initializing = true;
+      renderAll();
+      initializing = false;
+      if (!wasDirty) clearDirty();   // a repaint is not an edit
+      renderRejectedWidgets(state.rejectedWidgets);
+      // Force the replica to take a fresh init. The catalog changed but the LAYOUT did
+      // not, and refreshReplica short-circuits an unchanged layout to a page-selection
+      // message — so a repaired widget the layout already references would stay blank in
+      // the preview until some unrelated structural edit happened to force a reload.
+      // Clearing the replica's snapshot (not lastWorkingLayout, which is the dirty
+      // baseline) makes the comparison miss and re-arms the init.
+      lastReplicaLayout = '';
+      refreshReplica('layout');
+    } else if (msg.type === 'saved') {
+      // Each ack names the save it answers (the host echoes our seq). Clear the
+      // marker only when nothing changed since THAT snapshot was posted — an edit
+      // racing the ack, or a second save still in flight, must stay visibly
+      // unsaved or it's easy to close the window and lose it. An ack without a
+      // seq (older host) falls back to the newest in-flight snapshot.
+      const acked = msg.seq != null ? pendingSaves.get(msg.seq)
+        : (pendingSaves.size ? [...pendingSaves.values()].pop() : undefined);
+      if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
+      // Dirty is cleared only for a FULLY successful save. A credential the host could
+      // not protect exists solely in this working copy; marking the editor clean would
+      // let the user close the window and lose it, with no visible sign anything failed.
+      const secretsLost = Array.isArray(msg.secretsFailed) && msg.secretsFailed.length > 0;
+      if (acked !== undefined && editSeq === acked && !secretsLost) clearDirty();
+      // The host stamps a stable instanceId on any credentialed slot that lacked one —
+      // but on ITS copy, so this editor still holds the id-less slot it sent. Adopt the
+      // identities or the next save can't find its own ciphertext and deletes it. The
+      // address is the position in the layout WE submitted; the widgetId guard keeps a
+      // stale ack from branding a slot the user has since replaced.
+      for (const m of (Array.isArray(msg.mintedIds) ? msg.mintedIds : [])) {
+        const target = (((state.layout || {}).pages || [])[m.page] || {}).slots || [];
+        const slot = target[m.slot];
+        if (!slot || slot.instanceId || slot.widgetId !== m.widgetId) continue;
+        // secretsTypedHere is keyed by slot identity, and adopting the id CHANGES that
+        // key. Migrate the entries first or the session record is orphaned: the rebuilt
+        // control reads "not set", and deleting the value sends "" — which the host
+        // honours by restoring the ciphertext this very save just wrote.
+        for (const key of [...secretsTypedHere]) {
+          const bar = key.lastIndexOf('|');
+          if (bar < 0 || !key.startsWith('p:' + m.widgetId + '@' + m.page + ':' + m.slot + '|')) continue;
+          secretsTypedHere.delete(key);
+          secretsTypedHere.add('i:' + m.instanceId + key.slice(bar));
+        }
+        slot.instanceId = m.instanceId;
+      }
+      // The layout saved, but a credential may not have: the host refuses to write one
+      // in the clear when Windows protection is unavailable. "Saved" alone would tell
+      // the user a token is active when it isn't.
+      const failed = Array.isArray(msg.secretsFailed) ? msg.secretsFailed : [];
+      if (failed.length) {
+        toast(failed.length === 1
+          ? 'Layout saved, but the credential could NOT be encrypted and was not stored. Re-enter it and save again.'
+          : `Layout saved, but ${failed.length} credentials could NOT be encrypted and were not stored.`, true);
+      } else {
+        toast('Saved — dashboard updated');
+      }
+    } else if (msg.type === 'save-failed') {
+      if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
+      toast('Save failed: ' + msg.message, true);
+    } else if (msg.type === 'widget-installed') {
+      // `pending` means it IS installed but has no origin yet (the host map could not be
+      // read; the library is already retrying). Saying only "Installed" would have the
+      // user hunt the palette for something that is deliberately not there yet.
+      toast(msg.pending
+        ? 'Installed "' + msg.name + '" — waiting for its origin, it will appear shortly'
+        : 'Installed "' + msg.name + '"');
+    } else if (msg.type === 'file-picked') {
+      // Browse-button round trip (#48): fill the field that asked and commit
+      // through its own handler. A null path is a cancelled dialog.
+      const target = pendingFilePicks.get(msg.id);
+      pendingFilePicks.delete(msg.id);
+      if (target && msg.path) {
+        target.value = msg.path;
+        target.dispatchEvent(new Event('input'));
+      }
+    } else if (msg.type === 'background-picked') {
+      const cb = pendingBgPick;
+      pendingBgPick = null;
+      if (cb) cb(msg.source, msg.kind);
+    } else if (msg.type === 'background-failed') {
+      pendingBgPick = null;
+      toast('Could not load background: ' + msg.message, true);
+    } else if (msg.type === 'apps-result') {
+      const waiters = appWaiters.splice(0);
+      const apps = Array.isArray(msg.apps)
+        ? msg.apps.filter((a) => a && typeof a.name === 'string' && typeof a.path === 'string')
+        : [];
+      waiters.forEach((cb) => cb(apps, msg.truncated === true));
+    } else if (msg.type === 'sd-profiles-result') {
+      const waiters = sdProfileWaiters.splice(0);
+      const profiles = Array.isArray(msg.profiles) ? msg.profiles.filter((p) => typeof p === 'string') : [];
+      waiters.forEach((cb) => cb(profiles));
+    } else if (msg.type === 'preview-host') {
+      // Live data (sensors/media) and replica request results from the host — keep our
+      // snapshot fresh for the next replica re-init, then pass straight through.
+      const m = msg.message || {};
+      if (m.type === 'sensors') state.sensors = m.data || [];
+      else if (m.type === 'media') state.media = m.data || null;
+      replicaPost(m);
+    }
+  });
+
+  function post(message) {
+    window.chrome.webview.postMessage(message);
+  }
+
+  // ---- live replica -----------------------------------------------------------
+  // The real shell (index.html?preview) embedded at native 1280×400 and scaled to
+  // fit, driven with the EDITED (unsaved) layout and theme. Structural edits push a
+  // debounced full re-init; theme edits ride a light token push (no iframe reloads).
+
+  const previewFrame = el('previewFrame');
+  const previewStage = el('previewStage');
+  let replicaReady = false;
+  let replicaTimer = null;
+  let initGen = 0;            // bumped per replica init; captures echo the generation
+                              // they were built under, so a save-layout the replica
+                              // emitted BEFORE applying the latest init (posting is
+                              // async) can be recognized as stale and dropped.
+  let lastReplicaLayout = ''; // structural snapshot (theme excluded — it rides the light push)
+  let lastWorkingLayout = ''; // edit detector: the working copy at the last layout render.
+                              // Separate from lastReplicaLayout, which tracks REPLICA
+                              // DELIVERY and goes stale while the preview is suspended —
+                              // comparing against it re-marked a saved layout dirty on a
+                              // mere page selection after editing with the preview hidden.
+
+  /** Secret property names per widget id, UNIONED over every catalog this session has
+   * seen — never just the current one.
+   *
+   * These names are the only thing that stops a typed-but-unsaved credential reaching
+   * the replica, and the replica hosts real widget iframes whose `mergedSettings` copies
+   * every slot setting straight in. Recomputing from the live catalog means a hot-reload
+   * that removes or renames a secret property silently drops it from the scrub list
+   * while the plaintext is still sitting in `state.layout` — and the very next replica
+   * init hands it to the widget. The union is the client-side twin of the host's
+   * masked-manifest snapshot, and holds until the layout is remasked by a settings-init.
+   *
+   * Erring wide is safe here: an extra name only blanks a field the preview should not
+   * have shown anyway. */
+  const secretNamesById = new Map();
+  function rememberSecretNames(widgets) {
+    for (const w of widgets || []) {
+      if (!w || !w.id) continue;
+      const seen = secretNamesById.get(w.id) || new Set();
+      for (const pr of w.properties || []) if (pr && pr.type === 'secret') seen.add(pr.name);
+      secretNamesById.set(w.id, seen);
+    }
+  }
+  const knownSecretNames = (widgetId) => [...(secretNamesById.get(widgetId) || [])];
+
+  /** The layout the PREVIEW may see. A typed credential lives in state.layout until
+   * Save, and the replica hosts real widget iframes — so without this the widget holds
+   * (and could transmit) a credential the user has not committed, in a surface the spec
+   * says always shows an empty secret. Blanked per manifest, on a copy. */
+  function replicaLayout() {
+    const secretsOf = (widgetId) => knownSecretNames(widgetId);
+    const copy = { pages: ((state.layout || {}).pages || []).map((page) => Object.assign({}, page, {
+      slots: (page.slots || []).map((slot) => {
+        const names = secretsOf(slot.widgetId);
+        if (!names.length || !slot.settings) return slot;
+        const settings = Object.assign({}, slot.settings);
+        for (const n of names) if (n in settings) settings[n] = '';
+        return Object.assign({}, slot, { settings });
+      }),
+    })) };
+    return Object.assign({}, state.layout, copy, { theme: null });
+  }
+  const replicaLayoutJson = () => JSON.stringify(replicaLayout());
+
+  /** Fold a replica capture back into the authoritative layout. Everything the replica
+   * can legitimately change (slot set, order, size, page) comes from the capture;
+   * secrets and the global theme are settings-side authority and are restored from the
+   * working copy, matched by instanceId (falling back to position for id-less slots). */
+  function mergeReplicaCapture(captured) {
+    const mine = new Map();
+    ((state.layout || {}).pages || []).forEach((page, pi) => {
+      (page.slots || []).forEach((slot, si) => {
+        mine.set(slot.instanceId ? 'i:' + slot.instanceId : 'p:' + pi + ':' + si, slot);
+      });
+    });
+    // Same union as the replica scrub — a capture must restore every secret this
+    // session has ever known about, not only those the current catalog still declares.
+    const secretsOf = (widgetId) => knownSecretNames(widgetId);
+    const pages = (captured.pages || []).map((page, pi) => Object.assign({}, page, {
+      slots: (page.slots || []).map((slot, si) => {
+        // By id first, then by position: the replica MINTS an instanceId for legacy
+        // id-less slots on its first mutation, so an id-keyed lookup alone would miss
+        // exactly the slot whose secret we are trying to preserve.
+        const prior = (slot.instanceId && mine.get('i:' + slot.instanceId)) || mine.get('p:' + pi + ':' + si);
+        if (!prior || prior.widgetId !== slot.widgetId) return slot;
+        // The projections below are carried across for EVERY captured slot, not only
+        // those whose widget still declares a secret. A demoted property is precisely
+        // one the manifest no longer calls secret, so gating this on the name list drops
+        // secretsCleared for the only case it exists to serve: the capture would replace
+        // the slot wholesale and the clear would silently become a restore.
+        const names = secretsOf(slot.widgetId);
+        let settings = slot.settings;
+        if (names.length) {
+          settings = Object.assign({}, slot.settings);
+          for (const n of names) {
+            if (prior.settings && n in prior.settings) settings[n] = prior.settings[n];
+            else delete settings[n];
+          }
+        }
+        const merged = Object.assign({}, slot, { settings });
+        // Facts about what the HOST did. The replica cannot change them, so they are
+        // restored wholesale.
+        if (prior.secretsSet) merged.secretsSet = prior.secretsSet;
+        if (prior.secretsRestorable) merged.secretsRestorable = prior.secretsRestorable;
+        // A pending removal is different: it is a statement the REPLICA can contradict.
+        // replicaLayout passes secretsCleared through, so the panel receives the marker
+        // and cancels it by setting a value — but cancelling deletes the key, which looks
+        // identical to a capture that never carried one. The value is the only signal
+        // that separates them, and it is the same rule the editors use: a removal
+        // survives anything that is not a value. Restoring the marker unconditionally
+        // meant a replacement typed in the preview was deleted by the next Save.
+        // BOTH sides can name an address: the preview's own Clear puts the property in
+        // the CAPTURED list where no prior marker exists, and sourcing the union only
+        // from prior deleted it — so the replica could cancel a removal but never start
+        // one. Union first, then let the value settle it, which also handles the cancel:
+        // a marker the replica dropped comes back through prior and is filtered out by
+        // the replacement value that dropped it.
+        const named = new Set(Array.isArray(slot.secretsCleared) ? slot.secretsCleared : []);
+        for (const n of (prior.secretsCleared || [])) named.add(n);
+        const stillCleared = [...named]
+          .filter((n) => !contradictsRemoval(settings ? settings[n] : undefined));
+        if (stillCleared.length) merged.secretsCleared = stillCleared;
+        else delete merged.secretsCleared;
+        return merged;
+      }),
+    }));
+    // theme is never sent to the replica, so the capture's null is absence, not intent.
+    return Object.assign({}, captured, { pages, theme: (state.layout || {}).theme ?? null });
+  }
+  // Test seam: the headless probes assert that nothing credential-shaped reaches the
+  // preview. Reading a projection is harmless; it exposes no state the page lacks.
+  window.__wwReplicaLayout = replicaLayout;
+  // Same seam, write side: the probes drive a capture that mirrors the replica's own
+  // scrubbed view — no secretsCleared, no secretsRestorable — and assert the merge puts
+  // the projections back. Pure over its argument plus state.layout; exposes nothing the
+  // page does not already hold.
+  window.__wwMergeReplicaCapture = mergeReplicaCapture;
+
+  function replicaPost(message) {
+    if (message && message.type === 'init') window.__wwLastReplicaInit = JSON.stringify(message);
+    if (!replicaReady) return;
+    try { previewFrame.contentWindow.postMessage({ type: 'ww-host', message }, '*'); } catch (e) { /* not loaded */ }
+  }
+
+  function replicaTheme() {
+    return derivePalette(Object.assign({}, THEME_DEFAULTS, state.layout.theme || {}));
+  }
+
+  function replicaInit() {
+    // This IS the delivery any armed debounce was waiting for — disarm it, both so
+    // a 'ready' arriving mid-debounce can't double-init and so replicaTimer stays a
+    // truthful "settings edits are still undelivered" signal for the capture guard.
+    clearTimeout(replicaTimer);
+    replicaTimer = null;
+    initGen++;
+    lastReplicaLayout = replicaLayoutJson();
+    replicaPost({
+      type: 'init',
+      data: {
+        gen: initGen,
+        layout: replicaLayout(),
+        widgets: state.widgets,
+        sensors: state.sensors,
+        media: state.media || null,
+        backgroundHost,
+        theme: replicaTheme(),
+        // settings-init only carries {elevated}; widgets still expect the panel's
+        // full status shape, so keep apiVersion present in the replica too.
+        status: Object.assign({ elevated: false, apiVersion: 1 }, state.status || {}),
+        page: selectedPage,
+      },
+    });
+    if (editMode) {
+      // The replica just (re)built from scratch: put it straight back into edit
+      // mode and restore the selection highlight (both are per-document state).
+      replicaPost({ type: 'edit-mode', on: true });
+      postReplicaSelection();
+    }
+  }
+
+  function postReplicaSelection() {
+    if (selectedSlot == null || !state.layout.pages[selectedPage]) return;
+    replicaPost({ type: 'select-slot', page: selectedPage, index: selectedSlot });
+  }
+
+  /** kind: 'layout' (debounced full re-init) | 'theme' (light token push). */
+  function refreshReplica(kind) {
+    if (kind === 'theme') {
+      markDirty();
+      if (!replicaReady || previewStage.classList.contains('collapsed')) return;
+      // seeds ride along so the replica's styled slots re-derive their overrides
+      // against the edited theme instead of keeping stale (or losing) seeds.
+      replicaPost({ type: 'theme', data: replicaTheme(), seeds: state.layout.theme || null });
+      return;
+    }
+    const json = replicaLayoutJson();
+    if (json !== lastWorkingLayout) { // a real structural edit, replica alive or not
+      lastWorkingLayout = json;
+      markDirty();
+    }
+    if (!replicaReady || previewStage.classList.contains('collapsed')) return;
+    // Selection-only renders (nothing structural changed) just steer the replica to
+    // the selected page — a full re-init would needlessly reload every widget. The
+    // replica already shows exactly this layout, so an earlier armed re-init (e.g.
+    // an edit since reverted) has nothing left to deliver: disarm it.
+    if (json === lastReplicaLayout) {
+      clearTimeout(replicaTimer);
+      replicaTimer = null;
+      replicaPost({ type: 'page', index: selectedPage });
+      return;
+    }
+    clearTimeout(replicaTimer);
+    replicaTimer = setTimeout(replicaInit, 350);
+  }
+
+  window.addEventListener('message', (ev) => {
+    if (ev.source !== previewFrame.contentWindow) return;
+    const msg = ev.data || {};
+    if (msg.type !== 'ww-shell') return;
+    const m = msg.message || {};
+    if (m.type === 'ready') {
+      replicaReady = true;
+      clearTimeout(replicaWatchdog);
+      el('previewHint').textContent = PREVIEW_HINT_DEFAULT;
+      el('previewHint').classList.remove('warn');
+      replicaInit();
+    } else if (m.type === 'page-changed') {
+      // The editing replica navigated (page add, edge-drop, capsule arrows): follow
+      // it, or the rail/detail/Add-widget keep operating on the page the preview no
+      // longer shows. Out-of-range indices (capture was dropped) are ignored; our
+      // own 'page' steering echoes back as an equal index and no-ops here.
+      // Same staleness rules as captures and selections: a navigation the OLD
+      // replica completed while settings edits are undelivered (armed debounce)
+      // or before applying the latest init (generation echo) indexes a layout we
+      // no longer hold — following it would point every page/widget edit at the
+      // wrong page after a reorder or deletion.
+      // A DROPPED navigation must still converge: unlike captures (the imminent
+      // re-init repaints the replica), nothing else corrects a page split, and
+      // the field showed the strip stuck on one page while the preview displayed
+      // another — with every edit landing on the wrong page's state. Steer the
+      // replica back to OUR page so the two surfaces re-agree visibly.
+      if (replicaTimer || (m.gen | 0) !== initGen) {
+        replicaPost({ type: 'page', index: selectedPage });
+        return;
+      }
+      const idx = m.index | 0;
+      if (idx !== selectedPage && idx >= 0 && idx < state.layout.pages.length) {
+        selectedPage = idx;
+        selectedSlot = null; // a follow-up slot-selected re-adopts if a tile moved with us
+        galleryOpen = false; // an open gallery was aimed at the page we just left
+        renderPageList();
+        renderEditorPanel();
+        // An open widget inspector points at a selection that no longer exists —
+        // close it rather than showing an orphaned card. Theme/wallpaper/page
+        // inspectors are page-independent and stay.
+        if (activeTab === 'widget' && panelOpen()) closePanel();
+      }
+    } else if (m.type === 'save-layout') {
+      // The interactive replica IS the editor (#32): its continuous persists are the
+      // edit stream. Captured into the working copy — unsaved until Save & apply —
+      // never forwarded to the real host.
+      captureReplicaLayout(m.layout, m.gen);
+    } else if (m.type === 'slot-selected') {
+      // Click-to-configure: the replica says which tile the user tapped (or where a
+      // mutation moved the already-selected one, or -1/-1 when it went away).
+      onReplicaSelection(m.page | 0, m.index | 0, m.instanceId || null, m.gen);
+    } else if (m.type === 'style-widget') {
+      // 🎨 on a preview tile: the slot-selected handoff (posted first) already
+      // adopted the tile — just make sure its inspector is open.
+      if ((m.gen | 0) === initGen && !replicaTimer) openPanel('widget');
+    } else if (m.type === 'add-widget') {
+      // The replica's "+" zone hands the add over to us (#45): a modal palette
+      // inside the scaled strip covered the very layout being edited. Follow the
+      // page the tap happened on, then open the settings-side gallery.
+      // Same staleness rules as page-changed/slot-selected: a tap in the OLD
+      // replica (undelivered edits or an outdated generation) indexes a layout
+      // we no longer hold — following it would open the gallery on, and add the
+      // widget to, the wrong page after a reorder or deletion.
+      if (replicaTimer || (m.gen | 0) !== initGen) return;
+      // Region the tap landed in. Null for an older shell, which simply keeps the
+      // page-wide sizing it always had.
+      const t = m.target;
+      const idx = m.index | 0;
+      const tPage = (idx >= 0 && idx < state.layout.pages.length) ? state.layout.pages[idx] : null;
+      pendingAddTarget = (t && tPage && t.w >= 1 && t.h >= 1 && t.col >= 0 && t.row >= 0)
+        ? { region: t, page: tPage } : null;
+      if (idx !== selectedPage && idx >= 0 && idx < state.layout.pages.length) {
+        selectedPage = idx;
+        selectedSlot = null;
+        renderPageList();
+      }
+      openGallery();
+    } else if (m.type === 'fetch' || m.type === 'ping' || m.type === 'media-list' || m.type === 'audio-get') {
+      post({ type: 'preview-data', message: m });
+    } else if (m.type === 'notifications-watch') {
+      // The host's toast mirror is demand-gated by the PANEL shell; the preview must
+      // never add/remove real watch demand (SetWatching is one toggle — a second
+      // writer would fight the dashboard's bookkeeping). Answer with representative
+      // sample toasts instead (theme-panel sample-tile spirit), or the widget sits
+      // on its loading spinner forever in the replica.
+      if (m.on !== false) replicaPost({ type: 'notifications', data: sampleNotifications() });
+    }
+    // Everything else (media-control, actions, audio-set, sd-*, log) is dropped:
+    // the replica edits the layout, but is never an actor for the outside world.
+  });
+
+  // ---- WYSIWYG capture --------------------------------------------------------
+  // The replica shell edits its own copy of the layout and streams every mutation
+  // as a save-layout post. Adopt that copy as the working state and refresh the
+  // panels around the preview WITHOUT re-initing the replica — it already shows
+  // exactly this layout (the lastReplicaLayout snapshot swallows the echo).
+
+  function captureReplicaLayout(layout, gen) {
+    if (!layout || !Array.isArray(layout.pages)) return;
+    // A capture built under an older init generation comes from a document state
+    // we have since replaced: clearing replicaTimer happens when the init is
+    // POSTED, but the replica applies it asynchronously, and a gesture (or a
+    // deferred view-transition mutation) completing in that gap streams the OLD
+    // copy. The armed-timer guard below can't see it — the timer is already
+    // clear — so the generation echo is the authority: stale gen, stale capture.
+    if ((gen | 0) !== initGen) return;
+    // An armed re-init debounce means the settings side holds edits the replica has
+    // NOT received yet — this capture was built from a stale copy, and adopting it
+    // would silently revert those edits (and the still-armed timer would then
+    // re-init the replica as a pure echo, reloading every widget). Drop it: the
+    // imminent re-init repaints the replica from the settings truth, visibly
+    // superseding the replica gesture instead of corrupting the working copy.
+    if (replicaTimer) return;
+    // The replica is sent a SCRUBBED projection (no credentials, no theme), so its
+    // capture is authoritative for STRUCTURE only — which slots exist, where, at what
+    // size. Adopting it wholesale would write those blanks back over the working copy:
+    // a drag would wipe the configured theme and discard a credential the user typed
+    // but has not saved. Take the structure, keep the settings-side values.
+    state.layout = mergeReplicaCapture(layout);
+    lastReplicaLayout = replicaLayoutJson();
+    lastWorkingLayout = lastReplicaLayout; // replica edits advance the edit baseline too
+    selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
+    markDirty();
+    renderPageList();
+    renderEditorPanel();
+  }
+
+  function onReplicaSelection(pageIdx, slotIdx, instanceId, gen) {
+    // An armed re-init debounce means the replica still shows a layout we have
+    // since edited: every index it emits — select AND deselect — references the
+    // OLD copy, and a mere existence check can bless the WRONG slot (delete slot
+    // 0 from the strip, tap the tile still showing old slot 1: our slot 1 is a
+    // different widget). Same rule as captureReplicaLayout: drop it — the
+    // imminent re-init repaints the replica and re-imposes our selection.
+    // The generation echo covers the post-to-apply gap the timer can't see, and
+    // unlike the instanceId check below it also protects LEGACY slots that have
+    // no id to verify: a matching generation proves the replica applied the
+    // current init, so its indices refer to the layout we hold right now.
+    if (replicaTimer || (gen | 0) !== initGen) return;
+    if (pageIdx < 0 || slotIdx < 0) {
+      if (selectedSlot === null) return;
+      selectedSlot = null;
+      renderEditorPanel();
+      return;
+    }
+    if (pageIdx === selectedPage && slotIdx === selectedSlot) {
+      // Echo of our own select-slot — EXCEPT the tap must always LAND on the
+      // widget card: reopen a closed inspector, take over from an open Page/
+      // Theme/Wallpaper card, and dismiss a stale gallery. Only a widget card
+      // already showing this slot treats the echo as a no-op.
+      if (!panelOpen() || activeTab !== 'widget' || galleryOpen) {
+        if (galleryOpen) { galleryOpen = false; renderEditorPanel(); }
+        openPanel('widget');
+      }
+      return;
+    }
+    // Only adopt indices that exist in OUR copy. A tap can race a pending structural
+    // edit (e.g. the rail just deleted the page the replica still shows): its indices
+    // reference a layout we no longer hold, and adopting the slot index would render
+    // ANOTHER slot's properties. The imminent re-init resets the replica anyway.
+    const page = state.layout.pages[pageIdx];
+    if (!page || !(page.slots || [])[slotIdx]) return;
+    // Identity check for the residual window the timer can't see (an init posted
+    // but not yet applied by the iframe): when the replica names the tapped tile,
+    // adopt the indices only if OUR slot at that position is the same instance.
+    if (instanceId && (page.slots || [])[slotIdx].instanceId !== instanceId) return;
+    selectedPage = pageIdx;
+    selectedSlot = slotIdx;
+    galleryOpen = false; // the tap picked an existing widget — detail takes over
+    renderPageList();
+    renderEditorPanel();
+    openPanel('widget'); // a real adoption (tap / palette add) — open the inspector
+  }
+
+  function markDirty() {
+    if (initializing) return;
+    editSeq++; // every edit bumps, even while already dirty — the save ack compares
+    if (dirty) return;
+    dirty = true;
+    el('save').classList.add('dirty');
+    el('save').title = 'You have unsaved changes';
+  }
+
+  function clearDirty() {
+    dirty = false;
+    el('save').classList.remove('dirty');
+    el('save').title = '';
+  }
+
+  function sampleNotifications() {
+    const now = Date.now();
+    return { state: 'allowed', items: [
+      { id: 1, app: 'Mail', appId: 'preview.mail', title: 'Sample notification', body: 'This is how mirrored toasts will look on the panel.', time: now - 40000 },
+      { id: 2, app: 'Mail', appId: 'preview.mail', title: 'Meeting in 15 minutes', body: 'Design sync — Room 4.', time: now - 300000 },
+      { id: 3, app: 'Chat', appId: 'preview.chat', title: 'Alex', body: 'Preview data — real notifications appear on the panel itself.', time: now - 3600000 },
+    ] };
+  }
+
+  // The preview is a STRIP above the editor, not the centerpiece: fit the stage
+  // width but never scale past native or past a strip height — unbounded fitting
+  // rendered the panel BIGGER than 1280×400 on wide windows, eating most of the
+  // screen and pushing the whole editor into scroll (#27). The strip height
+  // follows the window (~30%, clamped 160–320): a fixed cap read "too small" on
+  // large screens and would dominate small ones. While "Edit layout" is on the
+  // strip IS the editing surface, so the cap rises to ~45% for usable targets —
+  // the same clamp logic, just a taller ceiling (#32).
+  function fitReplica() {
+    const width = previewStage.clientWidth || 1;
+    // Measure what is actually LEFT, rather than guessing a share of the window.
+    // The dock is docked (#79): it takes the height it needs and the preview gets
+    // the remainder, so a percentage-of-window cap would either leave a gap under
+    // the canvas or let the dock push it off the top. Everything above the stage
+    // plus the whole dock is subtracted; the floor keeps the strip usable if the
+    // dock ever grows past the window.
+    const dockEl = el('dock');
+    // Everything the canvas and the dock have to share. stageTop is the header, the
+    // rejected-widgets banner and the preview bar — none of which move when either of
+    // those two heights changes, so this is a stable input rather than a term that
+    // shifts under the arithmetic below.
+    const stageTop = previewStage.getBoundingClientRect().top;
+    const available = Math.max(0, Math.round(window.innerHeight - stageTop - 12));
+    if (dockEl) {
+      // ONE viewport-derived cap for the whole dock. The toolbar's 38vh and the dock
+      // body's 46vh are independent allowances that ADD UP: enough page and widget
+      // chips to fill the toolbar, plus a dock body with a populated inspector, is
+      // 84vh of fixed-height region before the header and preview bar are counted at
+      // all. At 480px that overflows the window on its own, and shrinking the canvas
+      // cannot recover it — there is nothing left to give. Bounded here, the columns
+      // scroll internally (every one of them is overflow:auto already) instead of
+      // hanging past the bottom edge of a document that cannot scroll.
+      // No circularity: `available` does not depend on the dock's height, so setting
+      // this cap cannot move the number that produced it.
+      dockEl.style.maxHeight = Math.max(0, available - Math.min(60, available)) + 'px';
+    }
+    const dockH = dockEl ? dockEl.getBoundingClientRect().height : 0;
+    const room = available - Math.round(dockH);
+    const ceiling = editMode ? 430 : 320;
+    // The floor yields to the room. An unconditional 160 forces a stage taller than
+    // what is left at the supported 780x480 minimum, where the toolbar plus the dock's
+    // allowance can leave less than that — and since both regions are flex:none in an
+    // overflow:hidden body, the dock is pushed past the viewport and its lower controls
+    // are unreachable. A cramped canvas is recoverable by resizing the window; controls
+    // clipped off the bottom of a document that cannot scroll are not.
+    const maxH = Math.max(Math.min(160, Math.max(0, room)), Math.min(ceiling, room));
+    const scale = Math.min(width / 1280, maxH / 400, 1);
+    previewFrame.style.transform = 'scale(' + scale + ')';
+    previewFrame.style.marginLeft = Math.max(0, Math.round((width - 1280 * scale) / 2)) + 'px';
+    previewStage.style.height = Math.round(400 * scale) + 'px';
+  }
+  new ResizeObserver(fitReplica).observe(previewStage);
+  window.addEventListener('resize', fitReplica); // stage width alone misses height-only resizes
+  // The DOCK's height is now an input to the fit, so it has to be watched too. It grows
+  // without the window, the toolbar or the stage changing at all: settings-init fills
+  // the palette, and switching widgets swaps inspector content of a different height.
+  // Watching only the stage left the old dock height in the calculation, and with both
+  // regions flex:none inside an overflow:hidden body the dock's lower controls stayed
+  // clipped until some unrelated resize happened to refit.
+  if (typeof ResizeObserver !== 'undefined' && el('dock'))
+    new ResizeObserver(fitReplica).observe(el('dock'));
+
+  // A dead preview must say so, not sit there as a black slab: if the shell never
+  // reports ready, surface it where the user is looking (#27 companion diagnostic).
+  const PREVIEW_HINT_DEFAULT = el('previewHint').textContent;
+  let replicaWatchdog = null;
+  function armReplicaWatchdog() {
+    clearTimeout(replicaWatchdog);
+    replicaWatchdog = setTimeout(() => {
+      if (replicaReady) return;
+      el('previewHint').textContent =
+        'Preview did not start — the panel shell failed to load here. Check app.log (enable dev tools in config.json for details).';
+      el('previewHint').classList.add('warn');
+    }, 6000);
+  }
+
+  el('previewToggle').addEventListener('click', () => {
+    const collapsed = previewStage.classList.toggle('collapsed');
+    el('previewToggle').textContent = collapsed ? 'Show' : 'Hide';
+    // Collapsing/restoring the stage TRANSLATES the toolbar without resizing
+    // it, so the ResizeObserver stays silent — refit an open inspector here.
+    positionPanel();
+    if (collapsed) {
+      previewFrame.removeAttribute('src'); // suspend: no hidden widgets burning CPU
+      replicaReady = false;
+      // An intentionally suspended preview is not a failure — a watchdog armed in
+      // the last six seconds must not fire a false "did not start".
+      clearTimeout(replicaWatchdog);
+      el('previewHint').textContent = PREVIEW_HINT_DEFAULT;
+      el('previewHint').classList.remove('warn');
+    } else {
+      previewFrame.src = 'index.html?preview=1';
+      fitReplica();
+      armReplicaWatchdog();
+    }
+  });
+
+  // ---- WYSIWYG edit toggle ----------------------------------------------------
+  // Default ON: the replica takes pointer input and runs the shell's own edit mode
+  // (drag, resize, ✕, +, tap-to-configure). OFF returns the look-don't-touch strip.
+  function applyEditMode() {
+    const btn = el('editToggle');
+    btn.classList.toggle('on', editMode);
+    btn.setAttribute('aria-pressed', String(editMode));
+    previewStage.classList.toggle('interactive', editMode);
+    fitReplica();
+    replicaPost({ type: 'edit-mode', on: editMode });
+    if (editMode) postReplicaSelection();
+  }
+  el('editToggle').addEventListener('click', () => {
+    editMode = !editMode;
+    applyEditMode();
+  });
+
+  applyEditMode(); // stamp the initial classes (replica messages no-op until ready)
+  previewFrame.src = 'index.html?preview=1';
+  fitReplica();
+  armReplicaWatchdog();
+
+  // ---- top bar ----------------------------------------------------------------
+
+  el('save').addEventListener('click', () => {
+    const seq = ++saveSeq;
+    pendingSaves.set(seq, editSeq); // the ack clears dirty only if this is still current
+    post({ type: 'save-layout', layout: state.layout, seq });
+  });
+  el('installWidget').addEventListener('click', () => post({ type: 'install-widget' }));
+  el('openFolder').addEventListener('click', () => post({ type: 'open-widgets-folder' }));
+  el('openMedia').addEventListener('click', () => post({ type: 'open-media-folder' }));
+  el('addPage').addEventListener('click', () => {
+    state.layout.pages.push({ name: 'Page ' + (state.layout.pages.length + 1), slots: [] });
+    selectedPage = state.layout.pages.length - 1;
+    selectedSlot = null;
+    renderAll();
+  });
+
+  /** Widgets the host found on disk and refused to load (issue #57).
+   *
+   * A refusal is the correct outcome for a widget that would write a credential in
+   * plaintext, but it is invisible by nature: the widget is simply absent from the
+   * palette, and if a slot referenced it that tile is now empty. The reason belongs
+   * where the user is looking for the missing widget, not only in app.log.
+   *
+   * Reason strings come from the host and name a third-party manifest, so they are
+   * rendered with textContent — never innerHTML. */
+  /** Names the properties the user asked to REMOVE, per slot, as a projection the host
+   * reads off the raw save payload (SecretPolicy.ClearedMarkerKey).
+   *
+   * This replaced a sentinel string written into the value. "The user cleared this" is a
+   * statement ABOUT a value, and putting it IN the value made one string mean two things:
+   * an untouched field echoing that exact text was indistinguishable from a deliberate
+   * clear, and no rule over the bytes could separate them. Escaping made it worse rather
+   * than better — it was a per-producer obligation, and only the text inputs ever had it.
+   *
+   * A name in a list cannot be confused with a value, so nothing escapes anything here. */
+  // Whether a value the user just set CONTRADICTS a pending removal. "" does not: it is
+  // the exact shape the host reads as untouched, so a control with a legitimately empty
+  // choice — an `sd-profiles` select where "" means "first available" — would otherwise
+  // cancel a clear and have Seal restore the envelope the user asked to delete.
+  //
+  // `false` and `0` ARE values. A switch turned off and a number set to zero are choices,
+  // not absences, and they cancel a removal like any other replacement.
+  function contradictsRemoval(value) {
+    return !(value === '' || value === null || value === undefined);
+  }
+
+  function markCleared(slot, name, on) {
+    const list = Array.isArray(slot.secretsCleared) ? slot.secretsCleared.slice() : [];
+    const at = list.indexOf(name);
+    if (on && at < 0) list.push(name);
+    else if (!on && at >= 0) list.splice(at, 1);
+    if (list.length) slot.secretsCleared = list;
+    else delete slot.secretsCleared;
+  }
+
+  function renderRejectedWidgets(list) {
+    const box = el('rejectedWidgets');
+    if (!box) return;
+    box.textContent = '';
+    const items = Array.isArray(list) ? list : [];
+    box.hidden = items.length === 0;
+    if (!items.length) return;
+
+    const title = document.createElement('h2');
+    title.textContent = items.length === 1
+      ? '1 widget was not loaded'
+      : `${items.length} widgets were not loaded`;
+    box.appendChild(title);
+
+    const intro = document.createElement('p');
+    intro.textContent = 'These are installed but refused, because loading them would store '
+      + 'a credential in plain text. Fix the manifest or remove the folder — the widget '
+      + 'stays unavailable until then, and any tile using it will be empty.';
+    box.appendChild(intro);
+
+    const ul = document.createElement('ul');
+    for (const item of items) {
+      const li = document.createElement('li');
+      const name = document.createElement('strong');
+      name.textContent = item.name || item.id || 'unknown widget';
+      li.append(name, document.createTextNode(' — ' + (item.reason || 'refused')));
+      if (item.folder) {
+        const where = document.createElement('div');
+        where.className = 'muted';
+        where.textContent = item.folder;
+        li.appendChild(where);
+      }
+      ul.appendChild(li);
+    }
+    box.appendChild(ul);
+  }
+
+  // ---- page panel ----------------------------------------------------------------
+
+  function renderAll() {
+    renderPageList();
+    renderThemeEditor();
+    renderGlobalBackground();
+    renderEditor();
+  }
+
+  function renderGlobalBackground() {
+    renderBackgroundEditor(
+      el('globalBg'),
+      () => state.layout.background || null,
+      (spec) => {
+        if (spec) state.layout.background = spec; else delete state.layout.background;
+        refreshReplica('layout');
+      },
+      { allowInherit: false });
+  }
+
+  // Stock seeds mirrored from PaletteEngine's defaults; shown when no theme is set.
+  const THEME_DEFAULTS = { accent: '#4cc2ff', background: '#05070b', text: '#e8ecf2', panelAlpha: 0.92 };
+
+  // Palette derivation lives in palette.js (shared with the dashboard shell for the
+  // live replica and per-widget style overrides).
+  const derivePalette = window.WWPalette.derive;
+
+  function renderThemeEditor() {
+    const container = el('themeEditor');
+    container.textContent = '';
+
+    // Live preview: a miniature widget tile over a wallpaper strip, restyled on every
+    // input so each control's effect is visible immediately.
+    const preview = document.createElement('div');
+    preview.className = 'theme-preview';
+    preview.innerHTML =
+      '<div class="tp-tile">' +
+        '<div class="tp-head"><span class="tp-kicker">CPU Load</span><span class="tp-pill">OK</span></div>' +
+        '<div class="tp-reading"><span class="tp-value">57</span><span class="tp-unit">%</span></div>' +
+        '<div class="tp-meter"><i></i></div>' +
+        '<div class="tp-btns"><button type="button" class="tp-btn" tabindex="-1">Button</button>' +
+        '<button type="button" class="tp-btn tp-primary" tabindex="-1">Accent</button></div>' +
+      '</div>';
+
+    const refreshPreview = () => {
+      const t = Object.assign({}, THEME_DEFAULTS, state.layout.theme || {});
+      const tokens = derivePalette(t);
+      for (const name of Object.keys(tokens)) preview.style.setProperty(name, tokens[name]);
+    };
+
+    const setKey = (key, value) => {
+      const t = state.layout.theme || (state.layout.theme = {});
+      if (value == null) delete t[key]; else t[key] = value;
+      if (!Object.keys(t).length) delete state.layout.theme;
+      refreshPreview();
+      refreshReplica('theme');
+    };
+    const cur = state.layout.theme || {};
+
+    container.appendChild(preview);
+    container.appendChild(bgColor('Accent', cur.accent || THEME_DEFAULTS.accent, (v) => setKey('accent', v)));
+    container.appendChild(bgColor('Background', cur.background || THEME_DEFAULTS.background, (v) => setKey('background', v)));
+    container.appendChild(bgColor('Text', cur.text || THEME_DEFAULTS.text, (v) => setKey('text', v)));
+    const alphaPct = Math.round((cur.panelAlpha != null ? cur.panelAlpha : THEME_DEFAULTS.panelAlpha) * 100);
+    container.appendChild(bgSlider('Panel opacity', alphaPct, 15, 100, 1, '%', (v) => setKey('panelAlpha', v / 100)));
+
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'ghost';
+    reset.textContent = 'Reset to stock theme';
+    reset.onclick = () => { delete state.layout.theme; renderThemeEditor(); refreshReplica('theme'); };
+    container.appendChild(bgRow('', reset));
+    refreshPreview();
+  }
+
+  // Horizontal pages strip: one chip per page (name + widget count); click selects
+  // AND steers the replica there. The active chip carries the ◀ ▶ reorder arrows.
+  function renderPageList() {
+    const list = el('pageList');
+    list.textContent = '';
+    state.layout.pages.forEach((page, i) => {
+      const item = document.createElement('li');
+      item.classList.toggle('active', i === selectedPage);
+      const name = document.createElement('span');
+      name.textContent = page.name || 'Page ' + (i + 1);
+      const count = document.createElement('span');
+      count.className = 'count';
+      count.textContent = (page.slots || []).length;
+      item.append(name, count);
+      if (i === selectedPage) {
+        const left = chipMove('movePageLeft', '◀', 'Move page earlier', -1);
+        left.disabled = i === 0;
+        const right = chipMove('movePageRight', '▶', 'Move page later', 1);
+        right.disabled = i === state.layout.pages.length - 1;
+        item.append(left, right);
+      }
+      item.addEventListener('click', () => {
+        if (selectedPage !== i) selectedSlot = null; // selection is per page
+        // A hole named by a "+" tap belongs to the page it was tapped on. Carrying it
+        // across a page switch would anchor the next add to a cell chosen elsewhere.
+        pendingAddTarget = null;
+        selectedPage = i;
+        renderAll();
+      });
+      list.appendChild(item);
+    });
+  }
+
+  function chipMove(id, glyph, title, delta) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = id;
+    btn.className = 'chip-move';
+    btn.textContent = glyph;
+    btn.title = title;
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation(); // the chip's own click would re-select
+      movePage(delta);
+    });
+    return btn;
+  }
+
+  // ---- page editor ----------------------------------------------------------------
+
+  function renderEditor() {
+    refreshReplica('layout');
+    renderEditorPanel();
+  }
+
+  // Everything below/around the preview, WITHOUT poking the replica — used directly
+  // when the replica itself originated the change (capture) and already shows it.
+  function renderEditorPanel() {
+    // Every render REPLACES the property controls, so a body-appended chooser opened
+    // against the old ones is now pointed at detached inputs — a pick would write into
+    // whichever slot was selected when it opened, while a different slot's inspector is
+    // on screen. closePanel() is not enough: selecting another slot through the embedded
+    // PREVIEW keeps the panel open and rebuilds it, and the iframe's pointer event never
+    // reaches this document's outside-click handler, so nothing else takes it down.
+    closeAppPop();
+    // Every render is a possible context change (page chip select, adoption,
+    // gallery toggle): an OPEN inspector must never keep naming the previous
+    // context while showing the new one's fields.
+    if (panelOpen()) el('panelTitle').textContent = panelTitleFor(activeTab);
+    // A widget card whose target vanished (chip deselect, widget removed)
+    // closes instead of floating as an orphaned "Select a widget" hint.
+    // The gallery legitimately shows with no selection and stays.
+    if (panelOpen() && activeTab === 'widget' && !galleryOpen && selectedSlot == null)
+      closePanel();
+    const page = state.layout.pages[selectedPage];
+    const hasPage = !!page;
+    el('editorEmpty').hidden = hasPage;
+    el('pageHeader').style.display = hasPage ? 'flex' : 'none';
+    // The palette shelf replaced this opener (#79) — the widget set is permanently
+    // on screen, so a button whose job was to reveal it has nothing left to do.
+    // Setting `display` here rather than `hidden` is why an earlier `hidden = true`
+    // did not stick: this runs on every panel render and put it straight back.
+    el('addSlot').style.display = 'none';
+    el('pageBgWrap').style.display = hasPage ? 'block' : 'none';
+    el('slotList').textContent = '';
+    el('slotDetail').textContent = '';
+    if (!hasPage) {
+      galleryOpen = false;
+      renderWidgetGallery(null);
+      // Nothing to manage widget-wise; the empty state lives on the Page tab.
+      if (activeTab === 'widget' && panelOpen()) closePanel();
+      return;
+    }
+
+    renderBackgroundEditor(
+      el('pageBg'),
+      () => page.background || null,
+      (spec) => {
+        if (spec) page.background = spec; else delete page.background;
+        refreshReplica('layout');
+      },
+      { allowInherit: true });
+
+    const nameInput = el('pageName');
+    nameInput.value = page.name || '';
+    // Renames go through the structural refresh like every other layout edit: it
+    // arms the replica debounce, and the armed timer is exactly what makes
+    // captureReplicaLayout drop stale replica copies — a rename that only touched
+    // our side was silently reverted by the next replica gesture's capture.
+    nameInput.oninput = () => { page.name = nameInput.value; renderPageList(); refreshReplica('layout'); };
+
+    // Two-tap confirm: the first tap arms the button (and auto-disarms), only a
+    // second tap actually deletes — a page full of tuned widgets is easy to fat-finger.
+    const delBtn = el('deletePage');
+    delBtn.textContent = 'Delete page';
+    delete delBtn.dataset.armed;
+    delBtn.onclick = () => {
+      if (!delBtn.dataset.armed) {
+        delBtn.dataset.armed = '1';
+        delBtn.textContent = 'Tap again to delete';
+        setTimeout(() => {
+          if (delBtn.dataset.armed) {
+            delete delBtn.dataset.armed;
+            delBtn.textContent = 'Delete page';
+          }
+        }, 3500);
+        return;
+      }
+      delete delBtn.dataset.armed;
+      state.layout.pages.splice(selectedPage, 1);
+      selectedPage = Math.max(0, selectedPage - 1);
+      selectedSlot = null;
+      renderAll();
+    };
+
+    el('addSlot').onclick = () => (galleryOpen ? closeGallery() : openGallery());
+
+    page.slots = page.slots || [];
+    if (selectedSlot !== null && !page.slots[selectedSlot]) selectedSlot = null; // stale index
+    renderSlotStrip(page);
+    renderSlotDetail(page);
+    renderSlotStylePanel();
+    renderWidgetGallery(page);
+    renderCapacity(page);
+  }
+
+  // ---- add-widget gallery -----------------------------------------------------
+  // Settings-side picker (#45): the replica's modal palette covered the scaled
+  // layout being edited, so adds happen HERE — whether they start from the
+  // "+ Add widget" button (toggle: second click closes) or from the replica's
+  // "+" zone (the shell bounces that tap up as an add-widget message).
+
+  // The palette is permanently on the shelf now (#79), so "open the gallery" no
+  // longer means reveal it — there is nothing to reveal. It means DRAW ATTENTION
+  // to it, because the request still arrives from the replica's "+" zone and that
+  // tap has to land somewhere the user can see. galleryOpen stays false so the
+  // detail pane is never displaced by a picker that is already on screen.
+  function openGallery() {
+    const shelf = el('dockPalette');
+    if (!shelf) return;
+    // Re-render BEFORE flashing. The shelf's buttons close over the page they were
+    // built for, and an add-widget message can name a different one — tapping the old
+    // page's "+" during the preview's page transition moves selectedPage, and a shelf
+    // still bound to the previous page would add the widget there and then open details
+    // for an unrelated slot. Flashing something stale is worse than not flashing.
+    renderEditorPanel();
+    shelf.scrollIntoView({ block: 'nearest' });
+    shelf.classList.remove('flash');
+    void shelf.offsetWidth;              // restart the animation on repeat taps
+    shelf.classList.add('flash');
+  }
+
+  function closeGallery() {
+    pendingAddTarget = null;   // dismissing the picker abandons the hole it was for
+    if (!galleryOpen) return;
+    galleryOpen = false;
+    renderEditorPanel();
+  }
+
+  // Mirror of the shell's defaultSizeFor: widest size that fits WITHOUT costing
+  // any currently-placing slot its spot. Legacy layouts can carry slots that
+  // already fail to place (over-full pages hide them) — they must not veto adds
+  // into the free space that IS visible (field bug: every gallery entry said
+  // "No room" while half the page sat empty).
+  /** The tapped region, but only for the page it was tapped on. Both the shelf's
+   *  enabled state and the add itself go through this — reading the target in one
+   *  place and page-wide sizing in the other is what left half-width widgets enabled
+   *  against a one-column hole, where clicking them did nothing at all. */
+  function activeAddTarget(page) {
+    if (!pendingAddTarget || pendingAddTarget.page !== page) return null;
+    // REVALIDATED, not merely remembered. Between the tap and the pick the user can
+    // resize or move a slot into the named cells — the shelf would still be answering
+    // for a rectangle that no longer exists, and the anchor would land in an occupied
+    // cell and flow somewhere else. Enumerating every interaction that could do that is
+    // a list to keep up to date; checking the cells is a fact.
+    const region = pendingAddTarget.region;
+    const { occupied } = occupancyOf(page.slots || []);
+    for (let r = region.row; r < region.row + region.h; r++)
+      for (let c = region.col; c < region.col + region.w; c++)
+        if (r > 1 || c > 3 || occupied[r][c]) { pendingAddTarget = null; return null; }
+    return region;
+  }
+
+  /** The size a widget takes in a specific free region: widest offered width that
+   *  fits its columns, banded to its rows. Mirrors the shell's sizeInRegion — the two
+   *  answer the same question for the same tap, on either surface. */
+  function sizeInRegion(widget, region) {
+    const band = region.h === 2 ? 'full' : (region.row === 0 ? 'upper' : 'lower');
+    const widths = offeredWidths(widget).slice().reverse();
+    for (const w of widths) if (WIDTH_COLS[w] <= region.w) return w + (band === 'full' ? '' : '-' + band);
+    return null;
+  }
+
+  function defaultSizeFor(page, widget) {
+    const widths = offeredWidths(widget).slice().reverse(); // widest first, shrink into the hole
+    const slots = (page.slots = page.slots || []);
+    const baseline = countUnplaced(slots);
+    const probe = { size: 'quarter' };
+    slots.push(probe);
+    let found = null;
+    outer:
+    for (const band of ['full', 'upper', 'lower']) {
+      for (const w of widths) {
+        probe.size = w + (band === 'full' ? '' : '-' + band);
+        if (countUnplaced(slots) === baseline) { found = probe.size; break outer; }
+      }
+    }
+    slots.pop();
+    return found;
+  }
+
+  // A glyph per stock widget so the palette can be a compact grid rather than a list
+  // of full-width rows. Presentation only, and settings-side only: manifests carry no
+  // icon, so putting this in the shell would mean inventing one field to serve one
+  // panel. Anything unrecognised — every third-party widget — gets the neutral tile,
+  // which is a plain look rather than a broken one.
+  const PALETTE_GLYPHS = {
+    'ws.stock.battery': '🔋', 'ws.stock.clock': '🕒', 'ws.stock.countdown': '⏳',
+    'ws.stock.cpu': '🧠', 'ws.stock.deck': '🎛️', 'ws.stock.forecast7': '📅',
+    'ws.stock.gallery': '🖼️', 'ws.stock.gpu': '🎮', 'ws.stock.hue': '💡',
+    'ws.stock.iframe': '🌐', 'ws.stock.launcher': '🚀', 'ws.stock.media': '🎵',
+    'ws.stock.notifications': '🔔', 'ws.stock.ping': '📡', 'ws.stock.radar': '🌧️',
+    'ws.stock.reddit': '👽', 'ws.stock.rest': '🔢', 'ws.stock.sensorchart': '📈',
+    'ws.stock.streamdeck': '🎚️', 'ws.stock.twitch': '💬', 'ws.stock.vitals': '❤️',
+    'ws.stock.volume': '🔊', 'ws.stock.weather': '⛅', 'ws.stock.youtube': '▶️',
+  };
+  const paletteGlyph = (id) => PALETTE_GLYPHS[id] || '▦';
+
+  function renderWidgetGallery(page) {
+    const wrap = el('widgetGallery');
+    // The palette is a permanent shelf now (#79): it lives in its own dock column
+    // and is drawn whenever there is a page to add to, rather than being toggled
+    // behind "+ Add widget". Seeing what exists is how you find out what exists —
+    // it was the one thing in the iCUE reference that is never hidden.
+    const open = !!page;
+    wrap.hidden = !open;
+    el('slotDetail').style.display = '';
+    wrap.textContent = '';
+    if (!open) return;
+    // When a replica "+" named a hole, the shelf answers for THAT hole: a widget the
+    // region cannot take is offered as unavailable rather than enabled-and-inert.
+    const region = activeAddTarget(page);
+    for (const widget of state.widgets) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'gallery-item';
+      const size = region ? sizeInRegion(widget, region) : defaultSizeFor(page, widget);
+      const glyph = document.createElement('span');
+      glyph.className = 'g-icon';
+      glyph.textContent = paletteGlyph(widget.id);
+      const name = document.createElement('span');
+      name.className = 'g-name';
+      name.textContent = widget.name;
+      btn.append(glyph, name);
+      // Unavailable WITH a reason (#77) — but in two words, because a full sentence
+      // per tile was what turned this shelf into a wall of text. The banner above
+      // carries the long form once instead of twenty-four times.
+      if (!size) {
+        const why = document.createElement('span');
+        why.className = 'g-why';
+        why.textContent = region ? 'too big' : 'no room';
+        btn.appendChild(why);
+      }
+      btn.title = size ? (widget.author || widget.name)
+        : (region ? 'Too big for the space you tapped' : 'No room on this page');
+      btn.disabled = !size;
+      btn.addEventListener('click', () => addWidgetToPage(page, widget));
+      wrap.appendChild(btn);
+    }
+    // A wall of disabled entries reads as "broken", not "full" — say it plainly.
+    if (![...wrap.children].some((b) => !b.disabled)) {
+      const note = document.createElement('p');
+      note.className = 'g-full panel-hint';
+      note.textContent = region
+        ? 'Nothing installed fits the space you tapped — try a larger one.'
+        : 'This page is full — remove a widget or add a page.';
+      wrap.prepend(note);
+    }
+  }
+
+  function addWidgetToPage(page, widget) {
+    // A tap on a specific hole in the replica sizes and anchors to THAT hole; the
+    // shelf's own "+" has no target and keeps the page-wide behaviour.
+    const region = activeAddTarget(page);
+    const size = region ? sizeInRegion(widget, region) : defaultSizeFor(page, widget);
+    if (!size) return;
+    pendingAddTarget = null;   // one tap, one add
+    galleryOpen = false;
+    const def = {
+      widgetId: widget.id,
+      size,
+      settings: {},
+      // Minted like the shell does: a positional tag could collide with an
+      // identity another slot froze earlier.
+      instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
+    };
+    if (region) def.col = region.col + 1;   // 1-based anchor, as placeSlots reads it
+    page.slots.push(def);
+    selectedSlot = page.slots.length - 1;
+    openPanel('widget'); // gallery pick lands in the new widget's inspector
+    renderPageList(); // the strip's widget count changed
+    renderEditor();
+  }
+
+  function movePage(delta) {
+    const target = selectedPage + delta;
+    if (target < 0 || target >= state.layout.pages.length) return;
+    const [page] = state.layout.pages.splice(selectedPage, 1);
+    state.layout.pages.splice(target, 0, page);
+    selectedPage = target;
+    renderAll();
+  }
+
+  // Mirror of the shell's two-pass placement (anchors first, then order-based
+  // first-fit). Total cells alone can't tell whether everything fits (five
+  // quarter-uppers are only 5/8 cells, but the top row holds 4), and ignoring
+  // `col` pins would let the gallery offer sizes the real placement then hides
+  // (a pinned tile the simulation flowed left can block the columns the shell
+  // actually keeps free) — so simulate the real 4x2 placement and count drops.
+  /** Which cells the page's slots occupy, by the same rules placeSlots uses. Shared
+   *  with countUnplaced so "is this cell free" has one answer, not two. */
+  function occupancyOf(slots) {
+    const occupied = [new Array(4).fill(false), new Array(4).fill(false)]; // [row][col]
+    const placed = new Array(slots.length).fill(false);
+    const geo = (s) => {
+      const { width, band } = parseSize(s.size);
+      return { w: WIDTH_COLS[width], rows: band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1] };
+    };
+    const free = (rows, col, w) => {
+      if (col < 0 || col + w > 4) return false;
+      for (const r of rows) for (let i = 0; i < w; i++) if (occupied[r][col + i]) return false;
+      return true;
+    };
+    const take = (rows, col, w) => {
+      for (const r of rows) for (let i = 0; i < w; i++) occupied[r][col + i] = true;
+    };
+    slots.forEach((s, i) => {
+      const anchor = (s.col >= 1 && s.col <= 4) ? s.col - 1 : null;
+      if (anchor === null) return;
+      const { w, rows } = geo(s);
+      if (free(rows, anchor, w)) { take(rows, anchor, w); placed[i] = true; }
+    });
+    let dropped = 0;
+    slots.forEach((s, i) => {
+      if (placed[i]) return;
+      const { w, rows } = geo(s);
+      let col = -1;
+      for (let c = 0; c + w <= 4; c++) if (free(rows, c, w)) { col = c; break; }
+      if (col >= 0) take(rows, col, w); else dropped++;
+    });
+    return { occupied, dropped };
+  }
+
+  function countUnplaced(slots) {
+    return occupancyOf(slots).dropped;
+  }
+
+
+  function renderCapacity(page) {
+    const slots = page.slots || [];
+    const used = slots.reduce((sum, s) => sum + sizeCells(s.size), 0);
+    const dropped = countUnplaced(slots);
+    const cap = el('capacity');
+    cap.textContent = 'Space used: ' + used + ' / 8';
+    cap.classList.toggle('warn', dropped > 0);
+    if (dropped > 0)
+      cap.textContent += ' — ' + dropped + ' widget' + (dropped > 1 ? 's' : '') + ' won\'t fit and will be dropped';
+  }
+
+  // ---- slot strip (compact chips) + detail panel ------------------------------------
+  // Master–detail: the strip lists this page's widgets (click to configure, ✕ to
+  // remove) and doubles as the selection path when the preview is hidden or dead;
+  // the detail panel shows ONLY the selected slot's properties.
+
+  const CHIP_WIDTH = { quarter: '¼', half: '½', 'three-quarter': '¾', full: 'Full' };
+  const CHIP_BAND = { full: '', upper: ' ▀', lower: ' ▄' };
+
+  function renderSlotStrip(page) {
+    const strip = el('slotList');
+    page.slots.forEach((slot, i) => {
+      const chip = document.createElement('div');
+      chip.className = 'slot-chip' + (i === selectedSlot ? ' active' : '');
+      const main = document.createElement('button');
+      main.type = 'button';
+      main.className = 'chip-main';
+      const w = widgetsById.get(slot.widgetId);
+      const name = document.createElement('span');
+      name.textContent = w ? w.name : slot.widgetId;
+      const size = document.createElement('span');
+      size.className = 'chip-size';
+      const parts = parseSize(slot.size);
+      size.textContent = CHIP_WIDTH[parts.width] + CHIP_BAND[parts.band];
+      main.append(name, size);
+      main.addEventListener('click', () => selectSlot(i));
+      chip.append(main, iconButton('✕', 'Remove', () => removeSlotAt(page, i), true));
+      strip.appendChild(chip);
+    });
+  }
+
+  function selectSlot(i) {
+    selectedSlot = selectedSlot === i ? null : i; // click the active chip to deselect
+    galleryOpen = false; // chip interaction takes the Widget tab over from the gallery
+    renderEditorPanel();
+    if (selectedSlot != null) openPanel('widget'); // chip select opens the inspector
+    // Mirror into the replica (index -1 clears its highlight).
+    replicaPost({ type: 'select-slot', page: selectedPage, index: selectedSlot == null ? -1 : selectedSlot });
+  }
+
+  function removeSlotAt(page, i) {
+    page.slots.splice(i, 1);
+    if (selectedSlot !== null) {
+      if (selectedSlot === i) selectedSlot = null;
+      else if (selectedSlot > i) selectedSlot--;
+    }
+    renderEditor();
+  }
+
+  function renderSlotDetail(page) {
+    const host = el('slotDetail');
+    const slot = selectedSlot !== null ? page.slots[selectedSlot] : null;
+    if (!slot) {
+      const hint = document.createElement('p');
+      hint.className = 'panel-hint detail-hint';
+      hint.textContent = page.slots.length
+        ? 'Select a widget in the preview to configure it.'
+        : 'This page is empty. Add widgets with “+ Add widget” or the + zone in the preview.';
+      host.appendChild(hint);
+      return;
+    }
+    host.appendChild(renderSlotCard(page, slot, selectedSlot));
+  }
+
+  function renderSlotCard(page, slot, index) {
+    const card = document.createElement('div');
+    card.className = 'slot-card';
+
+    const row = document.createElement('div');
+    row.className = 'slot-row';
+
+    // widget picker
+    const widgetSelect = document.createElement('select');
+    widgetSelect.className = 'widget';
+    for (const w of state.widgets) {
+      const opt = new Option(w.name + '  (' + w.id + ')', w.id, false, w.id === slot.widgetId);
+      widgetSelect.add(opt);
+    }
+    if (slot.widgetId && !widgetsById.has(slot.widgetId)) {
+      widgetSelect.add(new Option(slot.widgetId + '  (not installed)', slot.widgetId, false, true));
+    }
+    widgetSelect.onchange = () => {
+      slot.widgetId = widgetSelect.value;
+      slot.settings = {};
+      // secretsSet describes the OUTGOING widget's stored credentials. The host scopes
+      // carry-over by widget id, so the new widget will correctly inherit nothing —
+      // but leaving the marker here would have the editor report a same-named secret
+      // (`token` is the obvious collision) as "saved · encrypted" for a widget that has
+      // never had one.
+      delete slot.secretsSet;
+      delete slot.secretsRestorable;
+      delete slot.secretsCleared;
+      const w = widgetsById.get(slot.widgetId);
+      const widths = offeredWidths(w);
+      const current = parseSize(slot.size);
+      if (!widths.includes(current.width))
+        slot.size = widths[0] + (current.band === 'full' ? '' : '-' + current.band);
+      renderEditor();
+    };
+
+    // size picker: every offered width, each at full height or just the top/bottom band
+    const sizeSelect = document.createElement('select');
+    sizeSelect.className = 'size';
+    const widget = widgetsById.get(slot.widgetId);
+    for (const width of offeredWidths(widget)) {
+      for (const band of ['', '-upper', '-lower']) {
+        const value = width + band;
+        sizeSelect.add(new Option(sizeLabel(value), value, false, value === slot.size));
+      }
+    }
+    if (![...sizeSelect.options].some((o) => o.selected))
+      sizeSelect.add(new Option(sizeLabel(slot.size), slot.size, false, true));
+    sizeSelect.onchange = () => { slot.size = sizeSelect.value; renderEditor(); };
+
+    row.append(widgetSelect, sizeSelect,
+      iconButton('◀', 'Move earlier', () => moveSlot(page, index, -1)),
+      iconButton('▶', 'Move later', () => moveSlot(page, index, 1)),
+      iconButton('✕', 'Remove', () => removeSlotAt(page, index), true));
+    card.appendChild(row);
+
+    // Configuring a widget and personalising it are DIFFERENT JOBS, so they are
+    // different panels rather than two tabs sharing one box. Tabs made them look like
+    // two halves of one form and hid whichever half you were not on; side by side,
+    // both are visible and neither pushes the other below the fold. The appearance
+    // panel is filled by renderSlotStylePanel, in its own dock column.
+    const propsWrap = document.createElement('div');
+    card.appendChild(propsWrap);
+
+    // property editors, sectioned by group where the widget declares them
+    if (widget && widget.properties && widget.properties.length) {
+      const grid = document.createElement('div');
+      grid.className = 'props';
+      slot.settings = slot.settings || {};
+      // Controls that need the full panel width; everything else packs two-up so
+      // a widget's settings sit on screen instead of scrolling as a form.
+      const WIDE_TYPES = new Set(['list', 'sensors-factory', 'location', 'media-selector']);
+      let lastGroup = null;
+      for (const prop of widget.properties) {
+        if (prop.group && prop.group !== lastGroup) {
+          lastGroup = prop.group;
+          const heading = document.createElement('div');
+          heading.className = 'group-title';
+          heading.textContent = prop.group;
+          grid.appendChild(heading);
+        }
+        const label = document.createElement('label');
+        label.textContent = prop.label || prop.name;
+        // One malformed property (e.g. an old host stripping manifest keys from the
+        // projection) must not take the whole panel down with it.
+        let editor;
+        try {
+          editor = propEditor(prop, slot);
+        } catch (e) {
+          editor = document.createElement('span');
+          editor.className = 'prop-error';
+          editor.textContent = (prop.label || prop.name || 'property') + ' — this control failed to render';
+        }
+        const field = document.createElement('div');
+        field.className = 'prop-field' + (WIDE_TYPES.has(prop.type) ? ' wide' : '');
+        field.append(label, editor);
+
+        // Guidance that STAYS. A placeholder answers "what goes here" only until the first
+        // keystroke, and it is clipped to the control's width — so the one question a
+        // credential field actually has to answer, "which permissions does this token
+        // need", had nowhere to live (#207).
+        if (prop.help) {
+          const help = document.createElement('p');
+          help.className = 'prop-help';
+          help.textContent = String(prop.help);
+          field.appendChild(help);
+        }
+
+        // A demoted property can be ANY type — `secret` → `number`, `switch`, `color`,
+        // `select` — and the host blanks and lists every one of them. The affordance
+        // therefore belongs to the FIELD, not to one control: a Clear that lived in the
+        // text branch left every other type with a stored envelope it could not delete,
+        // because each of those controls' own reset emits an empty or absent value and
+        // the host reads that as untouched.
+        //
+        // Keyed on the list, so nothing here has to know what the control is. The text
+        // control renders its own richer version (placeholder + live state), so it opts
+        // out — that is the one type where the value and the affordance are the same
+        // widget.
+        if (Array.isArray(slot.secretsRestorable)
+            && slot.secretsRestorable.includes(prop.name)
+            && !(editor.classList && editor.classList.contains('restorable-wrap'))) {
+          const clear = iconButton('✕', 'Remove the stored value on the next save', () => {
+            // Empty, never absent: absent is one of the shapes the host reads as
+            // untouched, and the name is what carries the intent anyway.
+            slot.settings = slot.settings || {};
+            slot.settings[prop.name] = '';
+            markCleared(slot, prop.name, true);
+            // The replica has to see the finished slot. Nothing else here refreshes it —
+            // markDirty only lights the save button and renderEditor only rebuilds this
+            // panel — so without it the preview keeps showing the value just cleared.
+            refreshReplica('layout');
+            markDirty();
+            renderEditor();
+          }, true);
+          clear.classList.add('prop-clear');
+          field.appendChild(clear);
+        }
+        grid.appendChild(field);
+      }
+      propsWrap.appendChild(grid);
+    }
+    if (!propsWrap.childNodes.length) {
+      const none = document.createElement('p');
+      none.className = 'panel-hint';
+      none.textContent = 'This widget has no settings of its own — the Appearance panel restyles it.';
+      propsWrap.appendChild(none);
+    }
+    return card;
+  }
+
+  /** Fills the Appearance column for the current selection, and hides the whole panel
+   *  when there is nothing selected — an empty bordered card sitting beside the
+   *  inspector would read as a control that stopped working. */
+  function renderSlotStylePanel() {
+    const panel = el('stylePanel');
+    const body = el('styleBody');
+    if (!panel || !body) return;
+    // Reads its own inputs rather than taking a page argument. selectSlot renders the
+    // editor BEFORE it opens the Widget tab, so a version handed the page at render
+    // time saw the previous tab and hid itself on every selection.
+    const page = (state.layout.pages || [])[selectedPage] || null;
+    const slot = (page && selectedSlot !== null) ? (page.slots || [])[selectedSlot] : null;
+    body.textContent = '';
+    // The inspector's OPEN state is part of this, not just the selection: closePanel
+    // only drops the card's `open` class, so a predicate reading selection and tab
+    // alone re-shows Appearance the moment the user closes the inspector — and it
+    // keeps a 300px column of the dock for a card that is gone.
+    panel.hidden = !slot || activeTab !== 'widget' || !panelOpen();
+    if (panel.hidden) return;
+    body.appendChild(renderSlotStyle(slot));
+  }
+
+  // Per-slot appearance overrides — THE appearance control for a widget (#42), the
+  // same seeds the on-panel 🎨 editor writes into def.style: checked keys re-derive
+  // this one widget's palette (contrast repair included); everything unchecked
+  // keeps following the global theme (Theme tab).
+  function renderSlotStyle(slot) {
+    const wrap = document.createElement('div');
+    wrap.className = 'slot-style';
+    // No title here: the column header above already says Appearance. What the user
+    // needs at this point is what these controls DO to the global theme.
+    const hint = document.createElement('p');
+    hint.className = 'panel-hint';
+    hint.textContent = 'Checked keys override the theme for this widget only; '
+      + 'anything unchecked keeps following the global theme.';
+    wrap.appendChild(hint);
+
+    const setStyleKey = (key, value) => {
+      const s = slot.style || (slot.style = {});
+      if (value == null) delete s[key]; else s[key] = value;
+      if (!Object.keys(s).length) delete slot.style;
+      refreshReplica('layout');
+    };
+    const cur = slot.style || {};
+    const seeds = Object.assign({}, THEME_DEFAULTS, state.layout.theme || {});
+    const hex6 = (v, fb) => (/^#[0-9a-f]{6}$/i.test(v || '') ? v : fb);
+
+    for (const [key, labelText] of [['accent', 'Accent'], ['background', 'Background'], ['text', 'Text']]) {
+      const row = document.createElement('div');
+      row.className = 'style-row';
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.checked = cur[key] != null;
+      const label = document.createElement('label');
+      label.textContent = labelText;
+      const color = document.createElement('input');
+      color.type = 'color';
+      color.disabled = !check.checked;
+      color.value = hex6(cur[key], hex6(seeds[key], '#4cc2ff'));
+      check.onchange = () => {
+        color.disabled = !check.checked;
+        setStyleKey(key, check.checked ? color.value : null);
+      };
+      color.oninput = () => setStyleKey(key, color.value);
+      row.append(check, label, color);
+      wrap.appendChild(row);
+    }
+
+    const row = document.createElement('div');
+    row.className = 'style-row';
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    const label = document.createElement('label');
+    label.textContent = 'Panel opacity';
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.min = 15; range.max = 100; range.step = 1;
+    const out = document.createElement('output');
+    check.checked = cur.panelAlpha != null;
+    range.disabled = !check.checked;
+    range.value = String(Math.round((cur.panelAlpha != null ? cur.panelAlpha : seeds.panelAlpha) * 100));
+    out.value = range.value + '%';
+    check.onchange = () => {
+      range.disabled = !check.checked;
+      setStyleKey('panelAlpha', check.checked ? Number(range.value) / 100 : null);
+    };
+    range.oninput = () => {
+      out.value = range.value + '%';
+      setStyleKey('panelAlpha', Number(range.value) / 100);
+    };
+    row.append(check, label, range, out);
+    wrap.appendChild(row);
+    return wrap;
+  }
+
+  function moveSlot(page, index, delta) {
+    const target = index + delta;
+    if (target < 0 || target >= page.slots.length) return;
+    const [slot] = page.slots.splice(index, 1);
+    page.slots.splice(target, 0, slot);
+    // ◀/▶ is an ORDER gesture: column pins on the swapped pair would override
+    // the reorder (placement claims anchors before consulting order) and the
+    // move would persist invisibly. Both pins dissolve — same rule as dropping
+    // one tile onto another on the panel.
+    delete slot.col;
+    if (page.slots[index]) delete page.slots[index].col;
+    if (selectedSlot === index) selectedSlot = target;       // selection follows its slot
+    else if (selectedSlot === target) selectedSlot = index;  // ±1 swap displaced the neighbor
+    renderEditor();
+  }
+
+  function iconButton(text, title, onClick, danger) {
+    const btn = document.createElement('button');
+    btn.className = 'icon ghost' + (danger ? ' danger' : '');
+    btn.textContent = text;
+    btn.title = title;
+    btn.addEventListener('click', onClick);
+    return btn;
+  }
+
+  // ---- field pickers (#48) ----------------------------------------------------
+  // Manifest fields/properties can declare picker:'emoji' (icon fields) or
+  // picker:'file' (path targets) — free-text stays available, the picker just
+  // stops "type an emoji" and "type C:\...\app.exe" from being the ONLY way.
+
+  const EMOJI_CHOICES = [
+    '🧮', '🌐', '📁', '📷', '🎨', '📝', '📊', '💻', '🖥️', '⌨️', '🖱️', '🎧',
+    '🎮', '🕹️', '🎬', '🎵', '📺', '📻', '🔊', '🔇', '⏯️', '⏭️', '⏮️', '⏹️',
+    '🚀', '⚡', '🔥', '⭐', '❤️', '🏠', '🔧', '⚙️', '🔒', '🔑', '🛡️', '📦',
+    '💬', '📧', '📅', '⏰', '🌙', '☀️', '☁️', '💡', '🔋', '📶', '🧭', '🗺️',
+  ];
+
+  // Leading emoji plus trailing whitespace — what a picker:'emoji-prefix' pick
+  // swaps out so the text after the icon survives (launcher labels: "🎮 Steam"
+  // → "🚀 Steam"). Covers regional-indicator flags (🇺🇸) and keycaps (1️⃣) as
+  // well as pictographic VS16/skin-tone/ZWJ/tag sequences — mirror of the
+  // launcher widget's own leading-icon matcher.
+  const LEAD_EMOJI_RE = /^(?:[\u{1F1E6}-\u{1F1FF}]{2}|[0-9#*]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier}|[\u{E0020}-\u{E007F}])*)\s*/u;
+
+  function closeEmojiPop() {
+    const pop = document.querySelector('.emoji-pop');
+    if (pop) pop.remove();
+    document.removeEventListener('pointerdown', onEmojiOutside, true);
+  }
+  function onEmojiOutside(ev) {
+    if (!ev.target.closest('.emoji-pop')) closeEmojiPop();
+  }
+
+  function makeEmojiBtn(input, prefix) {
+    return iconButton('😀', 'Pick an icon', (ev) => {
+      ev.stopPropagation();
+      if (document.querySelector('.emoji-pop')) { closeEmojiPop(); return; }
+      const pop = document.createElement('div');
+      pop.className = 'emoji-pop';
+      for (const e of EMOJI_CHOICES) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = e;
+        b.addEventListener('click', () => {
+          // prefix mode keeps the text and swaps only the leading icon.
+          input.value = prefix ? (e + ' ' + input.value.replace(LEAD_EMOJI_RE, '')).trimEnd() : e;
+          input.dispatchEvent(new Event('input')); // commits through the field's handler
+          closeEmojiPop();
+        });
+        pop.appendChild(b);
+      }
+      document.body.appendChild(pop);
+      const r = ev.currentTarget.getBoundingClientRect();
+      pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8)) + 'px';
+      pop.style.top = Math.min(r.bottom + 4, window.innerHeight - pop.offsetHeight - 8) + 'px';
+      document.addEventListener('pointerdown', onEmojiOutside, true);
+    });
+  }
+
+  let filePickSeq = 0;
+  const pendingFilePicks = new Map(); // id -> input awaiting the host's dialog
+
+  function makeFileBtn(input) {
+    return iconButton('📂', 'Browse for a program or file', () => {
+      const id = 'fp' + (++filePickSeq);
+      pendingFilePicks.set(id, input);
+      post({ type: 'pick-file', id });
+    });
+  }
+
+  // ---- installed-application picker (#210) --------------------------------------
+  // Browsing for an .exe asks the user where an application LIVES, which nobody knows
+  // for anything installed from a store and which moves under them on an update. The
+  // host reads the Start Menu instead. Free text and Browse both stay: this is the
+  // shortest path, not the only one.
+
+  function closeAppPop() {
+    const pop = document.querySelector('.app-pop');
+    if (pop) pop.remove();
+    document.removeEventListener('pointerdown', onAppOutside, true);
+  }
+  function onAppOutside(ev) {
+    if (!ev.target.closest('.app-pop')) closeAppPop();
+  }
+
+  function makeAppBtn(input) {
+    return iconButton('🗂', 'Choose an installed application', (ev) => {
+      ev.stopPropagation();
+      if (document.querySelector('.app-pop')) { closeAppPop(); return; }
+      const pop = document.createElement('div');
+      pop.className = 'app-pop';
+      const search = document.createElement('input');
+      search.type = 'text';
+      search.className = 'app-pop-search';
+      search.placeholder = 'Search installed apps…';
+      const list = document.createElement('div');
+      list.className = 'app-pop-list';
+      // Says something before the host answers, and keeps saying something if the answer
+      // is empty — a silent empty box reads as a broken picker rather than as "none found".
+      const status = document.createElement('p');
+      status.className = 'app-pop-status';
+      status.textContent = 'Looking for installed applications…';
+      pop.append(search, status, list);
+
+      const place = () => {
+        const r = ev.currentTarget.getBoundingClientRect();
+        pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 320)) + 'px';
+        pop.style.top = Math.min(r.bottom + 6, window.innerHeight - 340) + 'px';
+      };
+      document.body.appendChild(pop);
+      place();
+      document.addEventListener('pointerdown', onAppOutside, true);
+      search.focus();
+
+      let apps = [];
+      let truncated = false;
+      const render = () => {
+        const q = search.value.trim().toLowerCase();
+        const shown = q ? apps.filter((a) => a.name.toLowerCase().includes(q)) : apps;
+        list.textContent = '';
+        for (const app of shown.slice(0, 200)) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = app.name;
+          b.title = app.path;
+          b.addEventListener('click', () => {
+            input.value = app.path;
+            input.dispatchEvent(new Event('input')); // commits through the field's handler
+            // A deck row migrated from the old JSON config can still carry a hidden
+            // `kind` (url/media/hotkey) that the list mapping preserves because no field
+            // renders it. classify() consults it for a scheme-less target, so a picked
+            // .lnk would come out as "url target must be http(s)" or be parsed as a
+            // hotkey. The row's own handler retires it.
+            input.dispatchEvent(new CustomEvent('ww-app-picked'));
+            closeAppPop();
+          });
+          list.appendChild(b);
+        }
+        // A cap that says nothing reads as "that app is not installed". With an empty
+        // search a long Start Menu is cut at 200 and the missing rows are invisible, so
+        // the line stays up and says what was dropped and how to reach it.
+        if (!shown.length) {
+          status.hidden = false;
+          status.textContent = apps.length
+            ? (truncated
+              ? 'No match — and the list was cut short, so it may simply not have been reached.'
+              : 'No match. This lists Start Menu shortcuts — a packaged Store app may not have one.')
+            : 'No installed applications found.';
+        } else if (shown.length > 200) {
+          status.hidden = false;
+          status.textContent = `Showing 200 of ${shown.length} — type to narrow the list.`;
+        } else {
+          status.hidden = true;
+        }
+      };
+      search.addEventListener('input', render);
+
+      appWaiters.push((result, wasTruncated) => {
+        if (!pop.isConnected) return;   // closed while the host was still walking the menu
+        apps = result;
+        truncated = wasTruncated;
+        render();
+      });
+      post({ type: 'list-apps' });
+    });
+  }
+
+  // >>> ww-list-mapping — extracted and RUN by tests/harness/listprims-run.js
+  // The two halves of a list setting's round trip live here as named functions on
+  // purpose. The probe loads this block out of the file and executes it, so it exercises
+  // the editor's own mapping instead of a copy in the test that can drift away from it —
+  // which is what the first version of that harness did, leaving every behavioural check
+  // green against a transcription while the real commit could have regressed freely.
+
+  /** The key marking a row that came in as a bare value. A SYMBOL, not a string: settings
+   * arrive as JSON and a manifest may legally declare a field called anything at all, so
+   * a string marker like "__raw" is a name a widget can collide with. An object row
+   * carrying that field would then be read as a wrapper, rendered as one input, and
+   * written back as the bare value — silently dropping its other fields, which is the
+   * very bug this file is fixing. A symbol cannot appear in parsed JSON, so the collision
+   * stops being unlikely and becomes impossible. */
+  const LIST_RAW = Symbol('ww-list-raw');
+
+  /** Is this list entry a bare value a widget accepts as shorthand? (#167)
+   *
+   * Strings and finite numbers only. null, undefined, booleans, NaN and blanks are NOT
+   * shorthand — they are junk in a settings file, and preserving junk as an editable row
+   * would put a permanent blank in front of the reader that does nothing and cannot be
+   * told apart from one they are midway through typing. */
+  function isListPrimitive(x) {
+    if (typeof x === 'string') return x.trim() !== '';
+    return typeof x === 'number' && Number.isFinite(x);
+  }
+
+  /** Stored array -> editor rows. Primitives are KEPT, marked rather than expanded. */
+  function listRowsFrom(arr) {
+    return (arr || [])
+      .filter((x) => (x && typeof x === 'object') || isListPrimitive(x))
+      .map((x) => {
+        if (!isListPrimitive(x)) return Object.assign({}, x);
+        const row = {};
+        row[LIST_RAW] = x;   // the value's own type is kept; String() is for display only
+        return row;
+      });
+  }
+
+  /** Editor rows -> stored array. A marked row goes back out as the value it arrived as. */
+  function listValueFrom(items) {
+    return (items || []).map((x) => (x && LIST_RAW in x) ? x[LIST_RAW] : Object.assign({}, x));
+  }
+  // <<< ww-list-mapping
+
+  function attachFieldPicker(container, spec, input) {
+    if (spec.picker === 'emoji' || spec.picker === 'emoji-prefix')
+      container.appendChild(makeEmojiBtn(input, spec.picker === 'emoji-prefix'));
+    else if (spec.picker === 'file') {
+      // App list first: it is the answer for almost every target, and Browse is the
+      // fallback for the few that are a script or a document rather than a program.
+      container.appendChild(makeAppBtn(input));
+      container.appendChild(makeFileBtn(input));
+    }
+  }
+
+  // Widths a widget can take: its declared supported widths, plus three-quarter for
+  // anything fluid enough to declare half or full (all stock widgets are vh-fluid).
+  function offeredWidths(widget) {
+    const declared = (widget && widget.supportedSlots && widget.supportedSlots.length)
+      ? widget.supportedSlots.map((s) => parseSize(s).width) : WIDTHS.slice();
+    const set = new Set(declared);
+    if (set.has('half') || set.has('full')) set.add('three-quarter');
+    return WIDTHS.filter((w) => set.has(w));
+  }
+
+  function sizeLabel(size) {
+    const { width, band } = parseSize(size);
+    const name = { quarter: 'Quarter', half: 'Half', 'three-quarter': 'Three-quarter', full: 'Full' }[width];
+    const px = WIDTH_PX[width];
+    if (band === 'full') return name + ' (' + px + '×400)';
+    return name + ' · ' + (band === 'upper' ? 'top' : 'bottom') + ' (' + px + '×200)';
+  }
+
+  // ---- property editors -------------------------------------------------------------
+
+  function makeSensorSelect(currentId, sensorType, onChange) {
+    const select = document.createElement('select');
+    select.add(new Option('Auto / none', '', false, !currentId));
+    const sensors = (state.sensors || []).filter((s) => !sensorType || s.type === sensorType);
+    for (const s of sensors) {
+      const text = s.device + ' — ' + s.name + (s.value != null ? '  (' + s.value + ' ' + s.units + ')' : '');
+      select.add(new Option(text, s.id, false, s.id === currentId));
+    }
+    if (currentId && !sensors.some((s) => s.id === currentId)) {
+      select.add(new Option(currentId + '  (missing)', currentId, false, true));
+    }
+    select.onchange = () => onChange(select.value);
+    return select;
+  }
+
+  /** Segmented button group for short static option lists: every choice visible,
+   * the current one lit. Option entries are strings or {value, label}. */
+  function segmented(options, current, commit) {
+    const seg = document.createElement('div');
+    seg.className = 'seg';
+    seg.setAttribute('role', 'group');
+    const valueOf = (o) => String((o && typeof o === 'object') ? o.value : o);
+    const textOf = (o) => (o && typeof o === 'object') ? (o.label || o.value) : o;
+    const light = (chosen) => {
+      for (const b of seg.querySelectorAll('button')) b.classList.toggle('active', b.dataset.v === chosen);
+    };
+    for (const o of options) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'seg-btn';
+      b.dataset.v = valueOf(o);
+      b.textContent = textOf(o);
+      b.addEventListener('click', () => { commit(valueOf(o)); light(valueOf(o)); });
+      seg.appendChild(b);
+    }
+    light(current != null ? String(current) : '');
+    return seg;
+  }
+
+  function propEditor(prop, slot) {
+    const current = slot.settings[prop.name] !== undefined ? slot.settings[prop.name] : prop.default;
+    // Writing a value CANCELS a pending removal. The field-level Clear names the address,
+    // and without this the name latched: the user cleared a demoted property, picked a
+    // replacement in the same session, and the save deleted the property instead of
+    // storing what they had just chosen. The controls that mean "remove" say so
+    // explicitly through markCleared; every other edit is the user setting a value.
+    //
+    // Only a real value cancels — see contradictsRemoval. Cancelling on "" put the latch
+    // back for any control whose empty choice is a legitimate selection.
+    const set = (value) => {
+      slot.settings[prop.name] = value;
+      if (contradictsRemoval(value)) markCleared(slot, prop.name, false);
+      refreshReplica('layout');
+    };
+
+    switch (prop.type) {
+      case 'switch': { // iCUE boolean toggle — rendered as a real switch, not a form checkbox
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.className = 'toggle-check';
+        input.checked = current === true || current === 'true';
+        input.onchange = () => set(input.checked);
+        return input;
+      }
+      case 'sensors-factory': { // iCUE "add sensors" list: [{sensorId, color}]
+        const wrap = document.createElement('div');
+        wrap.className = 'factory';
+        const items = Array.isArray(current)
+          ? current.filter((x) => x && typeof x === 'object')
+              .map((x) => ({ sensorId: x.sensorId || '', color: x.color || '#76b900' }))
+          : [];
+        const commit = () => set(items.map((x) => ({ sensorId: x.sensorId, color: x.color })));
+        const renderList = () => {
+          wrap.textContent = '';
+          items.forEach((item, i) => {
+            const row = document.createElement('div');
+            row.className = 'factory-row';
+            const sensor = makeSensorSelect(item.sensorId, prop.sensor_type, (v) => { item.sensorId = v; commit(); });
+            const color = document.createElement('input');
+            color.type = 'color';
+            color.value = /^#[0-9a-f]{6}$/i.test(item.color) ? item.color : '#76b900';
+            color.oninput = () => { item.color = color.value; commit(); };
+            row.append(sensor, color,
+              iconButton('✕', 'Remove sensor', () => { items.splice(i, 1); commit(); renderList(); }, true));
+            wrap.appendChild(row);
+          });
+          const add = document.createElement('button');
+          add.className = 'ghost';
+          add.textContent = '+ Add sensor';
+          add.addEventListener('click', () => {
+            // Seed from the sensors this property actually accepts — the first
+            // sensor overall is usually a temperature, and a Fan-typed picker
+            // preselecting it reads as "selected fans not found" (Codex, #38).
+            const pool = (state.sensors || []).filter((s) => !prop.sensor_type || s.type === prop.sensor_type);
+            items.push({ sensorId: (pool[0] || {}).id || '', color: '#76b900' });
+            commit();
+            renderList();
+          });
+          wrap.appendChild(add);
+        };
+        renderList();
+        return wrap;
+      }
+      case 'media-selector': { // iCUE background image/video picker — not supported yet
+        const note = document.createElement('span');
+        note.className = 'muted';
+        note.textContent = 'Background media is not supported yet.';
+        return note;
+      }
+      case 'location': { // city search: disambiguates duplicate place names (Lewisville TX vs NC…)
+        const wrap = document.createElement('div');
+        wrap.className = 'location-picker';
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Search city…';
+        const results = document.createElement('select');
+        results.hidden = true;
+        const chosen = document.createElement('span');
+        chosen.className = 'muted';
+
+        let value = current;
+        let found = [];
+        let searchTimer = null;
+
+        const describe = () => {
+          if (value && typeof value === 'object' && value.label) chosen.textContent = 'Selected: ' + value.label;
+          else if (typeof value === 'string' && value.trim()) chosen.textContent = 'Will use the best match for "' + value.trim() + '" — pick from the list to be exact.';
+          else chosen.textContent = 'Type a city name and pick a match.';
+        };
+        input.value = value && typeof value === 'object' ? (value.label || '') : (typeof value === 'string' ? value : '');
+        describe();
+
+        input.addEventListener('input', () => {
+          clearTimeout(searchTimer);
+          const query = input.value.trim();
+          value = query;         // fallback: raw string, widget resolves best match
+          set(value);
+          describe();
+          if (query.length < 2) { results.hidden = true; return; }
+          searchTimer = setTimeout(async () => {
+            try {
+              const response = await fetch(
+                'https://geocoding-api.open-meteo.com/v1/search?count=8&language=en&format=json&name=' +
+                encodeURIComponent(query));
+              const data = await response.json();
+              found = data.results || [];
+              results.textContent = '';
+              results.add(new Option(found.length ? 'Pick a match…' : 'No matches found', ''));
+              found.forEach((hit, i) => {
+                const label = [hit.name, hit.admin1, hit.country].filter(Boolean).join(', ');
+                const pop = hit.population ? '  ·  pop ' + hit.population.toLocaleString() : '';
+                results.add(new Option(label + pop, String(i)));
+              });
+              results.hidden = false;
+            } catch (e) {
+              chosen.textContent = 'Search unavailable (offline?) — the typed name will be matched at runtime.';
+            }
+          }, 400);
+        });
+
+        results.addEventListener('change', () => {
+          const hit = found[Number(results.value)];
+          if (!hit) return;
+          const label = [hit.name, hit.admin1, hit.country].filter(Boolean).join(', ');
+          value = { label, latitude: hit.latitude, longitude: hit.longitude };
+          set(value);
+          input.value = label;
+          results.hidden = true;
+          describe();
+        });
+
+        wrap.append(input, results, chosen);
+        return wrap;
+      }
+      case 'secret': {
+        // Credentials (bearer tokens, PATs, client secrets, private ICS URLs). The host
+        // encrypts these with DPAPI before layout.json is written and NEVER sends a
+        // stored value back here — the editor only learns that one exists, via the
+        // slot's secretsSet list. So: masked input, a reveal toggle for what you type
+        // in this session, and a Clear that removes the stored value on the next save.
+        const wrap = document.createElement('div');
+        wrap.className = 'secret-wrap';
+        const input = document.createElement('input');
+        input.type = 'password';
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        input.placeholder = prop.placeholder || 'Paste the token or key';
+        // No protocol words live in values any more, so whatever is here is the user's.
+        input.value = typeof current === 'string' ? current : '';
+        // Whether a credential EXISTS on disk for this field. `secretsSet` is only the
+        // state at init: the host does not refresh it on save and this control is not
+        // rebuilt, so once the user types and saves, a credential exists that the
+        // snapshot still denies. Tracked live, or emptying the field afterwards would
+        // send "" — which the host reads as an untouched masked field, restoring the
+        // value that save had just stored, while the row claims "not set".
+        const typedKey = secretKey(slot, prop.name);
+        let stored = (Array.isArray(slot.secretsSet) && slot.secretsSet.includes(prop.name))
+          || secretsTypedHere.has(typedKey);
+        let cleared = false; // Clear was pressed: the save will DROP the stored value
+        const state = document.createElement('span');
+        state.className = 'secret-state';
+        const sync = () => {
+          const typed = input.value.length > 0;
+          // Each state says what the next save will do — "saved" must never linger
+          // after the user asked for the credential to be removed.
+          state.textContent = typed ? 'will be encrypted on save'
+            : cleared && stored ? 'will be removed on save'
+            : stored ? 'saved · encrypted (hidden)' : 'not set';
+          state.classList.toggle('set', typed || (stored && !cleared));
+          clear.hidden = !(typed || (stored && !cleared));
+        };
+        const reveal = iconButton('👁', 'Show what you typed', () => {
+          input.type = input.type === 'password' ? 'text' : 'password';
+        });
+        const clear = iconButton('✕', 'Remove the stored credential on the next save', () => {
+          input.value = '';
+          cleared = true;
+          secretsTypedHere.delete(typedKey);
+          // secretsSet is the host's init snapshot. Leaving the name in it means a later
+          // rebuild reconstructs `stored` as true and reports the just-deleted credential
+          // as "saved · encrypted (hidden)".
+          if (Array.isArray(slot.secretsSet))
+            slot.secretsSet = slot.secretsSet.filter((n) => n !== prop.name);
+          // The VALUE goes empty and the intent is stated separately. Empty on its own
+          // is what an untouched masked field sends and must KEEP the credential; the
+          // name in secretsCleared is what says "delete it".
+          set('');
+          markCleared(slot, prop.name, true);
+          sync();
+        }, true);
+        input.addEventListener('input', () => {
+          if (input.value.length > 0) {
+            // On its way to disk, so a later empty field means "remove it", not
+            // "leave the masked value alone".
+            stored = true;
+            secretsTypedHere.add(typedKey);   // survives the next renderEditor()
+            cleared = false;
+            // A credential is arbitrary text and needs no escaping now: nothing about a
+            // value carries protocol, so any string at all round-trips as itself.
+            markCleared(slot, prop.name, false);
+            set(input.value);
+          } else if (stored) {
+            cleared = true;
+            set('');
+            markCleared(slot, prop.name, true);
+          } else {
+            cleared = false;
+            markCleared(slot, prop.name, false);
+            set('');
+          }
+          sync();
+        });
+        sync();
+        wrap.append(input, reveal, clear, state);
+        return wrap;
+      }
+      case 'color': {
+        // Widgets only let a color setting override the theme tokens when it differs
+        // from its manifest default — but a native color input can never be cleared,
+        // so once touched a color was pinned forever (#29). The row now says which
+        // side it's on and offers the way back.
+        const wrap = document.createElement('div');
+        wrap.className = 'color-wrap';
+        const input = document.createElement('input');
+        input.type = 'color';
+        const def = typeof prop.default === 'string' && /^#[0-9a-f]{6}$/i.test(prop.default) ? prop.default : '#00d4ff';
+        input.value = typeof current === 'string' && /^#[0-9a-f]{6}$/i.test(current) ? current : def;
+        const state = document.createElement('span');
+        state.className = 'color-state';
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.className = 'color-reset';
+        reset.textContent = 'Use theme';
+        reset.title = 'Clear this override and follow the theme';
+        const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+        const sync = () => {
+          const overridden = slot.settings[prop.name] !== undefined && norm(slot.settings[prop.name]) !== norm(prop.default);
+          state.textContent = overridden ? 'custom' : 'themed';
+          state.classList.toggle('overridden', overridden);
+          reset.hidden = !overridden;
+        };
+        input.oninput = () => { set(input.value); sync(); };
+        reset.onclick = () => {
+          delete slot.settings[prop.name]; // absent = default = the theme shows through
+          input.value = def;
+          refreshReplica('layout');
+          sync();
+        };
+        sync();
+        wrap.append(input, state, reset);
+        return wrap;
+      }
+      case 'slider': {
+        const wrap = document.createElement('div');
+        wrap.className = 'slider-wrap';
+        const input = document.createElement('input');
+        input.type = 'range';
+        input.min = prop.min != null ? prop.min : 0;
+        input.max = prop.max != null ? prop.max : 100;
+        input.step = prop.step != null ? prop.step : 1;
+        input.value = current != null ? current : input.min;
+        const out = document.createElement('output');
+        out.value = String(input.value);
+        input.oninput = () => { out.value = String(input.value); set(parseFloat(input.value)); };
+        wrap.append(input, out);
+        return wrap;
+      }
+      case 'number': {
+        const input = document.createElement('input');
+        input.type = 'number';
+        if (prop.min != null) input.min = prop.min;
+        if (prop.max != null) input.max = prop.max;
+        // Without a declared step the HTML default of 1 would fail validity on
+        // fractional values the manifest never prohibited (e.g. 1.5).
+        input.step = prop.step != null ? prop.step : 'any';
+        input.value = current != null ? current : '';
+        input.oninput = () => {
+          // Constraint validation doesn't block input events: without the
+          // validity check an out-of-range value (dwell=1 against min 4) would
+          // commit and reach widgets that don't defensively clamp.
+          const parsed = parseFloat(input.value);
+          if (!Number.isNaN(parsed) && input.validity.valid) set(parsed);
+        };
+        return input;
+      }
+      case 'select': {
+        // Static short option lists render as segmented BUTTONS — every choice on
+        // screen at once, current one lit — instead of a closed dropdown (field
+        // report: settings should be visible, not a wall of form controls).
+        // Dynamic lists (host-backed profiles, sensors) keep the dropdown.
+        const staticOpts = prop.options || [];
+        if (!prop.optionsSource && staticOpts.length >= 2 && staticOpts.length <= 5) {
+          return segmented(staticOpts, current, set);
+        }
+        const select = document.createElement('select');
+        for (const option of prop.options || []) {
+          select.add(new Option(option, option, false, option === current));
+        }
+        if (prop.optionsSource === 'sd-profiles') {
+          // Options come from the host (discovered Virtual Stream Deck profiles) —
+          // the user picks from a list instead of typing a profile name.
+          select.add(new Option('First available (default)', '', false, !current));
+          if (current) select.add(new Option(current, current, false, true));
+          sdProfileWaiters.push((profiles) => {
+            if (!select.isConnected) return;
+            const chosen = select.value;
+            select.textContent = '';
+            select.add(new Option('First available (default)', '', false, !chosen));
+            for (const name of profiles) {
+              select.add(new Option(name, name, false, name === chosen));
+            }
+            if (chosen && !profiles.includes(chosen)) {
+              select.add(new Option(chosen + '  (not found right now)', chosen, false, true));
+            }
+          });
+          post({ type: 'sd-profiles' });
+        }
+        select.onchange = () => set(select.value);
+        return select;
+      }
+      case 'list': { // structured rows — the user never types a delimited string
+        // A projection without `fields` (old hosts stripped them from the manifest on
+        // the way here) cannot back a structured editor: guessed keys would corrupt
+        // the stored value. Fall back to the legacy single text input instead.
+        if (!Array.isArray(prop.fields) || !prop.fields.length) {
+          const input = document.createElement('input');
+          input.type = 'text';
+          if (prop.placeholder) input.placeholder = String(prop.placeholder);
+          input.value = Array.isArray(current)
+            ? current.map((x) => (x && typeof x === 'object') ? Object.values(x).join('=') : String(x)).join(', ')
+            : (current != null ? String(current) : '');
+          input.oninput = () => set(input.value);
+          return input;
+        }
+        const wrap = document.createElement('div');
+        wrap.className = 'factory list-editor';
+        const fields = prop.fields;
+
+        // Accept the stored array; migrate a legacy JSON-ARRAY string (the old
+        // Control Deck stored its buttons that way — splitting it as "A=B" pairs
+        // rendered JSON fragments as rows and the first edit wrote them back,
+        // corrupting the config); or convert a legacy "A=B, C=D" delimited string
+        // into rows mapped onto the first two fields. Extra keys on parsed
+        // objects (e.g. the old deck's `kind`) ride along untouched — widgets
+        // that honor them keep working.
+        let items;
+        let legacyJson = null;
+        if (typeof current === 'string' && current.trim().startsWith('[')) {
+          try { legacyJson = JSON.parse(current); } catch (e) { legacyJson = null; }
+          if (!Array.isArray(legacyJson)) legacyJson = null;
+        }
+        if (Array.isArray(current) || legacyJson) {
+          // A PRIMITIVE entry is kept, not discarded (#167). Several widgets accept a bare
+          // string as shorthand in a list — endpoints takes "nas.lan" and expands it
+          // itself — and filtering those away meant they got no row, so the editor wrote
+          // back only what it had rendered and silently deleted every one of them the
+          // moment anyone opened this panel and saved.
+          //
+          // Kept AS a primitive rather than expanded into the field shape, deliberately.
+          // What a bare string means is the widget's business and differs between them:
+          // endpoints reads it as both the label and the URL, while the comma-string
+          // branch just below reads a bare token as fields[0] alone — which for endpoints
+          // would leave the URL empty and the entry would then be dropped by the widget
+          // instead of by the editor. With no rule the manifest can state, guessing picks
+          // one widget's meaning and corrupts the rest.
+          items = listRowsFrom(legacyJson || current);
+        } else if (typeof current === 'string' && current.trim()) {
+          items = current.split(',').map((pair) => {
+            const eq = pair.indexOf('=');
+            const item = {};
+            item[fields[0].key] = (eq < 0 ? pair : pair.slice(0, eq)).trim();
+            if (fields[1]) item[fields[1].key] = eq < 0 ? '' : pair.slice(eq + 1).trim();
+            return item;
+          }).filter((x) => Object.values(x).some((v) => v));
+        } else {
+          items = [];
+        }
+
+        // A marked row goes back out as the value it came in as, so a shorthand entry
+        // survives an edit unchanged rather than being rewritten into a shape its widget
+        // never asked for. See listValueFrom.
+        const commit = () => set(listValueFrom(items));
+        // A legacy string value renders as rows immediately, but only writes back as an
+        // array once the user touches the editor — untouched layouts stay byte-identical.
+        const renderList = () => {
+          wrap.textContent = '';
+          items.forEach((item, i) => {
+            const row = document.createElement('div');
+            row.className = 'factory-row';
+            if (LIST_RAW in item) {
+              // One input, because the value genuinely is one value — rendering the field
+              // pair would ask which half of it goes where, which is the question this
+              // deliberately does not answer. It stays editable and removable, which is
+              // the whole complaint: the entry was invisible, so it could not be
+              // corrected or deleted either.
+              const input = document.createElement('input');
+              input.type = 'text';
+              // String() for DISPLAY only. The stored value keeps the type it arrived with —
+              // a numeric entry that nobody touches must go back out as a number, not as its
+              // decimal spelling, which is the same silent rewriting this set out to stop.
+              input.value = String(item[LIST_RAW]);
+              input.setAttribute('aria-label', (prop.itemLabel || 'item') + ' ' + (i + 1));
+              input.oninput = () => { item[LIST_RAW] = input.value; commit(); };
+              row.appendChild(input);
+              row.appendChild(iconButton('✕', 'Remove ' + (prop.itemLabel || 'item'), () => {
+                items.splice(i, 1); commit(); renderList();
+              }, true));
+              wrap.appendChild(row);
+              return;
+            }
+            for (const field of fields) {
+              const input = document.createElement('input');
+              if (field.type === 'color') {
+                input.type = 'color';
+                input.value = /^#[0-9a-f]{6}$/i.test(item[field.key]) ? item[field.key] : '#4cc2ff';
+              } else {
+                input.type = 'text';
+                input.placeholder = field.placeholder || field.label || '';
+                input.value = item[field.key] != null ? String(item[field.key]) : '';
+              }
+              input.setAttribute('aria-label', field.label || field.key);
+              input.oninput = () => { item[field.key] = input.value; commit(); };
+              input.addEventListener('ww-app-picked', () => {
+                if (item && typeof item === 'object' && 'kind' in item) { delete item.kind; commit(); }
+              });
+              row.appendChild(input);
+              attachFieldPicker(row, field, input); // picker:'emoji' / picker:'file' (#48)
+            }
+            row.appendChild(iconButton('✕', 'Remove ' + (prop.itemLabel || 'item'), () => {
+              items.splice(i, 1); commit(); renderList();
+            }, true));
+            wrap.appendChild(row);
+          });
+          // A declared maxItems caps the editor too — rows the widget will never
+          // render must not be addable (they'd look configured and do nothing).
+          const cap = Math.max(0, Math.round(Number(prop.maxItems) || 0));
+          if (cap && items.length >= cap) {
+            const full = document.createElement('p');
+            full.className = 'panel-hint';
+            full.textContent = 'Limit reached — this widget shows at most ' + cap + ' ' +
+              (prop.itemLabel || 'item') + 's.';
+            wrap.appendChild(full);
+          } else {
+            const add = document.createElement('button');
+            add.className = 'ghost';
+            add.textContent = '+ Add ' + (prop.itemLabel || 'item');
+            add.addEventListener('click', () => {
+              const item = {};
+              for (const field of fields) item[field.key] = field.type === 'color' ? '#4cc2ff' : '';
+              items.push(item);
+              commit();
+              renderList();
+              const first = wrap.querySelector('.factory-row:last-of-type input');
+              if (first) first.focus();
+            });
+            wrap.appendChild(add);
+          }
+        };
+        renderList();
+        return wrap;
+      }
+      case 'sensor': {
+        const select = document.createElement('select');
+        select.add(new Option('Auto (recommended)', '', false, !current));
+        const sensors = (state.sensors || []).filter((s) =>
+          !prop.sensor_type || s.type === prop.sensor_type);
+        for (const s of sensors) {
+          const text = s.device + ' — ' + s.name + (s.value != null ? '  (' + s.value + ' ' + s.units + ')' : '');
+          select.add(new Option(text, s.id, false, s.id === current));
+        }
+        if (current && !sensors.some((s) => s.id === current)) {
+          select.add(new Option(current + '  (missing)', current, false, true));
+        }
+        select.onchange = () => set(select.value);
+        return select;
+      }
+      default: { // text
+        const input = document.createElement('input');
+        input.type = 'text';
+        // The sanctioned place to teach an expected format — labels must not.
+        if (prop.placeholder) input.placeholder = String(prop.placeholder);
+        input.value = current != null ? String(current) : '';
+        input.oninput = () => set(input.value);
+
+        // A DEMOTED property (#66): the manifest calls it `text` now, but layout.json still
+        // holds the envelope from when it was `secret`, so the host blanked it on the way
+        // here and will restore it if this field comes home untouched.
+        //
+        // That restore is what makes a Clear affordance mandatory rather than a nicety. An
+        // ordinary text input sends "" when the user empties it, which is byte-identical to
+        // the "" an untouched blanked field sends — so without a distinct signal the host
+        // restores over a deliberate clear and the field can NEVER be emptied. That is the
+        // uneditable-field failure this intent exists to avoid, and it is the one PR #65 hit
+        // three separate times.
+        //
+        // Deliberately NOT rendered as a secret input: the manifest says this property is
+        // ordinary, so the user must be able to see and type what they put in it. Only the
+        // value they cannot see — the leftover envelope — is withheld.
+        if (Array.isArray(slot.secretsRestorable) && slot.secretsRestorable.includes(prop.name)) {
+          const wrap = document.createElement('div');
+          // Its OWN class, sharing the secret row's layout. Not `.secret-wrap`: this is not
+          // a secret control -- it is a text input with a Clear -- and probes that count
+          // secret rows would otherwise count this one.
+          wrap.className = 'restorable-wrap';
+          input.placeholder = prop.placeholder
+            ? String(prop.placeholder) + ' — a previous value is stored'
+            : 'A previous value is stored (hidden)';
+          // Live, like the secret control's: the marker is the host's snapshot at init and
+          // is not refreshed, so this tracks whether the host would still restore.
+          let stored = true;
+          let cleared = false;
+          const state = document.createElement('span');
+          state.className = 'secret-state';
+          const sync = () => {
+            const typed = input.value.length > 0;
+            state.textContent = typed ? 'will replace the stored value'
+              : cleared ? 'will be removed on save'
+              : 'stored value kept (hidden)';
+            state.classList.toggle('set', typed || !cleared);
+            clear.hidden = cleared && !typed;
+          };
+          const clear = iconButton('✕', 'Remove the stored value on the next save', () => {
+            input.value = '';
+            cleared = true;
+            // Name the address BEFORE set()'s replica refresh, so the refresh sees the
+            // finished slot. Refreshing first sees no layout change, schedules no
+            // re-init, and mergeReplicaCapture then merges back a captured slot that
+            // never carried the marker. Safe now that set('') no longer cancels.
+            markCleared(slot, prop.name, true);
+            set('');
+            sync();
+          }, true);
+          input.oninput = () => {
+            if (input.value.length > 0) {
+              cleared = false;
+              markCleared(slot, prop.name, false);
+              set(input.value);
+            } else if (stored) {
+              // Emptying a field the host blanked is a deliberate clear. The plain "" is
+              // the one string that cannot say which one the user meant, so the name says
+              // it instead.
+              cleared = true;
+              markCleared(slot, prop.name, true);
+              set('');
+            } else {
+              cleared = false;
+              markCleared(slot, prop.name, false);
+              set('');
+            }
+            sync();
+          };
+          sync();
+          wrap.append(input, clear, state);
+          // A demoted property keeps whatever picker its manifest declares. The branch
+          // below never runs for it — this one returns first — so a `picker: 'file'`
+          // property would lose its Browse dialog exactly while the user is trying to
+          // replace the leftover value by hand.
+          if (prop.picker) attachFieldPicker(wrap, prop, input);
+          return wrap;
+        }
+        if (prop.picker) {
+          // picker:'emoji' / picker:'file' on a top-level text property (#48).
+          const wrap = document.createElement('div');
+          wrap.className = 'picker-wrap';
+          wrap.appendChild(input);
+          attachFieldPicker(wrap, prop, input);
+          return wrap;
+        }
+        return input;
+      }
+    }
+  }
+
+  // ---- background editor ---------------------------------------------------------------
+
+  // Renders a compact wallpaper editor into `container`. getSpec()/setSpec(spec|null)
+  // read and write the target background (a page's or the dashboard's). setSpec(null)
+  // clears it; for a page that means "inherit the dashboard background".
+  function renderBackgroundEditor(container, getSpec, setSpec, opts) {
+    opts = opts || {};
+    container.textContent = '';
+    const spec = getSpec();
+    const type = spec ? (spec.type || 'none') : (opts.allowInherit ? 'inherit' : 'none');
+
+    const choices = [];
+    if (opts.allowInherit) choices.push(['inherit', 'Use dashboard default']);
+    choices.push(['none', 'None'], ['color', 'Solid color'], ['gradient', 'Gradient'],
+      ['image', 'Image'], ['video', 'Video (animated)']);
+
+    const typeSel = document.createElement('select');
+    for (const [value, label] of choices) typeSel.add(new Option(label, value, false, value === type));
+    typeSel.onchange = () => {
+      const v = typeSel.value;
+      if (v === 'inherit') setSpec(null);
+      else if (v === 'none') setSpec({ type: 'none' });
+      else {
+        // Merge from the LIVE spec (getSpec), not the render-time snapshot, so a color/
+        // slider edit made just before switching type isn't discarded.
+        const next = Object.assign({ type: 'none', fit: 'cover', angle: 135, dim: 0, blur: 0 }, getSpec() || {}, { type: v });
+        if (v === 'color' || v === 'gradient') { next.dim = 0; next.blur = 0; } // flat fills aren't dimmed/blurred
+        setSpec(next);
+      }
+      renderBackgroundEditor(container, getSpec, setSpec, opts);
+    };
+    container.appendChild(bgRow('Type', typeSel));
+
+    if (type === 'inherit' || type === 'none') return;
+
+    const patch = (p) => setSpec(Object.assign({}, getSpec(), p));
+    const cur = getSpec() || {};
+
+    if (type === 'color') {
+      container.appendChild(bgColor('Color', cur.color || '#101418', (v) => patch({ color: v })));
+    } else if (type === 'gradient') {
+      container.appendChild(bgColor('Color 1', cur.color || '#101418', (v) => patch({ color: v })));
+      container.appendChild(bgColor('Color 2', cur.color2 || '#0b0e14', (v) => patch({ color2: v })));
+      container.appendChild(bgSlider('Angle', cur.angle != null ? cur.angle : 135, 0, 360, 5, '°', (v) => patch({ angle: v })));
+    } else if (type === 'image' || type === 'video') {
+      container.appendChild(bgFile(container, getSpec, setSpec, opts, type));
+      container.appendChild(bgFitField(cur.fit || 'cover', (v) => patch({ fit: v })));
+      container.appendChild(bgSlider('Dim', cur.dim || 0, 0, 100, 5, '%', (v) => patch({ dim: v })));
+      container.appendChild(bgSlider('Blur', cur.blur || 0, 0, 40, 1, 'px', (v) => patch({ blur: v })));
+    }
+  }
+
+  function bgRow(labelText, control) {
+    const row = document.createElement('div');
+    row.className = 'bg-row';
+    const label = document.createElement('label');
+    label.textContent = labelText;
+    row.append(label, control);
+    return row;
+  }
+
+  // <input type=color> only accepts #rrggbb; normalize any valid CSS hex to it so a
+  // hand-authored #fff or #112233ff shows the real color instead of the theme default.
+  function toHex6(value) {
+    if (typeof value !== 'string') return '#101418';
+    const m = value.trim().match(/^#([0-9a-fA-F]{3,8})$/);
+    if (!m) return '#101418';
+    let h = m[1];
+    if (h.length === 3 || h.length === 4) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2]; // expand, drop alpha
+    else if (h.length === 6 || h.length === 8) h = h.slice(0, 6);                      // drop alpha
+    else return '#101418';                                                             // 5/7 digits: invalid
+    return '#' + h.toLowerCase();
+  }
+
+  function bgColor(labelText, value, onChange) {
+    const input = document.createElement('input');
+    input.type = 'color';
+    input.value = toHex6(value);
+    input.oninput = () => onChange(input.value);
+    return bgRow(labelText, input);
+  }
+
+  function bgSlider(labelText, value, min, max, step, unit, onChange) {
+    const wrap = document.createElement('div');
+    wrap.className = 'slider-wrap';
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = min; input.max = max; input.step = step;
+    input.value = value;
+    const out = document.createElement('output');
+    out.value = value + (unit || '');
+    input.oninput = () => { out.value = input.value + (unit || ''); onChange(parseFloat(input.value)); };
+    wrap.append(input, out);
+    return bgRow(labelText, wrap);
+  }
+
+  function bgFitField(value, onChange) {
+    const select = document.createElement('select');
+    for (const [v, label] of [['cover', 'Cover'], ['contain', 'Contain'], ['stretch', 'Stretch'],
+      ['tile', 'Tile'], ['center', 'Center']]) {
+      select.add(new Option(label, v, false, v === value));
+    }
+    select.onchange = () => onChange(select.value);
+    return bgRow('Fit', select);
+  }
+
+  function bgFile(container, getSpec, setSpec, opts, type) {
+    const wrap = document.createElement('div');
+    wrap.className = 'bg-file';
+
+    const spec = getSpec() || {};
+    if (spec.source) {
+      const url = 'https://' + backgroundHost + '/' + encodeURIComponent(spec.source);
+      const preview = type === 'video' ? document.createElement('video') : document.createElement('img');
+      preview.className = 'bg-preview';
+      preview.src = url;
+      if (type === 'video') { preview.muted = true; preview.loop = true; preview.autoplay = true; preview.setAttribute('playsinline', ''); }
+      preview.onerror = () => { preview.classList.add('broken'); };
+      wrap.appendChild(preview);
+    }
+
+    const btn = document.createElement('button');
+    btn.className = 'ghost';
+    btn.textContent = spec.source ? 'Change file…' : 'Choose file…';
+    btn.onclick = () => {
+      pendingBgPick = (source, kind) => {
+        // If the chosen file's kind differs from the control (image vs video), follow it.
+        const nextType = kind === 'video' ? 'video' : 'image';
+        setSpec(Object.assign({ fit: 'cover', angle: 135, dim: 0, blur: 0 }, getSpec() || {}, { type: nextType, source }));
+        renderBackgroundEditor(container, getSpec, setSpec, opts);
+      };
+      post({ type: 'pick-background', target: opts.allowInherit ? ('page:' + selectedPage) : 'global' });
+    };
+    wrap.appendChild(btn);
+
+    const name = document.createElement('span');
+    name.className = 'bg-filename muted';
+    name.textContent = spec.source || 'No file chosen';
+    wrap.appendChild(name);
+
+    return bgRow(type === 'video' ? 'Video' : 'Image', wrap);
+  }
+
+  // ---- toast ---------------------------------------------------------------------------
+
+  function toast(message, isError) {
+    const node = el('toast');
+    node.textContent = message;
+    node.classList.toggle('error', !!isError);
+    node.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { node.hidden = true; }, 3200);
+  }
+
+  // ---- go -------------------------------------------------------------------------------
+
+  post({ type: 'settings-ready' });
+})();

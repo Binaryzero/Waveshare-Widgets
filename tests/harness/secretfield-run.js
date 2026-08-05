@@ -131,7 +131,7 @@ const layout = {
     const push = (obj) => page.evaluate((d) => window.__hostPush(d), JSON.stringify(obj)).catch(() => {});
     if (msg.type === 'settings-ready') {
       push({ type: 'settings-init', data: {
-        layout, widgets, sensors: [], backgroundHost: 'backgrounds.wsw',
+        layout, widgets, sensors: [], backgroundHost: 'backgrounds.plinth',
         status: { elevated: false, version: 'v0.2.0 (probe)' },
       } });
     } else if (msg.type === 'save-layout') {
@@ -153,7 +153,7 @@ const layout = {
     } };
     window.__hostPush = (json) => { const data = JSON.parse(json); listeners.forEach((cb) => { try { cb({ data }); } catch (e) {} }); };
   });
-  await page.goto('http://127.0.0.1:8951/src/WaveshareWidgets/Shell/settings.html');
+  await page.goto('http://127.0.0.1:8951/src/Plinth/Shell/settings.html');
   await page.waitForTimeout(900);
 
   // Open the widget inspector for the only slot (chip click, inspector-era UX).
@@ -444,7 +444,7 @@ const layout = {
         widgetId: 'test.gh', size: 'half', instanceId: 'gh1',
         settings: { token: '', fresh: 'now-a-public-value' },
       }] }] },
-      sensors: [], backgroundHost: 'backgrounds.wsw',
+      sensors: [], backgroundHost: 'backgrounds.plinth',
       status: { elevated: false, version: 'v0.2.0 (probe)' },
     },
   }));
@@ -1179,7 +1179,7 @@ const layout = {
   await page.evaluate((payload) => window.__hostPush(payload), JSON.stringify({
     type: 'settings-init',
     data: {
-      layout, widgets, sensors: [], backgroundHost: 'backgrounds.wsw',
+      layout, widgets, sensors: [], backgroundHost: 'backgrounds.plinth',
       status: { elevated: false, version: 'v0.2.0 (probe)' },
     },
   }));

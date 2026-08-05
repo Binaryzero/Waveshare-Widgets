@@ -1,8 +1,8 @@
 {
   "id": "ws.stock.reddit",
   "name": "Reddit Photos",
-  "author": "Waveshare Widgets",
-  "version": "1.5.2",
+  "author": "Plinth",
+  "version": "1.5.3",
   "description": "Slideshow of image posts from any subreddit, built for the panel: images preload fully before a slow crossfade, so nothing flashes. Tap left/right edges to step, center to pause.",
   "min_api_version": 1,
   "supported_slots": [

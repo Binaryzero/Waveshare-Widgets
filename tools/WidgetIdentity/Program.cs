@@ -1,4 +1,4 @@
-using WaveshareWidgets.Widgets;
+using Plinth.Widgets;
 
 // Who may claim which id, and who gets which origin (#93, #94).
 //
@@ -291,14 +291,14 @@ Console.WriteLine("Serving what the library lists (#94)");
 // lose its mapping. Only the dashboard used to clear stale hosts; the settings window
 // mapped the current library over whatever was there, so a refused widget stayed served
 // from the folder it was refused for and any other widget could iframe that origin.
-var mappedNow = new[] { "app.wsw", "media.wsw", "hue.widgets.wsw", "clock.widgets.wsw" };
-var fixedHosts = new[] { "app.wsw", "media.wsw" };
-var stale = WidgetIdentity.StaleHosts(mappedNow, fixedHosts, new[] { "clock.widgets.wsw" });
+var mappedNow = new[] { "app.plinth", "media.plinth", "hue.widgets.plinth", "clock.widgets.plinth" };
+var fixedHosts = new[] { "app.plinth", "media.plinth" };
+var stale = WidgetIdentity.StaleHosts(mappedNow, fixedHosts, new[] { "clock.widgets.plinth" });
 Check("I23 a host the library no longer lists is stale",
-    stale.Contains("hue.widgets.wsw"), string.Join(", ", stale));
-Check("I23b ...while a host it still lists is not", !stale.Contains("clock.widgets.wsw"));
+    stale.Contains("hue.widgets.plinth"), string.Join(", ", stale));
+Check("I23b ...while a host it still lists is not", !stale.Contains("clock.widgets.plinth"));
 Check("I23c ...and the shell/media/background hosts are never swept",
-    !stale.Contains("app.wsw") && !stale.Contains("media.wsw"), string.Join(", ", stale));
+    !stale.Contains("app.plinth") && !stale.Contains("media.plinth"), string.Join(", ", stale));
 
 // I24 · validating the writable copy is not the same as serving it. A virtual host serves
 // its folder continuously, so a fingerprint checked during a rescan says nothing about what

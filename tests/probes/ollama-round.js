@@ -8,7 +8,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const SHELL = '/home/user/Waveshare-Widgets/src/WaveshareWidgets/Shell';
+const SHELL = '/home/user/Waveshare-Widgets/src/Plinth/Shell';
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css' };
 
 const folder = process.argv[2];
@@ -29,7 +29,7 @@ function loadPlaywright() {
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
   const page = await browser.newPage({ viewport: { width: 640, height: 400 } });
 
-  await page.route('https://app.wsw/**', (route) => {
+  await page.route('https://app.plinth/**', (route) => {
     const rel = decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\/+/, '');
     const file = path.resolve(SHELL, rel);
     if (file.startsWith(path.resolve(SHELL) + path.sep) && fs.existsSync(file))
@@ -50,7 +50,7 @@ function loadPlaywright() {
   }));
 
   let feedHits = 0;
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[:/?#]|$)).*/, (route) => {
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test)(?:[:/?#]|$)).*/, (route) => {
     if (!route.request().url().includes('11434')) return route.abort();
     feedHits++;
     // stall: never fulfil, never abort — the connection opens and then goes silent,

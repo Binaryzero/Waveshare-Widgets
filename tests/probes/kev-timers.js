@@ -9,7 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const REPO = '/home/user/Waveshare-Widgets';
-const SHELL = path.join(REPO, 'src/WaveshareWidgets/Shell');
+const SHELL = path.join(REPO, 'src/Plinth/Shell');
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css' };
 
 const folder = process.argv[2];
@@ -34,7 +34,7 @@ const FEED_OK = JSON.stringify({ vulnerabilities: [
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
   const page = await browser.newPage({ viewport: { width: 640, height: 400 } });
 
-  await page.route('https://app.wsw/**', (route) => {
+  await page.route('https://app.plinth/**', (route) => {
     const rel = decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\/+/, '');
     const file = path.resolve(SHELL, rel);
     if (file.startsWith(path.resolve(SHELL) + path.sep) && fs.existsSync(file))
@@ -54,7 +54,7 @@ const FEED_OK = JSON.stringify({ vulnerabilities: [
       + 'iframe{display:block;border:0;width:100vw;height:100vh}</style>',
   }));
   let feedFails = mode === 'backoff';
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[:/?#]|$)).*/, (route) => {
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test)(?:[:/?#]|$)).*/, (route) => {
     if (!route.request().url().includes('cisa.gov')) return route.abort();
     if (feedFails) return route.fulfill({ status: 503, body: '', headers: { 'access-control-allow-origin': '*' } });
     return route.fulfill({ status: 200, contentType: 'application/json', body: FEED_OK,

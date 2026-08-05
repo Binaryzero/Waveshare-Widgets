@@ -20,7 +20,7 @@ const http = require('http');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 // Minimal static file server so the suite is fully self-contained.
@@ -120,7 +120,7 @@ const widgets = [
     if (msg.type === 'ready') {
       page.evaluate((d) => window.__hostPush(d), JSON.stringify({
         type: 'init',
-        data: { layout, widgets, sensors: [], media: null, backgroundHost: 'backgrounds.wsw', status: { elevated: false, apiVersion: 1 } },
+        data: { layout, widgets, sensors: [], media: null, backgroundHost: 'backgrounds.plinth', status: { elevated: false, apiVersion: 1 } },
       })).catch(() => {});
     } else if (msg.type === 'fetch') {
       fetchMsgs.push(JSON.parse(JSON.stringify(msg)));
@@ -164,7 +164,7 @@ const widgets = [
     window.__hostPush = (json) => { const data = JSON.parse(json); listeners.forEach((cb) => { try { cb({ data }); } catch (e) {} }); };
   });
   await page.addInitScript(fs.readFileSync(SHELL + '/widget-api.js', 'utf8') + '\n' + fs.readFileSync(SHELL + '/icue-compat.js', 'utf8'));
-  await page.goto('http://127.0.0.1:8941/src/WaveshareWidgets/Shell/index.html');
+  await page.goto('http://127.0.0.1:8941/src/Plinth/Shell/index.html');
 
   // Wait for both fixtures to finish their scripted sequences.
   const frameFor = (part) => page.frames().find((f) => f.url().includes(part));

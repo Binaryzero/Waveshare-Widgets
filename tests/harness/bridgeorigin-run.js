@@ -37,7 +37,7 @@ const http = require('http');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const PORT = 8956;
 
 function staticServer(rootDir, port) {
@@ -66,10 +66,10 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
 <body style="margin:0;background:#111">
 <iframe id="evil" src="https://evil.example/nested.html"
         style="width:100%;height:100%;border:0"></iframe>
-<script src="https://app.wsw/widget-api.js"></script>
+<script src="https://app.plinth/widget-api.js"></script>
 <!-- iCUE-compatible widgets carry a SECOND injected shim with its own message
      listener, so a gate on one file leaves the other as the way in. -->
-<script src="https://app.wsw/icue-compat.js"></script>
+<script src="https://app.plinth/icue-compat.js"></script>
 <script>
   // Raised while the shim is still waiting for its init — B7c checks it arrives anyway.
   // A widget that dies during startup is the case these diagnostics exist for, so a
@@ -101,7 +101,7 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
 const NESTED_HTML = `<!DOCTYPE html><meta charset="utf-8">
 <body>nested
 <!-- WebView2 injects the shim into EVERY document, nested frames included. -->
-<script src="https://app.wsw/widget-api.js"></script>
+<script src="https://app.plinth/widget-api.js"></script>
 <script>
   // Everything a hostile framed page would try, aimed at the TOP window rather than
   // its own parent — the reach postMessage grants any descendant.
@@ -138,7 +138,7 @@ const NESTED_HTML = `<!DOCTYPE html><meta charset="utf-8">
 // merely re-testing B7d.
 const STRAY_HTML = `<!DOCTYPE html><meta charset="utf-8">
 <body>stray
-<script src="https://app.wsw/widget-api.js"></script>
+<script src="https://app.plinth/widget-api.js"></script>
 <script>window.__throw = () => setTimeout(() => { throw new Error('stray-boom'); }, 0);</script>`;
 
 // The slot frame after it navigates away. Same WindowProxy, foreign origin — it still
@@ -172,9 +172,9 @@ const HIJACK_HTML = `<!DOCTYPE html><meta charset="utf-8">
       : name.endsWith('.js') ? 'application/javascript' : 'text/html';
     route.fulfill({ status: 200, contentType: type, body: fs.readFileSync(file) });
   };
-  await page.route('https://app.wsw/**', (r) =>
+  await page.route('https://app.plinth/**', (r) =>
     serve(r, SHELL, new URL(r.request().url()).pathname.replace(/^\/+/, '')));
-  await page.route('https://framer.widgets.wsw/**', (r) =>
+  await page.route('https://framer.widgets.plinth/**', (r) =>
     r.fulfill({ status: 200, contentType: 'text/html', body: WIDGET_HTML }));
   await page.route('https://evil.example/**', (r) =>
     r.fulfill({ status: 200, contentType: 'text/html', body: NESTED_HTML }));
@@ -183,7 +183,7 @@ const HIJACK_HTML = `<!DOCTYPE html><meta charset="utf-8">
   await page.route('https://attacker.example/**', (r) =>
     r.fulfill({ status: 200, contentType: 'text/html', body: HIJACK_HTML }));
 
-  const widget = { id: 'test.framer', name: 'Framer', url: 'https://framer.widgets.wsw/index.html',
+  const widget = { id: 'test.framer', name: 'Framer', url: 'https://framer.widgets.plinth/index.html',
     supportedSlots: ['half'], properties: [] };
   // Two slots: one navigates away mid-run, the other stays. Without the second, "the
   // hijacked frame received no broadcast" would also hold if broadcasts had simply
@@ -214,10 +214,10 @@ const HIJACK_HTML = `<!DOCTYPE html><meta charset="utf-8">
     }
   });
 
-  await page.goto(`http://127.0.0.1:${PORT}/src/WaveshareWidgets/Shell/index.html`);
+  await page.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/index.html`);
   await page.waitForTimeout(2000);
 
-  const widgetFrame = page.frames().find((f) => /framer\.widgets\.wsw/.test(f.url()));
+  const widgetFrame = page.frames().find((f) => /framer\.widgets\.plinth/.test(f.url()));
   const nested = page.frames().find((f) => /evil\.example/.test(f.url()));
   check('B0 setup: the widget loaded and its nested remote frame is live',
     !!widgetFrame && !!nested, `widget ${!!widgetFrame} nested ${!!nested}`);
@@ -343,7 +343,7 @@ const HIJACK_HTML = `<!DOCTYPE html><meta charset="utf-8">
   // B8/B8b/B9 · the slot frame navigates away. Its WindowProxy is unchanged, so it is
   // still `slots[0].frame.contentWindow` — the identity check alone cannot tell that
   // the widget is gone. Destructive, so it runs last.
-  const control = page.frames().filter((f) => /framer\.widgets\.wsw/.test(f.url()))[1];
+  const control = page.frames().filter((f) => /framer\.widgets\.plinth/.test(f.url()))[1];
   check('B8 setup: a second widget is live to act as the broadcast control',
     !!control, `control ${!!control}`);
   await widgetFrame.evaluate(() => window.__wwNavigate('https://attacker.example/hijack.html'));

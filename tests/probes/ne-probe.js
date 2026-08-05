@@ -22,7 +22,7 @@
 //             immediate retry and discarded the backoff entirely.
 'use strict';
 const fs = require('fs'); const path = require('path');
-const SHELL = '/home/user/Waveshare-Widgets/src/WaveshareWidgets/Shell';
+const SHELL = '/home/user/Waveshare-Widgets/src/Plinth/Shell';
 const MIME = { '.html':'text/html', '.js':'application/javascript', '.css':'text/css' };
 const folder = process.argv[2];
 const mode = process.argv[3] || 'hang';
@@ -37,7 +37,7 @@ const CAL = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:a\r\nDTSTART:
   const shim = fs.readFileSync(path.join(SHELL,'widget-api.js'),'utf8')+'\n'+fs.readFileSync(path.join(SHELL,'icue-compat.js'),'utf8');
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
   const page = await browser.newPage({ viewport:{width:640,height:400} });
-  await page.route('https://app.wsw/**', (r) => {
+  await page.route('https://app.plinth/**', (r) => {
     const f = path.resolve(SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/,''));
     return fs.existsSync(f) ? r.fulfill({ contentType: MIME[path.extname(f)]||'text/plain', body: fs.readFileSync(f) }) : r.fulfill({status:404,body:''});
   });
@@ -48,7 +48,7 @@ const CAL = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:a\r\nDTSTART:
   await page.route('https://shell.test/**', (r) => r.fulfill({ contentType:'text/html',
     body:'<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%}iframe{display:block;border:0;width:100vw;height:100vh}</style>' }));
   const CORS = { 'access-control-allow-origin':'*', 'access-control-allow-headers':'*' };
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[:/?#]|$)).*/, async (r) => {
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test)(?:[:/?#]|$)).*/, async (r) => {
     if (r.request().method() === 'OPTIONS') return r.fulfill({ status:204, headers: CORS });
     if (r.request().url().includes('cal.example')) {
       calHits++;

@@ -5,7 +5,7 @@
 // the same hole the ranking was added to close, one severity level down.
 'use strict';
 const fs = require('fs'); const path = require('path');
-const SHELL = '/home/user/Waveshare-Widgets/src/WaveshareWidgets/Shell';
+const SHELL = '/home/user/Waveshare-Widgets/src/Plinth/Shell';
 const MIME = { '.html':'text/html', '.js':'application/javascript', '.css':'text/css' };
 const folder = process.argv[2];
 function pw(){ for (const c of ['playwright','/opt/node22/lib/node_modules/playwright']) { try { return require(c);} catch(e){} } throw new Error('no playwright'); }
@@ -14,7 +14,7 @@ function pw(){ for (const c of ['playwright','/opt/node22/lib/node_modules/playw
   const shim = fs.readFileSync(path.join(SHELL,'widget-api.js'),'utf8')+'\n'+fs.readFileSync(path.join(SHELL,'icue-compat.js'),'utf8');
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
   const page = await browser.newPage({ viewport:{width:640,height:200} });   // a band: few rows
-  await page.route('https://app.wsw/**', (r) => {
+  await page.route('https://app.plinth/**', (r) => {
     const f = path.resolve(SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/,''));
     return fs.existsSync(f) ? r.fulfill({ contentType: MIME[path.extname(f)]||'text/plain', body: fs.readFileSync(f) }) : r.fulfill({status:404,body:''});
   });
@@ -24,7 +24,7 @@ function pw(){ for (const c of ['playwright','/opt/node22/lib/node_modules/playw
   });
   await page.route('https://shell.test/**', (r) => r.fulfill({ contentType:'text/html',
     body:'<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%}iframe{display:block;border:0;width:100vw;height:100vh}</style>' }));
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[:/?#]|$)).*/, async (r) => {
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test)(?:[:/?#]|$)).*/, async (r) => {
     const u = r.request().url();
     if (/9401|9402|9403|9404/.test(u)) {            // answers, but late — slow
       await new Promise((res) => setTimeout(res, 300));

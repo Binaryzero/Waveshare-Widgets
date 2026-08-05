@@ -5,12 +5,12 @@ for. It is implemented in two files: `widget-base.css` (the tokens and component
 linked from the shell origin) and the theme push (`PaletteEngine` on the host deriving the
 token palette that lands on every widget's `:root` at init). For the packaging format and
 the `WW` API see [WIDGET-SPEC.md](WIDGET-SPEC.md) and
-[WAVESHARE-API-REFERENCE.md](WAVESHARE-API-REFERENCE.md).
+[PLINTH-API-REFERENCE.md](PLINTH-API-REFERENCE.md).
 
 Link the foundation first in `<head>`, before any widget CSS:
 
 ```html
-<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 ```
 
 Widget CSS is then *layout only* — colors, background, the `bgStyle` handling and the
@@ -458,7 +458,7 @@ Copy this into your widget's PR / release notes and check every line:
 ## WIDGET-STANDARD compliance
 
 ### Tokens & theming
-- [ ] Links `https://app.wsw/widget-base.css` before widget CSS
+- [ ] Links `https://app.plinth/widget-base.css` before widget CSS
 - [ ] Zero literal colors in CSS/JS — every color is a `var(--token)`
 - [ ] No manifest `color` properties for appearance — chrome comes from the tokens
       (global theme + per-slot style override); `color` properties only for data colors

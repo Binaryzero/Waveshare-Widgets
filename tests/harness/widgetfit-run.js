@@ -18,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const WIDGET = path.join(REPO, 'widgets', 'clock');
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json' };
 
@@ -79,7 +79,7 @@ const SLOTS = [
       Frozen.UTC = Real.UTC;
       window.Date = Frozen;
     }, FROZEN_ISO);
-    await page.route('https://app.wsw/**', (route) => {
+    await page.route('https://app.plinth/**', (route) => {
       const file = path.join(SHELL, new URL(route.request().url()).pathname);
       if (fs.existsSync(file)) return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
       return route.fulfill({ status: 404, body: '' });
@@ -91,7 +91,7 @@ const SLOTS = [
         return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
       return route.fulfill({ status: 404, body: '' });
     });
-    await page.route(/https?:\/\/(?!app\.wsw|widget\.test).*/, (route) => route.abort());
+    await page.route(/https?:\/\/(?!app\.plinth|widget\.test).*/, (route) => route.abort());
     await page.addInitScript(shim);
     await page.goto('https://widget.test/index.html');
     return page;

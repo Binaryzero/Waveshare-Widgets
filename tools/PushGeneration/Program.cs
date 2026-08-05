@@ -23,7 +23,7 @@
 // by mutation, not assumed. That is why this file exists and why it runs in CI, where the
 // Playwright harnesses do not.
 
-using WaveshareWidgets.App;
+using Plinth.App;
 
 var failures = 0;
 void Check(string name, bool ok, string? detail = null)
@@ -63,8 +63,8 @@ Check("N6 a future epoch is refused too — a poll cannot begin in an interval n
 
 Console.WriteLine("Host stamps");
 
-var host = FindUpwards("src/WaveshareWidgets/App/DashboardWindow.cs");
-var shell = FindUpwards("src/WaveshareWidgets/Shell/shell.js");
+var host = FindUpwards("src/Plinth/App/DashboardWindow.cs");
+var shell = FindUpwards("src/Plinth/Shell/shell.js");
 
 if (host is null)
 {
@@ -160,7 +160,7 @@ else
         "echoed verbatim");
 }
 
-var notif = FindUpwards("src/WaveshareWidgets/App/NotificationCenter.cs");
+var notif = FindUpwards("src/Plinth/App/NotificationCenter.cs");
 if (notif is null)
 {
     Check("N7 setup: NotificationCenter.cs was found", false);

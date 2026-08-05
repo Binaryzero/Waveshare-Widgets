@@ -13,7 +13,7 @@
 //              overflow:hidden, silently, including the one that is failing.
 'use strict';
 const fs = require('fs'); const path = require('path');
-const SHELL = '/home/user/Waveshare-Widgets/src/WaveshareWidgets/Shell';
+const SHELL = '/home/user/Waveshare-Widgets/src/Plinth/Shell';
 const MIME = { '.html':'text/html', '.js':'application/javascript', '.css':'text/css' };
 const folder = process.argv[2];
 const mode = process.argv[3] || 'split';
@@ -25,7 +25,7 @@ const calls = { search: 0, runs: 0 };
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
   const height = mode === 'band' ? 200 : 400;
   const page = await browser.newPage({ viewport:{width:640,height} });
-  await page.route('https://app.wsw/**', (r) => {
+  await page.route('https://app.plinth/**', (r) => {
     const f = path.resolve(SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/,''));
     return fs.existsSync(f) ? r.fulfill({ contentType: MIME[path.extname(f)]||'text/plain', body: fs.readFileSync(f) }) : r.fulfill({status:404,body:''});
   });
@@ -38,7 +38,7 @@ const calls = { search: 0, runs: 0 };
   const CORS = { 'access-control-allow-origin':'*', 'access-control-allow-headers':'*',
     'access-control-expose-headers':'*' };
   const JSONH = { ...CORS, 'content-type':'application/json' };
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[:/?#]|$)).*/, (r) => {
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test)(?:[:/?#]|$)).*/, (r) => {
     const u = r.request().url();
     if (r.request().method() === 'OPTIONS') return r.fulfill({ status:204, headers: CORS });
     if (u.includes('/search/issues')) {

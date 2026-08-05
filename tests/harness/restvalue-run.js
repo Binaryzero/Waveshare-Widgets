@@ -25,7 +25,7 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const WIDGET = path.join(REPO, 'widgets', 'rest');
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json' };
 
@@ -60,7 +60,7 @@ const TOKEN = 'Bearer super-secret-probe-token';
 
   // Shared by every page the suite opens — R11 needs a second one with a fake clock.
   async function prepare(p) {
-    await p.route('https://app.wsw/**', (route) => {
+    await p.route('https://app.plinth/**', (route) => {
       const file = path.join(SHELL, new URL(route.request().url()).pathname);
       if (fs.existsSync(file)) return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
       return route.fulfill({ status: 404, body: '' });
@@ -81,7 +81,7 @@ const TOKEN = 'Bearer super-secret-probe-token';
       if (r.abort) return route.abort();
       return route.fulfill({ status: r.status, contentType: r.contentType || 'application/json', body: r.body });
     });
-    await p.route(/https?:\/\/(?!app\.wsw|widget\.test|api\.test).*/, (route) => route.abort());
+    await p.route(/https?:\/\/(?!app\.plinth|widget\.test|api\.test).*/, (route) => route.abort());
 
     await p.addInitScript(shim);
     // The one pause this tile has is a hidden panel, and Playwright cannot hide a page on
@@ -353,17 +353,18 @@ const TOKEN = 'Bearer super-secret-probe-token';
   await clockPage.close();
 
   // ---- R12 · a hidden panel must not keep polling underneath the tile ---------------
-  // The panel goes away with a request still OUT, which is the case a pause cannot be
-  // honoured at one point only: the timer already armed has to be dropped, AND the answer
-  // that lands afterwards must not re-arm from its own continuation. Either half left out
-  // puts the 5 s cadence back under a panel nobody is looking at — invisible by
-  // definition, so it shows up as traffic and nothing else.
-  respond = () => ({ status: 200, body: JSON.stringify({ v: 7 }), delayMs: 1200 });
+  // A quiet tile with its next poll already armed: becoming hidden has to drop that
+  // timer, not merely decline to arm the one after it. Getting this wrong is invisible by
+  // definition — nobody is looking at a hidden panel — and shows up only as a tile that
+  // spent the night asking a corporate endpoint for a number every five seconds, for
+  // nobody. (The other ordering, where the poll is already OUT when the panel goes away,
+  // is R12d.)
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 7 }) });
   await init(Object.assign({}, base, { url: 'https://api.test/paused', jsonPointer: '/v' }));
-  await wait(400);                         // the opening request is out, nothing back yet
+  await wait(700);                         // the opening poll has answered; the next is armed
   await setHidden(true);
   seen.length = 0;
-  await wait(6500);                        // the answer lands in here, then a full 5 s period
+  await wait(6500);                        // one full 5 s period plus slack
   check('R12 a widget paused by a hidden panel schedules no polls', seen.length === 0,
     `${seen.length} requests`);
   // The reading it already has stays up, and that is NOT what this guards: a tile that

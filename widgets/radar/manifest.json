@@ -1,8 +1,8 @@
 {
   "id": "ws.stock.radar",
   "name": "Weather Radar",
-  "author": "Waveshare Widgets",
-  "version": "1.4.2",
+  "author": "Plinth",
+  "version": "1.4.3",
   "description": "Live animated precipitation radar over a street map, centered on your city. Radar data by RainViewer, map tiles by OpenStreetMap — no API key needed.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],

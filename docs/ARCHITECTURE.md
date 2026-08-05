@@ -3,7 +3,7 @@
 ## Overview
 
 ```
-┌────────────────────────────── WaveshareWidgets.exe (.NET 8, tray app) ─────────────────────────────┐
+┌────────────────────────────── Plinth.exe (.NET 8, tray app) ─────────────────────────────┐
 │                                                                                                    │
 │  TrayApplicationContext ── panel detection (1280x400 signature), hotplug, tray menu, autostart     │
 │         │                                                                                          │
@@ -11,10 +11,10 @@
 │  DashboardWindow (borderless, WS_EX_NOACTIVATE, pinned to panel)                                   │
 │         │                                                                                          │
 │         ▼                                                                                          │
-│  WebView2 ──► https://app.wsw/index.html  (shell: pages, slots, dots, bridge relay)                │
+│  WebView2 ──► https://app.plinth/index.html  (shell: pages, slots, dots, bridge relay)                │
 │                  │ iframe (sandboxed, per-widget origin)                                           │
-│                  ├─► https://ws-stock-cpu.widgets.wsw/index.html                                   │
-│                  ├─► https://ws-stock-media.widgets.wsw/index.html                                 │
+│                  ├─► https://ws-stock-cpu.widgets.plinth/index.html                                   │
+│                  ├─► https://ws-stock-media.widgets.plinth/index.html                                 │
 │                  └─► … one origin per installed widget                                             │
 │                                                                                                    │
 │  SensorHub (background thread, ~2 s tick)                                                          │
@@ -22,7 +22,7 @@
 │    ├─ SystemCountersProvider   — CPU load, network, memory via PDH/Win32 (never needs elevation)   │
 │    └─ MediaSessionProvider     — now-playing + transport via GlobalSystemMediaTransportControls    │
 │                                                                                                    │
-│  WidgetLibrary — scans/installs %LocalAppData%\WaveshareWidgets\widgets, hot-reload watcher        │
+│  WidgetLibrary — scans/installs %LocalAppData%\Plinth\widgets, hot-reload watcher        │
 └────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -92,8 +92,8 @@ instead of a blank temperature).
 
 - One virtual host per widget (`SetVirtualHostNameToFolderMapping`), so each widget is a
   distinct browser origin: no shell DOM access, no cross-widget access, per-widget
-  `localStorage`. The shell itself is `https://app.wsw/`; user wallpaper files are served
-  read-only from `https://backgrounds.wsw/` (mapped to `%LocalAppData%\…\backgrounds\`).
+  `localStorage`. The shell itself is `https://app.plinth/`; user wallpaper files are served
+  read-only from `https://backgrounds.plinth/` (mapped to `%LocalAppData%\…\backgrounds\`).
 - `sandbox="allow-scripts allow-same-origin"` — safe *because* of the per-origin split;
   the sandbox attribute prevents popups/top-navigation/downloads.
 - The bridge is JSON-only `postMessage`. Widget-originated message types are `ww-ready`,
@@ -104,7 +104,7 @@ instead of a blank temperature).
 ## Repo layout
 
 ```
-src/WaveshareWidgets/        the app (C# + Shell/ web assets)
+src/Plinth/        the app (C# + Shell/ web assets)
 widgets/                     stock widgets, copied to output and seeded on first run
 docs/                        this file + the widget spec
 .github/workflows/build.yml  Windows CI build producing the distributable artifact
@@ -113,7 +113,7 @@ docs/                        this file + the widget spec
 ## v2 candidates (explicitly out of v1 scope)
 
 Touch-driven layout editor on the panel itself, software night-dimming overlay, widget
-marketplace/gallery, a `wswidget` scaffold/pack CLI, an AI "skill file" for LLM-generated
+marketplace/gallery, a `plinthwidget` scaffold/pack CLI, an AI "skill file" for LLM-generated
 widgets, manifest-declared capability permissions, WebView2 nightly recycle for
 multi-week uptime. (Shipped shortly after v1: the desktop settings UI — `SettingsWindow`
 + `Shell/settings.*` — the iCUE compatibility layer — `Shell/icue-compat.js` +

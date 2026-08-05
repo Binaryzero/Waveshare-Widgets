@@ -22,7 +22,7 @@ const path = require('path');
 const zlib = require('zlib');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const WIDGET = path.join(REPO, 'widgets', 'reddit');
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json' };
 
@@ -123,7 +123,7 @@ const listing = (urls, padTo) => {
   const imageBytes = {};        // path -> size to serve
   const served = [];            // which images were actually requested
 
-  await page.route('https://app.wsw/**', (route) => {
+  await page.route('https://app.plinth/**', (route) => {
     const file = path.join(SHELL, new URL(route.request().url()).pathname);
     if (fs.existsSync(file)) return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
@@ -144,7 +144,7 @@ const listing = (urls, padTo) => {
     if (size === undefined) return route.abort();
     return route.fulfill({ status: 200, contentType: 'image/png', body: png(size) });
   });
-  await page.route(/https?:\/\/(?!app\.wsw|widget\.test|www\.reddit\.com|i\.redd\.it).*/, (route) => route.abort());
+  await page.route(/https?:\/\/(?!app\.plinth|widget\.test|www\.reddit\.com|i\.redd\.it).*/, (route) => route.abort());
 
   await page.addInitScript(shim);
   // No host behind the shim: WW.fetch escalates to the proxy when the browser attempt

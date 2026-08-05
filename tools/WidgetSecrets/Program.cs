@@ -22,7 +22,7 @@
 // on disk in the clear, and nothing anywhere says so.
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
-using WaveshareWidgets.Widgets;
+using Plinth.Widgets;
 
 var failures = 0;
 void Check(string name, bool ok, string? detail = null)
@@ -227,7 +227,7 @@ Check("W7d removing the last key removes the widget's bucket too",
     WidgetSecrets.Serialize(emptied).Replace("\n", " "));
 
 // ---- W8: the refusal vocabulary a widget branches on --------------------------------
-// docs/WAVESHARE-API-REFERENCE.md names these five in the ww-secure-result row, and a
+// docs/PLINTH-API-REFERENCE.md names these five in the ww-secure-result row, and a
 // widget's whole fallback hangs on telling `unavailable` (keep it in memory, protection
 // is off on this machine) from the rest (fix the widget). The host used to derive them
 // from the enum member, which yields `toolarge` where the contract says `too-large` — so
@@ -269,7 +269,7 @@ Check("W8e a refused write's own result names itself",
 Console.WriteLine(failures > 0 ? $"{failures} FAILURES" : "ALL PASS");
 return failures > 0 ? 1 : 0;
 
-namespace WaveshareWidgets
+namespace Plinth
 {
     // Stand-ins for the app-side helpers SecretStore's dependency closure logs and
     // persists through. The same shape tools/SecretRoundTrip uses: the probe needs them

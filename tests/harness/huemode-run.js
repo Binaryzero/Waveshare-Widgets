@@ -28,7 +28,7 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const WIDGET = path.join(REPO, 'widgets', 'hue');
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json' };
 const KEY = 'probe-application-key-9f3a';
@@ -97,7 +97,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     });
   }, [IP, KEY, v2Rooms, v1Groups]);
 
-  await page.route('https://app.wsw/**', (route) => {
+  await page.route('https://app.plinth/**', (route) => {
     const file = path.join(SHELL, new URL(route.request().url()).pathname);
     if (fs.existsSync(file)) return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
@@ -109,7 +109,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   });
-  await page.route(/https?:\/\/(?!app\.wsw|widget\.test).*/, (route) => route.abort());
+  await page.route(/https?:\/\/(?!app\.plinth|widget\.test).*/, (route) => route.abort());
 
   // A fresh document per scenario: `mode` is probed once per session, so re-initialising
   // the same page would answer questions about a session that already decided.

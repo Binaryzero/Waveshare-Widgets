@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Standards validator for Waveshare widgets — the single validation boundary the
+// Standards validator for Plinth widgets — the single validation boundary the
 // build-widget skill, humans, and imports all share (see docs/WIDGET-STANDARD.md).
 //
 //   node tools/validate-widget.js widgets/clock           one widget, human output
@@ -185,7 +185,7 @@ const attr = (tag, name) => {
   const v = tagAttributes(tag).get(name.toLowerCase());
   return v === undefined ? null : v;
 };
-const APP_PREFIX = 'https://app.wsw/';
+const APP_PREFIX = 'https://app.plinth/';
 // External = anything carrying a scheme or protocol-relative authority that is not the
 // shell's own origin. A plain relative path stays inside the widget's virtual host and
 // is always fine. Whitespace inside the value counts as padding, not as content: a
@@ -313,9 +313,9 @@ function validate(folder) {
   }
 
   // The foundation stylesheet, linked before any widget CSS.
-  const baseIdx = html.indexOf('https://app.wsw/widget-base.css');
+  const baseIdx = html.indexOf('https://app.plinth/widget-base.css');
   if (baseIdx < 0) {
-    err('base-css', 'index.html must link https://app.wsw/widget-base.css (first, in <head>)');
+    err('base-css', 'index.html must link https://app.plinth/widget-base.css (first, in <head>)');
   } else {
     // The foundation must be the FIRST stylesheet of any kind — a linked local
     // stylesheet before it would override base layout just like an inline <style>.
@@ -356,7 +356,7 @@ function validate(folder) {
   // it passed — and a browser resolves it against the widget's own https virtual host,
   // which is precisely the fetch the rule exists to stop (issue #110). Same for `data:`,
   // `blob:`, an uppercase scheme, or a value padded with whitespace. Anything that is
-  // not app.wsw and not a plain relative path is external, whatever it looks like.
+  // not app.plinth and not a plain relative path is external, whatever it looks like.
   // Every rule below classifies an ATTRIBUTE, and an attribute is only half of a URL —
   // the document base is the other half. `<base href="//evil.example/">` turns every
   // relative reference in the file remote without any of them looking it, so the
@@ -375,7 +375,7 @@ function validate(folder) {
   for (const m of startTags(html, 'script')) {
     const src = attr(m.tag, 'src');
     if (src !== null && isExternalRef(src))
-      err('external-script', `external <script src="${src}"> — widgets must be self-contained (only app.wsw scripts allowed)`);
+      err('external-script', `external <script src="${src}"> — widgets must be self-contained (only app.plinth scripts allowed)`);
   }
   for (const m of startTags(html, 'link')) {
     const href = attr(m.tag, 'href');
@@ -400,7 +400,7 @@ function validate(folder) {
   const hostSet = new Set();
   for (const m of html.matchAll(/https?:\/\/([a-z0-9.-]+\.[a-z]{2,})/gi)) {
     const host = m[1].toLowerCase();
-    if (!host.endsWith('.wsw') && host !== 'app.wsw') hostSet.add(host);
+    if (!host.endsWith('.plinth') && host !== 'app.plinth') hostSet.add(host);
   }
   report.externalHosts = [...hostSet].sort();
 
@@ -458,10 +458,10 @@ if (args.includes('--self-test')) {
   // spellings nobody had written down: a browser-legal shape the regex did not model
   // (issues #110, #121). The CLEAN case is not decoration — it is what fails first if
   // one of these rules is tightened into refusing ordinary widgets.
-  const BASE = '<link rel="stylesheet" href="https://app.wsw/widget-base.css">';
+  const BASE = '<link rel="stylesheet" href="https://app.plinth/widget-base.css">';
   const doc = (head) => `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <title>T</title>${head}<style>body { color: var(--text); }</style></head>
-<body><script src="https://app.wsw/widget-api.js"></script></body></html>`;
+<body><script src="https://app.plinth/widget-api.js"></script></body></html>`;
   const htmlCases = [
     ['clean', doc(BASE), null],
     // #121 — \b matches after a hyphen, so data-rel was read as the real rel and the

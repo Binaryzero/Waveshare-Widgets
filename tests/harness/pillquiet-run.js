@@ -112,7 +112,7 @@ for (const c of CASES) {
 const { chromium } = require('playwright');
 const fs = require('fs');
 
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const OLLAMA = path.join(REPO, 'widgets', 'ollama');
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' };
@@ -140,12 +140,12 @@ const initFor = (baseUrl) => ({ type: 'ww-init',
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   };
-  await page.route('https://app.wsw/**', (r) =>
+  await page.route('https://app.plinth/**', (r) =>
     serve(r, SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '')));
   await page.route('https://widget.test/**', (r) =>
     serve(r, OLLAMA, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '') || 'index.html'));
   await page.route('https://shell.test/**', (r) => r.fulfill({ contentType: 'text/html', body: SHELL_PAGE }));
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)).*/, (r) => r.abort());
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test)(?:[/?#]|$)).*/, (r) => r.abort());
 
   const shim = fs.readFileSync(path.join(SHELL, 'widget-api.js'), 'utf8') + '\n'
              + fs.readFileSync(path.join(SHELL, 'icue-compat.js'), 'utf8');

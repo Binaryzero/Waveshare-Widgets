@@ -33,7 +33,7 @@ const http = require('http');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const PORT = 8964;
 
 function staticServer(rootDir, port) {
@@ -61,7 +61,7 @@ const check = (name, ok, detail) => {
 // Each call is timed, because the defect was not a wrong ANSWER, it was a ten-second one.
 const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
 <body style="margin:0;background:#111">
-<script src="https://app.wsw/widget-api.js"></script>
+<script src="https://app.plinth/widget-api.js"></script>
 <script>
   WW.onInit(() => { document.body.dataset.inited = '1'; });
   window.__timed = async (fn) => {
@@ -112,7 +112,7 @@ const PARENT_HTML = `<!DOCTYPE html><meta charset="utf-8">
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
 
   const widgets = [{
-    id: 'test.oauth', name: 'OAuth', url: 'https://oauth.widgets.wsw/index.html',
+    id: 'test.oauth', name: 'OAuth', url: 'https://oauth.widgets.plinth/index.html',
     supportedSlots: ['half'], properties: [],
   }];
   const layout = { pages: [{ name: 'P', slots: [
@@ -129,9 +129,9 @@ const PARENT_HTML = `<!DOCTYPE html><meta charset="utf-8">
         : name.endsWith('.js') ? 'application/javascript' : 'text/html';
       route.fulfill({ status: 200, contentType: type, body: fs.readFileSync(file) });
     };
-    await page.route('https://app.wsw/**', (r) =>
+    await page.route('https://app.plinth/**', (r) =>
       serve(r, SHELL, new URL(r.request().url()).pathname.replace(/^\/+/, '')));
-    await page.route('https://oauth.widgets.wsw/**', (r) =>
+    await page.route('https://oauth.widgets.plinth/**', (r) =>
       r.fulfill({ status: 200, contentType: 'text/html', body: WIDGET_HTML }));
   };
 
@@ -139,14 +139,14 @@ const PARENT_HTML = `<!DOCTYPE html><meta charset="utf-8">
   const page = await browser.newPage({ viewport: { width: 1300, height: 500 } });
   page.on('pageerror', (e) => { failures++; console.log('[pageerror]', String(e).slice(0, 300)); });
   await wire(page);
-  await page.route(`http://127.0.0.1:${PORT}/src/WaveshareWidgets/Shell/__parent.html`, (r) =>
+  await page.route(`http://127.0.0.1:${PORT}/src/Plinth/Shell/__parent.html`, (r) =>
     r.fulfill({ status: 200, contentType: 'text/html', body: PARENT_HTML }));
   await page.addInitScript((d) => { window.__initData = d; }, initData);
-  await page.goto(`http://127.0.0.1:${PORT}/src/WaveshareWidgets/Shell/__parent.html`);
+  await page.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/__parent.html`);
   await page.waitForTimeout(2500);
 
   const previewShell = page.frames().find((f) => /\?preview/.test(f.url()));
-  const previewWidget = page.frames().find((f) => /oauth\.widgets\.wsw/.test(f.url()));
+  const previewWidget = page.frames().find((f) => /oauth\.widgets\.plinth/.test(f.url()));
   const isPreview = previewShell
     ? await previewShell.evaluate(() => new URLSearchParams(location.search).has('preview'))
     : false;
@@ -208,9 +208,9 @@ const PARENT_HTML = `<!DOCTYPE html><meta charset="utf-8">
     if (m.type === 'ready')
       panel.evaluate((d) => window.__push(d), JSON.stringify({ type: 'init', data: initData })).catch(() => {});
   });
-  await panel.goto(`http://127.0.0.1:${PORT}/src/WaveshareWidgets/Shell/index.html`);
+  await panel.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/index.html`);
   await panel.waitForTimeout(2000);
-  const panelWidget = panel.frames().find((f) => /oauth\.widgets\.wsw/.test(f.url()));
+  const panelWidget = panel.frames().find((f) => /oauth\.widgets\.plinth/.test(f.url()));
   check('P7 setup: the panel widget initialized', !!panelWidget
     && await panelWidget.evaluate(() => document.body.dataset.inited === '1'));
   if (panelWidget) {

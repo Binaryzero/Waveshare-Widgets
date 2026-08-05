@@ -15,7 +15,7 @@
 //               never matched and the tile read unknown forever.
 'use strict';
 const fs = require('fs'); const path = require('path');
-const SHELL = '/home/user/Waveshare-Widgets/src/WaveshareWidgets/Shell';
+const SHELL = '/home/user/Waveshare-Widgets/src/Plinth/Shell';
 const MIME = { '.html':'text/html', '.js':'application/javascript', '.css':'text/css' };
 const folder = process.argv[2];
 const mode = process.argv[3] || 'unknownlock';
@@ -26,7 +26,7 @@ const sent = [];
   const shim = fs.readFileSync(path.join(SHELL,'widget-api.js'),'utf8')+'\n'+fs.readFileSync(path.join(SHELL,'icue-compat.js'),'utf8');
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
   const page = await browser.newPage({ viewport:{width:640,height:400} });
-  await page.route('https://app.wsw/**', (r) => {
+  await page.route('https://app.plinth/**', (r) => {
     const f = path.resolve(SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/,''));
     return fs.existsSync(f) ? r.fulfill({ contentType: MIME[path.extname(f)]||'text/plain', body: fs.readFileSync(f) }) : r.fulfill({status:404,body:''});
   });
@@ -46,7 +46,7 @@ const sent = [];
     uppercase:   [{entity_id:'light.kitchen', state:'on', attributes:{}}],
     bodystall:   [{entity_id:'light.kitchen', state:'on', attributes:{}}],
   }[mode];
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[:/?#]|$)).*/, async (r) => {
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test)(?:[:/?#]|$)).*/, async (r) => {
     const u = r.request().url();
     if (r.request().method() === 'OPTIONS') return r.fulfill({ status:204, headers: CORS });
     if (u.includes('/api/services/')) {

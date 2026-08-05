@@ -21,6 +21,6 @@
     <AssemblyName>WidgetIdentityProbe</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../src/WaveshareWidgets/Widgets/WidgetIdentity.cs" />
+    <Compile Include="../../src/Plinth/Widgets/WidgetIdentity.cs" />
   </ItemGroup>
 </Project>

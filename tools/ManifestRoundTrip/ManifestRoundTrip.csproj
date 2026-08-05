@@ -10,8 +10,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../src/WaveshareWidgets/Widgets/WidgetManifest.cs" />
+    <Compile Include="../../src/Plinth/Widgets/WidgetManifest.cs" />
     <!-- WidgetManifest.CredentialsAreTyped calls into this (issue #57). -->
-    <Compile Include="../../src/WaveshareWidgets/Widgets/CredentialNames.cs" />
+    <Compile Include="../../src/Plinth/Widgets/CredentialNames.cs" />
   </ItemGroup>
 </Project>

@@ -10,7 +10,7 @@
 // forever. The widget's requests to it are passed through rather than intercepted.
 'use strict';
 const fs = require('fs'); const path = require('path'); const https = require('https');
-const SHELL = '/home/user/Waveshare-Widgets/src/WaveshareWidgets/Shell';
+const SHELL = '/home/user/Waveshare-Widgets/src/Plinth/Shell';
 const MIME = { '.html':'text/html', '.js':'application/javascript', '.css':'text/css' };
 const folder = process.argv[2];
 function pw(){ for (const c of ['playwright','/opt/node22/lib/node_modules/playwright']) { try { return require(c);} catch(e){} } throw new Error('no playwright'); }
@@ -48,7 +48,7 @@ const open = [];
   const browser = await chromium.launch(launch);
   const context = await browser.newContext({ viewport:{width:640,height:400}, ignoreHTTPSErrors: true });
   const page = await context.newPage();
-  await page.route('https://app.wsw/**', (r) => {
+  await page.route('https://app.plinth/**', (r) => {
     const f = path.resolve(SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/,''));
     return fs.existsSync(f) ? r.fulfill({ contentType: MIME[path.extname(f)]||'text/plain', body: fs.readFileSync(f) }) : r.fulfill({status:404,body:''});
   });
@@ -60,7 +60,7 @@ const open = [];
     body:'<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%}iframe{display:block;border:0;width:100vw;height:100vh}</style>' }));
   // Everything else that is NOT the stalling server is refused; the server itself is
   // passed straight through to the real socket, which is the whole point.
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[:/?#]|$)).*/, (r) => {
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test)(?:[:/?#]|$)).*/, (r) => {
     if (r.request().url().includes('127.0.0.1:' + port)) return r.continue();
     return r.abort();
   });

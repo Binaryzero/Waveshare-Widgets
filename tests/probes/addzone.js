@@ -2,7 +2,7 @@
 const { chromium } = require('playwright');
 const fs = require('fs'), path = require('path'), http = require('http');
 const REPO = '/home/user/Waveshare-Widgets';
-const SHELL = path.join(REPO, 'src/WaveshareWidgets/Shell');
+const SHELL = path.join(REPO, 'src/Plinth/Shell');
 const PORT = 8961;
 function srvr(root, port) {
   const t = { '.html':'text/html', '.js':'application/javascript', '.css':'text/css', '.json':'application/json' };
@@ -16,7 +16,7 @@ function srvr(root, port) {
   return new Promise(res => s.listen(port,'127.0.0.1',()=>res(s)));
 }
 const man = (slug) => JSON.parse(fs.readFileSync(path.join(REPO,'widgets',slug,'manifest.json'),'utf8'));
-const entry = (slug) => { const m = man(slug); return { id:m.id, name:m.name, url:`https://${slug}.widgets.wsw/index.html`, supportedSlots:m.supported_slots, properties:m.properties||[] }; };
+const entry = (slug) => { const m = man(slug); return { id:m.id, name:m.name, url:`https://${slug}.widgets.plinth/index.html`, supportedSlots:m.supported_slots, properties:m.properties||[] }; };
 (async () => {
   const srv = await srvr(REPO, PORT);
   const b = await chromium.launch(process.env.CHROMIUM ? {executablePath:process.env.CHROMIUM}:{});
@@ -28,9 +28,9 @@ const entry = (slug) => { const m = man(slug); return { id:m.id, name:m.name, ur
     route.fulfill({status:200,contentType:ty,body:fs.readFileSync(f)});
   };
   const rel = u => new URL(u).pathname.replace(/^\/+/,'');
-  await page.route('https://app.wsw/**', r => serve(r, SHELL, rel(r.request().url())));
-  await page.route('https://*.widgets.wsw/**', r => { const u=new URL(r.request().url());
-    serve(r, path.join(REPO,'widgets',u.hostname.replace(/\.widgets\.wsw$/,'')), rel(r.request().url())); });
+  await page.route('https://app.plinth/**', r => serve(r, SHELL, rel(r.request().url())));
+  await page.route('https://*.widgets.plinth/**', r => { const u=new URL(r.request().url());
+    serve(r, path.join(REPO,'widgets',u.hostname.replace(/\.widgets\.plinth$/,'')), rel(r.request().url())); });
   const clock = entry('clock');
   // ONE page, two DISTINCT holes: cols0-1 upper filled, col3 lower filled.
   // Free: cols 0-1 lower (2x1) and cols 2-3 upper (2x1) and col2 lower (1x1).
@@ -48,7 +48,7 @@ const entry = (slug) => { const m = man(slug); return { id:m.id, name:m.name, ur
     if (m.type === 'ready') page.evaluate(d=>window.__push(d), JSON.stringify({type:'init',data:{
       layout, widgets:[clock], sensors:[], status:{elevated:false,version:'probe'} }})).catch(()=>{});
   });
-  await page.goto(`http://127.0.0.1:${PORT}/src/WaveshareWidgets/Shell/index.html`);
+  await page.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/index.html`);
   await page.waitForTimeout(1500);
   await page.evaluate(() => document.getElementById('editBtn') && document.getElementById('editBtn').click());
   await page.waitForTimeout(800);

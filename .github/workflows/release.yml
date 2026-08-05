@@ -52,13 +52,13 @@ jobs:
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained false -p:Version=$env:VERSION -o publish/fdd
+        run: dotnet publish src/Plinth/Plinth.csproj -c Release -r win-x64 --self-contained false -p:Version=$env:VERSION -o publish/fdd
 
       - name: Publish (self-contained)
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained true -p:Version=$env:VERSION -o publish/scd
+        run: dotnet publish src/Plinth/Plinth.csproj -c Release -r win-x64 --self-contained true -p:Version=$env:VERSION -o publish/scd
 
       - name: Package
         shell: pwsh
@@ -66,8 +66,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           New-Item -ItemType Directory dist | Out-Null
-          Compress-Archive -Path publish/fdd/* -DestinationPath "dist/WaveshareWidgets-v$($env:VERSION)-win-x64.zip"
-          Compress-Archive -Path publish/scd/* -DestinationPath "dist/WaveshareWidgets-v$($env:VERSION)-win-x64-self-contained.zip"
+          Compress-Archive -Path publish/fdd/* -DestinationPath "dist/Plinth-v$($env:VERSION)-win-x64.zip"
+          Compress-Archive -Path publish/scd/* -DestinationPath "dist/Plinth-v$($env:VERSION)-win-x64-self-contained.zip"
 
       - name: Upload artifacts (dry run)
         if: github.ref_type != 'tag'

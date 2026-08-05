@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <title>Hue Lights</title>
-<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
   /* Widget-specific layout only — tokens, background/bgStyle handling and the
    * .card/.state-card/.btn/.meter anatomy come from widget-base.css. */
@@ -92,7 +92,7 @@
     <small id="legacyHint" class="state-body"></small>
   </div>
 
-<script src="https://app.wsw/widget-api.js"></script>
+<script src="https://app.plinth/widget-api.js"></script>
 <script>
   'use strict';
   const cfg = { ip: '', showScenes: true };
@@ -260,7 +260,7 @@
     try {
       const res = await v1fetch('http://' + cfg.ip + '/api', {
         method: 'POST',
-        body: JSON.stringify({ devicetype: 'waveshare_widgets#panel' }),
+        body: JSON.stringify({ devicetype: 'plinth#panel' }),
       });
       const json = await res.json();
       const entry = Array.isArray(json) ? json[0] : null;

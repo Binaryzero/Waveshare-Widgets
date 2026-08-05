@@ -20,9 +20,9 @@
     <AssemblyName>FetchLimitsProbe</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../src/WaveshareWidgets/FetchLimits.cs" />
+    <Compile Include="../../src/Plinth/FetchLimits.cs" />
     <!-- The generated page script derives its response-header list from ProxyHeaderRules,
          so the probe has to compile both or it is checking a script that cannot build. -->
-    <Compile Include="../../src/WaveshareWidgets/ProxyHeaderRules.cs" />
+    <Compile Include="../../src/Plinth/ProxyHeaderRules.cs" />
   </ItemGroup>
 </Project>

@@ -4,7 +4,7 @@
 // all on the UI thread. The API invites polling and nothing put a floor under "faster", so a
 // widget could degrade the dashboard without being hostile. The capture itself needs
 // Windows, a running Stream Deck and a window handle; the two decisions are arithmetic.
-using WaveshareWidgets.App;
+using Plinth.App;
 
 var failures = 0;
 void Check(string name, bool ok, string? detail = null)
@@ -148,7 +148,7 @@ Console.WriteLine("Wired up");
 // about the capture asking them, and "computed but not used" has been the recurring defect
 // in this repo — a ceiling passed to a method that substituted its own, twice. The capture
 // needs Windows and a live Stream Deck, so its call sites cannot be driven from here.
-var bridge = FindUpwards("src/WaveshareWidgets/App/StreamDeckBridge.cs");
+var bridge = FindUpwards("src/Plinth/App/StreamDeckBridge.cs");
 if (bridge is null)
 {
     Check("K6 setup: StreamDeckBridge.cs was found", false);

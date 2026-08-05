@@ -14,15 +14,15 @@ my-widget/
 └── assets/…           optional (scripts, styles, images, fonts)
 ```
 
-Zip the *contents* of the folder (manifest at the zip root) and rename to `.wswidget`:
+Zip the *contents* of the folder (manifest at the zip root) and rename to `.plinthwidget`:
 
 ```powershell
 Compress-Archive -Path my-widget\* -DestinationPath my-widget.zip
-Rename-Item my-widget.zip my-widget.wswidget
+Rename-Item my-widget.zip my-widget.plinthwidget
 ```
 
 Install via tray → **Install widget…**, or unzip the folder directly into
-`%LocalAppData%\WaveshareWidgets\widgets\`. File changes hot-reload the dashboard.
+`%LocalAppData%\Plinth\widgets\`. File changes hot-reload the dashboard.
 
 ## manifest.json
 
@@ -203,7 +203,7 @@ Install via tray → **Install widget…**, or unzip the folder directly into
 Include the API from the shell's origin:
 
 ```html
-<script src="https://app.wsw/widget-api.js"></script>
+<script src="https://app.plinth/widget-api.js"></script>
 ```
 
 ```js
@@ -252,7 +252,7 @@ pairs — all shapes survive the host proxy hop, so authenticated APIs keep thei
 literal IPs (for self-signed devices like the Hue bridge). Insecure LAN requests go
 over HTTP/1.1 on a single serialized connection per device, since embedded TLS
 servers mishandle h2 offers and parallel handshakes. `WW.listMedia()` URLs are on
-`https://media.wsw/`, mapped to the media folder ("Open media folder" in Settings).
+`https://media.plinth/`, mapped to the media folder ("Open media folder" in Settings).
 
 **Body ceiling.** A `WW.fetch` response reads at most **5 MiB**. `text()`, `json()`,
 `blob()`, `arrayBuffer()`, `bytes()`, `formData()` and the `body` stream all refuse past
@@ -308,7 +308,7 @@ sensor selections must be (re)made in our Settings UI.
 
 ## Rules of the sandbox
 
-- Each widget runs on its own origin (`https://<id-slug>.widgets.wsw`) in an iframe with
+- Each widget runs on its own origin (`https://<id-slug>.widgets.plinth`) in an iframe with
   `sandbox="allow-scripts allow-same-origin"`. You get `localStorage` scoped to your
   widget, and you can `fetch()` external HTTPS APIs (the stock weather widget does).
 - You cannot touch the shell page, other widgets, or the host process. The only channel
@@ -319,7 +319,7 @@ sensor selections must be (re)made in our Settings UI.
 ## Design tokens & theming
 
 Stock widgets share a design system. `widget-base.css` (linked from
-`https://app.wsw/widget-base.css`) carries the design tokens (`--surface`, `--text`,
+`https://app.plinth/widget-base.css`) carries the design tokens (`--surface`, `--text`,
 `--accent`, …), the `bgStyle` panel-opacity classes and the standard component classes;
 the host derives a token palette from the user's theme and pushes it into every widget at
 init (readable as `WW.theme`, applied to `:root` automatically). Style with the tokens —

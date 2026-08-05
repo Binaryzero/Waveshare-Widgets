@@ -26,7 +26,7 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const WIDGET = path.join(REPO, 'widgets', 'kev');
 const FEED = 'known_exploited_vulnerabilities.json';
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
@@ -72,7 +72,7 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   };
-  await page.route('https://app.wsw/**', (r) =>
+  await page.route('https://app.plinth/**', (r) =>
     serve(r, SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '')));
   await page.route('https://widget.test/**', (r) =>
     serve(r, WIDGET, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '') || 'index.html'));
@@ -88,7 +88,7 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     if (feedDelayMs) return setTimeout(finish, feedDelayMs);
     return finish();
   });
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test|www\.cisa\.gov)(?:[/?#]|$)).*/,
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test|www\.cisa\.gov)(?:[/?#]|$)).*/,
     (r) => r.abort());
 
   const shim = fs.readFileSync(path.join(SHELL, 'widget-api.js'), 'utf8') + '\n'

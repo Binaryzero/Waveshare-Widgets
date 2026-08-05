@@ -1,4 +1,4 @@
-# Waveshare Widgets
+# Plinth
 
 An [iCUE-widgets](https://marketplace.elgato.com/icue/widgets)-style dashboard for the
 [Waveshare 7.9inch HDMI LCD](https://www.waveshare.com/wiki/7.9inch_HDMI_LCD) (1280×400 touch strip)
@@ -7,7 +7,7 @@ on Windows 10/11.
 A single tray app pins a borderless, never-focused window to the panel and renders
 swipeable pages of **widgets** — small HTML/JS apps showing CPU/GPU telemetry, clocks,
 now-playing media, weather, or anything else. Widgets are plain web tech packaged as
-`.wswidget` files, deliberately close to the iCUE widget model, so anyone can build one.
+`.plinthwidget` files, deliberately close to the iCUE widget model, so anyone can build one.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -38,7 +38,7 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   media now-playing + transport control via Windows
   (`GlobalSystemMediaTransportControls`), and anything a widget fetches itself
   (e.g. the weather widget calls Open-Meteo).
-- **Widget packages**: a `.wswidget` file is a zip of `manifest.json` + `index.html`.
+- **Widget packages**: a `.plinthwidget` file is a zip of `manifest.json` + `index.html`.
   Install via the tray menu, or drop a folder into the widgets directory —
   changes hot-reload. Each widget runs in a sandboxed iframe on its own origin.
 - **Edit on the screen itself**: tap the pencil in the panel's corner to rearrange
@@ -116,12 +116,12 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
 
 Download the latest zip from the [Releases page](../../releases):
 
-- `WaveshareWidgets-vX.Y.Z-win-x64.zip` — small; needs the
+- `Plinth-vX.Y.Z-win-x64.zip` — small; needs the
   [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)
-- `WaveshareWidgets-vX.Y.Z-win-x64-self-contained.zip` — bigger; runs with nothing
+- `Plinth-vX.Y.Z-win-x64-self-contained.zip` — bigger; runs with nothing
   preinstalled
 
-Unzip and run `WaveshareWidgets.exe`. Requirements: Windows 10 1809+ or Windows 11, and
+Unzip and run `Plinth.exe`. Requirements: Windows 10 1809+ or Windows 11, and
 the WebView2 Runtime (preinstalled on Windows 11 and current Windows 10). Development
 builds of every commit are available as [Actions artifacts](../../actions).
 
@@ -155,7 +155,7 @@ with nothing extra installed.
 If you run iCUE, battery percentages for Corsair wireless keyboards/mice/headsets can
 appear as sensors (`corsair:*:battery`): download the client DLL
 (`iCUESDK.x64_2019.dll`) from the [cue-sdk releases](https://github.com/CorsairOfficial/cue-sdk/releases),
-drop it next to `WaveshareWidgets.exe`, and enable the SDK toggle in iCUE's settings.
+drop it next to `Plinth.exe`, and enable the SDK toggle in iCUE's settings.
 Next to the exe or an iCUE install directory are the only places it is looked for —
 loading a native DLL runs its startup code before anything checks that it is really the
 Corsair SDK, so the app does not go looking in the per-user data directory. Note that
@@ -172,7 +172,7 @@ remain iCUE-internal, which is why the app reads hardware itself.
 
 ## Configuration
 
-Everything lives in `%LocalAppData%\WaveshareWidgets\`:
+Everything lives in `%LocalAppData%\Plinth\`:
 
 | File | Purpose |
 |---|---|
@@ -223,12 +223,12 @@ widget validator fails a credential-looking property declared as plain text.
 ## Building widgets
 
 A widget is a folder with a `manifest.json` and an `index.html`, zipped into a
-`.wswidget`. Sensor data, settings, and media transport arrive through a tiny JS API
+`.plinthwidget`. Sensor data, settings, and media transport arrive through a tiny JS API
 (`window.WW`). Start with **[docs/WIDGET-SPEC.md](docs/WIDGET-SPEC.md)** for the quick
 start; the stock widgets in [`widgets/`](widgets/) are working examples you can copy.
 
 Full references:
-- **[docs/WAVESHARE-API-REFERENCE.md](docs/WAVESHARE-API-REFERENCE.md)** — the complete
+- **[docs/PLINTH-API-REFERENCE.md](docs/PLINTH-API-REFERENCE.md)** — the complete
   `window.WW` API, sensor/media models, property types, and the host bridge protocol.
 - **[docs/ICUE-API-REFERENCE.md](docs/ICUE-API-REFERENCE.md)** — the iCUE Widget API
   (v1.4.0) this runtime emulates, with per-feature notes on what's supported. Most
@@ -237,7 +237,7 @@ Full references:
 ## Building from source
 
 ```powershell
-dotnet publish src/WaveshareWidgets/WaveshareWidgets.csproj -c Release -r win-x64 --self-contained false -o publish
+dotnet publish src/Plinth/Plinth.csproj -c Release -r win-x64 --self-contained false -o publish
 ```
 
 Requires the .NET 8 SDK on Windows (CI does exactly this; non-Windows SDKs can compile

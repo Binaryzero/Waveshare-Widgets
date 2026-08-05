@@ -14,7 +14,7 @@
 //                disk that anyone with the WebView profile could have taken.
 'use strict';
 const fs = require('fs'); const path = require('path');
-const SHELL = '/home/user/Waveshare-Widgets/src/WaveshareWidgets/Shell';
+const SHELL = '/home/user/Waveshare-Widgets/src/Plinth/Shell';
 const MIME = { '.html':'text/html', '.js':'application/javascript', '.css':'text/css' };
 const folder = process.argv[2];
 const mode = process.argv[3] || 'tokentype';
@@ -35,7 +35,7 @@ const tokenBody = (n) => {
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
   const page = await browser.newPage({ viewport:{width:640,height:400} });
   await page.exposeFunction('__proxyToken', () => { proxyTokenHits++; return tokenBody(directTokenHits + proxyTokenHits); });
-  await page.route('https://app.wsw/**', (r) => {
+  await page.route('https://app.plinth/**', (r) => {
     const f = path.resolve(SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/,''));
     return fs.existsSync(f) ? r.fulfill({ contentType: MIME[path.extname(f)]||'text/plain', body: fs.readFileSync(f) }) : r.fulfill({status:404,body:''});
   });
@@ -47,7 +47,7 @@ const tokenBody = (n) => {
     body:'<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%}iframe{display:block;border:0;width:100vw;height:50vh}</style>' }));
   const CORS = { 'access-control-allow-origin':'*', 'access-control-allow-headers':'*' };
   const JSONH = { ...CORS, 'content-type':'application/json' };
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[:/?#]|$)).*/, async (r) => {
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test)(?:[:/?#]|$)).*/, async (r) => {
     const u = r.request().url();
     // corsreplay: the preflight is refused too, exactly like an endpoint that has never
     // heard of CORS. The POST is still DELIVERED — that is the whole point.
