@@ -458,11 +458,23 @@ function validate(folder) {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
   let scriptJs = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]).join('\n');
+  // Resolved against the document BASE, not the widget root. A relative <base href="./sub/">
+  // is a permitted shape here — only an external one is refused — and a browser loads
+  // `<script src="helper.js">` from `sub/helper.js` under it. Reading from the root instead
+  // would open the file the page never loads, or none, and report the widget clean while the
+  // shipped page writes the class.
+  const baseHref = startTags(html, 'base')
+    .map((m) => attr(m.tag, 'href'))
+    .find((h) => h && !isExternalRef(h)) || '';
+  const baseDir = baseHref.replace(/[^/]*$/, '').replace(/^\/+/, '');
   for (const m of startTags(html, 'script')) {
     const src = attr(m.tag, 'src');
     if (!src || isExternalRef(src)) continue;
     const root = path.resolve(folder);
-    const file = path.resolve(root, decodeURIComponent(src.split(/[?#]/)[0]).replace(/^\/+/, ''));
+    const rel = decodeURIComponent(src.split(/[?#]/)[0]);
+    // An absolute path is document-root relative and ignores <base>; anything else rides it.
+    const joined = rel.startsWith('/') ? rel.replace(/^\/+/, '') : baseDir + rel;
+    const file = path.resolve(root, joined);
     if (file !== root && !file.startsWith(root + path.sep)) continue;   // no walking out
     try { scriptJs += '\n' + fs.readFileSync(file, 'utf8'); } catch (e) { /* unreadable: not this rule's business */ }
   }

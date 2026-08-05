@@ -338,15 +338,21 @@
     // because widget-base.css re-declares the derived alphas at body scope precisely so the
     // bg-* override beats them.
     stampBackground();
-    // DOMContentLoaded is the BACKSTOP, not the mechanism. It fires only after the whole
-    // body has parsed, which is far too late for a widget whose own script runs partway
-    // down that body: WW.onInit replays immediately once state.ready is set, so such a
-    // widget would paint and measure inside a tile whose background class had not landed
-    // yet — a transparent tile getting one frame of solid, and any first-paint measurement
-    // taken against the wrong surface. onInit stamps for that case; this only covers a
-    // document that registers nothing at all.
-    if (!document.body) document.addEventListener('DOMContentLoaded', stampBackground, { once: true });
   }
+
+  // Registered HERE, at shim load, rather than from applyBackground when body is missing.
+  // Registration ORDER decides who runs first, and this file is injected ahead of
+  // icue-compat.js — which registers its own DOMContentLoaded listener at ITS load and
+  // fires icueEvents.onICUEInitialized from it. A listener added later, from inside the
+  // ww-init handler, would therefore run AFTER an iCUE widget's lifecycle callback had
+  // already rendered, so a transparent tile still took its first paint on the wrong
+  // background. Being first in the queue is the whole point of the placement.
+  //
+  // Harmless before any init: stampBackground no-ops while backgroundClass is null. This
+  // covers documents that register nothing — an iCUE widget drives its own lifecycle and
+  // may never call WW.onInit at all, so the onInit path below cannot be the only guard.
+  if (typeof document !== 'undefined' && document.addEventListener)
+    document.addEventListener('DOMContentLoaded', stampBackground, { once: true });
 
   function applyThemeTokens(theme) {
     if (!theme || typeof theme !== 'object') return;
