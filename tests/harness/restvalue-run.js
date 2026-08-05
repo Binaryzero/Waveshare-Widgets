@@ -12,7 +12,7 @@
 //   R8 · a repeated ww-init (settings edit) does not stack pollers
 //   R10 · a failing endpoint backs off; an explicit Retry overrides the backoff
 //   R11 · the age label is recomputed from the clock, not frozen until the next poll
-//   R12 · a tile that BOOTS during a game reads that state out of ww-init and stays quiet
+//   R12 · a hidden panel stops the cadence underneath the tile, and resumes it
 //   R22 · a response past the WW.fetch ceiling is named as such, not as unreachable —
 //         and an ordinary body still reads through the new cap
 //   R23 · the same refusal arriving from the HOST proxy tier reads the same way, by either
@@ -84,6 +84,16 @@ const TOKEN = 'Bearer super-secret-probe-token';
     await p.route(/https?:\/\/(?!app\.wsw|widget\.test|api\.test).*/, (route) => route.abort());
 
     await p.addInitScript(shim);
+    // The one pause this tile has is a hidden panel, and Playwright cannot hide a page on
+    // demand — so `hidden` and `visibilityState` are backed by a flag the probes flip.
+    // Installed before any widget script runs, and visible unless a page says otherwise:
+    // R21 needs a document that was ALREADY hidden when the widget booted.
+    await p.addInitScript(() => {
+      if (window.__hidden === undefined) window.__hidden = false;
+      Object.defineProperty(document, 'hidden', { get: () => window.__hidden === true, configurable: true });
+      Object.defineProperty(document, 'visibilityState',
+        { get: () => (window.__hidden === true ? 'hidden' : 'visible'), configurable: true });
+    });
     // WW.fetch escalates to the host proxy when the browser request fails. Without a
     // host answering that message the promise never settles — which is exactly how the
     // first run of this suite wedged the widget, and why it now has a timeout.
@@ -123,17 +133,17 @@ const TOKEN = 'Bearer super-secret-probe-token';
     return out;
   })();
 
-  // `game` mirrors what the host puts in a real ww-init: the CURRENT game state, not
-  // a transition. A widget that ignores it only learns about game mode on the next flip.
-  const init = (settings, game) => page.evaluate(([s, g]) => {
+  const init = (settings) => page.evaluate((s) => {
     window.postMessage({ type: 'ww-init', settings: s, sensors: [], media: null, theme: null,
-      game: g || { active: false, process: '' },
       status: { elevated: false, apiVersion: 1 } }, '*');
-  }, [Object.assign({}, manifestDefaults, settings), game]);
+  }, Object.assign({}, manifestDefaults, settings));
 
-  const gameEvent = (active) => page.evaluate((a) => {
-    window.postMessage({ type: 'ww-game', game: { active: a, process: a ? 'game.exe' : '' } }, '*');
-  }, active);
+  // Hidden the way a browser does it: the flag first, then the event, because the widget
+  // drops its pending timer from the handler rather than at the next tick.
+  const setHidden = (hidden) => page.evaluate((h) => {
+    window.__hidden = h;
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, hidden);
 
   const read = () => page.evaluate(() => ({
     value: document.getElementById('value').textContent,
@@ -325,7 +335,7 @@ const TOKEN = 'Bearer super-secret-probe-token';
   respond = () => ({ status: 200, body: JSON.stringify({ v: 1 }) });
   await clockPage.evaluate((s) => {
     window.postMessage({ type: 'ww-init', settings: s, sensors: [], media: null, theme: null,
-      game: { active: false, process: '' }, status: { elevated: false, apiVersion: 1 } }, '*');
+      status: { elevated: false, apiVersion: 1 } }, '*');
   }, Object.assign({}, base, { url: 'https://api.test/aged', jsonPointer: '/v', pollSeconds: 86400 }));
   // Real time, not clock time: the fixture round-trip is genuine async work and the
   // fake clock does not advance while it happens.
@@ -342,27 +352,62 @@ const TOKEN = 'Bearer super-secret-probe-token';
     `${seen.length} requests`);
   await clockPage.close();
 
-  // ---- R12 · a tile that BOOTS during a game must not poll through it ---------------
-  // onGame fires on transitions only, so the initial state has to be read out of
-  // ww-init. Getting this wrong is invisible in normal use — it only shows up when the
-  // app starts, or the tile reloads, while a game is already fullscreen.
-  respond = () => ({ status: 200, body: JSON.stringify({ v: 7 }) });
-  await init(Object.assign({}, base, { url: 'https://api.test/ingame', jsonPointer: '/v' }),
-    { active: true, process: 'game.exe' });
-  await wait(700);
+  // ---- R12 · a hidden panel must not keep polling underneath the tile ---------------
+  // The panel goes away with a request still OUT, which is the case a pause cannot be
+  // honoured at one point only: the timer already armed has to be dropped, AND the answer
+  // that lands afterwards must not re-arm from its own continuation. Either half left out
+  // puts the 5 s cadence back under a panel nobody is looking at — invisible by
+  // definition, so it shows up as traffic and nothing else.
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 7 }), delayMs: 1200 });
+  await init(Object.assign({}, base, { url: 'https://api.test/paused', jsonPointer: '/v' }));
+  await wait(400);                         // the opening request is out, nothing back yet
+  await setHidden(true);
   seen.length = 0;
-  await wait(6500);                        // one full 5 s period plus slack
-  check('R12 a widget initialised during a game schedules no polls', seen.length === 0,
+  await wait(6500);                        // the answer lands in here, then a full 5 s period
+  check('R12 a widget paused by a hidden panel schedules no polls', seen.length === 0,
     `${seen.length} requests`);
-  // The single read at init is deliberate and NOT what this guards: a tile that painted
-  // a spinner for the whole session, then a number when the game ended, would be worse
-  // than one request. What must not happen is the 5 s cadence continuing underneath.
-  check('R12b it still painted a value rather than spinning for the whole session',
+  // The reading it already has stays up, and that is NOT what this guards: a tile that
+  // fell back to a spinner for the whole pause, then a number when the panel returned,
+  // would be worse than one request. What must not happen is the 5 s cadence
+  // continuing underneath.
+  check('R12b it still shows a value rather than spinning for the whole pause',
     (await read()).value === '7');
 
-  await gameEvent(false);
+  await setHidden(false);
   await wait(600);
-  check('R12c and polling resumes once the game exits', seen.length > 0, `${seen.length} requests`);
+  check('R12c and polling resumes once the panel is visible again', seen.length > 0, `${seen.length} requests`);
+
+  // ---- R12d · the hide that lands while a request is IN FLIGHT ----------------------
+  // R12 hides the panel with nothing outstanding, so the pending timer is there to be
+  // cleared and the chain stops. The hole is one step over: the poll is already out when
+  // the panel goes away, so `visibilitychange` clears a timer that is ALREADY null — and
+  // then the request resolves and its own `.then(schedule)` arms the next one. `poll()`
+  // has no visibility guard of its own, so from there the tile polls a hidden panel
+  // forever. The re-arm is the only place that can refuse, which is why the check lives
+  // in `schedule()` and not only in the event handler.
+  //
+  // Deleting `document.hidden` from `schedule()` fails R12 as well, so this is not the
+  // only witness to that line. It is here for the ordering R12 never builds: R12 hides a
+  // quiet tile, and a "fix" that cleared the timer harder in the visibilitychange handler
+  // would satisfy it while leaving this sequence — where there is no timer to clear —
+  // exactly as broken.
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 3 }), delayMs: 1500 });
+  await init(Object.assign({}, base, { url: 'https://api.test/inflight', jsonPointer: '/v' }));
+  await wait(500);                         // the request is out and will not answer yet
+  const inFlight = seen.length;
+  check('R12d setup: a request is in flight when the panel goes away', inFlight > 0,
+    `${inFlight} request(s)`);
+  await setHidden(true);
+  // Long enough for the held response to land (1.5 s) AND for the timer its resolution
+  // would arm to fire (5 s). A shorter wait passes against the defect.
+  await wait(7500);
+  check('R12d a poll resolving after the panel hid does not re-arm the chain',
+    seen.length === inFlight, `${seen.length - inFlight} request(s) after the panel hid`);
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 3 }) });
+  await setHidden(false);
+  await wait(700);
+  check('R12e ...and the tile is not dead either — it polls when the panel returns',
+    seen.length > inFlight, `${seen.length - inFlight} request(s)`);
 
   // ---- R22 · a response past the WW.fetch ceiling is NAMED, not reported as unreachable
   // The tile renders one number. An endpoint that answers with megabytes is answering —
@@ -595,22 +640,23 @@ const TOKEN = 'Bearer super-secret-probe-token';
     /5m ago/.test(agedLabel) && /5m ago/.test(afterLabel), `${agedLabel} -> ${afterLabel}`);
   check('R18c the failure reason survives the edit too', /unreachable|HTTP/.test(afterLabel), afterLabel);
 
-  // ---- R19 · resuming checks BOTH pause reasons -------------------------------------
-  // Each handler used to check only its own reason, so becoming visible during a game
-  // (or a game ending while hidden) fired a request that schedule() then declined to
-  // repeat — quiet afterwards, but the request had already gone.
+  // ---- R19 · the resume path re-reads the reason it was paused for ------------------
+  // `visibilitychange` fires for the panel going away as well as coming back, and both
+  // enter the same resume path. A resume that polls before re-reading document.hidden
+  // fires a request for a panel nobody can see — quiet afterwards, because schedule()
+  // then declines to arm anything, but the request has already gone.
   respond = () => ({ status: 200, body: JSON.stringify({ v: 9 }) });
-  await init({ url: 'https://api.test/paused', jsonPointer: '/v', pollSeconds: 60 },
-    { active: true, process: 'game.exe' });
+  await init({ url: 'https://api.test/stillhidden', jsonPointer: '/v', pollSeconds: 60 });
   await wait(600);
   seen.length = 0;
-  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await setHidden(true);                                                    // the real hide
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));  // ...and a second event, still hidden
   await wait(600);
-  check('R19 becoming visible while a game is running issues no request',
+  check('R19 a visibility change that arrives while the panel is still hidden issues no request',
     seen.length === 0, `${seen.length} requests`);
-  await gameEvent(false);
+  await setHidden(false);
   await wait(600);
-  check('R19b and once the game exits, polling resumes normally',
+  check('R19b and once the panel is visible again, polling resumes normally',
     seen.length > 0, `${seen.length} requests`);
 
   // ---- R20 · JSON Pointer tokens keep their whitespace ------------------------------
@@ -640,17 +686,15 @@ const TOKEN = 'Bearer super-secret-probe-token';
   const hiddenPage = await browser.newPage({ viewport: { width: 640, height: 400 } });
   hiddenPage.on('pageerror', (e) => { failures++; console.log('[pageerror:hidden]', String(e).slice(0, 300)); });
   await prepare(hiddenPage);
-  // Force document.hidden before the widget script runs, so init sees a hidden document.
-  await hiddenPage.addInitScript(() => {
-    Object.defineProperty(document, 'hidden', { get: () => window.__hidden !== false, configurable: true });
-    Object.defineProperty(document, 'visibilityState', { get: () => (window.__hidden !== false ? 'hidden' : 'visible'), configurable: true });
-  });
+  // Hidden before the widget script runs, so init sees a hidden document. prepare() has
+  // already installed the property; this only decides what it reads on this page.
+  await hiddenPage.addInitScript(() => { window.__hidden = true; });
   await hiddenPage.goto('https://widget.test/index.html');
   respond = () => ({ status: 200, body: JSON.stringify({ v: 4 }) });
   seen.length = 0;
   await hiddenPage.evaluate((s) => {
     window.postMessage({ type: 'ww-init', settings: s, sensors: [], media: null, theme: null,
-      game: { active: false, process: '' }, status: { elevated: false, apiVersion: 1 } }, '*');
+      status: { elevated: false, apiVersion: 1 } }, '*');
   }, { url: 'https://api.test/hidden', jsonPointer: '/v', pollSeconds: 60, bgStyle: 'solid' });
   await wait(800);
   check('R21 a widget initialised while the panel is hidden issues no request',

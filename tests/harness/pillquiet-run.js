@@ -125,7 +125,7 @@ const MODELS = { models: [{ name: 'llama3.1:8b', size: 6111111111 }] };
 
 const initFor = (baseUrl) => ({ type: 'ww-init',
   settings: { baseUrl, refreshSeconds: 5, bgStyle: 'solid' },
-  sensors: [], media: null, theme: {}, game: { active: false, process: '' },
+  sensors: [], media: null, theme: {},
   status: { elevated: false, apiVersion: 1 } });
 
 (async () => {

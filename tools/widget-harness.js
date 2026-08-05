@@ -39,7 +39,7 @@ const opt = (name, dflt) => {
   return i >= 0 ? args[i + 1] : dflt;
 };
 if (!folder) {
-  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--shot out.png] [--game] [--json]');
+  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--shot out.png] [--json]');
   process.exit(1);
 }
 
@@ -62,9 +62,6 @@ const settings = (() => {
 })();
 const shot = opt('shot', null);
 const asJson = args.includes('--json');
-// Drive the game-mode gate. Several widgets suspend polling while a fullscreen game is
-// foreground, and with no way to say so offline that branch was unreachable here.
-const gameActive = args.includes('--game');
 
 // The slot fragment shell.js puts on every frame src. The iCUE shim reads its property
 // globals out of ww-settings BEFORE the widget's own scripts run, and uniqueId — the
@@ -92,8 +89,9 @@ function loadPlaywright() {
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
   // serviceWorkers: 'block' — a request a service worker makes does NOT pass through
   // page.route, so a widget that registered one has a way out of this runner that the
-  // abort, the stub table and the game gate are all blind to. This is Playwright's own
-  // mechanism for that and costs nothing, so it is on.
+  // catch-all abort below never sees, breaking the contract that every unmatched request
+  // here is deterministic and offline. This is Playwright's own mechanism for that and
+  // costs nothing, so it is on.
   //
   // What it is NOT is a demonstrated containment, and this comment will not claim one.
   // A probe widget in the real (sandboxed, cross-origin) frame topology still had
@@ -145,9 +143,10 @@ function loadPlaywright() {
   // media.wsw and backgrounds.wsw are LOCAL virtual hosts, not the network:
   // DashboardWindow.MapVirtualHosts maps them to AppPaths.MediaDir and
   // AppPaths.BackgroundsDir, and WW.listMedia() hands widgets URLs on the first of them.
-  // Without a route here they fell through to the catch-all, which counted a widget's
-  // local media I/O as a network attempt and failed the game gate for a gallery doing
-  // exactly what its API told it to do. 404 rather than a file: this runner has no media
+  // Without a route here they fell through to the catch-all, which ABORTED a widget's
+  // local media I/O as though it were a network call — a gallery doing exactly what its
+  // API told it to do got a failed request where the panel hands it a local file, and
+  // then rendered the failure. 404 rather than a file: this runner has no media
   // library, and ww-media-list answers [] to match — a widget must handle a missing file
   // either way, and the answer is deterministic and local, which is what the contract
   // requires.
@@ -181,11 +180,10 @@ function loadPlaywright() {
   // none of them — and treating ':' as a boundary would exempt it from the abort as
   // well, leaving the one URL shape that reaches the real network. Exempt only what a
   // local route can actually serve.
-  // Counted before the abort, because the abort is what makes an ungated widget look
-  // identical to a gated one here: a widget that ignores state.game keeps fetching, every
-  // request fails, it renders its ordinary offline card, and every remaining check passes.
-  // Without this the --game flag only changed the payload and could not tell a working
-  // gate from a regression.
+  // Recorded BEFORE the abort, because the abort erases the difference: afterwards every
+  // request has failed identically, and the attempt itself is the only evidence left of
+  // what the widget tried to reach. No check reads this list today — it is the runner's
+  // ledger of what would have left the machine.
   // EVERY method counts, including OPTIONS. Measured first: Playwright's interception
   // hands this handler the real request and never delivers a CORS preflight at all —
   // checked on this Chromium both ways (aborting, and fulfilling with the allow-headers
@@ -203,9 +201,9 @@ function loadPlaywright() {
       return route.abort();
     });
   // A WebSocket passes through NONE of the above. page.route intercepts HTTP(S) only, so
-  // `new WebSocket('wss://…')` left this runner and reached the real network — not merely
-  // unseen by the game gate, but a hole in the contract that every unmatched request here
-  // is deterministic and offline. Nothing this handler receives is connected upstream
+  // `new WebSocket('wss://…')` left this runner and reached the real network — a hole in
+  // the contract that every unmatched request here is deterministic and offline, not just
+  // a gap in the record. Nothing this handler receives is connected upstream
   // (the socket is only forwarded if connectToServer() is called), so every one is
   // refused; the non-local ones are also counted, with the same host boundary the abort
   // route uses.
@@ -308,8 +306,8 @@ function loadPlaywright() {
     if (window.top !== window) return;   // shell-side only; the widget frame gets the shim
     // The two channels that leave the machine WITHOUT passing page.route: the shim posts
     // them to the shell and the HOST dials out. `WW.fetch(url, { proxy: 'always' })`
-    // skips the browser fetch entirely, and WW.ping is real ICMP — so a game gate built
-    // on the route alone was blind to both. Everything else a widget can post
+    // skips the browser fetch entirely, and WW.ping is real ICMP — so a record built on
+    // the route alone sees neither. Everything else a widget can post
     // (ww-media-list, ww-audio-*, ww-sd-*, ww-secure-*, ww-log, ww-action, ww-open-url)
     // is answered inside the host process and reaches no network.
     window.__wwHostCalls = [];
@@ -352,7 +350,7 @@ function loadPlaywright() {
         // DashboardWindow.HandleProxyFetchAsync refuses a non-absolute or non-http(s)
         // URL and any method outside GET/POST/PUT/HEAD before it dials. A call the host
         // throws out is not a network call in production, so counting one here would
-        // fail the game gate for a widget that never crossed it.
+        // record traffic the widget never actually caused.
         let abs = null;
         try { abs = new URL(String(m.url || '')); } catch (e) { abs = null; }
         const method = String(m.method || 'GET').toUpperCase();
@@ -377,9 +375,9 @@ function loadPlaywright() {
         // NOT host-local, which is what an earlier pass of this enumeration called it.
         // shell.js forwards it and DashboardWindow.OpenExternalUrl runs Process.Start on
         // the URL with UseShellExecute — the system browser then fetches it, which is
-        // external network activity the widget initiated, and a browser window thrown in
-        // front of a running game besides. Counted behind the host's own admission test:
-        // absolute http(s) only, exactly as OpenExternalUrl requires.
+        // external network activity the widget initiated, and a window thrown in front of
+        // whatever the user was doing besides. Counted behind the host's own admission
+        // test: absolute http(s) only, exactly as OpenExternalUrl requires.
         let openAbs = null;
         try { openAbs = new URL(String(m.url || '')); } catch (e) { openAbs = null; }
         if (openAbs && (openAbs.protocol === 'http:' || openAbs.protocol === 'https:'))
@@ -418,19 +416,13 @@ function loadPlaywright() {
     widgetUrl: 'https://widget.test/index.html',
     widgetOrigin: 'https://widget.test',
     slotHash,
-    // The panel's ww-init carries EIGHT fields (shell.js initMessage); this used to send
-    // six. `game` was the gap that mattered: shell.js always sends it, so a widget reading
-    // state.game got an object there and undefined here, and the game-mode gate several
-    // widgets now use could not be exercised offline at all. `notifications` is null
-    // unless a slot subscribed, which is what a non-subscribing widget gets on the panel
-    // too — stated rather than omitted, so the difference is a decision.
+    // The panel's ww-init carries SEVEN fields (shell.js initMessage) and so does this
+    // one — a widget must see the same message here as on the panel, so a field the shell
+    // sends is sent here and a field it does not send is absent here too. `notifications`
+    // is null unless a slot subscribed, which is what a non-subscribing widget gets on the
+    // panel too — stated rather than omitted, so the difference is a decision.
     initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme,
-      notifications: null, // The process name is EXTENSIONLESS: GameModeWatcher fills it from
-      // Process.ProcessName, which is also what its ignored-process list matches against,
-      // so a widget that displays or branches on state.game.process must be exercised
-      // with that shape rather than with a filename.
-      game: { active: gameActive, process: gameActive ? 'game' : '' },
-      status: { elevated: false, apiVersion: 1 } },
+      notifications: null, status: { elevated: false, apiVersion: 1 } },
   });
 
   await page.goto('https://shell.test/host.html');
@@ -448,7 +440,7 @@ function loadPlaywright() {
   await page.evaluate(() => window.__wwSendInit());
   // One follow-up SENSORS push, because only onInit replays. widget-api's onInit calls
   // back immediately when an init has already arrived (`if (state.ready) cb(state)`), but
-  // onSensors/onMedia/onTheme/onNotifications/onGame do not. Answering ww-ready lands
+  // onSensors/onMedia/onTheme/onNotifications do not. Answering ww-ready lands
   // the init DURING document parse — while the widget-api script tag still blocks the
   // parser — so a widget that registers WW.onSensors further down its own script misses
   // the init's sensors emit permanently. widgets/gpu silently lost its "No GPU sensors
@@ -508,42 +500,29 @@ function loadPlaywright() {
   check('bgStyle contract (body background)', expected.some((e) => bg.color === e),
     `got ${bg.color} (class "${bg.cls}"), expected ${expected.join(' or ')}`);
 
-  // The game gate, asserted rather than merely enabled. Only under --game: without it a
-  // widget is SUPPOSED to reach the network, and the offline routes refusing it is the
-  // designed state this runner tests everywhere else.
-  if (gameActive) {
-    // Both routes out: HTTP the browser made (page.route) and HTTP/ICMP the HOST would
-    // have made on the widget's behalf (ww-fetch, ww-ping). Asserting on the first alone
-    // let a proxy-first widget ignore the gate and still report zero.
-    const hostCalls = await page.evaluate(() => window.__wwHostCalls || []);
-    // ...plus WebRTC, which is read from the WIDGET frame because that is the document
-    // that would have constructed it — the shell's globals are a different origin.
-    // EVERY frame, not just the slot's. The init script runs in each document, so a
-    // child iframe the widget creates records into its OWN __wwRtc — reading only the
-    // slot frame returned zero while a descendant was opening STUN/TURN or QUIC, which
-    // is traffic the panel would carry just the same. Three stock widgets frame
-    // third-party content and one frames a URL the user types, so a descendant is the
-    // ordinary case here, not an exotic one.
-    const peerApis = (await Promise.all(page.frames().map((f) =>
-      f.evaluate(() => window.__wwRtc || []).catch(() => [])))).flat();
-    const net = attempted.concat(hostCalls, peerApis);
-    check('no network request while a game is running',
-      net.length === 0,
-      net.length + ' attempted (' + attempted.length + ' by the browser, '
-        + hostCalls.length + ' via the host, ' + peerApis.length + ' via WebRTC/WebTransport)'
-        + (net.length ? ': ' + net[0].slice(0, 80) : ''));
-  }
-
   check('no horizontal overflow', await frame.evaluate(() =>
     document.documentElement.scrollWidth <= window.innerWidth &&
     document.body.scrollWidth <= window.innerWidth),
     await frame.evaluate(() => document.body.scrollWidth + 'w vs viewport ' + window.innerWidth));
 
   if (shot) await page.screenshot({ path: shot });
+
+  // The three routes out of this runner, reported rather than merely recorded. `attempted`
+  // is browser HTTP/WS, `hostCalls` is what the HOST would have dialled on the widget's
+  // behalf (ww-fetch with proxy:'always' skips the browser fetch entirely, ww-ping is real
+  // ICMP), and `peerApis` is WebRTC/WebTransport — read from EVERY frame, because the init
+  // script runs in each document and a child iframe the widget creates records into its own
+  // __wwRtc. Nothing asserts on them: this runner's contract is that every unmatched
+  // request is refused offline, and these lists say what was refused. A ledger no caller
+  // can read is not a ledger, which is what these were until they were emitted here.
+  const hostCalls = await page.evaluate(() => window.__wwHostCalls || []);
+  const peerApis = (await Promise.all(page.frames().map((f) =>
+    f.evaluate(() => window.__wwRtc || []).catch(() => [])))).flat();
   await browser.close();
 
   const ok = checks.every((c) => c.ok);
-  if (asJson) console.log(JSON.stringify({ folder, slot, theme: themeArg, ok, checks, consoleErrors }, null, 1));
+  if (asJson) console.log(JSON.stringify({ folder, slot, theme: themeArg, ok, checks,
+    attempted, hostCalls, peerApis, consoleErrors }, null, 1));
   else {
     console.log(`${ok ? 'OK  ' : 'FAIL'} ${folder} @ ${slot} (${themeArg})`);
     for (const c of checks) console.log(`  ${c.ok ? 'PASS' : 'FAIL'} ${c.name}${c.detail ? ' - ' + c.detail : ''}`);

@@ -7,14 +7,14 @@
   'use strict';
   if (window.WW) return; // already installed (injected + script tag)
 
-  const listeners = { init: [], sensors: [], media: [], theme: [], streamdeck: [], sdcapture: [], notifications: [], game: [] };
+  const listeners = { init: [], sensors: [], media: [], theme: [], streamdeck: [], sdcapture: [], notifications: [] };
   // Stamped until the first ww-init arrives; widget-base.css shows a muted
   // "waiting for panel data…" hint so delivery failures are visible in the field.
   if (document.documentElement) document.documentElement.dataset.wwWaiting = '1';
   else document.addEventListener('DOMContentLoaded', function () {
     if (document.documentElement && !state.ready) document.documentElement.dataset.wwWaiting = '1';
   }, { once: true });
-  const state = { settings: {}, sensors: [], media: null, status: null, theme: null, notifications: null, game: { active: false, process: '' }, ready: false };
+  const state = { settings: {}, sensors: [], media: null, status: null, theme: null, notifications: null, ready: false };
   // The shell's origin, learned from the init it answered us with — the shim is
   // injected into every document in the WebView and has no script URL of its own to
   // read it from, and hardcoding a host would break both the harness fixtures and
@@ -321,16 +321,6 @@
     else document.addEventListener('DOMContentLoaded', apply, { once: true });
   }
 
-  function applyGame(game) {
-    state.game = { active: !!(game && game.active), process: (game && game.process) || '' };
-    const stamp = function () {
-      if (document.documentElement)
-        document.documentElement.dataset.game = state.game.active ? 'on' : 'off';
-    };
-    if (document.documentElement) stamp();
-    else document.addEventListener('DOMContentLoaded', stamp, { once: true });
-  }
-
   window.addEventListener('message', (ev) => {
     // Only the shell speaks this protocol, and the shell is always this frame's
     // parent. Without the check, a page this widget frames can post to its parent —
@@ -344,7 +334,6 @@
       state.media = msg.media || null;
       state.status = msg.status || null;
       if (msg.notifications !== undefined) state.notifications = msg.notifications;
-      if (msg.game) applyGame(msg.game);
       // Design tokens land on :root before init callbacks so first paint is themed.
       applyThemeTokens(msg.theme);
       // Clears the "waiting for panel data" stamp widget-base.css renders: a
@@ -365,9 +354,6 @@
     } else if (msg.type === 'ww-notifications') {
       state.notifications = msg.data || null;
       emit('notifications', state.notifications);
-    } else if (msg.type === 'ww-game') {
-      applyGame(msg.game);
-      emit('game', state.game);
     } else if (msg.type === 'ww-sensors') {
       state.sensors = msg.sensors || [];
       emit('sensors', state.sensors);
@@ -677,12 +663,6 @@
     watchNotifications(on) { parent.postMessage({ type: 'ww-notifications-watch', on: on !== false }, shellTarget()); },
     /** Dismiss one mirrored notification by its id. */
     dismissNotification(id) { parent.postMessage({ type: 'ww-notification-dismiss', id }, shellTarget()); },
-    /** Game mode: {active, process}. Also stamped as html[data-game="on"|"off"];
-     * widget-base.css pauses CSS animation while on. */
-    get game() { return state.game; },
-    /** cb(game) — fires when game mode flips; pause your own timers/streams. */
-    onGame(cb) { listeners.game.push(cb); },
-
     /** Find a sensor by exact id. */
     sensorById(id) {
       return state.sensors.find((s) => s.id === id) || null;

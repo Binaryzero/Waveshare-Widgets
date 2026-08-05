@@ -236,15 +236,12 @@ else
     Check("G5b the replica is exempt, because its host never declares a demand interval",
         src.Contains("!PREVIEW && msg.gen !== notifGen"));
 
-    // G6 · THE HAZARD. game-mode is edge-triggered: GameModeWatcher raises Changed only on a
-    // transition, so the host never re-sends the current state. Gating it would leave the
-    // shell believing the wrong game state until the next real transition — possibly hours,
-    // hiding or showing every hideInGame widget wrongly throughout. A worse bug than the one
-    // being fixed, manufactured by fixing it.
-    //
-    // Checked as "this branch does not mention the generation at all", which is blunt on
-    // purpose: any use of it here is a decision that should fail this and be argued for.
-    foreach (var channel in new[] { "game-mode", "sensors", "media" })
+    // G6 · sensors and media are re-sent on a cadence, so a dropped push is replaced by
+    // the next one — gating them on the notification generation would buy nothing and cost
+    // a frame. Checked as "this branch does not mention the generation at all", which is
+    // blunt on purpose: any use of it here is a decision that should fail this and be
+    // argued for.
+    foreach (var channel in new[] { "sensors", "media" })
     {
         var branch = BranchBody(src, $"msg.type === '{channel}'");
         Check($"G6 setup: the {channel} branch was located", branch.Length > 0);
@@ -310,7 +307,7 @@ static string Braced(string code, int open)
 /// documentation. That hole was found in the capture probes by running it.
 ///
 /// String literals are deliberately KEPT, and the first version of this file got that wrong.
-/// Every anchor here — `case "notifications-watch":`, `msg.type === 'game-mode'`, `["gen"]` —
+/// Every anchor here — `case "notifications-watch":`, `msg.type === 'sensors'`, `["gen"]` —
 /// IS a string literal, so blanking them made the locators find nothing, and the assertions
 /// that followed then ran against an empty string and passed vacuously. The setup checks
 /// caught it. Locating code by its strings and refusing to read its strings cannot both be

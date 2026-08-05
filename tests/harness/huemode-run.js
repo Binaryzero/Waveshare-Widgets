@@ -128,7 +128,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     }, [IP, KEY, opts.v2, !!opts.seen, opts.clearConsent !== false]);
     await page.evaluate((ip) => {
       window.postMessage({ type: 'ww-init', sensors: [], media: null, theme: null,
-        game: { active: false, process: '' }, status: { elevated: false, apiVersion: 1 },
+        status: { elevated: false, apiVersion: 1 },
         settings: { bridgeIp: ip, showScenes: 'on', bgStyle: 'solid' } }, '*');
     }, IP);
     await wait(opts.settleMs || 1500);
@@ -182,7 +182,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   }, [IP, KEY]);
   await page.evaluate((ip) => {
     window.postMessage({ type: 'ww-init', sensors: [], media: null, theme: null,
-      game: { active: false, process: '' }, status: { elevated: false, apiVersion: 1 },
+      status: { elevated: false, apiVersion: 1 },
       settings: { bridgeIp: ip, showScenes: 'on', bgStyle: 'solid' } }, '*');
   }, IP);
   await wait(1500);
@@ -255,7 +255,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   }, [IP, KEY]);
   await page.evaluate((ip) => {
     window.postMessage({ type: 'ww-init', sensors: [], media: null, theme: null,
-      game: { active: false, process: '' }, status: { elevated: false, apiVersion: 1 },
+      status: { elevated: false, apiVersion: 1 },
       settings: { bridgeIp: ip, showScenes: 'on', bgStyle: 'solid' } }, '*');
   }, IP);
   await wait(2000);
@@ -291,7 +291,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   }, [IP, KEY]);
   await page.evaluate((ip) => {
     window.postMessage({ type: 'ww-init', sensors: [], media: null, theme: null,
-      game: { active: false, process: '' }, status: { elevated: false, apiVersion: 1 },
+      status: { elevated: false, apiVersion: 1 },
       settings: { bridgeIp: ip, showScenes: 'on', bgStyle: 'solid' } }, '*');
   }, IP);
   await wait(2000);

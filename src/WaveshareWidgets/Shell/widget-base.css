@@ -263,14 +263,6 @@ body.bg-transparent {
   100% { box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0); }
 }
 
-/* Game mode: while a fullscreen game is foreground the host stamps
- * html[data-game="on"] — CSS animation cost drops to zero panel-wide. Widgets
- * with JS timers/streams should also listen via WW.onGame. */
-html[data-game="on"] * {
-  animation-play-state: paused !important;
-  transition: none !important;
-}
-
 /* Delivery diagnostics: widget-api stamps data-ww-waiting until the first init
  * lands. A blank tile in the field becomes a labeled state instead of a mystery. */
 html[data-ww-waiting] body::after {

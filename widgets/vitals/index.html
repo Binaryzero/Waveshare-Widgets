@@ -37,9 +37,8 @@
    * monochrome rgba() alphas — they stay legible on every theme's state hues. */
   .px-e { fill: rgba(0, 0, 0, 0.72); }
   .px-h { fill: rgba(255, 255, 255, 0.85); }
-  /* Slow blink + a gentle bob — opacity/transform only, so game mode pauses them
-   * for free (html[data-game="on"] in the base). JS never re-enables motion under
-   * reduced motion; the base only guards its own classes, so we guard ours. */
+  /* Slow blink + a gentle bob — opacity/transform only. JS never re-enables motion
+   * under reduced motion; the base only guards its own classes, so we guard ours. */
   #pet .eyes { animation: vt-blink 4.4s step-end infinite; }
   @keyframes vt-blink {
     0%, 90.9% { opacity: 1; }
@@ -410,7 +409,6 @@
   //
   // opts: { pace: 'gentle'|'standard'|'brisk',
   //         enabled: {water,eyes,posture,stretch: bool},
-  //         gameActive: bool,          // WW.game truce — time doesn't count
   //         idleSeconds: number|null } // sys:idle:seconds; null/absent = active
   function applyDrain(state, now, opts) {
     const o = opts || {};
@@ -448,7 +446,6 @@
     let countable = now - state.lastTick;
     if (!(countable > 0)) countable = 0;                 // clock moved backwards
     if (countable > AWAY_GAP_MS) countable = 0;          // away / PC off / just booted
-    if (o.gameActive) countable = 0;                     // gamer truce
     if (o.idleSeconds != null && o.idleSeconds > IDLE_LIMIT_S) countable = 0; // idle at desk
 
     // 3 · Drain the enabled meters. Disabled meters hold their value.
@@ -483,7 +480,6 @@
   // Reduced motion does NOT suppress bubbles — the base zeroes the pop animation,
   // so the line simply appears without motion.
   function canBubble(now, o) {
-    if (o.gameActive) return false;
     if (o.quiet && isNight(now)) return false;
     if (o.worst == null || o.worst >= SEGMENTS / 2) return false; // only below half
     if (now - (o.lastBubbleAt || 0) < BUBBLE_COOLDOWN_MS) return false;
@@ -512,8 +508,6 @@
   const cfg = { petName: 'Pip', pace: 'standard', quiet: true, enabled: {} };
   for (const m of METERS) cfg.enabled[m] = true;
   let started = false;      // repeated ww-init must not stack timers
-  let game = false;         // WW.game truce flag, kept fresh via WW.onGame
-  let renderedOnce = false; // per-init: has this config painted at least once?
   let openMeter = null;     // which meter's coaching card is up
   let lastBubbleAt = 0;     // in-memory cooldown anchor
   let bubbleTimer = null;
@@ -529,7 +523,7 @@
     return s && typeof s.value === 'number' && isFinite(s.value) ? s.value : null;
   }
   function currentOpts() {
-    return { pace: cfg.pace, enabled: cfg.enabled, gameActive: game, idleSeconds: idleSeconds() };
+    return { pace: cfg.pace, enabled: cfg.enabled, idleSeconds: idleSeconds() };
   }
 
   function put(id, text) { // write-if-changed guard
@@ -662,10 +656,6 @@
   }
 
   // ---- speech bubble ----------------------------------------------------------------
-  function hideBubble() {
-    if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null; }
-    $('bubble').hidden = true;
-  }
   function showBubble(text) {
     const b = $('bubble');
     b.hidden = true;            // restart the pop animation on re-show
@@ -676,7 +666,7 @@
   }
   function maybeBubble(st, now) {
     const worst = worstOf(st.meters, cfg.enabled);
-    if (!canBubble(now, { gameActive: game, quiet: cfg.quiet, worst, lastBubbleAt })) return;
+    if (!canBubble(now, { quiet: cfg.quiet, worst, lastBubbleAt })) return;
     if (Math.random() < 0.4) return;  // "occasionally", not metronomically
     const draw = drawFromBag(st);
     lastBubbleAt = now;
@@ -726,18 +716,14 @@
   // ---- tick loop -----------------------------------------------------------------------
   // The bookkeeping half always runs (a 30s read-apply-write of a pure function is
   // the widget's core accounting; skipping it while hidden would mis-count desk
-  // time), but rendering and bubbles stop while hidden or during a game — except
-  // that each (re)init paints ONCE even mid-game: the panel stays visible during
-  // games, so a widget initialized then must not sit on the loading spinner (or
-  // stale settings) until the game ends. maybeBubble self-guards via canBubble,
-  // which is always false while gameActive.
+  // time), but rendering and bubbles stop while the tile is hidden — nobody is
+  // looking, and the visibilitychange listener ticks again the moment it returns.
   function tick() {
     try {
       const now = Date.now();
       const st = applyDrain(loadState(now), now, currentOpts());
       saveState(st);
-      if (!document.hidden && (!game || !renderedOnce)) {
-        renderedOnce = true;
+      if (!document.hidden) {
         render(st);
         maybeBubble(st, now);
       }
@@ -757,10 +743,8 @@
     cfg.pace = PACE_MIN_PER_SEGMENT[s.pace] ? s.pace : 'standard';
     cfg.quiet = s.quiet !== 'off';
     for (const m of METERS) cfg.enabled[m] = s[m] !== 'off';
-    game = !!(WW.game && WW.game.active);
     closeCard();                       // a re-init may have changed the meter set
     for (const k of Object.keys(last)) delete last[k]; // repaint with new config
-    renderedOnce = false;              // new config earns one paint even mid-game
 
     if (!started) {                    // repeated ww-init must not stack timers
       started = true;
@@ -770,17 +754,10 @@
     tick();
   });
 
-  // Gamer truce: registered once at top level (onInit re-fires per ww-init).
-  WW.onGame((g) => {
-    game = !!g.active;
-    if (game) hideBubble();
-    else tick();                       // catch up as soon as the game ends
-  });
-
   // Another instance (the settings preview shares this storage) wrote state —
   // repaint from storage so both tiles show the same numbers.
   window.addEventListener('storage', (ev) => {
-    if (ev.key !== STATE_KEY || !started || document.hidden || game) return;
+    if (ev.key !== STATE_KEY || !started || document.hidden) return;
     try { render(loadState(Date.now())); } catch (e) { /* next tick repaints */ }
   });
 

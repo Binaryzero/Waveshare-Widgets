@@ -318,8 +318,7 @@ function flash(el, cls) {
 ```
 
 Under reduced motion the flash utilities keep their (color-only) animation — feedback
-is not motion; in game mode all animation pauses panel-wide, which is acceptable
-because the user is in the game, not on the panel.
+is not motion.
 
 ---
 

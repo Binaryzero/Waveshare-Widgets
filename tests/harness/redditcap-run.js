@@ -164,7 +164,7 @@ const listing = (urls, padTo) => {
 
   const init = (settings) => page.evaluate((s) => {
     window.postMessage({ type: 'ww-init', settings: s, sensors: [], media: null, theme: null,
-      game: { active: false, process: '' }, status: { elevated: false, apiVersion: 1 } }, '*');
+      status: { elevated: false, apiVersion: 1 } }, '*');
   }, settings);
 
   const read = () => page.evaluate(() => {

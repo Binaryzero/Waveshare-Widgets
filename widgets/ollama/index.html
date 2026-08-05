@@ -97,7 +97,6 @@
   let polled = false;      // has a request ever actually been ATTEMPTED?
   let failures = 0;        // consecutive failed polls; stretches the interval
   let pollAnchor = 0;      // when the current wait began: the last poll attempt's end
-  let gameOn = false;      // a fullscreen game is foreground: WIDGET-SPEC gates JS work
   let tickerTimer = null;  // repaints the unload countdowns between polls
   let gen = 0;             // bumped when the address changes; retires older requests
 
@@ -147,10 +146,6 @@
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
 
-    // Seeded, not only listened for: onGame reports later flips, so a widget that only
-    // listens polls straight through a game that was already running when it loaded.
-    gameOn = !!(state.game && state.game.active);
-
     const wasBase = cfg.base;
     cfg.base = normalizeBase(s.baseUrl);
     cfg.refreshMs = Math.min(300, Math.max(5, Number(s.refreshSeconds) || 15)) * 1000;
@@ -175,10 +170,10 @@
       failures = 0;
       inFlight = false;   // the retired request cleans up nothing; this chain owns it now
       // Overdue from this instant, in every path that reads the deadline. Without it, a
-      // switch made while a game was running left arm() computing against the PREVIOUS
-      // endpoint's anchor: tick() was gated, onGame's resume only re-armed that same
-      // deadline, and the tile could sit on Loading for the rest of the old interval —
-      // up to five minutes — before it ever spoke to the new address.
+      // switch made while the document was hidden left arm() computing against the
+      // PREVIOUS endpoint's anchor: tick() was gated, the visibility resume only re-armed
+      // that same deadline, and the tile could sit on Loading for the rest of the old
+      // interval — up to five minutes — before it ever spoke to the new address.
       pollAnchor = 0;
       // And the countdown timer goes with it. scheduleTicker() may already have queued a
       // render() from the previous server's expires_at; clearing only the poll timer left
@@ -193,24 +188,11 @@
     } else if (!inFlight) arm();
   });
 
-  // A flip in either direction just re-arms: while a game is on the floor keeps this from
-  // spinning, and when it ends an overdue deadline computes to zero and the catch-up poll
-  // runs immediately.
-  WW.onGame((g) => {
-    gameOn = !!(g && g.active);
-    if (started) { arm(); scheduleTicker(); }
-  });
-
   async function tick() {
     // Re-armed, NOT rescheduled: schedule() moves the anchor to now, so a wake while the
     // document is hidden would push the deadline out by another whole interval and the
     // visibility handler would then see a future deadline and decline to catch up.
-    //
-    // Game mode is here for the reason WIDGET-SPEC gives: the shell pauses CSS animation
-    // for every widget, but JS work is the widget's own to hold, and document.hidden does
-    // not cover it — the panel is a second screen and stays visible while the game has the
-    // first. At the 5-second minimum this widget is the most talkative of the set.
-    if (document.hidden || gameOn) { arm(); return; }
+    if (document.hidden) { arm(); return; }
     if (inFlight) { schedule(); return; }
     inFlight = true;
     polled = true;   // an ATTEMPT, not a success: the branches above return first
@@ -355,7 +337,7 @@
     clearTimeout(timer);
     // The floor applies only while the poll is suspended, where tick() returns without
     // asking for anything: without it an overdue deadline re-enters on a zero timer.
-    const floor = (document.hidden || gameOn) ? IDLE_RECHECK : 0;
+    const floor = document.hidden ? IDLE_RECHECK : 0;
     timer = setTimeout(tick, Math.max(floor, pollAnchor + pollDelay() - Date.now()));
   }
 
@@ -366,18 +348,17 @@
   //
   // The cadence follows the display's own resolution rather than the wall clock — a figure
   // in whole hours does not need repainting every second — and the whole thing stands down
-  // while the document is hidden or a game is foreground, since the point of both gates is
-  // that nothing here is worth CPU when nobody is looking.
+  // while the document is hidden, since nothing here is worth CPU when nobody is looking.
   function scheduleTicker() {
     clearTimeout(tickerTimer);
-    if (document.hidden || gameOn) return;
+    if (document.hidden) return;
     // Deadlines that passed while nothing was ticking. The eviction check used to live
     // only in the timer callback, so it was reachable only by a timer that SURVIVED until
-    // the crossing — and a game (or a hidden document) clears the ticker precisely so that
-    // it does not. Start the game before a model expires, end it afterwards, and the
-    // crossing had no witness: nothing marked the list stale, the poll stayed anchored to
-    // the old interval, and the tile went on counting the evicted model's VRAM. Resuming
-    // is exactly when the elapsed ones need looking at.
+    // the crossing — and a hidden document clears the ticker precisely so that it does
+    // not. Hide the panel before a model expires, come back afterwards, and the crossing
+    // had no witness: nothing marked the list stale, the poll stayed anchored to the old
+    // interval, and the tile went on counting the evicted model's VRAM. Resuming is
+    // exactly when the elapsed ones need looking at.
     noticeEvictions();
     let soonest = Infinity;
     for (const m of models) {
@@ -398,7 +379,7 @@
   //
   // Both, not either: the poll is what corrects the number, and the stale mark is what
   // tells the truth in the meantime — including when the poll is gated because the
-  // document is hidden or a game is running, where it may not happen for some time.
+  // document is hidden, where it may not happen for some time.
   //
   // `t > lastOk` is what stops this repeating: once a poll lands, lastOk is later than the
   // deadline that triggered it, so a server still reporting the model does not re-arm this
@@ -538,8 +519,8 @@
       p.className = 'pill muted';
       // A person pressing Retry is saying the outage is over, so the backoff clears as a
       // success would — and the poll becomes overdue in every path that consults the
-      // deadline, so if a game is running the retry fires the moment it ends rather than
-      // leaving a spinner that cannot resolve.
+      // deadline, so a retry pressed just before the panel is hidden fires the moment it
+      // comes back rather than leaving a spinner that cannot resolve.
       failures = 0;
       pollAnchor = 0;
       clearTimeout(timer);

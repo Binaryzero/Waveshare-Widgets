@@ -100,9 +100,7 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   generation, because that is the only thing about the queued payload that differs — same
   shape, same data — so no check that inspects the payload could separate them. R12b
   guards the direction that matters more: a staleness check that refuses *everything*
-  passes R12 perfectly. R12d asserts that `game-mode` is NOT gated, since it is
-  edge-triggered and a dropped push would strand the shell on the wrong state until the
-  next real transition.
+  passes R12 perfectly.
 
   Note the split with `tools/PushGeneration`: this harness fakes the host, so it drives
   the shell's CHECKING while only imitating the host's STAMPING. Delete the stamp from
@@ -172,52 +170,37 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   relay by DROPPING everything outside that allow-list — a friendlier stand-in would hide
   the whole defect — and a fetch is pushed through first to prove the relay works at all.
   The timings are the witness: 10001 ms before, single-digit ms after. Port used: 8964.
-- `kevretry-run.js` — pressing Retry while a game is running (issue #164). The game-mode
-  gate suspends polling because the tile parses a multi-megabyte catalog on a machine
-  whose frame budget is spoken for, and Retry did not account for it: it painted a
-  spinner and called the poll, which returned through the gate without recording that a
-  retry had been asked for, so the tile could spin for a day at the maximum interval
-  while the deadline it was waiting on stayed an untouched interval from the last
-  attempt. Drives the real sequence — the feed fails, a game starts, Retry is pressed,
-  the game ends — and counts feed REQUESTS rather than reading what was drawn. Half its
-  checks must fail before the fix and pass after; the other half must pass in BOTH, and
-  those are the load-bearing ones: the plain no-game Retry still fetches at once, the
-  gate still refuses while a game runs, and a game ending with nothing pending still
-  does not poll early. Without that last one, "the retry runs when the game ends" would
-  be satisfied just as well by deleting the gate. The loading assertion holds the
-  stubbed request open, because a refused fetch resolves in microseconds and the
-  in-flight state is gone before it can be observed. `KEV_SHOT=<path>` captures the
-  queued card. No static server — every origin is route-fulfilled.
-- `gameresume-run.js` — resuming from game mode when the SETUP, not a poll, is what was
-  paused (issue #201). Most gated widgets pause a poll and resume by fetching again;
-  `radar` geocodes its configured location inside `onInit` before it can draw anything,
-  and `hue` hunts for a bridge the same way, so gating only the refresh left both
-  reaching out through a game. Holding the setup is the easy half — resuming it is where
-  this went wrong. The run drives a SUCCESSFUL session first so the refresh interval is
-  armed, then starts a game, then changes the location mid-pause, then ends the game, and
-  asserts on which NAME was geocoded rather than on request counts. Both details are
-  load-bearing and were learned the hard way: the first version paused at init, so no
-  interval was ever armed and the check passed against the buggy logic too; and a
-  count-based assertion passes while the resume fetches diligently for the wrong city.
-  R6 — a flip with nothing held makes no request — keeps R4 from being satisfied by a
-  gate that simply reopens. Scenario B mounts with the game ALREADY running, because
-  scenario A only ever sets the flag through a transition and would pass with the
-  `state.game` seeding deleted. Scenario C holds the geocoder open so the request FAILS
-  while the game runs: a rejection jumps straight to `catch`, skipping the gates that sit
-  after each await, so nothing was recorded as owed and the error card outlived the game
-  (issue #208). D is the same question one request later, at `refreshRadar`'s own catch,
-  which the fix for C did not reach — recoverable at the next five-minute tick, but on a
-  first load the tile has no frames at all until then. G and J move to `hue`, mounted with
-  its own ww-fetch responder because it speaks to the bridge exclusively through the host
-  proxy, so none of its traffic is a page request and the request LOG is the only witness.
-  G is C's question against the cloud bridge hunt — its terminal "No Hue Bridge found"
-  card sat above the gate, so a discovery that failed during a game was a verdict recorded
-  in neither flag. J needs no game at all: two `connect()` calls overlap when settings
-  change mid-hunt, and discovery was committing to the widget-global `cfg.ip` before the
-  generation check, so the abandoned connection redirected the live one — which had
-  already validated the configured bridge and loaded its key. J asserts on the bridge
-  address the application key was sent to. No static server; every origin is
-  route-fulfilled.
+- `kevretry-run.js` — pressing Retry while the panel is hidden (issue #164). Polling is
+  suspended for a hidden document because the tile parses a multi-megabyte catalog, and
+  Retry did not account for it: it painted a spinner and called the poll, which returned
+  through the gate without recording that a retry had been asked for, so the tile could
+  spin for a day at the maximum interval while the deadline it was waiting on stayed an
+  untouched interval from the last attempt. Drives the real sequence — the feed fails, the
+  panel goes away, Retry is pressed, the panel comes back — and counts feed REQUESTS
+  rather than reading what was drawn. `document.hidden` and `visibilityState` are backed by
+  a flag installed in every frame, because Playwright cannot hide a frame on demand; the
+  flag is flipped before the event, which is the order a browser uses and the order the
+  widget's handler depends on. Half its checks must fail before the fix and pass after; the
+  other half must pass in BOTH, and those are the load-bearing ones: the plain visible
+  Retry still fetches at once, the gate still refuses while the panel is hidden, and a
+  panel returning with nothing pending still does not poll early. Without that last one,
+  "the retry runs when the panel comes back" would be satisfied just as well by deleting
+  the gate. The loading assertion holds the stubbed request open, because a refused fetch
+  resolves in microseconds and the in-flight state is gone before it can be observed. No
+  static server — every origin is route-fulfilled.
+- `hueconnect-run.js` — a late bridge discovery must not redirect the credential. `connect()`
+  runs concurrently with itself: a settings change starts a second one while the first is
+  still in the cloud round trip at discovery.meethue.com, and `v1api`/`v2fetch` interpolate
+  `cfg.ip` at REQUEST time rather than at connect time — so a discovery that wrote the
+  widget-global `cfg.ip` before the generation check silently redirected the connection that
+  had already validated the configured bridge and loaded its application key. The witness is
+  the ww-fetch LOG, not page requests: hue speaks to its bridge exclusively through the host
+  proxy, so none of its traffic is a page request at all, and every request is recorded
+  before it is answered — an address the widget should never have spoken to still has to
+  show up. J5 is what keeps J3 honest: "never spoke to the wrong bridge" is also true of a
+  widget that stopped talking to anything. Extracted from the deleted `gameresume-run.js`,
+  where it lived because the pause gates sat beside the generation check; the scenario
+  itself never involved one.
 - `touchpan-run.js` — a tap on a widget control paged the panel instead of acting
   (issue #206). The report points at a scrollbar next to the notifications eye; there is
   none — `#list` hides its scrollbar and the eye sits in `<header>`, outside the list. What

@@ -37,7 +37,6 @@ public sealed class DashboardWindow : Form
     private StreamDeckBridge? _streamDeck;
     private readonly AudioMixer _audio = new();
     private readonly NotificationCenter _notifications = new();
-    private readonly GameModeWatcher _gameMode = new();
     private bool _shellReady;
 
     /// <summary>Lists the user's media library folder for the Gallery widget.</summary>
@@ -92,8 +91,6 @@ public sealed class DashboardWindow : Form
         // at the moment the push was authorised. Reading it here instead would reintroduce
         // the window this exists to close.
         _notifications.Updated += (data, gen) => PostToShellThreadSafe("notifications", data, gen);
-        _gameMode.Changed += (data) => PostToShellThreadSafe("game-mode", data);
-        _gameMode.Start();
 
         // Crossing into a monitor with different DPI makes Windows rescale the window
         // mid-move, leaving it the wrong size on the panel; re-assert our exact bounds.
@@ -1038,7 +1035,6 @@ public sealed class DashboardWindow : Form
             ["media"] = JsonSerializer.SerializeToNode(_hub.LatestMedia, BridgeJson),
             ["backgroundHost"] = BackgroundHost,
             ["theme"] = tokens,
-            ["game"] = _gameMode.Current,
             ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated, ["apiVersion"] = 1 },
             // What makes this document's generations distinguishable from the previous
             // document's. The shell counts from zero in every document, so without a base
@@ -1237,8 +1233,8 @@ public sealed class DashboardWindow : Form
     /// <summary>The last demand generation the shell told us about (#132).</summary>
     /// <remarks>
     /// Written from the web-message handler and read from PostToShell. Those are both the UI
-    /// thread today, but a push can originate on a worker — NotificationCenter and
-    /// GameModeWatcher raise their events from timer threads — and PostToShellThreadSafe
+    /// thread today, but a push can originate on a worker — NotificationCenter raises its
+    /// events from a timer thread — and PostToShellThreadSafe
     /// marshals rather than blocks, so the read is not guaranteed to be on the writer's
     /// thread. Volatile rather than a lock: a stale read costs one dropped push, which the
     /// next poll replaces, while a lock on the push path would be contention for nothing.
@@ -1263,8 +1259,7 @@ public sealed class DashboardWindow : Form
         // Stamped on EVERY envelope, in the one place every envelope is built, so the field
         // means the same thing everywhere and no future channel can be added without it.
         // Which channels the shell actually GATES on it is the shell's decision and is
-        // deliberately narrower — see the note in handleHostMessage. In particular
-        // `game-mode` is edge-triggered and must never be dropped.
+        // deliberately narrower — see the note in handleHostMessage.
         var envelope = new JsonObject
         {
             ["type"] = type,
@@ -1288,7 +1283,6 @@ public sealed class DashboardWindow : Form
             _hub.SensorsUpdated -= OnSensorsUpdated;
             _hub.MediaUpdated -= OnMediaUpdated;
             _notifications.Dispose();
-            _gameMode.Dispose();
             _browserFetcher?.Dispose();
             _webView.Dispose();
         }

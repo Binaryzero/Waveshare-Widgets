@@ -75,11 +75,6 @@
   const cfg = { targets: [], interval: 3, goodMs: 50, badMs: 120 };
   const history = new Map();    // host -> [{ok, rtt}]
   let cards = new Map();        // host -> {dot, rtt, loss, canvas}
-  // WIDGET-SPEC: JS work is yours to gate. Seeded from state.game at init AND flipped by
-  // onGame, because onGame reports later flips only — a widget that just listens polls
-  // straight through a game that was already running when it loaded.
-  let gameOn = false;
-  let missedWhilePaused = false;   // something was due while the game had the foreground
   let polling = false;             // a WW.ping batch is in the air right now
   let queuedPoll = false;          // ...and a caller asked for another while it was
   let pollTimer = null;
@@ -124,7 +119,6 @@
   }
 
   WW.onInit((state) => {
-    gameOn = !!(state.game && state.game.active);
     const s = state.settings;
     // Anything that isn't explicitly glass/transparent renders solid, matching the
     // pre-token behavior for unset AND out-of-spec values.
@@ -198,32 +192,24 @@
   }
 
   async function poll() {
-    if (gameOn) { missedWhilePaused = true; return; }
     // One batch at a time. At the supported one-second interval a batch can still be in
-    // the air when the next tick arrives, and the catch-up on game exit is one more
-    // caller — two overlapping batches double the ICMP and interleave their samples.
-    // Busy is not paused. Recording this as game-missed work meant a live settings change
-    // arriving mid-batch was only ever resumed by a game ENDING — with no game running, a
-    // new target sat at "--" until the replacement interval came round. Queued instead,
-    // and run when the batch in flight finishes.
+    // the air when the next tick arrives — two overlapping batches double the ICMP and
+    // interleave their samples. Busy is not dropped, it is queued: a live settings change
+    // arriving mid-batch would otherwise leave a new target at "--" until the replacement
+    // interval came round. The queued caller runs when the batch in flight finishes.
     if (polling) { queuedPoll = true; return; }
     polling = true;
     let results;
     try {
       results = await WW.ping(cfg.targets.map((t) => t.host));
-      // The ICMP cannot be recalled, but the per-host history append, the card repaint and
-      // every sparkline canvas can still be skipped — that is the frame budget this gate
-      // exists to protect, and it is spent after the answer arrives, not before.
-      if (gameOn) { missedWhilePaused = true; return; }
     } catch (e) {
-      if (gameOn) { missedWhilePaused = true; return; }
       WW.log('ping: ' + e.message);
       return;
     } finally {
-      // Released on EVERY exit, including the two returns above — a flag left set by an
+      // Released on EVERY exit, including the early return above — a flag left set by an
       // early return would silence the widget for the rest of the session.
       polling = false;
-      if (queuedPoll && !gameOn) { queuedPoll = false; setTimeout(poll, 0); }
+      if (queuedPoll) { queuedPoll = false; setTimeout(poll, 0); }
     }
     for (const r of results) {
       const samples = history.get(r.host);
@@ -297,26 +283,6 @@
   }
 
   window.addEventListener('resize', () => { for (const host of cards.keys()) renderCard(host); });
-
-  // A game ending is the user coming back to the panel: catch up at once rather than
-  // waiting out whatever remained of the interval.
-  WW.onGame((g) => {
-    gameOn = !!(g && g.active);
-    if (gameOn || !missedWhilePaused) return;
-    missedWhilePaused = false;
-    // Restart the cadence FROM the catch-up. The interval kept ticking through the game
-    // (its handler returned at the gate), so its next deadline is wherever it happened to
-    // land — and a game ending just before it produced two polls seconds apart. At the
-    // supported one-second interval, with host pings allowed two seconds, that is
-    // overlapping ICMP batches for the same targets.
-    clearInterval(pollTimer);
-    // This IS the poll the queue was asking for. Leaving the flag set meant the in-flight
-    // release fired a second batch straight after — two back-to-back ICMP runs for targets
-    // the catch-up had already used.
-    queuedPoll = false;
-    poll();   // refused by the in-flight guard if a pre-game batch is still resolving
-    if (cfg.targets.length) pollTimer = setInterval(poll, cfg.interval * 1000);
-  });
 
 </script>
 </body>

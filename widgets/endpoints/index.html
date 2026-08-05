@@ -86,7 +86,6 @@
   const results = new Map();   // key -> {state, code, ms, at}
   const fails = new Map();     // key -> consecutive failures, for this target's backoff
   let generation = 0;          // invalidates the chains a previous settings load started
-  let gameOn = false;          // a fullscreen game is foreground: WIDGET-SPEC gates JS work
 
   // One probe's whole budget, covering the HEAD and the GET retry together. Neither tier
   // of WW.fetch bounds a direct browser request — the shim's timer is on the host-proxy
@@ -136,10 +135,6 @@
     document.body.classList.toggle('bg-solid', bg === 'solid');
     document.body.classList.toggle('bg-glass', bg === 'glass');
     document.body.classList.toggle('bg-transparent', bg === 'transparent');
-
-    // Seeded, not only listened for: onGame reports later flips, so a widget that only
-    // listens probes straight through a game that was already running when it loaded.
-    gameOn = !!(state.game && state.game.active);
 
     const all = parseTargets(s.targets);
     // The cap is real and worth keeping — twelve tiles is already past what this panel can
@@ -319,12 +314,11 @@
     if (gen !== generation) return;
     const mark = gen + '\n' + target.url;
     running.add(mark);
-    // Hidden, or a game is running. WIDGET-SPEC: the shell pauses CSS animation for every
-    // widget, but JS work is the widget's own to hold — and this one makes up to twelve
-    // network calls per interval, on a machine whose frame budget is spoken for.
-    // document.hidden does not cover it: the panel is a second screen and stays visible
-    // while the game has the first.
-    if (document.hidden || gameOn) {
+    // Hidden. WIDGET-SPEC: the shell pauses CSS animation for every widget, but JS work is
+    // the widget's own to hold — and this one makes up to twelve network calls per
+    // interval, on a machine whose frame budget is spoken for. Re-armed cheaply rather
+    // than dropped, so the chain is still alive when the panel comes back.
+    if (document.hidden) {
       running.delete(mark);
       timers.set(target.url, setTimeout(() => probe(target, gen), 5000));
       return;
@@ -458,14 +452,6 @@
     notes.push('times are relative — a blocked call is retried through the host and counts that hop');
     el('meta').textContent = notes.join(' · ');
   }
-
-  // A flip in either direction re-checks the grid: while a game is on, probe() holds and
-  // re-arms cheaply, and when it ends everything is asked again rather than waiting out
-  // each target's remaining interval.
-  WW.onGame((g) => {
-    gameOn = !!(g && g.active);
-    if (!gameOn) recheckAll();
-  });
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;

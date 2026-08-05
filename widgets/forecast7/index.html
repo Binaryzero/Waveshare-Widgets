@@ -170,11 +170,8 @@
   let queuedRefresh = false; // a refresh requested mid-flight (settings change) runs next
   let hasData = false;
   let failStreak = 0;
+  // A refresh refused while the tab was hidden; the visibilitychange handler catches up.
   let pendingRefresh = false;
-  // WIDGET-SPEC: JS work is yours to gate. Seeded from state.game at init AND flipped by
-  // onGame, because onGame reports later flips only — a widget that just listens polls
-  // straight through a game that was already running when it loaded.
-  let gameOn = false;
 
   function applySettings(s) {
     // Anything that isn't explicitly glass/transparent renders solid, covering
@@ -273,7 +270,7 @@
 
   async function refresh() {
     if (refreshing) { queuedRefresh = true; return; }
-    if (document.hidden || gameOn) { pendingRefresh = true; return; }
+    if (document.hidden) { pendingRefresh = true; return; }
     const s = WW.settings;
     // A missing key mirrors the manifest default (the host merges defaults; the
     // harness delivers raw settings) — but an explicitly cleared location means
@@ -287,14 +284,7 @@
     if (!hasData) showState('loading');
     try {
       const place = await resolvePlace(loc);
-      // Re-checked after the await, as in weather: the geocoder runs first for an
-      // uncached name, and a game starting during it must not be followed by the
-      // forecast request.
-      if (gameOn) { pendingRefresh = true; return; }
       const data = await fetchForecast(place, s.units);
-      // ...and again on the far side of the network await, or seven day cells and the
-      // state card get rendered during the game anyway.
-      if (gameOn) { pendingRefresh = true; return; }
       renderDays(data);
       els.place.textContent = place.label;
       els.updated.textContent = 'Updated ' +
@@ -307,11 +297,6 @@
       els.pill.hidden = true;
       showState(null);
     } catch (e) {
-      // Same rule as weather: a rejection skips the post-await gates, so a failure seen
-      // during a game has to be recorded as pending rather than counted as a real
-      // failure — failStreak also drives the backoff, and a paused widget has not earned
-      // a stretched interval.
-      if (gameOn) { pendingRefresh = true; return; }
       WW.log('forecast7 refresh failed: ' + e.message);
       failStreak++;
       if (hasData) {
@@ -347,8 +332,7 @@
     }
   }
 
-  WW.onInit((state) => {
-    gameOn = !!(state.game && state.game.active);
+  WW.onInit(() => {
     applySettings(WW.settings);
     // Repeat inits (live setting edits) re-apply settings and refresh once —
     // clearTimeout keeps a single self-scheduling chain, never a stack.
@@ -371,24 +355,6 @@
     if (refreshing || !started) return;
     clearTimeout(timer);
     tick();
-  });
-
-  // A game ending is the user coming back to the panel — the same reasoning as the
-  // visibilitychange handler above, and it reuses the same catch-up path.
-  WW.onGame((g) => {
-    gameOn = !!(g && g.active);
-    if (gameOn || !started) return;
-    if (pendingRefresh || !hasData) {
-      pendingRefresh = false;
-      // clearTimeout + tick(), exactly as the visibilitychange handler above does, and
-      // for the same reason. A tick refused during the game still armed the NEXT timeout
-      // before returning, so calling refresh() directly here left that deadline standing:
-      // the widget could fetch on the flip and again seconds later, and if the first was
-      // still in flight the second only set queuedRefresh and forced a third. Restarting
-      // the chain from the catch-up is what keeps one cadence.
-      clearTimeout(timer);
-      tick();
-    }
   });
 </script>
 </body>

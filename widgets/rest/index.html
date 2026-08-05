@@ -97,7 +97,6 @@
   let staleWhy = '';      // why the last poll failed, kept for the age line
   let stale = false;      // is the number on screen a survivor of a failed poll?
   let failures = 0;       // consecutive failures — drives the retry backoff
-  let gamePaused = false;
   let generation = 0;     // bumped when the source changes; older answers are discarded
   let activeController = null;
 
@@ -727,7 +726,7 @@
   function schedule() {
     clearTimeout(timer);
     timer = null;
-    if (!cfg.url || gamePaused || document.hidden) return;
+    if (!cfg.url || document.hidden) return;
     timer = setTimeout(async () => {
       timer = null;
       await poll();
@@ -754,9 +753,7 @@
     // A hidden panel gets no opening request. The shell answers `ww-ready` whether or
     // not the WebView is visible, so every cold start or reload while minimised would
     // otherwise fetch once for nobody; `visibilitychange` polls the moment it is worth
-    // looking at. Deliberately `document.hidden` and not `paused()` — a fullscreen game
-    // does not hide this panel, it is a second screen, so a tile that loads during one
-    // is still being looked at and still earns its first reading.
+    // looking at.
     if (document.hidden) return;
     // Schedule only once the first poll has resolved: scheduling alongside it reads a
     // failure counter that has not been updated yet, so the backoff would always miss
@@ -767,10 +764,6 @@
   // ---- lifecycle ----------------------------------------------------------------
   WW.onInit((state) => {
     const s = state.settings || {};
-    // onGame reports TRANSITIONS only, so a tile that boots (or reloads) while a game
-    // already owns the screen never hears about it. ww-init carries the current state:
-    // seed from it, or this widget is the one thing still polling during a game.
-    gamePaused = !!(state.game && state.game.active);
     // Anything not explicitly glass/transparent renders solid — matching unset AND
     // out-of-spec values, exactly like the stock clock.
     const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
@@ -869,24 +862,16 @@
     poll().then(schedule);
   });
 
-  // 24/7 hygiene: no polling while the tile is hidden or a game owns the screen.
-  // Both conditions gate BOTH handlers. Checking only its own reason lets each one
-  // fire a request while the other reason still holds — becoming visible mid-game, or
-  // a game ending while the tile is hidden. `schedule()` then correctly refuses to arm
-  // a timer, which hides the bug: the tile stays quiet afterwards, but the request
-  // that should never have left has already gone.
-  function paused() { return document.hidden || gamePaused; }
+  // 24/7 hygiene: no polling while the tile is hidden. Becoming hidden drops the pending
+  // timer as well as refusing to arm a new one — otherwise a tile minimised between polls
+  // still fires the one already scheduled.
   function resume() {
-    if (paused()) { clearTimeout(timer); timer = null; return; }
+    if (document.hidden) { clearTimeout(timer); timer = null; return; }
     poll().then(schedule);
   }
 
   document.addEventListener('visibilitychange', () => {
     renderMeta();          // the age is worth refreshing even when we will not poll
-    resume();
-  });
-  WW.onGame((g) => {
-    gamePaused = !!(g && g.active);
     resume();
   });
 </script>
