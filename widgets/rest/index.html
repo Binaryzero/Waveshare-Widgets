@@ -764,12 +764,6 @@
   // ---- lifecycle ----------------------------------------------------------------
   WW.onInit((state) => {
     const s = state.settings || {};
-    // Anything not explicitly glass/transparent renders solid — matching unset AND
-    // out-of-spec values, exactly like the stock clock.
-    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
-    document.body.classList.toggle('bg-solid', bg === 'solid');
-    document.body.classList.toggle('bg-glass', bg === 'glass');
-    document.body.classList.toggle('bg-transparent', bg === 'transparent');
 
     const num = (v) => {
       const n = Number(String(v == null ? '' : v).trim());

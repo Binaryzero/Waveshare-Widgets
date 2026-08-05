@@ -2,7 +2,7 @@
   "id": "ws.stock.youtube",
   "name": "YouTube",
   "author": "Plinth",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Plays a YouTube video, Short, or playlist through the privacy-enhanced embed. Autoplays muted and loops by default — great for ambient scenes, visualizers, and lofi streams.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
@@ -12,7 +12,6 @@
     { "name": "muted", "label": "Muted (required for autoplay)", "type": "select", "options": ["on", "off"], "default": "on" },
     { "name": "loop", "label": "Loop", "type": "select", "options": ["on", "off"], "default": "on" },
     { "name": "controls", "label": "Player controls", "type": "select", "options": ["on", "off"], "default": "on" },
-    { "name": "bgStyle", "label": "Background", "type": "select", "options": ["solid", "glass", "transparent"], "default": "solid" },
     { "name": "msgSize", "label": "Message size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" }
   ]
 }

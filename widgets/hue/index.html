@@ -131,10 +131,6 @@
 
   WW.onInit(async (state) => {
     const s = state.settings;
-    // bgStyle drives the widget-base panel-opacity classes (default = solid).
-    document.body.classList.toggle('bg-solid', s.bgStyle !== 'transparent' && s.bgStyle !== 'glass');
-    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
-    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
     // Appearance comes from the theme tokens (global theme or the per-slot style
     // override) — legacy color keys in old layouts are deliberately ignored.
     document.body.style.setProperty('--name-scale', String((Number(s.nameSize) || 100) / 100));

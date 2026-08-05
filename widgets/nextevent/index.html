@@ -109,10 +109,6 @@
 
   WW.onInit((s0) => {
     const s = s0.settings;
-    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
-    document.body.classList.toggle('bg-solid', bg === 'solid');
-    document.body.classList.toggle('bg-glass', bg === 'glass');
-    document.body.classList.toggle('bg-transparent', bg === 'transparent');
 
     const prevSource = cfg.url + '\n' + cfg.lookaheadDays + '\n' + cfg.ignoreAllDay;
     const prevRefreshMs = cfg.refreshMs;

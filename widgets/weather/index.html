@@ -90,12 +90,6 @@
 
   WW.onInit((state) => {
     const s = state.settings;
-    // Anything that isn't explicitly glass/transparent renders solid, matching the
-    // pre-token behavior for unset AND out-of-spec values.
-    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
-    document.body.classList.toggle('bg-solid', bg === 'solid');
-    document.body.classList.toggle('bg-glass', bg === 'glass');
-    document.body.classList.toggle('bg-transparent', bg === 'transparent');
 
     // Per-text-type size scales (bare numbers so the CSS calc() multiplication
     // stays valid). Appearance comes from the theme tokens (global theme or the

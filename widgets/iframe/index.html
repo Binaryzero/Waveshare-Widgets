@@ -33,12 +33,6 @@
   'use strict';
   WW.onInit((state) => {
     const s = state.settings;
-    // Anything that isn't explicitly glass/transparent renders solid, matching the
-    // pre-token behavior for unset AND out-of-spec values (no class = glass in base).
-    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
-    document.body.classList.toggle('bg-solid', bg === 'solid');
-    document.body.classList.toggle('bg-glass', bg === 'glass');
-    document.body.classList.toggle('bg-transparent', bg === 'transparent');
 
     const url = String(s.url || '').trim();
     const zoom = Number(s.zoom) || 1;

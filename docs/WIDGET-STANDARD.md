@@ -170,10 +170,13 @@ much of it shows through each widget tile — coherently, at any level.
   tile itself. Always use `var(--card-surface)` (or the `.card` class) for nested
   surfaces; an opaque `--surface-alt` card on a glass tile looks like a sticker.
 
-### The `bgStyle` facade
+### `bgStyle` — the panel's, not yours
 
-Widgets expose the opacity system to users as a **Background** select property
-(`bgStyle`) and toggle one class on `<body>`:
+**Do not declare a `bgStyle` property and do not set the `bg-*` classes.** Whether a tile
+is opaque, tinted or absent is a fact about the panel, not about what your widget
+displays — so the shell declares the property for every widget (`Shell/appearance.js`)
+and `widget-api.js` applies the class inside your frame before your `onInit` runs. The
+validator rejects a widget that does either by hand.
 
 | Class | `--panel-alpha-eff` | Meaning |
 |---|---|---|
@@ -181,17 +184,19 @@ Widgets expose the opacity system to users as a **Background** select property
 | `body.bg-glass` | `var(--panel-alpha)` | Translucent tint at the theme's chosen level |
 | `body.bg-transparent` | `0` | No tile at all — content floats directly on the wallpaper; the base adds a text-shadow for legibility |
 
-```js
-const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
-document.body.classList.toggle('bg-solid', bg === 'solid');
-document.body.classList.toggle('bg-glass', bg === 'glass');
-document.body.classList.toggle('bg-transparent', bg === 'transparent');
-```
+You still need to know the classes exist, because they change what your CSS sits on. The
+derived values are re-declared on `body` in the base, and the `bg-*` classes land on
+`<body>` — so values left only on `:root` would ignore the override. If you re-derive any
+of them yourself, do it at `body` scope or below. Unset and out-of-spec both render solid,
+so a widget that has never heard of any of this is an ordinary opaque tile.
 
-Treat unset and out-of-spec values as `solid` (the stock default). Note the derived
-values are re-declared on `body` in the base — the `bg-*` classes land on `<body>`, so
-values left only on `:root` would ignore the override; if you re-derive any of them
-yourself, do it at `body` scope or below.
+> **Why this changed.** This section used to require the opposite: every widget declared
+> the property and toggled the classes itself. Thirty-one stock widgets ended up carrying
+> byte-identical eight-line declarations, and the hand-written half had already drifted
+> into two different spellings of the same three lines. The declarations had drifted too —
+> the control landed at a different position in every widget's settings list, twelve at the
+> end and others wedged between an API token and a refresh interval. A setting that is
+> true of every tile belongs to the thing that owns every tile.
 
 ---
 
@@ -465,8 +470,10 @@ Copy this into your widget's PR / release notes and check every line:
 - [ ] Looks right on a light theme (`data-appearance="light"`) — verified
 
 ### Transparency
-- [ ] Exposes a `bgStyle` property; toggles `bg-solid` / `bg-glass` / `bg-transparent` on `<body>`
-- [ ] Unset/unknown `bgStyle` renders solid
+- [ ] Does **not** declare `bgStyle` — the panel supplies it for every widget
+- [ ] Does **not** toggle `bg-solid` / `bg-glass` / `bg-transparent` — `widget-api.js` does
+- [ ] Readable on all three: check with `--settings '{"bgStyle":"transparent"}'`, where
+      there is no tile behind the text at all
 - [ ] Nested surfaces use `.card` / `var(--card-surface)` — no opaque cards on a glass tile
 
 ### Anatomy & states

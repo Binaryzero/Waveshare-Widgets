@@ -2,7 +2,7 @@
   "id": "ws.stock.hue",
   "name": "Hue Lights",
   "author": "Plinth",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "description": "Touch control for Philips Hue rooms and zones straight from the panel: on/off, brightness, and scenes, talking to your bridge locally. Prefers the modern CLIP v2 API and falls back to the classic v1 API on older bridges. First use: press the bridge's link button, then tap Pair.",
   "min_api_version": 1,
   "supported_slots": [
@@ -26,17 +26,6 @@
         "off"
       ],
       "default": "on"
-    },
-    {
-      "name": "bgStyle",
-      "label": "Background",
-      "type": "select",
-      "options": [
-        "solid",
-        "glass",
-        "transparent"
-      ],
-      "default": "solid"
     },
     {
       "name": "nameSize",

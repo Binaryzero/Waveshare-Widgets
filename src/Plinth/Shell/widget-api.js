@@ -304,6 +304,36 @@
     }
   }
 
+  /// The panel's background style, applied for the widget rather than by it.
+  ///
+  /// Every widget used to carry this itself, from a property every manifest declared. It is
+  /// a fact about the tile, not about the thing displayed in it, so the shell owns it and
+  /// this puts it on the document — see Shell/appearance.js for the other half.
+  ///
+  /// Unset and unrecognised both mean `solid`, which keeps a widget that never heard of the
+  /// setting (an iCUE port, a third-party package) rendering as an ordinary opaque tile
+  /// instead of vanishing onto the wallpaper.
+  function applyBackground(settings) {
+    const raw = settings && settings.bgStyle;
+    const bg = (raw === 'glass' || raw === 'transparent') ? raw : 'solid';
+    // The classes land on <body>, which may not exist yet: ww-init can arrive DURING
+    // document parse — the shell answers ww-ready while the widget-api script tag is still
+    // blocking the parser — so `document.body` is genuinely null on a first init often
+    // enough to matter. Stamping documentElement instead would be wrong rather than late,
+    // because widget-base.css re-declares the derived alphas at body scope precisely so the
+    // bg-* override beats them. If body is missing we are mid-parse by definition, so
+    // DOMContentLoaded has not fired and is a safe place to wait.
+    const stamp = () => {
+      const body = document.body;
+      if (!body) return;
+      body.classList.toggle('bg-solid', bg === 'solid');
+      body.classList.toggle('bg-glass', bg === 'glass');
+      body.classList.toggle('bg-transparent', bg === 'transparent');
+    };
+    if (document.body) stamp();
+    else document.addEventListener('DOMContentLoaded', stamp, { once: true });
+  }
+
   function applyThemeTokens(theme) {
     if (!theme || typeof theme !== 'object') return;
     state.theme = theme;
@@ -336,6 +366,10 @@
       if (msg.notifications !== undefined) state.notifications = msg.notifications;
       // Design tokens land on :root before init callbacks so first paint is themed.
       applyThemeTokens(msg.theme);
+      // Same reason, same moment: a widget that measures or paints in its own onInit must
+      // already be inside the right background, or a transparent tile paints one frame as
+      // an opaque one. Re-runs on every init, which is also how a settings edit arrives.
+      applyBackground(state.settings);
       // Clears the "waiting for panel data" stamp widget-base.css renders: a
       // widget that loads but never receives init must say so ON SCREEN instead
       // of sitting as an undiagnosable blank tile (field report: empty deck).

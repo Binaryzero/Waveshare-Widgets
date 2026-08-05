@@ -2,7 +2,7 @@
   "id": "ws.stock.clock",
   "name": "Clock",
   "author": "Plinth",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Large digital clock with date.",
   "min_api_version": 1,
   "supported_slots": [
@@ -30,17 +30,6 @@
         "off"
       ],
       "default": "on"
-    },
-    {
-      "name": "bgStyle",
-      "label": "Background",
-      "type": "select",
-      "options": [
-        "solid",
-        "glass",
-        "transparent"
-      ],
-      "default": "solid"
     },
     {
       "name": "timeSize",

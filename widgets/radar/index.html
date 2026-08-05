@@ -68,13 +68,6 @@
 
   WW.onInit(async (state) => {
     const s = state.settings;
-    // bgStyle drives the widget-base panel-opacity classes; anything that isn't
-    // explicitly glass/transparent renders solid, matching the pre-token look for
-    // unset AND out-of-spec values (no class = glass in the base).
-    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
-    document.body.classList.toggle('bg-solid', bg === 'solid');
-    document.body.classList.toggle('bg-glass', bg === 'glass');
-    document.body.classList.toggle('bg-transparent', bg === 'transparent');
 
     // RainViewer radar tiles top out at zoom 7 — a saved 8-10 from the old
     // slider range renders "Zoom Level Not Supported" tiles, so clamp hard.

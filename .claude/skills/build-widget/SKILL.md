@@ -36,16 +36,18 @@ Read these first, in order (they are the authority; this skill is the workflow):
      see the property-type rules in WIDGET-SPEC.
 
 2. **Scaffold.** Folder under `widgets/` named after the id tail. Manifest: reverse-DNS
-   id, semver `version`, `min_api_version: 1`, honest `supported_slots`, a `bgStyle`
-   select (solid/glass/transparent, default solid) unless the widget is inherently
-   full-bleed media.
+   id, semver `version`, `min_api_version: 1`, honest `supported_slots`. Do NOT declare
+   a `bgStyle` property — the panel supplies it for every widget, and the validator
+   rejects a manifest that declares one.
 
 3. **Author `index.html` to the standard.** Non-negotiables:
    - `<link rel="stylesheet" href="https://app.plinth/widget-base.css" />` first in head;
      widget CSS is layout only. Tokens, never literal colors — including canvas/SVG
      (read via `getComputedStyle(document.documentElement).getPropertyValue('--token')`,
      re-read inside `WW.onTheme`).
-   - bgStyle mapping with solid fallback, exactly like the stock clock.
+   - No bgStyle handling at all — `widget-api.js` applies the panel's background class.
+     Do check the widget reads well under `--settings '{"bgStyle":"transparent"}'`, where
+     there is no tile behind the text.
    - Per-widget color settings use the changed-vs-default pattern (clock's
      `DEF`/`norm`/`changed`/`setVar` helpers).
    - Standard anatomy classes for equivalent parts: `.card .kicker .value .unit .pill

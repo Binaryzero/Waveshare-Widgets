@@ -170,6 +170,21 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   relay by DROPPING everything outside that allow-list — a friendlier stand-in would hide
   the whole defect — and a fetch is pushed through first to prove the relay works at all.
   The timings are the witness: 10001 ms before, single-digit ms after. Port used: 8964.
+- `appearance-run.js` — the appearance properties the SHELL owns. `bgStyle` was declared in
+  all 31 stock manifests and applied by hand in all 31 widget scripts; the panel supplies it
+  now (`Shell/appearance.js` splices the declaration into every widget's property list, and
+  `widget-api.js` applies the class inside the frame). The failure this guards is silent:
+  both settings editors render whatever is in `widget.properties`, so if normalisation ever
+  stops running nothing throws — the Background control just disappears from every widget
+  and every tile quietly renders solid. Loads the real module with `vm` rather than
+  transcribing it, so a change to the shipped file cannot leave these assertions green. A3
+  is the one with teeth: a widget that declares its OWN `bgStyle` — a third-party package or
+  an iCUE port with different options — must have it dropped rather than merged, or there
+  are two definitions of one setting and no way to know which a tile obeys. A5 mutates one
+  widget's returned declaration and checks the next widget's is unaffected, because the
+  editors write to what they are handed and a shared options array would let one tile's edit
+  rewrite every other tile's. A6 reads the SHIPPED manifests rather than a fixture, which is
+  what would have caught this change going in half-done. No browser needed.
 - `kevretry-run.js` — pressing Retry while the panel is hidden (issue #164). Polling is
   suspended for a hidden document because the tile parses a multi-megabyte catalog, and
   Retry did not account for it: it painted a spinner and called the poll, which returned

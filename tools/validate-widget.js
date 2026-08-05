@@ -410,11 +410,35 @@ function validate(folder) {
   if (/setInterval\s*\([^)]*,\s*([0-9]{1,2})\s*\)/.test(html))
     warn('fast-timer', 'setInterval under 100ms — this runs 24/7 on the panel; batch or slow it down');
 
-  // bgStyle contract: widgets that offer the setting must map it to the base classes,
-  // with solid as the fallback for unset/out-of-spec values.
-  const hasBgStyle = (manifest.properties || []).some((p) => p.name === 'bgStyle');
-  if (hasBgStyle && !/bg-solid/.test(html))
-    err('bgstyle-mapping', 'bgStyle property declared but bg-solid is never applied — unset values must render solid (see the stock clock)');
+  // Appearance the SHELL owns. These are facts about the tile, not about what a widget
+  // displays, so the panel declares them and widget-api.js applies them inside the frame —
+  // see Shell/appearance.js. This rule used to be the opposite: it REQUIRED every widget
+  // that declared bgStyle to map it by hand, which is how 31 identical declarations and
+  // two different hand-written spellings of the same three lines came to exist.
+  //
+  // Declaring one is an error rather than a warning because a declaration is not merely
+  // redundant — the shell drops it, so the author would be looking at a control in their
+  // manifest that has no effect on anything, which is worse than not having written it.
+  const SHELL_OWNED = ['bgStyle'];
+  for (const name of SHELL_OWNED) {
+    if ((manifest.properties || []).some((p) => p && p.name === name))
+      err('shell-owned-property', `"${name}" is supplied by the panel for every widget — remove it from the manifest (the shell ignores a declared one, so it would render as a dead control)`);
+  }
+  // The other half: applying the classes by hand fights the shell. It is not merely
+  // duplicated work — widget-api applies these at init, so a widget that also sets them
+  // from its own onInit races the panel and wins or loses depending on callback order.
+  //
+  // Read from the SCRIPT blocks, not from `noComments` — that one holds the <style> blocks
+  // and nothing else, so a JS pattern tested against it can never match and the rule would
+  // pass for every widget including the broken ones. Comments are stripped so the prose in
+  // a header block explaining that the panel owns this cannot trip the rule that enforces
+  // it.
+  const scriptJs = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)]
+    .map((m) => m[1]).join('\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  if (/classList\s*\.\s*toggle\s*\(\s*['"]bg-(?:solid|glass|transparent)['"]/.test(scriptJs))
+    err('bgstyle-selfapplied', 'the widget toggles its own bg-* classes — widget-api.js applies the panel\'s background style; remove the local handling');
 
   // Reduced motion: infinite animations should freeze under prefers-reduced-motion.
   if (/animation[^;]*infinite/.test(noComments) && !/prefers-reduced-motion/.test(noComments))

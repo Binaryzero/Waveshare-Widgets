@@ -156,12 +156,6 @@
 
   WW.onInit((state) => {
     const s = state.settings;
-    // Anything that isn't explicitly glass/transparent renders solid, matching the
-    // pre-token behavior for unset AND out-of-spec values (no class = glass in base).
-    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
-    document.body.classList.toggle('bg-solid', bg === 'solid');
-    document.body.classList.toggle('bg-glass', bg === 'glass');
-    document.body.classList.toggle('bg-transparent', bg === 'transparent');
     // Appearance comes from the theme tokens (global theme or the per-slot style
     // override) — legacy labelColor keys in old layouts are deliberately ignored.
     document.body.style.setProperty('--label-scale', String((Number(s.labelSize) || 100) / 100));

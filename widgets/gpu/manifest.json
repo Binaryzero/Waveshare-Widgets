@@ -2,7 +2,7 @@
   "id": "ws.stock.gpu",
   "name": "GPU Monitor",
   "author": "Plinth",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "GPU load ring with temperature, clock and VRAM readouts.",
   "min_api_version": 1,
   "supported_slots": [
@@ -23,17 +23,6 @@
       "type": "sensor",
       "sensor_type": "Temperature",
       "default": ""
-    },
-    {
-      "name": "bgStyle",
-      "label": "Background",
-      "type": "select",
-      "options": [
-        "solid",
-        "glass",
-        "transparent"
-      ],
-      "default": "solid"
     },
     {
       "name": "titleSize",
