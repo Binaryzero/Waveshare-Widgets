@@ -476,7 +476,12 @@ function validate(folder) {
   };
   const root = path.resolve(folder);
   for (const m of startTags(html, 'script')) {
-    const src = attr(m.tag, 'src');
+    // TRIMMED once, and every later test uses the trimmed value. isExternalRef strips
+    // whitespace before classifying and `new URL` strips it too, so a guard reading the raw
+    // attribute disagrees with both: `src=" https://app.plinth/widget-api.js "` is allowed
+    // as the shell origin, fails a scheme test anchored at position 0, and lands back here
+    // as though it named a file in the package. One normalisation, one answer.
+    const src = (attr(m.tag, 'src') || '').trim();
     if (!src || isExternalRef(src)) continue;
     // isExternalRef is the WRONG test on its own here: it deliberately returns false for
     // the allowed shell origin, so `https://app.plinth/widget-api.js` looked origin-relative
