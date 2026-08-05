@@ -58,6 +58,70 @@ if (failures.Count > 0)
     return 1;
 }
 Console.WriteLine($"manifest round-trip OK: {checkedCount} manifests, no data loss");
+
+// ---- shell-owned properties are dropped from a manifest, whatever it declares ----------
+// The panel supplies these (Shell/appearance.js) and the shell ignores a declared one when
+// it renders. Doing that ONLY in the shell left the host reading a manifest the shell had
+// disowned, and the host does more with a property than draw it: a package declaring
+// bgStyle as type "secret" would have had SecretPolicy mask and seal the very key the
+// panel-owned Background select writes — an encrypted opacity in layout.json and a control
+// that came back blank, with nothing reporting a problem.
+//
+// Asserted here because WidgetLibrary, which calls this, is compiled only by the WinForms
+// build; this file compiles WidgetManifest on every platform, so the BEHAVIOUR is covered
+// even where the call site cannot be.
+var dropFailures = 0;
+void DropCheck(string name, bool ok, string? detail = null)
+{
+    Console.WriteLine($"  {(ok ? "PASS" : "FAIL")} {name}{(detail is null ? "" : " - " + detail)}");
+    if (!ok) dropFailures++;
+}
+
+var declaring = new WidgetManifest
+{
+    Id = "test.declares", Name = "Declares", Properties =
+    [
+        new WidgetProperty { Name = "url", Type = "text" },
+        new WidgetProperty { Name = "bgStyle", Type = "select" },
+        new WidgetProperty { Name = "zoom", Type = "slider" },
+    ],
+};
+var removed = declaring.DropShellOwnedProperties();
+DropCheck("D1 a declared shell-owned property is dropped", removed == 1, $"{removed} removed");
+DropCheck("D2 ...and the widget's own properties survive, in order",
+    declaring.Properties.Count == 2 && declaring.Properties[0].Name == "url"
+        && declaring.Properties[1].Name == "zoom",
+    string.Join(", ", declaring.Properties.Select(p => p.Name)));
+
+// The shape that made this a host problem rather than a cosmetic one: declared as a
+// credential type, which is what drags it into SecretPolicy.
+var asSecret = new WidgetManifest
+{
+    Id = "test.secret", Name = "Secret", Properties =
+    [
+        new WidgetProperty { Name = "bgStyle", Type = "secret" },
+    ],
+};
+asSecret.DropShellOwnedProperties();
+DropCheck("D3 one declared as a secret is dropped too, so SecretPolicy never sees it",
+    asSecret.Properties.Count == 0, $"{asSecret.Properties.Count} properties left");
+DropCheck("D3b ...and it is not reported as a credential property afterwards",
+    !asSecret.CredentialPropertyNames().Contains("bgStyle"),
+    string.Join(", ", asSecret.CredentialPropertyNames()));
+
+var clean = new WidgetManifest
+{
+    Id = "test.clean", Name = "Clean", Properties = [new WidgetProperty { Name = "url", Type = "text" }],
+};
+DropCheck("D4 a manifest declaring none is untouched",
+    clean.DropShellOwnedProperties() == 0 && clean.Properties.Count == 1);
+
+if (dropFailures > 0)
+{
+    Console.WriteLine($"{dropFailures} shell-owned-property FAILURES");
+    return 1;
+}
+Console.WriteLine("shell-owned properties dropped from manifests: 4 cases OK");
 return 0;
 
 // Every key/value in `original` must exist (deep-equal) in `round`; keys ADDED by the

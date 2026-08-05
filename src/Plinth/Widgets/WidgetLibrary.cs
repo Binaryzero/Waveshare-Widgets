@@ -599,6 +599,14 @@ public sealed partial class WidgetLibrary : IDisposable
                 if (manifest.Properties.Count == 0)
                     manifest.Properties = IcueManifestReader.ParseProperties(indexPath);
 
+                // Also after the iCUE parse, and BEFORE the credential check below — which
+                // is the point. A dropped property must never have existed as far as the
+                // rest of the host is concerned, and CredentialsAreTyped is the first thing
+                // downstream that would form an opinion about one.
+                var dropped = manifest.DropShellOwnedProperties();
+                if (dropped > 0)
+                    Log.Info($"Widget '{manifest.Id}' declares {dropped} property(ies) the panel supplies; ignoring its own");
+
                 // AFTER the iCUE parse, not before: at IsValid time an iCUE widget has no
                 // properties at all, so checking there would exempt exactly the widgets
                 // least likely to have met the build-time validator (issue #57).

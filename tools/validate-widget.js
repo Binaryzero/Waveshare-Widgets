@@ -419,45 +419,81 @@ function validate(folder) {
   // Declaring one is an error rather than a warning because a declaration is not merely
   // redundant — the shell drops it, so the author would be looking at a control in their
   // manifest that has no effect on anything, which is worse than not having written it.
+  // The panel's property names. Kept in step with Shell/appearance.js by hand — this file
+  // is Node and that one is a browser IIFE, and a require() shim across that boundary buys
+  // less than it costs for a one-entry list.
   const SHELL_OWNED = ['bgStyle'];
+
+  // A widget may declare properties in the MANIFEST or, for iCUE-compatible packages, in
+  // <meta name="x-icue-property"> tags — IcueManifestReader parses those when the manifest
+  // list is empty, so a package can declare a shell-owned name down the supported iCUE path
+  // and be just as wrong there. Checking only the manifest would enforce the contract for
+  // widgets written here and exempt exactly the imported ones it exists to protect against.
+  const icueNames = startTags(html, 'meta')
+    .filter((m) => (attr(m.tag, 'name') || '').toLowerCase() === 'x-icue-property')
+    .map((m) => String(attr(m.tag, 'content') || '').split(/[;,]/)[0].trim())
+    .filter(Boolean);
+  const declaredNames = (manifest.properties || []).map((p) => p && p.name).filter(Boolean)
+    .concat(icueNames);
   for (const name of SHELL_OWNED) {
-    if ((manifest.properties || []).some((p) => p && p.name === name))
+    if (declaredNames.some((n) => n === name))
       err('shell-owned-property', `"${name}" is supplied by the panel for every widget — remove it from the manifest (the shell ignores a declared one, so it would render as a dead control)`);
   }
-  // The other half: applying the classes by hand fights the shell. It is not merely
-  // duplicated work — widget-api applies these at init, so a widget that also sets them
-  // from its own onInit races the panel and wins or loses depending on callback order.
+
+  // Applying the classes by hand fights the shell. Not merely duplicated work: widget-api
+  // applies these at init, so a widget that also sets them races the panel and wins or
+  // loses on callback order.
   //
-  // Read from the SCRIPT blocks, not from `noComments` — that one holds the <style> blocks
-  // and nothing else, so a JS pattern tested against it can never match and the rule would
-  // pass for every widget including the broken ones. Comments are stripped so the prose in
-  // a header block explaining that the panel owns this cannot trip the rule that enforces
-  // it.
-  const scriptJs = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)]
-    .map((m) => m[1]).join('\n')
+  // Read from SCRIPT bodies, not from `noComments` — that one holds the <style> blocks and
+  // nothing else, so a JS pattern tested against it can never match and the rule would pass
+  // for every widget including the broken ones. Comments are stripped so the prose in a
+  // header block explaining that the panel owns this cannot trip the rule enforcing it.
+  //
+  // LOCAL script files are read too. Only EXTERNAL script srcs are refused by this
+  // validator, so `<script src="helper.js">` is a supported shape and one stock widget
+  // already uses it — scanning inline bodies alone would leave the contract unenforced for
+  // exactly the packaging that hides it best. Resolved inside the widget folder and read
+  // best-effort: an unreadable helper is the packaging rules' business, not this rule's.
+  const stripComments = (js) => js
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
-  // EVERY way of writing the class, not just the one the stock widgets happened to use.
-  // A rule that named `classList.toggle` only would have been satisfied by `classList.add`,
-  // by assigning `className`, or by `setAttribute('class', …)` — three spellings of the
-  // same defect, and the kind of gap that makes a checklist item feel enforced while it is
-  // not. The class name appearing anywhere in a write to class is enough to flag.
-  // The trailing boundary matters: without it `bg-solid` matches inside a widget's own
-  // `bg-solid-ish`, and the rule fires on a class the panel does not own at all.
-  const BG_CLASS = /bg-(?:solid|glass|transparent)(?![\w-])/;
+  let scriptJs = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]).join('\n');
+  for (const m of startTags(html, 'script')) {
+    const src = attr(m.tag, 'src');
+    if (!src || isExternalRef(src)) continue;
+    const root = path.resolve(folder);
+    const file = path.resolve(root, decodeURIComponent(src.split(/[?#]/)[0]).replace(/^\/+/, ''));
+    if (file !== root && !file.startsWith(root + path.sep)) continue;   // no walking out
+    try { scriptJs += '\n' + fs.readFileSync(file, 'utf8'); } catch (e) { /* unreadable: not this rule's business */ }
+  }
+  scriptJs = stripComments(scriptJs);
+
+  // A COMPLETE class token, not a substring. `bg-solid` sits inside both `bg-solid-ish`
+  // and `my-bg-solid`; neither is a class the panel owns, and flagging either blocks a
+  // valid widget. Both ends are bounded for that reason — the trailing one was added first
+  // and the leading one was still missing, which is the same mistake twice.
+  const BG_TOKEN = '(?<![\\w-])bg-(?:solid|glass|transparent)(?![\\w-])';
+  const BG_CLASS = new RegExp(BG_TOKEN);
   const selfApplied = [
-    /classList\s*\.\s*(?:toggle|add|remove|replace)\s*\([^)]*bg-(?:solid|glass|transparent)(?![\w-])/,
-    /className\s*(?:=|\+=)[^;\n]*bg-(?:solid|glass|transparent)(?![\w-])/,
-    /setAttribute\s*\(\s*['"]class['"][^)]*bg-(?:solid|glass|transparent)(?![\w-])/,
+    new RegExp('classList\\s*\\.\\s*(?:toggle|add|remove|replace)\\s*\\([^)]*' + BG_TOKEN),
+    new RegExp('className\\s*(?:=|\\+=)[^;\\n]*' + BG_TOKEN),
+    new RegExp('setAttribute\\s*\\(\\s*[\'"]class[\'"][^)]*' + BG_TOKEN),
   ].some((re) => re.test(scriptJs));
   if (selfApplied)
     err('bgstyle-selfapplied', 'the widget sets its own bg-* classes — widget-api.js applies the panel\'s background style; remove the local handling');
-  // ...and statically, in the markup. `<body class="bg-solid">` is not a race so much as a
-  // lie: it renders one frame of a tile the panel may not have asked for, and it is the
-  // widget claiming a class it does not own. Checked on the body tag specifically, so a
-  // widget's own `.bg-glass`-named CSS class on some inner element is not caught by this.
-  const bodyTag = (html.match(/<body\b[^>]*>/i) || [''])[0];
-  if (BG_CLASS.test(bodyTag))
+
+  // ...and statically, in the markup. `<body class="bg-solid">` is less a race than a lie:
+  // it paints one frame of a tile the panel may not have asked for, and it is the widget
+  // claiming a class it does not own.
+  //
+  // Parsed with the real attribute reader rather than sliced with a regex. `<body[^>]*>`
+  // ends at the first `>` ANYWHERE, including one inside a quoted value, so
+  // `<body data-note=">" class="bg-solid">` hands the check a fragment with no class in it
+  // and the rule passes on markup a browser renders with the class applied. tagAttributes
+  // already handles quoted delimiters and entity-decoding; the shortcut existed only
+  // because I did not look for it.
+  const bodyClass = startTags(html, 'body').map((m) => attr(m.tag, 'class') || '').join(' ');
+  if (BG_CLASS.test(bodyClass))
     err('bgstyle-static', 'the <body> tag hard-codes a bg-* class — the panel owns the background style; remove it from the markup');
 
   // Reduced motion: infinite animations should freeze under prefers-reduced-motion.
