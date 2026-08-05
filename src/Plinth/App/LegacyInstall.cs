@@ -1,5 +1,3 @@
-using Microsoft.Win32;
-
 namespace Plinth.App;
 
 /// <summary>Everything that exists ONLY because the app used to be called something else.
@@ -22,8 +20,6 @@ internal static class LegacyInstall
     /// WaveshareWidgets.exe, which either still exists — and then launches a second app that
     /// fights this one for the panel — or does not, and fails silently at every logon.</summary>
     private const string AutostartValueName = "WaveshareWidgets";
-
-    private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
 
     /// <summary>True when a pre-rename instance is running.
     ///
@@ -66,37 +62,45 @@ internal static class LegacyInstall
         }
     }
 
-    /// <summary>Drops the pre-rename Run value if it is still there.
+    /// <summary>Repoints the pre-rename Run value at this executable, if it is still there.
+    ///
+    /// <para>The old value is DELETED and the current one WRITTEN, because the two halves are
+    /// one repair rather than two. What the value encodes is a live instruction — "start this
+    /// at logon" — and the rename broke the instruction, not the intent behind it. Deleting
+    /// alone fixes the wrong executable and silently turns autostart off for someone who had
+    /// switched it on; they would find out at the next logon, from a panel that stayed
+    /// blank.</para>
+    ///
+    /// <para>This is not migrating the old install's data, which is deliberately not carried
+    /// over. Nothing is read from the old data directory, and no setting, secret or layout
+    /// moves. It repairs a startup instruction this rename is otherwise about to break.</para>
     ///
     /// <para>Called before the instance check, not after, and that ordering is the whole
     /// point. At logon Windows starts both Run values; if the old one wins the race it holds
     /// the mutex, and a version of this that cleaned up only on the successful startup path
     /// would refuse, exit, and leave the stale value in place — reproducing the same race at
-    /// every logon, forever. The guard would be preserving the conflict it exists to
-    /// resolve.</para>
+    /// every logon, forever. The guard would be preserving the conflict it exists to resolve.
+    /// Running it on the refusal path too is what actually breaks that loop: the next logon
+    /// starts this app and not its predecessor.</para>
     ///
-    /// <para>Unconditional, rather than only when autostart is enabled: the stale value is
-    /// equally wrong either way, and someone who turned autostart off before updating would
-    /// otherwise keep it with no surface that mentions it. Opened WRITABLE only when there
-    /// is something to remove, so the ordinary case takes a read-only handle.</para></summary>
-    public static void RemoveAutostartEntry()
+    /// <para>Absence is left alone. Someone who had autostart OFF before updating has no old
+    /// value to find here, so nothing is written and the setting stays off — the intent is
+    /// carried in both directions, not just the one that adds an entry.</para></summary>
+    public static void MoveAutostartEntry()
     {
         try
         {
-            using (var probe = Registry.CurrentUser.OpenSubKey(RunKey))
-            {
-                if (probe?.GetValue(AutostartValueName) is null)
-                    return;
-            }
-            using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
-            key?.DeleteValue(AutostartValueName, throwOnMissingValue: false);
-            Log.Info("Removed the pre-rename autostart entry");
+            if (!Autostart.HasValue(AutostartValueName))
+                return;
+            Autostart.RemoveValue(AutostartValueName);
+            Autostart.SetEnabled(true);
+            Log.Info($"Moved the pre-rename autostart entry to '{Autostart.ValueName}'");
         }
         catch (Exception ex)
         {
             // A policy-locked or unreadable Run key is not a reason to fail startup. The cost
             // of not getting here is a stale entry, which is what we already had.
-            Log.Warn($"Could not remove the pre-rename autostart entry: {ex.Message}");
+            Log.Warn($"Could not move the pre-rename autostart entry: {ex.Message}");
         }
     }
 }

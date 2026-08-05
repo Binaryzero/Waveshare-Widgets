@@ -15,7 +15,7 @@ internal static class Program
         // Windows starts both entries, and if the old app wins the race it holds the legacy
         // mutex — so cleaning up only on the path that reaches TrayApplicationContext would
         // exit while leaving the value in place, and repeat the same race at every logon.
-        LegacyInstall.RemoveAutostartEntry();
+        LegacyInstall.MoveAutostartEntry();
 
         if (LegacyInstall.InstanceRunning())
         {

@@ -11,7 +11,6 @@ namespace Plinth.App;
 /// </summary>
 public sealed class TrayApplicationContext : ApplicationContext
 {
-    private const string AutostartValueName = "Plinth";
 
     private readonly AppConfig _config;
     private readonly SensorHub _hub = new();
@@ -251,20 +250,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private static bool IsAutostartEnabled()
-    {
-        using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-        return key?.GetValue(AutostartValueName) is not null;
-    }
+    private static bool IsAutostartEnabled() => Autostart.IsEnabled();
 
-    private static void SetAutostart(bool enabled)
-    {
-        using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-        if (enabled)
-            key.SetValue(AutostartValueName, $"\"{Environment.ProcessPath}\"");
-        else
-            key.DeleteValue(AutostartValueName, throwOnMissingValue: false);
-    }
+    private static void SetAutostart(bool enabled) => Autostart.SetEnabled(enabled);
 
     private static Icon CreateTrayIcon()
     {
