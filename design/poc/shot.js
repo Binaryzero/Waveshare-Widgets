@@ -1,30 +1,42 @@
 #!/usr/bin/env node
-// Screenshot each design POC at exactly 1280x400, @2x for crisp chat viewing.
+// Regenerates the POC screenshots in design/poc/shots/ — the images the directions are
+// judged from, at exactly 1280x400 CSS px, rendered @2x so they read crisply when zoomed.
+//
+//   CHROMIUM=/opt/pw-browsers/chromium node design/poc/shot.js [outDir]
+//
+// Paths derive from THIS FILE's location, not from any absolute checkout path or authoring
+// environment, so the script works from any clone. It writes the SAME filenames that are
+// committed (meter.png, lume.png, ledger.png ...): regenerating updates the images people
+// are choosing from rather than leaving them stale next to fresh duplicates.
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
-const REPO = '/home/user/Waveshare-Widgets';
-const OUT = process.argv[2] || '/tmp/claude-0/-home-user-Waveshare-Widgets/d6b97a67-e62c-511f-8bda-cbc09a953f4e/scratchpad';
+const POC = __dirname;                                   // design/poc/
+const OUT = process.argv[2] || path.join(POC, 'shots');  // committed screenshot dir
 
 (async () => {
+  fs.mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
-  const dirs = fs.readdirSync(path.join(REPO, 'design/poc'))
-    .filter((d) => fs.existsSync(path.join(REPO, 'design/poc', d, 'index.html')));
+  const dirs = fs.readdirSync(POC)
+    .filter((d) => fs.existsSync(path.join(POC, d, 'index.html')));
+  let failed = 0;
   for (const d of dirs) {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 400 }, deviceScaleFactor: 2 });
     const page = await ctx.newPage();
     const errs = [];
     page.on('pageerror', (e) => errs.push(String(e).slice(0, 200)));
     page.on('requestfailed', (r) => errs.push('REQFAIL ' + r.url().slice(0, 120)));
-    await page.goto('file://' + path.join(REPO, 'design/poc', d, 'index.html'));
+    await page.goto('file://' + path.join(POC, d, 'index.html'));
     await page.evaluate(() => document.fonts.ready);
     await page.waitForTimeout(900);
-    const size = await page.evaluate(() => [document.body.scrollWidth, document.body.scrollHeight]);
-    await page.screenshot({ path: path.join(OUT, `poc-${d}.png`) });
-    console.log(`${d}: shot -> poc-${d}.png  body=${size[0]}x${size[1]}${errs.length ? '  ISSUES: ' + errs.join(' | ') : ''}`);
+    const [w, h] = await page.evaluate(() => [document.body.scrollWidth, document.body.scrollHeight]);
+    await page.screenshot({ path: path.join(OUT, `${d}.png`) });
+    if (w !== 1280 || h !== 400 || errs.length) failed++;
+    console.log(`${d}: -> ${path.relative(process.cwd(), path.join(OUT, d + '.png'))}  body=${w}x${h}${errs.length ? '  ISSUES: ' + errs.join(' | ') : ''}`);
     await ctx.close();
   }
   await browser.close();
+  process.exit(failed ? 1 : 0);
 })();
