@@ -478,6 +478,14 @@ function validate(folder) {
   for (const m of startTags(html, 'script')) {
     const src = attr(m.tag, 'src');
     if (!src || isExternalRef(src)) continue;
+    // isExternalRef is the WRONG test on its own here: it deliberately returns false for
+    // the allowed shell origin, so `https://app.plinth/widget-api.js` looked origin-relative
+    // and this reader went looking for <folder>/widget-api.js. A widget that ships an
+    // unrelated file by that name — packaging leftovers, a vendored copy — would have had it
+    // read and could be failed for a string in a file the browser never executes. Anything
+    // carrying a scheme or an authority is served from somewhere else; only a genuinely
+    // relative reference names a file inside this package.
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(src) || src.startsWith('//')) continue;
     // URL semantics, not path arithmetic. A browser resolves dot segments against the
     // ORIGIN and clamps at its root, so from /index.html `../helper.js` still loads
     // /helper.js. Treating that as an escape — which path.resolve does — skipped the file
