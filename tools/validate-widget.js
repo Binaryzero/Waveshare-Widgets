@@ -458,25 +458,48 @@ function validate(folder) {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
   let scriptJs = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]).join('\n');
-  // Resolved against the document BASE, not the widget root. A relative <base href="./sub/">
+  // Resolved against the document BASE, in DOCUMENT ORDER. A relative <base href="./sub/">
   // is a permitted shape here — only an external one is refused — and a browser loads
-  // `<script src="helper.js">` from `sub/helper.js` under it. Reading from the root instead
-  // would open the file the page never loads, or none, and report the widget clean while the
-  // shipped page writes the class.
-  const baseHref = startTags(html, 'base')
-    .map((m) => attr(m.tag, 'href'))
-    .find((h) => h && !isExternalRef(h)) || '';
-  const baseDir = baseHref.replace(/[^/]*$/, '').replace(/^\/+/, '');
+  // `<script src="helper.js">` from `sub/helper.js` under it.
+  //
+  // Order matters and is not a detail: a browser resolves each script against the base in
+  // force AT THAT POINT, so `<script src="helper.js"></script><base href="./sub/">` loads
+  // the ROOT helper. Applying the document's only base to every script would read
+  // `sub/helper.js` instead — the file the page never loads — and report a root helper that
+  // writes the class as clean.
+  const bases = startTags(html, 'base')
+    .map((m) => ({ index: m.index, href: attr(m.tag, 'href') }))
+    .filter((x) => x.href && !isExternalRef(x.href));
+  const baseAt = (index) => {
+    const inForce = bases.filter((x) => x.index < index);
+    return inForce.length ? inForce[0].href.replace(/[^/]*$/, '') : '';   // first wins, as in a browser
+  };
+  const root = path.resolve(folder);
   for (const m of startTags(html, 'script')) {
     const src = attr(m.tag, 'src');
     if (!src || isExternalRef(src)) continue;
-    const root = path.resolve(folder);
-    const rel = decodeURIComponent(src.split(/[?#]/)[0]);
-    // An absolute path is document-root relative and ignores <base>; anything else rides it.
-    const joined = rel.startsWith('/') ? rel.replace(/^\/+/, '') : baseDir + rel;
-    const file = path.resolve(root, joined);
-    if (file !== root && !file.startsWith(root + path.sep)) continue;   // no walking out
+    // URL semantics, not path arithmetic. A browser resolves dot segments against the
+    // ORIGIN and clamps at its root, so from /index.html `../helper.js` still loads
+    // /helper.js. Treating that as an escape — which path.resolve does — skipped the file
+    // and reported a widget clean while the page ran it. Resolve on a throwaway origin,
+    // then map the normalised pathname back into the folder.
+    let rel;
+    try {
+      rel = new URL(src.split('#')[0], 'https://w.invalid/' + baseAt(m.index)).pathname;
+    } catch (e) { continue; }
+    const file = path.resolve(root, decodeURIComponent(rel).replace(/^\/+/, ''));
+    if (file !== root && !file.startsWith(root + path.sep)) continue;   // belt and braces
     try { scriptJs += '\n' + fs.readFileSync(file, 'utf8'); } catch (e) { /* unreadable: not this rule's business */ }
+  }
+  // Inline event handlers are script too. `<body onload="document.body.className='bg-solid'">`
+  // runs AFTER the shim has stamped the panel's class, so it silently wins — and it is not
+  // inside a <script> block, so a scan of those alone never sees it. Every on* attribute on
+  // every start tag is appended; they are expressions rather than statements, which the
+  // patterns below do not care about.
+  for (const m of html.matchAll(/<[a-zA-Z][^\s/>]*(?=[\s/>])/g)) {
+    const tag = html.slice(m.index, (html.indexOf('>', m.index) + 1) || html.length);
+    for (const [name, value] of tagAttributes(tag))
+      if (/^on[a-z]+$/.test(name) && value) scriptJs += '\n' + value;
   }
   scriptJs = stripComments(scriptJs);
 
