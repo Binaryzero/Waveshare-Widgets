@@ -159,7 +159,11 @@
       state = msg.data || state;
       if (!state.layout || !Array.isArray(state.layout.pages)) state.layout = { pages: [] };
       backgroundHost = state.backgroundHost || backgroundHost;
-      widgetsById = new Map((state.widgets || []).map((w) => [w.id, w]));
+      // Normalised HERE, at the one door the catalog comes through, so nothing downstream
+      // has to know the shell owns some properties: the editors, the defaults seeding and
+      // the projection back to the host all read one already-correct property list.
+      state.widgets = window.WWAppearance.normalizeCatalog(state.widgets);
+      widgetsById = new Map(state.widgets.map((w) => [w.id, w]));
       // A full init is the one moment the union may be dropped: this layout was
       // masked by the host against the CURRENT manifests, so no unsaved plaintext
       // from the previous catalog survives in it for the old names to protect.
@@ -184,7 +188,7 @@
       // widget). Refresh the palette and the banner ONLY — re-seeding the layout here
       // would silently discard unsaved edits, and the user may well be mid-edit, since
       // repairing a widget is something they do with this window open.
-      state.widgets = msg.widgets || [];
+      state.widgets = window.WWAppearance.normalizeCatalog(msg.widgets);
       state.rejectedWidgets = msg.rejectedWidgets || [];
       widgetsById = new Map(state.widgets.map((w) => [w.id, w]));
       rememberSecretNames(state.widgets);

@@ -16,6 +16,31 @@ public sealed class WidgetManifest
     [JsonPropertyName("supported_slots")] public List<string> SupportedSlots { get; set; } = ["quarter", "half", "full"];
     [JsonPropertyName("properties")] public List<WidgetProperty> Properties { get; set; } = [];
 
+    /// <summary>Property names the PANEL supplies for every widget, whatever a manifest says.
+    /// The declarations live in Shell/appearance.js; this is the host's copy of the name list
+    /// and the two must be kept in step by hand.</summary>
+    public static readonly HashSet<string> ShellOwnedProperties =
+        new(StringComparer.Ordinal) { "bgStyle" };
+
+    /// <summary>Drops the properties the panel owns, so a package cannot declare one.
+    ///
+    /// <para>The shell already ignores a declared one when it renders, but doing it ONLY
+    /// there left the host reading a manifest the shell had disowned — and the host does
+    /// more with a property than draw it. A package declaring <c>bgStyle</c> as
+    /// <c>type: "secret"</c> would have had SecretPolicy mask and seal the very key the
+    /// panel-owned Background select writes: layout.json storing an encrypted opacity, and
+    /// the control coming back blank with nothing anywhere reporting a problem.</para>
+    ///
+    /// <para>Dropped rather than refused, which is what the shell does. Refusing would take
+    /// a whole widget off the panel over a property the user never sees and cannot fix in a
+    /// package they did not write.</para>
+    ///
+    /// <para>Call AFTER the iCUE meta parse: an iCUE package has no manifest properties at
+    /// that point, so stripping earlier would exempt exactly the imported widgets this is
+    /// for.</para></summary>
+    public int DropShellOwnedProperties() =>
+        Properties.RemoveAll(p => p is not null && ShellOwnedProperties.Contains(p.Name));
+
     public bool IsValid(out string error)
     {
         if (string.IsNullOrWhiteSpace(Id)) { error = "manifest is missing 'id'"; return false; }

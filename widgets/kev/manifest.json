@@ -2,7 +2,7 @@
   "id": "ws.stock.kev",
   "name": "CISA KEV",
   "author": "Plinth",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "CISA's Known Exploited Vulnerabilities catalog as a glance tile: how many landed this week, and the newest entries by vendor and product. Public feed, no key needed.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
@@ -43,13 +43,6 @@
       "max": 1440,
       "step": 15,
       "default": 60
-    },
-    {
-      "name": "bgStyle",
-      "label": "Background",
-      "type": "select",
-      "options": ["solid", "glass", "transparent"],
-      "default": "solid"
     }
   ]
 }

@@ -2,7 +2,7 @@
   "id": "ws.stock.countdown",
   "name": "Countdown",
   "author": "Plinth",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Counts down to a date and time you set — biggest-unit readout, progress since you configured it, and a celebration when the moment arrives.",
   "min_api_version": 1,
   "supported_slots": [
@@ -22,17 +22,6 @@
       "type": "text",
       "placeholder": "2026-12-24 18:00",
       "default": ""
-    },
-    {
-      "name": "bgStyle",
-      "label": "Background",
-      "type": "select",
-      "options": [
-        "solid",
-        "glass",
-        "transparent"
-      ],
-      "default": "solid"
     }
   ]
 }

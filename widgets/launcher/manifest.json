@@ -2,7 +2,7 @@
   "id": "ws.stock.launcher",
   "name": "Launch App",
   "author": "Plinth",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "A grid of tappable shortcuts that start programs or open websites on the PC. Each shortcut is a name plus a target — \"C:\\path\\app.exe\" or \"https://site\" — and an optional leading emoji on the name becomes the tile icon.",
   "min_api_version": 1,
   "supported_slots": [
@@ -43,17 +43,6 @@
       "max": 8,
       "step": 1,
       "default": 0
-    },
-    {
-      "name": "bgStyle",
-      "label": "Background",
-      "type": "select",
-      "options": [
-        "solid",
-        "glass",
-        "transparent"
-      ],
-      "default": "solid"
     },
     {
       "name": "labelSize",

@@ -87,12 +87,6 @@
     cfg.maxVideoSeconds = Math.min(300, Math.max(10, Number(s.maxVideoSeconds) || 120));
     cfg.fit = s.fit === 'contain' ? 'contain' : 'cover';
     cfg.showName = s.showName === 'on';
-    // bgStyle drives the widget-base panel-opacity classes; anything that isn't
-    // explicitly glass/transparent renders solid, matching pre-token behavior
-    // for unset AND out-of-spec values (no class = glass in the base).
-    document.body.classList.toggle('bg-solid', s.bgStyle !== 'transparent' && s.bgStyle !== 'glass');
-    document.body.classList.toggle('bg-glass', s.bgStyle === 'glass');
-    document.body.classList.toggle('bg-transparent', s.bgStyle === 'transparent');
     // Caption color comes from the theme tokens (global theme or the per-slot
     // style override) — legacy captionColor keys in old layouts are ignored.
     document.body.style.setProperty('--caption-scale', (Number(s.captionSize) || 100) / 100);

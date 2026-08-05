@@ -131,10 +131,6 @@
 
   WW.onInit((state) => {
     const s = state.settings;
-    const bg = (s.bgStyle === 'glass' || s.bgStyle === 'transparent') ? s.bgStyle : 'solid';
-    document.body.classList.toggle('bg-solid', bg === 'solid');
-    document.body.classList.toggle('bg-glass', bg === 'glass');
-    document.body.classList.toggle('bg-transparent', bg === 'transparent');
 
     const all = parseTargets(s.targets);
     // The cap is real and worth keeping — twelve tiles is already past what this panel can

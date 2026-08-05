@@ -2,14 +2,13 @@
   "id": "ws.stock.volume",
   "name": "Volume Mixer",
   "author": "Plinth",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "The Windows volume mixer on your panel — master volume plus a slider and mute toggle for every app playing audio, iCUE style. Drag to set levels, tap to mute.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
   "properties": [
     { "name": "showMaster", "label": "Show master volume", "type": "select", "options": ["on", "off"], "default": "on" },
     { "name": "maxApps", "label": "Max apps shown", "type": "slider", "min": 3, "max": 12, "step": 1, "default": 8 },
-    { "name": "bgStyle", "label": "Background", "type": "select", "options": ["solid", "glass", "transparent"], "default": "solid" },
     { "name": "nameSize", "label": "Name size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" },
     { "name": "valueSize", "label": "Value size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" }
   ]

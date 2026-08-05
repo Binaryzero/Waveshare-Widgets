@@ -376,8 +376,9 @@ in `layout.json` as a `background` object on the layout root and/or on any page:
   is itself transparent. A page with zero slots becomes a pure wallpaper screen.
 - Stock widgets (clock, CPU, GPU, weather, media, Stream Deck) have a **Background**
   setting — `solid` (default), `glass` (translucent tint), or `transparent` — so they can
-  float directly on the wallpaper. Widget authors: paint your base background on `body`
-  and honor a `bgStyle` property the same way to fit in.
+  float directly on the wallpaper. Widget authors do NOT implement this: the panel declares
+  the property for every widget and `widget-api.js` applies the class inside your frame
+  before `onInit` runs. Paint your base background on `body` and it fits in for free.
 
 ---
 

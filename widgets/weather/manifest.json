@@ -2,7 +2,7 @@
   "id": "ws.stock.weather",
   "name": "Weather",
   "author": "Plinth",
-  "version": "1.9.2",
+  "version": "1.9.3",
   "description": "Current conditions plus hourly or 6-day forecast from Open-Meteo. Search your city by name — no coordinates, no API key.",
   "min_api_version": 1,
   "supported_slots": [
@@ -36,17 +36,6 @@
         "off"
       ],
       "default": "hourly"
-    },
-    {
-      "name": "bgStyle",
-      "label": "Background",
-      "type": "select",
-      "options": [
-        "solid",
-        "glass",
-        "transparent"
-      ],
-      "default": "solid"
     },
     {
       "name": "tempSize",

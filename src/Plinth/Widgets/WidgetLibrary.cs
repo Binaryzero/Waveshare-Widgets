@@ -599,6 +599,14 @@ public sealed partial class WidgetLibrary : IDisposable
                 if (manifest.Properties.Count == 0)
                     manifest.Properties = IcueManifestReader.ParseProperties(indexPath);
 
+                // Also after the iCUE parse, and BEFORE the credential check below — which
+                // is the point. A dropped property must never have existed as far as the
+                // rest of the host is concerned, and CredentialsAreTyped is the first thing
+                // downstream that would form an opinion about one.
+                var dropped = manifest.DropShellOwnedProperties();
+                if (dropped > 0)
+                    Log.Info($"Widget '{manifest.Id}' declares {dropped} property(ies) the panel supplies; ignoring its own");
+
                 // AFTER the iCUE parse, not before: at IsValid time an iCUE widget has no
                 // properties at all, so checking there would exempt exactly the widgets
                 // least likely to have met the build-time validator (issue #57).
@@ -846,6 +854,14 @@ public sealed partial class WidgetLibrary : IDisposable
             // lives here rather than beside IsValid above.
             if (manifest.Properties.Count == 0)
                 manifest.Properties = IcueManifestReader.ParseProperties(Path.Combine(stageDir, "index.html"));
+            // The same drop RescanCore does, in the same position — after the iCUE parse and
+            // before the credential check. Both paths or neither: without it here, a package
+            // declaring bgStyle as a credential type is REFUSED when installed through the
+            // UI and silently accepted when the identical folder is picked up by a rescan.
+            // One outcome for one manifest, whichever door it came through.
+            var droppedOnInstall = manifest.DropShellOwnedProperties();
+            if (droppedOnInstall > 0)
+                Log.Info($"Package '{manifest.Id}' declares {droppedOnInstall} property(ies) the panel supplies; ignoring its own");
             if (!manifest.CredentialsAreTyped(out var credentialError))
                 throw new InvalidDataException(
                     $"Refusing to install '{manifest.Name}': {credentialError}");

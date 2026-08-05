@@ -43,6 +43,15 @@ const path = require('path');
 global.window = {};
 require(path.join(__dirname, '../src/Plinth/Shell/palette.js'));
 const derive = global.window.WWPalette.derive;
+// The panel's shell-owned appearance properties, loaded the same way. The runners merge
+// MANIFEST defaults into settings to mirror what a widget receives — but the panel also
+// supplies properties no manifest declares, so without this the offline payload is missing
+// fields the real ww-init always carries. Inert today (bgStyle's default is solid, which is
+// also what widget-api assumes when it is absent) and that is exactly why it is wired now:
+// the divergence would be invisible until a universal property arrived with a default that
+// mattered, and then it would look like a widget bug.
+require(path.join(__dirname, '../src/Plinth/Shell/appearance.js'));
+const universalProperties = global.window.WWAppearance.universalProperties;
 
 const SHELL = path.join(__dirname, '../src/Plinth/Shell');
 const SLOTS = {
@@ -79,6 +88,7 @@ const settings = (() => {
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(folder, 'manifest.json'), 'utf8'));
     for (const prop of manifest.properties || []) if (prop.name) merged[prop.name] = prop.default;
+    for (const prop of universalProperties()) merged[prop.name] = prop.default;
   } catch (e) { /* validator owns manifest errors */ }
   return Object.assign(merged, given);
 })();

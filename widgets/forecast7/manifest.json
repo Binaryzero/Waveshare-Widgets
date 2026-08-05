@@ -2,7 +2,7 @@
   "id": "ws.stock.forecast7",
   "name": "7-Day Forecast",
   "author": "Plinth",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "description": "Week-ahead outlook from Open-Meteo: seven days of condition, high/low and precipitation chance for any city — no API key. Inspired by DGM Previsión 7 días from the Xenon gallery.",
   "min_api_version": 1,
   "supported_slots": [
@@ -25,17 +25,6 @@
         "fahrenheit"
       ],
       "default": "celsius"
-    },
-    {
-      "name": "bgStyle",
-      "label": "Background",
-      "type": "select",
-      "options": [
-        "solid",
-        "glass",
-        "transparent"
-      ],
-      "default": "solid"
     }
   ]
 }

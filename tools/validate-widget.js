@@ -410,11 +410,139 @@ function validate(folder) {
   if (/setInterval\s*\([^)]*,\s*([0-9]{1,2})\s*\)/.test(html))
     warn('fast-timer', 'setInterval under 100ms — this runs 24/7 on the panel; batch or slow it down');
 
-  // bgStyle contract: widgets that offer the setting must map it to the base classes,
-  // with solid as the fallback for unset/out-of-spec values.
-  const hasBgStyle = (manifest.properties || []).some((p) => p.name === 'bgStyle');
-  if (hasBgStyle && !/bg-solid/.test(html))
-    err('bgstyle-mapping', 'bgStyle property declared but bg-solid is never applied — unset values must render solid (see the stock clock)');
+  // Appearance the SHELL owns. These are facts about the tile, not about what a widget
+  // displays, so the panel declares them and widget-api.js applies them inside the frame —
+  // see Shell/appearance.js. This rule used to be the opposite: it REQUIRED every widget
+  // that declared bgStyle to map it by hand, which is how 31 identical declarations and
+  // two different hand-written spellings of the same three lines came to exist.
+  //
+  // Declaring one is an error rather than a warning because a declaration is not merely
+  // redundant — the shell drops it, so the author would be looking at a control in their
+  // manifest that has no effect on anything, which is worse than not having written it.
+  // The panel's property names. Kept in step with Shell/appearance.js by hand — this file
+  // is Node and that one is a browser IIFE, and a require() shim across that boundary buys
+  // less than it costs for a one-entry list.
+  const SHELL_OWNED = ['bgStyle'];
+
+  // A widget may declare properties in the MANIFEST or, for iCUE-compatible packages, in
+  // <meta name="x-icue-property"> tags — IcueManifestReader parses those when the manifest
+  // list is empty, so a package can declare a shell-owned name down the supported iCUE path
+  // and be just as wrong there. Checking only the manifest would enforce the contract for
+  // widgets written here and exempt exactly the imported ones it exists to protect against.
+  const icueNames = startTags(html, 'meta')
+    .filter((m) => (attr(m.tag, 'name') || '').toLowerCase() === 'x-icue-property')
+    .map((m) => String(attr(m.tag, 'content') || '').split(/[;,]/)[0].trim())
+    .filter(Boolean);
+  const declaredNames = (manifest.properties || []).map((p) => p && p.name).filter(Boolean)
+    .concat(icueNames);
+  for (const name of SHELL_OWNED) {
+    if (declaredNames.some((n) => n === name))
+      err('shell-owned-property', `"${name}" is supplied by the panel for every widget — remove it from the manifest (the shell ignores a declared one, so it would render as a dead control)`);
+  }
+
+  // Applying the classes by hand fights the shell. Not merely duplicated work: widget-api
+  // applies these at init, so a widget that also sets them races the panel and wins or
+  // loses on callback order.
+  //
+  // Read from SCRIPT bodies, not from `noComments` — that one holds the <style> blocks and
+  // nothing else, so a JS pattern tested against it can never match and the rule would pass
+  // for every widget including the broken ones. Comments are stripped so the prose in a
+  // header block explaining that the panel owns this cannot trip the rule enforcing it.
+  //
+  // LOCAL script files are read too. Only EXTERNAL script srcs are refused by this
+  // validator, so `<script src="helper.js">` is a supported shape and one stock widget
+  // already uses it — scanning inline bodies alone would leave the contract unenforced for
+  // exactly the packaging that hides it best. Resolved inside the widget folder and read
+  // best-effort: an unreadable helper is the packaging rules' business, not this rule's.
+  const stripComments = (js) => js
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  let scriptJs = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]).join('\n');
+  // Resolved against the document BASE, in DOCUMENT ORDER. A relative <base href="./sub/">
+  // is a permitted shape here — only an external one is refused — and a browser loads
+  // `<script src="helper.js">` from `sub/helper.js` under it.
+  //
+  // Order matters and is not a detail: a browser resolves each script against the base in
+  // force AT THAT POINT, so `<script src="helper.js"></script><base href="./sub/">` loads
+  // the ROOT helper. Applying the document's only base to every script would read
+  // `sub/helper.js` instead — the file the page never loads — and report a root helper that
+  // writes the class as clean.
+  const bases = startTags(html, 'base')
+    .map((m) => ({ index: m.index, href: attr(m.tag, 'href') }))
+    .filter((x) => x.href && !isExternalRef(x.href));
+  const baseAt = (index) => {
+    const inForce = bases.filter((x) => x.index < index);
+    return inForce.length ? inForce[0].href.replace(/[^/]*$/, '') : '';   // first wins, as in a browser
+  };
+  const root = path.resolve(folder);
+  for (const m of startTags(html, 'script')) {
+    // TRIMMED once, and every later test uses the trimmed value. isExternalRef strips
+    // whitespace before classifying and `new URL` strips it too, so a guard reading the raw
+    // attribute disagrees with both: `src=" https://app.plinth/widget-api.js "` is allowed
+    // as the shell origin, fails a scheme test anchored at position 0, and lands back here
+    // as though it named a file in the package. One normalisation, one answer.
+    const src = (attr(m.tag, 'src') || '').trim();
+    if (!src || isExternalRef(src)) continue;
+    // isExternalRef is the WRONG test on its own here: it deliberately returns false for
+    // the allowed shell origin, so `https://app.plinth/widget-api.js` looked origin-relative
+    // and this reader went looking for <folder>/widget-api.js. A widget that ships an
+    // unrelated file by that name — packaging leftovers, a vendored copy — would have had it
+    // read and could be failed for a string in a file the browser never executes. Anything
+    // carrying a scheme or an authority is served from somewhere else; only a genuinely
+    // relative reference names a file inside this package.
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(src) || src.startsWith('//')) continue;
+    // URL semantics, not path arithmetic. A browser resolves dot segments against the
+    // ORIGIN and clamps at its root, so from /index.html `../helper.js` still loads
+    // /helper.js. Treating that as an escape — which path.resolve does — skipped the file
+    // and reported a widget clean while the page ran it. Resolve on a throwaway origin,
+    // then map the normalised pathname back into the folder.
+    let rel;
+    try {
+      rel = new URL(src.split('#')[0], 'https://w.invalid/' + baseAt(m.index)).pathname;
+    } catch (e) { continue; }
+    const file = path.resolve(root, decodeURIComponent(rel).replace(/^\/+/, ''));
+    if (file !== root && !file.startsWith(root + path.sep)) continue;   // belt and braces
+    try { scriptJs += '\n' + fs.readFileSync(file, 'utf8'); } catch (e) { /* unreadable: not this rule's business */ }
+  }
+  // Inline event handlers are script too. `<body onload="document.body.className='bg-solid'">`
+  // runs AFTER the shim has stamped the panel's class, so it silently wins — and it is not
+  // inside a <script> block, so a scan of those alone never sees it. Every on* attribute on
+  // every start tag is appended; they are expressions rather than statements, which the
+  // patterns below do not care about.
+  for (const m of html.matchAll(/<[a-zA-Z][^\s/>]*(?=[\s/>])/g)) {
+    const tag = html.slice(m.index, (html.indexOf('>', m.index) + 1) || html.length);
+    for (const [name, value] of tagAttributes(tag))
+      if (/^on[a-z]+$/.test(name) && value) scriptJs += '\n' + value;
+  }
+  scriptJs = stripComments(scriptJs);
+
+  // A COMPLETE class token, not a substring. `bg-solid` sits inside both `bg-solid-ish`
+  // and `my-bg-solid`; neither is a class the panel owns, and flagging either blocks a
+  // valid widget. Both ends are bounded for that reason — the trailing one was added first
+  // and the leading one was still missing, which is the same mistake twice.
+  const BG_TOKEN = '(?<![\\w-])bg-(?:solid|glass|transparent)(?![\\w-])';
+  const BG_CLASS = new RegExp(BG_TOKEN);
+  const selfApplied = [
+    new RegExp('classList\\s*\\.\\s*(?:toggle|add|remove|replace)\\s*\\([^)]*' + BG_TOKEN),
+    new RegExp('className\\s*(?:=|\\+=)[^;\\n]*' + BG_TOKEN),
+    new RegExp('setAttribute\\s*\\(\\s*[\'"]class[\'"][^)]*' + BG_TOKEN),
+  ].some((re) => re.test(scriptJs));
+  if (selfApplied)
+    err('bgstyle-selfapplied', 'the widget sets its own bg-* classes — widget-api.js applies the panel\'s background style; remove the local handling');
+
+  // ...and statically, in the markup. `<body class="bg-solid">` is less a race than a lie:
+  // it paints one frame of a tile the panel may not have asked for, and it is the widget
+  // claiming a class it does not own.
+  //
+  // Parsed with the real attribute reader rather than sliced with a regex. `<body[^>]*>`
+  // ends at the first `>` ANYWHERE, including one inside a quoted value, so
+  // `<body data-note=">" class="bg-solid">` hands the check a fragment with no class in it
+  // and the rule passes on markup a browser renders with the class applied. tagAttributes
+  // already handles quoted delimiters and entity-decoding; the shortcut existed only
+  // because I did not look for it.
+  const bodyClass = startTags(html, 'body').map((m) => attr(m.tag, 'class') || '').join(' ');
+  if (BG_CLASS.test(bodyClass))
+    err('bgstyle-static', 'the <body> tag hard-codes a bg-* class — the panel owns the background style; remove it from the markup');
 
   // Reduced motion: infinite animations should freeze under prefers-reduced-motion.
   if (/animation[^;]*infinite/.test(noComments) && !/prefers-reduced-motion/.test(noComments))

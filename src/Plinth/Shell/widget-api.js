@@ -304,6 +304,56 @@
     }
   }
 
+  /// The panel's background style, applied for the widget rather than by it.
+  ///
+  /// Every widget used to carry this itself, from a property every manifest declared. It is
+  /// a fact about the tile, not about the thing displayed in it, so the shell owns it and
+  /// this puts it on the document — see Shell/appearance.js for the other half.
+  ///
+  /// Unset and unrecognised both mean `solid`, which keeps a widget that never heard of the
+  /// setting (an iCUE port, a third-party package) rendering as an ordinary opaque tile
+  /// instead of vanishing onto the wallpaper.
+  /// The style the panel last asked for, held so it can be stamped the moment there is a
+  /// <body> to stamp it on. Null until the first ww-init.
+  let backgroundClass = null;
+
+  /// Idempotent, and called from more than one place ON PURPOSE — see stampBackground's
+  /// call site in onInit. Re-running it is three classList.toggle calls with the same
+  /// arguments, which is cheaper than reasoning about whether it already happened.
+  function stampBackground() {
+    const body = document.body;
+    if (!body || !backgroundClass) return;
+    body.classList.toggle('bg-solid', backgroundClass === 'solid');
+    body.classList.toggle('bg-glass', backgroundClass === 'glass');
+    body.classList.toggle('bg-transparent', backgroundClass === 'transparent');
+  }
+
+  function applyBackground(settings) {
+    const raw = settings && settings.bgStyle;
+    backgroundClass = (raw === 'glass' || raw === 'transparent') ? raw : 'solid';
+    // The classes land on <body>, which may not exist yet: ww-init can arrive DURING
+    // document parse — the shell answers ww-ready while the widget-api script tag is still
+    // blocking the parser — so `document.body` is genuinely null on a first init often
+    // enough to matter. Stamping documentElement instead would be wrong rather than late,
+    // because widget-base.css re-declares the derived alphas at body scope precisely so the
+    // bg-* override beats them.
+    stampBackground();
+  }
+
+  // Registered HERE, at shim load, rather than from applyBackground when body is missing.
+  // Registration ORDER decides who runs first, and this file is injected ahead of
+  // icue-compat.js — which registers its own DOMContentLoaded listener at ITS load and
+  // fires icueEvents.onICUEInitialized from it. A listener added later, from inside the
+  // ww-init handler, would therefore run AFTER an iCUE widget's lifecycle callback had
+  // already rendered, so a transparent tile still took its first paint on the wrong
+  // background. Being first in the queue is the whole point of the placement.
+  //
+  // Harmless before any init: stampBackground no-ops while backgroundClass is null. This
+  // covers documents that register nothing — an iCUE widget drives its own lifecycle and
+  // may never call WW.onInit at all, so the onInit path below cannot be the only guard.
+  if (typeof document !== 'undefined' && document.addEventListener)
+    document.addEventListener('DOMContentLoaded', stampBackground, { once: true });
+
   function applyThemeTokens(theme) {
     if (!theme || typeof theme !== 'object') return;
     state.theme = theme;
@@ -336,6 +386,10 @@
       if (msg.notifications !== undefined) state.notifications = msg.notifications;
       // Design tokens land on :root before init callbacks so first paint is themed.
       applyThemeTokens(msg.theme);
+      // Same reason, same moment: a widget that measures or paints in its own onInit must
+      // already be inside the right background, or a transparent tile paints one frame as
+      // an opaque one. Re-runs on every init, which is also how a settings edit arrives.
+      applyBackground(state.settings);
       // Clears the "waiting for panel data" stamp widget-base.css renders: a
       // widget that loads but never receives init must say so ON SCREEN instead
       // of sitting as an undiagnosable blank tile (field report: empty deck).
@@ -645,7 +699,13 @@
     fitText,
 
     /** cb(state) — fires once settings/sensors are first delivered. */
-    onInit(cb) { listeners.init.push(cb); if (state.ready) cb(state); },
+    // The replay path is the one that races the background class. A widget's own script
+    // runs partway down the body, so by the time it registers here the document HAS a body
+    // but DOMContentLoaded has not fired — and because init already arrived, this callback
+    // runs synchronously, right now, before the deferred stamp would have. Stamping first
+    // means the callback's first paint and any measurement it takes are inside the right
+    // tile. No-ops when the class already landed.
+    onInit(cb) { listeners.init.push(cb); if (state.ready) { stampBackground(); cb(state); } },
     /** cb(sensors) — fires on every poll tick (~2 s). */
     onSensors(cb) { listeners.sensors.push(cb); },
     /** cb(media) — fires when now-playing info changes. */

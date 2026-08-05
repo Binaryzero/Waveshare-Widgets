@@ -651,7 +651,11 @@
     applyThemeTokens(data.theme);
 
     layoutData = (data.layout && Array.isArray(data.layout.pages)) ? data.layout : { pages: [] };
-    widgetLib = data.widgets || [];
+    // Normalised at the one door the catalog comes through — see Shell/appearance.js.
+    // Downstream (mergedSettings, buildPropRows, the palette) reads an already-correct
+    // property list and needs no idea that some properties are the panel's, not the
+    // widget author's.
+    widgetLib = window.WWAppearance.normalizeCatalog(data.widgets);
     widgetsById = new Map(widgetLib.map((w) => [w.id, w]));
     backgroundHost = data.backgroundHost || backgroundHost;
 
