@@ -46,7 +46,20 @@ const OUT = process.argv[2] || path.join(POC, 'shots');  // committed screenshot
     page.on('requestfailed', (r) => errs.push('REQFAIL ' + r.url().slice(0, 120)));
     await page.goto('file://' + path.join(POC, d, 'index.html'));
     await page.evaluate(() => document.fonts.ready);
-    await page.waitForTimeout(900);
+    // Freeze every animation at the SAME phase, one second into its cycle, instead of
+    // letting wall-clock timing decide where each breathing dot and EQ bar happens to be.
+    // animation:none would be wrong, not just blunt -- an element animated from its
+    // keyframes can collapse to a base state the design never shows. And a negative
+    // animation-delay is wrong too, which the first version of this learned from a 6x6px
+    // pixel-diff localised to one breathing dot: changing the delay of an already-running
+    // CSS animation shifts its elapsed time, it does not pin absolute phase, so the pause
+    // still landed wherever font-load timing had let the animation get to. The Web
+    // Animations API pins it exactly: pause, then set currentTime.
+    await page.addStyleTag({ content: '*, *::before, *::after { transition: none !important; }' });
+    await page.evaluate(() => {
+      for (const a of document.getAnimations({ subtree: true })) { a.pause(); a.currentTime = 1000; }
+    });
+    await page.waitForTimeout(120);
     const [w, h] = await page.evaluate(() => [document.body.scrollWidth, document.body.scrollHeight]);
     await page.screenshot({ path: path.join(OUT, `${d}.png`) });
     if (w !== 1280 || h !== 400 || errs.length) failed++;
