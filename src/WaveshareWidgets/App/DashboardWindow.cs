@@ -1233,8 +1233,8 @@ public sealed class DashboardWindow : Form
     /// <summary>The last demand generation the shell told us about (#132).</summary>
     /// <remarks>
     /// Written from the web-message handler and read from PostToShell. Those are both the UI
-    /// thread today, but a push can originate on a worker — NotificationCenter and
-    /// GameModeWatcher raise their events from timer threads — and PostToShellThreadSafe
+    /// thread today, but a push can originate on a worker — NotificationCenter raises its
+    /// events from a timer thread — and PostToShellThreadSafe
     /// marshals rather than blocks, so the read is not guaranteed to be on the writer's
     /// thread. Volatile rather than a lock: a stale read costs one dropped push, which the
     /// next poll replaces, while a lock on the push path would be contention for nothing.

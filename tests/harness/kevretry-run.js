@@ -1,26 +1,25 @@
 #!/usr/bin/env node
-// CISA KEV: pressing Retry while a game is running (issue #164).
+// CISA KEV: pressing Retry while the panel is hidden (issue #164).
 //
-// The game-mode gate suspends polling while a fullscreen game is foreground, because the
-// tile downloads and parses a multi-megabyte catalog on a machine whose frame budget is
-// spoken for. Retry did not account for it: it painted a spinner, cleared the failure
-// count and called tick(), which returned through the gameOn guard without recording
-// that a retry had been asked for. Nothing marked the poll as due, so when the game ended
-// onGame re-armed the EXISTING deadline — pollAnchor + one interval, measured from the
-// last attempt. At refreshMinutes 1440 the tile could sit on a spinner for a day, having
-// told the reader it was retrying.
+// Polling is suspended while the document is hidden, because the tile downloads and
+// parses a multi-megabyte catalog and a panel nobody is looking at has no claim on that.
+// Retry did not account for it: it painted a spinner, cleared the failure count and
+// called tick(), which returned through the hidden guard without recording that a retry
+// had been asked for. Nothing marked the poll as due, so coming back re-armed the
+// EXISTING deadline — pollAnchor + one interval, measured from the last attempt. At
+// refreshMinutes 1440 the tile could sit on a spinner for a day, having told the reader
+// it was retrying.
 //
 // Both halves are asserted, because either alone is still a lie:
 //
-//   K1 · setup: a game is running and the feed has failed, so the error card is up
-//   K2 · pressing Retry while the game runs does NOT fetch — the gate still holds
-//   K3 · ...and the tile does not claim to be loading something it is not doing
-//   K4 · when the game ends, the retry actually happens, and promptly
+//   K1 · setup: the feed has failed, so the error card is up
+//   K2 · pressing Retry while the panel is hidden does NOT fetch — the gate still holds
+//   K4 · when the panel comes back, the retry actually happens, and promptly
 //   K5 · the request is a real feed request, not a cache read or a re-render
-//   K6 · a game ending with NO retry pending does not fetch early — the gate is not
-//        simply disabled, which is what K4 would also look like
-//   K1b· with no game running, Retry is unchanged: it fetches at once and says so,
-//        because gating the wording added an early return in front of that path
+//   K6 · a panel coming back with NO retry pending does not fetch early — the gate is
+//        not simply disabled, which is what K4 would also look like
+//   K1b· with the panel visible, Retry is unchanged: it fetches at once and says so,
+//        because the deadline bookkeeping sits in front of that path too
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -95,6 +94,18 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
   const shim = fs.readFileSync(path.join(SHELL, 'widget-api.js'), 'utf8') + '\n'
              + fs.readFileSync(path.join(SHELL, 'icue-compat.js'), 'utf8');
   await page.addInitScript(shim);
+  // The pause under test is a hidden document, which Playwright cannot impose on a frame
+  // — so `hidden` and `visibilityState` are backed by a flag, in EVERY frame (the widget
+  // reads its own document, not the shell's) and before any widget script runs.
+  await page.addInitScript(() => {
+    window.__hidden = false;
+    Object.defineProperty(document, 'hidden', { get: () => window.__hidden === true, configurable: true });
+    Object.defineProperty(document, 'visibilityState',
+      { get: () => (window.__hidden === true ? 'hidden' : 'visible'), configurable: true });
+    // Flipped the way a browser flips it: the flag first, then the event — the widget
+    // re-arms and catches up from the handler, not at some later tick.
+    window.__wwHide = (on) => { window.__hidden = !!on; document.dispatchEvent(new Event('visibilitychange')); };
+  });
   await page.addInitScript(({ widgetUrl, widgetOrigin, initMessage }) => {
     if (window.top !== window) return;
     let frame = null;
@@ -118,11 +129,12 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     widgetOrigin: 'https://widget.test',
     // refreshMinutes 1440: the interval the issue names, so a poll that is NOT marked due
     // cannot fire during this run by coincidence.
-    // No game at init: the tile has to poll and FAIL first, or there is no error card and
-    // no Retry button to press. The game is started afterwards, which is also the real
-    // sequence — a reader sees a failed tile, launches a game, then presses Retry.
+    // Visible at init: the tile has to poll and FAIL first, or there is no error card and
+    // no Retry button to press. The document is hidden afterwards, and Retry is pressed
+    // while it is — a press that lands as the window goes away is exactly the case where
+    // the bookkeeping is all that survives.
     initMessage: { type: 'ww-init', settings: { maxItems: 6, windowDays: 7, refreshMinutes: 1440 },
-      sensors: [], media: null, theme: {}, game: { active: false, process: '' },
+      sensors: [], media: null, theme: {},
       status: { elevated: false, apiVersion: 1 } },
   });
 
@@ -143,10 +155,10 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     !!retryBtn && feedHits > 0, `feedHits=${feedHits} retry=${!!retryBtn}`);
   if (!retryBtn) { await browser.close(); process.exit(1); }
 
-  // ---- K1b · the ordinary path, before any game is involved -------------------------
-  // Gating the wording put an early return in front of the normal branch, so the plain
-  // Retry is the thing this change could have broken. Asserted HERE, while the error
-  // card is up and nothing is gated — after the game sequence the tile is showing data
+  // ---- K1b · the ordinary path, while the panel is visible ---------------------------
+  // The bookkeeping this issue added sits in front of the normal branch, so the plain
+  // Retry is the thing that change could have broken. Asserted HERE, while the error
+  // card is up and nothing is gated — after the hidden sequence the tile is showing data
   // and the button is no longer reachable.
   const beforePlain = feedHits;
   feedDelayMs = 1500;              // hold the request open so the in-flight state is visible
@@ -157,51 +169,35 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     return { spinner: vis(document.querySelector('#state .spinner')),
              pill: (document.getElementById('pill') || {}).textContent || '' };
   });
-  check('K1b Retry with no game running still fetches at once', feedHits > beforePlain,
+  check('K1b Retry on a visible panel still fetches at once', feedHits > beforePlain,
     `${feedHits - beforePlain} request(s)`);
   check('K1b2 ...and reports it as loading while it runs',
     plain.spinner || plain.pill === 'Loading', `spinner=${plain.spinner} pill="${plain.pill}"`);
 
-  // Let the held request finish and fail, so the card is back for the game sequence.
+  // Let the held request finish and fail, so the card is back for the hidden sequence.
   feedDelayMs = 0;
   await page.waitForTimeout(1800);
 
-  // NOW the game starts — the reader launched something after the tile had already failed.
-  await page.evaluate(() => window.__wwPush({ type: 'ww-game', game: { active: true, process: 'game.exe' } }));
+  // NOW the panel goes away — after the tile had already failed.
+  await frame.evaluate(() => window.__wwHide(true));
   await page.waitForTimeout(300);
 
-  // ---- K2/K3 · pressing Retry under the gate ----------------------------------------
+  // ---- K2 · pressing Retry under the gate --------------------------------------------
   const before = feedHits;
   retryBtn = await frame.$('#state .btn');
   if (!retryBtn) { console.log('  FAIL K2 setup: the Retry button vanished before it could be pressed'); await browser.close(); process.exit(1); }
   await retryBtn.click();
   await page.waitForTimeout(1200);
-  check('K2 Retry under a running game does not fetch', feedHits === before,
+  check('K2 Retry while the panel is hidden does not fetch', feedHits === before,
     `${feedHits - before} request(s)`);
-  // The tile must not present this as work in progress. A spinner here is a promise the
-  // widget cannot keep while the gate holds, and it is the state this widget has spent
-  // several rounds learning not to show.
-  const shown = await frame.evaluate(() => {
-    const vis = (el) => el && el.getBoundingClientRect().width > 4 && getComputedStyle(el).visibility !== 'hidden';
-    return {
-      spinner: vis(document.querySelector('#state .spinner')),
-      text: (document.querySelector('#state') || {}).innerText || '',
-      pill: (document.getElementById('pill') || {}).textContent || '',
-    };
-  });
-  // KEV_SHOT=<path> captures the queued card, because "the wording is honest" is a claim
-  // about what a reader sees and is checked by looking at it.
-  if (process.env.KEV_SHOT) await page.screenshot({ path: process.env.KEV_SHOT });
-  check('K3 ...and does not show a spinner that cannot resolve',
-    !shown.spinner, `spinner=${shown.spinner} pill="${shown.pill}" text="${shown.text.replace(/\s+/g, ' ').trim().slice(0, 90)}"`);
 
-  // ---- K4/K5 · the game ends --------------------------------------------------------
+  // ---- K4/K5 · the panel comes back --------------------------------------------------
   feedAnswers = true;
   const beforeEnd = feedHits;
-  await page.evaluate(() => window.__wwPush({ type: 'ww-game', game: { active: false, process: '' } }));
+  await frame.evaluate(() => window.__wwHide(false));
   await page.waitForTimeout(1500);
-  check('K4 when the game ends, the queued retry actually runs', feedHits > beforeEnd,
-    `${feedHits - beforeEnd} request(s) after the game ended`);
+  check('K4 when the panel comes back, the queued retry actually runs', feedHits > beforeEnd,
+    `${feedHits - beforeEnd} request(s) after the panel returned`);
   const settled = await frame.evaluate(() => {
     const vis = (el) => el && el.getBoundingClientRect().width > 4 && getComputedStyle(el).visibility !== 'hidden';
     return { state: vis(document.querySelector('#state')), body: document.body.innerText.replace(/\s+/g, ' ').trim() };
@@ -210,15 +206,15 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     !settled.state && settled.body.includes('Acme'), settled.body.slice(0, 110));
 
   // ---- K6 · the gate is not simply switched off -------------------------------------
-  // K4 passes just as well if a game ending always polls, which would defeat the whole
-  // point of the gate. A SECOND game, with no retry pending and a deadline a day out,
-  // must end without fetching.
+  // K4 passes just as well if coming back always polls, which would defeat the whole
+  // point of the gate. A SECOND hide and return, with no retry pending and a deadline a
+  // day out, must fetch nothing.
   const beforeIdle = feedHits;
-  await page.evaluate(() => window.__wwPush({ type: 'ww-game', game: { active: true, process: 'game.exe' } }));
+  await frame.evaluate(() => window.__wwHide(true));
   await page.waitForTimeout(400);
-  await page.evaluate(() => window.__wwPush({ type: 'ww-game', game: { active: false, process: '' } }));
+  await frame.evaluate(() => window.__wwHide(false));
   await page.waitForTimeout(1500);
-  check('K6 a game ending with nothing pending does NOT poll early',
+  check('K6 a panel returning with nothing pending does NOT poll early',
     feedHits === beforeIdle, `${feedHits - beforeIdle} request(s)`);
 
   await browser.close();

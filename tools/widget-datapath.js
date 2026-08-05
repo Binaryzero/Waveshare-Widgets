@@ -63,7 +63,7 @@ const opt = (name, dflt) => {
 if (!folder) {
   console.error('usage: widget-datapath.js <widget-folder> --stubs <file.json> [--slot half] '
     + '[--theme dark|light] [--settings {json}] [--expect "text"] [--reject "text"] [--allow-state] '
-    + '[--wait 1500] [--shot out.png] [--game] [--json]');
+    + '[--wait 1500] [--shot out.png] [--json]');
   process.exit(1);
 }
 
@@ -119,9 +119,6 @@ if (args.includes('--allow-state') && expects.length === 0) {
 const waitMs = Number(opt('wait', 1500));
 const shot = opt('shot', null);
 const asJson = args.includes('--json');
-// Drive the game-mode gate. Several widgets suspend polling while a fullscreen game is
-// foreground, and with no way to say so offline that branch was unreachable here.
-const gameActive = args.includes('--game');
 
 function loadPlaywright() {
   const candidates = ['playwright', '/opt/node22/lib/node_modules/playwright',
@@ -141,8 +138,8 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
                fs.readFileSync(path.join(SHELL, 'icue-compat.js'), 'utf8');
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
   // serviceWorkers: 'block' — a service worker's requests do not pass through page.route,
-  // so a widget that registered one could reach the network past the stub table and past
-  // the game gate. Playwright's mechanism for that, set here because it costs nothing.
+  // so a widget that registered one could reach the real network past the stub table
+  // entirely. Playwright's mechanism for that, set here because it costs nothing.
   //
   // NOT a demonstrated containment: with this set, a probe widget in the real sandboxed
   // cross-origin frame still had register() resolve, and the worker's failure to activate
@@ -199,9 +196,10 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // media.wsw and backgrounds.wsw are LOCAL virtual hosts, not the network:
   // DashboardWindow.MapVirtualHosts maps them to AppPaths.MediaDir and
   // AppPaths.BackgroundsDir, and WW.listMedia() hands widgets URLs on the first of them.
-  // Without a route here they fell through to the catch-all, which counted a widget's
-  // local media I/O as a network attempt and failed the game gate for a gallery doing
-  // exactly what its API told it to do. 404 rather than a file: this runner has no media
+  // Without a route here they fell through to the catch-all, which ABORTED a widget's
+  // local media I/O as though it were an un-stubbed endpoint — a gallery doing exactly
+  // what its API told it to do got a failed request where the panel hands it a local
+  // file, and then rendered the failure. 404 rather than a file: this runner has no media
   // library, and ww-media-list answers [] to match — a widget must handle a missing file
   // either way, and the answer is deterministic and local, which is what the contract
   // requires.
@@ -231,9 +229,10 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     const url = route.request().url();
     // Counted HERE, before any stub matching and before the abort. `served` and
     // __wwProxyServed only ever record a MATCHED fixture, so a widget that requests an
-    // unstubbed or renamed endpoint left both empty — and "no endpoint was requested"
-    // passed while the widget had gone to the network. The attempt is the fact the game
-    // gate is about, not whether a fixture happened to answer it.
+    // unstubbed or renamed endpoint leaves both empty while having gone to the network
+    // all the same. The attempt is the fact this list is for, not whether a fixture
+    // happened to answer it. No check reads the list today — it is the runner's ledger
+    // of what the widget tried to reach.
     // Every method, including OPTIONS — for the reasons written out in widget-harness.js,
     // which measured it: Playwright hands this handler the real request and delivers no
     // CORS preflight, so the filter that used to be here dropped nothing, and both runners
@@ -287,7 +286,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // A WebSocket passes through NONE of the routes above — page.route intercepts HTTP(S)
   // only, so `new WebSocket('wss://…')` left this runner for the real network. That is a
   // hole in the contract that every unmatched request here is deterministic and offline,
-  // not merely a blind spot in the game gate. Nothing this handler receives is connected
+  // not merely a gap in the record. Nothing this handler receives is connected
   // upstream (a socket is only forwarded if connectToServer() is called), so all of them
   // are refused; the non-local ones are counted, with the same host boundary the catch-all
   // uses. Stubs are HTTP fixtures, so there is nothing to serve a widget here — a widget
@@ -396,8 +395,8 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     // Distinct from __wwProxyServed, which records only a MATCHED fixture. This records
     // the two channels that leave the machine WITHOUT passing page.route — the shim posts
     // them to the shell and the HOST dials out. `WW.fetch(url, { proxy: 'always' })` skips
-    // the browser fetch entirely, and WW.ping is real ICMP, so a game gate built on the
-    // route alone was blind to both. Everything else a widget can post (ww-media-list,
+    // the browser fetch entirely, and WW.ping is real ICMP, so a record built on the route
+    // alone sees neither. Everything else a widget can post (ww-media-list,
     // ww-audio-*, ww-sd-*, ww-secure-*, ww-log, ww-action, ww-open-url) is answered inside
     // the host process and reaches no network.
     window.__wwHostCalls = [];
@@ -542,9 +541,9 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         // NOT host-local, which is what an earlier pass of this enumeration called it.
         // shell.js forwards it and DashboardWindow.OpenExternalUrl runs Process.Start on
         // the URL with UseShellExecute — the system browser then fetches it, which is
-        // external network activity the widget initiated, and a browser window thrown in
-        // front of a running game besides. Counted behind the host's own admission test:
-        // absolute http(s) only, exactly as OpenExternalUrl requires.
+        // external network activity the widget initiated, and a window thrown in front of
+        // whatever the user was doing besides. Counted behind the host's own admission
+        // test: absolute http(s) only, exactly as OpenExternalUrl requires.
         let openAbs = null;
         try { openAbs = new URL(String(m.url || '')); } catch (e) { openAbs = null; }
         if (openAbs && (openAbs.protocol === 'http:' || openAbs.protocol === 'https:'))
@@ -571,19 +570,13 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     widgetUrl: 'https://widget.test/index.html',
     widgetOrigin: 'https://widget.test',
     slotHash,
-    // The panel's ww-init carries EIGHT fields (shell.js initMessage); this used to send
-    // six. `game` was the gap that mattered: shell.js always sends it, so a widget reading
-    // state.game got an object there and undefined here, and the game-mode gate several
-    // widgets now use could not be exercised offline at all. `notifications` is null
-    // unless a slot subscribed, which is what a non-subscribing widget gets on the panel
-    // too — stated rather than omitted, so the difference is a decision.
+    // The panel's ww-init carries SEVEN fields (shell.js initMessage) and so does this
+    // one — a widget must see the same message here as on the panel, so a field the shell
+    // sends is sent here and a field it does not send is absent here too. `notifications`
+    // is null unless a slot subscribed, which is what a non-subscribing widget gets on the
+    // panel too — stated rather than omitted, so the difference is a decision.
     initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme,
-      notifications: null, // The process name is EXTENSIONLESS: GameModeWatcher fills it from
-      // Process.ProcessName, which is also what its ignored-process list matches against,
-      // so a widget that displays or branches on state.game.process must be exercised
-      // with that shape rather than with a filename.
-      game: { active: gameActive, process: gameActive ? 'game' : '' },
-      status: { elevated: false, apiVersion: 1 } },
+      notifications: null, status: { elevated: false, apiVersion: 1 } },
     table: stubs.map((s) => ({
       match: s.match, status: s.status, statusText: s.statusText,
       contentType: s.contentType, json: s.json, bodyText: bodyOf(s),
@@ -639,15 +632,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     return { visible: shown.length > 0, text: shown.map((el) => el.innerText || '').join(' ').replace(/\s+/g, ' ').trim() };
   });
   const allowState = args.includes('--allow-state');
-  // Under --game, what the tile shows is per-widget (spinner, retained data, or a full
-  // grid), so neither "state cleared" nor "state showing" is a rule that holds across
-  // widgets. Assert it with --expect where it matters.
-  // Under --game NEITHER branch runs. Guarding only the first one would have left the
-  // else asserting that a state layer IS showing, which is the same defect moved: a
-  // widget that keeps its grid while paused (endpoints) would fail for behaving well.
-  if (gameActive) {
-    // nothing to assert generically — see the note above
-  } else if (!allowState) {
+  if (!allowState) {
     check('state layer cleared (data is showing, not a spinner or error card)', !stateLayer.visible);
   } else {
     check('a state layer is showing (--allow-state asserts one)', stateLayer.visible);
@@ -674,39 +659,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // --allow-state, where not reaching the network IS the expected outcome (an
   // unconfigured widget makes no request at all).
   const proxyServed = await page.evaluate(() => window.__wwProxyServed || []);
-  if (gameActive) {
-    // Under --game the expectation INVERTS. A gated widget is supposed to make no
-    // network call at all, so requiring one would fail every widget that behaves
-    // correctly — and exempting the check instead would assert nothing about the only
-    // thing this mode exists to establish. Not reaching the network IS the result here.
-    //
-    // What the tile DRAWS while paused is deliberately not asserted: some show a
-    // spinner, some keep the data they already had, and endpoints keeps its whole grid.
-    // That is per-widget, so it belongs in --expect rather than in a blanket rule; the
-    // state-layer check below is skipped for the same reason.
-    // Both routes out: HTTP the browser made (page.route) and HTTP/ICMP the HOST would
-    // have made on the widget's behalf (ww-fetch, ww-ping). `served`/`proxyServed` were
-    // the wrong pair to report here — they count only fixtures that MATCHED, so the
-    // failure line could read "0 attempted (0 direct, 1 proxied)" while the widget had
-    // gone to the network twice.
-    const hostCalls = await page.evaluate(() => window.__wwHostCalls || []);
-    // ...plus WebRTC, read from the WIDGET frame — the document that would have
-    // constructed it; the shell is a different origin.
-    // EVERY frame, not just the slot's. The init script runs in each document, so a
-    // child iframe the widget creates records into its OWN __wwRtc — reading only the
-    // slot frame returned zero while a descendant was opening STUN/TURN or QUIC, which
-    // is traffic the panel would carry just the same. Three stock widgets frame
-    // third-party content and one frames a URL the user types, so a descendant is the
-    // ordinary case here, not an exotic one.
-    const peerApis = (await Promise.all(page.frames().map((f) =>
-      f.evaluate(() => window.__wwRtc || []).catch(() => [])))).flat();
-    const net = attempted.concat(hostCalls, peerApis);
-    check('no endpoint was requested while a game is running',
-      net.length === 0,
-      net.length + ' attempted (' + attempted.length + ' by the browser, '
-        + hostCalls.length + ' via the host, ' + peerApis.length + ' via WebRTC/WebTransport)'
-        + (net.length ? ': ' + net[0].slice(0, 80) : ''));
-  } else if (!allowState) {
+  if (!allowState) {
     check('a stubbed endpoint was actually requested (direct or proxy tier)',
       served.length + proxyServed.length > 0,
       served.length + ' direct, ' + proxyServed.length + ' proxied');
@@ -718,10 +671,22 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     await frame.evaluate(() => document.body.scrollWidth + 'w vs viewport ' + window.innerWidth));
 
   if (shot) await page.screenshot({ path: shot });
+
+  // `served`/`proxyServed` record only fixtures that MATCHED. These three record what was
+  // TRIED: browser HTTP/WS, what the HOST would have dialled on the widget's behalf
+  // (ww-fetch with proxy:'always' skips the browser fetch entirely, ww-ping is real ICMP),
+  // and WebRTC/WebTransport — the last read from EVERY frame, because the init script runs
+  // in each document and a child iframe the widget creates records into its own __wwRtc.
+  // Nothing asserts on them; they are how a widget that requested a renamed endpoint stops
+  // looking identical to one that requested nothing, which `served` alone cannot show.
+  const hostCalls = await page.evaluate(() => window.__wwHostCalls || []);
+  const peerApis = (await Promise.all(page.frames().map((f) =>
+    f.evaluate(() => window.__wwRtc || []).catch(() => [])))).flat();
   await browser.close();
 
   const ok = checks.every((c) => c.ok);
-  if (asJson) console.log(JSON.stringify({ folder, slot, theme: themeArg, ok, checks, served, proxyServed, consoleErrors }, null, 1));
+  if (asJson) console.log(JSON.stringify({ folder, slot, theme: themeArg, ok, checks, served, proxyServed,
+    attempted, hostCalls, peerApis, consoleErrors }, null, 1));
   else {
     console.log(`${ok ? 'OK  ' : 'FAIL'} ${folder} @ ${slot} (${themeArg}) — data path`);
     for (const c of checks) console.log(`  ${c.ok ? 'PASS' : 'FAIL'} ${c.name}${c.detail ? ' - ' + c.detail : ''}`);

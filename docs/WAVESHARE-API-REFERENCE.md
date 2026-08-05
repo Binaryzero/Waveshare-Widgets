@@ -171,13 +171,6 @@ WW.dismissNotification(id)      // dismiss one toast by id
 // Windows only grants the UserNotificationListener to apps with package identity
 // (MSIX-installed). On the portable zip install expect 'denied'/'unavailable' and
 // render an explanatory state card — never an empty list.
-
-// Game mode
-WW.game                         // {active, process} — a fullscreen game is foreground
-WW.onGame((g) => {})            // gate your JS timers/streams; CSS animation pauses automatically via html[data-game]
-// onGame fires on TRANSITIONS only. Seed your paused flag from WW.game.active (or
-// state.game, carried by ww-init) inside onInit, or a widget that loads DURING a
-// game never learns about it and keeps polling.
 ```
 
 `WW.onInit(cb)` fires immediately if data already arrived. All getters are live snapshots

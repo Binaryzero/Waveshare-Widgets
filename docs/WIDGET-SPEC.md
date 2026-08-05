@@ -237,23 +237,13 @@ WW.watchNotifications(true)                    // start the host's notification 
 WW.notifications                               // {state: 'allowed'|'denied'|'unavailable', items:[{id, app, appId, title, body, time}]}
 WW.onNotifications((n) => { ... })             // fires when the mirrored list changes
 WW.dismissNotification(id)                     // dismiss one toast by id
-
-WW.game                                        // {active, process} — a fullscreen game is foreground
-WW.onGame((g) => { ... })                      // fires on TRANSITIONS only — seed from WW.game at init
 ```
 
-Game mode also stamps `html[data-game="on"|"off"]` in every widget, and
-`widget-base.css` pauses ALL CSS animation while on — JS work is yours to gate via
-`WW.onGame`. Seed your paused flag from `WW.game.active` (or `state.game`, which
-`ww-init` carries) inside `onInit`: `onGame` reports later flips, not the state you
-started in, so a widget that only listens polls straight through a game that was
-already running when it loaded. Notification strings are untrusted external text: render them with
-`textContent`, never `innerHTML`. Windows only grants the notification listener to
-apps with **package identity** (MSIX-installed); on the portable zip install expect
-`state` to come back `denied` or `unavailable`, and design for it — the stock
-notifications widget shows an explanatory card instead of an empty list. A slot can also opt out of game time entirely with
-the "hide during games" checkbox in Settings (`hideInGame` in layout.json) — the shell
-hides it and returns it to the same grid cell afterwards.
+Notification strings are untrusted external text: render them with `textContent`, never
+`innerHTML`. Windows only grants the notification listener to apps with **package
+identity** (MSIX-installed); on the portable zip install expect `state` to come back
+`denied` or `unavailable`, and design for it — the stock notifications widget shows an
+explanatory card instead of an empty list.
 
 `WW.fetch` extras: `init.headers` (plain object, `Headers` instance, or `[[k,v]]`
 pairs — all shapes survive the host proxy hop, so authenticated APIs keep their

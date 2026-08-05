@@ -117,7 +117,7 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     widgetOrigin: 'https://widget.test',
     init: { type: 'ww-init',
       settings: { bgStyle: 'solid', maxItems: 24 },
-      sensors: [], media: null, theme: {}, game: { active: false, process: '' },
+      sensors: [], media: null, theme: {},
       status: { elevated: false, apiVersion: 1 } },
     // `data`, not `payload` — widget-api.js reads msg.data. Getting this wrong renders an
     // empty tile that still mounts cleanly, which is why T1 asserts the list overflowed

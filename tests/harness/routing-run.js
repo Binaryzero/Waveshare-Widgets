@@ -74,9 +74,11 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   window.__notifs = [];
   window.__decks = [];
   window.__caps = [];
+  window.__media = [];
   window.__initNotifs = [];
   WW.onInit((s) => { document.body.dataset.inited = '1'; window.__initNotifs.push(s.notifications); });
   WW.onNotifications((n) => window.__notifs.push(n));
+  WW.onMedia((m) => window.__media.push(m));
   WW.onStreamDeck((p) => window.__decks.push(p));
   WW.onStreamDeckCapture((c) => window.__caps.push(c));
   window.__deckNames = () => window.__decks.map((p) => (p && p.name) || '?');
@@ -604,18 +606,20 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
   check('R12e2 ...while this document\'s own stamp still is',
     ownDoc === 1, `${ownDoc} delivery(ies)`);
 
-  // R12d · game-mode must NOT be gated. GameModeWatcher raises Changed only on a
-  // transition, so the host never re-sends the current state; a dropped push would leave
-  // the shell believing the wrong game state until the next real transition, hiding or
-  // showing every hideInGame widget wrongly for the duration. Posted with a deliberately
-  // stale generation — the exact stamp that would get it dropped if someone ever extended
-  // the check to this channel.
+  // R12d · the gate belongs to the notifications channel and to nothing else. Every
+  // envelope the host posts is stamped in PostToShell, so a check applied one level up
+  // would drop them all — and `media` is where that is worst: the host sends it only when
+  // the session CHANGES, so a dropped push would leave the shell showing the wrong track
+  // until the next real transition. Posted with a deliberately stale generation — the
+  // exact stamp that would get it dropped if someone ever extended the check to this
+  // channel.
+  await sub.evaluate(() => { window.__media.length = 0; });
   await page.evaluate((d) => window.__push(d),
-    JSON.stringify({ type: 'game-mode', data: { active: true, process: 'game.exe' }, gen: '0:0' }));
+    JSON.stringify({ type: 'media', data: { title: 'Edge Case', artist: 'Transitions', playing: true }, gen: '0:0' }));
   await page.waitForTimeout(300);
-  const gameSeen = await page.evaluate(() => document.documentElement.dataset.game);
-  check('R12d an edge-triggered game-mode push is NOT dropped for its generation',
-    gameSeen === 'on', `data-game=${gameSeen}`);
+  const mediaSeen = await sub.evaluate(() => window.__media.map((m) => (m && m.title) || '?'));
+  check('R12d an edge-triggered push on an ungated channel survives a stale generation',
+    mediaSeen.includes('Edge Case'), JSON.stringify(mediaSeen));
 
   await browser.close();
   srv.close();
