@@ -10,7 +10,7 @@
 // the defect to be reproduced rather than assumed, which is what D1 does: it parses the
 // exact shape from the report and shows the OLD code throwing on it.
 using System.Text.Json;
-using WaveshareWidgets.App;
+using Plinth.App;
 
 var failures = 0;
 void Check(string name, bool ok, string? detail = null)

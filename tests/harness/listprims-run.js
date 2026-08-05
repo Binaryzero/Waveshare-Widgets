@@ -29,7 +29,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const SHELL = path.join(__dirname, '..', '..', 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(__dirname, '..', '..', 'src', 'Plinth', 'Shell');
 
 let failures = 0;
 const check = (name, ok, detail) => {

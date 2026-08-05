@@ -34,7 +34,7 @@ const http = require('http');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const PORT = 8954;
 
 function staticServer(rootDir, port) {
@@ -70,7 +70,7 @@ function catalogEntry(slug) {
     // the sandbox attribute relies on ("widgets cannot reach the shell's or each
     // other's origin"). Serving them same-origin would quietly test a weaker posture
     // than the one that ships.
-    url: `https://${slug}.widgets.wsw/index.html`,
+    url: `https://${slug}.widgets.plinth/index.html`,
     supportedSlots: m.supported_slots,
     properties: m.properties || [],
   };
@@ -88,10 +88,10 @@ function mapHosts(page) {
   };
   const rel = (u) => new URL(u).pathname.replace(/^\/+/, '');
   return Promise.all([
-    page.route('https://app.wsw/**', (r) => serve(r, SHELL, rel(r.request().url()))),
-    page.route('https://*.widgets.wsw/**', (r) => {
+    page.route('https://app.plinth/**', (r) => serve(r, SHELL, rel(r.request().url()))),
+    page.route('https://*.widgets.plinth/**', (r) => {
       const u = new URL(r.request().url());
-      serve(r, path.join(REPO, 'widgets', u.hostname.replace(/\.widgets\.wsw$/, '')), rel(r.request().url()));
+      serve(r, path.join(REPO, 'widgets', u.hostname.replace(/\.widgets\.plinth$/, '')), rel(r.request().url()));
     }),
   ]);
 }
@@ -152,7 +152,7 @@ const readDeck = (frame) => frame.evaluate(() => {
     const push = (obj) => page.evaluate((d) => window.__hostPush(d), JSON.stringify(obj)).catch(() => {});
     if (msg.type === 'settings-ready') {
       push({ type: 'settings-init', data: {
-        layout, widgets: [deck, clock], sensors: [], backgroundHost: 'backgrounds.wsw',
+        layout, widgets: [deck, clock], sensors: [], backgroundHost: 'backgrounds.plinth',
         status: { elevated: false, version: 'v0.2.0 (probe)' },
       } });
     } else if (msg.type === 'save-layout') {
@@ -168,7 +168,7 @@ const readDeck = (frame) => frame.evaluate(() => {
       if (kind) {
         push({ type: 'preview-host', message: { type: kind, data: {
           id: m.id, ok: true, status: 200, body: 'PREVIEW-SENTINEL',
-          results: [], items: [{ name: 'holiday.png', url: 'https://media.wsw/holiday.png' }],
+          results: [], items: [{ name: 'holiday.png', url: 'https://media.plinth/holiday.png' }],
         } } });
       }
     }
@@ -182,7 +182,7 @@ const readDeck = (frame) => frame.evaluate(() => {
     window.__hostPush = (json) => { const data = JSON.parse(json); listeners.forEach((cb) => { try { cb({ data }); } catch (e) {} }); };
   });
 
-  await page.goto(`http://127.0.0.1:${PORT}/src/WaveshareWidgets/Shell/settings.html`);
+  await page.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/settings.html`);
   await page.waitForTimeout(3000);   // replica boot, widget iframes, ww-ready round trip
 
   const replica = page.frames().find((f) => /Shell\/index\.html/.test(f.url()));
@@ -197,7 +197,7 @@ const readDeck = (frame) => frame.evaluate(() => {
   // Every slot is built up front, so all the deck documents exist at once. Read them
   // by their slot tag rather than by "the first deck frame" — switching pages and
   // re-finding would keep returning page 0 and the matrix would measure one constant.
-  const deckFrames = page.frames().filter((f) => /deck\.widgets\.wsw/.test(f.url()));
+  const deckFrames = page.frames().filter((f) => /deck\.widgets\.plinth/.test(f.url()));
   const byTag = new Map();
   for (const f of deckFrames) {
     const tag = (f.url().match(/ww-slot=([^&]*)/) || [])[1];
@@ -214,7 +214,7 @@ const readDeck = (frame) => frame.evaluate(() => {
   check('D2c ww-init reached it, so the waiting stamp is cleared',
     !!main && main.waiting === false, main ? `waiting=${main.waiting}` : 'no frame');
 
-  const clockFrame = page.frames().find((f) => /clock\.widgets\.wsw/.test(f.url()));
+  const clockFrame = page.frames().find((f) => /clock\.widgets\.plinth/.test(f.url()));
   const clockText = clockFrame ? (await clockFrame.evaluate(() =>
     (document.body.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 30))) : '';
   check('D3 control: the clock paints on a timer with or without ww-init, so a tile '
@@ -267,7 +267,7 @@ const readDeck = (frame) => frame.evaluate(() => {
   // a delivery bug and a tile the user can only describe as empty.
   const solo = await browser.newPage({ viewport: { width: 640, height: 400 } });
   await mapHosts(solo);
-  await solo.goto('https://deck.widgets.wsw/index.html');   // no shell parent: init never comes
+  await solo.goto('https://deck.widgets.plinth/index.html');   // no shell parent: init never comes
   await solo.waitForTimeout(1000);
   const stamp = await solo.evaluate(() => ({
     waiting: document.documentElement.hasAttribute('data-ww-waiting'),
@@ -314,7 +314,7 @@ const readDeck = (frame) => frame.evaluate(() => {
       } catch (e) { window.__attacked = 'threw: ' + e; }
     </script>` }));
 
-  const deckFrame = page.frames().find((f) => /deck\.widgets\.wsw/.test(f.url()));
+  const deckFrame = page.frames().find((f) => /deck\.widgets\.plinth/.test(f.url()));
   check('D6 setup: a widget frame to embed the hostile page in', !!deckFrame);
 
   // The positive control first, and it is not optional: "the host received nothing" is
@@ -399,7 +399,7 @@ const readDeck = (frame) => frame.evaluate(() => {
         message: { type: r.result, data: {
           id: r.id, ok: true, status: 200, body: 'SHOULD-NOT-ARRIVE',
           results: [{ host: '127.0.0.1', ok: true }],
-          items: [{ name: 'holiday.png', url: 'https://media.wsw/holiday.png' }],
+          items: [{ name: 'holiday.png', url: 'https://media.plinth/holiday.png' }],
         } },
       }));
   }, REFUSED);

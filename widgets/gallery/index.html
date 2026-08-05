@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <title>Gallery</title>
-<link rel="stylesheet" href="https://app.wsw/widget-base.css" />
+<link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
   /* Widget-specific layout only — tokens, background/bgStyle handling and the
    * .state-card anatomy come from widget-base.css. The scrims behind the caption
@@ -61,7 +61,7 @@
   <div id="paused">paused</div>
   <div id="message" class="state-card"></div>
 
-<script src="https://app.wsw/widget-api.js"></script>
+<script src="https://app.plinth/widget-api.js"></script>
 <script>
   'use strict';
 
@@ -164,7 +164,7 @@
 
   // --- slideshow ---------------------------------------------------------------
 
-  function fileUrl(name) { return 'https://media.wsw/' + encodeURIComponent(name); }
+  function fileUrl(name) { return 'https://media.plinth/' + encodeURIComponent(name); }
 
   async function advance(direction) {
     if (advancing || items.length === 0) return;

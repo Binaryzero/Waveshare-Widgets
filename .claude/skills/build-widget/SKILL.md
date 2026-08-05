@@ -1,9 +1,9 @@
 ---
 name: build-widget
-description: Build a new Waveshare Widgets dashboard widget to the house standard, or port a Xenon share-code preset into one. Use when asked to create, scaffold, or port a widget for the 1280×400 panel. Covers manifest + index.html authoring, design-token compliance, settings design, validation, and headless verification.
+description: Build a new Plinth dashboard widget to the house standard, or port a Xenon share-code preset into one. Use when asked to create, scaffold, or port a widget for the 1280×400 panel. Covers manifest + index.html authoring, design-token compliance, settings design, validation, and headless verification.
 ---
 
-# Build a Waveshare widget
+# Build a Plinth widget
 
 You are building a widget for a 1280×400 touch panel that runs 24/7. Every widget is a
 folder with `manifest.json` + `index.html`, rendered in a sandboxed iframe, themed by
@@ -41,7 +41,7 @@ Read these first, in order (they are the authority; this skill is the workflow):
    full-bleed media.
 
 3. **Author `index.html` to the standard.** Non-negotiables:
-   - `<link rel="stylesheet" href="https://app.wsw/widget-base.css" />` first in head;
+   - `<link rel="stylesheet" href="https://app.plinth/widget-base.css" />` first in head;
      widget CSS is layout only. Tokens, never literal colors — including canvas/SVG
      (read via `getComputedStyle(document.documentElement).getPropertyValue('--token')`,
      re-read inside `WW.onTheme`).
@@ -129,10 +129,10 @@ ambient engine), say so and either degrade the feature or park the port.
 
 ```powershell
 Compress-Archive -Path widgets/<folder>/* -DestinationPath <folder>.zip   # Windows
-Rename-Item <folder>.zip <folder>.wswidget
+Rename-Item <folder>.zip <folder>.plinthwidget
 ```
 ```bash
-(cd widgets/<folder> && zip -r ../../<folder>.wswidget .)                  # Linux/mac
+(cd widgets/<folder> && zip -r ../../<folder>.plinthwidget .)                  # Linux/mac
 ```
 
 For stock widgets: leave the folder in `widgets/` (the repo is the source of truth) and

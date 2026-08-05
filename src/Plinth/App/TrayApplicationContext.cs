@@ -1,0 +1,338 @@
+using System.Diagnostics;
+using Microsoft.Win32;
+using Plinth.Sensors;
+using Plinth.Widgets;
+
+namespace Plinth.App;
+
+/// <summary>
+/// The long-lived application shell: tray icon + menu, sensor hub lifetime, panel
+/// detection/hotplug handling, and the dashboard window.
+/// </summary>
+public sealed class TrayApplicationContext : ApplicationContext
+{
+    private const string AutostartValueName = "Plinth";
+
+    /// <summary>What the autostart entry was called before the rename. Removed on
+    /// startup rather than migrated.
+    ///
+    /// <para>The rename deliberately carries nothing over, but a Run value is not the
+    /// app's data — it is an instruction Windows acts on, and leaving it behind is the
+    /// one piece of litter that MISBEHAVES rather than merely going stale. The assembly
+    /// is now Plinth.exe, so the old value points at WaveshareWidgets.exe: if that file
+    /// is still on disk from a previous install, BOTH launch at logon and two processes
+    /// fight over the same panel, each re-placing the window under the other. If it is
+    /// gone, the user instead gets a startup entry that silently fails forever.</para>
+    ///
+    /// <para>Deleted unconditionally at startup, not only when autostart is enabled: the
+    /// stale value is exactly as wrong either way, and someone who turned autostart OFF
+    /// before updating would otherwise keep it forever with no surface that mentions
+    /// it.</para></summary>
+    private const string LegacyAutostartValueName = "WaveshareWidgets";
+
+    private readonly AppConfig _config;
+    private readonly SensorHub _hub = new();
+    private readonly WidgetLibrary _library = new();
+    private readonly NotifyIcon _trayIcon;
+    private System.Windows.Forms.Timer? _placementTimer;
+    private DashboardWindow? _dashboard;
+    private SettingsWindow? _settings;
+    private string? _currentScreenDevice;
+
+    public TrayApplicationContext()
+    {
+        AppPaths.EnsureCreated();
+        // Stamp every log with the running build so bug reports are unambiguous.
+        Log.Info($"Plinth {AppVersion.Describe} starting");
+        RemoveLegacyAutostart();
+        _config = AppConfig.Load();
+
+        _library.Initialize();
+        _library.Changed += () => _dashboard?.ReloadDashboard();
+
+        _hub.Start(_config.PollIntervalMs);
+
+        _trayIcon = new NotifyIcon
+        {
+            Icon = CreateTrayIcon(),
+            Text = $"Plinth {AppVersion.Describe}",
+            Visible = true,
+            ContextMenuStrip = BuildTrayMenu(),
+        };
+
+        // The panel powers up ~10 s after HDMI connect and may be absent at logon;
+        // re-evaluate placement whenever the display topology changes.
+        SystemEvents.DisplaySettingsChanged += (_, _) => PlaceDashboard();
+
+        // Belt and suspenders: DisplaySettingsChanged does not fire for every case
+        // (late monitor arrival at logon, DPI-rescale drift), so self-heal placement
+        // on a slow tick as well.
+        _placementTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        _placementTimer.Tick += (_, _) =>
+        {
+            var screen = PanelLocator.Find(_config.DisplayDeviceName);
+            var misplaced = screen is not null &&
+                (_dashboard is null || _dashboard.IsDisposed || !_dashboard.Visible || !_dashboard.IsPlacedCorrectly
+                 || _dashboard.Bounds != screen.Bounds);
+            var vanished = screen is null && _dashboard is { IsDisposed: false, Visible: true };
+            if (misplaced || vanished)
+                PlaceDashboard();
+        };
+        _placementTimer.Start();
+
+        PlaceDashboard();
+    }
+
+    /// <summary>NotifyIcon.Text throws above 63 chars — cap, keeping the head.</summary>
+    private static string Cap63(string text) => text.Length <= 63 ? text : text[..63];
+
+    private void PlaceDashboard()
+    {
+        try
+        {
+            var screen = PanelLocator.Find(_config.DisplayDeviceName);
+            if (screen is null)
+            {
+                _currentScreenDevice = null;
+                if (_dashboard is { IsDisposed: false })
+                    _dashboard.Hide();
+                _trayIcon.Text = Cap63($"Plinth {AppVersion.Describe} — panel not detected");
+                Log.Info("No 1280x400 / 400x1280 display found; dashboard hidden");
+                return;
+            }
+
+            _trayIcon.Text = Cap63($"Plinth {AppVersion.Describe} — {screen.DeviceName} ({screen.Bounds.Width}x{screen.Bounds.Height})");
+
+            if (_dashboard is null || _dashboard.IsDisposed)
+            {
+                _dashboard = new DashboardWindow(_config, _hub, _library);
+                _dashboard.Show();
+                _currentScreenDevice = screen.DeviceName;
+                // A settings window opened while the panel was absent holds a null (or
+                // disposed) dashboard reference and can only fail preview data requests
+                // fast — hand it the live window so fetch/ping/audio work from now on.
+                if (_settings is { IsDisposed: false })
+                    _settings.Dashboard = _dashboard;
+                _ = InitializeDashboardAsync(screen);
+                return;
+            }
+
+            _dashboard.Show();
+            if (_currentScreenDevice != screen.DeviceName || _dashboard.Bounds != screen.Bounds)
+            {
+                _currentScreenDevice = screen.DeviceName;
+                _dashboard.MoveToScreen(screen);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Failed to place dashboard: {ex.Message}");
+        }
+    }
+
+    private async Task InitializeDashboardAsync(Screen screen)
+    {
+        try
+        {
+            await _dashboard!.InitializeAsync(screen);
+            Log.Info($"Dashboard running on {screen.DeviceName} ({screen.Bounds.Width}x{screen.Bounds.Height})");
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"WebView2 initialization failed: {ex}");
+            _trayIcon.ShowBalloonTip(10_000, "Plinth",
+                "Failed to start the dashboard. Is the WebView2 Runtime installed? See app.log for details.",
+                ToolTipIcon.Error);
+        }
+    }
+
+    private ContextMenuStrip BuildTrayMenu()
+    {
+        var menu = new ContextMenuStrip();
+
+        // The build stamp lives at the top of the menu: "which version am I
+        // running" must never require digging through logs.
+        menu.Items.Add(new ToolStripMenuItem($"Plinth {AppVersion.Describe}") { Enabled = false });
+        menu.Items.Add(new ToolStripSeparator());
+
+        var settingsItem = new ToolStripMenuItem("Settings…") { Font = new Font(menu.Font, FontStyle.Bold) };
+        settingsItem.Click += (_, _) => OpenSettings();
+        menu.Items.Add(settingsItem);
+        menu.Items.Add(new ToolStripSeparator());
+
+        menu.Items.Add("Reload dashboard", null, (_, _) => _dashboard?.ReloadDashboard());
+        menu.Items.Add("Open widgets folder", null, (_, _) => OpenInExplorer(AppPaths.WidgetsDir));
+        menu.Items.Add("Edit layout (JSON)", null, (_, _) =>
+        {
+            LayoutStore.Save(LayoutStore.Load()); // materialize the default on first use
+            OpenInExplorer(AppPaths.LayoutFile);
+        });
+        menu.Items.Add("Install widget…", null, (_, _) => InstallWidgetInteractive());
+
+        var displayMenu = new ToolStripMenuItem("Display");
+        displayMenu.DropDownOpening += (_, _) => PopulateDisplayMenu(displayMenu);
+        menu.Items.Add(displayMenu);
+
+        var autostart = new ToolStripMenuItem("Start with Windows") { CheckOnClick = true };
+        autostart.Checked = IsAutostartEnabled();
+        autostart.CheckedChanged += (_, _) => SetAutostart(autostart.Checked);
+        menu.Items.Add(autostart);
+
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Exit", null, (_, _) => ExitThread());
+        return menu;
+    }
+
+    private void OpenSettings()
+    {
+        if (_settings is { IsDisposed: false })
+        {
+            _settings.Activate();
+            _settings.BringToFront();
+            return;
+        }
+        _settings = new SettingsWindow(_hub, _library);
+        _settings.Dashboard = _dashboard;
+        _settings.LayoutSaved += () => _dashboard?.ReloadDashboard();
+        _settings.Show();
+    }
+
+    private void PopulateDisplayMenu(ToolStripMenuItem parent)
+    {
+        parent.DropDownItems.Clear();
+
+        var auto = new ToolStripMenuItem("Auto-detect (1280x400)") { Checked = _config.DisplayDeviceName is null };
+        auto.Click += (_, _) =>
+        {
+            _config.DisplayDeviceName = null;
+            _config.Save();
+            PlaceDashboard();
+        };
+        parent.DropDownItems.Add(auto);
+        parent.DropDownItems.Add(new ToolStripSeparator());
+
+        foreach (var screen in Screen.AllScreens)
+        {
+            var label = $"{screen.DeviceName}  {screen.Bounds.Width}x{screen.Bounds.Height}{(screen.Primary ? "  (primary)" : "")}";
+            var item = new ToolStripMenuItem(label) { Checked = _config.DisplayDeviceName == screen.DeviceName };
+            var deviceName = screen.DeviceName;
+            item.Click += (_, _) =>
+            {
+                _config.DisplayDeviceName = deviceName;
+                _config.Save();
+                PlaceDashboard();
+            };
+            parent.DropDownItems.Add(item);
+        }
+    }
+
+    private void InstallWidgetInteractive()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Install widget package",
+            Filter = "Widget packages (*.plinthwidget;*.icuewidget;*.zip)|*.plinthwidget;*.icuewidget;*.zip",
+        };
+        if (dialog.ShowDialog() != DialogResult.OK)
+            return;
+
+        try
+        {
+            var installed = _library.InstallPackage(dialog.FileName);
+            _dashboard?.ReloadDashboard();
+            // A message box, not a balloon tip: Windows 11 quietly drops balloon
+            // notifications for many users, which made installs look like silent failures.
+            // Pending is its own outcome: the package IS installed, it simply has no origin
+            // yet because the host map could not be read. Saying "failed" would be false.
+            var message = installed.Widget is null
+                ? $"Installed '{installed.Manifest.Name}' v{installed.Manifest.Version}, but it is not being "
+                  + "served yet — the widget host map could not be read. It will appear shortly; see app.log."
+                : $"Installed '{installed.Manifest.Name}' v{installed.Manifest.Version}.\n\nOpen Settings to add it to a page.";
+            MessageBox.Show(message, "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not install widget:\n{ex.Message}", "Plinth",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private static void OpenInExplorer(string path)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Failed to open '{path}': {ex.Message}");
+        }
+    }
+
+    /// <summary>Drops the pre-rename Run value if it is still there. Opened WRITABLE only
+    /// when something needs removing, so the ordinary case takes a read-only handle and
+    /// the common path touches nothing.</summary>
+    private static void RemoveLegacyAutostart()
+    {
+        try
+        {
+            using (var probe = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))
+            {
+                if (probe?.GetValue(LegacyAutostartValueName) is null)
+                    return;
+            }
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
+            key?.DeleteValue(LegacyAutostartValueName, throwOnMissingValue: false);
+            Log.Info("Removed the pre-rename autostart entry");
+        }
+        catch (Exception ex)
+        {
+            // A policy-locked or unreadable Run key is not a reason to fail startup. The
+            // cost of not getting here is a stale entry, which is what we already had.
+            Log.Warn($"Could not remove the pre-rename autostart entry: {ex.Message}");
+        }
+    }
+
+    private static bool IsAutostartEnabled()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
+        return key?.GetValue(AutostartValueName) is not null;
+    }
+
+    private static void SetAutostart(bool enabled)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
+        if (enabled)
+            key.SetValue(AutostartValueName, $"\"{Environment.ProcessPath}\"");
+        else
+            key.DeleteValue(AutostartValueName, throwOnMissingValue: false);
+    }
+
+    private static Icon CreateTrayIcon()
+    {
+        // Drawn at runtime so the project needs no binary icon asset.
+        using var bmp = new Bitmap(32, 32);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.Clear(Color.FromArgb(16, 20, 28));
+            using var font = new Font("Segoe UI", 16, FontStyle.Bold, GraphicsUnit.Pixel);
+            using var brush = new SolidBrush(Color.FromArgb(0, 212, 255));
+            var size = g.MeasureString("W", font);
+            g.DrawString("W", font, brush, (32 - size.Width) / 2, (32 - size.Height) / 2);
+        }
+        return Icon.FromHandle(bmp.GetHicon());
+    }
+
+    protected override void ExitThreadCore()
+    {
+        _placementTimer?.Stop();
+        _placementTimer?.Dispose();
+        _trayIcon.Visible = false;
+        _trayIcon.Dispose();
+        _settings?.Dispose();
+        _dashboard?.Dispose();
+        _hub.Dispose();
+        _library.Dispose();
+        base.ExitThreadCore();
+    }
+}

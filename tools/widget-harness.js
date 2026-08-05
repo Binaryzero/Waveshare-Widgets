@@ -17,10 +17,10 @@ const fs = require('fs');
 const path = require('path');
 
 global.window = {};
-require(path.join(__dirname, '../src/WaveshareWidgets/Shell/palette.js'));
+require(path.join(__dirname, '../src/Plinth/Shell/palette.js'));
 const derive = global.window.WWPalette.derive;
 
-const SHELL = path.join(__dirname, '../src/WaveshareWidgets/Shell');
+const SHELL = path.join(__dirname, '../src/Plinth/Shell');
 const SLOTS = {
   quarter: [320, 400], half: [640, 400], 'three-quarter': [960, 400], full: [1280, 400],
   'quarter-upper': [320, 200], 'half-upper': [640, 200], 'three-quarter-upper': [960, 200], 'full-upper': [1280, 200],
@@ -117,7 +117,7 @@ function loadPlaywright() {
   // out of — but an encoded slash (`..%2f..%2f`) survives normalization, so any decode
   // of that pathname makes traversal expressible again. The decode and this check go
   // together. See the fuller note in widget-datapath.js, where this was flagged.
-  await page.route('https://app.wsw/**', (route) => {
+  await page.route('https://app.plinth/**', (route) => {
     const shellRoot = path.resolve(SHELL);
     const rel = decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\/+/, '');
     const file = path.resolve(shellRoot, rel);
@@ -128,7 +128,7 @@ function loadPlaywright() {
   await page.route('https://widget.test/**', (route) => {
     // Root PLUS SEPARATOR, not a bare prefix: `widgets/rest` is a string-prefix of
     // `widgets/rest-private`, so a decoded traversal into a sibling whose name merely
-    // starts with this folder's name passed the old test — the same defect the app.wsw
+    // starts with this folder's name passed the old test — the same defect the app.plinth
     // route above already guards against, in the route that looked guarded. Fixed in
     // widget-datapath.js when it was found there; this copy still had it.
     // path.resolve, not path.join, so the comparison is against a normalized path.
@@ -140,7 +140,7 @@ function loadPlaywright() {
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   });
-  // media.wsw and backgrounds.wsw are LOCAL virtual hosts, not the network:
+  // media.plinth and backgrounds.plinth are LOCAL virtual hosts, not the network:
   // DashboardWindow.MapVirtualHosts maps them to AppPaths.MediaDir and
   // AppPaths.BackgroundsDir, and WW.listMedia() hands widgets URLs on the first of them.
   // Without a route here they fell through to the catch-all, which ABORTED a widget's
@@ -150,7 +150,7 @@ function loadPlaywright() {
   // library, and ww-media-list answers [] to match — a widget must handle a missing file
   // either way, and the answer is deterministic and local, which is what the contract
   // requires.
-  await page.route(/^https:\/\/(?:media|backgrounds)\.wsw(?:[/?#]|$)/,
+  await page.route(/^https:\/\/(?:media|backgrounds)\.plinth(?:[/?#]|$)/,
     (route) => route.fulfill({ status: 404, body: '' }));
   // The shell page. Markup only — the iframe is created from script (__wwMount) so the
   // listener that answers it is registered before it can exist. Its own origin is
@@ -171,12 +171,12 @@ function loadPlaywright() {
   }));
   // Anything else (widget data fetches) fails fast and deterministically — the
   // standard requires a graceful state for exactly this.
-  // The exclusions need a HOST BOUNDARY. Without one `https://app.wswevil.com/` starts
-  // with `app.wsw`, so it escaped the abort while matching no local route, and the
+  // The exclusions need a HOST BOUNDARY. Without one `https://app.plinthevil.com/` starts
+  // with `app.plinth`, so it escaped the abort while matching no local route, and the
   // browser made a real network request out of a runner whose whole contract is that
   // unmatched requests are deterministic.
   // The boundary deliberately does NOT include ':'. Every local route above is
-  // portless (`https://app.wsw/**`), so a port-bearing `https://app.wsw:444/x` matches
+  // portless (`https://app.plinth/**`), so a port-bearing `https://app.plinth:444/x` matches
   // none of them — and treating ':' as a boundary would exempt it from the abort as
   // well, leaving the one URL shape that reaches the real network. Exempt only what a
   // local route can actually serve.
@@ -195,7 +195,7 @@ function loadPlaywright() {
   // call completely, in the one runner that aborts everything. The method is kept in the
   // string so a failure line says which half was seen.
   const attempted = [];
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test|media\.wsw|backgrounds\.wsw)(?:[/?#]|$)).*/,
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test|media\.plinth|backgrounds\.plinth)(?:[/?#]|$)).*/,
     (route) => {
       attempted.push(route.request().method() + ' ' + route.request().url());
       return route.abort();
@@ -209,7 +209,7 @@ function loadPlaywright() {
   // route uses.
   await page.routeWebSocket(/.*/, (ws) => {
     const url = ws.url();
-    if (!/^wss?:\/\/(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)/.test(url)) attempted.push('WS ' + url);
+    if (!/^wss?:\/\/(?:app\.plinth|widget\.test|shell\.test)(?:[/?#]|$)/.test(url)) attempted.push('WS ' + url);
     ws.close();
   });
 

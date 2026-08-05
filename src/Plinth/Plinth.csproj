@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <RootNamespace>Plinth</RootNamespace>
+    <AssemblyName>Plinth</AssemblyName>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Allows compiling the Windows-targeted project from non-Windows build hosts (CI, dev containers). -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Version>0.2.0</Version>
+    <Description>iCUE-style widget dashboard for the Waveshare 7.9inch HDMI LCD (1280x400)</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 0.9.6+ uses the signed PawnIO driver; older versions bundle WinRing0, which
+         Defender quarantines and the Windows 11 vulnerable-driver blocklist blocks. -->
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2478.35" />
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="8.0.1" />
+    <!-- DPAPI (ProtectedData) for `secret` widget settings: credentials are encrypted
+         with the CurrentUser scope before they reach layout.json. -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <!-- Must match or exceed LibreHardwareMonitorLib's transitive requirement (NU1605). -->
+    <PackageReference Include="System.Management" Version="10.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Shell\**" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\widgets\**" Link="stock-widgets\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

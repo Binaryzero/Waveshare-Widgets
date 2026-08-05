@@ -12,6 +12,6 @@
     <!-- The predicate only, not the bridge: everything else in that file needs Windows,
          a Stream Deck installation and a live WebView. The part that was wrong is the
          part that is pure string handling, which is exactly what this compiles. -->
-    <Compile Include="../../src/WaveshareWidgets/App/StreamDeckPaths.cs" />
+    <Compile Include="../../src/Plinth/App/StreamDeckPaths.cs" />
   </ItemGroup>
 </Project>

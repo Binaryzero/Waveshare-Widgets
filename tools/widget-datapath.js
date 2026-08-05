@@ -41,10 +41,10 @@ const fs = require('fs');
 const path = require('path');
 
 global.window = {};
-require(path.join(__dirname, '../src/WaveshareWidgets/Shell/palette.js'));
+require(path.join(__dirname, '../src/Plinth/Shell/palette.js'));
 const derive = global.window.WWPalette.derive;
 
-const SHELL = path.join(__dirname, '../src/WaveshareWidgets/Shell');
+const SHELL = path.join(__dirname, '../src/Plinth/Shell');
 const SLOTS = {
   quarter: [320, 400], half: [640, 400], 'three-quarter': [960, 400], full: [1280, 400],
   'quarter-upper': [320, 200], 'half-upper': [640, 200], 'three-quarter-upper': [960, 200], 'full-upper': [1280, 200],
@@ -160,20 +160,20 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // Contained the same way the widget.test route below is. The subtlety is worth
   // recording because it is the opposite of what it looks like:
   //
-  //   new URL('https://app.wsw/../../../x').pathname  ->  '/x'
-  //   new URL('https://app.wsw/%2e%2e/%2e%2e/x').pathname -> '/x'
+  //   new URL('https://app.plinth/../../../x').pathname  ->  '/x'
+  //   new URL('https://app.plinth/%2e%2e/%2e%2e/x').pathname -> '/x'
   //
   // The URL parser normalizes dot segments, INCLUDING the %2e spelling, so a route that
   // joins the raw pathname cannot be walked out of with either. But an encoded SLASH
   // survives it untouched:
   //
-  //   new URL('https://app.wsw/..%2f..%2fx').pathname  ->  '/..%2f..%2fx'
+  //   new URL('https://app.plinth/..%2f..%2fx').pathname  ->  '/..%2f..%2fx'
   //
   // so the moment anything calls decodeURIComponent on that pathname — which this route
   // must, for filenames with spaces, and which the sibling route already did — '../../x'
   // becomes expressible again. The decode and this containment check therefore belong
   // together: adding the decode without the check is what would create the hole.
-  await page.route('https://app.wsw/**', (route) => {
+  await page.route('https://app.plinth/**', (route) => {
     const shellRoot = path.resolve(SHELL);
     const rel = decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\/+/, '');
     const file = path.resolve(shellRoot, rel);
@@ -184,7 +184,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   await page.route('https://widget.test/**', (route) => {
     // Root PLUS SEPARATOR, not a bare prefix: `widgets/rest` is a string-prefix of
     // `widgets/rest-private`, so a decoded traversal into a sibling whose name merely
-    // starts with the folder name passed the old test. Same defect the app.wsw route
+    // starts with the folder name passed the old test. Same defect the app.plinth route
     // had, in the route that already looked guarded.
     const widgetRoot = path.resolve(folder);
     const rel = decodeURIComponent(new URL(route.request().url()).pathname).replace(/^\/+/, '') || 'index.html';
@@ -193,7 +193,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   });
-  // media.wsw and backgrounds.wsw are LOCAL virtual hosts, not the network:
+  // media.plinth and backgrounds.plinth are LOCAL virtual hosts, not the network:
   // DashboardWindow.MapVirtualHosts maps them to AppPaths.MediaDir and
   // AppPaths.BackgroundsDir, and WW.listMedia() hands widgets URLs on the first of them.
   // Without a route here they fell through to the catch-all, which ABORTED a widget's
@@ -203,7 +203,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // library, and ww-media-list answers [] to match — a widget must handle a missing file
   // either way, and the answer is deterministic and local, which is what the contract
   // requires.
-  await page.route(/^https:\/\/(?:media|backgrounds)\.wsw(?:[/?#]|$)/,
+  await page.route(/^https:\/\/(?:media|backgrounds)\.plinth(?:[/?#]|$)/,
     (route) => route.fulfill({ status: 404, body: '' }));
   // The shell page. Markup only — the iframe is created from script (see __wwMount) so
   // the message listener that answers it is registered before it can exist, and so the
@@ -217,15 +217,15 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   }));
   // The stubs. Anything unmatched aborts, same as widget-harness — an un-stubbed
   // endpoint must still land the widget in a designed state, never a hang.
-  // The exclusions need a HOST BOUNDARY. Without one, `https://app.wswevil.com/`
-  // starts with `app.wsw`, so it was excluded from the abort handler while matching
+  // The exclusions need a HOST BOUNDARY. Without one, `https://app.plinthevil.com/`
+  // starts with `app.plinth`, so it was excluded from the abort handler while matching
   // neither local route — and the browser then made a real network request out of a
   // runner whose whole contract is that unmatched requests are deterministic.
   // The boundary deliberately omits ':' — every local route above is portless, so a
-  // port-bearing `https://app.wsw:444/x` matches none of them, and treating ':' as a
+  // port-bearing `https://app.plinth:444/x` matches none of them, and treating ':' as a
   // boundary would exempt it from the abort too: the one URL shape that still reaches
   // the real network out of a runner whose contract is that it never does.
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test|media\.wsw|backgrounds\.wsw)(?:[/?#]|$)).*/, (route) => {
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test|media\.plinth|backgrounds\.plinth)(?:[/?#]|$)).*/, (route) => {
     const url = route.request().url();
     // Counted HERE, before any stub matching and before the abort. `served` and
     // __wwProxyServed only ever record a MATCHED fixture, so a widget that requests an
@@ -293,7 +293,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // that needs a live socket needs a purpose-built runner.
   await page.routeWebSocket(/.*/, (ws) => {
     const url = ws.url();
-    if (!/^wss?:\/\/(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)/.test(url)) attempted.push('WS ' + url);
+    if (!/^wss?:\/\/(?:app\.plinth|widget\.test|shell\.test)(?:[/?#]|$)/.test(url)) attempted.push('WS ' + url);
     ws.close();
   });
 

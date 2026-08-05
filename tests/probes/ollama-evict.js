@@ -4,7 +4,7 @@
 // presenting it as current, and must go and ask, rather than waiting out the interval.
 'use strict';
 const fs = require('fs'); const path = require('path');
-const SHELL = '/home/user/Waveshare-Widgets/src/WaveshareWidgets/Shell';
+const SHELL = '/home/user/Waveshare-Widgets/src/Plinth/Shell';
 const MIME = { '.html':'text/html', '.js':'application/javascript', '.css':'text/css' };
 const folder = process.argv[2];
 const mode = process.argv[3] || 'plain';
@@ -15,7 +15,7 @@ let hits = 0;
   const shim = fs.readFileSync(path.join(SHELL,'widget-api.js'),'utf8')+'\n'+fs.readFileSync(path.join(SHELL,'icue-compat.js'),'utf8');
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
   const page = await browser.newPage({ viewport:{width:640,height:400} });
-  await page.route('https://app.wsw/**', (r) => {
+  await page.route('https://app.plinth/**', (r) => {
     const f = path.resolve(SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/,''));
     return fs.existsSync(f) ? r.fulfill({ contentType: MIME[path.extname(f)]||'text/plain', body: fs.readFileSync(f) }) : r.fulfill({status:404,body:''});
   });
@@ -25,7 +25,7 @@ let hits = 0;
   });
   await page.route('https://shell.test/**', (r) => r.fulfill({ contentType:'text/html',
     body:'<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%}iframe{display:block;border:0;width:100vw;height:100vh}</style>' }));
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[:/?#]|$)).*/, (r) => {
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test)(?:[:/?#]|$)).*/, (r) => {
     if (!r.request().url().includes('11434')) return r.abort();
     hits++;
     // First answer: resident, evicted in 3s. Any LATER poll: Ollama has unloaded it.

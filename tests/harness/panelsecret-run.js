@@ -26,7 +26,7 @@ const path = require('path');
 const { textContrast, AA_NORMAL, LARGE_TEXT_PX } = require('./contrast');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const PORT = 8952;
 
 function staticServer(rootDir, port) {
@@ -132,7 +132,7 @@ const widgets = [{
     if (msg.type === 'ready') {
       page.evaluate((d) => window.__hostPush(d), JSON.stringify({
         type: 'init',
-        data: { layout, widgets, sensors: [], media: null, backgroundHost: 'backgrounds.wsw', status: { elevated: false, apiVersion: 1 } },
+        data: { layout, widgets, sensors: [], media: null, backgroundHost: 'backgrounds.plinth', status: { elevated: false, apiVersion: 1 } },
       })).catch(() => {});
     } else if (msg.type === 'save-layout') {
       saves.push(JSON.parse(JSON.stringify(msg.layout)));
@@ -162,7 +162,7 @@ const widgets = [{
     window.__hostPush = (json) => { const data = JSON.parse(json); listeners.forEach((cb) => { try { cb({ data }); } catch (e) {} }); };
   });
   await page.addInitScript(fs.readFileSync(path.join(SHELL, 'widget-api.js'), 'utf8'));
-  await page.goto(`http://127.0.0.1:${PORT}/src/WaveshareWidgets/Shell/index.html`);
+  await page.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/index.html`);
   await wait(1200);
 
   const lastSave = () => (saves.length ? saves[saves.length - 1] : null);

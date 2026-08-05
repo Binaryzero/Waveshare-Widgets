@@ -35,7 +35,7 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 
-const SHIM = path.join(__dirname, '..', '..', 'src', 'WaveshareWidgets', 'Shell', 'widget-api.js');
+const SHIM = path.join(__dirname, '..', '..', 'src', 'Plinth', 'Shell', 'widget-api.js');
 const MAX = 5 * 1024 * 1024;
 const OVERSIZE = MAX * 2;   // enough to be refused, small enough to stay quick when paced
 const PORT = 8961;

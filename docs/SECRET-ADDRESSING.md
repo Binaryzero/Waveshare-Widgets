@@ -214,8 +214,8 @@ post `save-layout`" has to be an established fact rather than an assumption. Wha
 source actually shows, as three independent barriers:
 
 1. **Widget frames are cross-origin with the shell.** Every widget is mapped to its own
-   virtual host (`{slug}.widgets.wsw` in `WidgetLibrary`), while the shell runs on
-   `app.wsw`. The `allow-same-origin` in the frame sandbox preserves the *widget's* own
+   virtual host (`{slug}.widgets.plinth` in `WidgetLibrary`), while the shell runs on
+   `app.plinth`. The `allow-same-origin` in the frame sandbox preserves the *widget's* own
    origin — it does not make it the shell's — so `parent.chrome.webview` is blocked by
    same-origin policy.
 2. **`DashboardWindow` subscribes to `CoreWebView2.WebMessageReceived`,** which WebView2

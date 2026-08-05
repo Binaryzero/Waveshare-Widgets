@@ -20,7 +20,7 @@ const http = require('http');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const PORT = 8955;
 
 function staticServer(rootDir, port) {
@@ -48,7 +48,7 @@ function catalogEntry(slug) {
   const m = manifest(slug);
   return {
     id: m.id, name: m.name, author: m.author, version: m.version,
-    url: `https://${slug}.widgets.wsw/index.html`,
+    url: `https://${slug}.widgets.plinth/index.html`,
     supportedSlots: m.supported_slots, properties: m.properties || [],
   };
 }
@@ -64,10 +64,10 @@ function mapHosts(page) {
   };
   const rel = (u) => new URL(u).pathname.replace(/^\/+/, '');
   return Promise.all([
-    page.route('https://app.wsw/**', (r) => serve(r, SHELL, rel(r.request().url()))),
-    page.route('https://*.widgets.wsw/**', (r) => {
+    page.route('https://app.plinth/**', (r) => serve(r, SHELL, rel(r.request().url()))),
+    page.route('https://*.widgets.plinth/**', (r) => {
       const u = new URL(r.request().url());
-      serve(r, path.join(REPO, 'widgets', u.hostname.replace(/\.widgets\.wsw$/, '')), rel(r.request().url()));
+      serve(r, path.join(REPO, 'widgets', u.hostname.replace(/\.widgets\.plinth$/, '')), rel(r.request().url()));
     }),
   ]);
 }
@@ -92,7 +92,7 @@ async function boot(browser, layout, widgets) {
       } })).catch(() => {});
     }
   });
-  await page.goto(`http://127.0.0.1:${PORT}/src/WaveshareWidgets/Shell/index.html`);
+  await page.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/index.html`);
   await page.waitForTimeout(1200);
   await page.evaluate(() => document.getElementById('editBtn').click());
   await page.waitForTimeout(600);

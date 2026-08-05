@@ -28,7 +28,7 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const WIDGET = path.join(REPO, 'widgets', 'notifications');
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' };
@@ -87,12 +87,12 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'text/plain', body: fs.readFileSync(file) });
     return route.fulfill({ status: 404, body: '' });
   };
-  await page.route('https://app.wsw/**', (r) =>
+  await page.route('https://app.plinth/**', (r) =>
     serve(r, SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '')));
   await page.route('https://widget.test/**', (r) =>
     serve(r, WIDGET, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '') || 'index.html'));
   await page.route('https://shell.test/**', (r) => r.fulfill({ contentType: 'text/html', body: SHELL_PAGE }));
-  await page.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test)(?:[/?#]|$)).*/, (r) => r.abort());
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test)(?:[/?#]|$)).*/, (r) => r.abort());
 
   const shim = fs.readFileSync(path.join(SHELL, 'widget-api.js'), 'utf8') + '\n'
              + fs.readFileSync(path.join(SHELL, 'icue-compat.js'), 'utf8');
@@ -234,7 +234,7 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   // the same job for the controls we can see. These stay as standing guards on the
   // invariant — third-party and embedded content keep scrolling — not as evidence.
   //
-  // T5 · installed third-party .wswidget packages link this same unversioned stylesheet
+  // T5 · installed third-party .plinthwidget packages link this same unversioned stylesheet
   //      (WidgetLibrary hot-reloads them), and the standard has always told them to — so
   //      whatever this file does reaches scrollable regions nobody here can see.
   // T6 · the iframe, twitch and youtube widgets host CROSS-ORIGIN content in a nested
@@ -252,18 +252,18 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   // document-level rule would kill; the shipped design has no document-level rule, so it is
   // here as a standing guard rather than as evidence for or against that claim.
   const ROOT_SCROLLER = '<!doctype html><meta charset="utf-8">'
-    + '<link rel="stylesheet" href="https://app.wsw/widget-base.css">'
+    + '<link rel="stylesheet" href="https://app.plinth/widget-base.css">'
     + '<style>html,body{overflow:auto !important}.tall{height:2000px}</style>'
     + '<div class="tall">third-party root scroller</div>';
   const THIRD_PARTY = '<!doctype html><meta charset="utf-8">'
-    + '<link rel="stylesheet" href="https://app.wsw/widget-base.css">'
+    + '<link rel="stylesheet" href="https://app.plinth/widget-base.css">'
     + '<style>#scroller{height:100%;overflow-y:auto}.tall{height:2000px}</style>'
     + '<div id="scroller"><div class="tall">third-party content</div></div>';
   const EMBEDDED = '<!doctype html><meta charset="utf-8">'
     + '<style>html,body{margin:0}.tall{height:2000px}</style><div class="tall">embedded</div>';
   // A widget whose content is a nested cross-origin frame, like iframe/twitch/youtube.
   const NESTER = '<!doctype html><meta charset="utf-8">'
-    + '<link rel="stylesheet" href="https://app.wsw/widget-base.css">'
+    + '<link rel="stylesheet" href="https://app.plinth/widget-base.css">'
     + '<style>iframe{border:0;width:100%;height:100%}</style>'
     + '<iframe src="https://embedded.test/page.html"></iframe>';
 
@@ -274,7 +274,7 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
 
   const scrollProbe = async (url, sel) => {
     const p = await context.newPage();
-    await p.route('https://app.wsw/**', (r) =>
+    await p.route('https://app.plinth/**', (r) =>
       serve(r, SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '')));
     await p.route('https://thirdparty.test/**', (r) => r.fulfill({ contentType: 'text/html', body: THIRD_PARTY }));
     await p.route('https://rootscroll.test/**', (r) => r.fulfill({ contentType: 'text/html', body: ROOT_SCROLLER }));
@@ -338,7 +338,7 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   const bad = [];
   for (const [w, sel] of OPTED) {
     const wp = await context.newPage();
-    await wp.route('https://app.wsw/**', (r) =>
+    await wp.route('https://app.plinth/**', (r) =>
       serve(r, SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '')));
     await wp.route('https://w.test/**', (r) => r.fulfill({ contentType: 'text/html',
       body: fs.readFileSync(path.join(REPO, 'widgets', w, 'index.html')) }));

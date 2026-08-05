@@ -2,9 +2,9 @@
 
 A consolidated reference for the Corsair/Elgato iCUE HTML widget runtime, compiled from
 the official documentation (docs.elgato.com/icue/widgets). This documents the **contract
-that iCUE widgets are written against** — the same contract Waveshare Widgets emulates so
+that iCUE widgets are written against** — the same contract Plinth emulates so
 those widgets run on the panel. For what *our* runtime supports of it, see the
-"Waveshare compatibility" callouts and [WIDGET-SPEC.md](WIDGET-SPEC.md).
+"Plinth compatibility" callouts and [WIDGET-SPEC.md](WIDGET-SPEC.md).
 
 > Runtime engine in iCUE: QtWebEngine 6.9.3 (Chromium 130). Minimum iCUE: 5.47.
 > A widget is plain HTML/JS/CSS; iCUE injects globals and plugin objects at load.
@@ -57,7 +57,7 @@ A widget is a folder packaged into a `.icuewidget` file (a zip). Minimum content
   `pump_lcd` (AIO pump caps, ~480×480).
 - Only documented feature: `"sensor-screen"` (device can display sensor data).
 
-**Waveshare compatibility:** we install `.icuewidget` files directly, read the same
+**Plinth compatibility:** we install `.icuewidget` files directly, read the same
 manifest, and additionally parse `x-icue-property` meta tags (below) as settings. We
 ignore `supported_devices` (the panel is a generic 1280×400 surface) and `min_app_version`.
 
@@ -101,7 +101,7 @@ plugin<Name>Events = { onInitialized: fn };   // e.g. pluginSensorsdataproviderE
 Where `<Name>` is the plugin module's last dotted segment with its first letter
 capitalized (`sensorsdataprovider` → `Sensorsdataprovider`).
 
-**Waveshare compatibility:** all of the above are emulated (`icue-compat.js`). Property
+**Plinth compatibility:** all of the above are emulated (`icue-compat.js`). Property
 globals are injected before widget scripts via the iframe URL fragment; `iCUE_initialized`
 flips true when the init events fire; every `plugin<Name>_initialized` flag and
 `onInitialized` callback fires.
@@ -139,7 +139,7 @@ Example:
       data-step="1" data-unit-label="'%'">
 ```
 
-**Waveshare compatibility:** parsed into our Settings UI. `slider`/`switch`/`textfield`/
+**Plinth compatibility:** parsed into our Settings UI. `slider`/`switch`/`textfield`/
 `color`/`combobox`/`tab-buttons`/`sensors-factory` are fully supported; `sensors-combobox`
 maps to our native sensor picker. `search-combobox` degrades to a text field (its options
 come from widget ES-modules we don't execute), and `media-selector` shows a
@@ -161,7 +161,7 @@ Controls are organized into settings sections via a JSON block:
 containing `textColor`/`accentColor`/`backgroundColor` get an automatic "Custom Style"
 toggle.
 
-**Waveshare compatibility:** parsed; group titles render as section headings in Settings.
+**Plinth compatibility:** parsed; group titles render as section headings in Settings.
 
 ---
 
@@ -179,7 +179,7 @@ toggle.
 `device` object: `deviceId` (string) — UUID without braces, identifies the displaying
 device. Injected before widget scripts; pass to plugin methods that need a device id.
 
-**Waveshare compatibility:** both emulated. `iCUE.isPreview` is always false;
+**Plinth compatibility:** both emulated. `iCUE.isPreview` is always false;
 `defaultTemperatureUnit()` derives from the OS locale; `device.deviceId` is a stable
 per-slot pseudo-UUID.
 
@@ -220,7 +220,7 @@ Sensor **kinds** (subcategory, used for the default-lookup tiebreaker): `default
 `frame-buffer-load`, `video-engine-load`, `bus-interface-load`, the `power-*`/`voltage-*`/
 `current-*` rail kinds, and `invalid`.
 
-**Waveshare compatibility:** fully implemented. Our sensor ids come from our own engine
+**Plinth compatibility:** fully implemented. Our sensor ids come from our own engine
 (LibreHardwareMonitor + system counters + Corsair battery), so ids differ from iCUE's —
 sensor selections are (re)made in our Settings UI. Types/kinds are mapped from our sensor
 model to the vocabulary above.
@@ -234,7 +234,7 @@ Methods: `getSongName(rid)` → string, `getArtist(rid)` → string (async);
 `triggerPlayPause()`, `triggerNextTrack()`, `triggerPreviousTrack()` (synchronous).
 Signal: `asyncResponse(rid, value)`. **No artwork is exposed by this plugin.**
 
-**Waveshare compatibility:** fully implemented, backed by the Windows media session (the
+**Plinth compatibility:** fully implemented, backed by the Windows media session (the
 same source our Now Playing widget uses). Transport controls work.
 
 ### Link Provider
@@ -243,7 +243,7 @@ same source our Now Playing widget uses). Transport controls work.
 Method: `open(link)` — opens the URL in the system browser. Flag:
 `pluginLinkprovider_initialized`.
 
-**Waveshare compatibility:** implemented; `open()` asks the host to launch the default
+**Plinth compatibility:** implemented; `open()` asks the host to launch the default
 browser.
 
 ### FPS Data Provider
@@ -254,7 +254,7 @@ Methods: `getCurrentFps(rid)`, `getFpsAvailable(rid)`, `getCurrentProcess(rid)` 
 Signals: `asyncResponse`, `fpsUpdated(fps)`, `fpsAvailabilityChanged(available)`,
 `processChanged(process)`.
 
-**Waveshare compatibility:** stub — reports `fpsAvailable=false`/0 (we don't yet run a
+**Plinth compatibility:** stub — reports `fpsAvailable=false`/0 (we don't yet run a
 PresentMon-style FPS source), so FPS widgets show "unavailable" rather than hanging.
 
 ### Device Action Provider
@@ -265,7 +265,7 @@ Method: `initDevice(deviceId)` — subscribe to that device's dial/key events.
 Signal: `dialTriggered(actionType, dialIndex)` where `actionType` ∈ {`"press"`,
 `"long-press"`}. Emitted only on real hardware, never in preview.
 
-**Waveshare compatibility:** stub — the panel has no dials, so `initDevice` is a no-op and
+**Plinth compatibility:** stub — the panel has no dials, so `initDevice` is a no-op and
 `dialTriggered` never fires (matching documented preview behavior).
 
 ### Stream Deck
@@ -280,7 +280,7 @@ Signals: `virtualDeviceCreated(widgetId, deviceId)`,
 `streamdeckUnreachable`, `authenticationRequired`, `authenticationRejected`.
 Uses `iCUE.widgetId` and `iCUE.streamDeckDeviceId`.
 
-**Waveshare compatibility:** not implemented — this plugin bridges to Corsair's internal
+**Plinth compatibility:** not implemented — this plugin bridges to Corsair's internal
 Stream Deck provider, which we can't reach. See [WIDGET-SPEC.md](WIDGET-SPEC.md) and the
 README for the **Embed URL** approach (point it at a localhost Stream Deck bridge such as
 StreamDeckEmbeded's `http://localhost:28199`) to get a touch Stream Deck without this
@@ -302,7 +302,7 @@ localStorage.setItem(uniqueId, JSON.stringify(state));
 Widgets may also listen for the `storage` event on their own key to react to changes from
 another live context (settings preview vs on-device). Limit is the browser's ~5–10 MB.
 
-**Waveshare compatibility:** `uniqueId` is a stable per-slot key, so persistence survives
+**Plinth compatibility:** `uniqueId` is a stable per-slot key, so persistence survives
 reloads. Each widget runs on its own origin, so `localStorage` is naturally isolated.
 
 ---
@@ -317,7 +317,7 @@ iCUE ships a `common/` folder of helper JS/CSS (the plugin promise-wrappers, a
 `MediaViewer` for `media-selector` output) that widgets copy into their package before
 building.
 
-**Waveshare compatibility:** `tr()` is implemented, backed by the package's
+**Plinth compatibility:** `tr()` is implemented, backed by the package's
 `translation.json` (flat map or per-language). The promise-wrappers work because the
 underlying plugin objects match the documented API. `MediaViewer` isn't provided (no
 `media-selector` support yet).

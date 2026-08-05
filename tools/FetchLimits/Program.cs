@@ -1,4 +1,4 @@
-using WaveshareWidgets;
+using Plinth;
 
 // One body ceiling, two tiers (#117).
 //
@@ -103,7 +103,7 @@ Check("F7 a null body is answered, not thrown on", code.Contains("if (!r.body)")
 // cannot materialise more than this either, and that number lives in widget-api.js because
 // the shim is plain JS with no access to the C# constant. Two hand-kept copies is exactly
 // how the proxy and browser tiers drifted apart in the first place, so they are compared.
-var shim = FindUpwards("src/WaveshareWidgets/Shell/widget-api.js");
+var shim = FindUpwards("src/Plinth/Shell/widget-api.js");
 if (shim is null)
 {
     Check("F8 the widget shim's ceiling matches the host's", false, "widget-api.js not found");

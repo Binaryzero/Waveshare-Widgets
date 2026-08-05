@@ -11,7 +11,7 @@
 // P7     the two tiers agree about host-owned names — the drift that WAS the finding
 // P8     name handling is case- and junk-proof
 using System.Text.Json;
-using WaveshareWidgets;
+using Plinth;
 
 var failures = 0;
 void Check(string name, bool ok, string? detail = null)

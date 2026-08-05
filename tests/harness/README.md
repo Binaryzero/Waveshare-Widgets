@@ -1,6 +1,6 @@
 # Headless probe harness
 
-Self-contained Playwright suites that boot the real shell (`src/WaveshareWidgets/Shell`)
+Self-contained Playwright suites that boot the real shell (`src/Plinth/Shell`)
 in a headless Chromium with a scripted host bridge, and assert end-to-end behavior
 through the actual message envelopes. Each suite starts every server it needs
 (static file serving plus scenario-specific counting/CORS/bot-wall origins) and

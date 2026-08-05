@@ -15,6 +15,6 @@
     <AssemblyName>UrlRedaction</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../src/WaveshareWidgets/SafeUrl.cs" />
+    <Compile Include="../../src/Plinth/SafeUrl.cs" />
   </ItemGroup>
 </Project>

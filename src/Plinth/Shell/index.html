@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Plinth</title>
+  <link rel="icon" href="data:," /><!-- no favicon on a panel; silences the 404 (#36) -->
+  <link rel="stylesheet" href="shell.css" />
+</head>
+<body>
+  <!-- Wallpaper: two stacked layers crossfade between pages; the dim overlay sits
+       above the wallpaper but below the widgets, so it never dims the widgets. -->
+  <div id="bgRoot" aria-hidden="true">
+    <div class="bg-layer" id="bgLayer0"></div>
+    <div class="bg-layer" id="bgLayer1"></div>
+    <div id="bgDim"></div>
+  </div>
+  <main id="pages"></main>
+  <div id="edgeLeft" class="edge left" aria-hidden="true">&#8249;</div>
+  <div id="edgeRight" class="edge right" aria-hidden="true">&#8250;</div>
+  <nav id="dots" aria-hidden="true"></nav>
+  <button id="editBtn" title="Edit layout">&#9998;</button>
+
+  <!-- Edit-mode chrome: floating capsule with page management + Done. -->
+  <div id="editBar" hidden>
+    <button id="pageMoveLeft" title="Previous page">&#8249;</button>
+    <button id="pageMoveRight" title="Next page">&#8250;</button>
+    <button id="pageAdd" title="Add a page">+ Page</button>
+    <button id="pageDelete" class="danger" title="Delete this page">&#10005; Page</button>
+    <button id="editDone" class="primary">Done</button>
+  </div>
+
+  <!-- Per-widget style editor: right-docked panel, live over the real tile. -->
+  <div id="stylePanel" hidden>
+    <div class="sp-head"><span id="spTitle">Style</span><button id="spClose" title="Close">&#10005;</button></div>
+    <p class="sp-hint">Checked rows override the theme for this widget only. Everything else keeps following it.</p>
+    <div id="spRows"></div>
+    <button id="spReset" class="sp-reset">Follow the theme again</button>
+  </div>
+
+  <!-- Per-widget SETTINGS editor (on-device, #48): right-docked over the live tile.
+       Every change applies immediately — the tile next to it is the preview. -->
+  <div id="propSheet" hidden>
+    <div class="sp-head"><span id="psTitle">Settings</span><button id="psClose" title="Close">&#10005;</button></div>
+    <div id="psRows"></div>
+  </div>
+
+  <!-- Centered widget palette (add-widget modal). -->
+  <div id="palette" hidden>
+    <div id="paletteBackdrop"></div>
+    <div id="paletteCard">
+      <div id="paletteTitle">Add a widget</div>
+      <div id="paletteGrid"></div>
+    </div>
+  </div>
+
+  <div id="empty" hidden>
+    <h1>Plinth</h1>
+    <p>No widgets on screen yet. Tap the pencil in the corner to add some.</p>
+  </div>
+  <script src="palette.js"></script>
+  <script src="shell.js"></script>
+</body>
+</html>

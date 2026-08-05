@@ -1,6 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using WaveshareWidgets.Widgets;
+using Plinth.Widgets;
 
 // Every value present in a shipped manifest must survive the host's round-trip —
 // keys the model doesn't carry get stripped on their way to the settings window,

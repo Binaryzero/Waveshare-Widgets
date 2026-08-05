@@ -31,7 +31,7 @@ const opt = (name, dflt) => {
   return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : dflt;
 };
 
-const SHELL = path.join(__dirname, '../../src/WaveshareWidgets/Shell');
+const SHELL = path.join(__dirname, '../../src/Plinth/Shell');
 // --shim points at a DIFFERENT copy of widget-api.js, which is how a change to the shim
 // gets falsified: run these cases against the version before it and require the ones it
 // fixes to fail there.

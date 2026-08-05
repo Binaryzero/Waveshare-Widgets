@@ -6,7 +6,7 @@
 // noticing. Everything after it covers turning a flagged name into an actual refusal.
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using WaveshareWidgets.Widgets;
+using Plinth.Widgets;
 
 var failures = 0;
 void Check(string name, bool ok, string? detail = null)

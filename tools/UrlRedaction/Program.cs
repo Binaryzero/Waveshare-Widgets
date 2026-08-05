@@ -5,7 +5,7 @@
 // credential. So the question these probes ask is not "does it shorten the URL" but
 // "can the secret still be read out of what we wrote". U1 covers every place a secret
 // hides in a URL; U5 sweeps the whole corpus for any leak the named cases missed.
-using WaveshareWidgets;
+using Plinth;
 
 var failures = 0;
 void Check(string name, bool ok, string? detail = null)

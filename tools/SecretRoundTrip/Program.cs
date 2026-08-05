@@ -4,7 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using WaveshareWidgets.Widgets;
+using Plinth.Widgets;
 
 var failures = 0;
 void Check(string name, bool ok, string? detail = null)
@@ -617,7 +617,7 @@ static string? FindUpwards(string relative)
 // an intent depends on a slot's own VALUE — two instances of one widget can be in different
 // states, and a per-widget answer treats them as interchangeable. PR #147 was withdrawn over
 // four separate consequences of exactly that (#148).
-var planSrc = FindUpwards("src/WaveshareWidgets/Widgets/SecretStore.cs");
+var planSrc = FindUpwards("src/Plinth/Widgets/SecretStore.cs");
 if (planSrc is null)
 {
     Check("P34 setup: SecretStore.cs was found", false);
@@ -1593,7 +1593,7 @@ Check("P37k6 the projection is indexed over slots that SURVIVE the placeholder f
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 
-namespace WaveshareWidgets
+namespace Plinth
 {
     // Stand-ins for the app-side helpers SecretStore logs through; the probe only needs
     // them to exist (and stay quiet unless something interesting happens).

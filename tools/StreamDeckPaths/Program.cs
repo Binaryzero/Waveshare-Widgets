@@ -8,7 +8,7 @@
 //
 // Reproducing it needs Windows, an Elgato installation and a profile on disk. The decision
 // does not: it is two predicates over strings, and this drives them.
-using WaveshareWidgets.App;
+using Plinth.App;
 
 var failures = 0;
 void Check(string name, bool ok, string? detail = null)
@@ -167,7 +167,7 @@ Console.WriteLine("Wired up");
 // was passed to, and both times every value-level probe still passed. StreamDeckBridge needs
 // Windows, an Elgato installation and a live profile, so its call sites cannot be driven
 // from here; asserting they exist is weak, and weak beats absent.
-var bridge = FindUpwards("src/WaveshareWidgets/App/StreamDeckBridge.cs");
+var bridge = FindUpwards("src/Plinth/App/StreamDeckBridge.cs");
 if (bridge is null)
 {
     Check("S8 setup: StreamDeckBridge.cs was found", false);

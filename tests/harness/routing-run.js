@@ -42,7 +42,7 @@ const http = require('http');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..', '..');
-const SHELL = path.join(REPO, 'src', 'WaveshareWidgets', 'Shell');
+const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const PORT = 8957;
 
 function staticServer(rootDir, port) {
@@ -69,7 +69,7 @@ const check = (name, ok, detail) => {
 // subscriber and the bystander are the same code — the only difference is what they ask.
 const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
 <body style="margin:0;background:#111">
-<script src="https://app.wsw/widget-api.js"></script>
+<script src="https://app.plinth/widget-api.js"></script>
 <script>
   window.__notifs = [];
   window.__decks = [];
@@ -103,17 +103,17 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
       : name.endsWith('.js') ? 'application/javascript' : 'text/html';
     route.fulfill({ status: 200, contentType: type, body: fs.readFileSync(file) });
   };
-  await page.route('https://app.wsw/**', (r) =>
+  await page.route('https://app.plinth/**', (r) =>
     serve(r, SHELL, new URL(r.request().url()).pathname.replace(/^\/+/, '')));
-  await page.route('https://sub.widgets.wsw/**', (r) =>
+  await page.route('https://sub.widgets.plinth/**', (r) =>
     r.fulfill({ status: 200, contentType: 'text/html', body: WIDGET_HTML }));
-  await page.route('https://bys.widgets.wsw/**', (r) =>
+  await page.route('https://bys.widgets.plinth/**', (r) =>
     r.fulfill({ status: 200, contentType: 'text/html', body: WIDGET_HTML }));
 
   // Two widget IDs so the two slots get distinct virtual hosts, as the real host map does.
   const widgets = [
-    { id: 'test.sub', name: 'Subscriber', url: 'https://sub.widgets.wsw/index.html', supportedSlots: ['half'], properties: [] },
-    { id: 'test.bys', name: 'Bystander', url: 'https://bys.widgets.wsw/index.html', supportedSlots: ['half'], properties: [] },
+    { id: 'test.sub', name: 'Subscriber', url: 'https://sub.widgets.plinth/index.html', supportedSlots: ['half'], properties: [] },
+    { id: 'test.bys', name: 'Bystander', url: 'https://bys.widgets.plinth/index.html', supportedSlots: ['half'], properties: [] },
   ];
   const layout = { pages: [{ name: 'P', slots: [
     { widgetId: 'test.sub', size: 'half', instanceId: 's1', settings: {} },
@@ -150,11 +150,11 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
     }
   });
 
-  await page.goto(`http://127.0.0.1:${PORT}/src/WaveshareWidgets/Shell/index.html`);
+  await page.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/index.html`);
   await page.waitForTimeout(2000);
 
-  const sub = page.frames().find((f) => /sub\.widgets\.wsw/.test(f.url()));
-  const bys = page.frames().find((f) => /bys\.widgets\.wsw/.test(f.url()));
+  const sub = page.frames().find((f) => /sub\.widgets\.plinth/.test(f.url()));
+  const bys = page.frames().find((f) => /bys\.widgets\.plinth/.test(f.url()));
   check('R0 setup: both widgets loaded and initialized',
     !!sub && !!bys && await sub.evaluate(() => document.body.dataset.inited === '1')
       && await bys.evaluate(() => document.body.dataset.inited === '1'),
@@ -382,7 +382,7 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
     }
   });
   await page.waitForTimeout(1800);
-  const reloaded = page.frames().find((f) => /sub\.widgets\.wsw/.test(f.url()));
+  const reloaded = page.frames().find((f) => /sub\.widgets\.plinth/.test(f.url()));
   const isNewDocument = !!reloaded && await reloaded.evaluate(() => window.__generation === undefined);
   check('R11d setup: the slot is a NEW document, not the same one',
     isNewDocument && await reloaded.evaluate(() => document.body.dataset.inited === '1'),
@@ -450,7 +450,7 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
     }
   });
   await page.waitForTimeout(1800);
-  const again = page.frames().find((f) => /sub\.widgets\.wsw/.test(f.url()));
+  const again = page.frames().find((f) => /sub\.widgets\.plinth/.test(f.url()));
   check('R11e2 setup: it really is another new document',
     !!again && await again.evaluate(() => window.__generation === undefined));
 

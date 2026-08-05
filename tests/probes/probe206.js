@@ -1,7 +1,7 @@
 'use strict';
 const fs=require('fs'),path=require('path');
 const REPO='/home/user/Waveshare-Widgets';
-const SHELL=path.join(REPO,'src/WaveshareWidgets/Shell');
+const SHELL=path.join(REPO,'src/Plinth/Shell');
 const WIDGET=path.join(REPO,'widgets/notifications');
 const MIME={'.html':'text/html','.js':'application/javascript','.css':'text/css','.json':'application/json'};
 const {chromium}=require('/opt/node22/lib/node_modules/playwright');
@@ -25,7 +25,7 @@ const SHELLPAGE='<!doctype html><meta charset=utf-8><style>'
  +'if(Math.abs(dx)<12)go(cur()+d);else go(cur()+(dx<0?1:-1));});}'
  +'bind(document.getElementById("edgeLeft"),-1);bind(document.getElementById("edgeRight"),1);})();<\/script>';
 const ROOTSCROLL='<!doctype html><meta charset=utf-8>'
- +'<link rel=stylesheet href="https://app.wsw/widget-base.css">'
+ +'<link rel=stylesheet href="https://app.plinth/widget-base.css">'
  +'<style>html,body{overflow:auto !important}.tall{height:2000px}</style><div class=tall>root scroller</div>';
 (async()=>{
  const b=await chromium.launch({executablePath:'/opt/pw-browsers/chromium'});
@@ -35,11 +35,11 @@ const ROOTSCROLL='<!doctype html><meta charset=utf-8>'
    if((f===root||f.startsWith(root+path.sep))&&fs.existsSync(f)&&fs.statSync(f).isFile())
      return r.fulfill({contentType:MIME[path.extname(f)]||'text/plain',body:fs.readFileSync(f)});
    return r.fulfill({status:404,body:''});};
- await p.route('https://app.wsw/**',r=>serve(r,SHELL,decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/,'')));
+ await p.route('https://app.plinth/**',r=>serve(r,SHELL,decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/,'')));
  await p.route('https://widget.test/**',r=>serve(r,WIDGET,decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/,'')||'index.html'));
  await p.route('https://shell.test/**',r=>r.fulfill({contentType:'text/html',body:SHELLPAGE}));
  await p.route('https://rootscroll.test/**',r=>r.fulfill({contentType:'text/html',body:ROOTSCROLL}));
- await p.route(/https?:\/\/(?!(?:app\.wsw|widget\.test|shell\.test|rootscroll\.test)(?:[/?#]|$)).*/,r=>r.abort());
+ await p.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test|rootscroll\.test)(?:[/?#]|$)).*/,r=>r.abort());
  const shim=fs.readFileSync(path.join(SHELL,'widget-api.js'),'utf8')+'\n'+fs.readFileSync(path.join(SHELL,'icue-compat.js'),'utf8');
  await p.addInitScript(shim);
  await p.addInitScript(({items})=>{if(window.top!==window)return;let fr=null;
@@ -79,7 +79,7 @@ const ROOTSCROLL='<!doctype html><meta charset=utf-8>'
 
  // M2: third-party widget whose ROOT document scrolls
  const p2=await ctx.newPage();
- await p2.route('https://app.wsw/**',r=>serve(r,SHELL,decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/,'')));
+ await p2.route('https://app.plinth/**',r=>serve(r,SHELL,decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/,'')));
  await p2.route('https://rootscroll.test/**',r=>r.fulfill({contentType:'text/html',body:ROOTSCROLL}));
  await p2.goto('https://rootscroll.test/w.html');await p2.waitForTimeout(400);
  const cdp2=await ctx.newCDPSession(p2);
