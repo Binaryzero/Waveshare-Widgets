@@ -2,7 +2,7 @@
   "id": "ws.stock.gallery",
   "name": "Gallery",
   "author": "Plinth",
-  "version": "1.1.2",
+  "version": "2.0.0",
   "description": "Slideshow of your own photos and videos. Drop files into the media folder (Settings → Open media folder) — images crossfade, videos play through with sound off. New files are picked up automatically.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
