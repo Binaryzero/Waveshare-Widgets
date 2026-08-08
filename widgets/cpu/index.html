@@ -166,6 +166,8 @@
       { label: 'Temp', unit: '°C', decimals: 0, sensor: temp },
       { label: 'Clock', unit: 'MHz', decimals: 0,
         sensor: WW.findSensor({ type: 'Clock', deviceTypeIncludes: ['cpu'], nameIncludes: ['core #1', 'core'] }) },
+      { label: 'Power', unit: 'W', decimals: 0,
+        sensor: WW.findSensor({ type: 'Power', deviceTypeIncludes: ['cpu'], preferredNames: ['CPU Package', 'Package'] }) },
       { label: 'Memory', unit: '%', decimals: 0, sensor: WW.sensorById('sys:mem:load') },
     ].find((c) => c.sensor && c.sensor.value != null);
     const stat2 = document.getElementById('stat2');

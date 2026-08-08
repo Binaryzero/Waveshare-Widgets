@@ -319,10 +319,12 @@
     el('masterRow').style.display = cfg.showMaster && data.master ? 'grid' : 'none';
     if (cfg.showMaster && data.master) updateRow(masterUI, data.master);
 
-    const list = (data.sessions || []).slice(0, cfg.maxApps);
+    const all = data.sessions || [];
+    const list = all.slice(0, cfg.maxApps);
+    // The annotation counts what Windows reports, not what fits the tile.
     const count = el('sessionCount');
-    count.hidden = !list.length;
-    count.textContent = list.length + (list.length === 1 ? ' app' : ' apps');
+    count.hidden = !all.length;
+    count.textContent = all.length + (all.length === 1 ? ' app' : ' apps');
     const sig = list.map((s) => s.pid + ' ' + s.name).join('');
     if (sig !== rowSig) { buildSessionRows(list); rowSig = sig; }
     list.forEach((s, i) => updateRow(sessionUI[i], s));

@@ -201,6 +201,10 @@
       WW.log('weather failed: ' + e.message);
       document.getElementById('errorBody').textContent =
         e.message + '. Check the location name in Settings.';
+      // On glass/transparent tiles the overlay is translucent — the mode and the
+      // temperature ruler must not present stale forecast data through it.
+      document.getElementById('mode').textContent = '';
+      document.getElementById('tempScale').classList.add('pending');
       document.getElementById('error').hidden = false;
     }
   }

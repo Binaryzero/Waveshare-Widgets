@@ -564,7 +564,11 @@
     // diamond per due date, the urgent ones amber. Without parseable dates the ruler
     // stays hidden and the tile is what it always was.
     const scale = el('dueScale');
-    const dues = visible.map((v) => Date.parse(v.due)).filter((t) => Number.isFinite(t) && t > now);
+    // dueDate parses to midnight UTC, so a deadline still due TODAY is already
+    // "past" by that instant — it stays on the timeline through the end of its
+    // due day (its marker clamps to the left edge as it approaches).
+    const DAY = 86400000;
+    const dues = visible.map((v) => Date.parse(v.due)).filter((t) => Number.isFinite(t) && t + DAY > now);
     if (dues.length) {
       const max = Math.max(...dues);
       const span = Math.max(max - now, 86400000);
