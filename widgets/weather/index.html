@@ -7,13 +7,13 @@
 <style>
   /* Widget-specific layout; tokens, background/bgStyle and typography base come
    * from widget-base.css. */
+  body { display: flex; flex-direction: column; padding: 12px 16px 10px; }
   #wrap {
     display: flex;
-    width: 100%;
-    height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
     align-items: center;
     justify-content: space-evenly;
-    padding: 0 3%;
     gap: 3%;
   }
   #now { display: flex; align-items: center; gap: 5%; flex: none; }
@@ -22,24 +22,34 @@
   #temp {
     font-size: calc(clamp(30px, 17vh, 70px) * var(--temp-scale, 1));
     color: var(--text);
-    font-weight: 200;
+    font-weight: 700;
     line-height: 1;
     font-variant-numeric: tabular-nums;
   }
   #temp small { font-size: 45%; color: var(--accent); font-weight: 400; }
-  #desc { font-size: calc(clamp(12px, 4.6vh, 20px) * var(--condition-scale, 1)); color: var(--text-muted); }
+  #desc {
+    font-size: calc(clamp(10px, 4vh, 16px) * var(--condition-scale, 1));
+    color: var(--text-muted); font-weight: 600;
+    letter-spacing: 0.18em; text-transform: uppercase;
+  }
   #meta { font-size: calc(clamp(10px, 3.8vh, 15px) * var(--meta-scale, 1)); color: var(--text-muted); font-variant-numeric: tabular-nums; }
   #place { font-size: calc(clamp(10px, 3.8vh, 15px) * var(--location-scale, 1)); color: var(--accent); letter-spacing: 0.08em; text-transform: uppercase; }
 
   #forecast { display: flex; flex: 1; max-width: 58%; justify-content: space-evenly; gap: 4px; }
   .fc { display: flex; flex-direction: column; align-items: center; gap: 1vh; min-width: 0; }
-  .fc .t { color: var(--text-muted); font-size: calc(clamp(9px, 3.4vh, 14px) * var(--forecast-scale, 1)); white-space: nowrap; }
+  .fc .t {
+    color: var(--text-dim); font-weight: 600;
+    letter-spacing: 0.2em; text-transform: uppercase;
+    font-size: calc(clamp(8px, 3vh, 11px) * var(--forecast-scale, 1)); white-space: nowrap;
+  }
   .fc .e { font-size: clamp(16px, 8vh, 34px); line-height: 1; }
-  .fc .v { color: var(--text); font-size: calc(clamp(11px, 4.6vh, 19px) * var(--forecast-scale, 1)); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .fc .v { color: var(--text); font-size: calc(clamp(11px, 4.6vh, 19px) * var(--forecast-scale, 1)); font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .fc .s { color: var(--text-muted); font-size: calc(clamp(9px, 3.2vh, 13px) * var(--forecast-scale, 1)); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
   /* Quarter slots are too narrow for the strip; keep just current conditions */
-  @media (max-width: 470px) { #forecast { display: none; } }
+  @media (max-width: 470px) { #forecast, #tempScale { display: none; } }
+  /* The day's temperature span: the tile's ruler. Hidden until data lands. */
+  #tempScale.pending { visibility: hidden; }
 
   /* Error state: standard state-card covering the layout. It paints the surface
    * at the effective panel opacity so it matches the tile's bgStyle. */
@@ -50,6 +60,10 @@
 </style>
 </head>
 <body>
+  <header class="hd">
+    <span class="kicker">WX</span>
+    <span class="st" id="mode"></span>
+  </header>
   <div id="wrap">
     <div id="now">
       <div id="icon">…</div>
@@ -61,6 +75,14 @@
       </div>
     </div>
     <div id="forecast"></div>
+  </div>
+  <div class="scale pending" id="tempScale" style="--pitch: 10%">
+    <div class="rail"></div><div class="mns"></div>
+    <div class="mj e-l" style="left:0"><b id="scaleL"></b></div>
+    <div class="mj e-r" style="left:100%"><b id="scaleR"></b></div>
+    <div class="fill" id="scaleFill" style="width:0%"></div>
+    <div class="cur" id="scaleCur" style="left:0%"></div>
+    <span id="scaleMarks"></span>
   </div>
   <div id="error" class="state-card err" hidden>
     <div class="state-icon">!</div>
@@ -170,6 +192,8 @@
         '  ·  ' + data.current.relative_humidity_2m + '% RH';
 
       renderForecast(data, s.forecast || 'hourly');
+      renderScale(data);
+      document.getElementById('mode').textContent = (s.forecast || 'hourly') === 'daily' ? '6-day' : '12h';
       document.getElementById('error').hidden = true;
     } catch (e) {
       WW.log('weather failed: ' + e.message);
@@ -177,6 +201,37 @@
         e.message + '. Check the location name in Settings.';
       document.getElementById('error').hidden = false;
     }
+  }
+
+  // The day's temperature span as the tile's ruler: endpoints on tens, hollow
+  // diamond markers at today's low and high, the cursor and fill at now.
+  function renderScale(data) {
+    const cur = data.current.temperature_2m;
+    const lo = data.daily.temperature_2m_min[0];
+    const hi = data.daily.temperature_2m_max[0];
+    if (![cur, lo, hi].every(Number.isFinite)) return;
+    const min = Math.floor((Math.min(cur, lo) - 2) / 10) * 10;
+    const max = Math.ceil((Math.max(cur, hi) + 2) / 10) * 10;
+    const span = Math.max(1, max - min);
+    const pct = (v) => (Math.min(max, Math.max(min, v)) - min) / span * 100;
+    const scale = document.getElementById('tempScale');
+    document.getElementById('scaleL').textContent = String(min);
+    document.getElementById('scaleR').textContent = String(max);
+    document.getElementById('scaleFill').style.width = pct(cur).toFixed(1) + '%';
+    document.getElementById('scaleCur').style.left = pct(cur).toFixed(1) + '%';
+    const marks = document.getElementById('scaleMarks');
+    marks.textContent = '';
+    for (const [label, value] of [['L' + Math.round(lo), lo], ['H' + Math.round(hi), hi]]) {
+      const mk = document.createElement('div');
+      mk.className = 'mk';
+      mk.style.left = pct(value).toFixed(1) + '%';
+      const i = document.createElement('i');
+      const b = document.createElement('b');
+      b.textContent = label;
+      mk.append(i, b);
+      marks.appendChild(mk);
+    }
+    scale.classList.remove('pending');
   }
 
   function renderForecast(data, mode) {
