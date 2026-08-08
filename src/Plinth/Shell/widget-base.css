@@ -187,7 +187,9 @@ body.bg-transparent {
   color: var(--text-muted);
 }
 .hd .st, .st { letter-spacing: 0.2em; color: var(--text-dim); }
-.hd .st.on, .st.on { color: var(--accent); }
+/* Lit annotations are TEXT in the data hue — the repaired foreground, not the
+ * raw seed, which may sit right on the surface. Dots and glows keep the seed. */
+.hd .st.on, .st.on { color: var(--accent-fg); }
 
 /* Breathing status dot — the mark beside a live annotation ("● PLAYING").
  * Scoped to header annotations: widgets already use bare .dot for their own
@@ -232,7 +234,7 @@ body.bg-transparent {
   font-weight: 600;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--accent-fg);
 }
 .pill.ok { color: var(--ok); }
 .pill.warn { color: var(--warn); }
@@ -322,7 +324,11 @@ body.bg-transparent {
  * surfaces — because the raw seed is the user's exact pick and may sit right on
  * the background; the glow keeps the raw accent, it is decoration. */
 .btn.primary {
-  background: transparent;
+  /* Self-backed at the surface color: invisible against a solid tile (same color
+   * beneath), but under bg-transparent the wallpaper is the backdrop and
+   * --accent-fg was repaired against the SURFACE — this backing is what keeps
+   * that repair meaningful there. */
+  background: rgba(var(--surface-rgb), 0.85);
   border-color: color-mix(in srgb, var(--accent-fg) 55%, transparent);
   box-shadow: inset 0 0 12px rgba(var(--accent-rgb), 0.07);
   color: var(--accent-fg);
