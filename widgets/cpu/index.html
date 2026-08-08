@@ -191,12 +191,14 @@
       .filter((x) => x.type === 'Load' && /core #?\d+/i.test(x.name || '') && x.value != null)
       .sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true }));
     const cores = allCores.slice(0, MAX_BARS);
+    // Hidden only when EMPTY: a machine exposing a single per-core reading still
+    // has usable data, and one bar beats a blank pane.
     const wrap = document.getElementById('coresWrap');
-    wrap.hidden = cores.length < 2;
+    wrap.hidden = !cores.length;
     const count = document.getElementById('coreCount');
-    count.hidden = cores.length < 2;
-    if (cores.length >= 2) {
-      count.textContent = allCores.length + ' cores';
+    count.hidden = !cores.length;
+    if (cores.length) {
+      count.textContent = allCores.length + (allCores.length === 1 ? ' core' : ' cores');
       const bars = document.getElementById('bars');
       const vals = document.getElementById('coreVals');
       bars.textContent = '';
