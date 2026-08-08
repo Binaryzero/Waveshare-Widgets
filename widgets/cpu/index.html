@@ -159,11 +159,14 @@
 
     // Second big stat: the best-available companion so the tile never shows a dead
     // placeholder on machines without the kernel-driver sensors.
+    // Preference: CPU-specific data before the generic fallback. sys:mem:load is
+    // emitted on every frame GlobalMemoryStatusEx succeeds, so listing it ahead of
+    // the clock made the clock unreachable on machines without a temp sensor.
     const second = [
       { label: 'Temp', unit: '°C', decimals: 0, sensor: temp },
-      { label: 'Memory', unit: '%', decimals: 0, sensor: WW.sensorById('sys:mem:load') },
       { label: 'Clock', unit: 'MHz', decimals: 0,
         sensor: WW.findSensor({ type: 'Clock', deviceTypeIncludes: ['cpu'], nameIncludes: ['core #1', 'core'] }) },
+      { label: 'Memory', unit: '%', decimals: 0, sensor: WW.sensorById('sys:mem:load') },
     ].find((c) => c.sensor && c.sensor.value != null);
     const stat2 = document.getElementById('stat2');
     stat2.hidden = !second;
