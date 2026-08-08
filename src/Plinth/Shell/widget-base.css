@@ -170,10 +170,9 @@ body.bg-transparent {
 }
 
 /* Tile header: identity left, structural annotation or status right.
- *   <header class="hd"><span><span class="idx">03</span><span class="kicker">CPU</span></span>
- *   <span class="st">8 CORES</span></header>
- * .idx is the slot index numeral; .st is the right-side annotation, .st.on lights
- * it in the data hue (live/playing states). */
+ *   <header class="hd"><span class="kicker">CPU</span><span class="st">8 CORES</span></header>
+ * .st is the right-side annotation; .st.on lights it in the data hue
+ * (live/playing states). */
 .hd {
   display: flex;
   align-items: baseline;
@@ -185,7 +184,6 @@ body.bg-transparent {
   text-transform: uppercase;
   color: var(--text-muted);
 }
-.hd .idx { color: var(--text-dim); margin-right: 9px; }
 .hd .st, .st { letter-spacing: 0.2em; color: var(--text-dim); }
 .hd .st.on, .st.on { color: var(--accent); }
 

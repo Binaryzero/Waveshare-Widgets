@@ -208,17 +208,16 @@ so a widget that has never heard of any of this is an ordinary opaque tile.
 A standard widget has six layers. Not every widget needs all six visible at once, but
 each one that exists uses the standard classes so widgets read as one family.
 
-1. **Header** — the instrument headline. A `.hd` row: on the left the slot index numeral
-   (`.idx`, dim) followed by the widget's name in `.kicker` type; on the right a
-   structural annotation (`.st` — the tile's fixed context, like `24H` or `8 CORES`),
-   which lights to `.st.on` in the data hue for a live state, with a breathing `.dot`
-   where the state deserves a pulse (`● PLAYING`). Exceptions still ride a `.pill`
-   (`.ok` / `.warn` / `.err` / `.muted`) — now flat etched uppercase text in the state's
-   hue, no chip chrome.
+1. **Header** — the instrument headline. A `.hd` row: the widget's name in `.kicker`
+   type on the left; on the right a structural annotation (`.st` — the tile's fixed
+   context, like `24H` or `8 CORES`), which lights to `.st.on` in the data hue for a
+   live state, with a breathing `.dot` where the state deserves a pulse (`● PLAYING`).
+   Exceptions still ride a `.pill` (`.ok` / `.warn` / `.err` / `.muted`) — now flat
+   etched uppercase text in the state's hue, no chip chrome.
 
    ```html
    <header class="hd">
-     <span><span class="idx">03</span><span class="kicker">CPU</span></span>
+     <span class="kicker">CPU</span>
      <span class="st">8 cores</span>
    </header>
    ```
@@ -267,7 +266,7 @@ Annotated skeleton:
 <body>
   <!-- 1 · Header: identity left, annotation/status right -->
   <header class="hd">
-    <span><span class="idx">04</span><span class="kicker">Network</span></span>
+    <span class="kicker">Network</span>
     <!-- Hidden while healthy; shown only to report stale/degraded/error. -->
     <span class="pill" id="pill" hidden></span>
   </header>
@@ -523,7 +522,7 @@ Copy this into your widget's PR / release notes and check every line:
 - [ ] Nested surfaces use `.card` / `var(--card-surface)` — no opaque cards on a glass tile
 
 ### Anatomy & states
-- [ ] Uses the standard classes (`.hd`/`.idx`/`.st`, `.kicker`, `.pill`, `.value`/`.unit`, `.card`, `.meter`, `.scale`, `.btn`)
+- [ ] Uses the standard classes (`.hd`/`.st`, `.kicker`, `.pill`, `.value`/`.unit`, `.card`, `.meter`, `.scale`, `.btn`)
 - [ ] Every natural scalar/time axis renders as a `.scale` ruler at the tile's foot
 - [ ] Loading: `.spinner` until first data
 - [ ] Empty/setup: `.state-card` explaining what to do, with a CTA where possible
