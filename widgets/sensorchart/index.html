@@ -19,15 +19,17 @@
   }
   #title {
     color: var(--text-muted);
-    font-size: calc(clamp(10px, 3.4vh, 15px) * var(--title-scale, 1));
-    letter-spacing: 0.06em;
+    font-size: calc(clamp(8px, 3vh, 11px) * var(--title-scale, 1));
+    font-weight: 600;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     flex: 1; min-width: 0;
   }
   #value {
     color: var(--text);
     font-size: calc(clamp(17px, 8.5vh, 42px) * var(--value-scale, 1));
-    font-weight: 600;
+    font-weight: 700;
     font-variant-numeric: tabular-nums;
     line-height: 1.05;
     white-space: nowrap;
