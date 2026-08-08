@@ -566,9 +566,15 @@
     const scale = el('dueScale');
     // dueDate parses to midnight UTC, so a deadline still due TODAY is already
     // "past" by that instant — it stays on the timeline through the end of its
-    // due day (its marker clamps to the left edge as it approaches).
-    const DAY = 86400000;
-    const dues = visible.map((v) => Date.parse(v.due)).filter((t) => Number.isFinite(t) && t + DAY > now);
+    // LOCAL due day (UTC+24h still dropped an Aug 8 deadline at 5PM PDT). The
+    // marker clamps to the left edge as the deadline approaches.
+    const dueEndLocal = (iso) => {
+      const [y, m, d] = String(iso).split('-').map(Number);
+      return Number.isFinite(y) ? new Date(y, m - 1, d + 1).getTime() : NaN;
+    };
+    const dues = visible
+      .filter((v) => Number.isFinite(Date.parse(v.due)) && dueEndLocal(v.due) > now)
+      .map((v) => Date.parse(v.due));
     if (dues.length) {
       const max = Math.max(...dues);
       const span = Math.max(max - now, 86400000);

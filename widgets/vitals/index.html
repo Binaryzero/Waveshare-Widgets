@@ -148,7 +148,9 @@
    * all four meter rows keep the 40px touch floor inside 200px. ---------------- */
   @media (max-height: 240px) {
     body { padding: 6px 10px; gap: 4px; }
-    header, #xpRow, #petName { display: none; }
+    /* header.hd, not header: the grammar class carries (0,1,0) specificity
+     * and a bare element selector no longer outranks it. */
+    header.hd, #xpRow, #petName { display: none; }
     #main { flex-direction: row; align-items: center; justify-content: center; gap: clamp(8px, 2vw, 18px); }
     #meters { flex: 1; min-width: 0; }
     #pet { width: clamp(40px, 24vh, 56px); }
