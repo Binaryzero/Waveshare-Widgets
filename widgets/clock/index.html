@@ -10,9 +10,16 @@
   body {
     display: flex;
     flex-direction: column;
+    padding: 12px 16px 10px;
+  }
+  #mid {
+    display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 2vh;
+    flex: 1 1 auto;
+    min-height: 0;
   }
   /* Both sizes are set by WW.fitText from script — the values here are only what
    * shows for the frame before the first fit runs. Sizing either one in `vh` alone
@@ -21,26 +28,51 @@
   #time {
     color: var(--text);
     font-size: 40px;
-    font-weight: 200;
-    line-height: 1;
+    font-weight: 700;
+    line-height: 0.92;
     font-variant-numeric: tabular-nums;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.01em;
     white-space: nowrap;
+    text-shadow: 0 0 26px rgba(var(--accent-rgb), 0.10);
   }
-  #time small { font-size: 40%; color: var(--text-muted); font-weight: 200; }
+  #time em {
+    font-style: normal;
+    color: var(--accent-fg);
+    text-shadow: 0 0 16px rgba(var(--accent-rgb), 0.45);
+  }
+  #time small { font-size: 40%; color: var(--text-muted); font-weight: 500; }
   #date {
     color: var(--text-muted);
     font-size: 12px;
-    font-weight: 400;
-    letter-spacing: 0.08em;
+    font-weight: 500;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
+  #dayScale { margin-top: auto; }
 </style>
 </head>
 <body>
-  <div id="time">--:--</div>
-  <div id="date"></div>
+  <header class="hd">
+    <span class="kicker">Chrono</span>
+    <span class="st" id="mode">24H</span>
+  </header>
+  <div id="mid">
+    <div id="time">--:--</div>
+    <div id="date"></div>
+  </div>
+  <!-- The day is the clock's natural axis: 00-24, fill to now. -->
+  <div class="scale" id="dayScale" style="--pitch: 4.1667%">
+    <div class="rail"></div><div class="mns"></div>
+    <div class="mj e-l" style="left:0"><b>00</b></div>
+    <div class="mj" style="left:25%"><b>06</b></div>
+    <div class="mj" style="left:50%"><b>12</b></div>
+    <div class="mj" style="left:75%"><b>18</b></div>
+    <div class="mj e-r" style="left:100%"><b>24</b></div>
+    <div class="fill" id="dayFill" style="width:0%"></div>
+    <div class="mk" id="dayMark" style="left:0%"><i></i></div>
+  </div>
 
 <script src="https://app.plinth/widget-api.js"></script>
 <script>
@@ -64,6 +96,7 @@
     dateScale = asFraction(s.dateSize);
     hour12 = s.hour12 === 'on';
     showSeconds = s.showSeconds !== 'off';
+    document.getElementById('mode').textContent = hour12 ? '12H' : '24H';
     render();
   });
 
@@ -76,38 +109,49 @@
       hours = hours % 12 || 12;
     }
     const pad = (n) => String(n).padStart(2, '0');
-    const time = (hour12 ? hours : pad(hours)) + ':' + pad(now.getMinutes()) +
-      (showSeconds ? ':' + pad(now.getSeconds()) : '');
     const timeEl = document.getElementById('time');
-    timeEl.textContent = time;
+    // Colons carry the accent (the demo's phosphor colon), so the pieces are built
+    // as nodes rather than one text write.
+    timeEl.textContent = '';
+    const parts = [hour12 ? String(hours) : pad(hours), pad(now.getMinutes())];
+    if (showSeconds) parts.push(pad(now.getSeconds()));
+    parts.forEach((p, i) => {
+      if (i) {
+        const em = document.createElement('em');
+        em.textContent = ':';
+        timeEl.appendChild(em);
+      }
+      timeEl.appendChild(document.createTextNode(p));
+    });
     if (suffix) {
       const small = document.createElement('small');
       small.textContent = suffix;
       timeEl.appendChild(small);
     }
     document.getElementById('date').textContent = now.toLocaleDateString(undefined, {
-      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      weekday: 'short', month: 'short', day: 'numeric',
     });
+    const dayPct = ((now.getHours() * 60 + now.getMinutes()) / 1440 * 100).toFixed(2) + '%';
+    document.getElementById('dayFill').style.width = dayPct;
+    document.getElementById('dayMark').style.left = dayPct;
     fit();
   }
 
-  /* Fit both lines to the tile. The date goes first because it claims a share of the
-   * height and the time takes what is left — the other order lets a long weekday name
-   * ("Wednesday, September 30, 2026") shrink the time twice as the string changes.
-   * Called on every render because the widths move under us: seconds tick 09:59:59 to
-   * 10:00:00, and the date is a full word longer on some days than others. */
+  /* Fit both lines to the middle band. The date goes first because it claims a share
+   * of the height and the time takes what is left — the other order lets a long
+   * weekday name shrink the time twice as the string changes. Called on every render
+   * because the widths move under us: seconds tick 09:59:59 to 10:00:00, and the date
+   * is a word longer on some days than others. */
   function fit() {
     const timeEl = document.getElementById('time');
     const dateEl = document.getElementById('date');
-    const box = document.body.getBoundingClientRect();
-    const styles = getComputedStyle(document.body);
-    const padX = parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight);
-    const padY = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+    const box = document.getElementById('mid').getBoundingClientRect();
+    const styles = getComputedStyle(document.getElementById('mid'));
     const gap = parseFloat(styles.rowGap) || 0;
     // A hair under the full width: tabular glyphs sit right up against the edge
     // otherwise, and letter-spacing adds a trailing gap the measurement includes.
-    const availW = Math.max(0, box.width - padX) * 0.96;
-    const availH = Math.max(0, box.height - padY);
+    const availW = Math.max(0, box.width) * 0.96;
+    const availH = Math.max(0, box.height);
     // The date gets at most a fifth of the height, so the time keeps the tile even in
     // a short slot; on a wide one it is width that binds and this never applies.
     WW.fitText(dateEl, { width: availW, height: availH * 0.2, scale: dateScale, max: 26 });

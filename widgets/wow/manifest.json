@@ -2,7 +2,7 @@
   "id": "ws.stock.wow",
   "name": "WoW Panel",
   "author": "Plinth",
-  "version": "1.3.3",
+  "version": "2.0.0",
   "description": "Token price with its own recorded trend, the weekly reset countdown, this week's Mythic+ affixes, and your character's item level and rating.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],

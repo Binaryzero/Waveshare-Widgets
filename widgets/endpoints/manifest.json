@@ -2,7 +2,7 @@
   "id": "ws.stock.endpoints",
   "name": "Endpoint Health",
   "author": "Plinth",
-  "version": "1.1.3",
+  "version": "2.0.0",
   "description": "Red/green tiles for self-hosted and LAN services. Each target is checked on its own timer, so one hung box never freezes the rest of the grid.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],

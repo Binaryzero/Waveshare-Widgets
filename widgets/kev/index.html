@@ -7,8 +7,13 @@
 <style>
   /* Layout only — colors, background, bgStyle and the typography base come from
    * widget-base.css. */
-  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+  body { display: flex; flex-direction: column; gap: 6px; padding: 12px 16px 10px; }
   header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+  #hdr { display: flex; align-items: center; gap: 10px; }
+  /* The header annotation is the wide-layout count — the demo's "2 ADDED THIS WEEK",
+   * numeral in the data hue. In a quarter the hero count carries it instead. */
+  #ann { display: none; }
+  #ann b { color: var(--accent-fg); font-weight: 600; }
   main { flex: 1 1 auto; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
   #count { display: flex; align-items: baseline; gap: 8px; flex: none; }
   #n { line-height: 1; font-size: clamp(30px, 9vh, 46px); }
@@ -16,8 +21,13 @@
   /* The list is the half/full story. In a quarter there is no room for rows that stay
    * legible, so the count becomes the tile: it takes the space the rows would have had
    * rather than leaving a mostly-empty card with a small number in the corner. */
-  #list { display: none; flex: 1 1 auto; flex-direction: column; gap: 4px; min-height: 0; overflow: hidden; }
-  @media (min-width: 470px) and (min-height: 241px) { #list { display: flex; } }
+  #list { display: none; flex: 1 1 auto; flex-direction: column; min-height: 0; overflow: hidden; }
+  @media (min-width: 470px) and (min-height: 241px) {
+    #list { display: flex; }
+    #ann { display: inline; }
+    #count { display: none; }
+    #dueScale.has-dues { display: block; }
+  }
   /* At three-quarter and full a row is roughly a thousand pixels wide, which parks a
    * vendor at one edge of the panel and its CVE at the other with nothing between them —
    * the pair a reader is trying to associate ends up as far apart as the tile allows.
@@ -49,29 +59,43 @@
     #n { font-size: min(34vw, 26vh); }
     #window { font-size: 13px; }
   }
+  /* Advisory rows in the demo's grammar: open rows over hairline separators — no
+   * cards. Diamond, CVE id bright, product muted, due date dim; a row whose due date
+   * is close carries the alert amber on its diamond and dates. */
   .row {
-    display: flex; align-items: center; gap: 8px;
-    padding: 4px 8px;
-    border-radius: var(--radius-control);
-    background: var(--card-surface);
+    display: flex; align-items: center; gap: 10px;
+    padding: 4px 2px;
+    border-top: 1px solid var(--line);
     min-width: 0;
     /* Share the tile: rows grow into the height a 400px slot has and a 200px band
      * does not, capped so a short list never turns into fat bars. */
     flex: 1 1 0; min-height: 24px; max-height: 46px;
   }
+  .row:first-child { border-top: none; }
+  .row .dm {
+    width: 5px; height: 5px; flex: none;
+    border: 1px solid var(--text-muted); transform: rotate(45deg);
+  }
+  .row .cve {
+    color: var(--text); font-weight: 600; font-size: 12px;
+    font-variant-numeric: tabular-nums; white-space: nowrap; flex: none;
+  }
   .row .who {
-    color: var(--text); font-weight: 650; font-size: 12px;
+    color: var(--text-muted); font-size: 11.5px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     flex: 1 1 auto; min-width: 0;
   }
-  .row .cve {
-    color: var(--text-muted); font-size: 11px;
+  .row .due {
+    color: var(--text-dim); font-size: 11px; font-weight: 500;
+    letter-spacing: 0.08em; text-transform: uppercase;
     font-variant-numeric: tabular-nums; white-space: nowrap; flex: none;
   }
-  .row .when {
-    color: var(--text-dim); font-size: 11px;
-    font-variant-numeric: tabular-nums; white-space: nowrap; flex: none;
-  }
+  .row.urgent .dm { border-color: var(--warn); background: var(--warn);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--warn) 50%, transparent); }
+  .row.urgent .due { color: var(--warn); }
+  /* The due-date timeline: today to the furthest deadline, a hollow diamond per due
+   * date, urgent ones amber. Hidden until rows carry dates, and in narrow layouts. */
+  #dueScale { display: none; }
   footer { color: var(--text-dim); font-size: 11px; flex: none; font-variant-numeric: tabular-nums; }
   #state { position: fixed; inset: 0; }
   /* Stale keeps the last answer visible but dimmed — old KEV data still beats none.
@@ -84,9 +108,12 @@
 </style>
 </head>
 <body>
-  <header>
+  <header class="hd">
     <span class="kicker">CISA KEV</span>
-    <span class="pill muted" id="pill">Loading</span>
+    <span id="hdr">
+      <span class="st" id="ann" hidden><b id="annN">0</b> <span id="annWindow">added in 7 days</span></span>
+      <span class="pill muted" id="pill">Loading</span>
+    </span>
   </header>
 
   <main id="data" hidden>
@@ -95,6 +122,12 @@
       <span id="window">added in 7 days</span>
     </div>
     <div id="list"></div>
+    <div class="scale" id="dueScale">
+      <div class="rail"></div>
+      <div class="mj e-l" style="left:0"><b id="dueL"></b></div>
+      <div class="mj e-r" style="left:100%"><b id="dueR"></b></div>
+      <span id="dueMarks"></span>
+    </div>
   </main>
 
   <footer id="meta"></footer>
@@ -131,7 +164,9 @@
   const FETCH_DEADLINE = 60000;
   // How often a hidden document re-checks, without disturbing the poll deadline.
   const HIDDEN_RECHECK = 60000;
-  const CACHE_KEY = 'kev.cache.v1';
+  // v2: entries carry the feed's dueDate for the due column and the timeline; a v1
+  // cache lacks it, so the version rolls and the first poll rebuilds the projection.
+  const CACHE_KEY = 'kev.cache.v2';
 
   const cfg = { watch: [], maxItems: 6, windowDays: 7, refreshMs: 3600000 };
   let entries = [];        // [{vendor, product, cve, added}] newest first
@@ -198,7 +233,8 @@
         const cve = typeof v.cve === 'string' ? v.cve : '';
         const added = typeof v.added === 'string' ? v.added : '';
         if (!cve || !added) continue;
-        clean.push({ vendor: String(v.vendor || ''), product: String(v.product || ''), cve, added });
+        clean.push({ vendor: String(v.vendor || ''), product: String(v.product || ''), cve, added,
+          due: typeof v.due === 'string' ? v.due : '' });
       }
       // An EMPTY cached array is a real answer that was written by a successful poll —
       // saveCache runs nowhere else — so restoring it keeps the authoritative "no
@@ -307,6 +343,7 @@
           product: String((v && v.product) || '').trim(),
           cve: String((v && v.cveID) || '').trim(),
           added: String((v && v.dateAdded) || '').trim(),
+          due: String((v && v.dueDate) || '').trim(),
         }))
         .filter((v) => v.cve && v.added)
         .sort((a, b) => (a.added < b.added ? 1 : a.added > b.added ? -1 : 0));
@@ -463,6 +500,8 @@
       pill.hidden = false;
       pill.textContent = document.body.classList.contains('stale') ? 'Stale' : 'Empty';
       pill.className = 'pill muted';
+      // The annotation counts rows the state card just replaced — hide it with them.
+      el('ann').hidden = true;
       // The footer describes THIS answer. Returning before the metadata line left the
       // previous catalog's update time — and its watched count — under an empty-state
       // card that had replaced the very data those numbers were counting.
@@ -481,24 +520,100 @@
     });
 
     el('n').textContent = String(recent.length);
-    el('window').textContent = 'added in ' + cfg.windowDays + (cfg.windowDays === 1 ? ' day' : ' days');
+    const windowText = 'added in ' + cfg.windowDays + (cfg.windowDays === 1 ? ' day' : ' days');
+    el('window').textContent = windowText;
+    el('annN').textContent = String(recent.length);
+    el('annWindow').textContent = windowText;
+    el('ann').hidden = false;
+
+    const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    // The due date is a CALENDAR date, so every reading of it is local: the label
+    // comes straight off the string's own numbers (no timezone math at all), and
+    // the timestamp helpers below anchor to LOCAL midnight — Date.parse would give
+    // UTC midnight, which shifted markers and flipped labels for readers west of
+    // Greenwich.
+    const fmtDue = (iso) => {
+      const [, m, d] = String(iso).split('-').map(Number);
+      return Number.isFinite(m) ? MONTHS[m - 1] + ' ' + d : '';
+    };
+    const dueLocalMid = (iso) => {
+      const [y, m, d] = String(iso).split('-').map(Number);
+      return Number.isFinite(y) ? new Date(y, m - 1, d).getTime() : NaN;
+    };
+    // "Close" in remediation terms: due within four days (or overdue) carries the amber.
+    const URGENT_MS = 4 * 86400000;
+    const now = Date.now();
 
     const list = el('list');
     list.textContent = '';
-    for (const v of shown.slice(0, cfg.maxItems)) {
+    const visible = shown.slice(0, cfg.maxItems);
+    for (const v of visible) {
       const row = document.createElement('div');
-      row.className = 'row';
-      const who = document.createElement('span');
-      who.className = 'who';
-      who.textContent = v.product ? v.vendor + ' · ' + v.product : v.vendor || v.cve;
+      const dueT = dueLocalMid(v.due);
+      const urgent = Number.isFinite(dueT) && dueT - now <= URGENT_MS;
+      row.className = 'row' + (urgent ? ' urgent' : '');
+      const dm = document.createElement('i');
+      dm.className = 'dm';
       const cve = document.createElement('span');
       cve.className = 'cve';
       cve.textContent = v.cve;
-      const when = document.createElement('span');
-      when.className = 'when';
-      when.textContent = v.added.slice(5);
-      row.append(who, cve, when);
+      const who = document.createElement('span');
+      who.className = 'who';
+      who.textContent = v.product ? v.vendor + ' · ' + v.product : v.vendor || '';
+      const due = document.createElement('span');
+      due.className = 'due';
+      due.textContent = v.due ? 'due ' + fmtDue(v.due) : v.added.slice(5);
+      row.append(dm, cve, who, due);
       list.appendChild(row);
+    }
+
+    // The due-date timeline: today out to the furthest visible deadline, one hollow
+    // diamond per due date, the urgent ones amber. Without parseable dates the ruler
+    // stays hidden and the tile is what it always was.
+    const scale = el('dueScale');
+    // Everything on the axis is a LOCAL calendar coordinate: entries stay through
+    // the end of their local due day (UTC+24h still dropped an Aug 8 deadline at
+    // 5PM PDT), the left endpoint is local midnight TODAY, and marker positions
+    // measure in whole local days — so the labels and the diamonds always agree
+    // with the reader's calendar. A due-today marker clamps to the left edge.
+    // Expiry is the CONSTRUCTED next local midnight — a fixed +24h is wrong by an
+    // hour on the 23- and 25-hour days around a DST transition; the Date
+    // constructor normalizes day+1 through those correctly.
+    const DAY = 86400000;
+    const nowD = new Date(now);
+    const todayMid = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate()).getTime();
+    const dueEndLocal = (iso) => {
+      const [y, m, d] = String(iso).split('-').map(Number);
+      return Number.isFinite(y) ? new Date(y, m - 1, d + 1).getTime() : NaN;
+    };
+    const dues = visible
+      .filter((v) => dueEndLocal(v.due) > now)
+      .map((v) => dueLocalMid(v.due));
+    if (dues.length) {
+      const max = Math.max(...dues);
+      const span = Math.max(max - todayMid, DAY);
+      const fmtLocal = (t) => { const d = new Date(t); return MONTHS[d.getMonth()] + ' ' + d.getDate(); };
+      el('dueL').textContent = fmtLocal(todayMid);
+      el('dueR').textContent = fmtLocal(max);
+      const marks = el('dueMarks');
+      marks.textContent = '';
+      for (const t of dues) {
+        const mk = document.createElement('div');
+        const urgent = t - now <= URGENT_MS;
+        mk.className = 'mk' + (urgent ? ' alert' : '');
+        mk.style.left = Math.min(100, Math.max(0, (t - todayMid) / span * 100)).toFixed(1) + '%';
+        const i = document.createElement('i');
+        mk.appendChild(i);
+        if (urgent) {
+          const b = document.createElement('b');
+          b.textContent = String(new Date(t).getDate()).padStart(2, '0');
+          mk.appendChild(b);
+        }
+        marks.appendChild(mk);
+      }
+      scale.classList.add('has-dues');
+    } else {
+      scale.classList.remove('has-dues');
     }
 
     const stale = document.body.classList.contains('stale');
@@ -530,6 +645,8 @@
     pill.hidden = false;
     pill.textContent = 'Error';
     pill.className = 'pill err';
+    // No data pane, no count to annotate.
+    el('ann').hidden = true;
     const state = el('state');
     state.className = 'state-card err';
     state.textContent = '';

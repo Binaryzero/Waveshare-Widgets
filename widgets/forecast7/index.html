@@ -13,18 +13,14 @@
     gap: clamp(4px, 1.6vh, 12px);
     padding: clamp(8px, 3vh, 16px) clamp(12px, 1.4vw, 20px);
   }
-  header { display: flex; align-items: center; gap: var(--space-2); flex: none; min-width: 0; }
+  header { min-width: 0; }
+  #hdr { display: flex; align-items: center; gap: 10px; min-width: 0; }
   #place {
-    color: var(--text-muted);
-    font-size: clamp(10px, 3.8vh, 13px);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;
   }
-  #pill { margin-left: auto; flex: none; }
 
   #days {
     flex: 1;
@@ -44,8 +40,8 @@
     min-width: 0;
     overflow: hidden;
   }
-  .day.today { border-color: rgba(var(--accent-rgb), 0.45); }
-  .day.today .d { color: var(--accent); }
+  .day + .day { border-left: 1px solid var(--line); }
+  .day.today .d { color: var(--accent-fg); }
   .d { font-size: clamp(10px, 3.6vh, 13px); white-space: nowrap; }
   .g { font-size: clamp(16px, 10vh, 40px); line-height: 1; }
   .c {
@@ -57,7 +53,7 @@
     text-overflow: ellipsis;
     max-width: 100%;
   }
-  .hi { font-size: clamp(14px, 6.5vh, 26px); white-space: nowrap; }
+  .hi { font-size: clamp(14px, 6.5vh, 26px); font-weight: 700; white-space: nowrap; }
   .lo {
     color: var(--text-muted);
     font-size: clamp(12px, 4.8vh, 18px);
@@ -100,20 +96,22 @@
 </style>
 </head>
 <body>
-  <header>
-    <span class="kicker">7-Day Forecast</span>
-    <span id="place"></span>
-    <span class="pill" id="pill" hidden></span>
+  <header class="hd">
+    <span class="kicker">Forecast</span>
+    <span id="hdr">
+      <span class="st" id="place"></span>
+      <span class="pill" id="pill" hidden></span>
+    </span>
   </header>
 
   <main id="days" hidden>
-    <div class="day card"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
-    <div class="day card"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
-    <div class="day card"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
-    <div class="day card"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
-    <div class="day card"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
-    <div class="day card"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
-    <div class="day card"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
   </main>
 
   <footer id="updated" hidden></footer>

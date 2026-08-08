@@ -2,7 +2,7 @@
   "id": "ws.stock.nextevent",
   "name": "Next Event",
   "author": "Plinth",
-  "version": "1.3.3",
+  "version": "2.0.0",
   "description": "The next thing on your calendar and a live countdown to it, straight from an ICS link — no OAuth, no account connection. Handles daily and weekly repeats.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],

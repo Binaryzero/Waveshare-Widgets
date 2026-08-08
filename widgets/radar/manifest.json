@@ -2,7 +2,7 @@
   "id": "ws.stock.radar",
   "name": "Weather Radar",
   "author": "Plinth",
-  "version": "1.4.4",
+  "version": "2.0.0",
   "description": "Live animated precipitation radar over a street map, centered on your city. Radar data by RainViewer, map tiles by OpenStreetMap — no API key needed.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],

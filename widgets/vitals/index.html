@@ -71,7 +71,7 @@
     display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px;
     height: clamp(10px, 2.6vh, 14px);
   }
-  .segs i { border-radius: 2px; background: var(--control-bg); }
+  .segs i { background: var(--control-bg); }
   .meter-row.ok .segs i.f { background: var(--ok); }
   .meter-row.warn .segs i.f { background: var(--warn); }
   .meter-row.err .segs i.f { background: var(--err); }
@@ -125,7 +125,7 @@
     padding: clamp(10px, 3vh, 18px);
   }
   #cardBox::-webkit-scrollbar { display: none; }
-  #cardTitle { font-size: clamp(14px, 4vh, 17px); font-weight: 750; color: var(--text); padding-right: 44px; }
+  #cardTitle { font-size: clamp(14px, 4vh, 17px); font-weight: 700; color: var(--text); padding-right: 44px; }
   #cardBody { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
   #cardActions { display: flex; gap: var(--space-2); margin-top: 2px; }
   #cardDone { flex: 1; min-height: 44px; }
@@ -148,7 +148,9 @@
    * all four meter rows keep the 40px touch floor inside 200px. ---------------- */
   @media (max-height: 240px) {
     body { padding: 6px 10px; gap: 4px; }
-    header, #xpRow, #petName { display: none; }
+    /* header.hd, not header: the grammar class carries (0,1,0) specificity
+     * and a bare element selector no longer outranks it. */
+    header.hd, #xpRow, #petName { display: none; }
     #main { flex-direction: row; align-items: center; justify-content: center; gap: clamp(8px, 2vw, 18px); }
     #meters { flex: 1; min-width: 0; }
     #pet { width: clamp(40px, 24vh, 56px); }
@@ -165,7 +167,7 @@
 </style>
 </head>
 <body>
-  <header>
+  <header class="hd">
     <span class="kicker">Vitals</span>
     <span class="pill ok" id="streakPill" hidden></span>
   </header>

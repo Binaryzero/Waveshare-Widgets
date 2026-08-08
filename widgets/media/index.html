@@ -7,50 +7,43 @@
 <style>
   /* Widget-specific layout; tokens, background/bgStyle and typography base come
    * from widget-base.css. */
-  body { display: flex; align-items: center; }
-  #backdrop {
-    position: fixed; inset: -30px;
-    background-size: cover; background-position: center;
-    filter: blur(24px) brightness(0.3);
-    z-index: 0;
-  }
-  /* On light themes wash the album-art backdrop out instead of darkening it, so
-   * the theme's dark text stays legible over it. */
-  html[data-appearance="light"] #backdrop { filter: blur(24px) saturate(0.7); opacity: 0.35; }
-  #layout { position: relative; z-index: 1; display: flex; align-items: center; width: 100%; height: 100%; padding: 3.5%; gap: 4%; }
+  body { display: flex; flex-direction: column; padding: 12px 16px 10px; }
+  #layout { position: relative; z-index: 1; display: flex; align-items: center; flex: 1 1 auto; min-height: 0; gap: 4%; padding-top: 6px; }
   #art {
-    height: 84%; aspect-ratio: 1;
-    border-radius: var(--radius-control);
+    height: 90%; aspect-ratio: 1;
+    border: 1px solid var(--line);
     background: var(--control-bg) center/cover no-repeat;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, calc(var(--panel-shadow-alpha) * 2.5));
     flex: none;
   }
-  #info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1vh; }
-  #title  { font-size: calc(clamp(17px, 8.5vh, 38px) * var(--title-scale, 1)); color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #artist { font-size: calc(clamp(13px, 5.5vh, 24px) * var(--artist-scale, 1)); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #album  { font-size: calc(clamp(11px, 4vh, 17px) * var(--album-scale, 1)); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1.2vh; }
+  #title { font-size: calc(clamp(17px, 8.5vh, 38px) * var(--title-scale, 1)); color: var(--text); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #meta {
+    font-size: calc(clamp(10px, 4.2vh, 14px) * var(--artist-scale, 1));
+    color: var(--text-muted); font-weight: 500;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
 
-  #timeline { display: flex; align-items: center; gap: 10px; margin-top: 1.2vh; }
+  #timeline { display: flex; align-items: center; gap: 10px; margin-top: 0.6vh; }
   #timeline time { font-size: calc(clamp(10px, 3.6vh, 14px) * var(--time-scale, 1)); color: var(--text-dim); font-variant-numeric: tabular-nums; flex: none; }
-  /* .meter carries the track/fill colors; the media bar keeps its 6px height and
-   * the linear fill transition matched to the 500ms position interpolation. */
-  #bar { flex: 1; height: 6px; border-radius: 3px; }
-  #bar > i { width: 0%; border-radius: 3px; transition: width 0.4s linear; }
+  #timeline #elapsed { color: var(--accent-fg); }
+  /* The track is the tile's axis: a ruler with the accent fill and now-cursor,
+   * interpolated between polls exactly as the meter fill was. */
+  #trackScale { flex: 1; height: 12px; }
+  #trackScale .fill, #trackScale .cur { transition: none; }
   #timeline.no-duration { visibility: hidden; }
 
-  #controls { display: flex; align-items: center; gap: 16px; margin-top: 1vh; }
+  #controls { display: flex; align-items: center; gap: 14px; margin-top: 1vh; }
   #controls .btn {
-    border: 0; padding: 0;
-    width: clamp(46px, 15vh, 68px); height: clamp(46px, 15vh, 68px);
-    border-radius: 50%;
+    padding: 0;
+    width: clamp(42px, 13vh, 60px); height: clamp(42px, 13vh, 60px);
     display: flex; align-items: center; justify-content: center;
     /* none, not manipulation: nothing here scrolls, and manipulation still PERMITS a
      * pan — so horizontal finger drift on a control chained out to the shell pager and
      * changed page instead of pressing it (#206). */
     touch-action: none;
   }
-  #controls .btn svg { width: 44%; height: 44%; fill: currentColor; }
-  #controls .btn:active, #controls #toggle { background: var(--accent); color: var(--on-accent); }
+  #controls .btn svg { width: 40%; height: 40%; fill: currentColor; }
   #idle {
     position: fixed; inset: 0; z-index: 2;
     display: flex; flex-direction: column; gap: 1.6vh; align-items: center; justify-content: center;
@@ -61,23 +54,29 @@
 </style>
 </head>
 <body>
-  <div id="backdrop"></div>
+  <header class="hd">
+    <span class="kicker">Audio</span>
+    <span class="st" id="status"></span>
+  </header>
   <div id="layout">
     <div id="art"></div>
     <div id="info">
       <div id="title"></div>
-      <div id="artist"></div>
-      <div id="album"></div>
+      <div id="meta"></div>
       <div id="timeline">
         <time id="elapsed">0:00</time>
-        <div id="bar" class="meter"><i id="barFill"></i></div>
+        <div class="scale" id="trackScale">
+          <div class="rail"></div>
+          <div class="fill" id="trackFill" style="width:0%"></div>
+          <div class="cur" id="trackCur" style="left:0%"></div>
+        </div>
         <time id="total">0:00</time>
       </div>
       <div id="controls">
         <button id="prev" class="btn" aria-label="Previous">
           <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zM9.5 12 18 6v12z"/></svg>
         </button>
-        <button id="toggle" class="btn" aria-label="Play/Pause">
+        <button id="toggle" class="btn primary" aria-label="Play/Pause">
           <svg id="iconPlay" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
           <svg id="iconPause" viewBox="0 0 24 24" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
         </button>
@@ -111,7 +110,6 @@
     // override) — legacy color keys in old layouts are deliberately ignored.
     document.body.style.setProperty('--title-scale', (Number(s.titleSize) || 100) / 100);
     document.body.style.setProperty('--artist-scale', (Number(s.artistSize) || 100) / 100);
-    document.body.style.setProperty('--album-scale', (Number(s.albumSize) || 100) / 100);
     document.body.style.setProperty('--time-scale', (Number(s.timeSize) || 100) / 100);
     render(state.media);
   });
@@ -121,27 +119,39 @@
     const idle = !media || !media.available || !media.title;
     el('idle').hidden = !idle;
     if (idle) {
-      // The idle overlay follows the panel opacity now (glass/transparent tiles stay
-      // glass/transparent while idle), so stale art must not linger underneath it.
+      // The idle overlay follows the panel opacity (glass/transparent tiles stay
+      // glass/transparent while idle), so stale art must not linger underneath it —
+      // and neither may the header's playback annotation, which shows straight
+      // through a zero-alpha overlay on transparent tiles.
       el('art').style.backgroundImage = 'none';
-      el('backdrop').style.backgroundImage = 'none';
+      el('status').textContent = '';
+      el('status').className = 'st';
       return;
     }
 
     el('title').textContent = media.title || '';
-    el('artist').textContent = media.artist || '';
-    el('album').textContent = media.album || '';
+    el('meta').textContent = [media.artist, media.album].filter(Boolean).join(' · ');
 
     const playing = media.status === 'Playing';
     el('iconPlay').style.display = playing ? 'none' : 'block';
     el('iconPause').style.display = playing ? 'block' : 'none';
+    // The header annotation is the live state: a breathing dot beside PLAYING,
+    // otherwise the session's actual status — Windows also reports Stopped,
+    // Changing, Opened and Closed, and labeling those all Paused would lie.
+    const status = el('status');
+    status.textContent = '';
+    status.className = 'st' + (playing ? ' on' : '');
+    if (playing) {
+      const dot = document.createElement('i');
+      dot.className = 'dot';
+      status.appendChild(dot);
+    }
+    status.appendChild(document.createTextNode(playing ? 'Playing' : (media.status || 'Paused')));
 
     base = { position: media.positionSeconds, duration: media.durationSeconds, at: Date.now(), playing };
     renderTimeline();
 
-    const art = media.thumbnail ? `url("${media.thumbnail}")` : 'none';
-    el('art').style.backgroundImage = art;
-    el('backdrop').style.backgroundImage = art;
+    el('art').style.backgroundImage = media.thumbnail ? `url("${media.thumbnail}")` : 'none';
   }
 
   function renderTimeline() {
@@ -153,7 +163,9 @@
     position = Math.min(position, base.duration);
     el('elapsed').textContent = fmt(position);
     el('total').textContent = fmt(base.duration);
-    el('barFill').style.width = (position / base.duration * 100).toFixed(2) + '%';
+    const pct = (position / base.duration * 100).toFixed(2) + '%';
+    el('trackFill').style.width = pct;
+    el('trackCur').style.left = pct;
   }
 
   function fmt(seconds) {
