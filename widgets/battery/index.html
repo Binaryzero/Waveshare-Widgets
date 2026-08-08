@@ -7,12 +7,13 @@
 <style>
   /* Layout only — tokens, background/bgStyle handling, typography base and the
    * .card/.state-card/.meter anatomy come from widget-base.css. */
+  body { display: flex; flex-direction: column; padding: 12px 16px 10px; }
   #grid {
     display: grid;
     gap: var(--space-2);
-    padding: var(--space-2);
-    width: 100%;
-    height: 100%;
+    padding-top: 8px;
+    flex: 1 1 auto;
+    min-height: 0;
   }
   .cell {
     /* .card supplies the surface/border; keep the battery grid's tighter geometry. */
@@ -28,8 +29,10 @@
   }
   .cell .name {
     color: var(--text-muted);
-    font-size: calc(clamp(9px, 3vh, 13px) * var(--name-scale, 1));
-    letter-spacing: 0.06em;
+    font-size: calc(clamp(8px, 3vh, 11px) * var(--name-scale, 1));
+    font-weight: 600;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .cell .pct {
@@ -53,7 +56,9 @@
   /* User scale multiplies OUTSIDE the clamp — cap against tile height so a
    * 200% setting still fits a half-height slot instead of clipping. */
   #grid.solo .cell .pct { font-size: min(calc(clamp(30px, 26vh, 110px) * var(--value-scale, 1)), 40vh); }
-  #grid.solo .cell .bar { height: clamp(8px, 3.5vh, 16px); width: min(70%, 480px); }
+  /* Solo mode carries the full ruler instead of a bar: 0-100 with the charge
+   * fill, the now-cursor, and an amber diamond at the low threshold. */
+  #grid.solo .cell .scale { width: min(70%, 480px); }
   .cell.charging .bolt { display: inline; }
   .cell .bar {
     /* .meter supplies track color + fill basics; battery keeps its chunkier bar. */
@@ -68,6 +73,11 @@
   .cell.good .bar > i { background: var(--ok); }
   .cell.warn .bar > i { background: var(--warn); }
   .cell.bad  .bar > i { background: var(--err); }
+  /* The solo ruler's fill and cursor carry the same state color as the value —
+   * charge is stateful, and the accent stays for non-stateful axes. */
+  .cell.good .scale .fill, .cell.good .scale .cur { background: var(--ok); box-shadow: 0 0 7px color-mix(in srgb, var(--ok) 45%, transparent); }
+  .cell.warn .scale .fill, .cell.warn .scale .cur { background: var(--warn); box-shadow: 0 0 7px color-mix(in srgb, var(--warn) 45%, transparent); }
+  .cell.bad  .scale .fill, .cell.bad  .scale .cur { background: var(--err); box-shadow: 0 0 7px color-mix(in srgb, var(--err) 45%, transparent); }
   /* Empty state: .state-card anatomy, kept at the widget's fluid sizes/tones. */
   #message {
     position: fixed; inset: 0;
@@ -80,6 +90,10 @@
 </style>
 </head>
 <body>
+  <header class="hd">
+    <span class="kicker">Battery</span>
+    <span class="st" id="count" hidden></span>
+  </header>
   <div id="grid"></div>
   <div id="message" class="state-card">
     <div class="head state-title">No battery-reporting devices found</div>
@@ -125,6 +139,9 @@
       build(packs);
       layoutKey = key;
     }
+    const count = document.getElementById('count');
+    count.hidden = !packs.length;
+    count.textContent = packs.length + (packs.length === 1 ? ' device' : ' devices');
     for (const p of packs) {
       const ui = cards.get(p.id);
       if (!ui) continue;
@@ -135,6 +152,7 @@
       ui.name.textContent = String(p.name).replace(CHARGING, ' ').trim() || p.device || 'Battery';
       ui.num.textContent = String(Math.round(v));
       ui.fill.style.width = v + '%';
+      if (ui.cur) ui.cur.style.left = v + '%';
     }
   }
 
@@ -168,14 +186,38 @@
       bolt.className = 'bolt';
       bolt.textContent = '⚡';
       pct.append(num, unit, bolt);
-      const bar = document.createElement('div');
-      bar.className = 'bar meter';
-      const fill = document.createElement('i');
-      fill.className = 'fill';
-      bar.appendChild(fill);
-      cell.append(name, pct, bar);
+      let fill, cur = null, gauge;
+      if (packs.length === 1) {
+        // The solo tile carries the instrument ruler: 0-100, minor ticks, the
+        // charge fill and cursor, and an amber diamond at the low threshold.
+        gauge = document.createElement('div');
+        gauge.className = 'scale';
+        gauge.style.setProperty('--pitch', '4%');
+        gauge.innerHTML = '<div class="rail"></div><div class="mns"></div>'
+          + '<div class="mj e-l" style="left:0"><b>0</b></div>'
+          + '<div class="mj" style="left:50%"><b>50</b></div>'
+          + '<div class="mj e-r" style="left:100%"><b>100</b></div>';
+        const mk = document.createElement('div');
+        mk.className = 'mk alert';
+        mk.style.left = cfg.lowAt + '%';
+        mk.innerHTML = '<i></i>';
+        gauge.appendChild(mk);
+        fill = document.createElement('div');
+        fill.className = 'fill';
+        gauge.appendChild(fill);
+        cur = document.createElement('div');
+        cur.className = 'cur';
+        gauge.appendChild(cur);
+      } else {
+        gauge = document.createElement('div');
+        gauge.className = 'bar meter';
+        fill = document.createElement('i');
+        fill.className = 'fill';
+        gauge.appendChild(fill);
+      }
+      cell.append(name, pct, gauge);
       grid.appendChild(cell);
-      cards.set(p.id, { cell, name, num, bolt, fill });
+      cards.set(p.id, { cell, name, num, bolt, fill, cur });
     }
   }
 
