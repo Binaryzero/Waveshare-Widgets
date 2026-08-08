@@ -20,9 +20,9 @@ public static class PaletteEngine
     public static Dictionary<string, string> Derive(ThemeSpec? theme)
     {
         var spec = theme ?? new ThemeSpec();
-        var accent = ParseHex(spec.Accent, 0x4c, 0xc2, 0xff);
-        var background = ParseHex(spec.Background, 0x05, 0x07, 0x0b);
-        var text = ParseHex(spec.Text, 0xe8, 0xec, 0xf2);
+        var accent = ParseHex(spec.Accent, 0x4d, 0xd4, 0xe8);
+        var background = ParseHex(spec.Background, 0x07, 0x0b, 0x12);
+        var text = ParseHex(spec.Text, 0xdd, 0xe2, 0xe8);
         var panelAlpha = Math.Clamp(spec.PanelAlpha, 0.15, 1.0);
 
         // Tone is decided by the *derived surface*, not the label the user picked, so
@@ -50,7 +50,7 @@ public static class PaletteEngine
         // State colors: fixed hues repaired for the theme's surfaces — including the
         // 14% tints of themselves that pills and state icons composite on top.
         var ok = EnsureStateContrast((0x45, 0xd4, 0x83), surface, surfaceAlt);
-        var warn = EnsureStateContrast((0xf0, 0xb8, 0x4f), surface, surfaceAlt);
+        var warn = EnsureStateContrast((0xff, 0xae, 0x52), surface, surfaceAlt);
         var err = EnsureStateContrast((0xff, 0x62, 0x68), surface, surfaceAlt);
         var info = EnsureStateContrast((0x62, 0xcb, 0xea), surface, surfaceAlt);
 
@@ -59,6 +59,11 @@ public static class PaletteEngine
         var nearBlack = (r: (byte)0x0a, g: (byte)0x0a, b: (byte)0x0a);
         var white = (r: (byte)0xff, g: (byte)0xff, b: (byte)0xff);
         var onAccent = Contrast(accent, nearBlack) >= Contrast(accent, white) ? nearBlack : white;
+
+        // Accent as a FOREGROUND: the seed itself is never repaired (it is the user's
+        // exact pick, used for fills and glows), but outlined controls draw text and
+        // borders in it directly, and an accent near the background disappears there.
+        var accentFg = EnsureContrast(accent, [surface, surfaceAlt], StateContrast);
 
         var hover = Mix(surface, text, 0.08);
 
@@ -76,6 +81,7 @@ public static class PaletteEngine
             ["--line"] = Hex(line),
             ["--accent"] = Hex(accent),
             ["--accent-rgb"] = Rgb(accent),
+            ["--accent-fg"] = Hex(accentFg),
             ["--on-accent"] = Hex(onAccent),
             ["--ok"] = Hex(ok),
             ["--warn"] = Hex(warn),

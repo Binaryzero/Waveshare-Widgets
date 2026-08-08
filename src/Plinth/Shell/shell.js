@@ -1646,7 +1646,7 @@
   const stylePanel = document.getElementById('stylePanel');
   const spRows = document.getElementById('spRows');
   const spTitle = document.getElementById('spTitle');
-  const STOCK_SEEDS = { accent: '#4cc2ff', background: '#05070b', text: '#e8ecf2', panelAlpha: 0.92 };
+  const STOCK_SEEDS = { accent: '#4dd4e8', background: '#070b12', text: '#dde2e8', panelAlpha: 0.92 };
   let styleTarget = null;
   let stylePersistTimer = null;
 
@@ -1715,7 +1715,7 @@
       const cur = def.style && def.style[r.key];
       check.checked = cur != null;
       color.disabled = !check.checked;
-      color.value = hex(cur, hex(seeds[r.key], '#4cc2ff'));
+      color.value = hex(cur, hex(seeds[r.key], '#4dd4e8'));
       check.addEventListener('change', () => {
         color.disabled = !check.checked;
         const style = def.style || (def.style = {});
@@ -2172,7 +2172,7 @@
       case 'color': {
         const input = document.createElement('input');
         input.type = 'color';
-        input.value = /^#[0-9a-f]{6}$/i.test(String(current)) ? current : '#4cc2ff';
+        input.value = /^#[0-9a-f]{6}$/i.test(String(current)) ? current : '#4dd4e8';
         input.oninput = () => set(prop, input.value);
         return input;
       }
@@ -2452,7 +2452,7 @@
           const input = document.createElement('input');
           if (f.type === 'color') {
             input.type = 'color';
-            input.value = /^#[0-9a-f]{6}$/i.test(item[f.key]) ? item[f.key] : '#4cc2ff';
+            input.value = /^#[0-9a-f]{6}$/i.test(item[f.key]) ? item[f.key] : '#4dd4e8';
           } else {
             input.type = 'text';
             input.placeholder = f.placeholder || f.label || '';
@@ -2495,7 +2495,7 @@
         add.textContent = '+ Add ' + (prop.itemLabel || 'item');
         add.addEventListener('click', () => {
           const item = {};
-          for (const f of fields) item[f.key] = f.type === 'color' ? '#4cc2ff' : '';
+          for (const f of fields) item[f.key] = f.type === 'color' ? '#4dd4e8' : '';
           items.push(item);
           commit();
           renderItems();
@@ -2533,7 +2533,7 @@
         select.onchange = () => { item.sensorId = select.value; commit(); };
         const color = document.createElement('input');
         color.type = 'color';
-        color.value = /^#[0-9a-f]{6}$/i.test(item.color) ? item.color : '#4cc2ff';
+        color.value = /^#[0-9a-f]{6}$/i.test(item.color) ? item.color : '#4dd4e8';
         color.oninput = () => { item.color = color.value; commit(); };
         const del = document.createElement('button');
         del.type = 'button';
@@ -2552,7 +2552,7 @@
       add.addEventListener('click', () => {
         // Seed from the FILTERED pool — the first sensor of any type would be a
         // temperature on most systems and could never resolve (Codex round 5).
-        items.push({ sensorId: pool[0].id, color: '#4cc2ff' });
+        items.push({ sensorId: pool[0].id, color: '#4dd4e8' });
         commit();
         renderItems();
       });

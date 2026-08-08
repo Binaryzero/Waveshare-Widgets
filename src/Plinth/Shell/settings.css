@@ -1,3 +1,10 @@
+/* Outfit for the theme preview, which must render what the panel renders. The
+ * settings chrome itself keeps its own face until the dock design settles. */
+@font-face { font-family: 'Outfit'; font-weight: 300; src: url('fonts/outfit-300.woff2') format('woff2'); }
+@font-face { font-family: 'Outfit'; font-weight: 400; src: url('fonts/outfit-400.woff2') format('woff2'); }
+@font-face { font-family: 'Outfit'; font-weight: 500; src: url('fonts/outfit-500.woff2') format('woff2'); }
+@font-face { font-family: 'Outfit'; font-weight: 700; src: url('fonts/outfit-700.woff2') format('woff2'); }
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
@@ -5,7 +12,7 @@
   --panel: #11151e;
   --card: #171c28;
   --line: #232a3a;
-  --text: #e8ecf2;
+  --text: #dde2e8;
   --muted: #7d8697;
   --accent: #00d4ff;
   --danger: #ff5577;
@@ -383,7 +390,7 @@ input.toggle-check:checked::after { transform: translateX(18px); }
   object-fit: cover;
   border-radius: 6px;
   border: 1px solid var(--line);
-  background: #05070b;
+  background: #070b12;
 }
 .bg-file .bg-preview.broken { display: none; }
 .bg-file .bg-filename { font-size: 11px; word-break: break-all; }
@@ -439,10 +446,14 @@ input.toggle-check:checked::after { transform: translateX(18px); }
     linear-gradient(135deg, #0f2027, #2c5364);
   border: 1px solid var(--line);
 }
+/* The miniature mirrors the instrument foundation: Outfit, square machined
+ * corners, flat etched status text, accent-outlined primary. */
 .theme-preview .tp-tile {
   background: rgba(var(--surface-rgb), var(--panel-alpha));
   color: var(--text);
-  border-radius: 10px;
+  font-family: 'Outfit', system-ui, sans-serif;
+  font-synthesis: none;
+  border-radius: 0;
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
@@ -451,27 +462,30 @@ input.toggle-check:checked::after { transform: translateX(18px); }
 }
 .theme-preview .tp-head { display: flex; align-items: center; justify-content: space-between; }
 .theme-preview .tp-kicker {
-  font-size: 10px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase;
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase;
   color: var(--text-muted);
 }
 .theme-preview .tp-pill {
-  font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.4px;
-  padding: 2px 8px; border-radius: 999px;
-  background: var(--ok-bg); border: 1px solid var(--ok); color: var(--ok);
+  font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.2em;
+  color: var(--ok);
 }
 .theme-preview .tp-reading { display: flex; align-items: baseline; gap: 4px; }
-.theme-preview .tp-value { font-size: 22px; font-weight: 800; color: var(--text); line-height: 1; }
-.theme-preview .tp-unit { font-size: 12px; font-weight: 700; color: var(--text-muted); }
-.theme-preview .tp-meter { height: 4px; border-radius: 2px; background: var(--control-bg); overflow: hidden; }
-.theme-preview .tp-meter i { display: block; height: 100%; width: 57%; border-radius: 2px; background: var(--accent); }
+.theme-preview .tp-value { font-size: 22px; font-weight: 700; color: var(--text); line-height: 1; font-variant-numeric: tabular-nums; }
+.theme-preview .tp-unit { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.theme-preview .tp-meter { height: 4px; background: var(--control-bg); overflow: hidden; }
+.theme-preview .tp-meter i { display: block; height: 100%; width: 57%; background: var(--accent); }
 .theme-preview .tp-btns { display: flex; gap: 6px; }
 .theme-preview .tp-btn {
   font: inherit; font-size: 11px; font-weight: 600; cursor: default;
-  padding: 4px 10px; border-radius: 7px;
+  padding: 4px 10px; border-radius: 0;
   background: var(--control-bg); color: var(--text); border: 1px solid var(--line);
 }
 .theme-preview .tp-btn.tp-primary {
-  background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 700;
+  /* Mirrors .btn.primary exactly, opaque surface backing included — the preview
+   * must show what the panel renders, especially at low panel opacity. */
+  background: rgb(var(--surface-rgb)); color: var(--accent-fg, var(--accent)); font-weight: 700;
+  border-color: color-mix(in srgb, var(--accent-fg, var(--accent)) 55%, transparent);
+  box-shadow: inset 0 0 8px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 /* ---- structured list editor -------------------------------------------------- */
@@ -487,7 +501,7 @@ input.toggle-check:checked::after { transform: translateX(18px); }
 #previewBar { display: flex; align-items: center; gap: 12px; }
 #previewBar .panel-title { margin: 0; }
 #previewBar .panel-hint { margin: 0; flex: 1; }
-#previewBar .panel-hint.warn { color: var(--warn, #f0b84f); }
+#previewBar .panel-hint.warn { color: var(--warn, #ffae52); }
 #previewStage {
   position: relative;
   margin-top: 8px;
@@ -543,7 +557,7 @@ input.toggle-check:checked::after { transform: translateX(18px); }
   font-size: 20px; line-height: 1;
   cursor: pointer;
 }
-.emoji-pop button:hover { background: color-mix(in srgb, var(--accent, #4cc2ff) 25%, transparent); }
+.emoji-pop button:hover { background: color-mix(in srgb, var(--accent, #4dd4e8) 25%, transparent); }
 .picker-wrap { display: flex; gap: 6px; align-items: center; }
 .picker-wrap input { flex: 1; min-width: 0; }
 
@@ -769,10 +783,10 @@ header h1 #appVersion {
   overflow-y: auto;
   margin: 0 0 14px;
   padding: 12px 14px;
-  border: 1px solid var(--warn, #f0b84f);
+  border: 1px solid var(--warn, #ffae52);
   border-left-width: 3px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--warn, #f0b84f) 8%, transparent);
+  background: color-mix(in srgb, var(--warn, #ffae52) 8%, transparent);
 }
 #rejectedWidgets h2 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
 #rejectedWidgets p { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
@@ -805,7 +819,7 @@ header h1 #appVersion {
   border-radius: 6px;
   padding: 7px 8px;
   background: transparent;
-  color: var(--text, #e8ecf2);
+  color: var(--text, #dde2e8);
   font: inherit;
   font-size: 12.5px;
   text-align: left;
@@ -813,4 +827,4 @@ header h1 #appVersion {
   /* The path is the title, so the NAME must never wrap into a second unreadable line. */
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.app-pop-list button:hover { background: color-mix(in srgb, var(--accent, #4cc2ff) 25%, transparent); }
+.app-pop-list button:hover { background: color-mix(in srgb, var(--accent, #4dd4e8) 25%, transparent); }

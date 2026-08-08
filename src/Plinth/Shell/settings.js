@@ -947,7 +947,7 @@
   }
 
   // Stock seeds mirrored from PaletteEngine's defaults; shown when no theme is set.
-  const THEME_DEFAULTS = { accent: '#4cc2ff', background: '#05070b', text: '#e8ecf2', panelAlpha: 0.92 };
+  const THEME_DEFAULTS = { accent: '#4dd4e8', background: '#070b12', text: '#dde2e8', panelAlpha: 0.92 };
 
   // Palette derivation lives in palette.js (shared with the dashboard shell for the
   // live replica and per-widget style overrides).
@@ -1661,7 +1661,7 @@
       const color = document.createElement('input');
       color.type = 'color';
       color.disabled = !check.checked;
-      color.value = hex6(cur[key], hex6(seeds[key], '#4cc2ff'));
+      color.value = hex6(cur[key], hex6(seeds[key], '#4dd4e8'));
       check.onchange = () => {
         color.disabled = !check.checked;
         setStyleKey(key, check.checked ? color.value : null);
@@ -2416,7 +2416,7 @@
               const input = document.createElement('input');
               if (field.type === 'color') {
                 input.type = 'color';
-                input.value = /^#[0-9a-f]{6}$/i.test(item[field.key]) ? item[field.key] : '#4cc2ff';
+                input.value = /^#[0-9a-f]{6}$/i.test(item[field.key]) ? item[field.key] : '#4dd4e8';
               } else {
                 input.type = 'text';
                 input.placeholder = field.placeholder || field.label || '';
@@ -2450,7 +2450,7 @@
             add.textContent = '+ Add ' + (prop.itemLabel || 'item');
             add.addEventListener('click', () => {
               const item = {};
-              for (const field of fields) item[field.key] = field.type === 'color' ? '#4cc2ff' : '';
+              for (const field of fields) item[field.key] = field.type === 'color' ? '#4dd4e8' : '';
               items.push(item);
               commit();
               renderList();

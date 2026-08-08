@@ -64,9 +64,9 @@
     const rgbOf = (c) => c[0] + ', ' + c[1] + ', ' + c[2];
     const tintOf = (c) => 'rgba(' + c[0] + ', ' + c[1] + ', ' + c[2] + ', 0.14)';
 
-    const accent = parse(spec.accent, [0x4c, 0xc2, 0xff]);
-    const background = parse(spec.background, [0x05, 0x07, 0x0b]);
-    let text = parse(spec.text, [0xe8, 0xec, 0xf2]);
+    const accent = parse(spec.accent, [0x4d, 0xd4, 0xe8]);
+    const background = parse(spec.background, [0x07, 0x0b, 0x12]);
+    let text = parse(spec.text, [0xdd, 0xe2, 0xe8]);
     const panelAlpha = Math.min(1.0, Math.max(0.15, spec.panelAlpha == null ? 0.92 : spec.panelAlpha));
     const dark = lum(background) < 0.35;
     const surface = mixc(background, text, dark ? 0.055 : 0.035);
@@ -79,18 +79,22 @@
     muted = ensure(muted, [surface, surfaceAlt], 4.5);
     dim = ensure(dim, [surface], 3.0);
     const ok = ensureState([0x45, 0xd4, 0x83], surface, surfaceAlt);
-    const warn = ensureState([0xf0, 0xb8, 0x4f], surface, surfaceAlt);
+    const warn = ensureState([0xff, 0xae, 0x52], surface, surfaceAlt);
     const err = ensureState([0xff, 0x62, 0x68], surface, surfaceAlt);
     const info = ensureState([0x62, 0xcb, 0xea], surface, surfaceAlt);
     const NEAR_BLACK = [0x0a, 0x0a, 0x0a];
     const onAccent = contrastc(accent, NEAR_BLACK) >= contrastc(accent, WHITE) ? NEAR_BLACK : WHITE;
+    // Accent as a FOREGROUND: the seed itself is never repaired (it is the user's
+    // exact pick, used for fills and glows), but outlined controls draw text and
+    // borders in it directly, and an accent near the background disappears there.
+    const accentFg = ensure(accent, [surface, surfaceAlt], 4.5);
     const hover = mixc(surface, text, 0.08);
     return {
       '--bg': hexOf(background), '--surface': hexOf(surface), '--surface-rgb': rgbOf(surface),
       '--surface-alt': hexOf(surfaceAlt), '--surface-alt-rgb': rgbOf(surfaceAlt),
       '--control-bg': hexOf(control), '--text': hexOf(text), '--text-muted': hexOf(muted),
       '--text-dim': hexOf(dim), '--line': hexOf(line), '--accent': hexOf(accent),
-      '--accent-rgb': rgbOf(accent), '--on-accent': hexOf(onAccent),
+      '--accent-rgb': rgbOf(accent), '--accent-fg': hexOf(accentFg), '--on-accent': hexOf(onAccent),
       '--ok': hexOf(ok), '--warn': hexOf(warn), '--err': hexOf(err), '--info': hexOf(info),
       '--ok-bg': tintOf(ok), '--warn-bg': tintOf(warn), '--err-bg': tintOf(err), '--info-bg': tintOf(info),
       '--hover-bg': hexOf(hover), '--panel-alpha': String(panelAlpha),
