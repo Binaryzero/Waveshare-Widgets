@@ -576,12 +576,19 @@
     // 5PM PDT), the left endpoint is local midnight TODAY, and marker positions
     // measure in whole local days — so the labels and the diamonds always agree
     // with the reader's calendar. A due-today marker clamps to the left edge.
+    // Expiry is the CONSTRUCTED next local midnight — a fixed +24h is wrong by an
+    // hour on the 23- and 25-hour days around a DST transition; the Date
+    // constructor normalizes day+1 through those correctly.
     const DAY = 86400000;
     const nowD = new Date(now);
     const todayMid = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate()).getTime();
+    const dueEndLocal = (iso) => {
+      const [y, m, d] = String(iso).split('-').map(Number);
+      return Number.isFinite(y) ? new Date(y, m - 1, d + 1).getTime() : NaN;
+    };
     const dues = visible
-      .map((v) => dueLocalMid(v.due))
-      .filter((t) => Number.isFinite(t) && t + DAY > now);
+      .filter((v) => dueEndLocal(v.due) > now)
+      .map((v) => dueLocalMid(v.due));
     if (dues.length) {
       const max = Math.max(...dues);
       const span = Math.max(max - todayMid, DAY);

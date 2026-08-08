@@ -71,6 +71,10 @@
     padding-top: 3px; flex: none;
   }
   #coreVals span { width: 13px; max-width: 9%; text-align: center; }
+  /* A 320px quarter cannot hold the bar chart beside the stats — sixteen bars
+   * carry 60px of gaps alone, before the axis. There the stats and the load
+   * ruler are the tile's whole story, as in the other quarter layouts. */
+  @media (max-width: 469px) { #coresWrap { display: none; } }
   #loadScale { margin-top: auto; }
 </style>
 </head>
