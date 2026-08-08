@@ -1,3 +1,10 @@
+/* Outfit for the theme preview, which must render what the panel renders. The
+ * settings chrome itself keeps its own face until the dock design settles. */
+@font-face { font-family: 'Outfit'; font-weight: 300; src: url('fonts/outfit-300.woff2') format('woff2'); }
+@font-face { font-family: 'Outfit'; font-weight: 400; src: url('fonts/outfit-400.woff2') format('woff2'); }
+@font-face { font-family: 'Outfit'; font-weight: 500; src: url('fonts/outfit-500.woff2') format('woff2'); }
+@font-face { font-family: 'Outfit'; font-weight: 700; src: url('fonts/outfit-700.woff2') format('woff2'); }
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
@@ -439,10 +446,14 @@ input.toggle-check:checked::after { transform: translateX(18px); }
     linear-gradient(135deg, #0f2027, #2c5364);
   border: 1px solid var(--line);
 }
+/* The miniature mirrors the instrument foundation: Outfit, square machined
+ * corners, flat etched status text, accent-outlined primary. */
 .theme-preview .tp-tile {
   background: rgba(var(--surface-rgb), var(--panel-alpha));
   color: var(--text);
-  border-radius: 10px;
+  font-family: 'Outfit', system-ui, sans-serif;
+  font-synthesis: none;
+  border-radius: 0;
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
@@ -451,27 +462,28 @@ input.toggle-check:checked::after { transform: translateX(18px); }
 }
 .theme-preview .tp-head { display: flex; align-items: center; justify-content: space-between; }
 .theme-preview .tp-kicker {
-  font-size: 10px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase;
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase;
   color: var(--text-muted);
 }
 .theme-preview .tp-pill {
-  font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.4px;
-  padding: 2px 8px; border-radius: 999px;
-  background: var(--ok-bg); border: 1px solid var(--ok); color: var(--ok);
+  font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.2em;
+  color: var(--ok);
 }
 .theme-preview .tp-reading { display: flex; align-items: baseline; gap: 4px; }
-.theme-preview .tp-value { font-size: 22px; font-weight: 800; color: var(--text); line-height: 1; }
-.theme-preview .tp-unit { font-size: 12px; font-weight: 700; color: var(--text-muted); }
-.theme-preview .tp-meter { height: 4px; border-radius: 2px; background: var(--control-bg); overflow: hidden; }
-.theme-preview .tp-meter i { display: block; height: 100%; width: 57%; border-radius: 2px; background: var(--accent); }
+.theme-preview .tp-value { font-size: 22px; font-weight: 700; color: var(--text); line-height: 1; font-variant-numeric: tabular-nums; }
+.theme-preview .tp-unit { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.theme-preview .tp-meter { height: 4px; background: var(--control-bg); overflow: hidden; }
+.theme-preview .tp-meter i { display: block; height: 100%; width: 57%; background: var(--accent); }
 .theme-preview .tp-btns { display: flex; gap: 6px; }
 .theme-preview .tp-btn {
   font: inherit; font-size: 11px; font-weight: 600; cursor: default;
-  padding: 4px 10px; border-radius: 7px;
+  padding: 4px 10px; border-radius: 0;
   background: var(--control-bg); color: var(--text); border: 1px solid var(--line);
 }
 .theme-preview .tp-btn.tp-primary {
-  background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 700;
+  background: transparent; color: var(--accent); font-weight: 700;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: inset 0 0 8px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 /* ---- structured list editor -------------------------------------------------- */

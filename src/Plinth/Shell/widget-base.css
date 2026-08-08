@@ -187,8 +187,11 @@ body.bg-transparent {
 .hd .st, .st { letter-spacing: 0.2em; color: var(--text-dim); }
 .hd .st.on, .st.on { color: var(--accent); }
 
-/* Breathing status dot — the mark beside a live annotation ("● PLAYING"). */
-.dot {
+/* Breathing status dot — the mark beside a live annotation ("● PLAYING").
+ * Scoped to header annotations: widgets already use bare .dot for their own
+ * indicators (ping's endpoint dots), which must not inherit the breathe, the
+ * margin, or the accent glow. */
+.hd .dot, .st .dot {
   display: inline-block;
   width: 5px;
   height: 5px;
