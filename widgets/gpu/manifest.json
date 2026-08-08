@@ -2,7 +2,7 @@
   "id": "ws.stock.gpu",
   "name": "GPU Monitor",
   "author": "Plinth",
-  "version": "1.4.2",
+  "version": "2.0.0",
   "description": "GPU load ring with temperature, clock and VRAM readouts.",
   "min_api_version": 1,
   "supported_slots": [
@@ -25,16 +25,6 @@
       "default": ""
     },
     {
-      "name": "titleSize",
-      "label": "Title size",
-      "type": "slider",
-      "min": 50,
-      "max": 200,
-      "step": 5,
-      "default": 100,
-      "group": "Text"
-    },
-    {
       "name": "valueSize",
       "label": "Value size",
       "type": "slider",
@@ -47,16 +37,6 @@
     {
       "name": "labelSize",
       "label": "Label size",
-      "type": "slider",
-      "min": 50,
-      "max": 200,
-      "step": 5,
-      "default": 100,
-      "group": "Text"
-    },
-    {
-      "name": "hintSize",
-      "label": "Hint size",
       "type": "slider",
       "min": 50,
       "max": 200,

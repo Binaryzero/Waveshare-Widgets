@@ -8,80 +8,85 @@
   /* Layout only — colors, background, typography basics come from widget-base.css. */
   body {
     display: flex;
+    flex-direction: column;
+    padding: 12px 16px 10px;
+  }
+  #main {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: space-evenly;
     gap: 6%;
+    margin-top: 2%;
   }
-  /* Sized by the SMALLER axis. Height alone was the wrong constraint: 72% of a 400px
-   * tile is a 288px ring, and aspect-ratio makes that 288px WIDE too — which fits the
-   * 640px half slot with room to spare but leaves 32px of a 320px quarter for the gap
-   * and the whole stat column, so the row overran to 339px and the labels were clipped
-   * mid-word. max-height in viewport WIDTH units lets whichever axis is tighter decide,
-   * and only binds at quarter: at half and full the 72% height is already the smaller
-   * of the two, so those slots render exactly as before. */
-  .ring { position: relative; height: 72%; max-height: 45vw; aspect-ratio: 1; }
-  .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
-  .ring .track { fill: none; stroke: var(--control-bg); stroke-width: 9; }
-  .ring .progress { fill: none; stroke: var(--accent); stroke-width: 9; stroke-linecap: round; transition: stroke-dashoffset 0.6s var(--ease); }
-  .ring .center {
-    position: absolute; inset: 0;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  .stat .val {
+    font-size: calc(clamp(18px, 9vh, 44px) * var(--value-scale, 1));
+    color: var(--text);
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
   }
-  .ring .center .big { font-size: calc(clamp(20px, 9vh, 44px) * var(--value-scale, 1)); color: var(--text); font-weight: 600; line-height: 1; }
-  .ring .center .cap { font-size: calc(clamp(9px, 3vh, 13px) * var(--title-scale, 1)); color: var(--text-muted); letter-spacing: 0.14em; margin-top: 4px; }
-  .stats { display: flex; flex-direction: column; gap: 8%; }
-  .stat .label { font-size: calc(clamp(9px, 3vh, 13px) * var(--label-scale, 1)); color: var(--text-muted); letter-spacing: 0.1em; }
-  .stat .val { font-size: calc(clamp(16px, 7vh, 34px) * var(--value-scale, 1)); color: var(--text); font-weight: 600; }
-  .stat .val .unit { font-size: 55%; font-weight: 400; color: var(--text-muted); }
-  .device { position: fixed; left: 12px; bottom: 8px; font-size: calc(clamp(8px, 2.4vh, 11px) * var(--hint-scale, 1)); color: var(--text-dim); max-width: 90%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat .val .unit { font-size: 45%; font-weight: 500; color: var(--text-muted); }
+  .stat .label {
+    margin-top: 4px;
+    font-size: calc(clamp(8px, 2.6vh, 10px) * var(--label-scale, 1));
+  }
+  /* Secondary pair reads a step smaller than the load/temp pair. */
+  #cols { display: flex; align-items: center; justify-content: space-evenly; gap: 6%; flex: 1 1 auto; }
+  .stat.minor .val { font-size: calc(clamp(14px, 6.5vh, 30px) * var(--value-scale, 1)); }
+  #loadScale { margin-top: auto; }
 </style>
 </head>
 <body>
-  <div class="ring">
-    <svg viewBox="0 0 100 100">
-      <circle class="track" cx="50" cy="50" r="44"></circle>
-      <circle class="progress" id="ringValue" cx="50" cy="50" r="44"></circle>
-    </svg>
-    <div class="center">
-      <div class="big value" id="load">--</div>
-      <div class="cap kicker">GPU LOAD</div>
-    </div>
-  </div>
-  <div class="stats">
+  <header class="hd">
+    <span class="kicker">GPU</span>
+    <span class="st" id="device"></span>
+  </header>
+  <div id="main">
     <div class="stat">
+      <div class="val value" id="load">--</div>
+      <div class="label kicker">Load</div>
+    </div>
+    <div class="stat">
+      <div class="val value" id="temp">--</div>
       <div class="label kicker">Temp</div>
-      <div class="val value" id="temp">--<small class="unit"> °C</small></div>
     </div>
-    <div class="stat">
-      <div class="label kicker">Clock</div>
-      <div class="val value" id="clock">--<small class="unit"> MHz</small></div>
-    </div>
-    <div class="stat">
-      <div class="label kicker">VRAM</div>
-      <div class="val value" id="vram">--<small class="unit"> %</small></div>
+    <div id="cols">
+      <div class="stat minor">
+        <div class="val value" id="clock">--</div>
+        <div class="label kicker">Clock</div>
+      </div>
+      <div class="stat minor">
+        <div class="val value" id="vram">--</div>
+        <div class="label kicker">VRAM</div>
+      </div>
     </div>
   </div>
-  <div class="device" id="device"></div>
+  <!-- Load is the tile's natural axis: 0-100, fill and cursor at now. -->
+  <div class="scale" id="loadScale" style="--pitch: 4%">
+    <div class="rail"></div><div class="mns"></div>
+    <div class="mj e-l" style="left:0"><b>0</b></div>
+    <div class="mj" style="left:25%"><b>25</b></div>
+    <div class="mj" style="left:50%"><b>50</b></div>
+    <div class="mj" style="left:75%"><b>75</b></div>
+    <div class="mj e-r" style="left:100%"><b>100</b></div>
+    <div class="fill" id="loadFill" style="width:0%"></div>
+    <div class="cur" id="loadCur" style="left:0%"></div>
+  </div>
 
 <script src="https://app.plinth/widget-api.js"></script>
 <script>
   'use strict';
   const GPU_TYPES = ['gpunvidia', 'gpuamd', 'gpuintel'];
-  const CIRCUMFERENCE = 2 * Math.PI * 44;
-  const ring = document.getElementById('ringValue');
-  ring.style.strokeDasharray = String(CIRCUMFERENCE);
-  ring.style.strokeDashoffset = String(CIRCUMFERENCE);
 
   WW.onInit((state) => {
     const s = state.settings;
-
     // Per-text-type size scales. Appearance comes from the theme tokens (global
     // theme or the per-slot style override) — legacy color keys in old layouts
     // are deliberately ignored.
-    document.body.style.setProperty('--title-scale', String((Number(s.titleSize) || 100) / 100));
     document.body.style.setProperty('--value-scale', String((Number(s.valueSize) || 100) / 100));
     document.body.style.setProperty('--label-scale', String((Number(s.labelSize) || 100) / 100));
-    document.body.style.setProperty('--hint-scale', String((Number(s.hintSize) || 100) / 100));
   });
 
   function pick(settingId, opts) {
@@ -104,12 +109,14 @@
     });
 
     const loadValue = load && load.value != null ? Math.min(100, load.value) : null;
-    document.getElementById('load').textContent = loadValue == null ? '--' : Math.round(loadValue) + '%';
-    ring.style.strokeDashoffset = String(CIRCUMFERENCE * (1 - (loadValue || 0) / 100));
+    setStat('load', loadValue == null ? null : { value: loadValue }, 0, '%');
+    const pct = (loadValue || 0).toFixed(1) + '%';
+    document.getElementById('loadFill').style.width = pct;
+    document.getElementById('loadCur').style.left = pct;
 
-    setStat('temp', temp, 0, ' °C');
-    setStat('clock', clock, 0, ' MHz');
-    setStat('vram', vram, 0, ' %');
+    setStat('temp', temp, 0, '°C');
+    setStat('clock', clock, 0, 'MHz');
+    setStat('vram', vram, 0, '%');
 
     const any = load || temp || clock;
     document.getElementById('device').textContent = any ? any.device : 'No GPU sensors found';
@@ -117,8 +124,11 @@
 
   function setStat(id, sensor, decimals, unit) {
     const el = document.getElementById(id);
-    const value = sensor && sensor.value != null ? sensor.value.toFixed(decimals) : '--';
-    el.innerHTML = value + '<small class="unit">' + unit + '</small>';
+    el.textContent = sensor && sensor.value != null ? sensor.value.toFixed(decimals) : '--';
+    const small = document.createElement('small');
+    small.className = 'unit';
+    small.textContent = unit;
+    el.appendChild(small);
   }
 </script>
 </body>
