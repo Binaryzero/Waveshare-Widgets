@@ -60,6 +60,11 @@ public static class PaletteEngine
         var white = (r: (byte)0xff, g: (byte)0xff, b: (byte)0xff);
         var onAccent = Contrast(accent, nearBlack) >= Contrast(accent, white) ? nearBlack : white;
 
+        // Accent as a FOREGROUND: the seed itself is never repaired (it is the user's
+        // exact pick, used for fills and glows), but outlined controls draw text and
+        // borders in it directly, and an accent near the background disappears there.
+        var accentFg = EnsureContrast(accent, [surface, surfaceAlt], StateContrast);
+
         var hover = Mix(surface, text, 0.08);
 
         return new Dictionary<string, string>
@@ -76,6 +81,7 @@ public static class PaletteEngine
             ["--line"] = Hex(line),
             ["--accent"] = Hex(accent),
             ["--accent-rgb"] = Rgb(accent),
+            ["--accent-fg"] = Hex(accentFg),
             ["--on-accent"] = Hex(onAccent),
             ["--ok"] = Hex(ok),
             ["--warn"] = Hex(warn),

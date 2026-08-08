@@ -481,8 +481,8 @@ input.toggle-check:checked::after { transform: translateX(18px); }
   background: var(--control-bg); color: var(--text); border: 1px solid var(--line);
 }
 .theme-preview .tp-btn.tp-primary {
-  background: transparent; color: var(--accent); font-weight: 700;
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: transparent; color: var(--accent-fg, var(--accent)); font-weight: 700;
+  border-color: color-mix(in srgb, var(--accent-fg, var(--accent)) 55%, transparent);
   box-shadow: inset 0 0 8px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 

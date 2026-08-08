@@ -84,13 +84,17 @@
     const info = ensureState([0x62, 0xcb, 0xea], surface, surfaceAlt);
     const NEAR_BLACK = [0x0a, 0x0a, 0x0a];
     const onAccent = contrastc(accent, NEAR_BLACK) >= contrastc(accent, WHITE) ? NEAR_BLACK : WHITE;
+    // Accent as a FOREGROUND: the seed itself is never repaired (it is the user's
+    // exact pick, used for fills and glows), but outlined controls draw text and
+    // borders in it directly, and an accent near the background disappears there.
+    const accentFg = ensure(accent, [surface, surfaceAlt], 4.5);
     const hover = mixc(surface, text, 0.08);
     return {
       '--bg': hexOf(background), '--surface': hexOf(surface), '--surface-rgb': rgbOf(surface),
       '--surface-alt': hexOf(surfaceAlt), '--surface-alt-rgb': rgbOf(surfaceAlt),
       '--control-bg': hexOf(control), '--text': hexOf(text), '--text-muted': hexOf(muted),
       '--text-dim': hexOf(dim), '--line': hexOf(line), '--accent': hexOf(accent),
-      '--accent-rgb': rgbOf(accent), '--on-accent': hexOf(onAccent),
+      '--accent-rgb': rgbOf(accent), '--accent-fg': hexOf(accentFg), '--on-accent': hexOf(onAccent),
       '--ok': hexOf(ok), '--warn': hexOf(warn), '--err': hexOf(err), '--info': hexOf(info),
       '--ok-bg': tintOf(ok), '--warn-bg': tintOf(warn), '--err-bg': tintOf(err), '--info-bg': tintOf(info),
       '--hover-bg': hexOf(hover), '--panel-alpha': String(panelAlpha),

@@ -31,6 +31,7 @@
   --line: #3f444a;
   --accent: #4dd4e8;
   --accent-rgb: 77, 212, 232;
+  --accent-fg: #4dd4e8;
   --on-accent: #0a0a0a;
   --ok: #45d483;
   --warn: #ffae52;
@@ -138,7 +139,8 @@ body.bg-transparent {
 .scale .mj b, .scale .mk b {
   position: absolute; top: 9px; left: 50%; transform: translateX(-50%);
   font-size: 8px; font-weight: 500; line-height: 1; letter-spacing: 0.12em;
-  color: var(--text-dim); white-space: nowrap;
+  /* muted, not dim: 8px text needs the 4.5:1 tier, and dim is only repaired to 3:1 */
+  color: var(--text-muted); white-space: nowrap;
 }
 .scale .mk b { color: var(--text-muted); } /* event labels are data, axis labels are structure */
 .scale .mj.e-l b { left: 0; transform: none; }
@@ -274,6 +276,8 @@ body.bg-transparent {
 @keyframes ww-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation: none; }
+  /* Frozen, not shortened: a 0.01ms infinite loop still samples every frame. */
+  .hd .dot, .st .dot { animation: none; }
   * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
   /* Flashes are color-only feedback, not motion — collapsing them would turn a
    * failed tap back into a silent no-op. */
@@ -313,12 +317,15 @@ body.bg-transparent {
   transition: transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 .btn:active { transform: scale(0.97); }
-/* Primary is the demo's play button: accent-outlined with an inset glow, not a fill. */
+/* Primary is the demo's play button: accent-outlined with an inset glow, not a
+ * fill. Text and border draw in --accent-fg — the accent repaired to 4.5:1 on the
+ * surfaces — because the raw seed is the user's exact pick and may sit right on
+ * the background; the glow keeps the raw accent, it is decoration. */
 .btn.primary {
   background: transparent;
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  border-color: color-mix(in srgb, var(--accent-fg) 55%, transparent);
   box-shadow: inset 0 0 12px rgba(var(--accent-rgb), 0.07);
-  color: var(--accent);
+  color: var(--accent-fg);
   font-weight: 700;
 }
 .btn:disabled { opacity: 0.45; cursor: default; }

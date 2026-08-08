@@ -57,6 +57,7 @@ during development); at runtime the theme push replaces them.
 | `--line` | Hairline borders and separators | `#3f444a` |
 | `--accent` | The user's accent — the one data hue: highlights, active fills, ruler fills, focus rings | `#4dd4e8` |
 | `--accent-rgb` | `--accent` as `r, g, b` for tints like `rgba(var(--accent-rgb), 0.14)` | `77, 212, 232` |
+| `--accent-fg` | The accent as a *foreground*: repaired to 4.5:1 on the surfaces, for accent-colored text and outlines (`.btn.primary`). The raw `--accent` is the user's exact pick and is never repaired | `#4dd4e8` |
 | `--on-accent` | Text/icon color on accent-filled surfaces | `#0a0a0a` |
 | `--hover-bg` | Hover/pressed row background | `#23272e` |
 | `--panel-alpha` | The theme's glass opacity level (see [§3](#3--transparency-system)) | `0.92` |
