@@ -258,7 +258,7 @@ body.bg-transparent {
   display: grid;
   place-items: center;
   font-size: 22px;
-  border-radius: 12px;
+  border-radius: var(--radius-control);
   background: rgba(var(--accent-rgb), 0.14);
   color: var(--accent);
 }
@@ -289,14 +289,12 @@ body.bg-transparent {
 /* Horizontal meter: 4px track + fill. */
 .meter {
   height: 4px;
-  border-radius: 2px;
   background: var(--control-bg);
   overflow: hidden;
 }
 .meter > i {
   display: block;
   height: 100%;
-  border-radius: 2px;
   background: var(--accent);
   transition: width 0.35s var(--ease);
 }
