@@ -48,7 +48,7 @@ const opt = (name, dflt) => {
   return i >= 0 ? args[i + 1] : dflt;
 };
 if (!folder) {
-  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--sensors frame.json] [--shot out.png] [--json]');
+  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--sensors frame.json] [--media state.json] [--shot out.png] [--json]');
   process.exit(1);
 }
 
@@ -57,6 +57,10 @@ if (!folder) {
 // Without it the run keeps the empty frame — the sweep's no-data baseline.
 const sensorsFile = opt('sensors', null);
 const sensorFrame = sensorsFile ? JSON.parse(fs.readFileSync(sensorsFile, 'utf8')) : [];
+// Optional media state, init-only — the panel emits media strictly on change, so no
+// follow-up push is synthesized (see the sensors-only note at the push below).
+const mediaFile = opt('media', null);
+const mediaState = mediaFile ? JSON.parse(fs.readFileSync(mediaFile, 'utf8')) : null;
 
 const slot = opt('slot', 'half');
 const [W, H] = SLOTS[slot] || slot.split('x').map(Number);
@@ -437,7 +441,7 @@ function loadPlaywright() {
     // sends is sent here and a field it does not send is absent here too. `notifications`
     // is null unless a slot subscribed, which is what a non-subscribing widget gets on the
     // panel too — stated rather than omitted, so the difference is a decision.
-    initMessage: { type: 'ww-init', settings, sensors: sensorFrame, media: null, theme,
+    initMessage: { type: 'ww-init', settings, sensors: sensorFrame, media: mediaState, theme,
       notifications: null, status: { elevated: false, apiVersion: 1 } },
   });
 
