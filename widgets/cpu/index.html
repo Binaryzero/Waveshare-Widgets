@@ -196,7 +196,10 @@
       const vals = document.getElementById('coreVals');
       bars.textContent = '';
       vals.textContent = '';
-      const hottest = allCores.reduce((m, c) => (c.value > m.value ? c : m), allCores[0]);
+      // The amber marks the hottest VISIBLE bar — marking a bar for an off-chart
+      // core would point at the wrong column, and no mark at all reads as "none
+      // hot". The count above still tells the whole truth.
+      const hottest = cores.reduce((m, c) => (c.value > m.value ? c : m), cores[0]);
       const showVals = cores.length <= 8;
       for (const core of cores) {
         const bar = document.createElement('b');

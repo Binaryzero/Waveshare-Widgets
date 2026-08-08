@@ -15,9 +15,13 @@
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
+    /* Wrap, don't clip: a quarter slot at a 200% value scale cannot hold four
+     * readouts in one row, so they reflow onto a second. */
+    flex-wrap: wrap;
+    align-content: center;
     align-items: center;
     justify-content: space-evenly;
-    gap: 6%;
+    gap: 4% 6%;
     margin-top: 2%;
   }
   .stat .val {
@@ -33,7 +37,7 @@
     font-size: calc(clamp(8px, 2.6vh, 10px) * var(--label-scale, 1));
   }
   /* Secondary pair reads a step smaller than the load/temp pair. */
-  #cols { display: flex; align-items: center; justify-content: space-evenly; gap: 6%; flex: 1 1 auto; }
+  #cols { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-evenly; gap: 4% 6%; flex: 1 1 auto; }
   .stat.minor .val { font-size: calc(clamp(14px, 6.5vh, 30px) * var(--value-scale, 1)); }
   #loadScale { margin-top: auto; }
 </style>

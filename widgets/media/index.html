@@ -120,8 +120,12 @@
     el('idle').hidden = !idle;
     if (idle) {
       // The idle overlay follows the panel opacity (glass/transparent tiles stay
-      // glass/transparent while idle), so stale art must not linger underneath it.
+      // glass/transparent while idle), so stale art must not linger underneath it —
+      // and neither may the header's playback annotation, which shows straight
+      // through a zero-alpha overlay on transparent tiles.
       el('art').style.backgroundImage = 'none';
+      el('status').textContent = '';
+      el('status').className = 'st';
       return;
     }
 
