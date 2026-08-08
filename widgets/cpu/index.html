@@ -8,59 +8,120 @@
   /* Layout only — colors, background, typography basics come from widget-base.css. */
   body {
     display: flex;
+    flex-direction: column;
+    padding: 12px 16px 10px;
+  }
+  #main {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: space-between;
     gap: 6%;
+    margin-top: 2%;
   }
-  .ring { position: relative; height: 72%; aspect-ratio: 1; }
-  .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
-  .ring .track { fill: none; stroke: var(--control-bg); stroke-width: 9; }
-  .ring .progress { fill: none; stroke: var(--accent); stroke-width: 9; stroke-linecap: round; transition: stroke-dashoffset 0.6s var(--ease); }
-  .ring .center {
-    position: absolute; inset: 0;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  #bigs { display: flex; flex-direction: column; gap: 7%; justify-content: center; }
+  .stat .val {
+    font-size: calc(clamp(18px, 9vh, 44px) * var(--value-scale, 1));
+    color: var(--text);
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
   }
-  .ring .center .big { font-size: calc(clamp(20px, 9vh, 44px) * var(--value-scale, 1)); color: var(--text); font-weight: 600; line-height: 1; }
-  .ring .center .cap { font-size: calc(clamp(9px, 3vh, 13px) * var(--title-scale, 1)); color: var(--text-muted); letter-spacing: 0.14em; margin-top: 4px; }
-  #stats { display: flex; flex-direction: column; gap: 8%; }
-  .stat .label { font-size: calc(clamp(9px, 3vh, 13px) * var(--label-scale, 1)); color: var(--text-muted); letter-spacing: 0.1em; }
-  .stat .val { font-size: calc(clamp(16px, 7vh, 34px) * var(--value-scale, 1)); color: var(--text); font-weight: 600; }
-  .stat .val .unit { font-size: 55%; font-weight: 400; }
-  #hint { position: fixed; left: 12px; bottom: 8px; font-size: calc(clamp(8px, 2.4vh, 11px) * var(--hint-scale, 1)); color: var(--text-dim); max-width: 92%; }
+  .stat .val .unit { font-size: 45%; font-weight: 500; }
+  .stat .label {
+    margin-top: 4px;
+    font-size: calc(clamp(8px, 2.6vh, 10px) * var(--label-scale, 1));
+  }
+  /* Per-core bars: the demo's chart — a hairline frame, one bar per core, the
+   * hottest core carried in the alert amber. */
+  #coresWrap { flex: 1 1 auto; min-width: 0; height: 88%; display: flex; gap: 8px; }
+  #axis {
+    display: flex; flex-direction: column; justify-content: space-between;
+    font-size: 8px; font-weight: 500; letter-spacing: 0.12em;
+    color: var(--text-dim); text-align: right;
+    font-variant-numeric: tabular-nums;
+    padding-bottom: 11px;
+  }
+  #chart { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  #bars {
+    flex: 1 1 auto; min-height: 0;
+    display: flex; align-items: flex-end; justify-content: space-around; gap: 4px;
+    border-bottom: 1px solid var(--line);
+    position: relative;
+  }
+  #bars::before { /* the 50% gridline */
+    content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px;
+    border-top: 1px dashed var(--line); opacity: 0.5;
+  }
+  #bars b {
+    width: 13px; max-width: 9%;
+    background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.85), rgba(var(--accent-rgb), 0.38));
+    box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.22);
+    transition: height 0.35s var(--ease);
+  }
+  #bars b.hot {
+    background: linear-gradient(180deg, var(--warn), color-mix(in srgb, var(--warn) 45%, transparent));
+    box-shadow: 0 0 8px color-mix(in srgb, var(--warn) 40%, transparent);
+  }
+  #coreVals {
+    display: flex; justify-content: space-around; gap: 4px;
+    font-size: 8px; font-weight: 500; letter-spacing: 0.08em;
+    color: var(--text-dim); font-variant-numeric: tabular-nums;
+    padding-top: 3px; flex: none;
+  }
+  #coreVals span { width: 13px; max-width: 9%; text-align: center; }
+  #loadScale { margin-top: auto; }
 </style>
 </head>
 <body>
-  <div class="ring">
-    <svg viewBox="0 0 100 100">
-      <circle class="track" cx="50" cy="50" r="44"></circle>
-      <circle class="progress" id="ringValue" cx="50" cy="50" r="44"></circle>
-    </svg>
-    <div class="center">
-      <div class="big value" id="load">--</div>
-      <div class="cap kicker">CPU LOAD</div>
+  <header class="hd">
+    <span class="kicker">CPU</span>
+    <span class="st" id="coreCount" hidden></span>
+  </header>
+  <div id="main">
+    <div id="bigs">
+      <div class="stat">
+        <div class="val value" id="load">--</div>
+        <div class="label kicker">Load</div>
+      </div>
+      <div class="stat" id="stat2" hidden>
+        <div class="val value" id="stat2Val">--</div>
+        <div class="label kicker" id="stat2Label"></div>
+      </div>
+    </div>
+    <div id="coresWrap" hidden>
+      <div id="axis"><span>100</span><span>50</span><span>0</span></div>
+      <div id="chart">
+        <div id="bars"></div>
+        <div id="coreVals"></div>
+      </div>
     </div>
   </div>
-  <div id="stats"></div>
-  <div id="hint" hidden></div>
+  <!-- Load is the tile's natural axis: 0-100, fill and cursor at now. -->
+  <div class="scale" id="loadScale" style="--pitch: 4%">
+    <div class="rail"></div><div class="mns"></div>
+    <div class="mj e-l" style="left:0"><b>0</b></div>
+    <div class="mj" style="left:25%"><b>25</b></div>
+    <div class="mj" style="left:50%"><b>50</b></div>
+    <div class="mj" style="left:75%"><b>75</b></div>
+    <div class="mj e-r" style="left:100%"><b>100</b></div>
+    <div class="fill" id="loadFill" style="width:0%"></div>
+    <div class="cur" id="loadCur" style="left:0%"></div>
+  </div>
 
 <script src="https://app.plinth/widget-api.js"></script>
 <script>
   'use strict';
-  const CIRCUMFERENCE = 2 * Math.PI * 44;
-  const ring = document.getElementById('ringValue');
-  ring.style.strokeDasharray = String(CIRCUMFERENCE);
-  ring.style.strokeDashoffset = String(CIRCUMFERENCE);
+  const MAX_BARS = 16;
 
   WW.onInit((state) => {
     const s = state.settings;
-
     // Per-text-type size scales. Appearance comes from the theme tokens (global
     // theme or the per-slot style override) — legacy color keys in old layouts
     // are deliberately ignored.
-    document.body.style.setProperty('--title-scale', String((Number(s.titleSize) || 100) / 100));
     document.body.style.setProperty('--value-scale', String((Number(s.valueSize) || 100) / 100));
     document.body.style.setProperty('--label-scale', String((Number(s.labelSize) || 100) / 100));
-    document.body.style.setProperty('--hint-scale', String((Number(s.hintSize) || 100) / 100));
   });
 
   function pick(settingId, opts) {
@@ -83,43 +144,70 @@
       || WW.findSensor({ type: 'Temperature', deviceTypeIncludes: ['system'], nameIncludes: ['thermal', 'acpi'] });
 
     const loadValue = load && load.value != null ? Math.min(100, load.value) : null;
-    document.getElementById('load').textContent = loadValue == null ? '--' : Math.round(loadValue) + '%';
-    ring.style.strokeDashoffset = String(CIRCUMFERENCE * (1 - (loadValue || 0) / 100));
+    document.getElementById('load').textContent = loadValue == null ? '--' : '';
+    if (loadValue != null) {
+      const el = document.getElementById('load');
+      el.textContent = String(Math.round(loadValue));
+      const unit = document.createElement('small');
+      unit.className = 'unit';
+      unit.textContent = '%';
+      el.appendChild(unit);
+    }
+    const pct = (loadValue || 0).toFixed(1) + '%';
+    document.getElementById('loadFill').style.width = pct;
+    document.getElementById('loadCur').style.left = pct;
 
-    // Fill the three stat rows with whatever this machine can actually provide, so the
-    // widget never shows dead "--" rows on systems without the kernel-driver sensors.
-    const candidates = [
-      { label: 'Temp', unit: ' °C', decimals: 0, sensor: temp },
-      { label: 'Clock', unit: ' MHz', decimals: 0,
+    // Second big stat: the best-available companion so the tile never shows a dead
+    // placeholder on machines without the kernel-driver sensors.
+    const second = [
+      { label: 'Temp', unit: '°C', decimals: 0, sensor: temp },
+      { label: 'Memory', unit: '%', decimals: 0, sensor: WW.sensorById('sys:mem:load') },
+      { label: 'Clock', unit: 'MHz', decimals: 0,
         sensor: WW.findSensor({ type: 'Clock', deviceTypeIncludes: ['cpu'], nameIncludes: ['core #1', 'core'] }) },
-      { label: 'Power', unit: ' W', decimals: 1,
-        sensor: WW.findSensor({ type: 'Power', deviceTypeIncludes: ['cpu'], preferredNames: ['CPU Package', 'Package'] }) },
-      { label: 'Memory', unit: ' %', decimals: 0, sensor: WW.sensorById('sys:mem:load') },
-      { label: 'Mem Used', unit: ' GB', decimals: 1, sensor: WW.sensorById('sys:mem:used') },
-      { label: 'Net Down', unit: ' MB/s', decimals: 1, scale: 1 / 1048576, sensor: WW.sensorById('sys:net:down') },
-    ];
-    const rows = candidates.filter((c) => c.sensor && c.sensor.value != null).slice(0, 3);
-
-    const stats = document.getElementById('stats');
-    stats.textContent = '';
-    for (const row of rows) {
-      const stat = document.createElement('div');
-      stat.className = 'stat';
-      const label = document.createElement('div');
-      label.className = 'label kicker';
-      label.textContent = row.label;
-      const val = document.createElement('div');
-      val.className = 'val value';
-      const value = (row.sensor.value * (row.scale || 1)).toFixed(row.decimals);
-      const small = document.createElement('small');
-      small.className = 'unit';
-      small.textContent = row.unit;
-      val.append(value, small);
-      stat.append(label, val);
-      stats.appendChild(stat);
+    ].find((c) => c.sensor && c.sensor.value != null);
+    const stat2 = document.getElementById('stat2');
+    stat2.hidden = !second;
+    if (second) {
+      const val = document.getElementById('stat2Val');
+      val.textContent = String(Math.round(second.sensor.value * (second.decimals ? 10 : 1)) / (second.decimals ? 10 : 1));
+      const unit = document.createElement('small');
+      unit.className = 'unit';
+      unit.textContent = second.unit;
+      val.appendChild(unit);
+      document.getElementById('stat2Label').textContent = second.label;
     }
 
-    document.getElementById('hint').hidden = true; // never suggests elevation (removed)
+    // Per-core bars, hottest core in amber. Enumerated from the sensor list — on a
+    // machine that exposes no per-core loads the whole chart stays hidden.
+    const cores = WW.sensors
+      .filter((x) => x.type === 'Load' && /core #?\d+/i.test(x.name || '') && x.value != null)
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true }))
+      .slice(0, MAX_BARS);
+    const wrap = document.getElementById('coresWrap');
+    wrap.hidden = cores.length < 2;
+    const count = document.getElementById('coreCount');
+    count.hidden = cores.length < 2;
+    if (cores.length >= 2) {
+      count.textContent = cores.length + ' cores';
+      const bars = document.getElementById('bars');
+      const vals = document.getElementById('coreVals');
+      bars.textContent = '';
+      vals.textContent = '';
+      const hottest = cores.reduce((m, c) => (c.value > m.value ? c : m), cores[0]);
+      const showVals = cores.length <= 8;
+      for (const core of cores) {
+        const bar = document.createElement('b');
+        bar.style.height = Math.max(2, Math.min(100, core.value)).toFixed(0) + '%';
+        if (core === hottest) bar.className = 'hot';
+        bars.appendChild(bar);
+        if (showVals) {
+          const v = document.createElement('span');
+          v.textContent = String(Math.round(core.value));
+          vals.appendChild(v);
+        }
+      }
+      vals.hidden = !showVals;
+    }
   });
 </script>
 </body>

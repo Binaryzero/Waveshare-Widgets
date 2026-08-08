@@ -48,9 +48,15 @@ const opt = (name, dflt) => {
   return i >= 0 ? args[i + 1] : dflt;
 };
 if (!folder) {
-  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--shot out.png] [--json]');
+  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--sensors frame.json] [--shot out.png] [--json]');
   process.exit(1);
 }
+
+// Optional sensor frame: a JSON array of sensor objects delivered in the init AND in
+// the follow-up ww-sensors push, exactly as SensorHub repeats a real frame every poll.
+// Without it the run keeps the empty frame — the sweep's no-data baseline.
+const sensorsFile = opt('sensors', null);
+const sensorFrame = sensorsFile ? JSON.parse(fs.readFileSync(sensorsFile, 'utf8')) : [];
 
 const slot = opt('slot', 'half');
 const [W, H] = SLOTS[slot] || slot.split('x').map(Number);
@@ -431,7 +437,7 @@ function loadPlaywright() {
     // sends is sent here and a field it does not send is absent here too. `notifications`
     // is null unless a slot subscribed, which is what a non-subscribing widget gets on the
     // panel too — stated rather than omitted, so the difference is a decision.
-    initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme,
+    initMessage: { type: 'ww-init', settings, sensors: sensorFrame, media: null, theme,
       notifications: null, status: { elevated: false, apiVersion: 1 } },
   });
 
@@ -464,7 +470,7 @@ function loadPlaywright() {
   // device. The panel's opening media value is also MediaState.None, a truthy object,
   // not the null this used to synthesize — so that push was wrong twice over.
   await page.waitForTimeout(150);
-  await page.evaluate(() => window.__wwPush({ type: 'ww-sensors', sensors: [] }));
+  await page.evaluate((frame) => window.__wwPush({ type: 'ww-sensors', sensors: frame }), sensorFrame);
   await page.waitForTimeout(1200);
 
   const frameErrors = await frame.evaluate(() => window.__wwErrors || []).catch(() => []);

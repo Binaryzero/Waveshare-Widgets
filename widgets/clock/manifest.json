@@ -2,7 +2,7 @@
   "id": "ws.stock.clock",
   "name": "Clock",
   "author": "Plinth",
-  "version": "1.4.2",
+  "version": "2.0.0",
   "description": "Large digital clock with date.",
   "min_api_version": 1,
   "supported_slots": [
