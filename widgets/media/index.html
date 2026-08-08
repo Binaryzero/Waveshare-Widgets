@@ -131,8 +131,9 @@
     const playing = media.status === 'Playing';
     el('iconPlay').style.display = playing ? 'none' : 'block';
     el('iconPause').style.display = playing ? 'block' : 'none';
-    // The header annotation is the live state: a breathing dot beside PLAYING, a
-    // still dim PAUSED otherwise.
+    // The header annotation is the live state: a breathing dot beside PLAYING,
+    // otherwise the session's actual status — Windows also reports Stopped,
+    // Changing, Opened and Closed, and labeling those all Paused would lie.
     const status = el('status');
     status.textContent = '';
     status.className = 'st' + (playing ? ' on' : '');
@@ -141,7 +142,7 @@
       dot.className = 'dot';
       status.appendChild(dot);
     }
-    status.appendChild(document.createTextNode(playing ? 'Playing' : 'Paused'));
+    status.appendChild(document.createTextNode(playing ? 'Playing' : (media.status || 'Paused')));
 
     base = { position: media.positionSeconds, duration: media.durationSeconds, at: Date.now(), playing };
     renderTimeline();

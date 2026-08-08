@@ -309,6 +309,8 @@
       mixer.style.display = 'none';
       msg.style.display = 'flex';
       msg.textContent = 'Audio control unavailable';
+      // The header annotation counts rows the message just replaced.
+      el('sessionCount').hidden = true;
       return;
     }
     mixer.style.display = 'flex';

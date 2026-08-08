@@ -191,9 +191,11 @@
         'H ' + Math.round(data.daily.temperature_2m_max[0]) + '°  L ' + Math.round(data.daily.temperature_2m_min[0]) + '°' +
         '  ·  ' + data.current.relative_humidity_2m + '% RH';
 
-      renderForecast(data, s.forecast || 'hourly');
+      const mode = s.forecast || 'hourly';
+      renderForecast(data, mode);
       renderScale(data);
-      document.getElementById('mode').textContent = (s.forecast || 'hourly') === 'daily' ? '6-day' : '12h';
+      document.getElementById('mode').textContent =
+        mode === 'daily' ? '6-day' : mode === 'off' ? '' : '12h';
       document.getElementById('error').hidden = true;
     } catch (e) {
       WW.log('weather failed: ' + e.message);

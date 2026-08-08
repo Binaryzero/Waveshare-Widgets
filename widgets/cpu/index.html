@@ -179,21 +179,24 @@
 
     // Per-core bars, hottest core in amber. Enumerated from the sensor list — on a
     // machine that exposes no per-core loads the whole chart stays hidden.
-    const cores = WW.sensors
+    // The count and the hottest core come from the FULL list; only the bars are
+    // capped — a 24-core machine reports 24 cores and its true hottest even when
+    // just 16 bars fit.
+    const allCores = WW.sensors
       .filter((x) => x.type === 'Load' && /core #?\d+/i.test(x.name || '') && x.value != null)
-      .sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true }))
-      .slice(0, MAX_BARS);
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true }));
+    const cores = allCores.slice(0, MAX_BARS);
     const wrap = document.getElementById('coresWrap');
     wrap.hidden = cores.length < 2;
     const count = document.getElementById('coreCount');
     count.hidden = cores.length < 2;
     if (cores.length >= 2) {
-      count.textContent = cores.length + ' cores';
+      count.textContent = allCores.length + ' cores';
       const bars = document.getElementById('bars');
       const vals = document.getElementById('coreVals');
       bars.textContent = '';
       vals.textContent = '';
-      const hottest = cores.reduce((m, c) => (c.value > m.value ? c : m), cores[0]);
+      const hottest = allCores.reduce((m, c) => (c.value > m.value ? c : m), allCores[0]);
       const showVals = cores.length <= 8;
       for (const core of cores) {
         const bar = document.createElement('b');
