@@ -5,7 +5,7 @@
   --panel: #11151e;
   --card: #171c28;
   --line: #232a3a;
-  --text: #e8ecf2;
+  --text: #dde2e8;
   --muted: #7d8697;
   --accent: #00d4ff;
   --danger: #ff5577;
@@ -383,7 +383,7 @@ input.toggle-check:checked::after { transform: translateX(18px); }
   object-fit: cover;
   border-radius: 6px;
   border: 1px solid var(--line);
-  background: #05070b;
+  background: #070b12;
 }
 .bg-file .bg-preview.broken { display: none; }
 .bg-file .bg-filename { font-size: 11px; word-break: break-all; }
@@ -487,7 +487,7 @@ input.toggle-check:checked::after { transform: translateX(18px); }
 #previewBar { display: flex; align-items: center; gap: 12px; }
 #previewBar .panel-title { margin: 0; }
 #previewBar .panel-hint { margin: 0; flex: 1; }
-#previewBar .panel-hint.warn { color: var(--warn, #f0b84f); }
+#previewBar .panel-hint.warn { color: var(--warn, #ffae52); }
 #previewStage {
   position: relative;
   margin-top: 8px;
@@ -543,7 +543,7 @@ input.toggle-check:checked::after { transform: translateX(18px); }
   font-size: 20px; line-height: 1;
   cursor: pointer;
 }
-.emoji-pop button:hover { background: color-mix(in srgb, var(--accent, #4cc2ff) 25%, transparent); }
+.emoji-pop button:hover { background: color-mix(in srgb, var(--accent, #4dd4e8) 25%, transparent); }
 .picker-wrap { display: flex; gap: 6px; align-items: center; }
 .picker-wrap input { flex: 1; min-width: 0; }
 
@@ -769,10 +769,10 @@ header h1 #appVersion {
   overflow-y: auto;
   margin: 0 0 14px;
   padding: 12px 14px;
-  border: 1px solid var(--warn, #f0b84f);
+  border: 1px solid var(--warn, #ffae52);
   border-left-width: 3px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--warn, #f0b84f) 8%, transparent);
+  background: color-mix(in srgb, var(--warn, #ffae52) 8%, transparent);
 }
 #rejectedWidgets h2 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
 #rejectedWidgets p { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
@@ -805,7 +805,7 @@ header h1 #appVersion {
   border-radius: 6px;
   padding: 7px 8px;
   background: transparent;
-  color: var(--text, #e8ecf2);
+  color: var(--text, #dde2e8);
   font: inherit;
   font-size: 12.5px;
   text-align: left;
@@ -813,4 +813,4 @@ header h1 #appVersion {
   /* The path is the title, so the NAME must never wrap into a second unreadable line. */
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.app-pop-list button:hover { background: color-mix(in srgb, var(--accent, #4cc2ff) 25%, transparent); }
+.app-pop-list button:hover { background: color-mix(in srgb, var(--accent, #4dd4e8) 25%, transparent); }

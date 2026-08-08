@@ -102,18 +102,18 @@
   // the new token values already applied to :root. The line/area always paints in
   // the theme accent (global theme or the per-slot style override).
   const chart = {
-    accent: '#4cc2ff', accentRgb: '76, 194, 255',
-    textRgb: '232, 236, 242', mutedRgb: '151, 160, 174',
-    font: '"Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif',
+    accent: '#4dd4e8', accentRgb: '77, 212, 232',
+    textRgb: '221, 226, 232', mutedRgb: '136, 141, 147',
+    font: '"Outfit", system-ui, sans-serif',
   };
   function readChartColors() {
     const cs = getComputedStyle(document.documentElement);
     const read = (name) => cs.getPropertyValue(name).trim();
-    const themeAccent = read('--accent') || '#4cc2ff';
+    const themeAccent = read('--accent') || '#4dd4e8';
     chart.accent = themeAccent;
-    chart.accentRgb = read('--accent-rgb') || toRgbParts(themeAccent) || '76, 194, 255';
-    chart.textRgb = toRgbParts(read('--text')) || '232, 236, 242';
-    chart.mutedRgb = toRgbParts(read('--text-muted')) || '151, 160, 174';
+    chart.accentRgb = read('--accent-rgb') || toRgbParts(themeAccent) || '77, 212, 232';
+    chart.textRgb = toRgbParts(read('--text')) || '221, 226, 232';
+    chart.mutedRgb = toRgbParts(read('--text-muted')) || '136, 141, 147';
     chart.font = getComputedStyle(document.body).fontFamily || chart.font;
   }
 

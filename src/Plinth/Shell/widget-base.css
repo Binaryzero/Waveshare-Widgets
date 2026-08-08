@@ -9,36 +9,45 @@
  * Widgets style with tokens — never literal colors.
  */
 
+/* Lume's Outfit, served alongside this sheet from the shell origin. */
+@font-face { font-family: 'Outfit'; font-weight: 300; src: url('fonts/outfit-300.woff2') format('woff2'); }
+@font-face { font-family: 'Outfit'; font-weight: 400; src: url('fonts/outfit-400.woff2') format('woff2'); }
+@font-face { font-family: 'Outfit'; font-weight: 500; src: url('fonts/outfit-500.woff2') format('woff2'); }
+@font-face { font-family: 'Outfit'; font-weight: 700; src: url('fonts/outfit-700.woff2') format('woff2'); }
+
 :root {
-  /* Color roles (defaults = stock dark; overwritten by the theme push). */
-  --bg: #05070b;
-  --surface: #111418;
-  --surface-rgb: 17, 20, 24;
-  --surface-alt: #1c1e22;
-  --surface-alt-rgb: 28, 30, 34;
-  --control-bg: #27292e;
-  --text: #e8ecf2;
-  --text-muted: #8e9196;
-  --text-dim: #676a6f;
-  --line: #404448;
-  --accent: #4cc2ff;
-  --accent-rgb: 76, 194, 255;
+  /* Color roles (defaults = stock dark; overwritten by the theme push).
+   * Stock values are PaletteEngine.Derive over the instrument seeds:
+   * accent #4dd4e8 · background #070b12 · text #dde2e8 · panelAlpha 0.92 */
+  --bg: #070b12;
+  --surface: #13171e;
+  --surface-rgb: 19, 23, 30;
+  --surface-alt: #1c2127;
+  --surface-alt-rgb: 28, 33, 39;
+  --control-bg: #272b32;
+  --text: #dde2e8;
+  --text-muted: #888d93;
+  --text-dim: #64686f;
+  --line: #3f444a;
+  --accent: #4dd4e8;
+  --accent-rgb: 77, 212, 232;
   --on-accent: #0a0a0a;
   --ok: #45d483;
-  --warn: #f0b84f;
+  --warn: #ffae52;
   --err: #ff6268;
   --info: #62cbea;
   --ok-bg: rgba(69, 212, 131, 0.14);
-  --warn-bg: rgba(240, 184, 79, 0.14);
+  --warn-bg: rgba(255, 174, 82, 0.14);
   --err-bg: rgba(255, 98, 104, 0.14);
   --info-bg: rgba(98, 203, 234, 0.14);
-  --hover-bg: #222529;
+  --hover-bg: #23272e;
   --panel-alpha: 0.92;
 
-  /* Geometry & motion */
-  --radius-card: 14px;
-  --radius-control: 10px;
-  --radius-pill: 999px;
+  /* Geometry & motion. The instrument look is machined: hairlines and square
+   * corners everywhere. The radius tokens stay for compatibility, at 0. */
+  --radius-card: 0px;
+  --radius-control: 0px;
+  --radius-pill: 0px;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -78,8 +87,9 @@ body {
   --card-surface: rgba(var(--surface-alt-rgb), max(0, calc(var(--panel-alpha-eff) - 0.02)));
   background: rgba(var(--surface-rgb), var(--panel-alpha-eff));
   color: var(--text);
-  font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  font-family: "Outfit", system-ui, sans-serif;
   font-size: 13.5px;
+  font-synthesis: none;
   -webkit-tap-highlight-color: transparent;
   user-select: none;
 }
@@ -95,7 +105,7 @@ body.bg-transparent {
 
 /* ---- standard anatomy ------------------------------------------------------- */
 
-/* Nested surface: rows, sub-cards, list items. */
+/* Nested surface: rows, sub-cards, list items. Machined: hairline, square. */
 .card {
   background: var(--card-surface);
   border: 1px solid rgba(255, 255, 255, calc(var(--panel-border-alpha) * 0.6));
@@ -103,19 +113,100 @@ body.bg-transparent {
   padding: var(--space-3);
 }
 
-/* Uppercase section label above a value or block. */
+/* ---- the ruler — one grammar for every quantity ------------------------------
+ * A hairline rail with minor ticks at --pitch, major ticks with min/max labels,
+ * an accent fill for the value, an accent cursor for "now", and hollow diamond
+ * markers for events (.mk.alert recolors to the warn hue).
+ *
+ *   <div class="scale" style="--pitch: 10%">
+ *     <div class="rail"></div><div class="mns"></div>
+ *     <div class="mj e-l" style="left:0"><b>0</b></div>
+ *     <div class="mj e-r" style="left:100%"><b>100</b></div>
+ *     <div class="fill" style="width:42%"></div>
+ *     <div class="cur" style="left:42%"></div>
+ *     <div class="mk alert" style="left:75%"><i></i><b>MAX</b></div>
+ *   </div>
+ */
+.scale { position: relative; height: 24px; flex: none; font-variant-numeric: tabular-nums; }
+.scale .rail { position: absolute; left: 0; right: 0; top: 6px; height: 1px; background: var(--line); }
+.scale .mns {
+  position: absolute; left: 0; right: 0; top: 7px; height: 4px;
+  background-image: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px var(--pitch, 10%));
+  opacity: 0.55;
+}
+.scale .mj { position: absolute; top: 7px; width: 1px; height: 7px; background: var(--line); transform: translateX(-0.5px); }
+.scale .mj b, .scale .mk b {
+  position: absolute; top: 9px; left: 50%; transform: translateX(-50%);
+  font-size: 8px; font-weight: 500; line-height: 1; letter-spacing: 0.12em;
+  color: var(--text-dim); white-space: nowrap;
+}
+.scale .mk b { color: var(--text-muted); } /* event labels are data, axis labels are structure */
+.scale .mj.e-l b { left: 0; transform: none; }
+.scale .mj.e-r b { left: auto; right: 0; transform: none; }
+.scale .fill {
+  position: absolute; left: 0; top: 5px; height: 3px; background: var(--accent);
+  box-shadow: 0 0 7px rgba(var(--accent-rgb), 0.45);
+}
+.scale .cur {
+  position: absolute; top: 1px; width: 2px; height: 10px; background: var(--accent);
+  transform: translateX(-1px); box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.7);
+}
+.scale .mk { position: absolute; top: 6.5px; }
+.scale .mk i {
+  position: absolute; left: 0; top: -2.5px; width: 5px; height: 5px;
+  transform: translateX(-3px) rotate(45deg);
+  border: 1px solid var(--text-muted); background: var(--surface); display: block;
+}
+.scale .mk.alert i { border-color: var(--warn); box-shadow: 0 0 6px color-mix(in srgb, var(--warn) 50%, transparent); }
+.scale .mk.alert b { color: var(--warn); }
+
+/* Uppercase section label above a value or block — the instrument header type. */
 .kicker {
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.5px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
 
+/* Tile header: identity left, structural annotation or status right.
+ *   <header class="hd"><span><span class="idx">03</span><span class="kicker">CPU</span></span>
+ *   <span class="st">8 CORES</span></header>
+ * .idx is the slot index numeral; .st is the right-side annotation, .st.on lights
+ * it in the data hue (live/playing states). */
+.hd {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.hd .idx { color: var(--text-dim); margin-right: 9px; }
+.hd .st, .st { letter-spacing: 0.2em; color: var(--text-dim); }
+.hd .st.on, .st.on { color: var(--accent); }
+
+/* Breathing status dot — the mark beside a live annotation ("● PLAYING"). */
+.dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 7px rgba(var(--accent-rgb), 0.8);
+  margin-right: 7px;
+  vertical-align: 1px;
+  animation: ww-breathe 2.6s ease-in-out infinite;
+}
+@keyframes ww-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
 /* Live numeric readout + its unit, on one baseline. */
 .value {
   font-size: 22px;
-  font-weight: 800;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--text);
   line-height: 1.1;
@@ -123,29 +214,27 @@ body.bg-transparent {
 .value.hero { font-size: 30px; letter-spacing: -0.02em; }
 .unit {
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-muted);
 }
 
-/* Status pill (header right side). */
+/* Status pill (header right side): flat etched text, no chip chrome — absence is
+ * the healthy signal, so when it appears it reads like the .st annotation, in the
+ * state's hue. */
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.4px;
+  gap: 6px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  padding: 3px 9px;
-  border-radius: var(--radius-pill);
-  background: rgba(var(--accent-rgb), 0.14);
-  border: 1px solid rgba(var(--accent-rgb), 0.35);
   color: var(--accent);
 }
-.pill.ok { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
-.pill.warn { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
-.pill.err { background: var(--err-bg); border-color: var(--err); color: var(--err); }
-.pill.muted { background: var(--card-surface); border-color: var(--line); color: var(--text-muted); }
+.pill.ok { color: var(--ok); }
+.pill.warn { color: var(--warn); }
+.pill.err { color: var(--err); }
+.pill.muted { color: var(--text-muted); }
 
 /* Centered state card for the empty / setup / error states. */
 .state-card {
@@ -208,7 +297,7 @@ body.bg-transparent {
 .meter.warn > i { background: var(--warn); }
 .meter.err > i { background: var(--err); }
 
-/* Touch button. */
+/* Touch button — machined: hairline border, square, open field. */
 .btn {
   min-width: 40px;
   min-height: 40px;
@@ -223,7 +312,14 @@ body.bg-transparent {
   transition: transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 .btn:active { transform: scale(0.97); }
-.btn.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: 700; }
+/* Primary is the demo's play button: accent-outlined with an inset glow, not a fill. */
+.btn.primary {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: inset 0 0 12px rgba(var(--accent-rgb), 0.07);
+  color: var(--accent);
+  font-weight: 700;
+}
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 

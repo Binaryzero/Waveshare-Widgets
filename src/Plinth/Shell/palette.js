@@ -64,9 +64,9 @@
     const rgbOf = (c) => c[0] + ', ' + c[1] + ', ' + c[2];
     const tintOf = (c) => 'rgba(' + c[0] + ', ' + c[1] + ', ' + c[2] + ', 0.14)';
 
-    const accent = parse(spec.accent, [0x4c, 0xc2, 0xff]);
-    const background = parse(spec.background, [0x05, 0x07, 0x0b]);
-    let text = parse(spec.text, [0xe8, 0xec, 0xf2]);
+    const accent = parse(spec.accent, [0x4d, 0xd4, 0xe8]);
+    const background = parse(spec.background, [0x07, 0x0b, 0x12]);
+    let text = parse(spec.text, [0xdd, 0xe2, 0xe8]);
     const panelAlpha = Math.min(1.0, Math.max(0.15, spec.panelAlpha == null ? 0.92 : spec.panelAlpha));
     const dark = lum(background) < 0.35;
     const surface = mixc(background, text, dark ? 0.055 : 0.035);
@@ -79,7 +79,7 @@
     muted = ensure(muted, [surface, surfaceAlt], 4.5);
     dim = ensure(dim, [surface], 3.0);
     const ok = ensureState([0x45, 0xd4, 0x83], surface, surfaceAlt);
-    const warn = ensureState([0xf0, 0xb8, 0x4f], surface, surfaceAlt);
+    const warn = ensureState([0xff, 0xae, 0x52], surface, surfaceAlt);
     const err = ensureState([0xff, 0x62, 0x68], surface, surfaceAlt);
     const info = ensureState([0x62, 0xcb, 0xea], surface, surfaceAlt);
     const NEAR_BLACK = [0x0a, 0x0a, 0x0a];

@@ -5,7 +5,7 @@ html, body {
   height: 100%;
   overflow: hidden;
   background: var(--bg, #000);
-  color: var(--text, #e8ecf2);
+  color: var(--text, #dde2e8);
   font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   user-select: none;
   -webkit-user-select: none;
@@ -166,7 +166,7 @@ html, body {
 }
 /* display:flex above beats the UA's [hidden]{display:none}; restore it explicitly */
 #empty[hidden] { display: none; }
-#empty h1 { font-size: 28px; font-weight: 600; color: var(--accent, #4cc2ff); }
+#empty h1 { font-size: 28px; font-weight: 600; color: var(--accent, #4dd4e8); }
 #empty p  { font-size: 15px; color: var(--text-muted, #7d8697); max-width: 70%; }
 
 /* ==== on-panel edit mode ========================================================== */
@@ -183,7 +183,7 @@ html, body {
   border: 1px solid color-mix(in srgb, var(--text, #fff) 25%, transparent);
   border-radius: 50%;
   background: color-mix(in srgb, var(--surface, #111418) 82%, transparent);
-  color: var(--text, #e8ecf2);
+  color: var(--text, #dde2e8);
   font-size: 17px;
   cursor: pointer;
   opacity: 0.85;
@@ -216,7 +216,7 @@ body.editing #editBtn { display: none; }
   border: 1px solid color-mix(in srgb, var(--text, #fff) 18%, transparent);
   border-radius: 999px;
   background: transparent;
-  color: var(--text, #e8ecf2);
+  color: var(--text, #dde2e8);
   font: inherit;
   font-size: 13px;
   font-weight: 600;
@@ -224,7 +224,7 @@ body.editing #editBtn { display: none; }
   touch-action: manipulation;
 }
 #editBar button:active { transform: scale(0.96); }
-#editBar button.primary { background: var(--accent, #4cc2ff); border-color: transparent; color: var(--on-accent, #0a0a0a); font-weight: 700; }
+#editBar button.primary { background: var(--accent, #4dd4e8); border-color: transparent; color: var(--on-accent, #0a0a0a); font-weight: 700; }
 #editBar button.danger { color: var(--err, #ff6268); border-color: color-mix(in srgb, var(--err, #ff6268) 45%, transparent); }
 #editBar button.confirm { background: var(--err, #ff6268); border-color: transparent; color: #fff; }
 #editBar button:disabled { opacity: 0.35; pointer-events: none; }
@@ -235,9 +235,9 @@ body.editing #editBtn { display: none; }
   position: absolute;
   inset: 0;
   z-index: 3;
-  border: 2px dashed color-mix(in srgb, var(--accent, #4cc2ff) 70%, transparent);
+  border: 2px dashed color-mix(in srgb, var(--accent, #4dd4e8) 70%, transparent);
   border-radius: 6px;
-  background: color-mix(in srgb, var(--accent, #4cc2ff) 6%, transparent);
+  background: color-mix(in srgb, var(--accent, #4dd4e8) 6%, transparent);
   touch-action: none;
   cursor: grab;
 }
@@ -255,7 +255,7 @@ body.editing .edit-overlay { display: block; }
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface, #111418) 85%, transparent);
   border: 1px solid color-mix(in srgb, var(--text, #fff) 20%, transparent);
-  color: var(--text, #e8ecf2);
+  color: var(--text, #dde2e8);
   font-size: 11px;
   font-weight: 700;
   pointer-events: none;
@@ -268,7 +268,7 @@ body.editing .edit-overlay { display: block; }
   border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
   border-radius: 8px;
   background: color-mix(in srgb, var(--surface, #111418) 88%, transparent);
-  color: var(--text, #e8ecf2);
+  color: var(--text, #dde2e8);
   font: inherit;
   font-size: 11px;
   font-weight: 700;
@@ -286,31 +286,31 @@ body.editing .edit-overlay { display: block; }
 
 /* Free-space landing spot: where the dragged widget will actually be placed. */
 .page .cell-hint {
-  border: 2px dashed var(--accent, #4cc2ff);
+  border: 2px dashed var(--accent, #4dd4e8);
   border-radius: 10px;
-  background: color-mix(in srgb, var(--accent, #4cc2ff) 10%, transparent);
+  background: color-mix(in srgb, var(--accent, #4dd4e8) 10%, transparent);
   pointer-events: none;
   z-index: 5;
 }
 .slot.drop-target .edit-overlay {
   border-style: solid;
-  border-color: var(--accent, #4cc2ff);
-  background: color-mix(in srgb, var(--accent, #4cc2ff) 16%, transparent);
+  border-color: var(--accent, #4dd4e8);
+  background: color-mix(in srgb, var(--accent, #4dd4e8) 16%, transparent);
 }
 body.editing .edge.drop-page {
-  color: var(--accent, #4cc2ff);
-  background: linear-gradient(to right, color-mix(in srgb, var(--accent, #4cc2ff) 30%, transparent), transparent);
+  color: var(--accent, #4dd4e8);
+  background: linear-gradient(to right, color-mix(in srgb, var(--accent, #4dd4e8) 30%, transparent), transparent);
 }
 body.editing .edge.right.drop-page {
-  background: linear-gradient(to left, color-mix(in srgb, var(--accent, #4cc2ff) 30%, transparent), transparent);
+  background: linear-gradient(to left, color-mix(in srgb, var(--accent, #4dd4e8) 30%, transparent), transparent);
 }
 
 /* Every landing the dragged widget could take stays lit for the whole gesture;
  * the pointer's landing spot keeps the strong dashed .cell-hint above (z 5). */
 .page .cell-avail {
-  border: 1px dashed color-mix(in srgb, var(--accent, #4cc2ff) 45%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--accent, #4dd4e8) 45%, transparent);
   border-radius: 10px;
-  background: color-mix(in srgb, var(--accent, #4cc2ff) 6%, transparent);
+  background: color-mix(in srgb, var(--accent, #4dd4e8) 6%, transparent);
   margin: 4px;
   pointer-events: none;
   z-index: 4;
@@ -318,11 +318,11 @@ body.editing .edge.right.drop-page {
 /* Valid swap targets carry a quiet ring; the hovered one gets the full glow. */
 .slot.drop-ok .edit-overlay {
   border-style: solid;
-  border-color: color-mix(in srgb, var(--accent, #4cc2ff) 40%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #4dd4e8) 40%, transparent);
 }
 /* Page edges that can take the widget stay bright; the rest dim to "not here". */
 body.editing.dragging .edge.drop-page-ok {
-  color: color-mix(in srgb, var(--accent, #4cc2ff) 75%, #eaf6ff);
+  color: color-mix(in srgb, var(--accent, #4dd4e8) 75%, #eaf6ff);
 }
 body.editing.dragging .edge:not(.drop-page-ok) { opacity: 0.2; }
 
@@ -342,7 +342,7 @@ body.editing.dragging .edge:not(.drop-page-ok) { opacity: 0.2; }
   padding: 7px 12px;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--warn, #ffb454) 55%, transparent);
-  background: color-mix(in srgb, #05070b 84%, transparent);
+  background: color-mix(in srgb, #070b12 84%, transparent);
   backdrop-filter: blur(6px);
 }
 body.editing .hidden-shelf { display: flex; }
@@ -358,8 +358,8 @@ body.editing .hidden-shelf { display: flex; }
   font-size: 12px;
   padding: 4px 10px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--accent, #4cc2ff) 45%, transparent);
-  background: color-mix(in srgb, var(--accent, #4cc2ff) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, #4dd4e8) 45%, transparent);
+  background: color-mix(in srgb, var(--accent, #4dd4e8) 12%, transparent);
   color: inherit;
   cursor: pointer;
   touch-action: manipulation;
@@ -393,10 +393,10 @@ body.editing.dragging .edge { pointer-events: auto; opacity: 0.85; }
   pointer-events: none;
   display: grid;
   place-items: center;
-  border: 2px solid var(--accent, #4cc2ff);
+  border: 2px solid var(--accent, #4dd4e8);
   border-radius: 8px;
   background: color-mix(in srgb, var(--surface, #111418) 80%, transparent);
-  color: var(--text, #e8ecf2);
+  color: var(--text, #dde2e8);
   font-size: 13px;
   font-weight: 700;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
@@ -409,9 +409,9 @@ body.editing.dragging .edge { pointer-events: auto; opacity: 0.85; }
   position: relative;
   z-index: 2;
   margin: 6px;
-  border: 2px dashed color-mix(in srgb, var(--accent, #4cc2ff) 55%, transparent);
+  border: 2px dashed color-mix(in srgb, var(--accent, #4dd4e8) 55%, transparent);
   border-radius: 10px;
-  color: var(--accent, #4cc2ff);
+  color: var(--accent, #4dd4e8);
   background: transparent;
   font-size: 30px;
   font-weight: 300;
@@ -425,11 +425,11 @@ body.editing .add-zone { display: grid; place-items: center; align-content: cent
   font-size: 12px;
   font-weight: 600;
   font-family: inherit;
-  color: color-mix(in srgb, var(--accent, #4cc2ff) 85%, transparent);
+  color: color-mix(in srgb, var(--accent, #4dd4e8) 85%, transparent);
 }
 @keyframes ww-add-pulse {
-  0%, 100% { border-color: color-mix(in srgb, var(--accent, #4cc2ff) 55%, transparent); }
-  50% { border-color: color-mix(in srgb, var(--accent, #4cc2ff) 90%, transparent); }
+  0%, 100% { border-color: color-mix(in srgb, var(--accent, #4dd4e8) 55%, transparent); }
+  50% { border-color: color-mix(in srgb, var(--accent, #4dd4e8) 90%, transparent); }
 }
 /* A region no installed widget can occupy: shown, and saying why (#77). Silence here
  * would be the same dead space #84 was about, just with a different cause. */
@@ -474,7 +474,7 @@ body.editing .add-zone { display: grid; place-items: center; align-content: cent
   border: 1px solid color-mix(in srgb, var(--text, #fff) 15%, transparent);
   border-radius: 10px;
   background: color-mix(in srgb, var(--text, #fff) 4%, transparent);
-  color: var(--text, #e8ecf2);
+  color: var(--text, #dde2e8);
   font: inherit;
   text-align: left;
   cursor: pointer;
@@ -534,7 +534,7 @@ body.editing.dragging .edge { pointer-events: auto; }
   min-height: 38px;
   padding: 0 10px;
   font: inherit; font-size: 13px;
-  color: var(--text, #e8ecf2);
+  color: var(--text, #dde2e8);
   background: color-mix(in srgb, var(--surface, #111418) 70%, transparent);
   border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
   border-radius: 8px;
@@ -545,7 +545,7 @@ body.editing.dragging .edge { pointer-events: auto; }
 .ps-inline .ps-pick {
   min-width: 42px; min-height: 38px;
   border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
-  border-radius: 8px; background: transparent; color: var(--text, #e8ecf2);
+  border-radius: 8px; background: transparent; color: var(--text, #dde2e8);
   font: inherit; font-size: 16px; cursor: pointer; touch-action: manipulation;
 }
 .ps-item {
@@ -559,7 +559,7 @@ body.editing.dragging .edge { pointer-events: auto; }
 .ps-add, .ps-remove {
   min-height: 38px;
   border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
-  border-radius: 8px; background: transparent; color: var(--text, #e8ecf2);
+  border-radius: 8px; background: transparent; color: var(--text, #dde2e8);
   font: inherit; font-weight: 600; cursor: pointer; touch-action: manipulation;
 }
 .ps-remove { min-width: 38px; min-height: 30px; color: #ff7676; }
@@ -587,29 +587,29 @@ body.editing.dragging .edge { pointer-events: auto; }
   cursor: pointer; touch-action: manipulation;
 }
 .sp-head { display: flex; align-items: center; justify-content: space-between; }
-#spTitle { font-size: 13px; font-weight: 800; color: var(--text, #e8ecf2); }
+#spTitle { font-size: 13px; font-weight: 800; color: var(--text, #dde2e8); }
 #spClose {
   min-width: 34px; min-height: 30px;
   border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
-  border-radius: 8px; background: transparent; color: var(--text, #e8ecf2);
+  border-radius: 8px; background: transparent; color: var(--text, #dde2e8);
   font: inherit; cursor: pointer; touch-action: manipulation;
 }
 .sp-hint { font-size: 10.5px; line-height: 1.4; color: var(--text-muted, #8e9196); margin: 0; }
 .sp-row { display: flex; align-items: center; gap: 8px; min-height: 40px; }
-.sp-row label { flex: 1; font-size: 12px; font-weight: 600; color: var(--text, #e8ecf2); }
-.sp-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent, #4cc2ff); }
+.sp-row label { flex: 1; font-size: 12px; font-weight: 600; color: var(--text, #dde2e8); }
+.sp-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent, #4dd4e8); }
 .sp-row input[type="color"] { width: 44px; height: 30px; border: 0; background: transparent; padding: 0; }
 .sp-row input[type="color"]:disabled, .sp-row input[type="range"]:disabled { opacity: 0.3; }
-.sp-row input[type="range"] { width: 110px; accent-color: var(--accent, #4cc2ff); }
+.sp-row input[type="range"] { width: 110px; accent-color: var(--accent, #4dd4e8); }
 .sp-row output { font-size: 11px; color: var(--text-muted, #8e9196); min-width: 34px; text-align: right; }
 .sp-reset {
   min-height: 40px;
   border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
-  border-radius: 10px; background: transparent; color: var(--text, #e8ecf2);
+  border-radius: 10px; background: transparent; color: var(--text, #dde2e8);
   font: inherit; font-weight: 600; cursor: pointer; touch-action: manipulation;
 }
 .edit-overlay .style { bottom: 4px; left: 4px; }
-.slot.style-editing .edit-overlay { border-color: var(--accent, #4cc2ff); border-style: solid; }
+.slot.style-editing .edit-overlay { border-color: var(--accent, #4dd4e8); border-style: solid; }
 
 /* WYSIWYG selection (settings replica): the slot whose properties the settings
  * window's detail panel is showing. WHITE, not accent — the accent tints half
@@ -625,7 +625,7 @@ body.preview.editing .slot, body.preview.editing .add-zone { transition: opacity
 body.preview.editing.has-selection .slot:not(.selected),
 body.preview.editing.has-selection .add-zone { opacity: 0.45; }
 body.preview.editing.has-selection .slot.selected { z-index: 4; }
-.ps-field input[type="checkbox"]:not(.toggle-check) { width: 22px; height: 22px; accent-color: var(--accent, #4cc2ff); }
+.ps-field input[type="checkbox"]:not(.toggle-check) { width: 22px; height: 22px; accent-color: var(--accent, #4dd4e8); }
 
 /* Segmented option group + boolean toggle for the settings sheet — every choice
  * visible and tappable, matching the desktop editor's controls. */
@@ -635,7 +635,7 @@ body.preview.editing.has-selection .slot.selected { z-index: 4; }
   padding: 0 14px;
   font: inherit;
   font-size: 13px;
-  color: var(--text, #e8ecf2);
+  color: var(--text, #dde2e8);
   background: transparent;
   border: 1px solid color-mix(in srgb, var(--text, #fff) 22%, transparent);
   border-radius: 8px;
@@ -643,7 +643,7 @@ body.preview.editing.has-selection .slot.selected { z-index: 4; }
   touch-action: manipulation;
 }
 .seg-btn.active {
-  background: var(--accent, #4cc2ff);
+  background: var(--accent, #4dd4e8);
   border-color: transparent;
   color: var(--on-accent, #0a0a0a);
   font-weight: 700;
@@ -669,7 +669,7 @@ input.toggle-check::after {
   background: #fff;
   transition: transform 0.15s ease;
 }
-input.toggle-check:checked { background: var(--accent, #4cc2ff); }
+input.toggle-check:checked { background: var(--accent, #4dd4e8); }
 input.toggle-check:checked::after { transform: translateX(22px); }
 
 /* On-panel credential row: masked by default (a desk-height strip is readable from
@@ -681,7 +681,7 @@ input.toggle-check:checked::after { transform: translateX(22px); }
   min-width: 40px;
   padding: 6px 8px;
   border-radius: var(--radius-control, 8px);
-  border: 1px solid color-mix(in srgb, var(--text, #e8ecf2) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text, #dde2e8) 22%, transparent);
   background: color-mix(in srgb, var(--surface, #12161d) 80%, transparent);
   color: inherit;
   font-size: 15px;
@@ -713,7 +713,7 @@ input.toggle-check:checked::after { transform: translateX(22px); }
   border-radius: var(--radius-control, 8px);
   border: 1px solid color-mix(in srgb, var(--danger, #ff6b6b) 55%, transparent);
   background: color-mix(in srgb, var(--surface, #12161d) 92%, transparent);
-  color: var(--text, #e8ecf2);
+  color: var(--text, #dde2e8);
   font-size: 14px;
   text-align: center;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
@@ -749,7 +749,7 @@ input.toggle-check:checked::after { transform: translateX(22px); }
   border-radius: 8px;
   padding: 0 10px;
   background: color-mix(in srgb, var(--surface, #111418) 70%, transparent);
-  color: var(--text, #e8ecf2);
+  color: var(--text, #dde2e8);
   font: inherit;
   font-size: 13px;
   text-align: left;

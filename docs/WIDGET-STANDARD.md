@@ -45,20 +45,20 @@ during development); at runtime the theme push replaces them.
 
 | Token | Purpose | Stock value |
 |---|---|---|
-| `--bg` | Theme background seed (the wallpaper-level color) | `#05070b` |
-| `--surface` | Widget tile background (`body` paints this via the panel-alpha system) | `#111418` |
-| `--surface-rgb` | `--surface` as `r, g, b` for `rgba()` composition | `17, 20, 24` |
-| `--surface-alt` | Raised surface one step above the tile | `#1c1e22` |
-| `--surface-alt-rgb` | `--surface-alt` as `r, g, b` | `28, 30, 34` |
-| `--control-bg` | Interactive control fill (buttons, meter tracks, ring tracks) | `#27292e` |
-| `--text` | Primary text and values | `#e8ecf2` |
-| `--text-muted` | Secondary text: labels, kickers, units | `#8e9196` |
-| `--text-dim` | Tertiary text: hints, footer meta | `#676a6f` |
-| `--line` | Hairline borders and separators | `#404448` |
-| `--accent` | The user's accent: highlights, active fills, focus rings | `#4cc2ff` |
-| `--accent-rgb` | `--accent` as `r, g, b` for tints like `rgba(var(--accent-rgb), 0.14)` | `76, 194, 255` |
-| `--on-accent` | Text/icon color on accent-filled surfaces (`.btn.primary`) | `#0a0a0a` |
-| `--hover-bg` | Hover/pressed row background | `#222529` |
+| `--bg` | Theme background seed (the wallpaper-level color) | `#070b12` |
+| `--surface` | Widget tile background (`body` paints this via the panel-alpha system) | `#13171e` |
+| `--surface-rgb` | `--surface` as `r, g, b` for `rgba()` composition | `19, 23, 30` |
+| `--surface-alt` | Raised surface one step above the tile | `#1c2127` |
+| `--surface-alt-rgb` | `--surface-alt` as `r, g, b` | `28, 33, 39` |
+| `--control-bg` | Interactive control fill (buttons, meter tracks, ring tracks) | `#272b32` |
+| `--text` | Primary text and values | `#dde2e8` |
+| `--text-muted` | Secondary text: labels, kickers, units | `#888d93` |
+| `--text-dim` | Tertiary text: hints, footer meta | `#64686f` |
+| `--line` | Hairline borders and separators | `#3f444a` |
+| `--accent` | The user's accent — the one data hue: highlights, active fills, ruler fills, focus rings | `#4dd4e8` |
+| `--accent-rgb` | `--accent` as `r, g, b` for tints like `rgba(var(--accent-rgb), 0.14)` | `77, 212, 232` |
+| `--on-accent` | Text/icon color on accent-filled surfaces | `#0a0a0a` |
+| `--hover-bg` | Hover/pressed row background | `#23272e` |
 | `--panel-alpha` | The theme's glass opacity level (see [§3](#3--transparency-system)) | `0.92` |
 | `--appearance` | `dark` \| `light`; also stamped as `data-appearance` on `<html>` | `dark` |
 
@@ -70,17 +70,20 @@ fills behind state-colored text.
 | Token | Purpose | Stock value |
 |---|---|---|
 | `--ok` / `--ok-bg` | Healthy, connected, in-range | `#45d483` / `rgba(69, 212, 131, 0.14)` |
-| `--warn` / `--warn-bg` | Degraded, near a limit | `#f0b84f` / `rgba(240, 184, 79, 0.14)` |
+| `--warn` / `--warn-bg` | Degraded, near a limit — the one alert hue (the instrument amber) | `#ffae52` / `rgba(255, 174, 82, 0.14)` |
 | `--err` / `--err-bg` | Failed, unreachable, over limit | `#ff6268` / `rgba(255, 98, 104, 0.14)` |
 | `--info` / `--info-bg` | Neutral information | `#62cbea` / `rgba(98, 203, 234, 0.14)` |
 
 ### Geometry & motion
 
+The instrument look is machined — hairline strokes and square corners everywhere. The
+radius tokens remain in the vocabulary for compatibility, at `0`.
+
 | Token | Purpose | Value |
 |---|---|---|
-| `--radius-card` | Cards and nested surfaces | `14px` |
-| `--radius-control` | Buttons and inputs | `10px` |
-| `--radius-pill` | Pills and badges | `999px` |
+| `--radius-card` | Cards and nested surfaces | `0px` |
+| `--radius-control` | Buttons and inputs | `0px` |
+| `--radius-pill` | Pills and badges | `0px` |
 | `--space-1` … `--space-5` | Spacing scale | `4 / 8 / 12 / 16 / 24 px` |
 | `--dur-fast` | Feedback transitions (press, hover) | `150ms` |
 | `--dur-mid` | State transitions | `240ms` |
@@ -202,12 +205,23 @@ so a widget that has never heard of any of this is an ordinary opaque tile.
 
 ## 4 · Widget anatomy
 
-A standard widget has five layers. Not every widget needs all five visible at once, but
+A standard widget has six layers. Not every widget needs all six visible at once, but
 each one that exists uses the standard classes so widgets read as one family.
 
-1. **Header** — identity, and an exception if there is one: a `.kicker` (uppercase section
-   label) on the left, a `.pill` (status badge: default accent, or `.ok` / `.warn` /
-   `.err` / `.muted`) on the right.
+1. **Header** — the instrument headline. A `.hd` row: on the left the slot index numeral
+   (`.idx`, dim) followed by the widget's name in `.kicker` type; on the right a
+   structural annotation (`.st` — the tile's fixed context, like `24H` or `8 CORES`),
+   which lights to `.st.on` in the data hue for a live state, with a breathing `.dot`
+   where the state deserves a pulse (`● PLAYING`). Exceptions still ride a `.pill`
+   (`.ok` / `.warn` / `.err` / `.muted`) — now flat etched uppercase text in the state's
+   hue, no chip chrome.
+
+   ```html
+   <header class="hd">
+     <span><span class="idx">03</span><span class="kicker">CPU</span></span>
+     <span class="st">8 cores</span>
+   </header>
+   ```
 
    **The pill reports exceptions, not health — it is hidden whenever the widget is
    working.** It appears only for something the reader would act on or would otherwise be
@@ -223,20 +237,37 @@ each one that exists uses the standard classes so widgets read as one family.
 2. **Body** — the data: `.value` (+ `.hero` for the headline number) with its `.unit` on
    the same baseline, `.card` for nested rows and sub-surfaces, `.meter` for compact
    horizontal gauges (`.ok` / `.warn` / `.err` variants recolor the fill).
-3. **Footer meta** — provenance and hints in `--text-dim`: last-updated, data source,
+3. **The ruler** — `.scale`, the instrument's signature: one grammar for every scalar or
+   time quantity, sitting at the bottom of the tile. A hairline rail with minor ticks
+   (`.mns`, pitch via `--pitch`), major ticks with labels (`.mj`, `.e-l`/`.e-r` for the
+   endpoints), an accent `.fill` for the value, an accent `.cur` cursor for *now*, and
+   hollow diamond `.mk` markers for events (`.mk.alert` recolors to the amber). **Every
+   widget with a natural axis carries one**: the clock's day progress, the weather's
+   temperature range, CPU load, track position, a due-date timeline.
+
+   ```html
+   <div class="scale" style="--pitch: 10%">
+     <div class="rail"></div><div class="mns"></div>
+     <div class="mj e-l" style="left:0"><b>0</b></div>
+     <div class="mj e-r" style="left:100%"><b>100</b></div>
+     <div class="fill" style="width:42%"></div>
+     <div class="cur" style="left:42%"></div>
+   </div>
+   ```
+4. **Footer meta** — provenance and hints in `--text-dim`: last-updated, data source,
    the elevation hint (see the stock CPU widget's PawnIO note).
-4. **State layer** — a `.state-card` (or bare `.spinner`) that replaces the body while
+5. **State layer** — a `.state-card` (or bare `.spinner`) that replaces the body while
    the widget is loading, unconfigured, or broken. See [§5](#5--required-states).
-5. **Touch affordances** — `.btn` (and `.btn.primary`) for anything tappable. See
+6. **Touch affordances** — `.btn` (and `.btn.primary`) for anything tappable. See
    [§8](#8--touch).
 
 Annotated skeleton:
 
 ```html
 <body>
-  <!-- 1 · Header: what is this + how is it doing -->
-  <header class="row">
-    <span class="kicker">Network</span>
+  <!-- 1 · Header: identity left, annotation/status right -->
+  <header class="hd">
+    <span><span class="idx">04</span><span class="kicker">Network</span></span>
     <!-- Hidden while healthy; shown only to report stale/degraded/error. -->
     <span class="pill" id="pill" hidden></span>
   </header>
@@ -252,10 +283,19 @@ Annotated skeleton:
     </div>
   </main>
 
-  <!-- 3 · Footer meta: provenance, dim -->
+  <!-- 3 · The ruler: the tile's natural axis, at its foot -->
+  <div class="scale" style="--pitch: 10%">
+    <div class="rail"></div><div class="mns"></div>
+    <div class="mj e-l" style="left:0"><b>0</b></div>
+    <div class="mj e-r" style="left:100%"><b>250MS</b></div>
+    <div class="fill" id="rttFill" style="width:12%"></div>
+    <div class="cur" id="rttCur" style="left:12%"></div>
+  </div>
+
+  <!-- 4 · Footer meta: provenance, dim -->
   <footer id="meta" style="color: var(--text-dim)"></footer>
 
-  <!-- 4 · State layer: shown instead of #data while loading / empty / broken -->
+  <!-- 5 · State layer: shown instead of #data while loading / empty / broken -->
   <div class="state-card" id="state">
     <div class="spinner"></div>
   </div>
@@ -329,26 +369,32 @@ is not motion.
 
 ## 6 · Typography
 
-The base sets the family (`"Segoe UI Variable Display", "Segoe UI", system-ui,
-sans-serif` — bundle any other font in your package, never assume one is installed) and a
-13.5px body size. The component classes carry the scale:
+The base sets the family: **Outfit**, served from the shell origin alongside the
+stylesheet (`fonts/outfit-{300,400,500,700}.woff2` — no other weights exist, and
+`font-synthesis: none` means asking for one gets you the nearest real weight, not a
+smeared fake). Widgets that need a different face bundle it in their package — never
+assume a system font. Body size is 13.5px.
+
+The instrument voice is uppercase micro-type with wide tracking for structure, and
+tabular numerals for data. The component classes carry the scale:
 
 | Role | Class | Size / weight |
 |---|---|---|
-| Status pill | `.pill` | 10px / 800, uppercase, 0.4px tracking |
-| Section label | `.kicker` | 11px / 800, uppercase, 0.5px tracking |
+| Ruler axis labels | `.scale .mj b` | 8px / 500, 0.12em tracking — structure, not body text |
+| Header, section label | `.hd`, `.kicker` | 9.5px / 600, uppercase, 0.24em tracking |
+| Status pill, annotation | `.pill`, `.st` | 9.5px / 600, uppercase, 0.2em tracking |
 | State body text | `.state-body` | 11px, muted |
-| Unit | `.unit` | 13px / 700, muted |
+| Unit | `.unit` | 13px / 600, muted |
 | State title | `.state-title` | 13px / 750 |
-| Value | `.value` | 22px / 800 |
-| Hero value | `.value.hero` | 30px / 800, −0.02em tracking |
+| Value | `.value` | 22px / 700 |
+| Hero value | `.value.hero` | 30px / 700, −0.02em tracking |
 
 - **`tabular-nums` is mandatory on every live number** (`.value` carries it already; add
   `font-variant-numeric: tabular-nums` to any custom readout, as the stock clock does for
   its time and date). Proportional digits make an updating value jitter horizontally —
   on a panel that is glanced at, that reads as noise.
-- Body text never below 12px (~170 PPI panel); the 10–11px tiers are for uppercase
-  labels only.
+- Body text never below 12px (~170 PPI panel); the 8–11px tiers are for uppercase
+  labels and ruler axis figures only — never sentences.
 - Size fluidly across slots with `clamp()` / `vh` (see WIDGET-SPEC's slot table); scale
   *from* the standard sizes rather than inventing new ones.
 
@@ -477,7 +523,8 @@ Copy this into your widget's PR / release notes and check every line:
 - [ ] Nested surfaces use `.card` / `var(--card-surface)` — no opaque cards on a glass tile
 
 ### Anatomy & states
-- [ ] Uses the standard classes (`.kicker`, `.pill`, `.value`/`.unit`, `.card`, `.meter`, `.btn`)
+- [ ] Uses the standard classes (`.hd`/`.idx`/`.st`, `.kicker`, `.pill`, `.value`/`.unit`, `.card`, `.meter`, `.scale`, `.btn`)
+- [ ] Every natural scalar/time axis renders as a `.scale` ruler at the tile's foot
 - [ ] Loading: `.spinner` until first data
 - [ ] Empty/setup: `.state-card` explaining what to do, with a CTA where possible
 - [ ] Error: `.state-card.err` with a Retry button

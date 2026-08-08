@@ -20,9 +20,9 @@ public static class PaletteEngine
     public static Dictionary<string, string> Derive(ThemeSpec? theme)
     {
         var spec = theme ?? new ThemeSpec();
-        var accent = ParseHex(spec.Accent, 0x4c, 0xc2, 0xff);
-        var background = ParseHex(spec.Background, 0x05, 0x07, 0x0b);
-        var text = ParseHex(spec.Text, 0xe8, 0xec, 0xf2);
+        var accent = ParseHex(spec.Accent, 0x4d, 0xd4, 0xe8);
+        var background = ParseHex(spec.Background, 0x07, 0x0b, 0x12);
+        var text = ParseHex(spec.Text, 0xdd, 0xe2, 0xe8);
         var panelAlpha = Math.Clamp(spec.PanelAlpha, 0.15, 1.0);
 
         // Tone is decided by the *derived surface*, not the label the user picked, so
@@ -50,7 +50,7 @@ public static class PaletteEngine
         // State colors: fixed hues repaired for the theme's surfaces — including the
         // 14% tints of themselves that pills and state icons composite on top.
         var ok = EnsureStateContrast((0x45, 0xd4, 0x83), surface, surfaceAlt);
-        var warn = EnsureStateContrast((0xf0, 0xb8, 0x4f), surface, surfaceAlt);
+        var warn = EnsureStateContrast((0xff, 0xae, 0x52), surface, surfaceAlt);
         var err = EnsureStateContrast((0xff, 0x62, 0x68), surface, surfaceAlt);
         var info = EnsureStateContrast((0x62, 0xcb, 0xea), surface, surfaceAlt);
 
