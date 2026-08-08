@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1280, initial-scale=1" />
+<title>Plinth — Ledger</title>
+<style>
+/* ============================================================
+   LEDGER — editorial broadsheet
+   1280×400. One sheet, not five cards. Ink on slate.
+   ============================================================ */
+
+@font-face{font-family:'Outfit';font-weight:300;src:url('../fonts/outfit-300.woff2') format('woff2')}
+@font-face{font-family:'Outfit';font-weight:400;src:url('../fonts/outfit-400.woff2') format('woff2')}
+@font-face{font-family:'Outfit';font-weight:500;src:url('../fonts/outfit-500.woff2') format('woff2')}
+@font-face{font-family:'Outfit';font-weight:700;src:url('../fonts/outfit-700.woff2') format('woff2')}
+
+:root{
+  /* one paper, one ink, one spot color — that is the whole palette */
+  --paper:      #191613;
+  --paper-deep: #13110d;
+  --ink:        #e9e3d3;              /* never pure white — 24/7 panel */
+  --ink-2:      #a89f8c;              /* muted ink */
+  --ink-3:      #6f6757;              /* agate / dim */
+  --rule:       rgba(233,227,211,.22);/* hairline column rules */
+  --rule-strong:rgba(233,227,211,.82);/* double rules, baselines */
+  --spot:       #e65f2e;              /* vermillion: URGENT + playing only */
+
+  --serif:'Outfit',system-ui,sans-serif;
+  --grot:'Outfit',system-ui,sans-serif;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1280px;height:400px;overflow:hidden}
+body{
+  position:relative;
+  background:
+    radial-gradient(1500px 700px at 50% -10%, #1e1a15 0%, var(--paper) 52%, var(--paper-deep) 100%);
+  color:var(--ink);
+  font-family:var(--grot);
+  font-synthesis:none;
+  -webkit-font-smoothing:antialiased;
+  user-select:none;
+}
+/* faintest paper grain — one inline SVG, no requests */
+body::after{
+  content:"";position:absolute;inset:0;pointer-events:none;opacity:.05;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='140' height='140' filter='url(%23n)'/></svg>");
+}
+
+/* ---- the sheet: 8px margin, 8px gutters, 316 / 316 / 616 ---- */
+.sheet{
+  position:relative;width:1280px;height:400px;padding:8px;
+  display:grid;
+  grid-template-columns:316px 316px 616px;
+  grid-template-rows:188px 188px;
+  gap:8px;
+}
+/* newspaper furniture: rules live in the gutters, not borders on cards */
+.vr,.hr{position:absolute;background:var(--rule);z-index:0}
+.vr{width:1px;top:14px;bottom:14px}
+.vr.a{left:327px}
+.vr.b{left:651px}
+.hr{height:1px;top:199px}
+.hr.a{left:336px;width:308px}
+.hr.b{left:660px;width:608px}
+
+section{position:relative;z-index:1;overflow:hidden}
+
+/* ---- shared furniture -------------------------------------- */
+.sec{display:flex;align-items:baseline;justify-content:space-between}
+.sec h2{
+  font:600 11px/1 var(--grot);letter-spacing:.22em;text-transform:uppercase;
+  color:var(--ink);
+}
+.sec .ann{font:500 10px/1 var(--grot);letter-spacing:.08em;color:var(--ink-2)}
+.sec .ann b{font-weight:700;color:var(--spot)}
+.rule2{height:5px;border-top:2px solid var(--rule-strong);border-bottom:1px solid var(--rule-strong);margin-top:6px}
+.num{font-variant-numeric:tabular-nums lining-nums}
+.agate{font:500 9px/1 var(--grot);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+
+/* ============================================================
+   CLOCK — the masthead
+   ============================================================ */
+.clock{
+  grid-row:1/3;
+  display:flex;flex-direction:column;align-items:center;text-align:center;
+  padding:12px 14px 14px;
+}
+.hairline{width:100%;border-top:1px solid var(--rule)}
+.nameplate{
+  font:600 21px/1.1 var(--serif);letter-spacing:.015em;color:var(--ink);
+  margin:8px 0 9px;
+}
+.clock .rule2{width:100%}
+.time{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:0}
+.time .hh,.time .mm{
+  font:900 130px/.84 var(--serif);
+  font-variant-numeric:tabular-nums lining-nums;
+  letter-spacing:-.015em;color:var(--ink);
+}
+.time-sep{width:52px;border-top:1px solid var(--rule-strong);margin:10px 0}
+.folio{
+  font:600 11px/1 var(--grot);letter-spacing:.24em;text-transform:uppercase;
+  color:var(--ink-2);white-space:nowrap;
+}
+.folio b{font-weight:600;color:var(--ink)}
+.folio .dot{color:var(--ink-3);padding:0 3px}
+.next{
+  width:100%;margin-top:12px;padding-top:10px;border-top:1px solid var(--rule);
+  display:flex;align-items:baseline;justify-content:center;gap:8px;white-space:nowrap;
+}
+.next .lbl{font:600 9px/1 var(--grot);letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3)}
+.next .t{font:700 14px/1 var(--grot);color:var(--ink)}
+.next .ev{font:300 15px/1 var(--serif);color:var(--ink-2)}
+
+/* ============================================================
+   WEATHER
+   ============================================================ */
+.weather{padding:14px 16px 12px;display:flex;flex-direction:column}
+.wx-main{flex:1;display:flex;align-items:center;gap:16px;min-height:0}
+.wx-temp{font:900 58px/1 var(--serif);letter-spacing:-.02em;white-space:nowrap}
+.wx-temp sup{font-size:55%;vertical-align:.5em;font-weight:600}
+.wx-side{display:flex;flex-direction:column;gap:6px;min-width:0}
+.wx-cond{font:300 17px/1.15 var(--serif);color:var(--ink)}
+.wx-hl{font:600 11px/1 var(--grot);letter-spacing:.1em;color:var(--ink-2)}
+.wx-hl span+span{margin-left:10px}
+.wx-days{
+  display:flex;border-top:1px solid var(--rule);padding-top:8px;
+}
+.wx-days>div{
+  flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;
+}
+.wx-days>div+div{border-left:1px solid var(--rule)}
+.wx-days .d{font:600 9px/1 var(--grot);letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3)}
+.wx-days .t{font:600 19px/1 var(--serif)}
+
+/* ============================================================
+   CPU — data column with agate figures
+   ============================================================ */
+.cpu{padding:12px 16px 12px;display:flex;flex-direction:column}
+.cpu-figs{flex:1;display:flex;align-items:flex-end;gap:22px;padding:6px 0 8px;min-height:0}
+.fig .v{font:900 44px/0.9 var(--serif);letter-spacing:-.02em;white-space:nowrap}
+.fig .v small{font-size:46%;font-weight:600;letter-spacing:0}
+.fig.minor .v{font:600 28px/0.95 var(--serif)}
+.fig .k{margin-top:5px}
+.cores{display:flex;justify-content:space-between;border-top:1px solid var(--rule);padding-top:7px}
+.core{width:29px;display:flex;flex-direction:column;align-items:center;gap:3px}
+.core .bar{
+  width:11px;height:26px;display:flex;align-items:flex-end;
+  border-bottom:1px solid var(--rule-strong);
+}
+.core .bar i{display:block;width:100%;background:var(--ink);opacity:.85}
+.core .n{font:500 9px/1 var(--grot);color:var(--ink-3);font-variant-numeric:tabular-nums}
+
+/* ============================================================
+   MEDIA — the review block
+   ============================================================ */
+.media{padding:14px 16px 12px;display:flex;flex-direction:column}
+.onair{display:inline-flex;align-items:center;gap:6px;font:700 10px/1 var(--grot);letter-spacing:.2em;text-transform:uppercase;color:var(--spot)}
+.onair i{width:6px;height:6px;border-radius:50%;background:var(--spot);animation:breathe 2.6s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.onair i{animation:none}}
+.md-body{flex:1;display:flex;align-items:center;gap:18px;padding-top:10px;min-height:0}
+.art{flex:none;width:112px;height:112px;border:1px solid var(--rule);background:#0f0d0a}
+.art svg{display:block;width:100%;height:100%}
+.md-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.md-title{
+  font:300 29px/1.05 var(--serif);color:var(--ink);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.md-artist{font:700 12px/1 var(--grot);letter-spacing:.18em;text-transform:uppercase;color:var(--ink);margin-top:2px}
+.md-album{font:300 13px/1.2 var(--serif);color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.md-prog{margin-top:9px}
+.md-track{position:relative;height:2px;background:var(--rule)}
+.md-track i{position:absolute;left:0;top:0;bottom:0;width:55.1%;background:var(--spot)}
+.md-track i::after{
+  content:"";position:absolute;right:-2px;top:-3px;width:2px;height:8px;background:var(--spot);
+}
+.md-times{display:flex;justify-content:space-between;margin-top:5px;
+  font:600 11px/1 var(--grot);font-variant-numeric:tabular-nums}
+.md-times .el{color:var(--ink)}
+.md-times .tot{color:var(--ink-3)}
+.md-ctl{flex:none;display:flex;gap:8px}
+.md-ctl button{
+  width:46px;height:46px;display:grid;place-items:center;
+  background:none;border:1px solid var(--rule);border-radius:0;
+  color:var(--ink);cursor:pointer;
+}
+.md-ctl button svg{width:18px;height:18px;fill:currentColor}
+.md-ctl button.main{background:var(--ink);border-color:var(--ink);color:var(--paper-deep)}
+.md-ctl button:active{background:var(--ink);color:var(--paper-deep)}
+.md-ctl button.main:active{background:var(--ink-2)}
+
+/* ============================================================
+   KEV — advisories table, hanging figures, due column set right
+   ============================================================ */
+.kev{padding:14px 16px 10px;display:flex;flex-direction:column}
+.kev-table{flex:1;display:flex;flex-direction:column;min-height:0;padding-top:7px}
+.kev-row{
+  display:grid;grid-template-columns:158px 1fr 96px;align-items:baseline;
+  column-gap:14px;
+}
+.kev-row.head{padding:0 0 5px}
+.kev-row.head span:last-child{text-align:right}
+.kev-row.data{flex:1;border-top:1px solid var(--rule);align-content:center}
+.kev-cve{font:600 14px/1 var(--grot);font-variant-numeric:tabular-nums;letter-spacing:.01em;color:var(--ink)}
+.kev-prod{font:400 16px/1 var(--serif);color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kev-due{font:600 13px/1 var(--grot);font-variant-numeric:tabular-nums;text-align:right;color:var(--ink-2);white-space:nowrap}
+.kev-row.urgent .kev-due{color:var(--spot);font-weight:700}
+.kev-row.urgent .kev-due::before{content:"◆";font-size:8px;vertical-align:1px;margin-right:5px}
+</style>
+</head>
+<body>
+<div class="sheet">
+  <i class="vr a"></i><i class="vr b"></i><i class="hr a"></i><i class="hr b"></i>
+
+  <!-- ======================= CLOCK / MASTHEAD ======================= -->
+  <section class="clock">
+    <div class="hairline"></div>
+    <div class="nameplate">The Plinth Ledger</div>
+    <div class="rule2"></div>
+    <div class="time num">
+      <div class="hh">14</div>
+      <div class="time-sep"></div>
+      <div class="mm">37</div>
+    </div>
+    <div class="folio num"><b>Wed, Aug 5</b><span class="dot">·</span>Late Edition</div>
+    <div class="next num">
+      <span class="lbl">Next</span>
+      <span class="t">15:00</span>
+      <span class="ev">Standup</span>
+    </div>
+  </section>
+
+  <!-- ============================ WEATHER =========================== -->
+  <section class="weather">
+    <header class="sec"><h2>Weather</h2><span class="ann num">Outlook</span></header>
+    <div class="rule2"></div>
+    <div class="wx-main num">
+      <div class="wx-temp">78<sup>°</sup></div>
+      <div class="wx-side">
+        <div class="wx-cond">Partly cloudy</div>
+        <div class="wx-hl"><span>H 84°</span><span>L 66°</span></div>
+      </div>
+    </div>
+    <div class="wx-days num">
+      <div><span class="d">Thu</span><span class="t">81°</span></div>
+      <div><span class="d">Fri</span><span class="t">79°</span></div>
+      <div><span class="d">Sat</span><span class="t">85°</span></div>
+    </div>
+  </section>
+
+  <!-- ============================= CPU ============================== -->
+  <section class="media">
+    <header class="sec">
+      <h2>Now Playing</h2>
+      <span class="onair"><i></i>Playing</span>
+    </header>
+    <div class="rule2"></div>
+    <div class="md-body">
+      <div class="art" aria-hidden="true">
+        <!-- engraved plate: a city at midnight, set like a newsprint photo -->
+        <svg viewBox="0 0 116 116" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <pattern id="hatch" width="1" height="3" patternUnits="userSpaceOnUse">
+              <rect width="1" height="1" fill="#e9e3d3" opacity=".32"/>
+            </pattern>
+          </defs>
+          <rect width="116" height="116" fill="#0f0d0a"/>
+          <circle cx="82" cy="30" r="15" fill="#e9e3d3" opacity=".92"/>
+          <circle cx="82" cy="30" r="15" fill="none" stroke="#0f0d0a" stroke-width="1"/>
+          <!-- skyline silhouettes -->
+          <g fill="#211d17">
+            <rect x="4"  y="56" width="15" height="54"/>
+            <rect x="21" y="42" width="13" height="68"/>
+            <rect x="36" y="64" width="10" height="46"/>
+            <rect x="48" y="34" width="17" height="76"/>
+            <rect x="67" y="54" width="12" height="56"/>
+            <rect x="81" y="62" width="14" height="48"/>
+            <rect x="97" y="46" width="13" height="64"/>
+          </g>
+          <!-- lit windows, ink -->
+          <g fill="#e9e3d3" opacity=".75">
+            <rect x="8"  y="62" width="2" height="3"/><rect x="13" y="70" width="2" height="3"/>
+            <rect x="25" y="48" width="2" height="3"/><rect x="29" y="58" width="2" height="3"/>
+            <rect x="25" y="76" width="2" height="3"/><rect x="40" y="70" width="2" height="3"/>
+            <rect x="52" y="40" width="2" height="3"/><rect x="58" y="48" width="2" height="3"/>
+            <rect x="52" y="60" width="2" height="3"/><rect x="58" y="74" width="2" height="3"/>
+            <rect x="70" y="60" width="2" height="3"/><rect x="74" y="72" width="2" height="3"/>
+            <rect x="85" y="68" width="2" height="3"/><rect x="101" y="52" width="2" height="3"/>
+            <rect x="105" y="64" width="2" height="3"/><rect x="101" y="78" width="2" height="3"/>
+          </g>
+          <line x1="0" y1="110.5" x2="116" y2="110.5" stroke="#e9e3d3" stroke-width="1" opacity=".4"/>
+          <rect x=".5" y=".5" width="115" height="115" fill="none" stroke="#e9e3d3" opacity=".18"/>
+        </svg>
+      </div>
+      <div class="md-info">
+        <div class="md-title">Midnight City</div>
+        <div class="md-artist">M83</div>
+        <div class="md-album">From “Hurry Up, We’re Dreaming”</div>
+        <div class="md-prog">
+          <div class="md-track"><i></i></div>
+          <div class="md-times num"><span class="el">2:14</span><span class="tot">4:03</span></div>
+        </div>
+      </div>
+      <div class="md-ctl">
+        <button aria-label="Previous track">
+          <svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM18 5l-9.5 7L18 19z"/></svg>
+        </button>
+        <button class="main" aria-label="Pause">
+          <svg viewBox="0 0 24 24"><path d="M8 5h3.2v14H8zM12.8 5H16v14h-3.2z"/></svg>
+        </button>
+        <button aria-label="Next track">
+          <svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM6 5l9.5 7L6 19z"/></svg>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ MEDIA ============================= -->
+  <section class="cpu">
+    <header class="sec"><h2>Processor</h2><span class="ann num">8 cores</span></header>
+    <div class="rule2"></div>
+    <div class="cpu-figs num">
+      <div class="fig">
+        <div class="v">42<small>%</small></div>
+        <div class="k agate">Load</div>
+      </div>
+      <div class="fig minor">
+        <div class="v">62<small>°C</small></div>
+        <div class="k agate">Temp</div>
+      </div>
+    </div>
+    <div class="cores num">
+      <div class="core"><span class="bar"><i style="height:35%"></i></span><span class="n">35</span></div>
+      <div class="core"><span class="bar"><i style="height:55%"></i></span><span class="n">55</span></div>
+      <div class="core"><span class="bar"><i style="height:20%"></i></span><span class="n">20</span></div>
+      <div class="core"><span class="bar"><i style="height:71%"></i></span><span class="n">71</span></div>
+      <div class="core"><span class="bar"><i style="height:44%"></i></span><span class="n">44</span></div>
+      <div class="core"><span class="bar"><i style="height:12%"></i></span><span class="n">12</span></div>
+      <div class="core"><span class="bar"><i style="height:64%"></i></span><span class="n">64</span></div>
+      <div class="core"><span class="bar"><i style="height:38%"></i></span><span class="n">38</span></div>
+    </div>
+  </section>
+
+  <!-- ============================= KEV ============================== -->
+  <section class="kev">
+    <header class="sec">
+      <h2>Advisories</h2>
+      <span class="ann num">CISA KEV — <b>2</b> added this week</span>
+    </header>
+    <div class="rule2"></div>
+    <div class="kev-table num">
+      <div class="kev-row head">
+        <span class="agate">CVE ID</span>
+        <span class="agate">Affected product</span>
+        <span class="agate">Due</span>
+      </div>
+      <div class="kev-row data">
+        <span class="kev-cve">CVE-2023-4966</span>
+        <span class="kev-prod">Citrix NetScaler ADC</span>
+        <span class="kev-due">Aug 12</span>
+      </div>
+      <div class="kev-row data urgent">
+        <span class="kev-cve">CVE-2024-3400</span>
+        <span class="kev-prod">Palo Alto PAN-OS</span>
+        <span class="kev-due">Aug 9</span>
+      </div>
+      <div class="kev-row data">
+        <span class="kev-cve">CVE-2021-44228</span>
+        <span class="kev-prod">Apache Log4j2</span>
+        <span class="kev-due">Aug 19</span>
+      </div>
+    </div>
+  </section>
+</div>
+</body>
+</html>
