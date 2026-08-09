@@ -887,7 +887,15 @@ public static class UpdateManager
             // any state at all over the quarantined, partially swapped install. If
             // the advisory cannot persist, the journal stays active and the next
             // start retries this whole path (quarantine re-runs empty).
-            try { File.WriteAllText(RepairAdvisedFile, DateTime.UtcNow.ToString("O")); }
+            // Persisting means the PLATTER, with the same flush discipline as the
+            // journal: WriteAllText only closes the handle, and a power cut could
+            // let the rename below reach disk while the advisory never did.
+            try
+            {
+                using var fs = new FileStream(RepairAdvisedFile, FileMode.Create, FileAccess.Write, FileShare.Read);
+                fs.Write(System.Text.Encoding.UTF8.GetBytes(DateTime.UtcNow.ToString("O")));
+                fs.Flush(flushToDisk: true);
+            }
             catch (Exception ex)
             {
                 Log.Warn($"Could not record the repair advisory: {ex.Message}; journal kept so the next start retries");
