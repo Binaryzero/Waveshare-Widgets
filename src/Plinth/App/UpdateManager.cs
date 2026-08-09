@@ -38,9 +38,11 @@ public static class UpdateManager
 
     public sealed record UpdateInfo(Version Version, string Tag, string AssetName, string AssetUrl, long Size);
 
-    /// <summary>The running build's numeric version — the part before '+sha'. A build
-    /// without a stamp (dev runs) reports 0.0.0 and thus always sees an update, which
-    /// is the honest answer for a build no release ever described.</summary>
+    /// <summary>The running build's numeric triple — the part before any '-pre' or
+    /// '+sha'. Release artifacts are stamped by release.yml from the tag; CI dev
+    /// artifacts are stamped 0.0.0-ci.N and so rank below every release, always
+    /// seeing the next one. A local unstamped build carries the csproj's fixed
+    /// version and gets whatever that number implies — it belongs to a developer.</summary>
     public static Version CurrentVersion()
     {
         var info = typeof(AppVersion).Assembly
@@ -49,14 +51,45 @@ public static class UpdateManager
         return Version.TryParse(numeric, out var v) ? v : new Version(0, 0, 0);
     }
 
-    /// <summary>Whether the running build is a prerelease (1.2.3-beta). The numeric
-    /// triple alone cannot say that 1.2.3 FINAL supersedes it — SemVer ranks a
-    /// prerelease below its own release.</summary>
-    private static bool CurrentIsPrerelease()
+    /// <summary>The running build's prerelease identifiers ("beta.2"), null for a
+    /// final.</summary>
+    private static string? CurrentPrerelease()
     {
         var info = typeof(AppVersion).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "";
-        return info.Split('+')[0].Contains('-');
+        var core = info.Split('+')[0];
+        var dash = core.IndexOf('-');
+        return dash < 0 ? null : core[(dash + 1)..];
+    }
+
+    /// <summary>SemVer precedence, the part after the numeric triple: a final outranks
+    /// its own prereleases, and prereleases compare identifier by identifier — numeric
+    /// ones numerically and below alphanumeric ones, a longer list winning a shared
+    /// prefix — so beta.2 supersedes beta.1 and beta.10 supersedes beta.9. The release
+    /// workflow accepts prerelease tags, which makes all of this a supported input,
+    /// not an edge case. Build metadata never participates.</summary>
+    private static int ComparePrecedence(Version aNumeric, string? aPre, Version bNumeric, string? bPre)
+    {
+        var byNumber = aNumeric.CompareTo(bNumeric);
+        if (byNumber != 0)
+            return byNumber;
+        if (aPre is null || bPre is null)
+            return (aPre is null ? 1 : 0) - (bPre is null ? 1 : 0);
+        var a = aPre.Split('.');
+        var b = bPre.Split('.');
+        for (var i = 0; i < Math.Min(a.Length, b.Length); i++)
+        {
+            var c = (long.TryParse(a[i], out var an), long.TryParse(b[i], out var bn)) switch
+            {
+                (true, true) => an.CompareTo(bn),
+                (true, false) => -1,
+                (false, true) => 1,
+                _ => string.CompareOrdinal(a[i], b[i]),
+            };
+            if (c != 0)
+                return c;
+        }
+        return a.Length.CompareTo(b.Length);
     }
 
     /// <summary>Queries the latest release. Returns null when this build is current
@@ -78,12 +111,10 @@ public static class UpdateManager
         var numeric = versionText.Split('-')[0].Split('+')[0];
         if (!Version.TryParse(numeric, out var latest))
             return null;
-        var current = CurrentVersion();
-        // Newer numeric always offers. An EQUAL numeric offers only in the one SemVer
-        // case where equal is not same: this build is a prerelease of that triple and
-        // the release is its final (no prerelease suffix of its own).
-        var latestIsPrerelease = versionText.Split('+')[0].Contains('-');
-        if (!(latest > current || (latest == current && CurrentIsPrerelease() && !latestIsPrerelease)))
+        var latestCore = versionText.Split('+')[0];
+        var dashAt = latestCore.IndexOf('-');
+        var latestPre = dashAt < 0 ? null : latestCore[(dashAt + 1)..];
+        if (ComparePrecedence(latest, latestPre, CurrentVersion(), CurrentPrerelease()) <= 0)
             return null;
 
         // The flavor must match the install: dropping a framework-dependent build over
@@ -113,6 +144,22 @@ public static class UpdateManager
     {
         Directory.CreateDirectory(UpdatesDir);
         var zipPath = Path.Combine(UpdatesDir, info.AssetName);
+        try
+        {
+            return await DownloadAndValidateAsync(info, zipPath);
+        }
+        catch
+        {
+            // A refused or interrupted download must not squat in the data dir —
+            // differently named releases would otherwise accumulate at up to 500 MB
+            // apiece with nothing ever reusing their file names.
+            try { File.Delete(zipPath); } catch (IOException) { /* swept next start */ }
+            throw;
+        }
+    }
+
+    private static async Task<string> DownloadAndValidateAsync(UpdateInfo info, string zipPath)
+    {
         using (var http = NewClient())
         await using (var body = await http.GetStreamAsync(info.AssetUrl))
         await using (var file = File.Create(zipPath))
@@ -183,7 +230,7 @@ public static class UpdateManager
         // exception but not a kill or a power cut, and the startup sweep would then
         // DELETE the very backups a recovery needs. With the file present, the next
         // start rolls the transaction back instead.
-        File.WriteAllText(JournalFile, baseDir + Environment.NewLine + stamp);
+        File.WriteAllText(JournalFile, baseDir + Environment.NewLine + stamp + Environment.NewLine);
         var renamed = new List<(string Target, string Aside)>();
         var placed = new List<string>();
         try
@@ -212,6 +259,11 @@ public static class UpdateManager
                 }
                 else
                 {
+                    // An ADDITION — a file the old install never had — leaves no aside
+                    // for recovery to find, so it is identifiable only by the record:
+                    // its relative path joins the journal BEFORE the move (intent
+                    // first), and recovery removes whatever of the record exists.
+                    File.AppendAllText(JournalFile, rel + Environment.NewLine);
                     File.Move(source, target);
                 }
                 placed.Add(target);
@@ -237,7 +289,12 @@ public static class UpdateManager
             throw;
         }
         File.Delete(JournalFile);
-        Directory.Delete(staging, recursive: true);
+        // Best-effort from here: every file is swapped and the journal is gone — the
+        // install IS the new version, and a transient failure deleting leftovers
+        // (antivirus holding a staged copy) must not cancel the relaunch and leave
+        // the old process running over new files. Startup sweeps what remains.
+        try { Directory.Delete(staging, recursive: true); }
+        catch (Exception ex) { Log.Warn($"Staging cleanup after update: {ex.Message}"); }
         try { File.Delete(zipPath); } catch (IOException) { /* swept next start */ }
 
         Log.Info($"Update applied from {Path.GetFileName(zipPath)}; relaunching");
@@ -249,24 +306,35 @@ public static class UpdateManager
     /// its stamp are the ORIGINAL install: they are restored, not deleted. Only once
     /// no transaction is open do the remaining remnants become litter to sweep.
     /// Runs only as the single instance; both halves move files in the install dir.</summary>
+    /// <summary>Only names carrying the updater's exact pid-tick shape are litter.
+    /// This is a portable install — a user's own "foo.dll.old-backup" beside the exe
+    /// is not ours, and a bare *.old-* glob would eat it.</summary>
+    private static readonly System.Text.RegularExpressions.Regex AsideName =
+        new(@"\.old-\d+-\d+(\.shed)?$", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly System.Text.RegularExpressions.Regex StrayName =
+        new(@"\.new-old-\d+-\d+$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
     public static void CleanupAtStartup()
     {
         try
         {
             // The sweep runs ONLY when no transaction remains open. Recovery that
-            // could not finish (a target antivirus still holds, a journal that did
-            // not parse) keeps its journal and forfeits this start's sweep — an
-            // unrestored original must never be reclassified as litter, and the
-            // start after gets to retry.
+            // could not finish (a target antivirus still holds) keeps its journal and
+            // forfeits this start's sweep — an unrestored original must never be
+            // reclassified as litter, and the start after gets to retry.
             if (!RecoverInterruptedSwap())
                 return;
-            foreach (var old in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.old-*", SearchOption.AllDirectories))
-                try { File.Delete(old); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-            foreach (var stray in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.new-old-*", SearchOption.AllDirectories))
-                try { File.Delete(stray); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.*old-*", SearchOption.AllDirectories))
+                if (AsideName.IsMatch(file) || StrayName.IsMatch(file))
+                    try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             var staging = Path.Combine(UpdatesDir, "staging");
             if (Directory.Exists(staging))
                 Directory.Delete(staging, recursive: true);
+            // Stale archives: failed or superseded downloads, ~500 MB apiece. Nothing
+            // downloads during startup, so anything here is finished with.
+            if (Directory.Exists(UpdatesDir))
+                foreach (var zip in Directory.EnumerateFiles(UpdatesDir, "*.zip"))
+                    try { File.Delete(zip); } catch (IOException) { }
         }
         catch (Exception ex)
         {
@@ -283,34 +351,48 @@ public static class UpdateManager
             return true;
         var lines = File.ReadAllLines(JournalFile);
         // A journal that does not parse is not a license to guess — restore nothing
-        // rather than aim renames at names a corrupted file suggests. It is preserved
-        // for eyes as .bad (so ONE later start regains its sweep), and this start
-        // leaves every remnant untouched.
+        // rather than aim renames at names a corrupted file suggests. But simply
+        // stepping aside would hand next start's sweep the very remnants that may
+        // include originals: they are QUARANTINED out of the install first, preserved
+        // for manual recovery, and only then does the journal retire as .bad.
         if (!(lines.Length >= 2 && Directory.Exists(lines[0]) && lines[1].StartsWith("old-", StringComparison.Ordinal)))
         {
-            Log.Warn("Swap journal did not parse; preserved as swap-journal.bad, nothing restored or swept this start");
+            Log.Warn("Swap journal did not parse; remnants quarantined, journal preserved as swap-journal.bad");
+            QuarantineRemnants();
             try { File.Move(JournalFile, JournalFile + ".bad", overwrite: true); }
-            catch (Exception ex) { Log.Warn($"Could not preserve the journal: {ex.Message}"); }
+            catch (Exception ex) { Log.Warn($"Could not retire the journal: {ex.Message}"); }
             return false;
         }
 
-        var suffix = "." + lines[1];
+        var baseDir = lines[0];
+        var stamp = lines[1];
+        var suffix = "." + stamp;
         var restored = 0;
         var failures = 0;
         // Incomplete Replace hops first: a *.new-<stamp> beside its target is staged
         // bytes that never swapped in — plain deletions, no original at risk.
-        foreach (var stray in Directory.EnumerateFiles(lines[0], "*.new-" + lines[1], SearchOption.AllDirectories))
+        foreach (var stray in Directory.EnumerateFiles(baseDir, "*.new-" + stamp, SearchOption.AllDirectories))
             try { File.Delete(stray); } catch (Exception) { failures++; }
-        foreach (var aside in Directory.EnumerateFiles(lines[0], "*" + suffix, SearchOption.AllDirectories))
+        foreach (var aside in Directory.EnumerateFiles(baseDir, "*" + suffix, SearchOption.AllDirectories))
         {
             var target = aside[..^suffix.Length];
             try
             {
-                // A target present beside its aside is the NEW file the dead swap
-                // placed; the transaction loses, the original returns.
                 if (File.Exists(target))
-                    File.Delete(target);
-                File.Move(aside, target);
+                {
+                    // The rollback is as atomic as the swap it undoes: delete-then-
+                    // move re-opened the very missing-name instant the forward path
+                    // closed, on the binary this recovery itself depends on. The shed
+                    // file is the dead swap's new content — disposable, and its name
+                    // matches the sweep should this crash before the delete.
+                    var shed = aside + ".shed";
+                    File.Replace(aside, target, shed);
+                    File.Delete(shed);
+                }
+                else
+                {
+                    File.Move(aside, target);
+                }
                 restored++;
             }
             catch (Exception ex)
@@ -318,6 +400,22 @@ public static class UpdateManager
                 failures++;
                 Log.Warn($"Swap recovery could not restore {Path.GetFileName(target)}: {ex.Message}");
             }
+        }
+        // The dead swap's ADDITIONS — files the old install never had, identifiable
+        // only by the journal record (lines three on). Each is validated to resolve
+        // INSIDE the install before deletion, so a corrupt line cannot aim outside.
+        var root = baseDir.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        foreach (var rel in lines.Skip(2))
+        {
+            if (rel.Length == 0)
+                continue;
+            var target = Path.GetFullPath(Path.Combine(baseDir, rel));
+            if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            {
+                Log.Warn($"Swap recovery: journaled addition escapes the install dir, skipped: {rel}");
+                continue;
+            }
+            try { if (File.Exists(target)) File.Delete(target); } catch (Exception) { failures++; }
         }
         if (failures > 0)
         {
@@ -330,6 +428,35 @@ public static class UpdateManager
         Log.Warn($"An update was interrupted mid-swap; rolled back at startup ({restored} file(s) restored)");
         File.Delete(JournalFile);
         return true;
+    }
+
+    /// <summary>For a journal that cannot be read: the remnants under the install may
+    /// include originals the sweep must never see, but holding the sweep forever
+    /// would let litter grow without bound. They move OUT of the install into
+    /// updates/quarantine — preserved for manual recovery — and the sweep resumes
+    /// next start. Names are flattened with an index; the point is preservation,
+    /// not restorability by machine.</summary>
+    private static void QuarantineRemnants()
+    {
+        var dir = Path.Combine(UpdatesDir, "quarantine");
+        Directory.CreateDirectory(dir);
+        var moved = 0;
+        foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.*old-*", SearchOption.AllDirectories))
+        {
+            if (!AsideName.IsMatch(file) && !StrayName.IsMatch(file))
+                continue;
+            try
+            {
+                File.Move(file, Path.Combine(dir, $"{moved}-{Path.GetFileName(file)}"), overwrite: true);
+                moved++;
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"Quarantine failed for {Path.GetFileName(file)}: {ex.Message}");
+            }
+        }
+        if (moved > 0)
+            Log.Warn($"{moved} update remnant(s) moved to {dir} — the journal naming them did not parse");
     }
 
     private static HttpClient NewClient()
