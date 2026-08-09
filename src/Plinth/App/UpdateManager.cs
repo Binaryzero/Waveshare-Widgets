@@ -175,10 +175,18 @@ public static class UpdateManager
                     continue;
                 // The tag suffix AND the API's own flag: a maintainer can mark a
                 // final-looking release as prerelease after publication, and the
-                // stable channel must honor that edit too.
+                // stable channel must honor that edit too. One exception: under a
+                // standing repair advisory the INSTALLED version stays eligible even
+                // flagged — it is this install's only in-app repair, and dropping it
+                // here would strand the advisory with no path. Other prereleases
+                // stay off the stable channel regardless.
                 if (stableChannel && (pre is not null
                     || (r.TryGetProperty("prerelease", out var flagged) && flagged.GetBoolean())))
-                    continue;
+                {
+                    if (!(RepairAdvised
+                          && ComparePrecedence(num, pre, CurrentVersion(), CurrentPrerelease()) == 0))
+                        continue;
+                }
                 if (bestNum is null || ComparePrecedence(num, pre, bestNum, bestPre) > 0)
                 {
                     best = r.Clone();
@@ -474,10 +482,13 @@ public static class UpdateManager
             {
                 Log.Warn($"Update rollback left {unrestored} file(s) unrestored — the journal is kept and startup recovery will retry");
             }
+            else if (WriteSweepMarker(stamp))
+            {
+                try { File.Delete(JournalFile); } catch (IOException) { /* recovery re-runs harmlessly */ }
+            }
             else
             {
-                WriteSweepMarker(stamp);
-                try { File.Delete(JournalFile); } catch (IOException) { /* recovery re-runs harmlessly */ }
+                Log.Warn("Sweep marker could not persist; journal kept so startup recovery retries");
             }
             throw;
         }
@@ -487,10 +498,16 @@ public static class UpdateManager
         // files. A journal that resists deletion means the next start rolls the
         // completed update back to a WHOLE old install and offers it again — the
         // recoverable wrong answer, named in the log.
-        WriteSweepMarker(stamp);
         var journalGone = false;
-        try { File.Delete(JournalFile); journalGone = true; }
-        catch (Exception ex) { Log.Warn($"Update committed but the journal would not delete ({ex.Message}); the next start will roll it back — run the update again after"); }
+        if (WriteSweepMarker(stamp))
+        {
+            try { File.Delete(JournalFile); journalGone = true; }
+            catch (Exception ex) { Log.Warn($"Update committed but the journal would not delete ({ex.Message}); the next start will roll it back — run the update again after"); }
+        }
+        else
+        {
+            Log.Warn("Sweep marker could not persist; journal kept — the next start rolls this update back and it can be retried");
+        }
         // A committed swap IS the repair a standing advisory asked for — but only
         // once the journal is truly gone: a surviving journal means the next start
         // ROLLS BACK to the very mixed install the advisory describes, and clearing
@@ -612,7 +629,12 @@ public static class UpdateManager
     /// can never establish ownership: a user's config.json.old-2024-01 beside a
     /// portable install fits any heuristic. Best-effort: a marker that fails to
     /// write means litter survives, which is the safe direction.</summary>
-    private static void WriteSweepMarker(string stamp)
+    /// <summary>Returns whether the marker reached STABLE STORAGE — callers order
+    /// this before deleting the journal, because the sweep deletes only stamps a
+    /// marker names: a journal gone with no marker persisted leaves every backup of
+    /// that stamp untracked forever, roughly an install's worth per occurrence.
+    /// A false return keeps the journal, and the next start retries.</summary>
+    private static bool WriteSweepMarker(string stamp)
     {
         try
         {
@@ -621,11 +643,16 @@ public static class UpdateManager
             // dir, and a copy that starts first would otherwise consume another
             // copy's marker against its own tree — finding nothing, retiring the
             // marker, and leaving the real remnants untracked forever.
-            File.WriteAllText(Path.Combine(UpdatesDir, $"sweep-{stamp}.txt"), AppContext.BaseDirectory);
+            using var fs = new FileStream(Path.Combine(UpdatesDir, $"sweep-{stamp}.txt"),
+                FileMode.Create, FileAccess.Write, FileShare.Read);
+            fs.Write(System.Text.Encoding.UTF8.GetBytes(AppContext.BaseDirectory));
+            fs.Flush(flushToDisk: true);
+            return true;
         }
         catch (Exception ex)
         {
             Log.Warn($"Could not record sweep marker for {stamp}: {ex.Message}");
+            return false;
         }
     }
 
@@ -1001,7 +1028,11 @@ public static class UpdateManager
             return (false, restored > 0, false);
         }
         Log.Warn($"An update was interrupted mid-swap; rolled back at startup ({restored} file(s) restored)");
-        WriteSweepMarker(stamp);
+        if (!WriteSweepMarker(stamp))
+        {
+            Log.Warn("Sweep marker could not persist; journal kept — retrying next start");
+            return (false, restored > 0, false);
+        }
         File.Delete(JournalFile);
         return (true, restored > 0, false);
         }
