@@ -284,6 +284,8 @@ public static class UpdateManager
             expanded += entry.Length;
             if (entry.Length > MaxExpandedBytes || expanded > MaxExpandedBytes)
                 throw new InvalidOperationException($"archive expands past {MaxExpandedBytes} bytes — refusing it");
+            if (IsUpdaterControlFile(entry.FullName))
+                throw new InvalidOperationException($"archive entry collides with an updater control file: {entry.FullName}");
             // FullName, not Name: the application must sit at the archive ROOT. A
             // publish output accidentally wrapped in a folder still contains a
             // Plinth.exe by basename — installing it would add a nested tree, leave
@@ -319,14 +321,9 @@ public static class UpdateManager
         // against that drive's current directory instead of the install.
         var baseDir = Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory);
         var staging = Path.Combine(UpdatesDir, "staging");
-        // Running FROM staging (or beneath it) would make the wipe below a wipe of
-        // the LIVE install — with no journal yet to restore a single file. This is
-        // not a location an update transaction can be built under; refuse whole.
-        var installPrefix = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory))
-            + Path.DirectorySeparatorChar;
-        var stagingPrefix = Path.TrimEndingDirectorySeparator(Path.GetFullPath(staging))
-            + Path.DirectorySeparatorChar;
-        if (installPrefix.StartsWith(stagingPrefix, StringComparison.OrdinalIgnoreCase))
+        // Running FROM staging (or beneath it) is not a location an update
+        // transaction can be built under; refuse whole.
+        if (InstallInsideStaging(staging))
             throw new InvalidOperationException(
                 "Plinth is running from the updater's staging folder — move the install somewhere else before updating");
         if (Directory.Exists(staging))
@@ -386,6 +383,8 @@ public static class UpdateManager
             foreach (var source in Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories))
             {
                 var rel = Path.GetRelativePath(staging, source);
+                if (IsUpdaterControlFile(rel))
+                    continue;
                 var target = Path.Combine(baseDir, rel);
                 // Vetting comes BEFORE creation: CreateDirectory follows an existing
                 // junction while materializing missing segments, so checking after
@@ -513,6 +512,27 @@ public static class UpdateManager
     /// owes the install a repair. Callers use this to refuse running a session
     /// over a known-mixed install.</summary>
     public static bool RecoveryPending => File.Exists(JournalFile);
+
+    /// <summary>True when the LIVE install sits at or beneath the staging folder —
+    /// a portable copy run from updates/staging. Deleting staging then deletes the
+    /// install itself, with no journal to restore a single file; every staging
+    /// wipe checks this first.</summary>
+    private static bool InstallInsideStaging(string staging)
+    {
+        var installPrefix = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory))
+            + Path.DirectorySeparatorChar;
+        var stagingPrefix = Path.TrimEndingDirectorySeparator(Path.GetFullPath(staging))
+            + Path.DirectorySeparatorChar;
+        return installPrefix.StartsWith(stagingPrefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Root-level names the updater itself owns inside the install. An
+    /// archive entry with one of these names would replace the LIVE transaction
+    /// journal mid-swap — the rollback record swapped out by the very transaction
+    /// it records — so validation refuses them and the swap loop skips them.</summary>
+    private static bool IsUpdaterControlFile(string entryName) =>
+        entryName.Equals("swap-journal.txt", StringComparison.OrdinalIgnoreCase)
+        || entryName.Equals("swap-journal.txt.bad", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Targets never sit beneath a reparse point: a junctioned Shell/
     /// would send the swap OUTSIDE the install, where recovery's walker — which
@@ -689,7 +709,10 @@ public static class UpdateManager
                         try { File.Delete(marker); } catch (IOException) { }
                 }
             var staging = Path.Combine(UpdatesDir, "staging");
-            if (Directory.Exists(staging))
+            // The same containment rule as Apply, because startup reaches this
+            // delete FIRST: run from staging, this recursive wipe would take the
+            // live install's own files with no journal to restore them.
+            if (Directory.Exists(staging) && !InstallInsideStaging(staging))
                 Directory.Delete(staging, recursive: true);
             // Stale archives only, and AGE is the discriminator: the apply-failure
             // dialog names a zip on disk for installing by hand, and a sweep on the
