@@ -9,8 +9,16 @@
 </head>
 <body>
   <!-- Wallpaper: two stacked layers crossfade between pages; the dim overlay sits
-       above the wallpaper but below the widgets, so it never dims the widgets. -->
+       above the wallpaper but below the widgets, so it never dims the widgets.
+       Beneath the layers sits the stock plate — the instrument chrome shown when no
+       wallpaper is picked. It needs no JS: a null spec leaves the shown layer
+       transparent, so the plate is simply what shows through. -->
   <div id="bgRoot" aria-hidden="true">
+    <div id="plate">
+      <i class="cb tl"></i><i class="cb tr"></i>
+      <i class="cb bl"></i><i class="cb br"></i>
+      <span class="etch">PLINTH &middot; MFD-1280 &middot; REV A</span>
+    </div>
     <div class="bg-layer" id="bgLayer0"></div>
     <div class="bg-layer" id="bgLayer1"></div>
     <div id="bgDim"></div>

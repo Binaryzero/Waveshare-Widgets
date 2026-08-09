@@ -24,6 +24,64 @@ html, body {
   overflow: hidden;
   background: var(--bg, #000);
 }
+
+/* The stock plate — the instrument's machined face, shown wherever no wallpaper
+   covers it: no background picked, page margins, glass/transparent tiles, empty
+   slots. Every tone is mixed from the LIVE theme seeds, never hardcoded, so the
+   Background, Text, and Accent pickers in settings recolor the chrome itself. */
+@font-face {
+  font-family: 'Outfit';
+  font-weight: 500;
+  src: url('fonts/outfit-500.woff2') format('woff2');
+}
+#plate {
+  --plate:        color-mix(in srgb, var(--text, #dde2e8) 4%, var(--bg, #070b12));
+  --plate-hi:     color-mix(in srgb, var(--text, #dde2e8) 6%, var(--bg, #070b12));
+  --plate-lo:     color-mix(in srgb, var(--text, #dde2e8) 3%, var(--bg, #070b12));
+  --plate-dot:    color-mix(in srgb, var(--text, #dde2e8) 6%, transparent);
+  --plate-line:   color-mix(in srgb, var(--text, #dde2e8) 12%, transparent);
+  --plate-bright: color-mix(in srgb, var(--text, #dde2e8) 34%, transparent);
+  position: absolute;
+  inset: 0;
+  /* Bezel: the raw background seed under an accent-tinted ambient glow. */
+  background:
+    radial-gradient(120% 160% at 50% -10%, rgba(var(--accent-rgb, 77, 212, 232), 0.08), transparent 55%),
+    var(--bg, #070b12);
+}
+#plate::before { /* the machined face: engineering grid dots over a lit plate, framed */
+  content: '';
+  position: absolute;
+  inset: 8px;
+  background:
+    radial-gradient(circle at 1px 1px, var(--plate-dot) 1px, transparent 1.4px) 0 0 / 26px 26px,
+    radial-gradient(140% 130% at 50% 0%, var(--plate-hi) 0%, var(--plate-lo) 55%, var(--plate) 100%);
+  box-shadow: inset 0 0 0 1px var(--plate-line);
+}
+#plate .cb { /* corner brackets — machined, a step brighter than the frame */
+  position: absolute;
+  width: 15px;
+  height: 15px;
+  border: 0 solid var(--plate-bright);
+}
+#plate .cb.tl { top: 8px; left: 8px; border-top-width: 1px; border-left-width: 1px; }
+#plate .cb.tr { top: 8px; right: 8px; border-top-width: 1px; border-right-width: 1px; }
+#plate .cb.bl { bottom: 8px; left: 8px; border-bottom-width: 1px; border-left-width: 1px; }
+#plate .cb.br { bottom: 8px; right: 8px; border-bottom-width: 1px; border-right-width: 1px; }
+#plate .etch { /* plate etching, set in the bezel band under the frame */
+  position: absolute;
+  right: 16px;
+  bottom: 0;
+  height: 8px;
+  font: 500 7px/8px 'Outfit', monospace;
+  letter-spacing: 0.34em;
+  color: color-mix(in srgb, var(--text, #dde2e8) 28%, transparent);
+}
+#plate::after { /* corner vignette over the plate only — never over the widgets */
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(140% 140% at 50% 50%, transparent 62%, rgba(0, 0, 0, 0.42) 100%);
+}
 .bg-layer {
   position: absolute;
   inset: 0;
@@ -342,7 +400,7 @@ body.editing.dragging .edge:not(.drop-page-ok) { opacity: 0.2; }
   padding: 7px 12px;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--warn, #ffb454) 55%, transparent);
-  background: color-mix(in srgb, #070b12 84%, transparent);
+  background: color-mix(in srgb, var(--bg, #070b12) 84%, transparent);
   backdrop-filter: blur(6px);
 }
 body.editing .hidden-shelf { display: flex; }

@@ -336,9 +336,16 @@ fluid across their `supported_slots`.
 
 ## Backgrounds (wallpaper)
 
-The dashboard renders a wallpaper layer behind the pages, iCUE-style. It's set in the
-Settings window (a dashboard-wide default, plus an optional per-page override) and stored
-in `layout.json` as a `background` object on the layout root and/or on any page:
+With no background picked, the dashboard shows the **stock plate**: the instrument's
+machined face — engineering grid dots, an inset hairline frame with corner brackets, a
+corner vignette, and the etched plate label. Every tone in it is derived live from the
+theme seeds (`color-mix` over `--bg`, `--text`, `--accent`), so editing the Background,
+Text, or Accent color in Settings recolors the chrome itself; nothing about it is fixed.
+
+A wallpaper replaces the plate. The dashboard renders it as a layer behind the pages,
+iCUE-style. It's set in the Settings window (a dashboard-wide default, plus an optional
+per-page override) and stored in `layout.json` as a `background` object on the layout
+root and/or on any page:
 
 ```jsonc
 {
