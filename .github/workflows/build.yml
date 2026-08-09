@@ -168,8 +168,12 @@ jobs:
       - name: Web messages are accepted only from the shell
         run: dotnet run --project tools/MessageOrigin
 
+      # Stamped BELOW every release on purpose: an unstamped artifact would carry the
+      # csproj's fixed version, match the next release's number, and never be offered
+      # that release by the updater. 0.0.0-ci.N ranks under everything and always
+      # upgrades. run_number is workflow-controlled, not attacker-choosable text.
       - name: Publish
-        run: dotnet publish src/Plinth/Plinth.csproj -c Release -r win-x64 --self-contained false -o publish
+        run: dotnet publish src/Plinth/Plinth.csproj -c Release -r win-x64 --self-contained false -p:Version=0.0.0-ci.${{ github.run_number }} -o publish
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

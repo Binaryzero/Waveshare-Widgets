@@ -20,6 +20,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     private DashboardWindow? _dashboard;
     private SettingsWindow? _settings;
     private string? _currentScreenDevice;
+    private System.Windows.Forms.Timer? _updateTimer;
+    private bool _updating;
 
     public TrayApplicationContext()
     {
@@ -40,6 +42,47 @@ public sealed class TrayApplicationContext : ApplicationContext
             Visible = true,
             ContextMenuStrip = BuildTrayMenu(),
         };
+
+        // A quiet daily update check — it only ever NOTIFIES (a balloon naming the
+        // version); downloading and installing require the user's click on the tray
+        // item. Delayed past startup so a machine that boots offline stays silent.
+        _updateTimer = new System.Windows.Forms.Timer { Interval = 60_000 };
+        _updateTimer.Tick += async (_, _) =>
+        {
+            _updateTimer.Interval = 24 * 60 * 60_000;
+            try
+            {
+                if (await UpdateManager.CheckAsync() is { } update)
+                    _trayIcon.ShowBalloonTip(10_000, "Plinth update available",
+                        $"{update.Tag} is available — right-click the tray icon to install.", ToolTipIcon.Info);
+            }
+            catch (Exception ex)
+            {
+                Log.Info($"Update check skipped: {ex.Message}"); // offline is not an error
+            }
+        };
+        _updateTimer.Start();
+
+        // A standing repair advisory (an update once died so badly its originals
+        // sit in quarantine) surfaces every session until a coherent update or a
+        // reinstall clears it — silence would let the drifted install fade into
+        // "it has always been like this".
+        if (UpdateManager.RepairAdvised)
+            // The advice must name paths that actually RETIRE the advisory: the
+            // in-app check reinstalls the current release and clears it on commit;
+            // extracting a zip OVER the install leaves this updater-owned marker
+            // behind, so the manual path is a fresh folder. And NEVER "delete the
+            // old folder": a portable copy can live AT the data dir, where deleting
+            // the install would take layout, secrets, widgets, and media with it.
+            // Balloon text truncates near 255 chars, so every clause earns its
+            // place: exit first (this instance holds the machine-wide mutex, the
+            // fresh copy bounces off it), new folder (zip-over keeps this marker),
+            // keep the old folder (it can BE the data dir), re-enable autostart
+            // (the Run value still points at the old exe).
+            _trayIcon.ShowBalloonTip(15_000, "Plinth needs repair",
+                "An update did not finish cleanly. Use Check for updates (tray menu) to repair — "
+                + "or run a fresh copy from a NEW folder: exit Plinth first, keep the old folder, "
+                + "and turn Start with Windows off and on again in the new copy.", ToolTipIcon.Warning);
 
         // The panel powers up ~10 s after HDMI connect and may be absent at logon;
         // re-evaluate placement whenever the display topology changes.
@@ -136,6 +179,21 @@ public sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(new ToolStripMenuItem($"Plinth {AppVersion.Describe}") { Enabled = false });
         menu.Items.Add(new ToolStripSeparator());
 
+        // The advisory's balloon is suppressible (Windows 11 quiets legacy
+        // NotifyIcon tips, users disable notifications); the MENU is not. A
+        // standing repair state gets a standing surface, wired straight to the
+        // repair itself.
+        if (UpdateManager.RepairAdvised)
+        {
+            var repair = new ToolStripMenuItem("⚠ Repair needed — install update")
+            {
+                Font = new Font(menu.Font, FontStyle.Bold),
+            };
+            repair.Click += async (_, _) => await CheckForUpdatesInteractive();
+            menu.Items.Add(repair);
+            menu.Items.Add(new ToolStripSeparator());
+        }
+
         var settingsItem = new ToolStripMenuItem("Settings…") { Font = new Font(menu.Font, FontStyle.Bold) };
         settingsItem.Click += (_, _) => OpenSettings();
         menu.Items.Add(settingsItem);
@@ -149,6 +207,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             OpenInExplorer(AppPaths.LayoutFile);
         });
         menu.Items.Add("Install widget…", null, (_, _) => InstallWidgetInteractive());
+        menu.Items.Add("Check for updates…", null, async (_, _) => await CheckForUpdatesInteractive());
 
         var displayMenu = new ToolStripMenuItem("Display");
         displayMenu.DropDownOpening += (_, _) => PopulateDisplayMenu(displayMenu);
@@ -204,6 +263,139 @@ public sealed class TrayApplicationContext : ApplicationContext
                 PlaceDashboard();
             };
             parent.DropDownItems.Add(item);
+        }
+    }
+
+    /// <summary>The whole update in one click: check, confirm, download, swap,
+    /// relaunch — the loop this replaces was exit, download, unzip, overwrite by
+    /// hand. Nothing downloads without the explicit Yes; a failed apply names the
+    /// path the downloaded zip is waiting at rather than losing the work.</summary>
+    private async Task CheckForUpdatesInteractive()
+    {
+        if (_updating)
+            return;
+        _updating = true;
+        try
+        {
+            UpdateManager.UpdateInfo? update;
+            try
+            {
+                update = await UpdateManager.CheckAsync();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Could not check for updates:\n{ex.Message}",
+                    "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (update is null)
+            {
+                MessageBox.Show($"Plinth {AppVersion.Describe} is up to date.",
+                    "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var mb = Math.Max(1, update.Size / (1024 * 1024));
+            var go = MessageBox.Show(
+                $"Plinth {update.Tag} is available (you have {AppVersion.Describe}).\n\n"
+                + $"Download {update.AssetName} (~{mb} MB) and install now? "
+                + "Plinth restarts by itself when it's done.",
+                "Plinth update", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (go != DialogResult.Yes)
+                return;
+
+            string zip;
+            try
+            {
+                zip = await UpdateManager.DownloadAsync(update);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Download failed:\n{ex.Message}",
+                    "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string exe;
+            try
+            {
+                exe = UpdateManager.Apply(zip);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"Update apply failed: {ex}");
+                if (UpdateManager.RecoveryPending)
+                {
+                    // The rollback did not finish — the install on disk is mixed and
+                    // the journal waits for startup recovery. Continuing this session
+                    // would run the old host over that mix until some later restart;
+                    // restart through the same wait-for machinery and let recovery
+                    // repair it now.
+                    MessageBox.Show(
+                        $"The update could not be applied, and undoing it needs a restart:\n{ex.Message}\n\n"
+                        + "Plinth will restart and repair itself now.",
+                        "Plinth update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = Environment.ProcessPath ?? Application.ExecutablePath,
+                            Arguments = $"--wait-for {Environment.ProcessId}",
+                            UseShellExecute = true,
+                        });
+                    }
+                    catch (Exception rex)
+                    {
+                        // The dialog just promised a restart; exiting silently after
+                        // a failed Process.Start would break that promise with a
+                        // vanished tray. Same honesty as the startup-recovery path.
+                        Log.Warn($"Repair relaunch failed: {rex.Message}");
+                        MessageBox.Show(
+                            "Plinth could not restart itself. Start Plinth again from the "
+                            + "Start menu or its folder, and it will finish the repair.",
+                            "Plinth update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    ExitThread();
+                    return;
+                }
+                // The failure worth naming precisely: an install folder this account
+                // cannot write. Apply rolled the install back, so what runs is still
+                // whole. The download is not lost — the dialog says where it is.
+                MessageBox.Show(
+                    $"The update could not be applied:\n{ex.Message}\n\n"
+                    + $"The downloaded zip is at:\n{zip}",
+                    "Plinth update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // Past this point the swap is COMMITTED — the install on disk is the new
+            // version and the zip is gone. A relaunch refusal (antivirus holding the
+            // fresh apphost) is a different event from an apply failure and must not
+            // borrow its dialog, which names a zip that no longer exists. Either way
+            // this process is old code running over new files: it exits, and on
+            // failure the message says how to start the new build by hand.
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = exe,
+                    Arguments = $"--wait-for {Environment.ProcessId}",
+                    UseShellExecute = true,
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"Relaunch after update failed: {ex}");
+                MessageBox.Show(
+                    $"The update is installed, but Plinth could not restart itself:\n{ex.Message}\n\n"
+                    + "Start Plinth again from the Start menu or its folder.",
+                    "Plinth update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            ExitThread();
+        }
+        finally
+        {
+            _updating = false;
         }
     }
 
@@ -273,6 +465,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _placementTimer?.Stop();
         _placementTimer?.Dispose();
+        _updateTimer?.Stop();
+        _updateTimer?.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         _settings?.Dispose();

@@ -5,11 +5,24 @@ namespace Plinth;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         // Before anything else, so the rename-era cleanup below has somewhere to log to.
         // Idempotent; TrayApplicationContext calls it again on the successful path.
         AppPaths.EnsureCreated();
+
+        // A self-update relaunches THIS exe while the old instance is still tearing
+        // down. The updater passes the dying instance's pid; wait it out (bounded)
+        // before contending for the single-instance mutex below.
+        var waitAt = Array.IndexOf(args, "--wait-for");
+        var relaunched = false;
+        if (waitAt >= 0 && waitAt + 1 < args.Length && int.TryParse(args[waitAt + 1], out var pid))
+        {
+            relaunched = true;
+            try { System.Diagnostics.Process.GetProcessById(pid).WaitForExit(15000); }
+            catch (ArgumentException) { /* already gone — the good case */ }
+            catch (InvalidOperationException) { /* exited between lookup and wait — the same good case */ }
+        }
 
         // The stale Run value goes FIRST, before the refusal below can return. At logon
         // Windows starts both entries, and if the old app wins the race it holds the legacy
@@ -31,9 +44,139 @@ internal static class Program
             return;
         }
 
-        using var mutex = new Mutex(initiallyOwned: true, "Plinth.SingleInstance", out var isFirstInstance);
-        if (!isFirstInstance)
+        // The lock below MOVED NAMESPACES: earlier Plinth releases named it without
+        // the Global\ prefix, which scopes to the launching session — where the
+        // Global\ open below cannot see it. A new build started beside a running
+        // old release would sail past its own gate and make BOTH processes "the"
+        // instance, free to run swaps and the remnant sweep concurrently. Until
+        // those releases age out, the old name is PROBED here — never held, like
+        // the Waveshare-era name above; it still belongs to the old app. The probe
+        // shares the old lock's session scope, which is exactly the reach the old
+        // release ever enforced for itself.
+        try
+        {
+            if (Mutex.TryOpenExisting("Plinth.SingleInstance", out var preNamespace))
+            {
+                preNamespace.Dispose();
+                Log.Info("A previous Plinth release holds the pre-namespace lock; exiting like any second launch");
+                return;
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Documented as "the named mutex exists, but the user does not have the
+            // security access required to use it" — positive evidence of a live old
+            // instance (one running elevated), not a probe failure.
+            Log.Info("A previous Plinth release holds the pre-namespace lock (not open to us); exiting");
             return;
+        }
+        catch (Exception ex)
+        {
+            // Failing to PROBE is not evidence the name is held. Proceeding mirrors
+            // LegacyInstall's judgment on the same trade: refusing here would turn a
+            // transitional courtesy into an app that will not start.
+            Log.Warn($"Could not check for a pre-namespace instance: {ex.Message}");
+        }
+
+        // An ordinary second launch bounces immediately — the app is already in the
+        // tray and the user can see it. A RELAUNCH after a self-update waits instead:
+        // teardown can outlive the pid grace above (WebView2 and the sensor providers
+        // dispose slowly), and bouncing here would silently cancel the restart the
+        // updater promised.
+        // Global\, not the default Local\: an unqualified name scopes to each Windows
+        // SESSION, so a console and an RDP login could both become "the" instance and
+        // run swaps and cleanup concurrently against the same portable install.
+        // Another ACCOUNT's instance created the mutex under its default ACL, which
+        // can deny this account the right to even open it. That still means "an
+        // instance runs somewhere on this machine" — the rule this lock enforces —
+        // just not one this account may wait on; exit like any second launch
+        // instead of crashing before the first window exists.
+        Mutex mutex;
+        try
+        {
+            mutex = new Mutex(initiallyOwned: false, @"Global\Plinth.SingleInstance");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            Log.Info("Another account's Plinth instance holds the machine lock; exiting");
+            return;
+        }
+        using var _ = mutex;
+        bool owned;
+        try
+        {
+            owned = mutex.WaitOne(relaunched ? TimeSpan.FromSeconds(30) : TimeSpan.Zero);
+        }
+        catch (AbandonedMutexException)
+        {
+            owned = true; // the previous instance died holding it; ownership passed here
+        }
+        if (!owned)
+        {
+            if (relaunched)
+            {
+                // The updater promised a restart, and the parent tray is already
+                // gone — a silent exit here would leave NO instance running just
+                // because the old process outlived every grace period. Say so.
+                MessageBox.Show(
+                    "Plinth updated, but the previous instance is still shutting down.\n\n"
+                    + "Start Plinth again in a moment.",
+                    "Plinth update", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            return;
+        }
+
+        // Only as the single instance: swap recovery MOVES files in the install dir,
+        // and the sweep deletes rename-aside remnants — neither may race a sibling.
+        var outcome = UpdateManager.CleanupAtStartup();
+        if (outcome == UpdateManager.StartupOutcome.Refuse)
+        {
+            // An active journal remains and nothing could be repaired yet: the
+            // install is KNOWN-mixed, and running a session over it trades a clear
+            // failure now for undiagnosable ones later. Refusing is deliberate; the
+            // next start retries recovery once whatever holds the files lets go.
+            Log.Warn("Update recovery could not run; refusing to start over a mixed install");
+            MessageBox.Show(
+                "An update did not finish, and Plinth could not repair it yet — a file "
+                + "may still be locked by another program.\n\n"
+                + "Close other programs using Plinth's folder, then start Plinth again. "
+                + "If this repeats or Plinth misbehaves afterwards, extract a fresh copy of "
+                + "the latest release into a new folder and run that — keep the old folder "
+                + "(your settings can live inside it), and turn Start with Windows off and "
+                + "on again from the new copy if you use it.",
+                "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (outcome == UpdateManager.StartupOutcome.Relaunch)
+        {
+            // Recovery restored files UNDER this process: the assemblies already
+            // loaded may be the dead transaction's new code, now facing the old
+            // shell assets and dependencies on disk — a contract that no longer
+            // exists. One clean relaunch loads the install as restored; the child
+            // waits out this pid and the mutex exactly like an updater relaunch.
+            Log.Warn("Update recovery restored files; relaunching into the restored install");
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "Plinth.exe"),
+                    Arguments = $"--wait-for {Environment.ProcessId}",
+                    UseShellExecute = true,
+                });
+            }
+            catch (Exception ex)
+            {
+                // Exiting is the deliberate choice — mixed images must not run a
+                // session — but a tray that silently never appears is not an
+                // explanation. Say what happened and what to do.
+                Log.Warn($"Relaunch after recovery failed: {ex.Message}");
+                MessageBox.Show(
+                    "Plinth restored an interrupted update but could not restart itself.\n\n"
+                    + "Start Plinth again from the Start menu or its folder.",
+                    "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            return;
+        }
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
