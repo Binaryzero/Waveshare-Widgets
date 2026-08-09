@@ -71,11 +71,14 @@ public sealed class TrayApplicationContext : ApplicationContext
             // The advice must name paths that actually RETIRE the advisory: the
             // in-app check reinstalls the current release and clears it on commit;
             // extracting a zip OVER the install leaves this updater-owned marker
-            // behind, so the manual path is a fresh folder, not an overlay.
+            // behind, so the manual path is a fresh folder. And NEVER "delete the
+            // old folder": a portable copy can live AT the data dir, where deleting
+            // the install would take layout, secrets, widgets, and media with it.
             _trayIcon.ShowBalloonTip(15_000, "Plinth needs repair",
                 "An earlier update did not finish cleanly. Right-click the tray icon and use "
-                + "Check for updates to repair — or delete Plinth's folder and extract a fresh "
-                + "copy from the latest release.", ToolTipIcon.Warning);
+                + "Check for updates to repair — or extract a fresh copy of the latest release "
+                + "into a NEW folder and run that. Keep the old folder; your settings can live "
+                + "inside it.", ToolTipIcon.Warning);
 
         // The panel powers up ~10 s after HDMI connect and may be absent at logon;
         // re-evaluate placement whenever the display topology changes.
