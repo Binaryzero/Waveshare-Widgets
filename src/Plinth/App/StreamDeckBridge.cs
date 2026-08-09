@@ -585,13 +585,35 @@ public sealed class StreamDeckBridge
 
         try
         {
-            using var bmp = new Bitmap(rect.Right, rect.Bottom);
-            using (var g = Graphics.FromImage(bmp))
+            // PW_CLIENTONLY is not honoured under PW_RENDERFULLCONTENT: DWM renders the
+            // FULL window — top chrome included — top-aligned into the target DC. Into a
+            // client-sized bitmap that shifts every key face DOWN by the chrome height
+            // and crops the same height of keys off the bottom, so taps mapped over the
+            // capture inject clicks one key ABOVE the face the user pressed (field
+            // video). Capture the whole window instead and cut the client region out at
+            // its measured offset: identical where CLIENTONLY worked, corrected where it
+            // did not.
+            if (!GetWindowRect(vsd, out var win))
+                return _lastCaptureResult = null;
+            var winW = win.Right - win.Left;
+            var winH = win.Bottom - win.Top;
+            var origin = default(POINT);
+            if (!ClientToScreen(vsd, ref origin))
+                return _lastCaptureResult = null;
+            var offX = origin.X - win.Left;
+            var offY = origin.Y - win.Top;
+            // A window mid-move/mid-resize can hand back rects that no longer agree;
+            // skip this frame rather than crop out of bounds — the next poll retries.
+            if (offX < 0 || offY < 0 || offX + rect.Right > winW || offY + rect.Bottom > winH)
+                return _lastCaptureResult = null;
+
+            using var full = new Bitmap(winW, winH);
+            using (var g = Graphics.FromImage(full))
             {
                 var hdc = g.GetHdc();
                 try
                 {
-                    if (!PrintWindow(vsd, hdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT))
+                    if (!PrintWindow(vsd, hdc, PW_RENDERFULLCONTENT))
                         return _lastCaptureResult = null;
                 }
                 finally
@@ -599,6 +621,7 @@ public sealed class StreamDeckBridge
                     g.ReleaseHdc(hdc);
                 }
             }
+            using var bmp = full.Clone(new Rectangle(offX, offY, rect.Right, rect.Bottom), full.PixelFormat);
 
             // A refused capture yields a uniform (usually black) bitmap; sample a small
             // grid and require at least two distinct colors before trusting it.
@@ -781,7 +804,6 @@ public sealed class StreamDeckBridge
 
     private const uint WM_LBUTTONDOWN = 0x0201;
     private const uint WM_LBUTTONUP = 0x0202;
-    private const uint PW_CLIENTONLY = 0x1;
     private const uint PW_RENDERFULLCONTENT = 0x2;
 
     [DllImport("user32.dll")]
@@ -813,6 +835,15 @@ public sealed class StreamDeckBridge
 
     [DllImport("user32.dll")]
     private static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr hWnd, ref POINT point);
 
     [DllImport("user32.dll")]
     private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);

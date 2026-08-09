@@ -12,6 +12,13 @@ public sealed class AudioMixer
     public sealed record AudioSessionInfo(int Pid, string Name, float Level, bool Muted);
     public sealed record AudioSnapshot(float MasterLevel, bool MasterMuted, IReadOnlyList<AudioSessionInfo> Sessions);
 
+    // Failure-transition state for Read()'s logging: a machine whose default audio
+    // endpoint is gone fails IDENTICALLY on every 1 Hz poll, and a WARN per poll wrote
+    // 3,935 near-duplicate lines into one field log. Worst case under racing polls is
+    // one extra transition line — never a line per poll.
+    private string? _lastReadFailure;
+    private long _repeatedReadFailures;
+
     /// <summary>Reads the current master + per-session state. Returns null when audio is unavailable.</summary>
     public AudioSnapshot? Read()
     {
@@ -65,6 +72,12 @@ public sealed class AudioMixer
                     .Select(g => g.OrderByDescending(s => s.Level).First())
                     .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
                     .ToList();
+                if (_lastReadFailure is not null)
+                {
+                    Log.Info($"Audio read recovered after {_repeatedReadFailures + 1} failure(s)");
+                    _lastReadFailure = null;
+                    _repeatedReadFailures = 0;
+                }
                 return new AudioSnapshot(master, masterMuted, merged);
             }
             finally
@@ -75,7 +88,18 @@ public sealed class AudioMixer
         }
         catch (Exception ex)
         {
-            Log.Warn($"Audio read failed: {ex.Message}");
+            // Log the TRANSITIONS — first failure, a different failure, the recovery
+            // above — and count the steady state instead of repeating it.
+            if (_lastReadFailure != ex.Message)
+            {
+                _lastReadFailure = ex.Message;
+                _repeatedReadFailures = 0;
+                Log.Warn($"Audio read failed: {ex.Message} (repeats suppressed until this changes)");
+            }
+            else
+            {
+                _repeatedReadFailures++;
+            }
             return null;
         }
     }
