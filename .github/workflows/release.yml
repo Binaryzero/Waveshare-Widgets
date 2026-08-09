@@ -83,3 +83,9 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          # A suffixed tag (v1.3.0-beta.1) must be MARKED prerelease, or GitHub
+          # classifies it as ordinary and serves it from /releases/latest — the
+          # endpoint the in-app updater polls — advertising the beta to every
+          # stable install. Marked, it stays off the stable channel; the next
+          # final supersedes it for everyone by SemVer precedence.
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}

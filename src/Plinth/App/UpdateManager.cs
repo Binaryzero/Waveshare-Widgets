@@ -296,7 +296,12 @@ public static class UpdateManager
                     // for recovery to find, so it is identifiable only by the record:
                     // its relative path joins the journal BEFORE the move (intent
                     // first), and recovery removes whatever of the record exists.
+                    // The rollback set too: a cross-volume Move is copy-then-delete,
+                    // and a copy dying partway (drive full, cable pulled) leaves a
+                    // partial target that a rollback tracking only COMPLETED moves
+                    // would never clean. Deleting a never-created file is a no-op.
                     WriteJournalDurable(rel + Environment.NewLine, append: true);
+                    placed.Add(target);
                     File.Move(source, target);
                 }
                 placed.Add(target);
