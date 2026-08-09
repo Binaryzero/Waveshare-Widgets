@@ -42,6 +42,16 @@ public static class UpdateManager
         return Version.TryParse(numeric, out var v) ? v : new Version(0, 0, 0);
     }
 
+    /// <summary>Whether the running build is a prerelease (1.2.3-beta). The numeric
+    /// triple alone cannot say that 1.2.3 FINAL supersedes it — SemVer ranks a
+    /// prerelease below its own release.</summary>
+    private static bool CurrentIsPrerelease()
+    {
+        var info = typeof(AppVersion).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "";
+        return info.Split('+')[0].Contains('-');
+    }
+
     /// <summary>Queries the latest release. Returns null when this build is current
     /// (or newer), when no matching asset exists, or on any network failure — the
     /// caller distinguishes "no update" from "check failed" by the thrown exception.</summary>
@@ -53,16 +63,26 @@ public static class UpdateManager
         var root = doc.RootElement;
 
         var tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
-        var numeric = tag.TrimStart('v').Split('-')[0].Split('+')[0];
+        // The version TEXT (what release.yml stamps into the asset file name, build
+        // metadata and prerelease suffix included) and the numeric triple (what
+        // precedence is decided on) are different jobs — normalizing before the name
+        // lookup made every +metadata release unfindable.
+        var versionText = tag.StartsWith('v') ? tag[1..] : tag;
+        var numeric = versionText.Split('-')[0].Split('+')[0];
         if (!Version.TryParse(numeric, out var latest))
             return null;
-        if (latest <= CurrentVersion())
+        var current = CurrentVersion();
+        // Newer numeric always offers. An EQUAL numeric offers only in the one SemVer
+        // case where equal is not same: this build is a prerelease of that triple and
+        // the release is its final (no prerelease suffix of its own).
+        var latestIsPrerelease = versionText.Split('+')[0].Contains('-');
+        if (!(latest > current || (latest == current && CurrentIsPrerelease() && !latestIsPrerelease)))
             return null;
 
         // The flavor must match the install: dropping a framework-dependent build over
         // a self-contained one strands the runtime files of the old flavor in place.
         var selfContained = File.Exists(Path.Combine(AppContext.BaseDirectory, "coreclr.dll"));
-        var wanted = $"Plinth-v{numeric}-win-x64{(selfContained ? "-self-contained" : "")}.zip";
+        var wanted = $"Plinth-v{versionText}-win-x64{(selfContained ? "-self-contained" : "")}.zip";
         if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
         {
             foreach (var asset in assets.EnumerateArray())
@@ -137,15 +157,43 @@ public static class UpdateManager
         // traversal), a second lock on the door DownloadAsync already validated.
         ZipFile.ExtractToDirectory(zipPath, staging);
 
-        var stamp = "old-" + Environment.ProcessId;
-        foreach (var source in Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories))
+        // Tick joins the pid so a recycled process id can never collide with a stale
+        // remnant from an earlier failed swap.
+        var stamp = $"old-{Environment.ProcessId}-{Environment.TickCount64}";
+        // The swap is journaled so a mid-flight failure (antivirus lock, full disk)
+        // never strands a MIXED install: everything placed comes back out and every
+        // renamed original goes back, and only then does the failure surface. An
+        // install that cannot be updated must still be the install that runs.
+        var renamed = new List<(string Target, string Aside)>();
+        var placed = new List<string>();
+        try
         {
-            var rel = Path.GetRelativePath(staging, source);
-            var target = Path.Combine(baseDir, rel);
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            if (File.Exists(target))
-                File.Move(target, $"{target}.{stamp}");
-            File.Move(source, target);
+            foreach (var source in Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories))
+            {
+                var rel = Path.GetRelativePath(staging, source);
+                var target = Path.Combine(baseDir, rel);
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                if (File.Exists(target))
+                {
+                    var aside = $"{target}.{stamp}";
+                    File.Move(target, aside);
+                    renamed.Add((target, aside));
+                }
+                File.Move(source, target);
+                placed.Add(target);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Update swap failed after {placed.Count} file(s); rolling back: {ex.Message}");
+            var unrestored = 0;
+            foreach (var newFile in placed)
+                try { File.Delete(newFile); } catch (Exception) { unrestored++; }
+            foreach (var (target, aside) in renamed)
+                try { if (!File.Exists(target)) File.Move(aside, target); } catch (Exception) { unrestored++; }
+            if (unrestored > 0)
+                Log.Warn($"Update rollback left {unrestored} file(s) unrestored — the next start may need a manual reinstall");
+            throw;
         }
         Directory.Delete(staging, recursive: true);
         try { File.Delete(zipPath); } catch (IOException) { /* swept next start */ }
