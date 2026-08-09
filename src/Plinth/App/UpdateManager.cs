@@ -633,9 +633,13 @@ public static class UpdateManager
     {
         try
         {
+            // Canonical, not lexical: an install journaled while launched through a
+            // junction and recovered through its resolved path (or vice versa) is
+            // the SAME install, and a lexical mismatch would quarantine originals
+            // that a plain rollback could have restored.
             return string.Equals(
-                Path.TrimEndingDirectorySeparator(Path.GetFullPath(recordedBase)),
-                Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory)),
+                Path.TrimEndingDirectorySeparator(CanonicalDir(recordedBase)),
+                Path.TrimEndingDirectorySeparator(CanonicalDir(AppContext.BaseDirectory)),
                 StringComparison.OrdinalIgnoreCase);
         }
         catch (Exception)

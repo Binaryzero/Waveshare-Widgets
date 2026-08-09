@@ -68,9 +68,14 @@ public sealed class TrayApplicationContext : ApplicationContext
         // reinstall clears it — silence would let the drifted install fade into
         // "it has always been like this".
         if (UpdateManager.RepairAdvised)
+            // The advice must name paths that actually RETIRE the advisory: the
+            // in-app check reinstalls the current release and clears it on commit;
+            // extracting a zip OVER the install leaves this updater-owned marker
+            // behind, so the manual path is a fresh folder, not an overlay.
             _trayIcon.ShowBalloonTip(15_000, "Plinth needs repair",
-                "An earlier update did not finish cleanly. Install the latest update from the tray menu, "
-                + "or reinstall from the release zip.", ToolTipIcon.Warning);
+                "An earlier update did not finish cleanly. Right-click the tray icon and use "
+                + "Check for updates to repair — or delete Plinth's folder and extract a fresh "
+                + "copy from the latest release.", ToolTipIcon.Warning);
 
         // The panel powers up ~10 s after HDMI connect and may be absent at logon;
         // re-evaluate placement whenever the display topology changes.

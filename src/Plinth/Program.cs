@@ -106,8 +106,8 @@ internal static class Program
                 "An update did not finish, and Plinth could not repair it yet — a file "
                 + "may still be locked by another program.\n\n"
                 + "Close other programs using Plinth's folder, then start Plinth again. "
-                + "If this repeats or Plinth misbehaves afterwards, reinstall from the "
-                + "latest release zip.",
+                + "If this repeats or Plinth misbehaves afterwards, delete Plinth's folder "
+                + "and extract a fresh copy from the latest release.",
                 "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
