@@ -76,12 +76,10 @@ html, body {
   letter-spacing: 0.34em;
   color: color-mix(in srgb, var(--text, #dde2e8) 28%, transparent);
 }
-#plate::after { /* corner vignette over the plate only — never over the widgets */
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(140% 140% at 50% 50%, transparent 62%, rgba(0, 0, 0, 0.42) 100%);
-}
+/* No vignette: the demo carried one, but its gradient never reaches a visible
+   pixel at this panel geometry (the corners sit at ~50% of the ray, inside the
+   transparent 62% stop), so the approved look is the plate WITHOUT it — and
+   dropping the rule keeps the chrome free of hardcoded color entirely. */
 .bg-layer {
   position: absolute;
   inset: 0;
