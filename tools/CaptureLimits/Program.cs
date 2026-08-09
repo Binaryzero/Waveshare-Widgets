@@ -209,13 +209,14 @@ else
         .ToList();
     // The exact count is asserted, not just "some were found". A tokeniser that silently
     // enumerated a SUBSET is the failure this whole check exists to prevent, and a subset
-    // still satisfies "every return I found assigns the cache". Twelve: five definite
-    // failures before the try, the throttle, the three window-geometry failures of the
-    // client-crop capture (window rect, client origin, rects that disagree mid-move),
-    // PrintWindow, uniform, oversize, success and the catch.
+    // still satisfies "every return I found assigns the cache". Fourteen: five definite
+    // failures before the try, the throttle, the five window-geometry failures of the
+    // client-crop capture (window rect, oversize-with-chrome, client origin, rects that
+    // disagree mid-move, a client resized under the render), PrintWindow, uniform,
+    // oversize, success and the catch.
     // If a return is legitimately added or removed, update this number deliberately.
     Check("K7 setup: the scan found every return the method has",
-        returns.Count == 12, returns.Count + " returns");
+        returns.Count == 14, returns.Count + " returns");
     Check("K7 exactly one return reuses the cached frame — the throttle",
         reusing.Count == 1, reusing.Count + " reusing returns");
     Check("K7b every other return in the capture assigns the cache",

@@ -89,12 +89,17 @@ public sealed class AudioMixer
         catch (Exception ex)
         {
             // Log the TRANSITIONS — first failure, a different failure, the recovery
-            // above — and count the steady state instead of repeating it.
+            // above — and count the steady state instead of repeating it. A changed
+            // message reports the run it ends, or that count would simply vanish and
+            // the recovery line would confess only the LAST message's run.
             if (_lastReadFailure != ex.Message)
             {
+                var endedRun = _lastReadFailure is null
+                    ? ""
+                    : $"; the previous failure repeated {_repeatedReadFailures + 1} time(s)";
+                Log.Warn($"Audio read failed: {ex.Message} (repeats suppressed until this changes){endedRun}");
                 _lastReadFailure = ex.Message;
                 _repeatedReadFailures = 0;
-                Log.Warn($"Audio read failed: {ex.Message} (repeats suppressed until this changes)");
             }
             else
             {

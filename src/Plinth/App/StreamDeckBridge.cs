@@ -597,6 +597,18 @@ public sealed class StreamDeckBridge
                 return _lastCaptureResult = null;
             var winW = win.Right - win.Left;
             var winH = win.Bottom - win.Top;
+            // The bitmap actually allocated is the WINDOW, chrome included — a client
+            // that squeaks under the ceiling does not mean its window does, and the
+            // ceiling exists for the object being captured, not the one measured first.
+            if (!CaptureLimits.SaneSize(winW, winH))
+            {
+                if (!_loggedOversizeWindow)
+                {
+                    _loggedOversizeWindow = true;
+                    Log.Warn($"Stream Deck: window with chrome is {winW}x{winH}; too large to capture");
+                }
+                return _lastCaptureResult = null;
+            }
             var origin = default(POINT);
             if (!ClientToScreen(vsd, ref origin))
                 return _lastCaptureResult = null;
@@ -621,6 +633,14 @@ public sealed class StreamDeckBridge
                     g.ReleaseHdc(hdc);
                 }
             }
+            // Between the first GetClientRect and the render the window can RESIZE, and a
+            // GROWN window still contains the stale client rectangle — the bounds check
+            // above passes, and the crop would ship old-geometry pixels that ClickCell,
+            // reading the CURRENT rect, no longer agrees with. One stale frame is one
+            // mismapped tap; re-read and reject instead, the next poll captures clean.
+            if (!GetClientRect(vsd, out var rectAfter)
+                || rectAfter.Right != rect.Right || rectAfter.Bottom != rect.Bottom)
+                return _lastCaptureResult = null;
             using var bmp = full.Clone(new Rectangle(offX, offY, rect.Right, rect.Bottom), full.PixelFormat);
 
             // A refused capture yields a uniform (usually black) bitmap; sample a small
