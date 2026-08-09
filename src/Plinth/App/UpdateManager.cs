@@ -173,7 +173,11 @@ public static class UpdateManager
                 var rTag = r.TryGetProperty("tag_name", out var rt) ? rt.GetString() ?? "" : "";
                 if (!TryParseTag(rTag, out var num, out var pre))
                     continue;
-                if (stableChannel && pre is not null)
+                // The tag suffix AND the API's own flag: a maintainer can mark a
+                // final-looking release as prerelease after publication, and the
+                // stable channel must honor that edit too.
+                if (stableChannel && (pre is not null
+                    || (r.TryGetProperty("prerelease", out var flagged) && flagged.GetBoolean())))
                     continue;
                 if (bestNum is null || ComparePrecedence(num, pre, bestNum, bestPre) > 0)
                 {
@@ -847,7 +851,13 @@ public static class UpdateManager
                     continue;
                 try
                 {
-                    if (!Path.GetFullPath(Path.Combine(lines[0], rel))
+                    // Rooted records are corruption by definition — additions are
+                    // written as RELATIVE paths, and Path.Combine hands a rooted
+                    // value straight through, where one that happens to point inside
+                    // the install would pass containment and delete a file the
+                    // updater never added.
+                    if (Path.IsPathRooted(rel)
+                        || !Path.GetFullPath(Path.Combine(lines[0], rel))
                             .StartsWith(vroot, StringComparison.OrdinalIgnoreCase))
                     {
                         bodyValid = false;
@@ -963,7 +973,7 @@ public static class UpdateManager
             if (rel.Length == 0)
                 continue;
             var target = Path.GetFullPath(Path.Combine(baseDir, rel));
-            if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            if (Path.IsPathRooted(rel) || !target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
             {
                 // Pre-validation routes escaping records to quarantine before this
                 // loop runs; reaching here anyway is a failure, never a clean skip.
