@@ -20,6 +20,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     private DashboardWindow? _dashboard;
     private SettingsWindow? _settings;
     private string? _currentScreenDevice;
+    private System.Windows.Forms.Timer? _updateTimer;
+    private bool _updating;
 
     public TrayApplicationContext()
     {
@@ -40,6 +42,26 @@ public sealed class TrayApplicationContext : ApplicationContext
             Visible = true,
             ContextMenuStrip = BuildTrayMenu(),
         };
+
+        // A quiet daily update check — it only ever NOTIFIES (a balloon naming the
+        // version); downloading and installing require the user's click on the tray
+        // item. Delayed past startup so a machine that boots offline stays silent.
+        _updateTimer = new System.Windows.Forms.Timer { Interval = 60_000 };
+        _updateTimer.Tick += async (_, _) =>
+        {
+            _updateTimer.Interval = 24 * 60 * 60_000;
+            try
+            {
+                if (await UpdateManager.CheckAsync() is { } update)
+                    _trayIcon.ShowBalloonTip(10_000, "Plinth update available",
+                        $"{update.Tag} is available — right-click the tray icon to install.", ToolTipIcon.Info);
+            }
+            catch (Exception ex)
+            {
+                Log.Info($"Update check skipped: {ex.Message}"); // offline is not an error
+            }
+        };
+        _updateTimer.Start();
 
         // The panel powers up ~10 s after HDMI connect and may be absent at logon;
         // re-evaluate placement whenever the display topology changes.
@@ -149,6 +171,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             OpenInExplorer(AppPaths.LayoutFile);
         });
         menu.Items.Add("Install widget…", null, (_, _) => InstallWidgetInteractive());
+        menu.Items.Add("Check for updates…", null, async (_, _) => await CheckForUpdatesInteractive());
 
         var displayMenu = new ToolStripMenuItem("Display");
         displayMenu.DropDownOpening += (_, _) => PopulateDisplayMenu(displayMenu);
@@ -204,6 +227,84 @@ public sealed class TrayApplicationContext : ApplicationContext
                 PlaceDashboard();
             };
             parent.DropDownItems.Add(item);
+        }
+    }
+
+    /// <summary>The whole update in one click: check, confirm, download, swap,
+    /// relaunch — the loop this replaces was exit, download, unzip, overwrite by
+    /// hand. Nothing downloads without the explicit Yes; a failed apply names the
+    /// path the downloaded zip is waiting at rather than losing the work.</summary>
+    private async Task CheckForUpdatesInteractive()
+    {
+        if (_updating)
+            return;
+        _updating = true;
+        try
+        {
+            UpdateManager.UpdateInfo? update;
+            try
+            {
+                update = await UpdateManager.CheckAsync();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Could not check for updates:\n{ex.Message}",
+                    "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (update is null)
+            {
+                MessageBox.Show($"Plinth {AppVersion.Describe} is up to date.",
+                    "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var mb = Math.Max(1, update.Size / (1024 * 1024));
+            var go = MessageBox.Show(
+                $"Plinth {update.Tag} is available (you have {AppVersion.Describe}).\n\n"
+                + $"Download {update.AssetName} (~{mb} MB) and install now? "
+                + "Plinth restarts by itself when it's done.",
+                "Plinth update", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (go != DialogResult.Yes)
+                return;
+
+            string zip;
+            try
+            {
+                zip = await UpdateManager.DownloadAsync(update);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Download failed:\n{ex.Message}",
+                    "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                var exe = UpdateManager.Apply(zip);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = exe,
+                    Arguments = $"--wait-for {Environment.ProcessId}",
+                    UseShellExecute = true,
+                });
+                ExitThread();
+            }
+            catch (Exception ex)
+            {
+                // The failure worth naming precisely: an install folder this account
+                // cannot write. The download is not lost — the dialog says where it is.
+                Log.Warn($"Update apply failed: {ex}");
+                MessageBox.Show(
+                    $"The update could not be applied:\n{ex.Message}\n\n"
+                    + $"The downloaded zip is at:\n{zip}",
+                    "Plinth update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+        finally
+        {
+            _updating = false;
         }
     }
 
@@ -273,6 +374,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _placementTimer?.Stop();
         _placementTimer?.Dispose();
+        _updateTimer?.Stop();
+        _updateTimer?.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         _settings?.Dispose();

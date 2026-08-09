@@ -126,8 +126,15 @@ the WebView2 Runtime (preinstalled on Windows 11 and current Windows 10). Develo
 builds of every commit are available as [Actions artifacts](../../actions).
 
 The app lives in the system tray. Right-click it for: **Settings…** (the layout and
-widget-property editor), reload, open widgets folder, install widget packages, pick
-the display, and start-with-Windows.
+widget-property editor), reload, open widgets folder, install widget packages,
+**Check for updates…**, pick the display, and start-with-Windows.
+
+Updating is one click: **Check for updates…** finds the latest release, downloads
+the zip matching your install (framework-dependent or self-contained), swaps the
+files in place, and restarts itself. A quiet daily check shows a tray notification
+when a new version exists — it never downloads or installs anything on its own.
+Your layout, theme, and widgets live under `%LocalAppData%\Plinth` and are never
+touched by an update.
 
 ### About CPU temperature and fan RPM
 

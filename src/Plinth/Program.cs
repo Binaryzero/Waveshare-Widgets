@@ -5,11 +5,23 @@ namespace Plinth;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         // Before anything else, so the rename-era cleanup below has somewhere to log to.
         // Idempotent; TrayApplicationContext calls it again on the successful path.
         AppPaths.EnsureCreated();
+
+        // A self-update relaunches THIS exe while the old instance is still tearing
+        // down, and the single-instance mutex below would bounce the new one silently.
+        // The updater passes the dying instance's pid; wait it out (bounded) before
+        // contending, then sweep the *.old files the swap renamed aside.
+        var waitAt = Array.IndexOf(args, "--wait-for");
+        if (waitAt >= 0 && waitAt + 1 < args.Length && int.TryParse(args[waitAt + 1], out var pid))
+        {
+            try { System.Diagnostics.Process.GetProcessById(pid).WaitForExit(15000); }
+            catch (ArgumentException) { /* already gone — the good case */ }
+        }
+        UpdateManager.CleanupAtStartup();
 
         // The stale Run value goes FIRST, before the refusal below can return. At logon
         // Windows starts both entries, and if the old app wins the race it holds the legacy
