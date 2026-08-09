@@ -233,6 +233,14 @@ public static class UpdateManager
     /// never deleted while possibly loaded; the next start sweeps them.</summary>
     public static string Apply(string zipPath)
     {
+        // A journal on disk is an UNFINISHED transaction — an earlier failed apply
+        // whose rollback could not complete. Writing a new one would truncate it and
+        // orphan the surviving originals under the old stamp for the sweep. That
+        // recovery belongs to startup; refuse until it has run.
+        if (File.Exists(JournalFile))
+            throw new InvalidOperationException(
+                "an earlier update did not finish rolling back — restart Plinth to let it recover, then try again");
+
         // Root-aware trim: a portable install at a volume root would otherwise become
         // the DRIVE-RELATIVE path "D:", and every Path.Combine from it would resolve
         // against that drive's current directory instead of the install.
@@ -299,11 +307,31 @@ public static class UpdateManager
             Log.Warn($"Update swap failed after {placed.Count} file(s); rolling back: {ex.Message}");
             var unrestored = 0;
             foreach (var stray in Directory.EnumerateFiles(baseDir, $"*.new-{stamp}", SearchOption.AllDirectories))
-                try { File.Delete(stray); } catch (Exception) { unrestored++; }
-            foreach (var newFile in placed)
-                try { File.Delete(newFile); } catch (Exception) { unrestored++; }
+                try { if (!InsideUpdatesDir(stray)) File.Delete(stray); } catch (Exception) { unrestored++; }
+            // Replacements roll back ATOMICALLY, exactly as startup recovery does —
+            // delete-then-restore held open the same missing-name instant here that
+            // the forward path closed, on the binary that must survive a failed
+            // update most of all. Only genuine additions are deletions.
+            var replacedTargets = new HashSet<string>(renamed.Select(r => r.Target), StringComparer.OrdinalIgnoreCase);
             foreach (var (target, aside) in renamed)
-                try { if (!File.Exists(target)) File.Move(aside, target); } catch (Exception) { unrestored++; }
+            {
+                try
+                {
+                    if (File.Exists(target))
+                    {
+                        var shed = aside + ".shed";
+                        File.Replace(aside, target, shed);
+                        File.Delete(shed);
+                    }
+                    else
+                    {
+                        File.Move(aside, target);
+                    }
+                }
+                catch (Exception) { unrestored++; }
+            }
+            foreach (var newFile in placed.Where(p => !replacedTargets.Contains(p)))
+                try { File.Delete(newFile); } catch (Exception) { unrestored++; }
             // The journal outlives an INCOMPLETE rollback on purpose: deleting it
             // would hand the surviving asides to the startup sweep as litter, and the
             // partial install would become permanent. Startup recovery retries instead.
@@ -344,6 +372,15 @@ public static class UpdateManager
     private static readonly System.Text.RegularExpressions.Regex StampShape =
         new(@"^old-\d+-\d+$", System.Text.RegularExpressions.RegexOptions.Compiled);
 
+    /// <summary>True when the path lies inside the updater's own data tree. A
+    /// portable copy CAN be installed at the data dir or an ancestor of it, which
+    /// puts updates/ (staging, quarantine, archives) inside every install scan —
+    /// and quarantine would then be swept by the very pass it exists to hide from.
+    /// Each scan over the install skips this subtree.</summary>
+    private static bool InsideUpdatesDir(string path) =>
+        path.StartsWith(Path.TrimEndingDirectorySeparator(UpdatesDir) + Path.DirectorySeparatorChar,
+            StringComparison.OrdinalIgnoreCase);
+
     public static void CleanupAtStartup()
     {
         try
@@ -355,7 +392,7 @@ public static class UpdateManager
             if (!RecoverInterruptedSwap())
                 return;
             foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.*old-*", SearchOption.AllDirectories))
-                if (AsideName.IsMatch(file) || StrayName.IsMatch(file))
+                if (!InsideUpdatesDir(file) && (AsideName.IsMatch(file) || StrayName.IsMatch(file)))
                     try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             var staging = Path.Combine(UpdatesDir, "staging");
             if (Directory.Exists(staging))
@@ -421,9 +458,11 @@ public static class UpdateManager
         // Incomplete Replace hops first: a *.new-<stamp> beside its target is staged
         // bytes that never swapped in — plain deletions, no original at risk.
         foreach (var stray in Directory.EnumerateFiles(baseDir, "*.new-" + stamp, SearchOption.AllDirectories))
-            try { File.Delete(stray); } catch (Exception) { failures++; }
+            try { if (!InsideUpdatesDir(stray)) File.Delete(stray); } catch (Exception) { failures++; }
         foreach (var aside in Directory.EnumerateFiles(baseDir, "*" + suffix, SearchOption.AllDirectories))
         {
+            if (InsideUpdatesDir(aside))
+                continue;
             var target = aside[..^suffix.Length];
             try
             {
@@ -493,7 +532,7 @@ public static class UpdateManager
         var failed = 0;
         foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.*old-*", SearchOption.AllDirectories))
         {
-            if (!AsideName.IsMatch(file) && !StrayName.IsMatch(file))
+            if (InsideUpdatesDir(file) || (!AsideName.IsMatch(file) && !StrayName.IsMatch(file)))
                 continue;
             try
             {
