@@ -63,6 +63,15 @@ public sealed class TrayApplicationContext : ApplicationContext
         };
         _updateTimer.Start();
 
+        // A standing repair advisory (an update once died so badly its originals
+        // sit in quarantine) surfaces every session until a coherent update or a
+        // reinstall clears it — silence would let the drifted install fade into
+        // "it has always been like this".
+        if (UpdateManager.RepairAdvised)
+            _trayIcon.ShowBalloonTip(15_000, "Plinth needs repair",
+                "An earlier update did not finish cleanly. Install the latest update from the tray menu, "
+                + "or reinstall from the release zip.", ToolTipIcon.Warning);
+
         // The panel powers up ~10 s after HDMI connect and may be absent at logon;
         // re-evaluate placement whenever the display topology changes.
         SystemEvents.DisplaySettingsChanged += (_, _) => PlaceDashboard();

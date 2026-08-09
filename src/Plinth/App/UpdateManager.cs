@@ -478,6 +478,9 @@ public static class UpdateManager
         // completed update back to a WHOLE old install and offers it again — the
         // recoverable wrong answer, named in the log.
         WriteSweepMarker(stamp);
+        // A committed swap IS the repair a standing advisory asked for: every
+        // release-owned file is now from one coherent version.
+        try { File.Delete(RepairAdvisedFile); } catch (Exception) { /* advisory stays; balloon repeats */ }
         try { File.Delete(JournalFile); }
         catch (Exception ex) { Log.Warn($"Update committed but the journal would not delete ({ex.Message}); the next start will roll it back — run the update again after"); }
         try { Directory.Delete(staging, recursive: true); }
@@ -557,7 +560,18 @@ public static class UpdateManager
     /// it records — so validation refuses them and the swap loop skips them.</summary>
     private static bool IsUpdaterControlFile(string entryName) =>
         entryName.Equals("swap-journal.txt", StringComparison.OrdinalIgnoreCase)
-        || entryName.Equals("swap-journal.txt.bad", StringComparison.OrdinalIgnoreCase);
+        || entryName.Equals("swap-journal.txt.bad", StringComparison.OrdinalIgnoreCase)
+        || entryName.Equals("repair-advised.txt", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Durable record that quarantine left this install PARTIALLY SWAPPED:
+    /// originals preserved away, the dead transaction's files in place. A blocking
+    /// refusal would brick the one in-app repair path (the updater runs inside the
+    /// session it would refuse), so the marker is ADVISORY — the quarantine session
+    /// refuses once, later sessions run and surface it, and a successful update
+    /// commit (a full coherent swap) or a reinstall retires it.</summary>
+    private static string RepairAdvisedFile => Path.Combine(AppContext.BaseDirectory, "repair-advised.txt");
+
+    public static bool RepairAdvised => File.Exists(RepairAdvisedFile);
 
     /// <summary>Targets never sit beneath a reparse point: a junctioned Shell/
     /// would send the swap OUTSIDE the install, where recovery's walker — which
@@ -830,8 +844,10 @@ public static class UpdateManager
             // The retired journal means the NEXT start proceeds — but THIS one just
             // moved originals into quarantine while the dead swap's new files stay
             // in place: a mixed install nobody has approved running. Refuse once,
-            // loudly; the user restarts into a working (if drifted) install with
-            // the quarantine preserved for repair.
+            // loudly, and leave the DURABLE advisory so later sessions keep saying
+            // so until a coherent update or a reinstall repairs the install.
+            try { File.WriteAllText(RepairAdvisedFile, DateTime.UtcNow.ToString("O")); }
+            catch (Exception ex) { Log.Warn($"Could not record the repair advisory: {ex.Message}"); }
             return (false, false, true);
         }
 
