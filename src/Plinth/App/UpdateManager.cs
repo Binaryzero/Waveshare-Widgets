@@ -482,13 +482,15 @@ public static class UpdateManager
             {
                 Log.Warn($"Update rollback left {unrestored} file(s) unrestored — the journal is kept and startup recovery will retry");
             }
-            else if (WriteSweepMarker(stamp))
-            {
-                try { File.Delete(JournalFile); } catch (IOException) { /* recovery re-runs harmlessly */ }
-            }
             else
             {
-                Log.Warn("Sweep marker could not persist; journal kept so startup recovery retries");
+                // Same reasoning as recovery: a COMPLETE rollback consumed this
+                // stamp's backups, so the journal retires whether or not the marker
+                // persisted — a kept journal would refuse future sessions over a
+                // coherent install for the sake of near-empty cleanup.
+                if (!WriteSweepMarker(stamp))
+                    Log.Warn("Sweep marker could not persist; this stamp's remnants (if any) stay unswept");
+                try { File.Delete(JournalFile); } catch (IOException) { /* recovery re-runs harmlessly */ }
             }
             throw;
         }
@@ -1028,11 +1030,13 @@ public static class UpdateManager
             return (false, restored > 0, false);
         }
         Log.Warn($"An update was interrupted mid-swap; rolled back at startup ({restored} file(s) restored)");
+        // A COMPLETE recovery consumed the stamp's backups — restores moved the
+        // asides back, strays were deleted — so the marker here is nearly vestigial.
+        // The journal retires even when the marker cannot persist: keeping it would
+        // map RecoveryPending to Refuse on every future launch, bricking a COHERENT
+        // install over cleanup bookkeeping. The unswept crumbs are the bounded trade.
         if (!WriteSweepMarker(stamp))
-        {
-            Log.Warn("Sweep marker could not persist; journal kept — retrying next start");
-            return (false, restored > 0, false);
-        }
+            Log.Warn("Sweep marker could not persist; this stamp's remnants (if any) stay unswept");
         File.Delete(JournalFile);
         return (true, restored > 0, false);
         }
