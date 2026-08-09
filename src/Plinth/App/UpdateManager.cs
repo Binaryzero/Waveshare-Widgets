@@ -108,12 +108,58 @@ public static class UpdateManager
     /// <summary>Queries the latest release. Returns null when this build is current
     /// (or newer), when no matching asset exists, or on any network failure — the
     /// caller distinguishes "no update" from "check failed" by the thrown exception.</summary>
+    /// <summary>"v1.2.3-beta.2+meta" → numeric triple + prerelease identifiers
+    /// (null for a final). Build metadata is dropped: it never joins precedence.</summary>
+    private static bool TryParseTag(string tag, out Version numeric, out string? prerelease)
+    {
+        var core = (tag.StartsWith('v') ? tag[1..] : tag).Split('+')[0];
+        var dash = core.IndexOf('-');
+        prerelease = dash < 0 ? null : core[(dash + 1)..];
+        return Version.TryParse(dash < 0 ? core : core[..dash], out numeric!);
+    }
+
     public static async Task<UpdateInfo?> CheckAsync()
     {
         using var http = NewClient();
-        var json = await http.GetStringAsync($"https://api.github.com/repos/{Owner}/{Repo}/releases/latest");
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
+        // The channel follows the install. /releases/latest IS the stable channel:
+        // GitHub keeps prereleases and drafts out of it, so a stable install can
+        // never be offered a beta. A PRERELEASE install has already opted in — and
+        // /latest would strand it, since beta.2 never appears there — so it reads
+        // the recent list and takes the highest PRECEDENCE instead: beta.2
+        // supersedes beta.1, and a final that outranks the newest beta wins there
+        // too, promoting the install back onto the stable channel.
+        JsonElement root;
+        if (CurrentPrerelease() is null)
+        {
+            using var doc = JsonDocument.Parse(
+                await http.GetStringAsync($"https://api.github.com/repos/{Owner}/{Repo}/releases/latest"));
+            root = doc.RootElement.Clone();
+        }
+        else
+        {
+            using var doc = JsonDocument.Parse(
+                await http.GetStringAsync($"https://api.github.com/repos/{Owner}/{Repo}/releases?per_page=10"));
+            JsonElement? best = null;
+            Version? bestNum = null;
+            string? bestPre = null;
+            foreach (var r in doc.RootElement.EnumerateArray())
+            {
+                if (r.TryGetProperty("draft", out var d) && d.GetBoolean())
+                    continue;
+                var rTag = r.TryGetProperty("tag_name", out var rt) ? rt.GetString() ?? "" : "";
+                if (!TryParseTag(rTag, out var num, out var pre))
+                    continue;
+                if (bestNum is null || ComparePrecedence(num, pre, bestNum, bestPre) > 0)
+                {
+                    best = r.Clone();
+                    bestNum = num;
+                    bestPre = pre;
+                }
+            }
+            if (best is null)
+                return null;
+            root = best.Value;
+        }
 
         var tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
         // The version TEXT (what release.yml stamps into the asset file name, build
@@ -121,12 +167,8 @@ public static class UpdateManager
         // precedence is decided on) are different jobs — normalizing before the name
         // lookup made every +metadata release unfindable.
         var versionText = tag.StartsWith('v') ? tag[1..] : tag;
-        var numeric = versionText.Split('-')[0].Split('+')[0];
-        if (!Version.TryParse(numeric, out var latest))
+        if (!TryParseTag(tag, out var latest, out var latestPre))
             return null;
-        var latestCore = versionText.Split('+')[0];
-        var dashAt = latestCore.IndexOf('-');
-        var latestPre = dashAt < 0 ? null : latestCore[(dashAt + 1)..];
         if (ComparePrecedence(latest, latestPre, CurrentVersion(), CurrentPrerelease()) <= 0)
             return null;
 

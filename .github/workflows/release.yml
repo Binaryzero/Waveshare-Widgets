@@ -47,6 +47,11 @@ jobs:
             $version = '0.0.0-dev'
           }
           "version=$version" >> $env:GITHUB_OUTPUT
+          # Prerelease is decided by the CORE version only — a hyphen in build
+          # metadata (v1.2.3+windows-x64) is not a prerelease marker, and marking
+          # such a release would hide a stable build from /releases/latest.
+          $core = $version.Split('+')[0]
+          "prerelease=$($core.Contains('-').ToString().ToLower())" >> $env:GITHUB_OUTPUT
 
       - name: Publish (framework-dependent)
         shell: pwsh
@@ -88,4 +93,4 @@ jobs:
           # endpoint the in-app updater polls — advertising the beta to every
           # stable install. Marked, it stays off the stable channel; the next
           # final supersedes it for everyone by SemVer precedence.
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
