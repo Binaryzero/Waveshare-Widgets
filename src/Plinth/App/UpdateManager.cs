@@ -29,6 +29,12 @@ public static class UpdateManager
 
     private static string UpdatesDir => Path.Combine(AppPaths.DataDir, "updates");
 
+    /// <summary>On-disk record that a swap is IN FLIGHT: base dir on line one, the
+    /// rename-aside stamp on line two. Written before the first file moves, deleted
+    /// after the last — its existence at startup means a swap was interrupted, and
+    /// the *.old files under that stamp are a transaction to roll back, not litter.</summary>
+    private static string JournalFile => Path.Combine(UpdatesDir, "swap-journal.txt");
+
     public sealed record UpdateInfo(Version Version, string Tag, string AssetName, string AssetUrl, long Size);
 
     /// <summary>The running build's numeric version — the part before '+sha'. A build
@@ -164,6 +170,11 @@ public static class UpdateManager
         // never strands a MIXED install: everything placed comes back out and every
         // renamed original goes back, and only then does the failure surface. An
         // install that cannot be updated must still be the install that runs.
+        // The journal is ON DISK before the first move: an in-memory list survives an
+        // exception but not a kill or a power cut, and the startup sweep would then
+        // DELETE the very backups a recovery needs. With the file present, the next
+        // start rolls the transaction back instead.
+        File.WriteAllText(JournalFile, baseDir + Environment.NewLine + stamp);
         var renamed = new List<(string Target, string Aside)>();
         var placed = new List<string>();
         try
@@ -193,8 +204,10 @@ public static class UpdateManager
                 try { if (!File.Exists(target)) File.Move(aside, target); } catch (Exception) { unrestored++; }
             if (unrestored > 0)
                 Log.Warn($"Update rollback left {unrestored} file(s) unrestored — the next start may need a manual reinstall");
+            try { File.Delete(JournalFile); } catch (IOException) { /* recovery re-runs harmlessly */ }
             throw;
         }
+        File.Delete(JournalFile);
         Directory.Delete(staging, recursive: true);
         try { File.Delete(zipPath); } catch (IOException) { /* swept next start */ }
 
@@ -202,12 +215,16 @@ public static class UpdateManager
         return Environment.ProcessPath ?? Path.Combine(baseDir, "Plinth.exe");
     }
 
-    /// <summary>Best-effort sweep of the rename-aside remnants and stale staging.
-    /// Called at startup; a file still locked stays for the start after.</summary>
+    /// <summary>Recovery first, sweep second — strictly in that order. A journal on
+    /// disk means a swap died mid-flight (kill, power cut), and the *.old files under
+    /// its stamp are the ORIGINAL install: they are restored, not deleted. Only once
+    /// no transaction is open do the remaining remnants become litter to sweep.
+    /// Runs only as the single instance; both halves move files in the install dir.</summary>
     public static void CleanupAtStartup()
     {
         try
         {
+            RecoverInterruptedSwap();
             foreach (var old in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.old-*", SearchOption.AllDirectories))
                 try { File.Delete(old); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             var staging = Path.Combine(UpdatesDir, "staging");
@@ -218,6 +235,40 @@ public static class UpdateManager
         {
             Log.Warn($"Update cleanup: {ex.Message}");
         }
+    }
+
+    private static void RecoverInterruptedSwap()
+    {
+        if (!File.Exists(JournalFile))
+            return;
+        var lines = File.ReadAllLines(JournalFile);
+        // A journal that does not parse is not a license to guess — leave the
+        // remnants alone rather than restore the wrong thing; the stamp shape is
+        // validated so a corrupted file cannot aim the rollback at arbitrary names.
+        if (lines.Length >= 2 && Directory.Exists(lines[0]) && lines[1].StartsWith("old-", StringComparison.Ordinal))
+        {
+            var suffix = "." + lines[1];
+            var restored = 0;
+            foreach (var aside in Directory.EnumerateFiles(lines[0], "*" + suffix, SearchOption.AllDirectories))
+            {
+                var target = aside[..^suffix.Length];
+                try
+                {
+                    // A target present beside its aside is the NEW file the dead swap
+                    // placed; the transaction loses, the original returns.
+                    if (File.Exists(target))
+                        File.Delete(target);
+                    File.Move(aside, target);
+                    restored++;
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn($"Swap recovery could not restore {Path.GetFileName(target)}: {ex.Message}");
+                }
+            }
+            Log.Warn($"An update was interrupted mid-swap; rolled back at startup ({restored} file(s) restored)");
+        }
+        File.Delete(JournalFile);
     }
 
     private static HttpClient NewClient()

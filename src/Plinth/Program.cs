@@ -12,16 +12,16 @@ internal static class Program
         AppPaths.EnsureCreated();
 
         // A self-update relaunches THIS exe while the old instance is still tearing
-        // down, and the single-instance mutex below would bounce the new one silently.
-        // The updater passes the dying instance's pid; wait it out (bounded) before
-        // contending, then sweep the *.old files the swap renamed aside.
+        // down. The updater passes the dying instance's pid; wait it out (bounded)
+        // before contending for the single-instance mutex below.
         var waitAt = Array.IndexOf(args, "--wait-for");
+        var relaunched = false;
         if (waitAt >= 0 && waitAt + 1 < args.Length && int.TryParse(args[waitAt + 1], out var pid))
         {
+            relaunched = true;
             try { System.Diagnostics.Process.GetProcessById(pid).WaitForExit(15000); }
             catch (ArgumentException) { /* already gone — the good case */ }
         }
-        UpdateManager.CleanupAtStartup();
 
         // The stale Run value goes FIRST, before the refusal below can return. At logon
         // Windows starts both entries, and if the old app wins the race it holds the legacy
@@ -43,9 +43,27 @@ internal static class Program
             return;
         }
 
-        using var mutex = new Mutex(initiallyOwned: true, "Plinth.SingleInstance", out var isFirstInstance);
-        if (!isFirstInstance)
+        // An ordinary second launch bounces immediately — the app is already in the
+        // tray and the user can see it. A RELAUNCH after a self-update waits instead:
+        // teardown can outlive the pid grace above (WebView2 and the sensor providers
+        // dispose slowly), and bouncing here would silently cancel the restart the
+        // updater promised.
+        using var mutex = new Mutex(initiallyOwned: false, "Plinth.SingleInstance");
+        bool owned;
+        try
+        {
+            owned = mutex.WaitOne(relaunched ? TimeSpan.FromSeconds(30) : TimeSpan.Zero);
+        }
+        catch (AbandonedMutexException)
+        {
+            owned = true; // the previous instance died holding it; ownership passed here
+        }
+        if (!owned)
             return;
+
+        // Only as the single instance: swap recovery MOVES files in the install dir,
+        // and the sweep deletes rename-aside remnants — neither may race a sibling.
+        UpdateManager.CleanupAtStartup();
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
