@@ -383,7 +383,9 @@ public sealed class DashboardWindow : Form
                         message["row"]?.GetValue<int>() ?? 0,
                         message["col"]?.GetValue<int>() ?? 0,
                         message["rows"]?.GetValue<int>() ?? 3,
-                        message["cols"]?.GetValue<int>() ?? 5);
+                        message["cols"]?.GetValue<int>() ?? 5,
+                        message["fx"]?.GetValue<double>(),
+                        message["fy"]?.GetValue<double>());
                     break;
 
                 case "fetch":

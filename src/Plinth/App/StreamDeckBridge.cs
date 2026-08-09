@@ -511,10 +511,16 @@ public sealed class StreamDeckBridge
     }
 
     /// <summary>
-    /// Triggers a button by clicking the VSD overlay window at the button's cell center.
-    /// This fires whatever plugin action Stream Deck has bound to that key.
+    /// Triggers a button by clicking the VSD overlay window. When the caller supplies the
+    /// exact tap point (fractions of the mirrored capture), the click lands on that exact
+    /// client pixel — the capture IS the client area, so the user hits the key face they
+    /// can see, whatever chrome or padding Elgato draws around the grid. Cell-center math
+    /// is only the fallback for callers that know a cell but not a point: uniform division
+    /// assumes the keys fill the window edge to edge, and the field showed they do not —
+    /// the window carries its own top strip INSIDE the client area, so cell centers sat
+    /// high and taps fired the key above the one pressed.
     /// </summary>
-    public bool ClickCell(int row, int col, int rows, int cols)
+    public bool ClickCell(int row, int col, int rows, int cols, double? fx = null, double? fy = null)
     {
         if (rows <= 0 || cols <= 0)
             return false;
@@ -531,14 +537,26 @@ public sealed class StreamDeckBridge
 
         var cellW = rect.Right / (double)cols;
         var cellH = rect.Bottom / (double)rows;
-        var x = (int)(cellW * col + cellW / 2);
-        var y = (int)(cellH * row + cellH / 2);
+        int x, y;
+        string how;
+        if (fx is { } px && fy is { } py && px is >= 0 and <= 1 && py is >= 0 and <= 1)
+        {
+            x = Math.Clamp((int)(px * rect.Right), 0, rect.Right - 1);
+            y = Math.Clamp((int)(py * rect.Bottom), 0, rect.Bottom - 1);
+            how = "tap point";
+        }
+        else
+        {
+            x = (int)(cellW * col + cellW / 2);
+            y = (int)(cellH * row + cellH / 2);
+            how = "cell center";
+        }
         var lParam = (IntPtr)((y << 16) | (x & 0xFFFF));
 
         PostMessage(vsd, WM_LBUTTONDOWN, (IntPtr)1, lParam);
         Thread.Sleep(40);
         PostMessage(vsd, WM_LBUTTONUP, IntPtr.Zero, lParam);
-        Log.Info($"Stream Deck: clicked cell row={row} col={col} of {rows}x{cols} at ({x},{y}) " +
+        Log.Info($"Stream Deck: clicked {how} row={row} col={col} of {rows}x{cols} at ({x},{y}) " +
                  $"in {rect.Right}x{rect.Bottom} window (cell {cellW:F0}x{cellH:F0})");
         return true;
     }

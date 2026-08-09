@@ -880,9 +880,11 @@
     },
     /** cb(data) — {image,w,h,hash} on a new frame, {unchanged:true}, or {available:false}. */
     onStreamDeckCapture(cb) { listeners.sdcapture.push(cb); },
-    /** Trigger a Stream Deck button by its grid cell. */
-    streamDeckClick(row, col, rows, cols) {
-      parent.postMessage({ type: 'ww-sd-click', row, col, rows, cols }, shellTarget());
+    /** Trigger a Stream Deck button by its grid cell. Pass fx/fy — the tap point as
+     * fractions (0..1) of the mirrored capture — and the click lands on that exact
+     * pixel of the VSD window instead of an assumed cell center. */
+    streamDeckClick(row, col, rows, cols, fx, fy) {
+      parent.postMessage({ type: 'ww-sd-click', row, col, rows, cols, fx, fy }, shellTarget());
     },
 
     /**

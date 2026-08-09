@@ -35,6 +35,9 @@ public sealed class BrowserFetcher : IDisposable
             ["preview.redd.it"] = "https://www.reddit.com/",
             ["external-preview.redd.it"] = "https://www.reddit.com/",
             ["i.redd.it"] = "https://www.reddit.com/",
+            // The listing fallback host: reddit redirects old.reddit's root to www for
+            // logged-out browsers — same operator, same minting site.
+            ["old.reddit.com"] = "https://www.reddit.com/",
         };
 
     public BrowserFetcher()

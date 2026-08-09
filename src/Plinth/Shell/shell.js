@@ -314,7 +314,15 @@
         have: String(msg.have || '').slice(0, 128),
       });
     } else if (msg.type === 'ww-sd-click') {
-      postToHost({ type: 'sd-click', row: msg.row | 0, col: msg.col | 0, rows: msg.rows | 0, cols: msg.cols | 0 });
+      // fx/fy: the EXACT tap point as fractions of the mirrored capture. The capture is
+      // the VSD's client area pixel for pixel, so the host clicks the key face the user
+      // saw — cell-center math (the fallback when absent) assumes the keys fill the
+      // window, and Elgato draws chrome inside it.
+      const frac = (v) => (typeof v === 'number' && v >= 0 && v <= 1 ? v : undefined);
+      postToHost({
+        type: 'sd-click', row: msg.row | 0, col: msg.col | 0, rows: msg.rows | 0, cols: msg.cols | 0,
+        fx: frac(msg.fx), fy: frac(msg.fy),
+      });
     } else if (msg.type === 'ww-fetch' && msg.id) {
       fetchRoutes.set(msg.id, { win: ev.source, origin: ev.origin });
       setTimeout(() => fetchRoutes.delete(msg.id), 30000);

@@ -130,10 +130,27 @@
 
   async function refreshListing(firstLoad) {
     try {
-      const url = 'https://www.reddit.com/r/' + encodeURIComponent(cfg.subreddit) +
+      // Two listing hosts, same JSON: reddit's wall blocks www intermittently even for
+      // real browsers (field log: 403 through every tier at startup, fine an hour
+      // earlier), and old.reddit sits behind a separately-tuned wall that often still
+      // answers. Whatever succeeds first wins; the schema is identical.
+      const path = '/r/' + encodeURIComponent(cfg.subreddit) +
         '/' + cfg.sort + '.json?limit=60&raw_json=1';
-      const res = await WW.fetch(url, { maxBytes: LISTING_MAX_BYTES });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
+      let res = null;
+      let lastErr = null;
+      for (const host of ['https://www.reddit.com', 'https://old.reddit.com']) {
+        try {
+          res = await WW.fetch(host + path, { maxBytes: LISTING_MAX_BYTES });
+          if (res.ok) break;
+          lastErr = new Error('HTTP ' + res.status);
+          res = null;
+        } catch (e) {
+          // A refused body-size ceiling is final, not a wall to route around.
+          if (isTooLarge(e)) throw e;
+          lastErr = e;
+        }
+      }
+      if (!res) throw lastErr || new Error('no listing host answered');
       const json = await res.json();
       const found = extractImagePosts(json);
       if (found.length === 0) {
