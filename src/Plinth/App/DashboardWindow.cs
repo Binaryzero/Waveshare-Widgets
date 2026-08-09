@@ -514,6 +514,27 @@ public sealed class DashboardWindow : Form
         && (media.Equals("text/html", StringComparison.OrdinalIgnoreCase)
             || media.Equals("application/xhtml+xml", StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>The browser tier reports its content type as raw header text.</summary>
+    private static bool IsHtmlMedia(string? contentType)
+    {
+        var media = contentType?.Split(';')[0].Trim();
+        return media is { }
+            && (media.Equals("text/html", StringComparison.OrdinalIgnoreCase)
+                || media.Equals("application/xhtml+xml", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>What every exhausted soft-wall path returns: 502 names the truth —
+    /// something answered in the origin's place — where the proxy's masquerading 200
+    /// would send the field chasing a widget decode failure.</summary>
+    private static void SetWallResult(JsonObject result)
+    {
+        result["status"] = 502;
+        result["statusText"] = "bot wall";
+        result["contentType"] = null;
+        result["bodyBase64"] = "";
+        result["headers"] = new JsonObject();
+    }
+
     private void HandleAudioGet(JsonNode message, Action<string, JsonNode?>? reply = null)
     {
         _ = Task.Run(() =>
@@ -761,6 +782,13 @@ public sealed class DashboardWindow : Form
             Log.Info($"proxy fetch {SafeUrl.Describe(uri)} -> {(int)response.StatusCode} ({bytes.Length} bytes)"
                 + (softWall ? " — HTML answering an image-only request; escalating" : ""));
 
+            // The known wall's connection is released BEFORE the serialized browser
+            // tier: its body is never read, and holding the open stream through a
+            // retry that can take tens of seconds — behind every other caller in the
+            // fetcher's queue — accumulates sockets for responses already condemned.
+            if (softWall)
+                response.Dispose();
+
             // TLS-fingerprinting bot walls (Reddit) 403 every .NET client; retry those
             // through a real Chromium navigation, which they do trust — and the
             // masquerading 200 escalates the same way.
@@ -785,17 +813,29 @@ public sealed class DashboardWindow : Form
                 }
                 else if (alt is { } browser && browser.Status < 400)
                 {
-                    result["status"] = browser.Status;
-                    result["statusText"] = "";
-                    result["contentType"] = browser.ContentType;
-                    result["bodyBase64"] = Convert.ToBase64String(browser.Body);
-                    // REPLACED, never merged. Every other field here describes the browser's
-                    // answer; leaving the proxy's headers beside them would hand the widget
-                    // a 200 carrying the 403's Retry-After — metadata about a response that
-                    // is no longer the one being reported. Assigned unconditionally so an
-                    // empty collection still clears what the proxy tier put there.
-                    result["headers"] = ToHeaderNode(browser.Headers);
-                    Log.Info($"browser fetch {SafeUrl.Describe(uri)} -> {browser.Status} ({browser.Body.Length} bytes)");
+                    if (softWall && IsHtmlMedia(browser.ContentType))
+                    {
+                        // The browser was walled too — a 2xx HTML answer to an
+                        // image-only request is inadmissible whichever tier produced
+                        // it, and copying it as success would re-report the wall as a
+                        // widget decode failure.
+                        Log.Warn($"browser fetch {SafeUrl.Describe(uri)} -> {browser.Status} but HTML to an image-only request; a wall on every tier");
+                        SetWallResult(result);
+                    }
+                    else
+                    {
+                        result["status"] = browser.Status;
+                        result["statusText"] = "";
+                        result["contentType"] = browser.ContentType;
+                        result["bodyBase64"] = Convert.ToBase64String(browser.Body);
+                        // REPLACED, never merged. Every other field here describes the browser's
+                        // answer; leaving the proxy's headers beside them would hand the widget
+                        // a 200 carrying the 403's Retry-After — metadata about a response that
+                        // is no longer the one being reported. Assigned unconditionally so an
+                        // empty collection still clears what the proxy tier put there.
+                        result["headers"] = ToHeaderNode(browser.Headers);
+                        Log.Info($"browser fetch {SafeUrl.Describe(uri)} -> {browser.Status} ({browser.Body.Length} bytes)");
+                    }
                 }
                 else if (alt is { } blocked)
                 {
@@ -824,13 +864,8 @@ public sealed class DashboardWindow : Form
                     // The browser tier returned nothing at all (navigation failure or a
                     // refused landing). Returning the proxy's 200 would report success
                     // carrying HTML already ruled inadmissible — the widget would blame
-                    // its own decoder. 502 names the truth: something answered in the
-                    // origin's place.
-                    result["status"] = 502;
-                    result["statusText"] = "bot wall";
-                    result["contentType"] = null;
-                    result["bodyBase64"] = "";
-                    result["headers"] = new JsonObject();
+                    // its own decoder.
+                    SetWallResult(result);
                 }
             }
         }
