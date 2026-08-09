@@ -630,6 +630,19 @@ public static class UpdateManager
         || entryName.Equals("repair-advised.txt", StringComparison.OrdinalIgnoreCase)
         || entryName.Equals("swap-journal.done", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>True when a journaled relative path contains a "." or ".." segment.
+    /// GetRelativePath never emits either for a file enumerated beneath staging, so
+    /// a record carrying one is corruption — and the dangerous kind: the containment
+    /// test resolves the path first, so "sub\..\Plinth.exe" passes it while naming
+    /// the root executable, which recovery would then delete as an "addition".</summary>
+    private static bool HasDotSegment(string rel)
+    {
+        foreach (var segment in rel.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            if (segment is "." or "..")
+                return true;
+        return false;
+    }
+
     /// <summary>Durable record that quarantine left this install PARTIALLY SWAPPED:
     /// originals preserved away, the dead transaction's files in place. A blocking
     /// refusal would brick the one in-app repair path (the updater runs inside the
@@ -925,8 +938,12 @@ public static class UpdateManager
                     // written as RELATIVE paths, and Path.Combine hands a rooted
                     // value straight through, where one that happens to point inside
                     // the install would pass containment and delete a file the
-                    // updater never added.
-                    if (Path.IsPathRooted(rel)
+                    // updater never added. Dot segments are corruption for the same
+                    // reason: GetRelativePath never emits them for a file beneath
+                    // staging, and "sub\..\Plinth.exe" RESOLVES inside the install —
+                    // straight past the containment test — while naming the root
+                    // executable, which no addition record ever legitimately does.
+                    if (Path.IsPathRooted(rel) || HasDotSegment(rel)
                         || !Path.GetFullPath(Path.Combine(lines[0], rel))
                             .StartsWith(vroot, StringComparison.OrdinalIgnoreCase))
                     {
@@ -1043,7 +1060,7 @@ public static class UpdateManager
             if (rel.Length == 0)
                 continue;
             var target = Path.GetFullPath(Path.Combine(baseDir, rel));
-            if (Path.IsPathRooted(rel) || !target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            if (Path.IsPathRooted(rel) || HasDotSegment(rel) || !target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
             {
                 // Pre-validation routes escaping records to quarantine before this
                 // loop runs; reaching here anyway is a failure, never a clean skip.

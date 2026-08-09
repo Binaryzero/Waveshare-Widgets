@@ -44,6 +44,40 @@ internal static class Program
             return;
         }
 
+        // The lock below MOVED NAMESPACES: earlier Plinth releases named it without
+        // the Global\ prefix, which scopes to the launching session — where the
+        // Global\ open below cannot see it. A new build started beside a running
+        // old release would sail past its own gate and make BOTH processes "the"
+        // instance, free to run swaps and the remnant sweep concurrently. Until
+        // those releases age out, the old name is PROBED here — never held, like
+        // the Waveshare-era name above; it still belongs to the old app. The probe
+        // shares the old lock's session scope, which is exactly the reach the old
+        // release ever enforced for itself.
+        try
+        {
+            if (Mutex.TryOpenExisting("Plinth.SingleInstance", out var preNamespace))
+            {
+                preNamespace.Dispose();
+                Log.Info("A previous Plinth release holds the pre-namespace lock; exiting like any second launch");
+                return;
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Documented as "the named mutex exists, but the user does not have the
+            // security access required to use it" — positive evidence of a live old
+            // instance (one running elevated), not a probe failure.
+            Log.Info("A previous Plinth release holds the pre-namespace lock (not open to us); exiting");
+            return;
+        }
+        catch (Exception ex)
+        {
+            // Failing to PROBE is not evidence the name is held. Proceeding mirrors
+            // LegacyInstall's judgment on the same trade: refusing here would turn a
+            // transitional courtesy into an app that will not start.
+            Log.Warn($"Could not check for a pre-namespace instance: {ex.Message}");
+        }
+
         // An ordinary second launch bounces immediately — the app is already in the
         // tray and the user can see it. A RELAUNCH after a self-update waits instead:
         // teardown can outlive the pid grace above (WebView2 and the sensor providers
