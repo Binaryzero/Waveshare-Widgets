@@ -336,9 +336,17 @@ fluid across their `supported_slots`.
 
 ## Backgrounds (wallpaper)
 
-The dashboard renders a wallpaper layer behind the pages, iCUE-style. It's set in the
-Settings window (a dashboard-wide default, plus an optional per-page override) and stored
-in `layout.json` as a `background` object on the layout root and/or on any page:
+With no background picked, the dashboard shows the **stock plate**: the instrument's
+machined face — engineering grid dots, an inset hairline frame with corner brackets, and
+the etched plate label. Every tone in it is derived live from the theme seeds
+(`color-mix` over `--bg`, `--text`, `--accent`), so editing the Background, Text, or
+Accent color in Settings recolors the chrome itself; nothing about it is fixed.
+
+A wallpaper covers the plate (a `contain`- or `center`-fit image floats on it, plate in
+the letterbox bars). The dashboard renders it as a layer behind the pages,
+iCUE-style. It's set in the Settings window (a dashboard-wide default, plus an optional
+per-page override) and stored in `layout.json` as a `background` object on the layout
+root and/or on any page:
 
 ```jsonc
 {
@@ -359,7 +367,7 @@ in `layout.json` as a `background` object on the layout root and/or on any page:
 | `angle` | gradient | degrees (0–360) |
 | `source` | image, video | file name in the backgrounds folder (below) |
 | `fit` | image, video | `cover` \| `contain` \| `stretch` \| `tile` \| `center` |
-| `dim` | image, video | 0–100 % dark overlay over the wallpaper (not the widgets) |
+| `dim` | image, video | 0–100 % dark overlay over the whole background canvas — letterbox bars and the plate showing in them included — but never the widgets |
 | `blur` | image, video | 0–40 px gaussian blur |
 
 - **Static** = `image` (PNG/JPG/WebP/AVIF/BMP, plus animated GIF/WebP/AVIF which animate
