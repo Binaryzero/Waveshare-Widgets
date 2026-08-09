@@ -26,6 +26,7 @@ public static class UpdateManager
     private const string Owner = "Binaryzero";
     private const string Repo = "Waveshare-Widgets";
     private const long MaxAssetBytes = 500L * 1024 * 1024;
+    private const long MaxExpandedBytes = 2L * 1024 * 1024 * 1024;
 
     private static string UpdatesDir => Path.Combine(AppPaths.DataDir, "updates");
 
@@ -136,11 +137,19 @@ public static class UpdateManager
         // actually contain the application, not be an error page saved as .zip.
         using var zip = ZipFile.OpenRead(zipPath);
         var sawApp = false;
+        long expanded = 0;
         foreach (var entry in zip.Entries)
         {
             var resolved = Path.GetFullPath(Path.Combine("X:\\probe", entry.FullName.Replace('/', '\\')));
             if (!resolved.StartsWith("X:\\probe\\", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException($"archive entry escapes the extraction root: {entry.FullName}");
+            // The download cap bounds COMPRESSED bytes; a hostile ratio expands a small
+            // zip until the system drive is full before the install is ever touched.
+            // Entry lengths are declared metadata, but ExtractToDirectory enforces them:
+            // inflating past the declared Length fails the entry.
+            expanded += entry.Length;
+            if (entry.Length > MaxExpandedBytes || expanded > MaxExpandedBytes)
+                throw new InvalidOperationException($"archive expands past {MaxExpandedBytes} bytes — refusing it");
             if (entry.Name.Equals("Plinth.dll", StringComparison.OrdinalIgnoreCase)
                 || entry.Name.Equals("Plinth.exe", StringComparison.OrdinalIgnoreCase))
                 sawApp = true;
@@ -186,11 +195,25 @@ public static class UpdateManager
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                 if (File.Exists(target))
                 {
+                    // ATOMIC per file: rename-aside-then-move-in left an instant in
+                    // which the target name resolved to NOTHING — a power cut there
+                    // with Plinth.exe as the target and no runnable binary remains to
+                    // perform any recovery. File.Replace swaps name, content, and
+                    // backup in one operation, so the name never stops resolving to a
+                    // complete file; it needs both files on the target's volume, so
+                    // the staged bytes hop in next to the target first. Crash states
+                    // shrink to "some files new, some old" — which the journal
+                    // recovery below rolls back — never "a file missing".
+                    var incoming = $"{target}.new-{stamp}";
+                    File.Copy(source, incoming, overwrite: true);
                     var aside = $"{target}.{stamp}";
-                    File.Move(target, aside);
+                    File.Replace(incoming, target, aside);
                     renamed.Add((target, aside));
                 }
-                File.Move(source, target);
+                else
+                {
+                    File.Move(source, target);
+                }
                 placed.Add(target);
             }
         }
@@ -198,13 +221,19 @@ public static class UpdateManager
         {
             Log.Warn($"Update swap failed after {placed.Count} file(s); rolling back: {ex.Message}");
             var unrestored = 0;
+            foreach (var stray in Directory.EnumerateFiles(baseDir, $"*.new-{stamp}", SearchOption.AllDirectories))
+                try { File.Delete(stray); } catch (Exception) { unrestored++; }
             foreach (var newFile in placed)
                 try { File.Delete(newFile); } catch (Exception) { unrestored++; }
             foreach (var (target, aside) in renamed)
                 try { if (!File.Exists(target)) File.Move(aside, target); } catch (Exception) { unrestored++; }
+            // The journal outlives an INCOMPLETE rollback on purpose: deleting it
+            // would hand the surviving asides to the startup sweep as litter, and the
+            // partial install would become permanent. Startup recovery retries instead.
             if (unrestored > 0)
-                Log.Warn($"Update rollback left {unrestored} file(s) unrestored — the next start may need a manual reinstall");
-            try { File.Delete(JournalFile); } catch (IOException) { /* recovery re-runs harmlessly */ }
+                Log.Warn($"Update rollback left {unrestored} file(s) unrestored — the journal is kept and startup recovery will retry");
+            else
+                try { File.Delete(JournalFile); } catch (IOException) { /* recovery re-runs harmlessly */ }
             throw;
         }
         File.Delete(JournalFile);
@@ -224,9 +253,17 @@ public static class UpdateManager
     {
         try
         {
-            RecoverInterruptedSwap();
+            // The sweep runs ONLY when no transaction remains open. Recovery that
+            // could not finish (a target antivirus still holds, a journal that did
+            // not parse) keeps its journal and forfeits this start's sweep — an
+            // unrestored original must never be reclassified as litter, and the
+            // start after gets to retry.
+            if (!RecoverInterruptedSwap())
+                return;
             foreach (var old in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.old-*", SearchOption.AllDirectories))
                 try { File.Delete(old); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            foreach (var stray in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.new-old-*", SearchOption.AllDirectories))
+                try { File.Delete(stray); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             var staging = Path.Combine(UpdatesDir, "staging");
             if (Directory.Exists(staging))
                 Directory.Delete(staging, recursive: true);
@@ -237,38 +274,62 @@ public static class UpdateManager
         }
     }
 
-    private static void RecoverInterruptedSwap()
+    /// <summary>Returns whether the install is clean to sweep: true when no journal
+    /// existed or every recorded backup was restored; false keeps the journal (and
+    /// the sweep held off) so the next start retries.</summary>
+    private static bool RecoverInterruptedSwap()
     {
         if (!File.Exists(JournalFile))
-            return;
+            return true;
         var lines = File.ReadAllLines(JournalFile);
-        // A journal that does not parse is not a license to guess — leave the
-        // remnants alone rather than restore the wrong thing; the stamp shape is
-        // validated so a corrupted file cannot aim the rollback at arbitrary names.
-        if (lines.Length >= 2 && Directory.Exists(lines[0]) && lines[1].StartsWith("old-", StringComparison.Ordinal))
+        // A journal that does not parse is not a license to guess — restore nothing
+        // rather than aim renames at names a corrupted file suggests. It is preserved
+        // for eyes as .bad (so ONE later start regains its sweep), and this start
+        // leaves every remnant untouched.
+        if (!(lines.Length >= 2 && Directory.Exists(lines[0]) && lines[1].StartsWith("old-", StringComparison.Ordinal)))
         {
-            var suffix = "." + lines[1];
-            var restored = 0;
-            foreach (var aside in Directory.EnumerateFiles(lines[0], "*" + suffix, SearchOption.AllDirectories))
-            {
-                var target = aside[..^suffix.Length];
-                try
-                {
-                    // A target present beside its aside is the NEW file the dead swap
-                    // placed; the transaction loses, the original returns.
-                    if (File.Exists(target))
-                        File.Delete(target);
-                    File.Move(aside, target);
-                    restored++;
-                }
-                catch (Exception ex)
-                {
-                    Log.Warn($"Swap recovery could not restore {Path.GetFileName(target)}: {ex.Message}");
-                }
-            }
-            Log.Warn($"An update was interrupted mid-swap; rolled back at startup ({restored} file(s) restored)");
+            Log.Warn("Swap journal did not parse; preserved as swap-journal.bad, nothing restored or swept this start");
+            try { File.Move(JournalFile, JournalFile + ".bad", overwrite: true); }
+            catch (Exception ex) { Log.Warn($"Could not preserve the journal: {ex.Message}"); }
+            return false;
         }
+
+        var suffix = "." + lines[1];
+        var restored = 0;
+        var failures = 0;
+        // Incomplete Replace hops first: a *.new-<stamp> beside its target is staged
+        // bytes that never swapped in — plain deletions, no original at risk.
+        foreach (var stray in Directory.EnumerateFiles(lines[0], "*.new-" + lines[1], SearchOption.AllDirectories))
+            try { File.Delete(stray); } catch (Exception) { failures++; }
+        foreach (var aside in Directory.EnumerateFiles(lines[0], "*" + suffix, SearchOption.AllDirectories))
+        {
+            var target = aside[..^suffix.Length];
+            try
+            {
+                // A target present beside its aside is the NEW file the dead swap
+                // placed; the transaction loses, the original returns.
+                if (File.Exists(target))
+                    File.Delete(target);
+                File.Move(aside, target);
+                restored++;
+            }
+            catch (Exception ex)
+            {
+                failures++;
+                Log.Warn($"Swap recovery could not restore {Path.GetFileName(target)}: {ex.Message}");
+            }
+        }
+        if (failures > 0)
+        {
+            // The journal outlives an incomplete recovery: deleting it would hand the
+            // surviving backups to the sweep as litter and make the partial install
+            // permanent. This start runs on what it has; the next one retries.
+            Log.Warn($"Swap recovery incomplete ({restored} restored, {failures} failed); journal kept, nothing swept — retrying next start");
+            return false;
+        }
+        Log.Warn($"An update was interrupted mid-swap; rolled back at startup ({restored} file(s) restored)");
         File.Delete(JournalFile);
+        return true;
     }
 
     private static HttpClient NewClient()
