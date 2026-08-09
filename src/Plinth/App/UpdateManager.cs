@@ -468,7 +468,12 @@ public static class UpdateManager
         catch (Exception ex) { Log.Warn($"Update committed but the journal would not delete ({ex.Message}); the next start will roll it back — run the update again after"); }
         try { Directory.Delete(staging, recursive: true); }
         catch (Exception ex) { Log.Warn($"Staging cleanup after update: {ex.Message}"); }
-        try { File.Delete(zipPath); } catch (IOException) { /* swept next start */ }
+        // ALL failures, not just IOException: an ACL that allows creating the zip
+        // but denies deleting it would otherwise turn a fully committed update
+        // into a reported failure — and the old process would keep running over
+        // the new files instead of relaunching.
+        try { File.Delete(zipPath); }
+        catch (Exception ex) { Log.Warn($"Archive cleanup after update: {ex.Message}"); }
 
         Log.Info($"Update applied from {Path.GetFileName(zipPath)}; relaunching");
         return Environment.ProcessPath ?? Path.Combine(baseDir, "Plinth.exe");
@@ -556,9 +561,19 @@ public static class UpdateManager
     /// puts updates/ (staging, quarantine, archives) inside every install scan —
     /// and quarantine would then be swept by the very pass it exists to hide from.
     /// Each scan over the install skips this subtree.</summary>
-    private static bool InsideUpdatesDir(string path) =>
-        path.StartsWith(Path.TrimEndingDirectorySeparator(UpdatesDir) + Path.DirectorySeparatorChar,
-            StringComparison.OrdinalIgnoreCase);
+    private static bool InsideUpdatesDir(string path)
+    {
+        var updates = Path.TrimEndingDirectorySeparator(UpdatesDir) + Path.DirectorySeparatorChar;
+        // The exclusion only makes sense for a data tree that DESCENDS from the
+        // install. If the install itself sits beneath the data dir — a zip
+        // extracted beside the download the apply-failure dialog points at —
+        // "inside updates/" would describe every file, and recovery would skip
+        // all asides while reporting a clean rollback.
+        var install = Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory) + Path.DirectorySeparatorChar;
+        if (install.StartsWith(updates, StringComparison.OrdinalIgnoreCase))
+            return false;
+        return path.StartsWith(updates, StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>Whether an EnumerateFilesSafe walk saw everything. A caller whose
     /// CORRECTNESS depends on completeness (recovery deciding a transaction is

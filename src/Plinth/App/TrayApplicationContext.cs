@@ -310,7 +310,14 @@ public sealed class TrayApplicationContext : ApplicationContext
                     }
                     catch (Exception rex)
                     {
+                        // The dialog just promised a restart; exiting silently after
+                        // a failed Process.Start would break that promise with a
+                        // vanished tray. Same honesty as the startup-recovery path.
                         Log.Warn($"Repair relaunch failed: {rex.Message}");
+                        MessageBox.Show(
+                            "Plinth could not restart itself. Start Plinth again from the "
+                            + "Start menu or its folder, and it will finish the repair.",
+                            "Plinth update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                     ExitThread();
                     return;

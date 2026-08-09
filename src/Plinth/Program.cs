@@ -21,6 +21,7 @@ internal static class Program
             relaunched = true;
             try { System.Diagnostics.Process.GetProcessById(pid).WaitForExit(15000); }
             catch (ArgumentException) { /* already gone — the good case */ }
+            catch (InvalidOperationException) { /* exited between lookup and wait — the same good case */ }
         }
 
         // The stale Run value goes FIRST, before the refusal below can return. At logon
@@ -51,7 +52,22 @@ internal static class Program
         // Global\, not the default Local\: an unqualified name scopes to each Windows
         // SESSION, so a console and an RDP login could both become "the" instance and
         // run swaps and cleanup concurrently against the same portable install.
-        using var mutex = new Mutex(initiallyOwned: false, @"Global\Plinth.SingleInstance");
+        // Another ACCOUNT's instance created the mutex under its default ACL, which
+        // can deny this account the right to even open it. That still means "an
+        // instance runs somewhere on this machine" — the rule this lock enforces —
+        // just not one this account may wait on; exit like any second launch
+        // instead of crashing before the first window exists.
+        Mutex mutex;
+        try
+        {
+            mutex = new Mutex(initiallyOwned: false, @"Global\Plinth.SingleInstance");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            Log.Info("Another account's Plinth instance holds the machine lock; exiting");
+            return;
+        }
+        using var _ = mutex;
         bool owned;
         try
         {
