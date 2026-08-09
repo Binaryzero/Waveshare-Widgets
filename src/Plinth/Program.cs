@@ -66,7 +66,24 @@ internal static class Program
 
         // Only as the single instance: swap recovery MOVES files in the install dir,
         // and the sweep deletes rename-aside remnants — neither may race a sibling.
-        if (UpdateManager.CleanupAtStartup())
+        var outcome = UpdateManager.CleanupAtStartup();
+        if (outcome == UpdateManager.StartupOutcome.Refuse)
+        {
+            // An active journal remains and nothing could be repaired yet: the
+            // install is KNOWN-mixed, and running a session over it trades a clear
+            // failure now for undiagnosable ones later. Refusing is deliberate; the
+            // next start retries recovery once whatever holds the files lets go.
+            Log.Warn("Update recovery could not run; refusing to start over a mixed install");
+            MessageBox.Show(
+                "An update did not finish, and Plinth could not repair it yet — a file "
+                + "may still be locked by another program.
+
+"
+                + "Close other programs using Plinth's folder, then start Plinth again.",
+                "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (outcome == UpdateManager.StartupOutcome.Relaunch)
         {
             // Recovery restored files UNDER this process: the assemblies already
             // loaded may be the dead transaction's new code, now facing the old

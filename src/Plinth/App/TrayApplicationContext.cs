@@ -287,10 +287,37 @@ public sealed class TrayApplicationContext : ApplicationContext
             }
             catch (Exception ex)
             {
+                Log.Warn($"Update apply failed: {ex}");
+                if (UpdateManager.RecoveryPending)
+                {
+                    // The rollback did not finish — the install on disk is mixed and
+                    // the journal waits for startup recovery. Continuing this session
+                    // would run the old host over that mix until some later restart;
+                    // restart through the same wait-for machinery and let recovery
+                    // repair it now.
+                    MessageBox.Show(
+                        $"The update could not be applied, and undoing it needs a restart:\n{ex.Message}\n\n"
+                        + "Plinth will restart and repair itself now.",
+                        "Plinth update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = Environment.ProcessPath ?? Application.ExecutablePath,
+                            Arguments = $"--wait-for {Environment.ProcessId}",
+                            UseShellExecute = true,
+                        });
+                    }
+                    catch (Exception rex)
+                    {
+                        Log.Warn($"Repair relaunch failed: {rex.Message}");
+                    }
+                    ExitThread();
+                    return;
+                }
                 // The failure worth naming precisely: an install folder this account
                 // cannot write. Apply rolled the install back, so what runs is still
                 // whole. The download is not lost — the dialog says where it is.
-                Log.Warn($"Update apply failed: {ex}");
                 MessageBox.Show(
                     $"The update could not be applied:\n{ex.Message}\n\n"
                     + $"The downloaded zip is at:\n{zip}",

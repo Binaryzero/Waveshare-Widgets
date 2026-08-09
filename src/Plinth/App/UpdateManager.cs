@@ -370,6 +370,7 @@ public static class UpdateManager
         WriteJournalDurable(baseDir + Environment.NewLine + stamp + Environment.NewLine, append: false);
         var renamed = new List<(string Target, string Aside)>();
         var placed = new List<string>();
+        var vetted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
             foreach (var source in Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories))
@@ -377,6 +378,7 @@ public static class UpdateManager
                 var rel = Path.GetRelativePath(staging, source);
                 var target = Path.Combine(baseDir, rel);
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                EnsureNoReparseAncestors(Path.GetDirectoryName(target)!, baseDir, vetted);
                 if (File.Exists(target))
                 {
                     // ATOMIC per file: rename-aside-then-move-in left an instant in
@@ -487,6 +489,31 @@ public static class UpdateManager
     private static readonly System.Text.RegularExpressions.Regex StampShape =
         new(@"^old-\d+-\d+$", System.Text.RegularExpressions.RegexOptions.Compiled);
 
+    /// <summary>An active journal means an unfinished transaction: recovery still
+    /// owes the install a repair. Callers use this to refuse running a session
+    /// over a known-mixed install.</summary>
+    public static bool RecoveryPending => File.Exists(JournalFile);
+
+    /// <summary>Targets never sit beneath a reparse point: a junctioned Shell/
+    /// would send the swap OUTSIDE the install, where recovery's walker — which
+    /// refuses reparse points for exactly that reason — could never find the
+    /// asides, and the journal would retire clean over unreachable damage.
+    /// Checked per directory and cached; throwing here aborts the transaction
+    /// while rollback is still trivial.</summary>
+    private static void EnsureNoReparseAncestors(string dir, string baseDir, HashSet<string> vetted)
+    {
+        var stop = Path.TrimEndingDirectorySeparator(baseDir);
+        for (var d = Path.TrimEndingDirectorySeparator(dir);
+             d.Length > stop.Length && d.StartsWith(stop, StringComparison.OrdinalIgnoreCase);
+             d = Path.GetDirectoryName(d)!)
+        {
+            if (!vetted.Add(d))
+                return;
+            if (File.GetAttributes(d).HasFlag(FileAttributes.ReparsePoint))
+                throw new InvalidOperationException($"update target sits beneath a link: {d}");
+        }
+    }
+
     /// <summary>Records that a transaction FINISHED and its stamp's remnants are
     /// litter. The sweep deletes only what a marker names — filename SHAPE alone
     /// can never establish ownership: a user's config.json.old-2024-01 beside a
@@ -577,12 +604,21 @@ public static class UpdateManager
         }
     }
 
-    /// <summary>Returns true when recovery RESTORED files under this very process:
-    /// the assemblies already loaded may be the dead transaction's new code, now
-    /// running against the restored old files — the caller must relaunch rather
-    /// than continue this session on a host/shell contract that no longer exists
-    /// on disk.</summary>
-    public static bool CleanupAtStartup()
+    public enum StartupOutcome
+    {
+        /// <summary>No transaction touched anything; run normally.</summary>
+        Proceed,
+        /// <summary>Recovery RESTORED files under this very process — the loaded
+        /// assemblies may be the dead transaction's code facing restored old files;
+        /// the caller must relaunch instead of running this session.</summary>
+        Relaunch,
+        /// <summary>An active journal remains and nothing could be repaired yet —
+        /// the install is known-mixed. Running a session over it is refused; the
+        /// next start retries recovery.</summary>
+        Refuse,
+    }
+
+    public static StartupOutcome CleanupAtStartup()
     {
         var restoredAny = false;
         try
@@ -593,7 +629,7 @@ public static class UpdateManager
             // reclassified as litter, and the start after gets to retry.
             (var clean, restoredAny) = RecoverInterruptedSwap();
             if (!clean)
-                return restoredAny;
+                return Outcome(restoredAny);
             // The sweep is driven by RECORD, never by filename shape: nothing but the
             // updater's own ledger can establish ownership of a suffix. Each finished
             // transaction leaves a marker naming its stamp; only those exact stamps
@@ -609,11 +645,17 @@ public static class UpdateManager
                         continue;
                     }
                     var walk = new WalkReport();
+                    var swept = true;
                     foreach (var pattern in new[] { "*." + stamp, "*." + stamp + ".shed", "*.new-" + stamp })
                         foreach (var file in EnumerateFilesSafe(AppContext.BaseDirectory, pattern, walk))
                             if (!InsideUpdatesDir(file))
-                                try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-                    if (walk.Complete)
+                                try { File.Delete(file); }
+                                catch (IOException) { swept = false; }
+                                catch (UnauthorizedAccessException) { swept = false; }
+                    // The marker retires only once every remnant is GONE: traversal
+                    // completeness alone would drop it over a still-locked aside,
+                    // and that old binary would then sit unclaimed forever.
+                    if (walk.Complete && swept)
                         try { File.Delete(marker); } catch (IOException) { }
                 }
             var staging = Path.Combine(UpdatesDir, "staging");
@@ -631,15 +673,23 @@ public static class UpdateManager
                             File.Delete(zip);
                     }
                     catch (IOException) { }
-            return restoredAny;
+            return Outcome(restoredAny);
         }
         catch (Exception ex)
         {
             Log.Warn($"Update cleanup: {ex.Message}");
             // Whatever failed AFTER recovery must not erase what recovery DID: files
             // restored under already-loaded images still demand the relaunch.
-            return restoredAny;
+            return Outcome(restoredAny);
         }
+
+        // Restores demand a relaunch whatever else happened; an ACTIVE journal with
+        // nothing restored is a known-mixed install a session must not run over —
+        // distinguishable from the quarantine path, which retires its journal.
+        static StartupOutcome Outcome(bool restoredAny) =>
+            restoredAny ? StartupOutcome.Relaunch
+            : RecoveryPending ? StartupOutcome.Refuse
+            : StartupOutcome.Proceed;
     }
 
     /// <summary>Clean: the install may be swept — no journal existed, or every
