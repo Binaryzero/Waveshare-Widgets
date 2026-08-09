@@ -108,8 +108,8 @@ internal static class Program
                 + "Close other programs using Plinth's folder, then start Plinth again. "
                 + "If this repeats or Plinth misbehaves afterwards, extract a fresh copy of "
                 + "the latest release into a new folder and run that — keep the old folder "
-                + "(your settings can live inside it), and re-enable Start with Windows from "
-                + "the new copy if you use it.",
+                + "(your settings can live inside it), and turn Start with Windows off and "
+                + "on again from the new copy if you use it.",
                 "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }

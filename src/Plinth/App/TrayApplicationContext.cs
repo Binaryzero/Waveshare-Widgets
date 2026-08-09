@@ -82,7 +82,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             _trayIcon.ShowBalloonTip(15_000, "Plinth needs repair",
                 "An update did not finish cleanly. Use Check for updates (tray menu) to repair — "
                 + "or run a fresh copy from a NEW folder: exit Plinth first, keep the old folder, "
-                + "and re-enable Start with Windows in the new copy.", ToolTipIcon.Warning);
+                + "and turn Start with Windows off and on again in the new copy.", ToolTipIcon.Warning);
 
         // The panel powers up ~10 s after HDMI connect and may be absent at logon;
         // re-evaluate placement whenever the display topology changes.
@@ -178,6 +178,21 @@ public sealed class TrayApplicationContext : ApplicationContext
         // running" must never require digging through logs.
         menu.Items.Add(new ToolStripMenuItem($"Plinth {AppVersion.Describe}") { Enabled = false });
         menu.Items.Add(new ToolStripSeparator());
+
+        // The advisory's balloon is suppressible (Windows 11 quiets legacy
+        // NotifyIcon tips, users disable notifications); the MENU is not. A
+        // standing repair state gets a standing surface, wired straight to the
+        // repair itself.
+        if (UpdateManager.RepairAdvised)
+        {
+            var repair = new ToolStripMenuItem("⚠ Repair needed — install update")
+            {
+                Font = new Font(menu.Font, FontStyle.Bold),
+            };
+            repair.Click += async (_, _) => await CheckForUpdatesInteractive();
+            menu.Items.Add(repair);
+            menu.Items.Add(new ToolStripSeparator());
+        }
 
         var settingsItem = new ToolStripMenuItem("Settings…") { Font = new Font(menu.Font, FontStyle.Bold) };
         settingsItem.Click += (_, _) => OpenSettings();

@@ -832,6 +832,35 @@ public static class UpdateManager
         var terminated = raw.Length > 0 && raw[^1] == '\n';
         var lines = raw.Replace("\r", "").Split('\n', StringSplitOptions.RemoveEmptyEntries);
         var headerComplete = lines.Length > 2 || terminated;
+        // Body records are vetted as strictly as the header: every addition was
+        // written as a relative path inside the install, so one that now resolves
+        // OUTSIDE it is disk corruption — and skipping it while deleting the journal
+        // as clean would leave the actually-installed addition untracked forever.
+        // A corrupt body gets the same treatment as a corrupt header.
+        var bodyValid = true;
+        if (headerComplete && lines.Length >= 2 && NamesThisInstall(lines[0]))
+        {
+            var vroot = lines[0].TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            foreach (var rel in lines.Skip(2))
+            {
+                if (rel.Length == 0)
+                    continue;
+                try
+                {
+                    if (!Path.GetFullPath(Path.Combine(lines[0], rel))
+                            .StartsWith(vroot, StringComparison.OrdinalIgnoreCase))
+                    {
+                        bodyValid = false;
+                        break;
+                    }
+                }
+                catch (Exception)
+                {
+                    bodyValid = false;
+                    break;
+                }
+            }
+        }
         // A journal that does not parse is not a license to guess — restore nothing
         // rather than aim renames at names a corrupted file suggests. But simply
         // stepping aside would hand next start's sweep the very remnants that may
@@ -841,7 +870,7 @@ public static class UpdateManager
         // truncated "old-123" would pass a prefix check, find no backups under its
         // malformed suffix, retire the journal — and hand the real stamped originals
         // to the sweep.
-        if (!(headerComplete && lines.Length >= 2 && NamesThisInstall(lines[0]) && StampShape.IsMatch(lines[1])))
+        if (!(headerComplete && bodyValid && lines.Length >= 2 && NamesThisInstall(lines[0]) && StampShape.IsMatch(lines[1])))
         {
             Log.Warn("Swap journal did not parse; quarantining remnants");
             // The journal retires ONLY once every remnant is preserved. A quarantine
@@ -928,7 +957,10 @@ public static class UpdateManager
             var target = Path.GetFullPath(Path.Combine(baseDir, rel));
             if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
             {
-                Log.Warn($"Swap recovery: journaled addition escapes the install dir, skipped: {rel}");
+                // Pre-validation routes escaping records to quarantine before this
+                // loop runs; reaching here anyway is a failure, never a clean skip.
+                Log.Warn($"Swap recovery: journaled addition escapes the install dir: {rel}");
+                failures++;
                 continue;
             }
             try { if (File.Exists(target)) File.Delete(target); } catch (Exception) { failures++; }
