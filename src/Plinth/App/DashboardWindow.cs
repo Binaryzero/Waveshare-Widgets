@@ -474,6 +474,67 @@ public sealed class DashboardWindow : Form
         }
     }
 
+    /// <summary>Whether the widget's own Accept header admits ONLY image media types —
+    /// the declaration that lets the ladder recognize an HTML answer as a wall even
+    /// behind a 200. A range at quality zero is an exclusion, not an admission —
+    /// "image/*, text/html;q=0" admits only images — so q=0 ranges are dropped before
+    /// the test. Absent or broader Accepts return false: text/html was then an
+    /// admissible answer and the response is the site's to give.</summary>
+    private static bool AcceptsOnlyImages(JsonNode message)
+    {
+        if (message["headers"] is not JsonObject headers) return false;
+        foreach (var (name, value) in headers)
+        {
+            if (!string.Equals(name, "Accept", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var admitted = (value?.GetValue<string>() ?? "")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(t => !HasZeroQuality(t))
+                .ToList();
+            return admitted.Count > 0 && admitted.All(t =>
+                t.Split(';')[0].Trim().StartsWith("image/", StringComparison.OrdinalIgnoreCase));
+        }
+        return false;
+    }
+
+    private static bool HasZeroQuality(string mediaRange)
+    {
+        foreach (var param in mediaRange.Split(';').Skip(1))
+        {
+            var kv = param.Split('=', 2);
+            if (kv.Length == 2 && kv[0].Trim().Equals("q", StringComparison.OrdinalIgnoreCase)
+                && double.TryParse(kv[1].Trim(), System.Globalization.CultureInfo.InvariantCulture, out var q))
+                return q <= 0;
+        }
+        return false;
+    }
+
+    private static bool IsHtmlContent(System.Net.Http.Headers.MediaTypeHeaderValue? contentType) =>
+        contentType?.MediaType is { } media
+        && (media.Equals("text/html", StringComparison.OrdinalIgnoreCase)
+            || media.Equals("application/xhtml+xml", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The browser tier reports its content type as raw header text.</summary>
+    private static bool IsHtmlMedia(string? contentType)
+    {
+        var media = contentType?.Split(';')[0].Trim();
+        return media is { }
+            && (media.Equals("text/html", StringComparison.OrdinalIgnoreCase)
+                || media.Equals("application/xhtml+xml", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>What every exhausted soft-wall path returns: 502 names the truth —
+    /// something answered in the origin's place — where the proxy's masquerading 200
+    /// would send the field chasing a widget decode failure.</summary>
+    private static void SetWallResult(JsonObject result)
+    {
+        result["status"] = 502;
+        result["statusText"] = "bot wall";
+        result["contentType"] = null;
+        result["bodyBase64"] = "";
+        result["headers"] = new JsonObject();
+    }
+
     private void HandleAudioGet(JsonNode message, Action<string, JsonNode?>? reply = null)
     {
         _ = Task.Run(() =>
@@ -694,7 +755,21 @@ public sealed class DashboardWindow : Form
 
             var client = lanDevice ? ProxyClientInsecure : ProxyClient;
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-            var bytes = await ReadCappedAsync(response, cap);
+
+            // A wall can masquerade as SUCCESS: reddit's image CDN answers the .NET
+            // fingerprint with its block page at HTTP 200 (field log: fifteen different
+            // .jpeg URLs, every "image" ~336 KB of identical text/html). The caller
+            // declared what it can accept — a 200 whose media type an image-only Accept
+            // never admitted is the wall wearing a success code. Decided from the
+            // HEADERS, before the body is consumed: a wall page bigger than the
+            // caller's cap would otherwise throw "response too large" right here and
+            // the escalation below would never run, even though the browser tier could
+            // return a real image well inside that same cap. The known wall's body is
+            // never read at all.
+            var imageOnly = method == "GET" && AcceptsOnlyImages(message);
+            var softWall = response.IsSuccessStatusCode && imageOnly
+                && IsHtmlContent(response.Content.Headers.ContentType);
+            var bytes = softWall ? Array.Empty<byte>() : await ReadCappedAsync(response, cap);
 
             result["status"] = (int)response.StatusCode;
             result["statusText"] = response.ReasonPhrase ?? "";
@@ -705,11 +780,20 @@ public sealed class DashboardWindow : Form
             // metadata exists only in headers, and this tier answers precisely the
             // requests most likely to carry it.
             result["headers"] = ForwardableResponseHeaders(response);
-            Log.Info($"proxy fetch {SafeUrl.Describe(uri)} -> {(int)response.StatusCode} ({bytes.Length} bytes)");
+            Log.Info($"proxy fetch {SafeUrl.Describe(uri)} -> {(int)response.StatusCode} ({bytes.Length} bytes)"
+                + (softWall ? " — HTML answering an image-only request; escalating" : ""));
+
+            // The known wall's connection is released BEFORE the serialized browser
+            // tier: its body is never read, and holding the open stream through a
+            // retry that can take tens of seconds — behind every other caller in the
+            // fetcher's queue — accumulates sockets for responses already condemned.
+            if (softWall)
+                response.Dispose();
 
             // TLS-fingerprinting bot walls (Reddit) 403 every .NET client; retry those
-            // through a real Chromium navigation, which they do trust.
-            if ((int)response.StatusCode is 403 or 429 && method == "GET")
+            // through a real Chromium navigation, which they do trust — and the
+            // masquerading 200 escalates the same way.
+            if (((int)response.StatusCode is 403 or 429 && method == "GET") || softWall)
             {
                 _browserFetcher ??= new BrowserFetcher();
                 // The widget's own ceiling reaches this tier too. It is entered on the remote
@@ -730,17 +814,32 @@ public sealed class DashboardWindow : Form
                 }
                 else if (alt is { } browser && browser.Status < 400)
                 {
-                    result["status"] = browser.Status;
-                    result["statusText"] = "";
-                    result["contentType"] = browser.ContentType;
-                    result["bodyBase64"] = Convert.ToBase64String(browser.Body);
-                    // REPLACED, never merged. Every other field here describes the browser's
-                    // answer; leaving the proxy's headers beside them would hand the widget
-                    // a 200 carrying the 403's Retry-After — metadata about a response that
-                    // is no longer the one being reported. Assigned unconditionally so an
-                    // empty collection still clears what the proxy tier put there.
-                    result["headers"] = ToHeaderNode(browser.Headers);
-                    Log.Info($"browser fetch {SafeUrl.Describe(uri)} -> {browser.Status} ({browser.Body.Length} bytes)");
+                    if (imageOnly && IsHtmlMedia(browser.ContentType))
+                    {
+                        // The browser was walled too — a 2xx HTML answer to an
+                        // image-only request is inadmissible whichever tier produced
+                        // it, and copying it as success would re-report the wall as a
+                        // widget decode failure. Gated on the CALLER's declaration,
+                        // not on which wall status opened this block: the proxy's own
+                        // 403 enters here too, and Chromium can be served the HTML
+                        // challenge on that path just as well.
+                        Log.Warn($"browser fetch {SafeUrl.Describe(uri)} -> {browser.Status} but HTML to an image-only request; a wall on every tier");
+                        SetWallResult(result);
+                    }
+                    else
+                    {
+                        result["status"] = browser.Status;
+                        result["statusText"] = "";
+                        result["contentType"] = browser.ContentType;
+                        result["bodyBase64"] = Convert.ToBase64String(browser.Body);
+                        // REPLACED, never merged. Every other field here describes the browser's
+                        // answer; leaving the proxy's headers beside them would hand the widget
+                        // a 200 carrying the 403's Retry-After — metadata about a response that
+                        // is no longer the one being reported. Assigned unconditionally so an
+                        // empty collection still clears what the proxy tier put there.
+                        result["headers"] = ToHeaderNode(browser.Headers);
+                        Log.Info($"browser fetch {SafeUrl.Describe(uri)} -> {browser.Status} ({browser.Body.Length} bytes)");
+                    }
                 }
                 else if (alt is { } blocked)
                 {
@@ -752,6 +851,25 @@ public sealed class DashboardWindow : Form
                         ? "likely authorization (missing credentials or a private resource), not TLS fingerprinting"
                         : "the site's own answer, not TLS fingerprinting";
                     Log.Warn($"browser fetch {SafeUrl.Describe(uri)} -> {blocked.Status}; {hint}");
+                    if (softWall)
+                    {
+                        // On the 403 path the proxy's own status stays — it already says
+                        // failure. Here it says 200, and that 200 is a KNOWN wall: the
+                        // browser's refusal is the honest answer, not the masquerade.
+                        result["status"] = blocked.Status;
+                        result["statusText"] = "";
+                        result["contentType"] = blocked.ContentType;
+                        result["bodyBase64"] = Convert.ToBase64String(blocked.Body);
+                        result["headers"] = ToHeaderNode(blocked.Headers);
+                    }
+                }
+                else if (softWall)
+                {
+                    // The browser tier returned nothing at all (navigation failure or a
+                    // refused landing). Returning the proxy's 200 would report success
+                    // carrying HTML already ruled inadmissible — the widget would blame
+                    // its own decoder.
+                    SetWallResult(result);
                 }
             }
         }

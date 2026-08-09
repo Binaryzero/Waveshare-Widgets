@@ -2588,7 +2588,11 @@
 
     const choices = [];
     if (opts.allowInherit) choices.push(['inherit', 'Use dashboard default']);
-    choices.push(['none', 'None'], ['color', 'Solid color'], ['gradient', 'Gradient'],
+    // "Stock plate", not "None": none IS the machined-plate chrome, and a user
+    // hunting for the default look could not find it behind a word that promises
+    // nothing (field report: "there's no default wallpaper and no way to make it
+    // active" — there was, labeled None).
+    choices.push(['none', 'Stock plate'], ['color', 'Solid color'], ['gradient', 'Gradient'],
       ['image', 'Image'], ['video', 'Video (animated)']);
 
     const typeSel = document.createElement('select');
