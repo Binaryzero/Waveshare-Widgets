@@ -445,9 +445,14 @@ public static class UpdateManager
             // would hand the surviving asides to the startup sweep as litter, and the
             // partial install would become permanent. Startup recovery retries instead.
             if (unrestored > 0)
+            {
                 Log.Warn($"Update rollback left {unrestored} file(s) unrestored — the journal is kept and startup recovery will retry");
+            }
             else
+            {
+                WriteSweepMarker(stamp);
                 try { File.Delete(JournalFile); } catch (IOException) { /* recovery re-runs harmlessly */ }
+            }
             throw;
         }
         // Best-effort from here: every file is swapped — the install IS the new
@@ -456,6 +461,7 @@ public static class UpdateManager
         // files. A journal that resists deletion means the next start rolls the
         // completed update back to a WHOLE old install and offers it again — the
         // recoverable wrong answer, named in the log.
+        WriteSweepMarker(stamp);
         try { File.Delete(JournalFile); }
         catch (Exception ex) { Log.Warn($"Update committed but the journal would not delete ({ex.Message}); the next start will roll it back — run the update again after"); }
         try { Directory.Delete(staging, recursive: true); }
@@ -480,6 +486,43 @@ public static class UpdateManager
         new(@"\.new-old-\d+-\d+$", System.Text.RegularExpressions.RegexOptions.Compiled);
     private static readonly System.Text.RegularExpressions.Regex StampShape =
         new(@"^old-\d+-\d+$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>Records that a transaction FINISHED and its stamp's remnants are
+    /// litter. The sweep deletes only what a marker names — filename SHAPE alone
+    /// can never establish ownership: a user's config.json.old-2024-01 beside a
+    /// portable install fits any heuristic. Best-effort: a marker that fails to
+    /// write means litter survives, which is the safe direction.</summary>
+    private static void WriteSweepMarker(string stamp)
+    {
+        try
+        {
+            Directory.CreateDirectory(UpdatesDir);
+            File.WriteAllText(Path.Combine(UpdatesDir, $"sweep-{stamp}.txt"), "");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not record sweep marker for {stamp}: {ex.Message}");
+        }
+    }
+
+    /// <summary>The journal must name THIS installation. A portable copy carries
+    /// its journal with it, and acting on the ORIGINAL directory the copied file
+    /// names would repair the wrong install while this one's sweep destroyed its
+    /// own unrestored asides; a damaged first line gets the same refusal.</summary>
+    private static bool NamesThisInstall(string recordedBase)
+    {
+        try
+        {
+            return string.Equals(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(recordedBase)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory)),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
 
     /// <summary>True when the path lies inside the updater's own data tree. A
     /// portable copy CAN be installed at the data dir or an ancestor of it, which
@@ -551,9 +594,28 @@ public static class UpdateManager
             (var clean, restoredAny) = RecoverInterruptedSwap();
             if (!clean)
                 return restoredAny;
-            foreach (var file in EnumerateFilesSafe(AppContext.BaseDirectory, "*.*old-*"))
-                if (!InsideUpdatesDir(file) && (AsideName.IsMatch(file) || StrayName.IsMatch(file)))
-                    try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            // The sweep is driven by RECORD, never by filename shape: nothing but the
+            // updater's own ledger can establish ownership of a suffix. Each finished
+            // transaction leaves a marker naming its stamp; only those exact stamps
+            // are swept, and a marker retires only once a COMPLETE walk found its
+            // remnants gone — an unreadable subtree keeps it for the next start.
+            if (Directory.Exists(UpdatesDir))
+                foreach (var marker in Directory.GetFiles(UpdatesDir, "sweep-*.txt"))
+                {
+                    var stamp = Path.GetFileNameWithoutExtension(marker)["sweep-".Length..];
+                    if (!StampShape.IsMatch(stamp))
+                    {
+                        try { File.Delete(marker); } catch (IOException) { }
+                        continue;
+                    }
+                    var walk = new WalkReport();
+                    foreach (var pattern in new[] { "*." + stamp, "*." + stamp + ".shed", "*.new-" + stamp })
+                        foreach (var file in EnumerateFilesSafe(AppContext.BaseDirectory, pattern, walk))
+                            if (!InsideUpdatesDir(file))
+                                try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                    if (walk.Complete)
+                        try { File.Delete(marker); } catch (IOException) { }
+                }
             var staging = Path.Combine(UpdatesDir, "staging");
             if (Directory.Exists(staging))
                 Directory.Delete(staging, recursive: true);
@@ -587,6 +649,11 @@ public static class UpdateManager
     /// the caller relaunches into the restored install.</summary>
     private static (bool Clean, bool RestoredAny) RecoverInterruptedSwap()
     {
+        // Hoisted OUTSIDE the try: restoration that happened must outlive whatever
+        // throws after it — the caller's relaunch decision rides on this count.
+        var restored = 0;
+        try
+        {
         if (!File.Exists(JournalFile))
             return (true, false);
         var raw = File.ReadAllText(JournalFile);
@@ -605,7 +672,7 @@ public static class UpdateManager
         // truncated "old-123" would pass a prefix check, find no backups under its
         // malformed suffix, retire the journal — and hand the real stamped originals
         // to the sweep.
-        if (!(headerComplete && lines.Length >= 2 && Directory.Exists(lines[0]) && StampShape.IsMatch(lines[1])))
+        if (!(headerComplete && lines.Length >= 2 && NamesThisInstall(lines[0]) && StampShape.IsMatch(lines[1])))
         {
             Log.Warn("Swap journal did not parse; quarantining remnants");
             // The journal retires ONLY once every remnant is preserved. A quarantine
@@ -625,7 +692,6 @@ public static class UpdateManager
         var baseDir = lines[0];
         var stamp = lines[1];
         var suffix = "." + stamp;
-        var restored = 0;
         var failures = 0;
         var walk = new WalkReport();
         // Incomplete Replace hops first: a *.new-<stamp> beside its target is staged
@@ -705,8 +771,17 @@ public static class UpdateManager
             return (false, restored > 0);
         }
         Log.Warn($"An update was interrupted mid-swap; rolled back at startup ({restored} file(s) restored)");
+        WriteSweepMarker(stamp);
         File.Delete(JournalFile);
         return (true, restored > 0);
+        }
+        catch (Exception ex)
+        {
+            // Not clean — the journal (if any) stays and the next start retries —
+            // but the restores already performed are still reported.
+            Log.Warn($"Swap recovery did not finish cleanly: {ex.Message}");
+            return (false, restored > 0);
+        }
     }
 
     /// <summary>For a journal that cannot be read: the remnants under the install may
