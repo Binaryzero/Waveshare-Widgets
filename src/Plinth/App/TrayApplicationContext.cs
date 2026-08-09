@@ -74,11 +74,15 @@ public sealed class TrayApplicationContext : ApplicationContext
             // behind, so the manual path is a fresh folder. And NEVER "delete the
             // old folder": a portable copy can live AT the data dir, where deleting
             // the install would take layout, secrets, widgets, and media with it.
+            // Balloon text truncates near 255 chars, so every clause earns its
+            // place: exit first (this instance holds the machine-wide mutex, the
+            // fresh copy bounces off it), new folder (zip-over keeps this marker),
+            // keep the old folder (it can BE the data dir), re-enable autostart
+            // (the Run value still points at the old exe).
             _trayIcon.ShowBalloonTip(15_000, "Plinth needs repair",
-                "An earlier update did not finish cleanly. Right-click the tray icon and use "
-                + "Check for updates to repair — or extract a fresh copy of the latest release "
-                + "into a NEW folder and run that. Keep the old folder; your settings can live "
-                + "inside it.", ToolTipIcon.Warning);
+                "An update did not finish cleanly. Use Check for updates (tray menu) to repair — "
+                + "or run a fresh copy from a NEW folder: exit Plinth first, keep the old folder, "
+                + "and re-enable Start with Windows in the new copy.", ToolTipIcon.Warning);
 
         // The panel powers up ~10 s after HDMI connect and may be absent at logon;
         // re-evaluate placement whenever the display topology changes.

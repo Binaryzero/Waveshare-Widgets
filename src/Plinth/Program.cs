@@ -107,8 +107,9 @@ internal static class Program
                 + "may still be locked by another program.\n\n"
                 + "Close other programs using Plinth's folder, then start Plinth again. "
                 + "If this repeats or Plinth misbehaves afterwards, extract a fresh copy of "
-                + "the latest release into a new folder and run that — keep the old folder, "
-                + "since your settings can live inside it.",
+                + "the latest release into a new folder and run that — keep the old folder "
+                + "(your settings can live inside it), and re-enable Start with Windows from "
+                + "the new copy if you use it.",
                 "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
