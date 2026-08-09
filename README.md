@@ -256,11 +256,13 @@ Push a version tag and CI publishes the GitHub Release with both zips and genera
 notes:
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
-Running the `release` workflow manually (workflow_dispatch) is a dry run: it builds the
-same zips and uploads them as workflow artifacts without creating a release.
+Or run the `release` workflow manually (Actions → release → Run workflow) with a bare
+version like `0.3.0` — it publishes the same release from the chosen branch head and
+creates the tag itself. Leaving the version empty makes the manual run a dry run: it
+builds the same zips and uploads them as workflow artifacts without creating a release.
 
 ## Architecture
 
