@@ -589,7 +589,11 @@ public static class UpdateManager
         try
         {
             Directory.CreateDirectory(UpdatesDir);
-            File.WriteAllText(Path.Combine(UpdatesDir, $"sweep-{stamp}.txt"), "");
+            // The marker NAMES ITS INSTALL: several portable copies share one data
+            // dir, and a copy that starts first would otherwise consume another
+            // copy's marker against its own tree — finding nothing, retiring the
+            // marker, and leaving the real remnants untracked forever.
+            File.WriteAllText(Path.Combine(UpdatesDir, $"sweep-{stamp}.txt"), AppContext.BaseDirectory);
         }
         catch (Exception ex)
         {
@@ -719,6 +723,14 @@ public static class UpdateManager
                         try { File.Delete(marker); } catch (IOException) { }
                         continue;
                     }
+                    // Another copy's marker is not ours to act on OR retire — its
+                    // remnants live under a different install tree. An empty
+                    // recorded install (pre-binding marker) is treated as ours.
+                    string markerInstall;
+                    try { markerInstall = File.ReadAllText(marker).Trim(); }
+                    catch (Exception) { continue; }
+                    if (markerInstall.Length > 0 && !NamesThisInstall(markerInstall))
+                        continue;
                     var walk = new WalkReport();
                     var swept = true;
                     foreach (var pattern in new[] { "*." + stamp, "*." + stamp + ".shed", "*.new-" + stamp })
