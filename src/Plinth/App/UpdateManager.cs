@@ -145,23 +145,31 @@ public static class UpdateManager
         }
         else
         {
-            using var doc = JsonDocument.Parse(
-                await http.GetStringAsync($"https://api.github.com/repos/{Owner}/{Repo}/releases?per_page=100"));
             JsonElement? best = null;
             Version? bestNum = null;
             string? bestPre = null;
-            foreach (var r in doc.RootElement.EnumerateArray())
+            // The list is creation-ordered, not precedence-ordered, so ALL pages are
+            // read before choosing (bounded — a thousand releases is beyond any state
+            // this repo reaches, and an unbounded loop trusts the server too much).
+            for (var page = 1; page <= 10; page++)
             {
-                if (r.TryGetProperty("draft", out var d) && d.GetBoolean())
-                    continue;
-                var rTag = r.TryGetProperty("tag_name", out var rt) ? rt.GetString() ?? "" : "";
-                if (!TryParseTag(rTag, out var num, out var pre))
-                    continue;
-                if (bestNum is null || ComparePrecedence(num, pre, bestNum, bestPre) > 0)
+                using var doc = JsonDocument.Parse(await http.GetStringAsync(
+                    $"https://api.github.com/repos/{Owner}/{Repo}/releases?per_page=100&page={page}"));
+                if (doc.RootElement.GetArrayLength() == 0)
+                    break;
+                foreach (var r in doc.RootElement.EnumerateArray())
                 {
-                    best = r.Clone();
-                    bestNum = num;
-                    bestPre = pre;
+                    if (r.TryGetProperty("draft", out var d) && d.GetBoolean())
+                        continue;
+                    var rTag = r.TryGetProperty("tag_name", out var rt) ? rt.GetString() ?? "" : "";
+                    if (!TryParseTag(rTag, out var num, out var pre))
+                        continue;
+                    if (bestNum is null || ComparePrecedence(num, pre, bestNum, bestPre) > 0)
+                    {
+                        best = r.Clone();
+                        bestNum = num;
+                        bestPre = pre;
+                    }
                 }
             }
             if (best is null)
@@ -260,8 +268,9 @@ public static class UpdateManager
                 throw new InvalidOperationException($"archive entry escapes the extraction root: {entry.FullName}");
             // The download cap bounds COMPRESSED bytes; a hostile ratio expands a small
             // zip until the system drive is full before the install is ever touched.
-            // Entry lengths are declared metadata, but ExtractToDirectory enforces them:
-            // inflating past the declared Length fails the entry.
+            // Declared lengths are only a PRE-SCREEN — metadata a crafted archive can
+            // understate — so Apply's extraction counts the bytes actually inflated
+            // and enforces the same ceiling there.
             expanded += entry.Length;
             if (entry.Length > MaxExpandedBytes || expanded > MaxExpandedBytes)
                 throw new InvalidOperationException($"archive expands past {MaxExpandedBytes} bytes — refusing it");
@@ -302,9 +311,40 @@ public static class UpdateManager
         var staging = Path.Combine(UpdatesDir, "staging");
         if (Directory.Exists(staging))
             Directory.Delete(staging, recursive: true);
-        // ExtractToDirectory re-checks entry containment itself (.NET 8 throws on
-        // traversal), a second lock on the door DownloadAsync already validated.
-        ZipFile.ExtractToDirectory(zipPath, staging);
+        // Manual extraction, cap enforced on bytes ACTUALLY inflated: the declared
+        // entry lengths validation pre-screened are metadata a crafted archive can
+        // understate, and deflate emits up to ~1000x its compressed input — a lying
+        // central directory could otherwise fill the drive during extraction.
+        // Containment is re-checked here on the resolved path, the same second lock
+        // ExtractToDirectory provided.
+        var stagingRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(staging)) + Path.DirectorySeparatorChar;
+        using (var archive = ZipFile.OpenRead(zipPath))
+        {
+            long inflated = 0;
+            var buffer = new byte[81920];
+            foreach (var entry in archive.Entries)
+            {
+                var dest = Path.GetFullPath(Path.Combine(staging, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
+                if (!dest.StartsWith(stagingRoot, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException($"archive entry escapes staging: {entry.FullName}");
+                if (entry.FullName.EndsWith('/') || entry.FullName.EndsWith('\\'))
+                {
+                    Directory.CreateDirectory(dest);
+                    continue;
+                }
+                Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+                using var src = entry.Open();
+                using var dst = File.Create(dest);
+                int read;
+                while ((read = src.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    inflated += read;
+                    if (inflated > MaxExpandedBytes)
+                        throw new InvalidOperationException($"archive inflated past {MaxExpandedBytes} bytes — refusing it");
+                    dst.Write(buffer, 0, read);
+                }
+            }
+        }
 
         // Tick joins the pid so a recycled process id can never collide with a stale
         // remnant from an earlier failed swap.
@@ -440,12 +480,23 @@ public static class UpdateManager
         path.StartsWith(Path.TrimEndingDirectorySeparator(UpdatesDir) + Path.DirectorySeparatorChar,
             StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Whether an EnumerateFilesSafe walk saw everything. A caller whose
+    /// CORRECTNESS depends on completeness (recovery deciding a transaction is
+    /// finished, quarantine deciding every remnant is preserved) must check this —
+    /// a silently omitted subtree would otherwise read as "nothing left there".</summary>
+    private sealed class WalkReport
+    {
+        public bool Complete = true;
+    }
+
     /// <summary>Recursive file walk that survives unreadable subtrees: an
-    /// inaccessible directory yields nothing rather than aborting the iteration.
-    /// EnumerateFiles throws at MoveNext — outside any per-file try — so one
-    /// unreadable folder anywhere in a portable install would otherwise cancel an
-    /// entire rollback, recovery, or sweep wholesale, every launch.</summary>
-    private static IEnumerable<string> EnumerateFilesSafe(string root, string pattern)
+    /// inaccessible directory is REPORTED, not thrown — EnumerateFiles throws at
+    /// MoveNext, outside any per-file try, so one unreadable folder anywhere in a
+    /// portable install would otherwise cancel an entire rollback, recovery, or
+    /// sweep wholesale, every launch. Reparse points are never followed: a junction
+    /// back to an ancestor loops the walk forever, and one leading out of the
+    /// install would put an UNRELATED tree under scans that delete things.</summary>
+    private static IEnumerable<string> EnumerateFilesSafe(string root, string pattern, WalkReport? report = null)
     {
         var pending = new Stack<string>();
         pending.Push(root);
@@ -454,14 +505,22 @@ public static class UpdateManager
             var dir = pending.Pop();
             string[] files;
             try { files = Directory.GetFiles(dir, pattern); }
-            catch (Exception) { files = []; }
+            catch (Exception) { files = []; if (report is { }) report.Complete = false; }
             foreach (var file in files)
                 yield return file;
             string[] subs;
             try { subs = Directory.GetDirectories(dir); }
-            catch (Exception) { continue; }
+            catch (Exception) { if (report is { }) report.Complete = false; continue; }
             foreach (var sub in subs)
+            {
+                try
+                {
+                    if (File.GetAttributes(sub).HasFlag(FileAttributes.ReparsePoint))
+                        continue;
+                }
+                catch (Exception) { if (report is { }) report.Complete = false; continue; }
                 pending.Push(sub);
+            }
         }
     }
 
@@ -539,11 +598,12 @@ public static class UpdateManager
         var suffix = "." + stamp;
         var restored = 0;
         var failures = 0;
+        var walk = new WalkReport();
         // Incomplete Replace hops first: a *.new-<stamp> beside its target is staged
         // bytes that never swapped in — plain deletions, no original at risk.
-        foreach (var stray in EnumerateFilesSafe(baseDir, "*.new-" + stamp))
+        foreach (var stray in EnumerateFilesSafe(baseDir, "*.new-" + stamp, walk))
             try { if (!InsideUpdatesDir(stray)) File.Delete(stray); } catch (Exception) { failures++; }
-        foreach (var aside in EnumerateFilesSafe(baseDir, "*" + suffix))
+        foreach (var aside in EnumerateFilesSafe(baseDir, "*" + suffix, walk))
         {
             if (InsideUpdatesDir(aside))
                 continue;
@@ -589,6 +649,15 @@ public static class UpdateManager
             }
             try { if (File.Exists(target)) File.Delete(target); } catch (Exception) { failures++; }
         }
+        // A walk that could not read every directory is an INCOMPLETE scan, not a
+        // clean one: an aside sitting in the unreadable subtree would otherwise be
+        // absent from a "successful" recovery, the journal would retire, and a later
+        // start would sweep that original once the directory turned readable again.
+        if (!walk.Complete)
+        {
+            failures++;
+            Log.Warn("Swap recovery could not read every directory; treating the scan as incomplete");
+        }
         if (failures > 0)
         {
             // The journal outlives an incomplete recovery: deleting it would hand the
@@ -614,7 +683,8 @@ public static class UpdateManager
         Directory.CreateDirectory(dir);
         var moved = 0;
         var failed = 0;
-        foreach (var file in EnumerateFilesSafe(AppContext.BaseDirectory, "*.*old-*"))
+        var walk = new WalkReport();
+        foreach (var file in EnumerateFilesSafe(AppContext.BaseDirectory, "*.*old-*", walk))
         {
             if (InsideUpdatesDir(file) || (!AsideName.IsMatch(file) && !StrayName.IsMatch(file)))
                 continue;
@@ -638,7 +708,9 @@ public static class UpdateManager
         }
         if (moved > 0)
             Log.Warn($"{moved} update remnant(s) moved to {dir} — the journal naming them did not parse");
-        return failed == 0;
+        // A subtree the walk could not read may hold a remnant: "every remnant is
+        // preserved" cannot be claimed from a partial scan.
+        return failed == 0 && walk.Complete;
     }
 
     private static HttpClient NewClient()
