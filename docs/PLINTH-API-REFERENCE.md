@@ -367,7 +367,7 @@ root and/or on any page:
 | `angle` | gradient | degrees (0–360) |
 | `source` | image, video | file name in the backgrounds folder (below) |
 | `fit` | image, video | `cover` \| `contain` \| `stretch` \| `tile` \| `center` |
-| `dim` | image, video | 0–100 % dark overlay over the wallpaper (not the widgets) |
+| `dim` | image, video | 0–100 % dark overlay over the whole background canvas — letterbox bars and the plate showing in them included — but never the widgets |
 | `blur` | image, video | 0–40 px gaussian blur |
 
 - **Static** = `image` (PNG/JPG/WebP/AVIF/BMP, plus animated GIF/WebP/AVIF which animate
