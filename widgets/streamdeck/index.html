@@ -264,16 +264,23 @@
     if (x < 0 || y < 0 || x >= r.width || y >= r.height) return;
     const col = Math.min(cols - 1, Math.floor(x / (r.width / cols)));
     const row = Math.min(rows - 1, Math.floor(y / (r.height / rows)));
-    WW.streamDeckClick(row, col, rows, cols);
+    // The EXACT tap point rides along as fractions of the capture. The capture is the
+    // VSD's client area pixel for pixel, so the host clicks the key face that was
+    // visibly tapped — the uniform row/col grid assumes keys fill the window edge to
+    // edge, and Elgato draws its own chrome INSIDE the window, which is how a tap kept
+    // firing the key above the one pressed (field video + log, Aug 9).
+    WW.streamDeckClick(row, col, rows, cols, x / r.width, y / r.height);
     WW.log('streamdeck: live click ' + row + ',' + col);
 
-    // Brief highlight over the tapped cell. NOTE: named hl, not flash — a
-    // `const flash` here would shadow the top-level flash() helper across the
-    // WHOLE handler scope, turning the fail-flash call above into a TDZ
-    // ReferenceError (the refused tap would throw instead of flashing).
+    // Brief highlight CENTERED on the tap, not on the computed cell — the uniform grid
+    // can sit offset from the drawn key faces (see above), and the field video showed
+    // the cell rectangle floating half a key off the face that was pressed.
+    // NOTE: named hl, not flash — a `const flash` here would shadow the top-level
+    // flash() helper across the WHOLE handler scope, turning the fail-flash call above
+    // into a TDZ ReferenceError (the refused tap would throw instead of flashing).
     const hl = document.getElementById('liveFlash');
-    hl.style.left = (r.left + col * (r.width / cols)) + 'px';
-    hl.style.top = (r.top + row * (r.height / rows)) + 'px';
+    hl.style.left = (r.left + Math.max(0, Math.min(r.width - r.width / cols, x - r.width / cols / 2))) + 'px';
+    hl.style.top = (r.top + Math.max(0, Math.min(r.height - r.height / rows, y - r.height / rows / 2))) + 'px';
     hl.style.width = (r.width / cols) + 'px';
     hl.style.height = (r.height / rows) + 'px';
     hl.style.opacity = '1';

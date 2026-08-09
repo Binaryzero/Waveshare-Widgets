@@ -511,10 +511,16 @@ public sealed class StreamDeckBridge
     }
 
     /// <summary>
-    /// Triggers a button by clicking the VSD overlay window at the button's cell center.
-    /// This fires whatever plugin action Stream Deck has bound to that key.
+    /// Triggers a button by clicking the VSD overlay window. When the caller supplies the
+    /// exact tap point (fractions of the mirrored capture), the click lands on that exact
+    /// client pixel — the capture IS the client area, so the user hits the key face they
+    /// can see, whatever chrome or padding Elgato draws around the grid. Cell-center math
+    /// is only the fallback for callers that know a cell but not a point: uniform division
+    /// assumes the keys fill the window edge to edge, and the field showed they do not —
+    /// the window carries its own top strip INSIDE the client area, so cell centers sat
+    /// high and taps fired the key above the one pressed.
     /// </summary>
-    public bool ClickCell(int row, int col, int rows, int cols)
+    public bool ClickCell(int row, int col, int rows, int cols, double? fx = null, double? fy = null)
     {
         if (rows <= 0 || cols <= 0)
             return false;
@@ -531,14 +537,26 @@ public sealed class StreamDeckBridge
 
         var cellW = rect.Right / (double)cols;
         var cellH = rect.Bottom / (double)rows;
-        var x = (int)(cellW * col + cellW / 2);
-        var y = (int)(cellH * row + cellH / 2);
+        int x, y;
+        string how;
+        if (fx is { } px && fy is { } py && px is >= 0 and <= 1 && py is >= 0 and <= 1)
+        {
+            x = Math.Clamp((int)(px * rect.Right), 0, rect.Right - 1);
+            y = Math.Clamp((int)(py * rect.Bottom), 0, rect.Bottom - 1);
+            how = "tap point";
+        }
+        else
+        {
+            x = (int)(cellW * col + cellW / 2);
+            y = (int)(cellH * row + cellH / 2);
+            how = "cell center";
+        }
         var lParam = (IntPtr)((y << 16) | (x & 0xFFFF));
 
         PostMessage(vsd, WM_LBUTTONDOWN, (IntPtr)1, lParam);
         Thread.Sleep(40);
         PostMessage(vsd, WM_LBUTTONUP, IntPtr.Zero, lParam);
-        Log.Info($"Stream Deck: clicked cell row={row} col={col} of {rows}x{cols} at ({x},{y}) " +
+        Log.Info($"Stream Deck: clicked {how} row={row} col={col} of {rows}x{cols} at ({x},{y}) " +
                  $"in {rect.Right}x{rect.Bottom} window (cell {cellW:F0}x{cellH:F0})");
         return true;
     }
@@ -585,13 +603,47 @@ public sealed class StreamDeckBridge
 
         try
         {
-            using var bmp = new Bitmap(rect.Right, rect.Bottom);
-            using (var g = Graphics.FromImage(bmp))
+            // PW_CLIENTONLY is not honoured under PW_RENDERFULLCONTENT: DWM renders the
+            // FULL window — top chrome included — top-aligned into the target DC. Into a
+            // client-sized bitmap that shifts every key face DOWN by the chrome height
+            // and crops the same height of keys off the bottom, so taps mapped over the
+            // capture inject clicks one key ABOVE the face the user pressed (field
+            // video). Capture the whole window instead and cut the client region out at
+            // its measured offset: identical where CLIENTONLY worked, corrected where it
+            // did not.
+            if (!GetWindowRect(vsd, out var win))
+                return _lastCaptureResult = null;
+            var winW = win.Right - win.Left;
+            var winH = win.Bottom - win.Top;
+            // The bitmap actually allocated is the WINDOW, chrome included — a client
+            // that squeaks under the ceiling does not mean its window does, and the
+            // ceiling exists for the object being captured, not the one measured first.
+            if (!CaptureLimits.SaneSize(winW, winH))
+            {
+                if (!_loggedOversizeWindow)
+                {
+                    _loggedOversizeWindow = true;
+                    Log.Warn($"Stream Deck: window with chrome is {winW}x{winH}; too large to capture");
+                }
+                return _lastCaptureResult = null;
+            }
+            var origin = default(POINT);
+            if (!ClientToScreen(vsd, ref origin))
+                return _lastCaptureResult = null;
+            var offX = origin.X - win.Left;
+            var offY = origin.Y - win.Top;
+            // A window mid-move/mid-resize can hand back rects that no longer agree;
+            // skip this frame rather than crop out of bounds — the next poll retries.
+            if (offX < 0 || offY < 0 || offX + rect.Right > winW || offY + rect.Bottom > winH)
+                return _lastCaptureResult = null;
+
+            using var full = new Bitmap(winW, winH);
+            using (var g = Graphics.FromImage(full))
             {
                 var hdc = g.GetHdc();
                 try
                 {
-                    if (!PrintWindow(vsd, hdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT))
+                    if (!PrintWindow(vsd, hdc, PW_RENDERFULLCONTENT))
                         return _lastCaptureResult = null;
                 }
                 finally
@@ -599,6 +651,15 @@ public sealed class StreamDeckBridge
                     g.ReleaseHdc(hdc);
                 }
             }
+            // Between the first GetClientRect and the render the window can RESIZE, and a
+            // GROWN window still contains the stale client rectangle — the bounds check
+            // above passes, and the crop would ship old-geometry pixels that ClickCell,
+            // reading the CURRENT rect, no longer agrees with. One stale frame is one
+            // mismapped tap; re-read and reject instead, the next poll captures clean.
+            if (!GetClientRect(vsd, out var rectAfter)
+                || rectAfter.Right != rect.Right || rectAfter.Bottom != rect.Bottom)
+                return _lastCaptureResult = null;
+            using var bmp = full.Clone(new Rectangle(offX, offY, rect.Right, rect.Bottom), full.PixelFormat);
 
             // A refused capture yields a uniform (usually black) bitmap; sample a small
             // grid and require at least two distinct colors before trusting it.
@@ -781,7 +842,6 @@ public sealed class StreamDeckBridge
 
     private const uint WM_LBUTTONDOWN = 0x0201;
     private const uint WM_LBUTTONUP = 0x0202;
-    private const uint PW_CLIENTONLY = 0x1;
     private const uint PW_RENDERFULLCONTENT = 0x2;
 
     [DllImport("user32.dll")]
@@ -813,6 +873,15 @@ public sealed class StreamDeckBridge
 
     [DllImport("user32.dll")]
     private static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr hWnd, ref POINT point);
 
     [DllImport("user32.dll")]
     private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);

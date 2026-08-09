@@ -20,6 +20,26 @@ public sealed class BrowserFetcher : IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private bool _ready;
 
+    /// <summary>
+    /// CDN hosts with no page at their root, each paired with the ONE landing page its
+    /// root redirect may reach: the parent site that mints these URLs. The landed page's
+    /// scripts can read the full request URL through a wrapped fetch, and this repository
+    /// treats URL paths and queries as credential-equivalent (see SafeUrl) — a presigned
+    /// or signed URL IS a secret even on a header-less GET. So foreign landing pages stay
+    /// refused in general; these exact pairs are the exception, safe precisely because
+    /// the landing page belongs to the site that issued the URLs being fetched.
+    /// </summary>
+    private static readonly Dictionary<string, string> TrustedRedirectLandings =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["preview.redd.it"] = "https://www.reddit.com/",
+            ["external-preview.redd.it"] = "https://www.reddit.com/",
+            ["i.redd.it"] = "https://www.reddit.com/",
+            // The listing fallback host: reddit redirects old.reddit's root to www for
+            // logged-out browsers — same operator, same minting site.
+            ["old.reddit.com"] = "https://www.reddit.com/",
+        };
+
     public BrowserFetcher()
     {
         _host = new Form
@@ -99,18 +119,36 @@ public sealed class BrowserFetcher : IDisposable
                 await Task.Delay(700); // let a JS challenge finish and set cookies
 
                 // The bootstrap can be REDIRECTED to a different origin, and the
-                // fetch below runs inside whatever page the WebView landed on —
-                // a foreign page's scripts can wrap window.fetch and read any
-                // forwarded Authorization/API-key headers synchronously. Only
-                // the requested origin may receive the request (and a foreign-
-                // origin fetch would be CORS-bound and useless anyway).
+                // fetch below runs inside whatever page the WebView landed on — a
+                // foreign page's scripts can wrap window.fetch and read forwarded
+                // Authorization/API-key headers AND the full request URL, whose
+                // path and query this repository treats as credential-equivalent
+                // (SafeUrl). So a foreign landing page is refused — UNLESS it is
+                // the exact landing named in TrustedRedirectLandings for this
+                // request's host AND the request carries no caller headers. That
+                // is the CDN-with-no-root-page case this tier exists for:
+                // preview.redd.it sends the browser to www.reddit.com, the very
+                // page whose bot-challenge cookies and CORS grant exist so
+                // reddit's own app can load these images (one field log: 679
+                // refused image fetches, every tile dark). The fetch then runs
+                // cookieless ('omit'): the CDN grants Access-Control-Allow-Origin
+                // without allow-credentials, and the landed page's cookies have
+                // no business riding a request addressed to a different host.
                 string finalOrigin;
                 try { finalOrigin = new Uri(core.Source).GetLeftPart(UriPartial.Authority) + "/"; }
                 catch { finalOrigin = ""; }
-                if (!string.Equals(finalOrigin, origin, StringComparison.OrdinalIgnoreCase))
+                var sameOrigin = string.Equals(finalOrigin, origin, StringComparison.OrdinalIgnoreCase);
+                if (!sameOrigin)
                 {
-                    Log.Warn($"browser fetch skipped ({SafeUrl.Describe(url)}): origin bootstrap redirected to '{SafeUrl.Describe(finalOrigin)}' — not running the request from a foreign origin");
-                    return null;
+                    var trusted = headers is not { Count: > 0 }
+                        && TrustedRedirectLandings.TryGetValue(new Uri(url).Host, out var landing)
+                        && string.Equals(finalOrigin, landing, StringComparison.OrdinalIgnoreCase);
+                    if (!trusted)
+                    {
+                        Log.Warn($"browser fetch skipped ({SafeUrl.Describe(url)}): origin bootstrap redirected to '{SafeUrl.Describe(finalOrigin)}' — not running the request from a foreign origin");
+                        return null;
+                    }
+                    Log.Info($"browser fetch ({SafeUrl.Describe(url)}): origin root redirected to its trusted landing '{SafeUrl.Describe(finalOrigin)}'; running cookieless from there");
                 }
 
                 // Kick off a same-origin fetch and stash its result on window; then poll.
@@ -128,7 +166,7 @@ public sealed class BrowserFetcher : IDisposable
                 // The cap is applied INSIDE the page, streaming, so the bytes past it are
                 // never received — see FetchLimits, which is also where the proxy tier's
                 // ceiling lives so the two cannot disagree.
-                await core.ExecuteScriptAsync(FetchLimits.BrowserFetchScript(jsUrl, jsHeaders, maxBytes));
+                await core.ExecuteScriptAsync(FetchLimits.BrowserFetchScript(jsUrl, jsHeaders, maxBytes, sameOrigin));
 
                 for (var i = 0; i < 60; i++) // up to ~15 s
                 {
