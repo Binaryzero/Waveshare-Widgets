@@ -48,7 +48,10 @@ internal static class Program
         // teardown can outlive the pid grace above (WebView2 and the sensor providers
         // dispose slowly), and bouncing here would silently cancel the restart the
         // updater promised.
-        using var mutex = new Mutex(initiallyOwned: false, "Plinth.SingleInstance");
+        // Global\, not the default Local\: an unqualified name scopes to each Windows
+        // SESSION, so a console and an RDP login could both become "the" instance and
+        // run swaps and cleanup concurrently against the same portable install.
+        using var mutex = new Mutex(initiallyOwned: false, @"Global\Plinth.SingleInstance");
         bool owned;
         try
         {

@@ -196,7 +196,8 @@ public static class UpdateManager
         // "..\" climbs out; the guard is on the RESOLVED path), and the archive must
         // actually contain the application, not be an error page saved as .zip.
         using var zip = ZipFile.OpenRead(zipPath);
-        var sawApp = false;
+        var sawExe = false;
+        var sawDll = false;
         long expanded = 0;
         foreach (var entry in zip.Entries)
         {
@@ -214,12 +215,16 @@ public static class UpdateManager
             // publish output accidentally wrapped in a folder still contains a
             // Plinth.exe by basename — installing it would add a nested tree, leave
             // the root exe untouched, and re-offer the same update forever.
-            if (entry.FullName.Equals("Plinth.dll", StringComparison.OrdinalIgnoreCase)
-                || entry.FullName.Equals("Plinth.exe", StringComparison.OrdinalIgnoreCase))
-                sawApp = true;
+            if (entry.FullName.Equals("Plinth.exe", StringComparison.OrdinalIgnoreCase))
+                sawExe = true;
+            else if (entry.FullName.Equals("Plinth.dll", StringComparison.OrdinalIgnoreCase))
+                sawDll = true;
         }
-        if (!sawApp)
-            throw new InvalidOperationException("archive does not contain Plinth — refusing to install it");
+        // BOTH, not either: an incomplete asset that still carries the apphost would
+        // otherwise install, relaunch the OLD managed app through the new apphost,
+        // and offer the same update again forever.
+        if (!(sawExe && sawDll))
+            throw new InvalidOperationException("archive does not contain the whole application — refusing to install it");
         return zipPath;
     }
 
@@ -333,6 +338,8 @@ public static class UpdateManager
         new(@"\.old-\d+-\d+(\.shed)?$", System.Text.RegularExpressions.RegexOptions.Compiled);
     private static readonly System.Text.RegularExpressions.Regex StrayName =
         new(@"\.new-old-\d+-\d+$", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly System.Text.RegularExpressions.Regex StampShape =
+        new(@"^old-\d+-\d+$", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     public static void CleanupAtStartup()
     {
@@ -350,11 +357,18 @@ public static class UpdateManager
             var staging = Path.Combine(UpdatesDir, "staging");
             if (Directory.Exists(staging))
                 Directory.Delete(staging, recursive: true);
-            // Stale archives: failed or superseded downloads, ~500 MB apiece. Nothing
-            // downloads during startup, so anything here is finished with.
+            // Stale archives only, and AGE is the discriminator: the apply-failure
+            // dialog names a zip on disk for installing by hand, and a sweep on the
+            // very next start would delete the file that message promised. Nothing
+            // legitimate needs a fortnight.
             if (Directory.Exists(UpdatesDir))
                 foreach (var zip in Directory.EnumerateFiles(UpdatesDir, "*.zip"))
-                    try { File.Delete(zip); } catch (IOException) { }
+                    try
+                    {
+                        if (DateTime.UtcNow - File.GetLastWriteTimeUtc(zip) > TimeSpan.FromDays(14))
+                            File.Delete(zip);
+                    }
+                    catch (IOException) { }
         }
         catch (Exception ex)
         {
@@ -375,10 +389,22 @@ public static class UpdateManager
         // stepping aside would hand next start's sweep the very remnants that may
         // include originals: they are QUARANTINED out of the install first, preserved
         // for manual recovery, and only then does the journal retire as .bad.
-        if (!(lines.Length >= 2 && Directory.Exists(lines[0]) && lines[1].StartsWith("old-", StringComparison.Ordinal)))
+        // The stamp must match the updater's EXACT shape, not merely begin like it: a
+        // truncated "old-123" would pass a prefix check, find no backups under its
+        // malformed suffix, retire the journal — and hand the real stamped originals
+        // to the sweep.
+        if (!(lines.Length >= 2 && Directory.Exists(lines[0]) && StampShape.IsMatch(lines[1])))
         {
-            Log.Warn("Swap journal did not parse; remnants quarantined, journal preserved as swap-journal.bad");
-            QuarantineRemnants();
+            Log.Warn("Swap journal did not parse; quarantining remnants");
+            // The journal retires ONLY once every remnant is preserved. A quarantine
+            // stopped short (antivirus holding a backup) keeps the journal active, so
+            // the sweep stays off and the next start finishes the job — retiring
+            // early would let that sweep destroy the unquarantined original.
+            if (!QuarantineRemnants())
+            {
+                Log.Warn("Quarantine incomplete; journal kept and nothing swept — retrying next start");
+                return false;
+            }
             try { File.Move(JournalFile, JournalFile + ".bad", overwrite: true); }
             catch (Exception ex) { Log.Warn($"Could not retire the journal: {ex.Message}"); }
             return false;
@@ -456,11 +482,12 @@ public static class UpdateManager
     /// updates/quarantine — preserved for manual recovery — and the sweep resumes
     /// next start. Names are flattened with an index; the point is preservation,
     /// not restorability by machine.</summary>
-    private static void QuarantineRemnants()
+    private static bool QuarantineRemnants()
     {
         var dir = Path.Combine(UpdatesDir, "quarantine");
         Directory.CreateDirectory(dir);
         var moved = 0;
+        var failed = 0;
         foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.*old-*", SearchOption.AllDirectories))
         {
             if (!AsideName.IsMatch(file) && !StrayName.IsMatch(file))
@@ -472,11 +499,13 @@ public static class UpdateManager
             }
             catch (Exception ex)
             {
+                failed++;
                 Log.Warn($"Quarantine failed for {Path.GetFileName(file)}: {ex.Message}");
             }
         }
         if (moved > 0)
             Log.Warn($"{moved} update remnant(s) moved to {dir} — the journal naming them did not parse");
+        return failed == 0;
     }
 
     private static HttpClient NewClient()
