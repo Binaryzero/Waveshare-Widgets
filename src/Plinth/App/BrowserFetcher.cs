@@ -55,6 +55,11 @@ public sealed class BrowserFetcher : IDisposable
         _host.Controls.Add(_webView);
     }
 
+    private static bool OnlyBenignHeaders(IReadOnlyDictionary<string, string>? headers) =>
+        headers is null || headers.Keys.All(k =>
+            k.Equals("Accept", StringComparison.OrdinalIgnoreCase)
+            || k.Equals("Accept-Language", StringComparison.OrdinalIgnoreCase));
+
     private async Task EnsureReadyAsync()
     {
         if (_ready)
@@ -140,7 +145,11 @@ public sealed class BrowserFetcher : IDisposable
                 var sameOrigin = string.Equals(finalOrigin, origin, StringComparison.OrdinalIgnoreCase);
                 if (!sameOrigin)
                 {
-                    var trusted = headers is not { Count: > 0 }
+                    // Accept and Accept-Language name media types and languages, not
+                    // secrets — the image-only Accept that lets the ladder recognize a
+                    // masquerading wall must not disqualify the trusted landing that
+                    // defeats it. Every other caller header still does.
+                    var trusted = OnlyBenignHeaders(headers)
                         && TrustedRedirectLandings.TryGetValue(new Uri(url).Host, out var landing)
                         && string.Equals(finalOrigin, landing, StringComparison.OrdinalIgnoreCase);
                     if (!trusted)

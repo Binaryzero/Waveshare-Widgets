@@ -474,6 +474,30 @@ public sealed class DashboardWindow : Form
         }
     }
 
+    /// <summary>Whether the widget's own Accept header admits ONLY image media types —
+    /// the declaration that lets the ladder recognize an HTML answer as a wall even
+    /// behind a 200. Absent or broader Accepts return false: text/html was then an
+    /// admissible answer and the response is the site's to give.</summary>
+    private static bool AcceptsOnlyImages(JsonNode message)
+    {
+        if (message["headers"] is not JsonObject headers) return false;
+        foreach (var (name, value) in headers)
+        {
+            if (!string.Equals(name, "Accept", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var terms = (value?.GetValue<string>() ?? "")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            return terms.Length > 0 && terms.All(t =>
+                t.Split(';')[0].Trim().StartsWith("image/", StringComparison.OrdinalIgnoreCase));
+        }
+        return false;
+    }
+
+    private static bool IsHtmlContent(System.Net.Http.Headers.MediaTypeHeaderValue? contentType) =>
+        contentType?.MediaType is { } media
+        && (media.Equals("text/html", StringComparison.OrdinalIgnoreCase)
+            || media.Equals("application/xhtml+xml", StringComparison.OrdinalIgnoreCase));
+
     private void HandleAudioGet(JsonNode message, Action<string, JsonNode?>? reply = null)
     {
         _ = Task.Run(() =>
@@ -708,8 +732,15 @@ public sealed class DashboardWindow : Form
             Log.Info($"proxy fetch {SafeUrl.Describe(uri)} -> {(int)response.StatusCode} ({bytes.Length} bytes)");
 
             // TLS-fingerprinting bot walls (Reddit) 403 every .NET client; retry those
-            // through a real Chromium navigation, which they do trust.
-            if ((int)response.StatusCode is 403 or 429 && method == "GET")
+            // through a real Chromium navigation, which they do trust. A wall can also
+            // masquerade as SUCCESS: reddit's image CDN answers the .NET fingerprint
+            // with its block page at HTTP 200 (field log: fifteen different .jpeg URLs,
+            // every "image" ~336 KB of identical text/html). The caller declared what
+            // it can accept — a 200 whose media type an image-only Accept never admitted
+            // is the wall wearing a success code, and it escalates the same way.
+            var softWall = response.IsSuccessStatusCode && method == "GET"
+                && AcceptsOnlyImages(message) && IsHtmlContent(response.Content.Headers.ContentType);
+            if (((int)response.StatusCode is 403 or 429 && method == "GET") || softWall)
             {
                 _browserFetcher ??= new BrowserFetcher();
                 // The widget's own ceiling reaches this tier too. It is entered on the remote

@@ -255,8 +255,15 @@
   // Fetch through the host proxy path (handles Reddit's bot wall and the
   // Referer requirement on *.redd.it) and hand back a local blob URL, so the
   // crossfade only ever starts on a fully-downloaded image — no flashing.
+  // The image-only Accept is load-bearing: reddit's CDN serves its block page
+  // at HTTP 200, and declaring that ONLY an image is an acceptable answer is
+  // what lets the host's ladder recognize that 200 as a wall and escalate to
+  // the browser tier instead of handing back 336 KB of HTML.
   async function loadImage(url) {
-    const res = await WW.fetch(url, { maxBytes: IMAGE_MAX_BYTES });
+    const res = await WW.fetch(url, {
+      maxBytes: IMAGE_MAX_BYTES,
+      headers: { Accept: 'image/avif,image/webp,image/jpeg,image/png,image/*' },
+    });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     // Past the ceiling this rejects with a RangeError rather than returning the bytes, and
     // the transfer is cancelled rather than abandoned — so an oversized image is never
