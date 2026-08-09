@@ -541,13 +541,14 @@ public static class UpdateManager
     /// on disk.</summary>
     public static bool CleanupAtStartup()
     {
+        var restoredAny = false;
         try
         {
             // The sweep runs ONLY when no transaction remains open. Recovery that
             // could not finish (a target antivirus still holds) keeps its journal and
             // forfeits this start's sweep — an unrestored original must never be
             // reclassified as litter, and the start after gets to retry.
-            var (clean, restoredAny) = RecoverInterruptedSwap();
+            (var clean, restoredAny) = RecoverInterruptedSwap();
             if (!clean)
                 return restoredAny;
             foreach (var file in EnumerateFilesSafe(AppContext.BaseDirectory, "*.*old-*"))
@@ -573,7 +574,9 @@ public static class UpdateManager
         catch (Exception ex)
         {
             Log.Warn($"Update cleanup: {ex.Message}");
-            return false;
+            // Whatever failed AFTER recovery must not erase what recovery DID: files
+            // restored under already-loaded images still demand the relaunch.
+            return restoredAny;
         }
     }
 

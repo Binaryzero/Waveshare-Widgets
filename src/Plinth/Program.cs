@@ -85,7 +85,14 @@ internal static class Program
             }
             catch (Exception ex)
             {
-                Log.Warn($"Relaunch after recovery failed: {ex.Message} — continuing this session on mixed images");
+                // Exiting is the deliberate choice — mixed images must not run a
+                // session — but a tray that silently never appears is not an
+                // explanation. Say what happened and what to do.
+                Log.Warn($"Relaunch after recovery failed: {ex.Message}");
+                MessageBox.Show(
+                    "Plinth restored an interrupted update but could not restart itself.\n\n"
+                    + "Start Plinth again from the Start menu or its folder.",
+                    "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             return;
         }
