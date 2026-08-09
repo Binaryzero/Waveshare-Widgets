@@ -233,7 +233,10 @@ public static class UpdateManager
     /// never deleted while possibly loaded; the next start sweeps them.</summary>
     public static string Apply(string zipPath)
     {
-        var baseDir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+        // Root-aware trim: a portable install at a volume root would otherwise become
+        // the DRIVE-RELATIVE path "D:", and every Path.Combine from it would resolve
+        // against that drive's current directory instead of the install.
+        var baseDir = Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory);
         var staging = Path.Combine(UpdatesDir, "staging");
         if (Directory.Exists(staging))
             Directory.Delete(staging, recursive: true);
@@ -494,7 +497,14 @@ public static class UpdateManager
                 continue;
             try
             {
-                File.Move(file, Path.Combine(dir, $"{moved}-{Path.GetFileName(file)}"), overwrite: true);
+                // Never overwrite: a quarantine retried after a lock, or a second
+                // malformed journal, starts its numbering over — and the file already
+                // preserved under that name is the original this exists to keep.
+                var name = Path.GetFileName(file);
+                var dest = Path.Combine(dir, name);
+                for (var i = 1; File.Exists(dest); i++)
+                    dest = Path.Combine(dir, $"{i}-{name}");
+                File.Move(file, dest);
                 moved++;
             }
             catch (Exception ex)
