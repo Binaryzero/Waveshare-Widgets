@@ -78,7 +78,19 @@ internal static class Program
             owned = true; // the previous instance died holding it; ownership passed here
         }
         if (!owned)
+        {
+            if (relaunched)
+            {
+                // The updater promised a restart, and the parent tray is already
+                // gone — a silent exit here would leave NO instance running just
+                // because the old process outlived every grace period. Say so.
+                MessageBox.Show(
+                    "Plinth updated, but the previous instance is still shutting down.\n\n"
+                    + "Start Plinth again in a moment.",
+                    "Plinth update", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
             return;
+        }
 
         // Only as the single instance: swap recovery MOVES files in the install dir,
         // and the sweep deletes rename-aside remnants — neither may race a sibling.

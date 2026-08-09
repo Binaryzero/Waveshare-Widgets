@@ -319,6 +319,16 @@ public static class UpdateManager
         // against that drive's current directory instead of the install.
         var baseDir = Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory);
         var staging = Path.Combine(UpdatesDir, "staging");
+        // Running FROM staging (or beneath it) would make the wipe below a wipe of
+        // the LIVE install — with no journal yet to restore a single file. This is
+        // not a location an update transaction can be built under; refuse whole.
+        var installPrefix = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory))
+            + Path.DirectorySeparatorChar;
+        var stagingPrefix = Path.TrimEndingDirectorySeparator(Path.GetFullPath(staging))
+            + Path.DirectorySeparatorChar;
+        if (installPrefix.StartsWith(stagingPrefix, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                "Plinth is running from the updater's staging folder — move the install somewhere else before updating");
         if (Directory.Exists(staging))
             Directory.Delete(staging, recursive: true);
         // Manual extraction, cap enforced on bytes ACTUALLY inflated: the declared
@@ -377,8 +387,13 @@ public static class UpdateManager
             {
                 var rel = Path.GetRelativePath(staging, source);
                 var target = Path.Combine(baseDir, rel);
-                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                // Vetting comes BEFORE creation: CreateDirectory follows an existing
+                // junction while materializing missing segments, so checking after
+                // the fact would validate a directory already planted outside the
+                // install. Missing ancestors are fine — they are about to be created
+                // as ordinary directories beneath ones proven real.
                 EnsureNoReparseAncestors(Path.GetDirectoryName(target)!, baseDir, vetted);
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                 if (File.Exists(target))
                 {
                     // ATOMIC per file: rename-aside-then-move-in left an instant in
@@ -514,7 +529,7 @@ public static class UpdateManager
         {
             if (!vetted.Add(d))
                 return;
-            if (File.GetAttributes(d).HasFlag(FileAttributes.ReparsePoint))
+            if (Directory.Exists(d) && File.GetAttributes(d).HasFlag(FileAttributes.ReparsePoint))
                 throw new InvalidOperationException($"update target sits beneath a link: {d}");
         }
     }
