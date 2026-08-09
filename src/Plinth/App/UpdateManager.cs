@@ -195,7 +195,13 @@ public static class UpdateManager
         var versionText = tag.StartsWith('v') ? tag[1..] : tag;
         if (!TryParseTag(tag, out var latest, out var latestPre))
             return null;
-        if (ComparePrecedence(latest, latestPre, CurrentVersion(), CurrentPrerelease()) <= 0)
+        var cmp = ComparePrecedence(latest, latestPre, CurrentVersion(), CurrentPrerelease());
+        // A standing repair advisory turns "same version" into a valid answer: the
+        // interrupted swap may have replaced Plinth.dll before dying, so this build
+        // REPORTS the newest release while the rest of the install is mixed — and
+        // reinstalling that release is exactly the repair the advisory promises.
+        // Only strictly older releases stay refused.
+        if (RepairAdvised ? cmp < 0 : cmp <= 0)
             return null;
 
         // The flavor must match the install: dropping a framework-dependent build over
@@ -478,11 +484,15 @@ public static class UpdateManager
         // completed update back to a WHOLE old install and offers it again — the
         // recoverable wrong answer, named in the log.
         WriteSweepMarker(stamp);
-        // A committed swap IS the repair a standing advisory asked for: every
-        // release-owned file is now from one coherent version.
-        try { File.Delete(RepairAdvisedFile); } catch (Exception) { /* advisory stays; balloon repeats */ }
-        try { File.Delete(JournalFile); }
+        var journalGone = false;
+        try { File.Delete(JournalFile); journalGone = true; }
         catch (Exception ex) { Log.Warn($"Update committed but the journal would not delete ({ex.Message}); the next start will roll it back — run the update again after"); }
+        // A committed swap IS the repair a standing advisory asked for — but only
+        // once the journal is truly gone: a surviving journal means the next start
+        // ROLLS BACK to the very mixed install the advisory describes, and clearing
+        // it first would leave that state silent.
+        if (journalGone)
+            try { File.Delete(RepairAdvisedFile); } catch (Exception) { /* advisory stays; balloon repeats */ }
         try { Directory.Delete(staging, recursive: true); }
         catch (Exception ex) { Log.Warn($"Staging cleanup after update: {ex.Message}"); }
         // ALL failures, not just IOException: an ACL that allows creating the zip
@@ -839,15 +849,19 @@ public static class UpdateManager
                 Log.Warn("Quarantine incomplete; journal kept and nothing swept — retrying next start");
                 return (false, false, true);
             }
+            // The DURABLE advisory persists BEFORE the journal retires: with the
+            // journal already .bad and this write failed, no later launch would see
+            // any state at all over the quarantined, partially swapped install. If
+            // the advisory cannot persist, the journal stays active and the next
+            // start retries this whole path (quarantine re-runs empty).
+            try { File.WriteAllText(RepairAdvisedFile, DateTime.UtcNow.ToString("O")); }
+            catch (Exception ex)
+            {
+                Log.Warn($"Could not record the repair advisory: {ex.Message}; journal kept so the next start retries");
+                return (false, false, true);
+            }
             try { File.Move(JournalFile, JournalFile + ".bad", overwrite: true); }
             catch (Exception ex) { Log.Warn($"Could not retire the journal: {ex.Message}"); }
-            // The retired journal means the NEXT start proceeds — but THIS one just
-            // moved originals into quarantine while the dead swap's new files stay
-            // in place: a mixed install nobody has approved running. Refuse once,
-            // loudly, and leave the DURABLE advisory so later sessions keep saying
-            // so until a coherent update or a reinstall repairs the install.
-            try { File.WriteAllText(RepairAdvisedFile, DateTime.UtcNow.ToString("O")); }
-            catch (Exception ex) { Log.Warn($"Could not record the repair advisory: {ex.Message}"); }
             return (false, false, true);
         }
 
