@@ -34,8 +34,14 @@ public static class UpdateManager
     /// rename-aside stamp on line two, added files by relative path after. Written
     /// before the first file moves, deleted after the last — its existence at startup
     /// means a swap was interrupted, and the *.old files under that stamp are a
-    /// transaction to roll back, not litter.</summary>
-    private static string JournalFile => Path.Combine(UpdatesDir, "swap-journal.txt");
+    /// transaction to roll back, not litter.
+    /// It lives IN THE INSTALL, beside the transaction it describes — not in the
+    /// per-account data dir. A shared portable install can be run by two Windows
+    /// accounts, and a journal in account A's %LocalAppData% is invisible to
+    /// account B, whose sweep would then delete A's unrestored originals as litter.
+    /// Writing it is also the transaction's entry permission check: an install this
+    /// account cannot write fails HERE, before any file is touched.</summary>
+    private static string JournalFile => Path.Combine(AppContext.BaseDirectory, "swap-journal.txt");
 
     /// <summary>Journal intents reach STABLE STORAGE before any swap they authorize.
     /// WriteAllText closes the handle without forcing the data down, so a power cut
@@ -105,9 +111,6 @@ public static class UpdateManager
         return a.Length.CompareTo(b.Length);
     }
 
-    /// <summary>Queries the latest release. Returns null when this build is current
-    /// (or newer), when no matching asset exists, or on any network failure — the
-    /// caller distinguishes "no update" from "check failed" by the thrown exception.</summary>
     /// <summary>"v1.2.3-beta.2+meta" → numeric triple + prerelease identifiers
     /// (null for a final). Build metadata is dropped: it never joins precedence.</summary>
     private static bool TryParseTag(string tag, out Version numeric, out string? prerelease)
@@ -118,6 +121,11 @@ public static class UpdateManager
         return Version.TryParse(dash < 0 ? core : core[..dash], out numeric!);
     }
 
+    /// <summary>Queries this install's channel for its next release. Returns null
+    /// when this build is current (or newer); throws when the check itself fails —
+    /// network errors, and a newer release whose matching asset is missing (a
+    /// publish job may have failed or still be uploading), which must not read as
+    /// "you are up to date".</summary>
     public static async Task<UpdateInfo?> CheckAsync()
     {
         using var http = NewClient();
@@ -138,7 +146,7 @@ public static class UpdateManager
         else
         {
             using var doc = JsonDocument.Parse(
-                await http.GetStringAsync($"https://api.github.com/repos/{Owner}/{Repo}/releases?per_page=10"));
+                await http.GetStringAsync($"https://api.github.com/repos/{Owner}/{Repo}/releases?per_page=100"));
             JsonElement? best = null;
             Version? bestNum = null;
             string? bestPre = null;
@@ -189,8 +197,12 @@ public static class UpdateManager
                     return new UpdateInfo(latest, tag, name, url, size);
             }
         }
-        Log.Warn($"Update check: release {tag} exists but has no asset named '{wanted}'");
-        return null;
+        // A release that EXISTS but lacks its asset is not "you are up to date" — a
+        // publish job may have failed or uploads may still be in flight. The thrown
+        // message reaches the interactive dialog as the reason; the silent daily
+        // check logs it and stays quiet, same as any other check failure.
+        throw new InvalidOperationException(
+            $"release {tag} is newer but has no asset named '{wanted}' yet — it may still be uploading");
     }
 
     /// <summary>Downloads and validates the archive. Returns the zip path, staged under
@@ -353,7 +365,7 @@ public static class UpdateManager
         {
             Log.Warn($"Update swap failed after {placed.Count} file(s); rolling back: {ex.Message}");
             var unrestored = 0;
-            foreach (var stray in Directory.EnumerateFiles(baseDir, $"*.new-{stamp}", SearchOption.AllDirectories))
+            foreach (var stray in EnumerateFilesSafe(baseDir, $"*.new-{stamp}"))
                 try { if (!InsideUpdatesDir(stray)) File.Delete(stray); } catch (Exception) { unrestored++; }
             // Replacements roll back ATOMICALLY, exactly as startup recovery does —
             // delete-then-restore held open the same missing-name instant here that
@@ -428,6 +440,31 @@ public static class UpdateManager
         path.StartsWith(Path.TrimEndingDirectorySeparator(UpdatesDir) + Path.DirectorySeparatorChar,
             StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Recursive file walk that survives unreadable subtrees: an
+    /// inaccessible directory yields nothing rather than aborting the iteration.
+    /// EnumerateFiles throws at MoveNext — outside any per-file try — so one
+    /// unreadable folder anywhere in a portable install would otherwise cancel an
+    /// entire rollback, recovery, or sweep wholesale, every launch.</summary>
+    private static IEnumerable<string> EnumerateFilesSafe(string root, string pattern)
+    {
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            var dir = pending.Pop();
+            string[] files;
+            try { files = Directory.GetFiles(dir, pattern); }
+            catch (Exception) { files = []; }
+            foreach (var file in files)
+                yield return file;
+            string[] subs;
+            try { subs = Directory.GetDirectories(dir); }
+            catch (Exception) { continue; }
+            foreach (var sub in subs)
+                pending.Push(sub);
+        }
+    }
+
     public static void CleanupAtStartup()
     {
         try
@@ -438,7 +475,7 @@ public static class UpdateManager
             // reclassified as litter, and the start after gets to retry.
             if (!RecoverInterruptedSwap())
                 return;
-            foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.*old-*", SearchOption.AllDirectories))
+            foreach (var file in EnumerateFilesSafe(AppContext.BaseDirectory, "*.*old-*"))
                 if (!InsideUpdatesDir(file) && (AsideName.IsMatch(file) || StrayName.IsMatch(file)))
                     try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             var staging = Path.Combine(UpdatesDir, "staging");
@@ -504,9 +541,9 @@ public static class UpdateManager
         var failures = 0;
         // Incomplete Replace hops first: a *.new-<stamp> beside its target is staged
         // bytes that never swapped in — plain deletions, no original at risk.
-        foreach (var stray in Directory.EnumerateFiles(baseDir, "*.new-" + stamp, SearchOption.AllDirectories))
+        foreach (var stray in EnumerateFilesSafe(baseDir, "*.new-" + stamp))
             try { if (!InsideUpdatesDir(stray)) File.Delete(stray); } catch (Exception) { failures++; }
-        foreach (var aside in Directory.EnumerateFiles(baseDir, "*" + suffix, SearchOption.AllDirectories))
+        foreach (var aside in EnumerateFilesSafe(baseDir, "*" + suffix))
         {
             if (InsideUpdatesDir(aside))
                 continue;
@@ -577,7 +614,7 @@ public static class UpdateManager
         Directory.CreateDirectory(dir);
         var moved = 0;
         var failed = 0;
-        foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.*old-*", SearchOption.AllDirectories))
+        foreach (var file in EnumerateFilesSafe(AppContext.BaseDirectory, "*.*old-*"))
         {
             if (InsideUpdatesDir(file) || (!AsideName.IsMatch(file) && !StrayName.IsMatch(file)))
                 continue;
