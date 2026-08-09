@@ -154,6 +154,7 @@ public static class UpdateManager
     /// (null for a final). Build metadata is dropped: it never joins precedence.</summary>
     private static bool TryParseTag(string tag, out Version numeric, out string? prerelease)
     {
+        numeric = new Version(0, 0, 0);
         var core = (tag.StartsWith('v') ? tag[1..] : tag).Split('+')[0];
         var dash = core.IndexOf('-');
         prerelease = dash < 0 ? null : core[(dash + 1)..];
