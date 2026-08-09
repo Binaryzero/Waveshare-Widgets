@@ -766,8 +766,9 @@ public sealed class DashboardWindow : Form
             // the escalation below would never run, even though the browser tier could
             // return a real image well inside that same cap. The known wall's body is
             // never read at all.
-            var softWall = response.IsSuccessStatusCode && method == "GET"
-                && AcceptsOnlyImages(message) && IsHtmlContent(response.Content.Headers.ContentType);
+            var imageOnly = method == "GET" && AcceptsOnlyImages(message);
+            var softWall = response.IsSuccessStatusCode && imageOnly
+                && IsHtmlContent(response.Content.Headers.ContentType);
             var bytes = softWall ? Array.Empty<byte>() : await ReadCappedAsync(response, cap);
 
             result["status"] = (int)response.StatusCode;
@@ -813,12 +814,15 @@ public sealed class DashboardWindow : Form
                 }
                 else if (alt is { } browser && browser.Status < 400)
                 {
-                    if (softWall && IsHtmlMedia(browser.ContentType))
+                    if (imageOnly && IsHtmlMedia(browser.ContentType))
                     {
                         // The browser was walled too — a 2xx HTML answer to an
                         // image-only request is inadmissible whichever tier produced
                         // it, and copying it as success would re-report the wall as a
-                        // widget decode failure.
+                        // widget decode failure. Gated on the CALLER's declaration,
+                        // not on which wall status opened this block: the proxy's own
+                        // 403 enters here too, and Chromium can be served the HTML
+                        // challenge on that path just as well.
                         Log.Warn($"browser fetch {SafeUrl.Describe(uri)} -> {browser.Status} but HTML to an image-only request; a wall on every tier");
                         SetWallResult(result);
                     }
