@@ -98,9 +98,9 @@ public static class UpdateManager
         var b = bPre.Split('.');
         for (var i = 0; i < Math.Min(a.Length, b.Length); i++)
         {
-            var c = (long.TryParse(a[i], out var an), long.TryParse(b[i], out var bn)) switch
+            var c = (IsDigits(a[i]), IsDigits(b[i])) switch
             {
-                (true, true) => an.CompareTo(bn),
+                (true, true) => CompareDigits(a[i], b[i]),
                 (true, false) => -1,
                 (false, true) => 1,
                 _ => string.CompareOrdinal(a[i], b[i]),
@@ -109,6 +109,23 @@ public static class UpdateManager
                 return c;
         }
         return a.Length.CompareTo(b.Length);
+    }
+
+    private static bool IsDigits(string s) => s.Length > 0 && s.All(char.IsAsciiDigit);
+
+    /// <summary>Numeric identifiers compare as NUMBERS of any size — parsing into a
+    /// bounded integer silently demoted identifiers past long.MaxValue to ordinal
+    /// string order, where "99...9" (20 digits) outranks "10...0" (21 digits).
+    /// Leading zeros are trimmed (SemVer forbids them; tolerance costs nothing),
+    /// then longer means larger and equal lengths compare digit by digit.</summary>
+    private static int CompareDigits(string x, string y)
+    {
+        var tx = x.TrimStart('0');
+        var ty = y.TrimStart('0');
+        if (tx.Length != ty.Length)
+            return tx.Length - ty.Length;
+        var byDigits = string.CompareOrdinal(tx, ty);
+        return byDigits != 0 ? byDigits : x.Length - y.Length;
     }
 
     /// <summary>"v1.2.3-beta.2+meta" → numeric triple + prerelease identifiers
@@ -129,53 +146,46 @@ public static class UpdateManager
     public static async Task<UpdateInfo?> CheckAsync()
     {
         using var http = NewClient();
-        // The channel follows the install. /releases/latest IS the stable channel:
-        // GitHub keeps prereleases and drafts out of it, so a stable install can
-        // never be offered a beta. A PRERELEASE install has already opted in — and
-        // /latest would strand it, since beta.2 never appears there — so it reads
-        // the recent list and takes the highest PRECEDENCE instead: beta.2
-        // supersedes beta.1, and a final that outranks the newest beta wins there
-        // too, promoting the install back onto the stable channel.
-        JsonElement root;
-        if (CurrentPrerelease() is null)
+        // BOTH channels choose by SemVer precedence over the full paginated list —
+        // never by /releases/latest, which GitHub assigns by PUBLISH date: a v1.2.1
+        // backport published after v2.0.0 becomes "latest" and would hide the real
+        // next release forever. The channel split is a FILTER, not a mechanism: a
+        // stable install considers finals only (a beta must never be offered to it),
+        // a prerelease install considers everything — beta.2 supersedes beta.1, and
+        // a final outranking the newest beta promotes it back onto stable. The list
+        // is creation-ordered, so all pages are read before choosing (bounded — a
+        // thousand releases is beyond any state this repo reaches, and an unbounded
+        // loop trusts the server too much).
+        var stableChannel = CurrentPrerelease() is null;
+        JsonElement? best = null;
+        Version? bestNum = null;
+        string? bestPre = null;
+        for (var page = 1; page <= 10; page++)
         {
-            using var doc = JsonDocument.Parse(
-                await http.GetStringAsync($"https://api.github.com/repos/{Owner}/{Repo}/releases/latest"));
-            root = doc.RootElement.Clone();
-        }
-        else
-        {
-            JsonElement? best = null;
-            Version? bestNum = null;
-            string? bestPre = null;
-            // The list is creation-ordered, not precedence-ordered, so ALL pages are
-            // read before choosing (bounded — a thousand releases is beyond any state
-            // this repo reaches, and an unbounded loop trusts the server too much).
-            for (var page = 1; page <= 10; page++)
+            using var doc = JsonDocument.Parse(await http.GetStringAsync(
+                $"https://api.github.com/repos/{Owner}/{Repo}/releases?per_page=100&page={page}"));
+            if (doc.RootElement.GetArrayLength() == 0)
+                break;
+            foreach (var r in doc.RootElement.EnumerateArray())
             {
-                using var doc = JsonDocument.Parse(await http.GetStringAsync(
-                    $"https://api.github.com/repos/{Owner}/{Repo}/releases?per_page=100&page={page}"));
-                if (doc.RootElement.GetArrayLength() == 0)
-                    break;
-                foreach (var r in doc.RootElement.EnumerateArray())
+                if (r.TryGetProperty("draft", out var d) && d.GetBoolean())
+                    continue;
+                var rTag = r.TryGetProperty("tag_name", out var rt) ? rt.GetString() ?? "" : "";
+                if (!TryParseTag(rTag, out var num, out var pre))
+                    continue;
+                if (stableChannel && pre is not null)
+                    continue;
+                if (bestNum is null || ComparePrecedence(num, pre, bestNum, bestPre) > 0)
                 {
-                    if (r.TryGetProperty("draft", out var d) && d.GetBoolean())
-                        continue;
-                    var rTag = r.TryGetProperty("tag_name", out var rt) ? rt.GetString() ?? "" : "";
-                    if (!TryParseTag(rTag, out var num, out var pre))
-                        continue;
-                    if (bestNum is null || ComparePrecedence(num, pre, bestNum, bestPre) > 0)
-                    {
-                        best = r.Clone();
-                        bestNum = num;
-                        bestPre = pre;
-                    }
+                    best = r.Clone();
+                    bestNum = num;
+                    bestPre = pre;
                 }
             }
-            if (best is null)
-                return null;
-            root = best.Value;
         }
+        if (best is null)
+            return null;
+        var root = best.Value;
 
         var tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
         // The version TEXT (what release.yml stamps into the asset file name, build
@@ -524,7 +534,12 @@ public static class UpdateManager
         }
     }
 
-    public static void CleanupAtStartup()
+    /// <summary>Returns true when recovery RESTORED files under this very process:
+    /// the assemblies already loaded may be the dead transaction's new code, now
+    /// running against the restored old files — the caller must relaunch rather
+    /// than continue this session on a host/shell contract that no longer exists
+    /// on disk.</summary>
+    public static bool CleanupAtStartup()
     {
         try
         {
@@ -532,8 +547,9 @@ public static class UpdateManager
             // could not finish (a target antivirus still holds) keeps its journal and
             // forfeits this start's sweep — an unrestored original must never be
             // reclassified as litter, and the start after gets to retry.
-            if (!RecoverInterruptedSwap())
-                return;
+            var (clean, restoredAny) = RecoverInterruptedSwap();
+            if (!clean)
+                return restoredAny;
             foreach (var file in EnumerateFilesSafe(AppContext.BaseDirectory, "*.*old-*"))
                 if (!InsideUpdatesDir(file) && (AsideName.IsMatch(file) || StrayName.IsMatch(file)))
                     try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
@@ -552,21 +568,31 @@ public static class UpdateManager
                             File.Delete(zip);
                     }
                     catch (IOException) { }
+            return restoredAny;
         }
         catch (Exception ex)
         {
             Log.Warn($"Update cleanup: {ex.Message}");
+            return false;
         }
     }
 
-    /// <summary>Returns whether the install is clean to sweep: true when no journal
-    /// existed or every recorded backup was restored; false keeps the journal (and
-    /// the sweep held off) so the next start retries.</summary>
-    private static bool RecoverInterruptedSwap()
+    /// <summary>Clean: the install may be swept — no journal existed, or every
+    /// recorded backup was restored (anything less keeps the journal so the next
+    /// start retries). RestoredAny: recovery MOVED files back under the running
+    /// process, so the images already loaded may be the dead transaction's code —
+    /// the caller relaunches into the restored install.</summary>
+    private static (bool Clean, bool RestoredAny) RecoverInterruptedSwap()
     {
         if (!File.Exists(JournalFile))
-            return true;
-        var lines = File.ReadAllLines(JournalFile);
+            return (true, false);
+        var raw = File.ReadAllText(JournalFile);
+        // A record proves itself complete by the newline AFTER it (or a successor
+        // line). A torn append is a PREFIX of a name — "lib.dll.config" cut to
+        // "lib.dll" — and a prefix must never aim anything at the install.
+        var terminated = raw.Length > 0 && raw[^1] == '\n';
+        var lines = raw.Replace("\r", "").Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var headerComplete = lines.Length > 2 || terminated;
         // A journal that does not parse is not a license to guess — restore nothing
         // rather than aim renames at names a corrupted file suggests. But simply
         // stepping aside would hand next start's sweep the very remnants that may
@@ -576,7 +602,7 @@ public static class UpdateManager
         // truncated "old-123" would pass a prefix check, find no backups under its
         // malformed suffix, retire the journal — and hand the real stamped originals
         // to the sweep.
-        if (!(lines.Length >= 2 && Directory.Exists(lines[0]) && StampShape.IsMatch(lines[1])))
+        if (!(headerComplete && lines.Length >= 2 && Directory.Exists(lines[0]) && StampShape.IsMatch(lines[1])))
         {
             Log.Warn("Swap journal did not parse; quarantining remnants");
             // The journal retires ONLY once every remnant is preserved. A quarantine
@@ -586,11 +612,11 @@ public static class UpdateManager
             if (!QuarantineRemnants())
             {
                 Log.Warn("Quarantine incomplete; journal kept and nothing swept — retrying next start");
-                return false;
+                return (false, false);
             }
             try { File.Move(JournalFile, JournalFile + ".bad", overwrite: true); }
             catch (Exception ex) { Log.Warn($"Could not retire the journal: {ex.Message}"); }
-            return false;
+            return (false, false);
         }
 
         var baseDir = lines[0];
@@ -636,8 +662,17 @@ public static class UpdateManager
         // The dead swap's ADDITIONS — files the old install never had, identifiable
         // only by the journal record (lines three on). Each is validated to resolve
         // INSIDE the install before deletion, so a corrupt line cannot aim outside.
+        // A torn FINAL record is dropped, not guessed at: the addition it described
+        // (if it ever landed) stays behind as litter — the lesser wrong, against
+        // deleting whichever old file the truncated prefix happens to name.
+        var additions = lines.Skip(2);
+        if (!terminated && lines.Length > 2)
+        {
+            additions = lines.Skip(2).SkipLast(1);
+            Log.Warn("Swap journal's last addition record is torn; leaving its file (if placed) rather than deleting by a truncated name");
+        }
         var root = baseDir.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        foreach (var rel in lines.Skip(2))
+        foreach (var rel in additions)
         {
             if (rel.Length == 0)
                 continue;
@@ -664,11 +699,11 @@ public static class UpdateManager
             // surviving backups to the sweep as litter and make the partial install
             // permanent. This start runs on what it has; the next one retries.
             Log.Warn($"Swap recovery incomplete ({restored} restored, {failures} failed); journal kept, nothing swept — retrying next start");
-            return false;
+            return (false, restored > 0);
         }
         Log.Warn($"An update was interrupted mid-swap; rolled back at startup ({restored} file(s) restored)");
         File.Delete(JournalFile);
-        return true;
+        return (true, restored > 0);
     }
 
     /// <summary>For a journal that cannot be read: the remnants under the install may

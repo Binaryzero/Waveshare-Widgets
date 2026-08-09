@@ -66,7 +66,29 @@ internal static class Program
 
         // Only as the single instance: swap recovery MOVES files in the install dir,
         // and the sweep deletes rename-aside remnants — neither may race a sibling.
-        UpdateManager.CleanupAtStartup();
+        if (UpdateManager.CleanupAtStartup())
+        {
+            // Recovery restored files UNDER this process: the assemblies already
+            // loaded may be the dead transaction's new code, now facing the old
+            // shell assets and dependencies on disk — a contract that no longer
+            // exists. One clean relaunch loads the install as restored; the child
+            // waits out this pid and the mutex exactly like an updater relaunch.
+            Log.Warn("Update recovery restored files; relaunching into the restored install");
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "Plinth.exe"),
+                    Arguments = $"--wait-for {Environment.ProcessId}",
+                    UseShellExecute = true,
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"Relaunch after recovery failed: {ex.Message} — continuing this session on mixed images");
+            }
+            return;
+        }
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
