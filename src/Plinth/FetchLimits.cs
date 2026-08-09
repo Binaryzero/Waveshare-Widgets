@@ -84,7 +84,13 @@ public static class FetchLimits
     /// TLS fingerprinting is why this tier exists at all) is EVERY request — so a
     /// per-request ceiling that stopped at the proxy tier would be absent exactly where
     /// its widget relies on it.</param>
-    public static string BrowserFetchScript(string jsUrl, string jsHeaders, int maxBytes) => $$"""
+    /// <param name="sameOrigin">False when the fetch runs from a page the origin bootstrap
+    /// was redirected to (a CDN root with no page of its own, e.g. preview.redd.it landing
+    /// on www.reddit.com). Cross-origin the fetch goes out cookieless: 'include' would
+    /// demand Access-Control-Allow-Credentials from the far side (reddit's CDN grants only
+    /// Access-Control-Allow-Origin), and the landed page's cookies have no business riding
+    /// a request the caller addressed to a different host.</param>
+    public static string BrowserFetchScript(string jsUrl, string jsHeaders, int maxBytes, bool sameOrigin = true) => $$"""
         (() => {
           window.__wwResult = null;
           const MAX = {{EffectiveCap(maxBytes)}};
@@ -99,7 +105,7 @@ public static class FetchLimits
             return out;
           };
           const fail = (e) => { window.__wwResult = { status: 0, ct: '', b64: '', error: String(e) }; };
-          fetch({{jsUrl}}, { credentials: 'include', headers: {{jsHeaders}} })
+          fetch({{jsUrl}}, { credentials: '{{(sameOrigin ? "include" : "omit")}}', headers: {{jsHeaders}} })
             .then(async (r) => {
               const declared = Number(r.headers.get('content-length') || 0);
               if (declared > MAX) {

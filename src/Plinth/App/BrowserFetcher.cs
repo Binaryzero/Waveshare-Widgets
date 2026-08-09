@@ -101,16 +101,33 @@ public sealed class BrowserFetcher : IDisposable
                 // The bootstrap can be REDIRECTED to a different origin, and the
                 // fetch below runs inside whatever page the WebView landed on —
                 // a foreign page's scripts can wrap window.fetch and read any
-                // forwarded Authorization/API-key headers synchronously. Only
-                // the requested origin may receive the request (and a foreign-
-                // origin fetch would be CORS-bound and useless anyway).
+                // forwarded Authorization/API-key headers synchronously. A request
+                // CARRYING caller headers therefore never runs from a foreign page.
+                //
+                // A header-less request may: there is nothing for the page to steal
+                // but a URL the target site already knows, and the redirect is how
+                // CDN hosts behave — preview.redd.it has no page at its root and
+                // sends the browser to www.reddit.com, the very page whose
+                // bot-challenge cookies and CORS grant exist so reddit's own app
+                // can load these images (one field log: 679 refused image fetches,
+                // every reddit tile dark). The fetch then runs cookieless ('omit'):
+                // the CDN grants Access-Control-Allow-Origin without
+                // allow-credentials, and the landed page's cookies have no business
+                // riding a request addressed to a different host. CORS still gates
+                // what the page is allowed to read.
                 string finalOrigin;
                 try { finalOrigin = new Uri(core.Source).GetLeftPart(UriPartial.Authority) + "/"; }
                 catch { finalOrigin = ""; }
-                if (!string.Equals(finalOrigin, origin, StringComparison.OrdinalIgnoreCase))
+                var sameOrigin = string.Equals(finalOrigin, origin, StringComparison.OrdinalIgnoreCase);
+                if (!sameOrigin)
                 {
-                    Log.Warn($"browser fetch skipped ({SafeUrl.Describe(url)}): origin bootstrap redirected to '{SafeUrl.Describe(finalOrigin)}' — not running the request from a foreign origin");
-                    return null;
+                    if (headers is { Count: > 0 }
+                        || !finalOrigin.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Log.Warn($"browser fetch skipped ({SafeUrl.Describe(url)}): origin bootstrap redirected to '{SafeUrl.Describe(finalOrigin)}' — not running a request with caller headers from a foreign origin");
+                        return null;
+                    }
+                    Log.Info($"browser fetch ({SafeUrl.Describe(url)}): origin root redirected to '{SafeUrl.Describe(finalOrigin)}'; running cookieless from the landed page (no caller headers to protect)");
                 }
 
                 // Kick off a same-origin fetch and stash its result on window; then poll.
@@ -128,7 +145,7 @@ public sealed class BrowserFetcher : IDisposable
                 // The cap is applied INSIDE the page, streaming, so the bytes past it are
                 // never received — see FetchLimits, which is also where the proxy tier's
                 // ceiling lives so the two cannot disagree.
-                await core.ExecuteScriptAsync(FetchLimits.BrowserFetchScript(jsUrl, jsHeaders, maxBytes));
+                await core.ExecuteScriptAsync(FetchLimits.BrowserFetchScript(jsUrl, jsHeaders, maxBytes, sameOrigin));
 
                 for (var i = 0; i < 60; i++) // up to ~15 s
                 {
