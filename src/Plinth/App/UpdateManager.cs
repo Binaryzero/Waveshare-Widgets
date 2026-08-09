@@ -519,11 +519,36 @@ public static class UpdateManager
     /// wipe checks this first.</summary>
     private static bool InstallInsideStaging(string staging)
     {
-        var installPrefix = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory))
+        var installPrefix = Path.TrimEndingDirectorySeparator(CanonicalDir(AppContext.BaseDirectory))
             + Path.DirectorySeparatorChar;
-        var stagingPrefix = Path.TrimEndingDirectorySeparator(Path.GetFullPath(staging))
+        var stagingPrefix = Path.TrimEndingDirectorySeparator(CanonicalDir(staging))
             + Path.DirectorySeparatorChar;
         return installPrefix.StartsWith(stagingPrefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Component-by-component link resolution. GetFullPath is LEXICAL —
+    /// it never touches the filesystem — so an install launched through a junction
+    /// whose target lies under staging compared as unrelated paths and walked past
+    /// the containment guard. ResolveLinkTarget resolves only a leaf, so each
+    /// component is resolved on the way down; an unreadable component keeps its
+    /// lexical form, which fails safe (the guard then refuses more, never less).</summary>
+    private static string CanonicalDir(string path)
+    {
+        var full = Path.GetFullPath(path);
+        var root = Path.GetPathRoot(full)!;
+        var current = root;
+        foreach (var part in full[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, part);
+            try
+            {
+                var info = new DirectoryInfo(current);
+                if (info.LinkTarget is not null && info.ResolveLinkTarget(returnFinalTarget: true) is { } resolved)
+                    current = resolved.FullName;
+            }
+            catch (Exception) { /* unreadable component — keep the lexical path */ }
+        }
+        return current;
     }
 
     /// <summary>Root-level names the updater itself owns inside the install. An
@@ -677,9 +702,9 @@ public static class UpdateManager
             // could not finish (a target antivirus still holds) keeps its journal and
             // forfeits this start's sweep — an unrestored original must never be
             // reclassified as litter, and the start after gets to retry.
-            (var clean, restoredAny) = RecoverInterruptedSwap();
+            (var clean, restoredAny, var manualRepair) = RecoverInterruptedSwap();
             if (!clean)
-                return Outcome(restoredAny);
+                return Outcome(restoredAny, manualRepair);
             // The sweep is driven by RECORD, never by filename shape: nothing but the
             // updater's own ledger can establish ownership of a suffix. Each finished
             // transaction leaves a marker naming its stamp; only those exact stamps
@@ -726,22 +751,23 @@ public static class UpdateManager
                             File.Delete(zip);
                     }
                     catch (IOException) { }
-            return Outcome(restoredAny);
+            return Outcome(restoredAny, manualRepair: false);
         }
         catch (Exception ex)
         {
             Log.Warn($"Update cleanup: {ex.Message}");
             // Whatever failed AFTER recovery must not erase what recovery DID: files
             // restored under already-loaded images still demand the relaunch.
-            return Outcome(restoredAny);
+            return Outcome(restoredAny, manualRepair: false);
         }
 
         // Restores demand a relaunch whatever else happened; an ACTIVE journal with
         // nothing restored is a known-mixed install a session must not run over —
-        // distinguishable from the quarantine path, which retires its journal.
-        static StartupOutcome Outcome(bool restoredAny) =>
+        // and so is the quarantine aftermath, whose journal is already retired but
+        // whose install just lost its originals to preservation.
+        static StartupOutcome Outcome(bool restoredAny, bool manualRepair) =>
             restoredAny ? StartupOutcome.Relaunch
-            : RecoveryPending ? StartupOutcome.Refuse
+            : manualRepair || RecoveryPending ? StartupOutcome.Refuse
             : StartupOutcome.Proceed;
     }
 
@@ -750,7 +776,7 @@ public static class UpdateManager
     /// start retries). RestoredAny: recovery MOVED files back under the running
     /// process, so the images already loaded may be the dead transaction's code —
     /// the caller relaunches into the restored install.</summary>
-    private static (bool Clean, bool RestoredAny) RecoverInterruptedSwap()
+    private static (bool Clean, bool RestoredAny, bool ManualRepair) RecoverInterruptedSwap()
     {
         // Hoisted OUTSIDE the try: restoration that happened must outlive whatever
         // throws after it — the caller's relaunch decision rides on this count.
@@ -758,7 +784,7 @@ public static class UpdateManager
         try
         {
         if (!File.Exists(JournalFile))
-            return (true, false);
+            return (true, false, false);
         var raw = File.ReadAllText(JournalFile);
         // A record proves itself complete by the newline AFTER it (or a successor
         // line). A torn append is a PREFIX of a name — "lib.dll.config" cut to
@@ -785,11 +811,16 @@ public static class UpdateManager
             if (!QuarantineRemnants())
             {
                 Log.Warn("Quarantine incomplete; journal kept and nothing swept — retrying next start");
-                return (false, false);
+                return (false, false, true);
             }
             try { File.Move(JournalFile, JournalFile + ".bad", overwrite: true); }
             catch (Exception ex) { Log.Warn($"Could not retire the journal: {ex.Message}"); }
-            return (false, false);
+            // The retired journal means the NEXT start proceeds — but THIS one just
+            // moved originals into quarantine while the dead swap's new files stay
+            // in place: a mixed install nobody has approved running. Refuse once,
+            // loudly; the user restarts into a working (if drifted) install with
+            // the quarantine preserved for repair.
+            return (false, false, true);
         }
 
         var baseDir = lines[0];
@@ -871,19 +902,19 @@ public static class UpdateManager
             // surviving backups to the sweep as litter and make the partial install
             // permanent. This start runs on what it has; the next one retries.
             Log.Warn($"Swap recovery incomplete ({restored} restored, {failures} failed); journal kept, nothing swept — retrying next start");
-            return (false, restored > 0);
+            return (false, restored > 0, false);
         }
         Log.Warn($"An update was interrupted mid-swap; rolled back at startup ({restored} file(s) restored)");
         WriteSweepMarker(stamp);
         File.Delete(JournalFile);
-        return (true, restored > 0);
+        return (true, restored > 0, false);
         }
         catch (Exception ex)
         {
             // Not clean — the journal (if any) stays and the next start retries —
             // but the restores already performed are still reported.
             Log.Warn($"Swap recovery did not finish cleanly: {ex.Message}");
-            return (false, restored > 0);
+            return (false, restored > 0, false);
         }
     }
 

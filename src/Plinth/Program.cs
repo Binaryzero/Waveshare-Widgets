@@ -105,7 +105,9 @@ internal static class Program
             MessageBox.Show(
                 "An update did not finish, and Plinth could not repair it yet — a file "
                 + "may still be locked by another program.\n\n"
-                + "Close other programs using Plinth's folder, then start Plinth again.",
+                + "Close other programs using Plinth's folder, then start Plinth again. "
+                + "If this repeats or Plinth misbehaves afterwards, reinstall from the "
+                + "latest release zip.",
                 "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
