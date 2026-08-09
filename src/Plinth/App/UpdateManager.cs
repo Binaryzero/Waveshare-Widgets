@@ -43,6 +43,28 @@ public static class UpdateManager
     /// account cannot write fails HERE, before any file is touched.</summary>
     private static string JournalFile => Path.Combine(AppContext.BaseDirectory, "swap-journal.txt");
 
+    /// <summary>Companion record that a journal's transaction FINISHED and the
+    /// journal file itself is merely undeletable — held open by a scanner without
+    /// delete sharing. A journal whose stamp this file names is INERT: nothing is
+    /// pending, and refusing sessions over it would brick a coherent install on
+    /// the very last cleanup step.</summary>
+    private static string JournalDoneFile => Path.Combine(AppContext.BaseDirectory, "swap-journal.done");
+
+    private static bool JournalInert()
+    {
+        try
+        {
+            if (!File.Exists(JournalFile) || !File.Exists(JournalDoneFile))
+                return false;
+            var lines = File.ReadAllLines(JournalFile);
+            return lines.Length >= 2 && File.ReadAllText(JournalDoneFile).Trim() == lines[1];
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Journal intents reach STABLE STORAGE before any swap they authorize.
     /// WriteAllText closes the handle without forcing the data down, so a power cut
     /// could persist the renames while the journal naming them was still nothing —
@@ -135,6 +157,14 @@ public static class UpdateManager
         var core = (tag.StartsWith('v') ? tag[1..] : tag).Split('+')[0];
         var dash = core.IndexOf('-');
         prerelease = dash < 0 ? null : core[(dash + 1)..];
+        // Identifiers are vetted here so ORDERING never sees invalid SemVer: a
+        // numeric identifier with a leading zero (beta.01) equals beta.1 in value,
+        // and any tie-break by spelling ranks the invalid form somewhere — better
+        // that such a tag is simply never offered. Empty identifiers likewise.
+        if (prerelease is not null)
+            foreach (var id in prerelease.Split('.'))
+                if (id.Length == 0 || (IsDigits(id) && id.Length > 1 && id[0] == '0'))
+                    return false;
         return Version.TryParse(dash < 0 ? core : core[..dash], out numeric!);
     }
 
@@ -330,7 +360,9 @@ public static class UpdateManager
         // whose rollback could not complete. Writing a new one would truncate it and
         // orphan the surviving originals under the old stamp for the sweep. That
         // recovery belongs to startup; refuse until it has run.
-        if (File.Exists(JournalFile))
+        if (JournalInert())
+            try { File.Delete(JournalFile); File.Delete(JournalDoneFile); } catch (Exception) { }
+        if (RecoveryPending)
             throw new InvalidOperationException(
                 "an earlier update did not finish rolling back — restart Plinth to let it recover, then try again");
 
@@ -547,7 +579,7 @@ public static class UpdateManager
     /// <summary>An active journal means an unfinished transaction: recovery still
     /// owes the install a repair. Callers use this to refuse running a session
     /// over a known-mixed install.</summary>
-    public static bool RecoveryPending => File.Exists(JournalFile);
+    public static bool RecoveryPending => File.Exists(JournalFile) && !JournalInert();
 
     /// <summary>True when the LIVE install sits at or beneath the staging folder —
     /// a portable copy run from updates/staging. Deleting staging then deletes the
@@ -594,7 +626,8 @@ public static class UpdateManager
     private static bool IsUpdaterControlFile(string entryName) =>
         entryName.Equals("swap-journal.txt", StringComparison.OrdinalIgnoreCase)
         || entryName.Equals("swap-journal.txt.bad", StringComparison.OrdinalIgnoreCase)
-        || entryName.Equals("repair-advised.txt", StringComparison.OrdinalIgnoreCase);
+        || entryName.Equals("repair-advised.txt", StringComparison.OrdinalIgnoreCase)
+        || entryName.Equals("swap-journal.done", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Durable record that quarantine left this install PARTIALLY SWAPPED:
     /// originals preserved away, the dead transaction's files in place. A blocking
@@ -858,6 +891,13 @@ public static class UpdateManager
         {
         if (!File.Exists(JournalFile))
             return (true, false, false);
+        if (JournalInert())
+        {
+            // The transaction FINISHED; only its files resisted deletion. Retry the
+            // cleanup quietly and run — nothing is pending.
+            try { File.Delete(JournalFile); File.Delete(JournalDoneFile); } catch (Exception) { }
+            return (true, false, false);
+        }
         var raw = File.ReadAllText(JournalFile);
         // A record proves itself complete by the newline AFTER it (or a successor
         // line). A torn append is a PREFIX of a name — "lib.dll.config" cut to
@@ -1037,7 +1077,20 @@ public static class UpdateManager
         // install over cleanup bookkeeping. The unswept crumbs are the bounded trade.
         if (!WriteSweepMarker(stamp))
             Log.Warn("Sweep marker could not persist; this stamp's remnants (if any) stay unswept");
-        File.Delete(JournalFile);
+        // Completion persists BEFORE the deletion attempt: a scanner holding the
+        // journal open without delete sharing fails the delete, and reporting
+        // not-clean then refused every later session over a COHERENT install. With
+        // the done-file down, a surviving journal is inert; without either, the
+        // worst case is a harmless re-recovery next start, never a refusal.
+        try
+        {
+            using var done = new FileStream(JournalDoneFile, FileMode.Create, FileAccess.Write, FileShare.Read);
+            done.Write(System.Text.Encoding.UTF8.GetBytes(stamp));
+            done.Flush(flushToDisk: true);
+        }
+        catch (Exception ex) { Log.Warn($"Could not record recovery completion: {ex.Message}"); }
+        try { File.Delete(JournalFile); File.Delete(JournalDoneFile); }
+        catch (Exception ex) { Log.Warn($"Journal cleanup after recovery: {ex.Message}"); }
         return (true, restored > 0, false);
         }
         catch (Exception ex)
