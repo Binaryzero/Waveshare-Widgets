@@ -280,27 +280,48 @@ public sealed class TrayApplicationContext : ApplicationContext
                 return;
             }
 
+            string exe;
             try
             {
-                var exe = UpdateManager.Apply(zip);
+                exe = UpdateManager.Apply(zip);
+            }
+            catch (Exception ex)
+            {
+                // The failure worth naming precisely: an install folder this account
+                // cannot write. Apply rolled the install back, so what runs is still
+                // whole. The download is not lost — the dialog says where it is.
+                Log.Warn($"Update apply failed: {ex}");
+                MessageBox.Show(
+                    $"The update could not be applied:\n{ex.Message}\n\n"
+                    + $"The downloaded zip is at:\n{zip}",
+                    "Plinth update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // Past this point the swap is COMMITTED — the install on disk is the new
+            // version and the zip is gone. A relaunch refusal (antivirus holding the
+            // fresh apphost) is a different event from an apply failure and must not
+            // borrow its dialog, which names a zip that no longer exists. Either way
+            // this process is old code running over new files: it exits, and on
+            // failure the message says how to start the new build by hand.
+            try
+            {
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = exe,
                     Arguments = $"--wait-for {Environment.ProcessId}",
                     UseShellExecute = true,
                 });
-                ExitThread();
             }
             catch (Exception ex)
             {
-                // The failure worth naming precisely: an install folder this account
-                // cannot write. The download is not lost — the dialog says where it is.
-                Log.Warn($"Update apply failed: {ex}");
+                Log.Warn($"Relaunch after update failed: {ex}");
                 MessageBox.Show(
-                    $"The update could not be applied:\n{ex.Message}\n\n"
-                    + $"The downloaded zip is at:\n{zip}",
+                    $"The update is installed, but Plinth could not restart itself:\n{ex.Message}\n\n"
+                    + "Start Plinth again from the Start menu or its folder.",
                     "Plinth update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
+            ExitThread();
         }
         finally
         {

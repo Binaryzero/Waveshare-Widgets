@@ -31,10 +31,23 @@ public static class UpdateManager
     private static string UpdatesDir => Path.Combine(AppPaths.DataDir, "updates");
 
     /// <summary>On-disk record that a swap is IN FLIGHT: base dir on line one, the
-    /// rename-aside stamp on line two. Written before the first file moves, deleted
-    /// after the last — its existence at startup means a swap was interrupted, and
-    /// the *.old files under that stamp are a transaction to roll back, not litter.</summary>
+    /// rename-aside stamp on line two, added files by relative path after. Written
+    /// before the first file moves, deleted after the last — its existence at startup
+    /// means a swap was interrupted, and the *.old files under that stamp are a
+    /// transaction to roll back, not litter.</summary>
     private static string JournalFile => Path.Combine(UpdatesDir, "swap-journal.txt");
+
+    /// <summary>Journal intents reach STABLE STORAGE before any swap they authorize.
+    /// WriteAllText closes the handle without forcing the data down, so a power cut
+    /// could persist the renames while the journal naming them was still nothing —
+    /// and the next start would sweep the originals as litter.</summary>
+    private static void WriteJournalDurable(string content, bool append)
+    {
+        using var fs = new FileStream(JournalFile, append ? FileMode.Append : FileMode.Create,
+            FileAccess.Write, FileShare.Read);
+        fs.Write(System.Text.Encoding.UTF8.GetBytes(content));
+        fs.Flush(flushToDisk: true);
+    }
 
     public sealed record UpdateInfo(Version Version, string Tag, string AssetName, string AssetUrl, long Size);
 
@@ -197,8 +210,12 @@ public static class UpdateManager
             expanded += entry.Length;
             if (entry.Length > MaxExpandedBytes || expanded > MaxExpandedBytes)
                 throw new InvalidOperationException($"archive expands past {MaxExpandedBytes} bytes — refusing it");
-            if (entry.Name.Equals("Plinth.dll", StringComparison.OrdinalIgnoreCase)
-                || entry.Name.Equals("Plinth.exe", StringComparison.OrdinalIgnoreCase))
+            // FullName, not Name: the application must sit at the archive ROOT. A
+            // publish output accidentally wrapped in a folder still contains a
+            // Plinth.exe by basename — installing it would add a nested tree, leave
+            // the root exe untouched, and re-offer the same update forever.
+            if (entry.FullName.Equals("Plinth.dll", StringComparison.OrdinalIgnoreCase)
+                || entry.FullName.Equals("Plinth.exe", StringComparison.OrdinalIgnoreCase))
                 sawApp = true;
         }
         if (!sawApp)
@@ -230,7 +247,7 @@ public static class UpdateManager
         // exception but not a kill or a power cut, and the startup sweep would then
         // DELETE the very backups a recovery needs. With the file present, the next
         // start rolls the transaction back instead.
-        File.WriteAllText(JournalFile, baseDir + Environment.NewLine + stamp + Environment.NewLine);
+        WriteJournalDurable(baseDir + Environment.NewLine + stamp + Environment.NewLine, append: false);
         var renamed = new List<(string Target, string Aside)>();
         var placed = new List<string>();
         try
@@ -263,7 +280,7 @@ public static class UpdateManager
                     // for recovery to find, so it is identifiable only by the record:
                     // its relative path joins the journal BEFORE the move (intent
                     // first), and recovery removes whatever of the record exists.
-                    File.AppendAllText(JournalFile, rel + Environment.NewLine);
+                    WriteJournalDurable(rel + Environment.NewLine, append: true);
                     File.Move(source, target);
                 }
                 placed.Add(target);
@@ -288,11 +305,14 @@ public static class UpdateManager
                 try { File.Delete(JournalFile); } catch (IOException) { /* recovery re-runs harmlessly */ }
             throw;
         }
-        File.Delete(JournalFile);
-        // Best-effort from here: every file is swapped and the journal is gone — the
-        // install IS the new version, and a transient failure deleting leftovers
-        // (antivirus holding a staged copy) must not cancel the relaunch and leave
-        // the old process running over new files. Startup sweeps what remains.
+        // Best-effort from here: every file is swapped — the install IS the new
+        // version, and a transient failure on cleanup must not report the update as
+        // failed and cancel the relaunch, leaving the old process running over new
+        // files. A journal that resists deletion means the next start rolls the
+        // completed update back to a WHOLE old install and offers it again — the
+        // recoverable wrong answer, named in the log.
+        try { File.Delete(JournalFile); }
+        catch (Exception ex) { Log.Warn($"Update committed but the journal would not delete ({ex.Message}); the next start will roll it back — run the update again after"); }
         try { Directory.Delete(staging, recursive: true); }
         catch (Exception ex) { Log.Warn($"Staging cleanup after update: {ex.Message}"); }
         try { File.Delete(zipPath); } catch (IOException) { /* swept next start */ }
