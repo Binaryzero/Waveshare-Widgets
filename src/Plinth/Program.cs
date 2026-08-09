@@ -76,9 +76,7 @@ internal static class Program
             Log.Warn("Update recovery could not run; refusing to start over a mixed install");
             MessageBox.Show(
                 "An update did not finish, and Plinth could not repair it yet — a file "
-                + "may still be locked by another program.
-
-"
+                + "may still be locked by another program.\n\n"
                 + "Close other programs using Plinth's folder, then start Plinth again.",
                 "Plinth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
