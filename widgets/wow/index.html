@@ -207,9 +207,20 @@
     catch (e) { e.tokenExchange = true; throw e; }
   }
 
+  // ONE exchange at a time: the section batch is concurrent, so a dead cached token
+  // arrives as several 401s at once — without coalescing, each handler bought its own
+  // token (six POSTs for one refresh) and later handlers discarded the one an earlier
+  // handler had just cached.
+  let signInFlight = null;
   async function signIn() {
     if (bearer && bearer.key === credKey()
       && bearer.expiresAt - Date.now() > freshnessMargin(bearer)) return bearer.token;
+    if (signInFlight) return signInFlight;
+    signInFlight = signInOnce().finally(() => { signInFlight = null; });
+    return signInFlight;
+  }
+
+  async function signInOnce() {
     // The identity this exchange is FOR, captured BEFORE awaiting anything. An exchange
     // the deadline gave up on keeps running, so without this it can return long after
     // the credentials changed and install the OLD client's token over the cleared cache.
@@ -275,15 +286,21 @@
   const ns = () => '?namespace=profile-' + cfg.region + '&locale=' + (LOCALE[cfg.region] || 'en_US');
 
   async function authed(label, url) {
-    const read = async () => ask(label, url, { headers: { Authorization: 'Bearer ' + await getBearer() } });
+    let used = '';
+    const read = async () => {
+      used = await getBearer();
+      return ask(label, url, { headers: { Authorization: 'Bearer ' + used } });
+    };
     try {
       return await read();
     } catch (e) {
       // A 401 means the token died before the expiry it advertised. Drop it and retry
       // EXACTLY once; `tokenExchange` keeps a wrong client secret (also a 401) from
-      // buying a second sign-in on every tick.
+      // buying a second sign-in on every tick. Only the token that EARNED this 401 is
+      // invalidated — a concurrent sibling may already have cached a fresh one, and
+      // discarding that would throw away a working credential mid-batch.
       if (e.tokenExchange || e.status !== 401) throw e;
-      bearer = null;
+      if (bearer && bearer.token === used) bearer = null;
       return read();
     }
   }
@@ -687,6 +704,10 @@
   // ---- States ---------------------------------------------------------------
 
   function stateCard(cls, icon, title, body, onRetry) {
+    // The footer describes the CARD, and the card is being replaced: left in the DOM
+    // it showed the previous character's "updated …" line under the new load's
+    // overlay — indefinitely, when the new query ended in an error card.
+    el('meta').textContent = '';
     const pill = el('pill');
     pill.hidden = false;
     pill.textContent = cls === 'err' ? 'Error' : 'Setup';
@@ -716,6 +737,7 @@
   }
 
   function showLoadingCard() {
+    el('meta').textContent = '';
     const s = el('state');
     s.className = 'state-card';
     s.textContent = '';
