@@ -478,16 +478,19 @@
         try {
           const r = await gh(API + '/repos/' + pr.repo + '/pulls/' + pr.number);
           if (!r.body || typeof r.body !== 'object') throw fault('format', 'reply was not a pull request');
-          // mergeable_state buckets four ways, and each is a different promise:
-          // "dirty" is a computed conflict; "clean"/"unstable"/"has_hooks" are states
-          // GitHub will actually accept a merge in; "blocked" and "behind" are
-          // computed NON-conflicts that still cannot merge (required reviews, stale
-          // base) — calling those ready promised a button GitHub would refuse; and
-          // "unknown" means still deciding, which may steer nothing.
+          // mergeable_state, bucketed by what each value actually PROMISES:
+          // "dirty" is a computed conflict. "clean"/"has_hooks" are the states in
+          // which GitHub will take the merge with nothing red anywhere — the only
+          // basis for "ready". "blocked" means protection is refusing the merge
+          // right now — "held". "unstable" (mergeable, but some non-Actions status
+          // is failing) and "behind" (out of date; mergeable unless the repo
+          // requires up-to-date branches, which this widget cannot see) are
+          // mergeable-with-an-asterisk: neither earns ready's promise nor blocked's
+          // accusation, so they land with "unknown" on the passing row.
           const ms = r.body.mergeable_state;
           pr.merge = ms === 'dirty' ? 'dirty'
-            : (ms === 'clean' || ms === 'unstable' || ms === 'has_hooks') ? 'ready'
-            : (ms === 'blocked' || ms === 'behind') ? 'held'
+            : (ms === 'clean' || ms === 'has_hooks') ? 'ready'
+            : ms === 'blocked' ? 'held'
             : 'unknown';
           const talk = (Number(r.body.comments) || 0) + (Number(r.body.review_comments) || 0);
           pr.talk = talk;
@@ -781,10 +784,20 @@
     const caveats = [];
     if (cfg.malformed) caveats.push(cfg.malformed + ' configured entr' + (cfg.malformed === 1 ? 'y is' : 'ies are') + ' not owner/name and could not be checked.');
     if (cfg.dropped) caveats.push(cfg.dropped + ' more ' + (cfg.dropped === 1 ? 'is' : 'are') + ' configured than this widget checks (' + MAX_REPOS + ' max).');
-    stateCard('ok', '✓', 'No open pull requests',
-      'Every checked repository is clear.' + (lastOk ? ' Checked ' + ageText(lastOk) + '.' : '')
+    // A clear card over a FAILED or rate-limited sweep is a claim about the past, and
+    // it says so: the green pill and the plain wording belong only to data that is
+    // current. The error paths route back through render() into here, and used to get
+    // the fresh-looking card regardless.
+    const stale = document.body.classList.contains('stale');
+    const age = lastOk ? ageText(lastOk) : '';
+    stateCard(stale ? '' : 'ok', stale ? '◷' : '✓', 'No open pull requests',
+      (stale
+        ? (rateLimitedUntil > Date.now()
+          ? 'Rate limited — the board was clear as of ' + age + '.'
+          : 'The last check failed — the board was clear as of ' + age + '.')
+        : 'Every checked repository is clear.' + (age ? ' Checked ' + age + '.' : ''))
       + (caveats.length ? ' ' + caveats.join(' ') : ''),
-      null, caveats.length ? 'Clear*' : 'Clear');
+      null, stale ? 'Stale' : (caveats.length ? 'Clear*' : 'Clear'));
   }
 
   // A card with no Retry, for a wait that a button cannot shorten.
