@@ -50,15 +50,27 @@ const PRS = [
   { repo: 'me/beta', number: 7, title: 'Refactor the engine room', sha: 'b7', created: ago(5 * 1440),
     runs: [{ status: 'completed', conclusion: 'success' }], mergeable_state: 'dirty',
     comments: 0, review_comments: 0, verdict: 'conflict' },
+  { repo: 'me/beta', number: 10, title: 'First-time contributor run', sha: 'b10', created: ago(200),
+    runs: [{ status: 'completed', conclusion: 'action_required' }], mergeable_state: 'clean',
+    comments: 0, review_comments: 0, verdict: 'needs ok' },
   { repo: 'me/alpha', number: 2, title: 'Add the missing docs', sha: 'a2', created: ago(120),
     runs: [{ status: 'completed', conclusion: 'success' }], mergeable_state: 'clean',
     comments: 0, review_comments: 0, verdict: 'ready' },
+  // Green CI but GitHub still computing mergeability: must read "passing", never
+  // "ready" — a promise the data does not support yet. Older than the running PR, so
+  // the within-rank tie breaks toward it.
+  { repo: 'me/alpha', number: 3, title: 'Green but unconfirmed', sha: 'a3', created: ago(90),
+    runs: [{ status: 'completed', conclusion: 'success' }], mergeable_state: 'unknown',
+    comments: 0, review_comments: 0, verdict: 'passing' },
   { repo: 'me/beta', number: 9, title: 'Rework the intake manifold', sha: 'b9', created: ago(30),
     runs: [{ status: 'in_progress', conclusion: null }], mergeable_state: 'unknown',
     comments: 0, review_comments: 0, verdict: 'running' },
   { repo: 'me/beta', number: 8, title: 'WIP: experimental thing', sha: 'b8', created: ago(60), draft: true,
     runs: [], mergeable_state: 'clean', comments: 0, review_comments: 0, verdict: 'draft' },
 ];
+
+// Worst-first, with the two tie-broken rank-4 rows in created order (oldest first).
+const WANT_ORDER = ['failing', 'conflict', 'needs ok', 'ready', 'passing', 'running', 'draft'];
 
 const listItem = (pr) => ({
   number: pr.number, title: pr.title, draft: !!pr.draft,
@@ -178,11 +190,7 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
 
   check('G1 every stubbed PR gets a row', board.rows.length === PRS.length,
     `${board.rows.length} of ${PRS.length}`);
-  const wantOrder = PRS.map((p) => p.verdict).sort((a, b) => {
-    const rank = { failing: 0, conflict: 1, ready: 2, running: 3, draft: 4 };
-    return rank[a] - rank[b];
-  });
-  check('G2 the board reads worst-first', JSON.stringify(board.rows.map((r) => r.verdict)) === JSON.stringify(wantOrder),
+  check('G2 the board reads worst-first', JSON.stringify(board.rows.map((r) => r.verdict)) === JSON.stringify(WANT_ORDER),
     board.rows.map((r) => r.verdict).join(' > '));
   check('G3 the header pill reports the exception', board.pill.text === '1 failing' && /\berr\b/.test(board.pill.cls),
     `"${board.pill.text}" [${board.pill.cls}]`);
