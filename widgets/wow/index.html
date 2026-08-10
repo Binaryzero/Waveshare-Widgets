@@ -268,7 +268,12 @@
     return 'https://' + cfg.region + '.api.blizzard.com/profile/wow/character/'
       + encodeURIComponent(slug(cfg.realm)) + '/' + encodeURIComponent(cfg.character.trim().toLowerCase());
   }
-  const ns = () => '?namespace=profile-' + cfg.region + '&locale=en_US';
+  // One locale PER REGION, from each region's own supported set. Locales are regional:
+  // asking eu/kr/tw hosts for en_US either fails outright or answers with every locale
+  // at once — name as an OBJECT of translations — and either way the shape checks
+  // below would read a healthy region as a malformed payload.
+  const LOCALE = { us: 'en_US', eu: 'en_GB', kr: 'ko_KR', tw: 'zh_TW' };
+  const ns = () => '?namespace=profile-' + cfg.region + '&locale=' + (LOCALE[cfg.region] || 'en_US');
 
   async function authed(label, url) {
     const read = async () => ask(label, url, { headers: { Authorization: 'Bearer ' + await getBearer() } });
@@ -298,8 +303,12 @@
     };
   }
 
+  // Malformed is not sparse, in every reader: a 200 whose body is not this endpoint's
+  // shape — a portal's login page, an outage payload — must throw so the section is
+  // REPORTED unavailable, not rendered as a healthy "none yet". An absent OPTIONAL
+  // field inside a well-shaped body is the sparse case, and stays quiet.
   function readPortrait(json) {
-    if (!isObj(json) || !Array.isArray(json.assets)) return '';
+    if (!isObj(json) || !Array.isArray(json.assets)) throw new Error('media: unexpected response');
     // The avatar render is the card-sized asset; inset and main-raw are scene shots.
     for (const a of json.assets) {
       if (isObj(a) && a.key === 'avatar' && isText(a.value)) return a.value;
@@ -308,10 +317,13 @@
   }
 
   function readProfs(json) {
-    if (!isObj(json)) return [];
+    if (!isObj(json)) throw new Error('professions: unexpected response');
     const out = [];
     const take = (list) => {
-      if (!Array.isArray(list)) return;
+      // Absent is a real answer — a character with no professions of that kind. A
+      // present non-array is the API not answering this question at all.
+      if (list == null) return;
+      if (!Array.isArray(list)) throw new Error('professions: unexpected response');
       for (const p of list) {
         if (!isObj(p) || !isObj(p.profession) || !isText(p.profession.name) || !Array.isArray(p.tiers)) continue;
         // The tier being LEVELED now is the newest one the character has touched —
@@ -339,7 +351,7 @@
   }
 
   function readReps(json) {
-    if (!isObj(json) || !Array.isArray(json.reputations)) return [];
+    if (!isObj(json) || !Array.isArray(json.reputations)) throw new Error('reputations: unexpected response');
     const all = [];
     for (const r of json.reputations) {
       if (!isObj(r) || !isObj(r.faction) || !isText(r.faction.name) || !isObj(r.standing)) continue;
@@ -369,13 +381,15 @@
       .slice(0, 3);
   }
 
-  const readCount = (json, key) =>
-    isObj(json) && Array.isArray(json[key]) ? json[key].length : null;
+  const readCount = (json, key) => {
+    if (!isObj(json) || !Array.isArray(json[key])) throw new Error(key + ': unexpected response');
+    return json[key].length;
+  };
 
   // The achievements summary carries every completed achievement with its timestamp and
   // every in-progress one with its criteria tree. One payload answers both questions.
   function readAchievements(json) {
-    if (!isObj(json) || !Array.isArray(json.achievements)) return { latest: null, almost: [] };
+    if (!isObj(json) || !Array.isArray(json.achievements)) throw new Error('achievements: unexpected response');
     let latest = null;
     const almost = [];
     for (const a of json.achievements) {
@@ -427,7 +441,7 @@
         if (e.status === 404) throw new Error(NO_CHARACTER);
         throw e;
       }
-      if (gen !== generation) return;
+      if (gen !== generation || paused()) return;
       const next = { who, portrait: '', profs: [], reps: [], mounts: null, pets: null, latest: null, almost: [] };
       // Everything else degrades per section: a failed collections call must not cost
       // the professions their rows. Each failure is named once for the footer.
@@ -436,24 +450,31 @@
         catch (e) { problems.push(label); WW.log('wow: ' + label + ': ' + e.message); }
       };
       await part('portrait', async () => { next.portrait = readPortrait(await authed('media', charBase() + '/character-media' + ns())); });
-      if (gen !== generation) return;
+      if (gen !== generation || paused()) return;
       await part('professions', async () => { next.profs = readProfs(await authed('professions', charBase() + '/professions' + ns())); });
-      if (gen !== generation) return;
+      if (gen !== generation || paused()) return;
       await part('reputation', async () => { next.reps = readReps(await authed('reputations', charBase() + '/reputations' + ns())); });
-      if (gen !== generation) return;
+      if (gen !== generation || paused()) return;
       await part('mounts', async () => { next.mounts = readCount(await authed('mounts', charBase() + '/collections/mounts' + ns()), 'mounts'); });
-      if (gen !== generation) return;
+      if (gen !== generation || paused()) return;
       await part('pets', async () => { next.pets = readCount(await authed('pets', charBase() + '/collections/pets' + ns()), 'pets'); });
-      if (gen !== generation) return;
+      if (gen !== generation || paused()) return;
       await part('achievements', async () => {
         const a = readAchievements(await authed('achievements', charBase() + '/achievements' + ns()));
         next.latest = a.latest; next.almost = a.almost;
       });
-      if (gen !== generation) return;
+      if (gen !== generation || paused()) return;
       data = next;
       lastOk = Date.now();
       lastProblems = problems;
       fails = 0;
+      // A failed portrait URL gets ONE retry per refresh: clearing the failure marker
+      // alone would repaint the broken element, so the src is dropped too, forcing a
+      // real reload when render() reassigns it.
+      if (next.portrait && next.portrait === portraitFailed) {
+        portraitFailed = '';
+        el('portrait').removeAttribute('src');
+      }
       document.body.classList.remove('stale');
       render();
     } catch (e) {
@@ -493,6 +514,33 @@
     if (days === 1) return 'yesterday';
     if (days < 60) return days + 'd ago';
     return Math.round(days / 30) + 'mo ago';
+  }
+
+  // The URL whose load FAILED, so a repaint cannot un-hide the broken image: assigning
+  // the same src to an errored <img> fires no new event, and the old branch showed the
+  // element anyway — a broken-image glyph where the initial had been. The fallback
+  // holds the frame until onload actually lands; a refresh retries a failed URL once
+  // (tick clears this and forces a reload) so a transient render-host outage heals.
+  let portraitFailed = '';
+
+  function paintPortrait(who) {
+    const img = el('portrait');
+    const init = el('initial');
+    const showInit = () => {
+      img.hidden = true; init.hidden = false;
+      init.textContent = who.name[0] || '?';
+    };
+    if (!data.portrait || data.portrait === portraitFailed) { showInit(); return; }
+    img.onerror = () => { portraitFailed = data.portrait; showInit(); };
+    img.onload = () => { init.hidden = true; img.hidden = false; };
+    if (img.getAttribute('src') !== data.portrait) {
+      showInit();               // the fallback owns the frame until the load lands
+      img.src = data.portrait;
+    } else if (img.complete && img.naturalWidth > 0) {
+      init.hidden = true; img.hidden = false;
+    } else {
+      showInit();               // still loading, or a load that died without error
+    }
   }
 
   function trow(label, fillPct, val) {
@@ -537,17 +585,7 @@
     el('cname').textContent = who.name;
     el('cline').textContent = [who.level != null ? 'Level ' + who.level : '', who.line].filter(Boolean).join(' · ');
     el('guild').textContent = who.guild ? '<' + who.guild + '>' : '';
-    const img = el('portrait');
-    const init = el('initial');
-    if (data.portrait) {
-      img.hidden = false; init.hidden = true;
-      // onerror BEFORE src: a cached failure can fire the moment src is assigned.
-      img.onerror = () => { img.hidden = true; init.hidden = false; init.textContent = who.name[0] || '?'; };
-      if (img.src !== data.portrait) img.src = data.portrait;
-    } else {
-      img.hidden = true; init.hidden = false;
-      init.textContent = who.name[0] || '?';
-    }
+    paintPortrait(who);
 
     fillSect('profs', data.profs.map((p) =>
       trow(p.name, p.skill / p.max * 100, p.skill + '/' + p.max)), 'No professions yet');
