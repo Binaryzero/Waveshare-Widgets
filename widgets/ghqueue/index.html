@@ -64,7 +64,7 @@
   // GitHub API answering, so it sits just under WW.fetch's own 5 MiB ceiling rather
   // than anywhere an honest page can reach.
   const RESPONSE_CAP = 4194304;
-  const CACHE_MAX = 90;          // etag/body entries kept; per-PR URLs churn as PRs close
+  const CACHE_MAX = 160;         // >= the max working set (80 list pages + 20 details + 20 runs), with slack — a cache smaller than one sweep evicts every entry just before its reuse
   const IDLE_FLOOR = 5000;       // a re-armed timer never fires sooner than this
   const GATED_RECHECK = 60000;   // backstop while paused for a hidden panel
   const MAX_WAIT = 3600000;
@@ -204,9 +204,12 @@
   function rank(pr) {
     if (pr.ci === 'fail') return 0;
     if (pr.merge === 'dirty') return 1;
-    if (pr.ci === 'warn') return 2;
+    // A failed CI LOOKUP ranks with needs-action: it is actionable (fix the token,
+    // check the network) and burying it under ready rows in a short slot made the
+    // one red "?" undiscoverable.
+    if (pr.ci === 'warn' || pr.ciFault) return 2;
     if (pr.ci === 'ok' && !pr.draft && pr.merge === 'ready') return 3;
-    if (pr.ci === 'running' || pr.ciFault || (pr.ci === 'ok' && !pr.draft)) return 4;
+    if (pr.ci === 'running' || (pr.ci === 'ok' && !pr.draft)) return 4;
     return 5;
   }
 
@@ -488,12 +491,16 @@
       // column rather than disappearing.
       const detailed = [...prs].sort((a, b) => b.updated - a.updated).slice(0, MAX_PRS);
       const overflow = prs.length - detailed.length;
-      for (const pr of detailed) {
+      let budgetSkipped = 0;     // PRs whose checks the sweep clock cut off — reported, not disguised
+      for (let i = 0; i < detailed.length; i++) {
+        const pr = detailed[i];
         if (gen !== generation) return;
         if (paused()) return;
         // Same clock: past the budget the remaining PRs keep their rows with unknown
         // verdicts — the next sweep retries — instead of holding the board hostage.
-        if (Date.now() - pollAnchor > SWEEP_BUDGET) break;
+        // COUNTED, because a row that was never checked must not read like a repo
+        // with no CI under a footer claiming the sweep was current.
+        if (Date.now() - pollAnchor > SWEEP_BUDGET) { budgetSkipped = detailed.length - i; break; }
         try {
           const r = await gh(API + '/repos/' + pr.repo + '/pulls/' + pr.number);
           if (!r.body || typeof r.body !== 'object') throw fault('format', 'reply was not a pull request');
@@ -519,6 +526,10 @@
         }
         if (paused()) return;
         if (!pr.sha) continue;
+        // The clock is consulted BETWEEN the two calls too: a detail request that
+        // spends its full deadline just inside the budget must not buy the runs call
+        // another fifteen seconds past it.
+        if (Date.now() - pollAnchor > SWEEP_BUDGET) { budgetSkipped = detailed.length - i; break; }
         try {
           const r = await gh(API + '/repos/' + pr.repo + '/actions/runs?head_sha=' + pr.sha + '&per_page=' + RUNS_PAGE);
           if (!r.body || !Array.isArray(r.body.workflow_runs)) throw fault('format', 'reply was not a workflow run list');
@@ -556,7 +567,15 @@
         }
         return;
       }
-      state = { prs, faults, overflow, listShort };
+      // A repo that FAILED this sweep keeps its last-known rows: replacing the whole
+      // state made a listing hiccup silently delete visible failing PRs, which is
+      // worse than showing them a sweep old — the footer names the fault either way.
+      if (state) {
+        for (const repo of faults.keys()) {
+          for (const old of state.prs) if (old.repo === repo) prs.push(old);
+        }
+      }
+      state = { prs, faults, overflow, listShort, budgetSkipped };
       lastOk = Date.now();
       rateLimitedUntil = 0;
       fails = 0;
@@ -722,6 +741,7 @@
     const notes = [];
     if (cfg.hidden) notes.push(cfg.hidden + ' more tracked but no room to show in this slot');
     if (state.overflow > 0) notes.push(state.overflow + ' more open than this widget checks in detail (' + MAX_PRS + ' max)');
+    if (state.budgetSkipped) notes.push(state.budgetSkipped + ' PR' + (state.budgetSkipped === 1 ? '' : 's') + ' not fully checked this sweep — GitHub answered slowly');
     // "May": a repo with EXACTLY the cap's worth of PRs fills the last page too, and
     // asserting omissions on that evidence would be the footer's own overclaim.
     if (state.listShort) notes.push(state.listShort + ' repositor' + (state.listShort === 1 ? 'y' : 'ies') + ' may have more open PRs than this widget lists (' + (PER_PAGE * PAGES_MAX) + ' cap reached)');
@@ -821,7 +841,10 @@
           : 'The last check failed — the board was clear as of ' + age + '.')
         : 'Every checked repository is clear.' + (age ? ' Checked ' + age + '.' : ''))
       + (caveats.length ? ' ' + caveats.join(' ') : ''),
-      null, stale ? 'Stale' : (caveats.length ? 'Clear*' : 'Clear'));
+      null, stale ? 'Stale' : (caveats.length ? 'Clear*' : ''));
+    // A healthy, uncaveated clear is NOMINAL: the card already says it, and the
+    // pill-quiet rule (#211) applies to empty boards exactly as to full ones.
+    if (!stale && !caveats.length) el('pill').hidden = true;
   }
 
   // A card with no Retry, for a wait that a button cannot shorten.
