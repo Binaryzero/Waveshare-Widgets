@@ -39,6 +39,7 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #state { position: fixed; inset: 0; }
   body.stale #board { opacity: 0.6; }
+  .pr.carried { opacity: 0.6; }
 </style>
 </head>
 <body>
@@ -247,7 +248,9 @@
     cfg.hidden = Math.max(0, (state ? state.prs.length : 0) - shown.length);
     for (const pr of shown) {
       const root = document.createElement('div');
-      root.className = 'pr';
+      // A carried row is last sweep's truth standing in for a repo that failed this
+      // one — dimmed like stale data, because that is exactly what it is.
+      root.className = pr.carried ? 'pr carried' : 'pr';
       const ci = document.createElement('span');
       ci.className = 'pill muted ci';
       ci.textContent = '—';
@@ -502,7 +505,16 @@
             if (r.body.length < PER_PAGE) break;
             if (page === PAGES_MAX) listShort++;
           }
-          prs.push(...staged);
+          // Offset pagination over a LIVE queue: a PR opened between two page
+          // requests shifts the boundary, and the page-1 tail arrives again on
+          // page 2. Deduplicated by number before committing — the omission twin of
+          // this race cannot be detected from offsets and heals on the next poll.
+          const seenNum = new Set();
+          prs.push(...staged.filter((p) => {
+            if (seenNum.has(p.number)) return false;
+            seenNum.add(p.number);
+            return true;
+          }));
         } catch (e) {
           if (e.rateLimitedUntil) throw e;
           // A 401, 404 or permission 403 is NOT an empty repo. Swallowing it would leave
@@ -605,7 +617,7 @@
       // worse than showing them a sweep old — the footer names the fault either way.
       if (state) {
         for (const repo of faults.keys()) {
-          for (const old of state.prs) if (old.repo === repo) prs.push(old);
+          for (const old of state.prs) if (old.repo === repo) prs.push({ ...old, carried: true });
         }
       }
       state = { prs, faults, overflow, listShort, budgetSkipped };
@@ -768,8 +780,9 @@
     // The footer names the FIRST fault it can, rather than assuming a permissions
     // problem for every one of them.
     let fail = null;
+    let failRepo = '';
     for (const repo of cfg.repos) {
-      if (state.faults.has(repo)) { fail = state.faults.get(repo); break; }
+      if (state.faults.has(repo)) { fail = state.faults.get(repo); failRepo = repo; break; }
     }
     const notes = [];
     if (cfg.hidden) notes.push(cfg.hidden + ' more tracked but no room to show in this slot');
@@ -786,7 +799,7 @@
     if (cfg.malformed) notes.push(cfg.malformed + ' entr' + (cfg.malformed === 1 ? 'y is' : 'ies are') + " not owner/name and can't be checked");
     notes.push(rateLimitedUntil > Date.now()
       ? 'rate limited — showing data from ' + ageText(lastOk)
-      : fail ? kindText(fail.kind, fail.errStatus)
+      : fail ? label(failRepo) + ': ' + kindText(fail.kind, fail.errStatus)
       : (lastOk ? 'updated ' + ageText(lastOk) : ''));
     el('meta').textContent = notes.filter(Boolean).join(' · ');
 
