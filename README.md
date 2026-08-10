@@ -85,11 +85,11 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   private ICS link — no OAuth and no account to connect; daily and weekly repeats
   are expanded, and any repeat it cannot read is counted on screen rather than
   quietly dropped, so the tile never looks emptier than the calendar is), and WoW
-  Panel (the token price with a trend this tile records itself — the API only
-  serves the price right now — plus the weekly reset countdown, this week's
-  Mythic+ affixes and your character's item level, M+ rating and raid progress;
-  each source is independent, so a mistyped character name cannot blank the
-  token price and missing Battle.net credentials cannot hide the affixes).
+  Panel (your character on the panel: portrait, level, spec and guild, your
+  professions with skill progress, the reputations you've pushed lately, mount
+  and pet counts, your latest achievement, and the ones only a step or two from
+  done — each section degrades independently, so one slow API cannot blank the
+  card).
 - **iCUE widget compatibility**: many `.icuewidget` packages from the
   [Elgato Marketplace](https://marketplace.elgato.com/icue/widgets) install and run
   as-is — the runtime emulates the `Sensorsdataprovider` plugin API and reads

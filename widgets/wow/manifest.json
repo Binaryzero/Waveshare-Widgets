@@ -2,8 +2,8 @@
   "id": "ws.stock.wow",
   "name": "WoW Panel",
   "author": "Plinth",
-  "version": "2.0.0",
-  "description": "Token price with its own recorded trend, the weekly reset countdown, this week's Mythic+ affixes, and your character's item level and rating.",
+  "version": "3.0.0",
+  "description": "Your character on the panel: portrait, level, spec and guild, professions with skill progress, the reputations you've pushed lately, mount and pet counts, your latest achievement — and the ones only a step or two from done.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
   "properties": [
@@ -33,15 +33,15 @@
       "label": "Battle.net client ID",
       "type": "text",
       "default": "",
-      "placeholder": "From develop.battle.net — needed for the token price",
-      "help": "Create a client at develop.battle.net → API Access. Both the id and the secret are needed, and only for the WoW Token price — the character and affix panels work without them."
+      "placeholder": "From develop.battle.net",
+      "help": "Create a client at develop.battle.net → API Access. Both the id and the secret are needed — they pay for the whole card: every panel reads Blizzard's character APIs with them."
     },
     {
       "name": "clientSecret",
       "label": "Battle.net client secret",
       "type": "secret",
       "placeholder": "From develop.battle.net",
-      "help": "The client secret for that same Battle.net application. It buys a short-lived token for the token-price call and is never sent anywhere else."
+      "help": "The client secret for that same Battle.net application. It buys the short-lived token every character panel reads with, and is never sent anywhere but Battle.net's sign-in endpoint."
     },
     {
       "name": "refreshMinutes",
