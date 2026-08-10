@@ -58,17 +58,20 @@
   // is one call — bounding the tick instead would let a single silent request spend the
   // whole budget and starve everything behind it.
   const REQUEST_DEADLINE = 15000;
-  // A pull-request list item embeds two full repository objects, so fifteen of them run
-  // to a few hundred KB of honest JSON. The cap guards against something OTHER than the
-  // GitHub API answering, not against GitHub being verbose.
-  const RESPONSE_CAP = 1048576;
+  // A pull-request list item embeds two full repository objects AND the PR's body
+  // text, which is author-controlled up to 65K characters — a page of long-bodied
+  // PRs is legitimately megabytes. The cap guards against something OTHER than the
+  // GitHub API answering, so it sits just under WW.fetch's own 5 MiB ceiling rather
+  // than anywhere an honest page can reach.
+  const RESPONSE_CAP = 4194304;
   const CACHE_MAX = 90;          // etag/body entries kept; per-PR URLs churn as PRs close
   const IDLE_FLOOR = 5000;       // a re-armed timer never fires sooner than this
   const GATED_RECHECK = 60000;   // backstop while paused for a hidden panel
   const MAX_WAIT = 3600000;
   const MAX_REPOS = 10;
-  const PER_PAGE = 30;           // pulls-list page size
-  const PAGES_MAX = 4;           // listing bound per repo: 120 open PRs is a backlog, not a board
+  const PER_PAGE = 15;           // pulls-list page size — small pages, so one cannot outgrow the cap
+  const PAGES_MAX = 8;           // listing bound per repo: 120 open PRs is a backlog, not a board
+  const SWEEP_BUDGET = 90000;    // the whole sweep's ceiling: a stalling API must not multiply per-request deadlines
   const MAX_PRS = 20;            // PRs given detail + CI calls per sweep, across the board
   const RUNS_PAGE = 30;          // workflow runs read per head SHA before completeness is doubted
   const cfg = { repos: [], token: '', refreshMs: 300000, dropped: 0, hidden: 0, malformed: 0 };
@@ -397,9 +400,14 @@
       else if (c === 'success') saw.ok = true;
     }
     if (saw.fail) return 'fail';
+    // Anything short of a fold that saw EVERY run is a guess for every verdict, not
+    // just green: a failure on the omitted page outranks the running or warn this
+    // page happens to show. Only an observed failure survives incompleteness — worse
+    // information cannot improve it.
+    if (!complete) return 'unknown';
     if (saw.running) return 'running';
     if (saw.warn) return 'warn';
-    if (saw.ok) return complete ? 'ok' : 'unknown';
+    if (saw.ok) return 'ok';
     return 'none';
   }
 
@@ -419,6 +427,14 @@
         // A settings change part-way through a sweep makes the rest of it worthless:
         // those results would be keyed to a repo list nobody is looking at any more.
         if (gen !== generation) return;
+        // The sweep has ONE clock. Per-request deadlines bound a call, but a server
+        // that stalls every call multiplies them — dozens of 15-second waits is ten
+        // minutes of spinner. Past the budget, unvisited repos report as timeouts
+        // rather than pretending they were checked.
+        if (Date.now() - pollAnchor > SWEEP_BUDGET) {
+          faults.set(repo, { kind: 'timeout', errStatus: 0 });
+          continue;
+        }
         // The gate at the top of the sweep is not enough. Requests are sequential, so the
         // panel being hidden after the first one is already away would be followed by
         // dozens more calls, the exact work the gate exists to hold.
@@ -475,6 +491,9 @@
       for (const pr of detailed) {
         if (gen !== generation) return;
         if (paused()) return;
+        // Same clock: past the budget the remaining PRs keep their rows with unknown
+        // verdicts — the next sweep retries — instead of holding the board hostage.
+        if (Date.now() - pollAnchor > SWEEP_BUDGET) break;
         try {
           const r = await gh(API + '/repos/' + pr.repo + '/pulls/' + pr.number);
           if (!r.body || typeof r.body !== 'object') throw fault('format', 'reply was not a pull request');
@@ -523,18 +542,24 @@
       if (gen !== generation) return;
       // A sweep in which NOTHING came back is a failed poll: dim what is on screen
       // rather than replace data that was true a minute ago with a fault-only board.
-      // Only the first sweep, which has nothing to keep, shows the faults themselves.
+      // A FIRST sweep that failed everywhere gets the error card and its Retry — a
+      // blank board with a small pill was every failure dressed as an empty queue.
       const anySucceeded = faults.size < cfg.repos.length;
-      if (!anySucceeded && state) {
+      if (!anySucceeded) {
         fails++;
-        document.body.classList.add('stale');
-        render();
+        if (state) {
+          document.body.classList.add('stale');
+          render();
+        } else {
+          const f = faults.values().next().value || { kind: 'unreachable', errStatus: 0 };
+          showError(kindText(f.kind, f.errStatus));
+        }
         return;
       }
       state = { prs, faults, overflow, listShort };
       lastOk = Date.now();
       rateLimitedUntil = 0;
-      fails = anySucceeded ? 0 : fails + 1;
+      fails = 0;
       document.body.classList.remove('stale');
       // Results change WHICH PRs deserve a row, not only what one says. Rebuilding
       // first means a PR that just went red gets a row instead of having its verdict
@@ -686,8 +711,7 @@
     else if (failing) { pill.textContent = failing + ' failing'; pill.className = 'pill err'; }
     else if (conflicts) { pill.textContent = conflicts + ' conflicted'; pill.className = 'pill warn'; }
     else if (needsOk) { pill.textContent = needsOk + ' needs action'; pill.className = 'pill warn'; }
-    else if (ready) { pill.textContent = ready + ' ready'; pill.className = 'pill ok'; }
-    else pill.hidden = true;   // in-flight only: the pill reports exceptions, not health
+    else pill.hidden = true;   // ready and in-flight are HEALTH: the pill reports exceptions only (#211)
 
     // The footer names the FIRST fault it can, rather than assuming a permissions
     // problem for every one of them.
