@@ -134,7 +134,6 @@
   // only reason a hung source cannot pin `inFlight` forever — the direct fetch tier has
   // no deadline of its own.
   const REQUEST_DEADLINE = 15000;
-  const GATED_RECHECK = 60000;
   const MAX_WAIT = 3600000;
   const IDLE_FLOOR = 5000;
 
@@ -364,10 +363,15 @@
     for (const r of json.reputations) {
       if (!isObj(r) || !isObj(r.faction) || !isText(r.faction.name) || !isObj(r.standing)) continue;
       const s = r.standing;
-      if (!isNum(s.value) || !isNum(s.max) || s.max <= 0) continue;
+      // Two shapes are real: a conventional value/max bar, and a Major Faction that
+      // answers with a renown level alone. Requiring the bar first silently deleted
+      // the renown factions — the ones the label logic below exists for. A renown-only
+      // row renders without a meter; a standing with neither shape says nothing.
+      const hasBar = isNum(s.value) && isNum(s.max) && s.max > 0;
       const renown = isNum(s.renown_level) ? s.renown_level : null;
+      if (!hasBar && renown == null) continue;
       const tier = isText(s.name) ? s.name : (renown != null ? 'Renown ' + renown : '');
-      all.push({ name: r.faction.name, value: s.value, max: s.max, renown, tier });
+      all.push({ name: r.faction.name, value: hasBar ? s.value : null, max: hasBar ? s.max : null, renown, tier });
     }
     let seen = {};
     try { seen = JSON.parse(localStorage.getItem(storeKey) || '{}') || {}; } catch (e) { seen = {}; }
@@ -375,7 +379,8 @@
     const record = {};
     for (const rep of all) {
       const prev = seen[rep.name];
-      const cur = rep.value + '/' + rep.max + '/' + (rep.renown == null ? '' : rep.renown);
+      const cur = (rep.value == null ? '' : rep.value) + '/' + (rep.max == null ? '' : rep.max)
+        + '/' + (rep.renown == null ? '' : rep.renown);
       // Changed since last look — or first sighting of a faction while OTHERS are known,
       // which is movement too (a new campaign opened). A first-ever run stamps nothing.
       const moved = prev ? prev.cur !== cur : Object.keys(seen).length > 0;
@@ -386,9 +391,10 @@
     // A faction that just CAPPED is the most recent push of all, and the in-progress
     // test alone deleted it the moment it completed. Movement keeps a row regardless
     // of completion; in-progress only gates the no-movement fallback.
-    const inProgress = (r) => r.renown != null || r.value < r.max;
+    const frac = (r) => (r.max ? r.value / r.max : 0);
+    const inProgress = (r) => r.renown != null || (r.value != null && r.value < r.max);
     return all.filter((r) => r.t > 0 || inProgress(r))
-      .sort((a, b) => (b.t - a.t) || (b.value / b.max - a.value / a.max))
+      .sort((a, b) => (b.t - a.t) || (frac(b) - frac(a)))
       .slice(0, 3);
   }
 
@@ -420,17 +426,23 @@
       // A single-leaf achievement carries no usable fraction — "0/1" describes
       // everything not started — so those are skipped.
       let done = 0, total = 0;
-      const walk = (c, satisfied) => {
+      const walk = (c) => {
         if (!isObj(c)) return;
-        const ok = satisfied || c.is_completed === true;
-        if (Array.isArray(c.child_criteria) && c.child_criteria.length) {
-          for (const ch of c.child_criteria) walk(ch, ok);
+        const kids = Array.isArray(c.child_criteria) ? c.child_criteria : [];
+        if (kids.length) {
+          // A parent with its OWN is_completed true is a satisfied operator — one
+          // requirement, met. Expanding its alternatives counted a one-of-five
+          // group as five, drowning an unmet sibling (5/6 for a logical 1/2).
+          // An UNSATISFIED group still expands, which can only understate
+          // progress — the conservative direction for an almost-there list.
+          if (c.is_completed === true) { total++; done++; return; }
+          for (const ch of kids) walk(ch);
           return;
         }
         total++;
-        if (ok) done++;
+        if (c.is_completed === true) done++;
       };
-      walk(a.criteria, false);
+      walk(a.criteria);
       if (total < 2 || !done || done >= total) continue;
       const left = total - done;
       // The owner's bar, verbatim: one or two steps out, or at a certain percent.
@@ -443,7 +455,11 @@
   // ---- The refresh ----------------------------------------------------------
 
   async function tick() {
-    if (paused() || inFlight) { schedule(GATED_RECHECK); return; }
+    // Paused returns WITHOUT touching dueAt: an overdue refresh stays overdue, and
+    // the visibility handler runs it the moment the panel is back — re-arming a
+    // recheck here pushed the deadline a minute out and made the return WAIT on it.
+    // In-flight likewise just yields; the running sweep's finally re-arms.
+    if (paused() || inFlight) return;
     if (!started) return;
     const gen = generation;
     inFlight = true;
@@ -627,7 +643,8 @@
     fillSect('profs', data.profs.map((p) =>
       trow(p.name, p.skill / p.max * 100, p.skill + '/' + p.max)), 'No professions yet');
     fillSect('reps', data.reps.map((r) =>
-      trow(r.name, r.value / r.max * 100, r.tier || Math.round(r.value / r.max * 100) + '%')), 'Nothing in progress');
+      trow(r.name, r.max ? r.value / r.max * 100 : null,
+        r.tier || (r.max ? Math.round(r.value / r.max * 100) + '%' : ''))), 'Nothing in progress');
     el('mounts').textContent = data.mounts == null ? '--' : String(data.mounts);
     el('pets').textContent = data.pets == null ? '--' : String(data.pets);
     fillSect('latest', data.latest
