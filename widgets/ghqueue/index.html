@@ -31,7 +31,12 @@
     font-variant-numeric: tabular-nums; color: var(--text-dim);
   }
   .pr .msgs:empty { display: none; }
-  footer { color: var(--text-dim); font-size: 11px; flex: none; font-variant-numeric: tabular-nums; }
+  /* One line, ellipsized: fitRows() budgets a fixed chrome height, and a footer that
+   * WRAPS under stacked warnings eats board height the row math already spent —
+   * clipping rows the hidden-counter claims are visible. Warnings sit first in the
+   * notes, so the tail the ellipsis eats is the freshness line, not the caveats. */
+  footer { color: var(--text-dim); font-size: 11px; flex: none; font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #state { position: fixed; inset: 0; }
   body.stale #board { opacity: 0.6; }
 </style>
@@ -448,7 +453,19 @@
           // one — never entered the board, and no counter could report what was never
           // fetched. The page bound is a bound on cost, and hitting it is REPORTED
           // (listShort) rather than passed off as a complete listing.
+          //
+          // Pages are STAGED and committed only when the repo's listing finishes: a
+          // prefix from a listing that then failed is not "this repository's PRs",
+          // and publishing it both understated the queue and duplicated rows when
+          // the faulted-repo carryover below re-added the last known state. The
+          // sweep clock and the pause gate hold between pages exactly as they do
+          // between repositories — eight slow pages are the same spinner-hostage
+          // problem as eight slow repos.
+          const staged = [];
           for (let page = 1; page <= PAGES_MAX; page++) {
+            if (gen !== generation) return;
+            if (paused()) return;
+            if (Date.now() - pollAnchor > SWEEP_BUDGET) throw fault('timeout', 'sweep budget spent mid-listing');
             const r = await gh(API + '/repos/' + repo + '/pulls?state=open&per_page=' + PER_PAGE + '&page=' + page);
             // A 200 carrying valid JSON that is not this endpoint's shape — a portal's
             // login object, an outage page's error payload — is a fault, not an empty
@@ -461,7 +478,7 @@
               // an array of non-PRs is not an answer at all.
               if (!item || typeof item.number !== 'number' || typeof item.title !== 'string')
                 throw fault('format', 'reply was not a pull request list');
-              prs.push({
+              staged.push({
                 repo,
                 number: item.number,
                 title: item.title,
@@ -475,6 +492,7 @@
             if (r.body.length < PER_PAGE) break;
             if (page === PAGES_MAX) listShort++;
           }
+          prs.push(...staged);
         } catch (e) {
           if (e.rateLimitedUntil) throw e;
           // A 401, 404 or permission 403 is NOT an empty repo. Swallowing it would leave
