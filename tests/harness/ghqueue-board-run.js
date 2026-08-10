@@ -95,6 +95,7 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
   const page = await browser.newPage({ viewport: { width: 640, height: 400 } });
   page.on('pageerror', (e) => { failures++; console.log('[pageerror]', String(e).slice(0, 300)); });
+  page.on('console', (m) => { if (/ww-log|ghqueue/.test(m.text())) console.log('[console]', m.text().slice(0, 220)); });
 
   const serve = (route, dir, rel) => {
     const root = path.resolve(dir);
@@ -159,6 +160,7 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     window.addEventListener('message', (ev) => {
       if (!frame || ev.source !== frame.contentWindow || ev.origin !== widgetOrigin) return;
       const m = ev.data || {};
+      if (m.type === 'ww-log') console.log('[ww-log]', String(m.message || m.text || '').slice(0, 200));
       if (m.type === 'ww-ready') return window.__wwPush(initMessage);
       // The board must be fed by the direct tier the stub serves; an escalation to the
       // host proxy would answer the same way the host does, and is refused so the run

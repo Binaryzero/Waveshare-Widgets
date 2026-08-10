@@ -305,14 +305,24 @@
     bodies.set(url, body);
   }
 
-  async function gh(url) {
+  // The remaining sweep budget, for capping a request that starts near the buzzer:
+  // the budget gates only decide whether to START a call, and a call granted the
+  // full per-request deadline at budget-minus-one-millisecond blew through the
+  // declared ceiling by fifteen seconds.
+  // A hoisted DECLARATION on purpose: the shim can deliver ww-init synchronously
+  // while WW.onInit registers — higher up this script than any const — and the
+  // first sweep then runs before a const arrow here would exist.
+  function budgetLeft() { return SWEEP_BUDGET - (Date.now() - pollAnchor); }
+
+  async function gh(url, maxMs) {
     // Neither tier of WW.fetch bounds a direct browser request — the shim's own timer is
     // on the host-proxy tier — so a host that accepts the connection and then goes silent
     // left this await pending forever. The `finally` never ran, inFlight stayed true, and
     // nothing re-armed the timer: the widget was not slow, it was dead, still showing
     // whatever had last been on screen.
     const abort = new AbortController();
-    const deadline = setTimeout(() => abort.abort(), REQUEST_DEADLINE);
+    const deadline = setTimeout(() => abort.abort(),
+      Math.max(1000, Math.min(REQUEST_DEADLINE, maxMs == null ? REQUEST_DEADLINE : maxMs)));
     try {
       return await ghOnce(url, abort);
     } finally {
@@ -466,7 +476,7 @@
             if (gen !== generation) return;
             if (paused()) return;
             if (Date.now() - pollAnchor > SWEEP_BUDGET) throw fault('timeout', 'sweep budget spent mid-listing');
-            const r = await gh(API + '/repos/' + repo + '/pulls?state=open&per_page=' + PER_PAGE + '&page=' + page);
+            const r = await gh(API + '/repos/' + repo + '/pulls?state=open&per_page=' + PER_PAGE + '&page=' + page, budgetLeft());
             // A 200 carrying valid JSON that is not this endpoint's shape — a portal's
             // login object, an outage page's error payload — is a fault, not an empty
             // repo. An EMPTY array is a real answer: no open PRs here.
@@ -520,7 +530,7 @@
         // with no CI under a footer claiming the sweep was current.
         if (Date.now() - pollAnchor > SWEEP_BUDGET) { budgetSkipped = detailed.length - i; break; }
         try {
-          const r = await gh(API + '/repos/' + pr.repo + '/pulls/' + pr.number);
+          const r = await gh(API + '/repos/' + pr.repo + '/pulls/' + pr.number, budgetLeft());
           if (!r.body || typeof r.body !== 'object') throw fault('format', 'reply was not a pull request');
           // mergeable_state, bucketed by what each value actually PROMISES:
           // "dirty" is a computed conflict. "clean"/"has_hooks" are the states in
@@ -538,6 +548,11 @@
             : 'unknown';
           const talk = (Number(r.body.comments) || 0) + (Number(r.body.review_comments) || 0);
           pr.talk = talk;
+          // The detail response is FRESHER than the list page: a force-push between
+          // the two would otherwise pair the OLD head's green workflows with the new
+          // head's clean merge state — a "ready" the new commit never earned. The
+          // runs question below targets the head the detail actually described.
+          if (r.body.head && typeof r.body.head.sha === 'string') pr.sha = r.body.head.sha;
         } catch (e) {
           if (e.rateLimitedUntil) throw e;
           WW.log('ghqueue: detail ' + pr.repo + '#' + pr.number + ': ' + e.message);
@@ -549,7 +564,7 @@
         // another fifteen seconds past it.
         if (Date.now() - pollAnchor > SWEEP_BUDGET) { budgetSkipped = detailed.length - i; break; }
         try {
-          const r = await gh(API + '/repos/' + pr.repo + '/actions/runs?head_sha=' + pr.sha + '&per_page=' + RUNS_PAGE);
+          const r = await gh(API + '/repos/' + pr.repo + '/actions/runs?head_sha=' + pr.sha + '&per_page=' + RUNS_PAGE, budgetLeft());
           if (!r.body || !Array.isArray(r.body.workflow_runs)) throw fault('format', 'reply was not a workflow run list');
           // Complete when the page held everything: total_count says so when present,
           // and a page shorter than what was asked for says so when it is not.
