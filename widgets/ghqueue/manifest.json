@@ -2,8 +2,8 @@
   "id": "ws.stock.ghqueue",
   "name": "GitHub Queue",
   "author": "Plinth",
-  "version": "2.0.0",
-  "description": "Per repo: pull requests waiting on your review, and how the last workflow run finished. Uses conditional requests so it stays well inside the token's rate limit.",
+  "version": "3.0.0",
+  "description": "The merge board: every open pull request across your repositories — title, age, CI verdict, review chatter — sorted worst first, so red and conflicted land on top. Uses conditional requests so it stays well inside the token's rate limit.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
   "properties": [

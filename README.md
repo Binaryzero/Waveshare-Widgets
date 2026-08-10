@@ -75,9 +75,10 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   long until it unloads — pairs with the GPU widget), Endpoint Health
   (red/green tiles for self-hosted and LAN services, each checked on its own
   timer so one hung box never freezes the rest of the grid), GitHub Queue
-  (per repo, the pull requests waiting on your review and how the last workflow
-  run finished — conditional requests keep it well inside the token's rate
-  limit), Home Assistant (entity states with touch control for lights and
+  (the merge board: every open pull request across your repositories with its
+  title, age, CI verdict and review chatter, sorted worst first so red and
+  conflicted land on top — conditional requests keep it well inside the
+  token's rate limit), Home Assistant (entity states with touch control for lights and
   switches; locks and covers stay display-only until you arm them in settings,
   and then need a deliberate long press, because a desk-height touch strip is
   the wrong place for a stray brush to open a garage door), Next Event (the
