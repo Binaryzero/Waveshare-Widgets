@@ -202,8 +202,8 @@
     if (pr.ci === 'fail') return 0;
     if (pr.merge === 'dirty') return 1;
     if (pr.ci === 'warn') return 2;
-    if (pr.ci === 'ok' && !pr.draft && pr.merge === 'ok') return 3;
-    if (pr.ci === 'running' || (pr.ci === 'ok' && !pr.draft)) return 4;
+    if (pr.ci === 'ok' && !pr.draft && pr.merge === 'ready') return 3;
+    if (pr.ci === 'running' || pr.ciFault || (pr.ci === 'ok' && !pr.draft)) return 4;
     return 5;
   }
 
@@ -373,13 +373,15 @@
     return { unchanged: false, body };
   }
 
-  // Every workflow run for the PR's head commit, folded to one verdict. Any run still
-  // going says "running" — a red from the PREVIOUS push is not this push's verdict
-  // while the new one is being decided. Then any failure makes it red: one broken job
-  // is broken, however many others passed. action_required (a first-time contributor's
-  // run waiting for approval) asks for a human, which is warn, not red. GitHub's other
-  // conclusions — neutral, skipped, cancelled, stale — are not the workflow asking for
-  // anything; all-quiet with at least one success reads green.
+  // Every workflow run for the PR's head commit, folded to one verdict. A completed
+  // FAILURE outranks a run still going: the list is filtered by head_sha, so a red
+  // here is this push's red, and another workflow being mid-flight does not unconfirm
+  // it — while a genuine re-run of the failed workflow puts that same run back
+  // in_progress, which clears the failure through this exact rule. One broken job is
+  // broken, however many others passed. action_required (a first-time contributor's
+  // run waiting for approval) asks for a human, which is warn, not red. GitHub's
+  // other conclusions — neutral, skipped, cancelled, stale — are not the workflow
+  // asking for anything; all-quiet with at least one success reads green.
   //
   // Green additionally demands the fold saw EVERY run: a page of thirty that
   // total_count says is short can only be hiding more verdicts, and the hidden ones
@@ -394,8 +396,8 @@
       else if (c === 'action_required') saw.warn = true;
       else if (c === 'success') saw.ok = true;
     }
-    if (saw.running) return 'running';
     if (saw.fail) return 'fail';
+    if (saw.running) return 'running';
     if (saw.warn) return 'warn';
     if (saw.ok) return complete ? 'ok' : 'unknown';
     return 'none';
@@ -434,7 +436,12 @@
             // repo. An EMPTY array is a real answer: no open PRs here.
             if (!Array.isArray(r.body)) throw fault('format', 'reply was not a pull request list');
             for (const item of r.body) {
-              if (!item || typeof item.number !== 'number' || typeof item.title !== 'string') continue;
+              // A malformed MEMBER is the same fault as a malformed body: skipping it
+              // would let an outage payload's array-of-something read as a healthy,
+              // emptier repository. An empty array is the legitimate no-PR answer;
+              // an array of non-PRs is not an answer at all.
+              if (!item || typeof item.number !== 'number' || typeof item.title !== 'string')
+                throw fault('format', 'reply was not a pull request list');
               prs.push({
                 repo,
                 number: item.number,
@@ -443,7 +450,7 @@
                 sha: item.head && typeof item.head.sha === 'string' ? item.head.sha : '',
                 created: Date.parse(item.created_at) || 0,
                 updated: Date.parse(item.updated_at) || 0,
-                ci: 'unknown', merge: 'unknown', talk: null,
+                ci: 'unknown', merge: 'unknown', talk: null, ciFault: null,
               });
             }
             if (r.body.length < PER_PAGE) break;
@@ -471,15 +478,16 @@
         try {
           const r = await gh(API + '/repos/' + pr.repo + '/pulls/' + pr.number);
           if (!r.body || typeof r.body !== 'object') throw fault('format', 'reply was not a pull request');
-          // mergeable_state is a three-way fact, and the difference is the difference
-          // between a report and a guess: "dirty" is a computed conflict, every other
-          // computed value ("clean", "blocked", "behind", "unstable", …) is a computed
-          // NON-conflict, and "unknown" means GitHub is still deciding. Only the first
-          // two may steer the board — an unknown that read as "no conflict" dressed
-          // still-computing PRs up as ready.
+          // mergeable_state buckets four ways, and each is a different promise:
+          // "dirty" is a computed conflict; "clean"/"unstable"/"has_hooks" are states
+          // GitHub will actually accept a merge in; "blocked" and "behind" are
+          // computed NON-conflicts that still cannot merge (required reviews, stale
+          // base) — calling those ready promised a button GitHub would refuse; and
+          // "unknown" means still deciding, which may steer nothing.
           const ms = r.body.mergeable_state;
           pr.merge = ms === 'dirty' ? 'dirty'
-            : (typeof ms === 'string' && ms !== '' && ms !== 'unknown') ? 'ok'
+            : (ms === 'clean' || ms === 'unstable' || ms === 'has_hooks') ? 'ready'
+            : (ms === 'blocked' || ms === 'behind') ? 'held'
             : 'unknown';
           const talk = (Number(r.body.comments) || 0) + (Number(r.body.review_comments) || 0);
           pr.talk = talk;
@@ -501,6 +509,10 @@
           pr.ci = foldRuns(runs, complete);
         } catch (e) {
           if (e.rateLimitedUntil) throw e;
+          // A failed CI question is an ANSWERED row, not a quiet one: logging alone
+          // left a token without Actions read rendering the same "—" as a repo with
+          // no workflows, under a footer claiming the sweep was healthy.
+          pr.ciFault = { kind: e.kind || 'unreachable', errStatus: e.status || 0 };
           WW.log('ghqueue: runs ' + pr.repo + '#' + pr.number + ': ' + e.message);
         }
       }
@@ -618,7 +630,11 @@
     if (pr.ci === 'fail') return { text: 'failing', cls: 'pill ci err' };
     if (pr.merge === 'dirty') return { text: 'conflict', cls: 'pill ci warn' };
     if (pr.ci === 'warn') return { text: 'needs ok', cls: 'pill ci warn' };
-    if (pr.ci === 'ok' && !pr.draft && pr.merge === 'ok') return { text: 'ready', cls: 'pill ci ok' };
+    if (pr.ci === 'ok' && !pr.draft && pr.merge === 'ready') return { text: 'ready', cls: 'pill ci ok' };
+    // A CI question that FAILED is not a repo without CI: "?" says this row's verdict
+    // could not be obtained, and the footer says why.
+    if (pr.ciFault) return { text: '?', cls: 'pill ci err' };
+    if (pr.ci === 'ok' && !pr.draft && pr.merge === 'held') return { text: 'blocked', cls: 'pill ci muted' };
     if (pr.ci === 'ok' && !pr.draft) return { text: 'passing', cls: 'pill ci' };
     if (pr.ci === 'running') return { text: 'running', cls: 'pill ci' };
     if (pr.draft) return { text: 'draft', cls: 'pill ci muted' };
@@ -637,12 +653,14 @@
     // Counted over EVERY tracked PR; only the ROWS are limited to what fits. Scoping
     // the counters to the visible ones would let a band showing three rows contradict
     // its own footer.
-    let failing = 0, conflicts = 0, needsOk = 0, ready = 0;
+    let failing = 0, conflicts = 0, needsOk = 0, ready = 0, ciFaults = 0;
+    let firstCiFault = null;
     for (const pr of state.prs) {
+      if (pr.ciFault) { ciFaults++; if (!firstCiFault) firstCiFault = pr.ciFault; }
       if (pr.ci === 'fail') failing++;
       else if (pr.merge === 'dirty') conflicts++;
       else if (pr.ci === 'warn') needsOk++;
-      else if (pr.ci === 'ok' && !pr.draft && pr.merge === 'ok') ready++;
+      else if (pr.ci === 'ok' && !pr.draft && pr.merge === 'ready') ready++;
     }
 
     for (const pr of visiblePrs()) {
@@ -677,7 +695,13 @@
     const notes = [];
     if (cfg.hidden) notes.push(cfg.hidden + ' more tracked but no room to show in this slot');
     if (state.overflow > 0) notes.push(state.overflow + ' more open than this widget checks in detail (' + MAX_PRS + ' max)');
-    if (state.listShort) notes.push(state.listShort + ' repositor' + (state.listShort === 1 ? 'y has' : 'ies have') + ' more open PRs than this widget lists (' + (PER_PAGE * PAGES_MAX) + ' max)');
+    // "May": a repo with EXACTLY the cap's worth of PRs fills the last page too, and
+    // asserting omissions on that evidence would be the footer's own overclaim.
+    if (state.listShort) notes.push(state.listShort + ' repositor' + (state.listShort === 1 ? 'y' : 'ies') + ' may have more open PRs than this widget lists (' + (PER_PAGE * PAGES_MAX) + ' cap reached)');
+    if (ciFaults) notes.push('CI could not be checked for ' + ciFaults + ' PR' + (ciFaults === 1 ? '' : 's') + ' — '
+      + (firstCiFault.kind === 'http' && (firstCiFault.errStatus === 403 || firstCiFault.errStatus === 404)
+        ? "the token may lack Actions read permission"
+        : kindText(firstCiFault.kind, firstCiFault.errStatus)));
     if (cfg.dropped) notes.push(cfg.dropped + ' more repositories configured than this widget checks (' + MAX_REPOS + ' max)');
     if (cfg.malformed) notes.push(cfg.malformed + ' entr' + (cfg.malformed === 1 ? 'y is' : 'ies are') + " not owner/name and can't be checked");
     notes.push(rateLimitedUntil > Date.now()
@@ -750,10 +774,17 @@
 
   // The empty board is a designed state, not an absence: a clear card is the only way
   // "nothing is open" can be told apart from a widget that died with an empty column.
+  // It speaks for the repositories that were CHECKED — an entry the config dropped or
+  // that is not owner/name may hold open PRs, and the early return here used to skip
+  // the footer that would have said so, turning "clear, with caveats" into "clear".
   function showClear() {
+    const caveats = [];
+    if (cfg.malformed) caveats.push(cfg.malformed + ' configured entr' + (cfg.malformed === 1 ? 'y is' : 'ies are') + ' not owner/name and could not be checked.');
+    if (cfg.dropped) caveats.push(cfg.dropped + ' more ' + (cfg.dropped === 1 ? 'is' : 'are') + ' configured than this widget checks (' + MAX_REPOS + ' max).');
     stateCard('ok', '✓', 'No open pull requests',
-      'Every configured repository is clear.' + (lastOk ? ' Checked ' + ageText(lastOk) + '.' : ''),
-      null, 'Clear');
+      'Every checked repository is clear.' + (lastOk ? ' Checked ' + ageText(lastOk) + '.' : '')
+      + (caveats.length ? ' ' + caveats.join(' ') : ''),
+      null, caveats.length ? 'Clear*' : 'Clear');
   }
 
   // A card with no Retry, for a wait that a button cannot shorten.

@@ -50,9 +50,18 @@ const PRS = [
   { repo: 'me/beta', number: 7, title: 'Refactor the engine room', sha: 'b7', created: ago(5 * 1440),
     runs: [{ status: 'completed', conclusion: 'success' }], mergeable_state: 'dirty',
     comments: 0, review_comments: 0, verdict: 'conflict' },
+  // A confirmed failure with another workflow still going must stay red: the runs are
+  // filtered by head SHA, so the failure belongs to THIS push.
+  { repo: 'me/alpha', number: 4, title: 'Fail while another runs', sha: 'a4', created: ago(1440),
+    runs: [{ status: 'completed', conclusion: 'failure' }, { status: 'in_progress', conclusion: null }],
+    mergeable_state: 'clean', comments: 0, review_comments: 0, verdict: 'failing' },
   { repo: 'me/beta', number: 10, title: 'First-time contributor run', sha: 'b10', created: ago(200),
     runs: [{ status: 'completed', conclusion: 'action_required' }], mergeable_state: 'clean',
     comments: 0, review_comments: 0, verdict: 'needs ok' },
+  // Green CI but branch protection holds the merge: "blocked", never "ready".
+  { repo: 'me/beta', number: 11, title: 'Blocked by branch protection', sha: 'b11', created: ago(45),
+    runs: [{ status: 'completed', conclusion: 'success' }], mergeable_state: 'blocked',
+    comments: 0, review_comments: 0, verdict: 'blocked' },
   { repo: 'me/alpha', number: 2, title: 'Add the missing docs', sha: 'a2', created: ago(120),
     runs: [{ status: 'completed', conclusion: 'success' }], mergeable_state: 'clean',
     comments: 0, review_comments: 0, verdict: 'ready' },
@@ -69,8 +78,9 @@ const PRS = [
     runs: [], mergeable_state: 'clean', comments: 0, review_comments: 0, verdict: 'draft' },
 ];
 
-// Worst-first, with the two tie-broken rank-4 rows in created order (oldest first).
-const WANT_ORDER = ['failing', 'conflict', 'needs ok', 'ready', 'passing', 'running', 'draft'];
+// Worst-first, with the rank-4 rows (passing / blocked / running) tie-broken by age,
+// oldest first, and the two failing rows likewise.
+const WANT_ORDER = ['failing', 'failing', 'conflict', 'needs ok', 'ready', 'passing', 'blocked', 'running', 'draft'];
 
 const listItem = (pr) => ({
   number: pr.number, title: pr.title, draft: !!pr.draft,
@@ -192,7 +202,7 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     `${board.rows.length} of ${PRS.length}`);
   check('G2 the board reads worst-first', JSON.stringify(board.rows.map((r) => r.verdict)) === JSON.stringify(WANT_ORDER),
     board.rows.map((r) => r.verdict).join(' > '));
-  check('G3 the header pill reports the exception', board.pill.text === '1 failing' && /\berr\b/.test(board.pill.cls),
+  check('G3 the header pill reports the exception', board.pill.text === '2 failing' && /\berr\b/.test(board.pill.cls),
     `"${board.pill.text}" [${board.pill.cls}]`);
   const top = board.rows[0] || { name: '', age: '' };
   check('G4 a row names its PR and shows an age',
