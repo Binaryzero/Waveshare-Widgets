@@ -9,8 +9,8 @@
    * widget-base.css. */
   body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
   header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
-  #repos { flex: 1 1 auto; display: flex; flex-direction: column; gap: 5px; min-height: 0; overflow: hidden; }
-  .repo {
+  #board { flex: 1 1 auto; display: flex; flex-direction: column; gap: 5px; min-height: 0; overflow: hidden; }
+  .pr {
     display: flex; align-items: center; gap: 10px;
     padding: 5px 10px;
     border-radius: var(--radius-control);
@@ -18,21 +18,28 @@
     min-width: 0;
     flex: 1 1 0; min-height: 28px; max-height: 54px;
   }
-  .repo .name {
+  .pr .ci { flex: none; min-width: 58px; text-align: center; }
+  .pr .name {
     color: var(--text); font-weight: 600;
     font-size: clamp(11px, 3.2vh, 14px);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     flex: 1 1 auto; min-width: 0;
   }
-  .repo .reviews {
-    font-size: clamp(11px, 3vh, 13px); font-weight: 700; flex: none;
-    font-variant-numeric: tabular-nums; color: var(--text-muted);
+  .pr .name b { color: var(--text-muted); font-weight: 600; }
+  .pr .msgs, .pr .age {
+    font-size: clamp(10px, 2.8vh, 12px); font-weight: 600; flex: none;
+    font-variant-numeric: tabular-nums; color: var(--text-dim);
   }
-  .repo .reviews.waiting { color: var(--accent); }
-  .repo .run { flex: none; }
-  footer { color: var(--text-dim); font-size: 11px; flex: none; font-variant-numeric: tabular-nums; }
+  .pr .msgs:empty { display: none; }
+  /* One line, ellipsized: fitRows() budgets a fixed chrome height, and a footer that
+   * WRAPS under stacked warnings eats board height the row math already spent —
+   * clipping rows the hidden-counter claims are visible. Warnings sit first in the
+   * notes, so the tail the ellipsis eats is the freshness line, not the caveats. */
+  footer { color: var(--text-dim); font-size: 11px; flex: none; font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #state { position: fixed; inset: 0; }
-  body.stale #repos { opacity: 0.6; }
+  body.stale #board { opacity: 0.6; }
+  .pr.carried { opacity: 0.6; }
 </style>
 </head>
 <body>
@@ -41,7 +48,7 @@
     <span class="pill muted" id="pill">Loading</span>
   </header>
 
-  <div id="repos" hidden></div>
+  <div id="board" hidden></div>
 
   <footer id="meta"></footer>
 
@@ -53,26 +60,36 @@
 <script>
   'use strict';
   const API = 'https://api.github.com';
-  // Per REQUEST, not per tick. A tick makes two calls per repo across up to ten repos, and
-  // the unit that hangs is one call — bounding the tick instead would let a single silent
-  // request spend the whole budget and starve every repo behind it.
+  // Per REQUEST, not per tick. A tick can make dozens of calls, and the unit that hangs
+  // is one call — bounding the tick instead would let a single silent request spend the
+  // whole budget and starve everything behind it.
   const REQUEST_DEADLINE = 15000;
-  // Only the status, the ETag and a small JSON object are wanted from either endpoint at
-  // per_page=1. Anything larger is something other than the GitHub API answering.
-  const RESPONSE_CAP = 262144;
-  const CACHE_MAX = 60;          // etag/body entries kept; repo lists change over a session
+  // A pull-request list item embeds two full repository objects AND the PR's body
+  // text, which is author-controlled up to 65K characters — a page of long-bodied
+  // PRs is legitimately megabytes. The cap guards against something OTHER than the
+  // GitHub API answering, so it sits just under WW.fetch's own 5 MiB ceiling rather
+  // than anywhere an honest page can reach.
+  const RESPONSE_CAP = 4194304;
+  const CACHE_MAX = 160;         // >= the max working set (80 list pages + 20 details + 20 runs), with slack — a cache smaller than one sweep evicts every entry just before its reuse
   const IDLE_FLOOR = 5000;       // a re-armed timer never fires sooner than this
   const GATED_RECHECK = 60000;   // backstop while paused for a hidden panel
   const MAX_WAIT = 3600000;
   const MAX_REPOS = 10;
+  const PER_PAGE = 15;           // pulls-list page size — small pages, so one cannot outgrow the cap
+  const PAGES_MAX = 8;           // listing bound per repo: 120 open PRs is a backlog, not a board
+  const SWEEP_BUDGET = 90000;    // the whole sweep's ceiling: a stalling API must not multiply per-request deadlines
+  const MAX_PRS = 20;            // PRs given detail + CI calls per sweep, across the board
+  const RUNS_PAGE = 30;          // workflow runs read per head SHA before completeness is doubted
   const cfg = { repos: [], token: '', refreshMs: 300000, dropped: 0, hidden: 0, malformed: 0 };
   // ETags let a poll that finds nothing new cost zero rate-limit budget. GitHub
-  // answers 304 and does not decrement the quota, which is what makes a 1-minute
+  // answers 304 and does not decrement the quota, which is what makes a short
   // cadence across a handful of repos sustainable on a PAT.
   const etags = new Map();     // url -> etag
   const bodies = new Map();    // url -> last parsed body (what a 304 means "still")
-  const rows = new Map();      // repo -> {reviews, run}
-  let state = new Map();       // repo -> {reviews, conclusion, status}
+  const rows = new Map();      // key -> {ci, name, msgs, age}
+  // null until a sweep has ever succeeded — the "nothing to keep" state the error
+  // paths test for. After that: {prs: [...], faults: Map(repo -> fault), overflow}.
+  let state = null;
   let started = false;
   let timer = null;
   let inFlight = false;
@@ -80,7 +97,7 @@
   let rateLimitedUntil = 0;
   // Every poll carries the generation it was started under. A settings change bumps it,
   // and anything still in flight from before then discards its own results rather than
-  // writing a state keyed by the OLD repo list into a grid built for the new one.
+  // writing a state keyed by the OLD repo list into a board built for the new one.
   let generation = 0;
   let pollAnchor = 0;          // when the current cadence's period began
   let fails = 0;               // consecutive failed polls, for backoff
@@ -101,16 +118,14 @@
       })
       .filter((s) => s !== '');
     // A row that is not owner/name cannot be checked, and dropping it in silence let the
-    // widget report "Clear" on the strength of the entries that happened to survive —
-    // while the rejected one sat in Settings looking configured and watched.
+    // widget report a clear board on the strength of the entries that happened to
+    // survive — while the rejected one sat in Settings looking configured and watched.
     const wellFormed = named.filter((s) => /^[^/\s]+\/[^/\s]+$/.test(s));
     cfg.malformed = named.length - wellFormed.length;
-    // Every map here is keyed by the repo name, so a list containing the same repo twice
-    // had its second row overwrite the first's reference: the first row stayed on its
-    // placeholder forever, both endpoints were called twice, and render() added the same
-    // review count into the summary twice. GitHub is case-insensitive about owner/name, so
-    // the same repo in two casings is the same repo — but the FIRST spelling is kept, so
-    // the row reads the way it was typed.
+    // Maps here are keyed by the repo name, so a list containing the same repo twice
+    // would double every PR on the board. GitHub is case-insensitive about owner/name,
+    // so the same repo in two casings is the same repo — the FIRST spelling is kept, so
+    // rows read the way they were typed.
     const seen = new Set();
     const unique = wellFormed.filter((s) => {
       const key = s.toLowerCase();
@@ -144,16 +159,24 @@
       etags.clear();
       bodies.clear();
       fails = 0;
+      // The old board answers for the old configuration. Keeping it meant a failed or
+      // rate-limited first sweep under the NEW repos rendered the previous repos' rows
+      // as "stale" indefinitely — data that is not stale but simply about something
+      // else. With it cleared, the spinner below owns the screen until the new sweep
+      // has something true to say.
+      state = null;
+      lastOk = 0;
+      rows.clear();
+      if (cfg.repos.length && cfg.token) showLoading();
     }
 
-    build();
     if (!cfg.repos.length || !cfg.token) {
       // Stop, do not just repaint. Leaving the timer running meant the next tick
       // treated an empty repo list as a SUCCESSFUL poll and replaced the setup card
-      // with a green "Clear", or fired unauthorized requests with the repos still set.
+      // with a clear board, or fired unauthorized requests with the repos still set.
       clearTimeout(timer);
       started = false;
-      state = new Map();
+      state = null;
       lastOk = 0;
       fails = 0;
       showSetup();
@@ -167,44 +190,50 @@
     tick(gen);
   });
 
-  // How many rows the slot can actually hold. A supported 200px band fits three, and the
-  // column simply CLIPPED the rest behind overflow:hidden — those repos were still polled
-  // and still counted in the summary, so the pill could say a repo was failing while no
-  // visible row could possibly be the one. Chrome is the body padding, the header, the
+  // How many rows the slot can actually hold. A supported 200px band fits three, and
+  // clipping the rest behind overflow:hidden would leave the summary naming a failing
+  // PR no visible row could possibly be. Chrome is the body padding, the header, the
   // footer and the two flex gaps; a row is its 28px minimum plus the 5px gap under it.
   function fitRows() {
     const h = document.documentElement.clientHeight || window.innerHeight || 400;
     return Math.max(1, Math.floor((h - 80) / 33));
   }
 
-  // Which repos get a row when they cannot all have one: the ones in trouble first, worst
-  // first, then the ones with reviews waiting, then the quiet ones. Stable inside each
-  // group, so a steady list does not shuffle itself between polls.
-  function visibleRepos() {
-    const max = fitRows();
-    if (cfg.repos.length <= max) return cfg.repos;
-    const rank = (repo) => {
-      const s = state.get(repo);
-      if (!s) return 3;
-      if (s.reviewsFault || s.runsFault) return 0;
-      const cls = runClass(s.conclusion, s.status);
-      if (cls === 'err' || cls === 'warn') return 1;
-      if (s.reviews) return 2;
-      return 4;
-    };
-    return cfg.repos
-      .map((repo, i) => ({ repo, i, r: rank(repo) }))
-      .sort((a, b) => (a.r - b.r) || (a.i - b.i))
-      .slice(0, max)
-      .map((x) => x.repo);
+  const prKey = (pr) => pr.repo + '#' + pr.number;
+
+  // Worst first — the whole point of the board. Red CI on top, then conflicts, then
+  // runs waiting on a human (action_required), then ready-to-merge, then running and
+  // green-but-unconfirmed, then the quiet tail (drafts, no CI). Ties: the one waiting
+  // longest first. "Ready" is a CONFIRMED claim: green CI, not a draft, and GitHub has
+  // actually computed the merge as clean — mergeable_state "unknown" (still being
+  // computed, or the detail call failed) must not dress up as it.
+  function rank(pr) {
+    if (pr.ci === 'fail') return 0;
+    if (pr.merge === 'dirty') return 1;
+    // A failed CI LOOKUP ranks with needs-action: it is actionable (fix the token,
+    // check the network) and burying it under ready rows in a short slot made the
+    // one red "?" undiscoverable.
+    if (pr.ci === 'warn' || pr.ciFault) return 2;
+    if (pr.ci === 'ok' && !pr.draft && pr.merge === 'ready') return 3;
+    if (pr.ci === 'running' || (pr.ci === 'ok' && !pr.draft)) return 4;
+    return 5;
   }
 
-  const visibleKey = () => visibleRepos().join('\n');
+  function ordered() {
+    if (!state) return [];
+    return [...state.prs]
+      .map((pr, i) => ({ pr, i, r: rank(pr) }))
+      .sort((a, b) => (a.r - b.r) || (a.pr.created - b.pr.created) || (a.i - b.i))
+      .map((x) => x.pr);
+  }
+
+  const visiblePrs = () => ordered().slice(0, fitRows());
+  const visibleKey = () => visiblePrs().map(prKey).join('\n');
 
   // The bare name, because owner/name is mostly the same owner repeated down the column.
   // But team-a/api and team-b/api both rendered as "api", which is worse than long: two
-  // rows that cannot be told apart, one of them asking for attention. When the short name
-  // is ambiguous, everyone with that short name gets the owner back.
+  // rows that cannot be told apart. When the short name is ambiguous, everyone with that
+  // short name gets the owner back.
   function label(repo) {
     const short = repo.split('/')[1] || repo;
     const clashes = cfg.repos.some((other) => other !== repo && (other.split('/')[1] || other) === short);
@@ -212,26 +241,31 @@
   }
 
   function build() {
-    const box = el('repos');
+    const box = el('board');
     box.textContent = '';
     rows.clear();
-    const shown = visibleRepos();
-    cfg.hidden = Math.max(0, cfg.repos.length - shown.length);
-    for (const repo of shown) {
+    const shown = visiblePrs();
+    cfg.hidden = Math.max(0, (state ? state.prs.length : 0) - shown.length);
+    for (const pr of shown) {
       const root = document.createElement('div');
-      root.className = 'repo';
+      // A carried row is last sweep's truth standing in for a repo that failed this
+      // one — dimmed like stale data, because that is exactly what it is.
+      root.className = pr.carried ? 'pr carried' : 'pr';
+      const ci = document.createElement('span');
+      ci.className = 'pill muted ci';
+      ci.textContent = '—';
       const name = document.createElement('span');
       name.className = 'name';
-      name.textContent = label(repo);
-      const reviews = document.createElement('span');
-      reviews.className = 'reviews';
-      reviews.textContent = '·';
-      const run = document.createElement('span');
-      run.className = 'pill muted run';
-      run.textContent = '—';
-      root.append(name, reviews, run);
+      const which = document.createElement('b');
+      which.textContent = label(pr.repo) + '#' + pr.number + ' ';
+      name.append(which, document.createTextNode(pr.title));
+      const msgs = document.createElement('span');
+      msgs.className = 'msgs';
+      const age = document.createElement('span');
+      age.className = 'age';
+      root.append(ci, name, msgs, age);
       box.appendChild(root);
-      rows.set(repo, { reviews, run });
+      rows.set(prKey(pr), { ci, msgs, age });
     }
   }
 
@@ -246,8 +280,7 @@
       if (now === lastFit) return;
       lastFit = now;
       if (!started) return;
-      build();
-      if (state.size) render();
+      if (state) { build(); render(); }
     }, 150);
   });
 
@@ -263,8 +296,9 @@
   }
 
   function remember(url, etag, body) {
-    // Repo lists change over a session and every URL is remembered forever otherwise. The
-    // bound is on the WRITE, so a cache that never grows never pays for the check.
+    // Per-PR URLs churn as PRs open and close, and every URL is remembered forever
+    // otherwise. The bound is on the WRITE, so a cache that never grows never pays for
+    // the check.
     if (!etags.has(url) && etags.size >= CACHE_MAX) {
       const oldest = etags.keys().next().value;
       etags.delete(oldest);
@@ -274,14 +308,24 @@
     bodies.set(url, body);
   }
 
-  async function gh(url) {
+  // The remaining sweep budget, for capping a request that starts near the buzzer:
+  // the budget gates only decide whether to START a call, and a call granted the
+  // full per-request deadline at budget-minus-one-millisecond blew through the
+  // declared ceiling by fifteen seconds.
+  // A hoisted DECLARATION on purpose: the shim can deliver ww-init synchronously
+  // while WW.onInit registers — higher up this script than any const — and the
+  // first sweep then runs before a const arrow here would exist.
+  function budgetLeft() { return SWEEP_BUDGET - (Date.now() - pollAnchor); }
+
+  async function gh(url, maxMs) {
     // Neither tier of WW.fetch bounds a direct browser request — the shim's own timer is
     // on the host-proxy tier — so a host that accepts the connection and then goes silent
     // left this await pending forever. The `finally` never ran, inFlight stayed true, and
     // nothing re-armed the timer: the widget was not slow, it was dead, still showing
     // whatever had last been on screen.
     const abort = new AbortController();
-    const deadline = setTimeout(() => abort.abort(), REQUEST_DEADLINE);
+    const deadline = setTimeout(() => abort.abort(),
+      Math.max(1000, Math.min(REQUEST_DEADLINE, maxMs == null ? REQUEST_DEADLINE : maxMs)));
     try {
       return await ghOnce(url, abort);
     } finally {
@@ -353,6 +397,41 @@
     return { unchanged: false, body };
   }
 
+  // Every workflow run for the PR's head commit, folded to one verdict. A completed
+  // FAILURE outranks a run still going: the list is filtered by head_sha, so a red
+  // here is this push's red, and another workflow being mid-flight does not unconfirm
+  // it — while a genuine re-run of the failed workflow puts that same run back
+  // in_progress, which clears the failure through this exact rule. One broken job is
+  // broken, however many others passed. action_required (a first-time contributor's
+  // run waiting for approval) asks for a human, which is warn, not red. GitHub's
+  // other conclusions — neutral, skipped, cancelled, stale — are not the workflow
+  // asking for anything; all-quiet with at least one success reads green.
+  //
+  // Green additionally demands the fold saw EVERY run: a page of thirty that
+  // total_count says is short can only be hiding more verdicts, and the hidden ones
+  // can only make things worse — a failure stays a failure on partial data, but "all
+  // green" from a partial page is a claim nothing checked. That reads as unknown.
+  function foldRuns(runs, complete) {
+    let saw = { fail: false, warn: false, ok: false, running: false };
+    for (const run of runs) {
+      if (run.status && run.status !== 'completed') { saw.running = true; continue; }
+      const c = run.conclusion;
+      if (c === 'failure' || c === 'timed_out' || c === 'startup_failure') saw.fail = true;
+      else if (c === 'action_required') saw.warn = true;
+      else if (c === 'success') saw.ok = true;
+    }
+    if (saw.fail) return 'fail';
+    // Anything short of a fold that saw EVERY run is a guess for every verdict, not
+    // just green: a failure on the omitted page outranks the running or warn this
+    // page happens to show. Only an observed failure survives incompleteness — worse
+    // information cannot improve it.
+    if (!complete) return 'unknown';
+    if (saw.running) return 'running';
+    if (saw.warn) return 'warn';
+    if (saw.ok) return 'ok';
+    return 'none';
+  }
+
   async function tick(gen) {
     if (gen !== generation) return;
     // Held, not cancelled: the anchor is preserved so the cadence resumes where it was
@@ -362,91 +441,196 @@
     inFlight = true;
     pollAnchor = Date.now();
     try {
-      const next = new Map();
+      const prs = [];
+      const faults = new Map();
+      let listShort = 0;         // repos whose listing hit the page bound while still full
       for (const repo of cfg.repos) {
         // A settings change part-way through a sweep makes the rest of it worthless:
         // those results would be keyed to a repo list nobody is looking at any more.
         if (gen !== generation) return;
+        // The sweep has ONE clock. Per-request deadlines bound a call, but a server
+        // that stalls every call multiplies them — dozens of 15-second waits is ten
+        // minutes of spinner. Past the budget, unvisited repos report as timeouts
+        // rather than pretending they were checked.
+        if (Date.now() - pollAnchor > SWEEP_BUDGET) {
+          faults.set(repo, { kind: 'timeout', errStatus: 0 });
+          continue;
+        }
         // The gate at the top of the sweep is not enough. Requests are sequential, so the
-        // panel being hidden after the first one is already away would be followed by up
-        // to eighteen more calls, the exact work the gate exists to hold.
-        // WIDGET-STANDARD.md asks widgets to skip work while hidden rather than fight the
-        // timer throttle, and a sweep already in flight is still work.
-        if (paused()) return;
-        const [owner, name] = repo.split('/');
-        // Two independent requests, so two independent faults. One combined `error` meant
-        // a token without Actions read — or one flaky /actions/runs call — replaced a
-        // perfectly good review count with "unavailable", hiding the number this widget
-        // exists to show. `status` is the workflow run's; `errStatus` is HTTP.
-        const entry = {
-          reviews: null, conclusion: null, status: null,
-          reviewsFault: null, runsFault: null,
-        };
-        // Review-requested PRs, scoped per repo so one bad repo name cannot blank the
-        // whole grid the way a single cross-repo search would.
-        try {
-          const q = encodeURIComponent('is:open is:pr review-requested:@me repo:' + repo);
-          const r = await gh(API + '/search/issues?q=' + q + '&per_page=1');
-          // A 200 carrying valid JSON that is not GitHub's search schema — a portal's
-          // login object, an outage page's error payload — left the count at null, so the
-          // row showed "·" and the summary fell through to a green "Clear". Nothing had
-          // been checked. Answering the wrong question is a format fault, not an answer.
-          if (!r.body || typeof r.body.total_count !== 'number') throw fault('format', 'reply was not a search result');
-          entry.reviews = r.body.total_count;
-        } catch (e) {
-          if (e.rateLimitedUntil) throw e;
-          // A 401, 404 or permission 403 is NOT an empty queue. Swallowing it left the
-          // counts at zero and the pill green, so an expired token looked exactly like
-          // having nothing to review — the most reassuring possible way to be wrong.
-          entry.reviewsFault = { kind: e.kind || 'unreachable', errStatus: e.status || 0 };
-          WW.log('ghqueue: reviews ' + repo + ': ' + e.message);
-        }
+        // panel being hidden after the first one is already away would be followed by
+        // dozens more calls, the exact work the gate exists to hold.
         if (paused()) return;
         try {
-          const r = await gh(API + '/repos/' + owner + '/' + name + '/actions/runs?per_page=1');
-          // The same rule the review call got: a 200 whose JSON is not this endpoint's
-          // shape is a fault, not an answer. Treating it as "no workflow runs" printed
-          // "none" on the row and let the pill go green over a result never obtained.
-          // An EMPTY workflow_runs array is a real answer — a repo with no runs yet.
-          if (!r.body || !Array.isArray(r.body.workflow_runs)) throw fault('format', 'reply was not a workflow run list');
-          const run = r.body.workflow_runs[0];
-          if (run) { entry.conclusion = run.conclusion || null; entry.status = run.status || null; }
+          // Paginated until a short page, because a single page silently DROPPED the
+          // tail: with sixteen open PRs the sixteenth — plausibly the oldest, reddest
+          // one — never entered the board, and no counter could report what was never
+          // fetched. The page bound is a bound on cost, and hitting it is REPORTED
+          // (listShort) rather than passed off as a complete listing.
+          //
+          // Pages are STAGED and committed only when the repo's listing finishes: a
+          // prefix from a listing that then failed is not "this repository's PRs",
+          // and publishing it both understated the queue and duplicated rows when
+          // the faulted-repo carryover below re-added the last known state. The
+          // sweep clock and the pause gate hold between pages exactly as they do
+          // between repositories — eight slow pages are the same spinner-hostage
+          // problem as eight slow repos.
+          const staged = [];
+          for (let page = 1; page <= PAGES_MAX; page++) {
+            if (gen !== generation) return;
+            if (paused()) return;
+            if (Date.now() - pollAnchor > SWEEP_BUDGET) throw fault('timeout', 'sweep budget spent mid-listing');
+            const r = await gh(API + '/repos/' + repo + '/pulls?state=open&per_page=' + PER_PAGE + '&page=' + page, budgetLeft());
+            // A 200 carrying valid JSON that is not this endpoint's shape — a portal's
+            // login object, an outage page's error payload — is a fault, not an empty
+            // repo. An EMPTY array is a real answer: no open PRs here.
+            if (!Array.isArray(r.body)) throw fault('format', 'reply was not a pull request list');
+            for (const item of r.body) {
+              // A malformed MEMBER is the same fault as a malformed body: skipping it
+              // would let an outage payload's array-of-something read as a healthy,
+              // emptier repository. An empty array is the legitimate no-PR answer;
+              // an array of non-PRs is not an answer at all.
+              if (!item || typeof item.number !== 'number' || typeof item.title !== 'string')
+                throw fault('format', 'reply was not a pull request list');
+              staged.push({
+                repo,
+                number: item.number,
+                title: item.title,
+                draft: !!item.draft,
+                sha: item.head && typeof item.head.sha === 'string' ? item.head.sha : '',
+                created: Date.parse(item.created_at) || 0,
+                updated: Date.parse(item.updated_at) || 0,
+                ci: 'unknown', merge: 'unknown', talk: null, ciFault: null,
+              });
+            }
+            if (r.body.length < PER_PAGE) break;
+            if (page === PAGES_MAX) listShort++;
+          }
+          // Offset pagination over a LIVE queue: a PR opened between two page
+          // requests shifts the boundary, and the page-1 tail arrives again on
+          // page 2. Deduplicated by number before committing — the omission twin of
+          // this race cannot be detected from offsets and heals on the next poll.
+          const seenNum = new Set();
+          prs.push(...staged.filter((p) => {
+            if (seenNum.has(p.number)) return false;
+            seenNum.add(p.number);
+            return true;
+          }));
         } catch (e) {
           if (e.rateLimitedUntil) throw e;
-          entry.runsFault = { kind: e.kind || 'unreachable', errStatus: e.status || 0 };
-          WW.log('ghqueue: runs ' + repo + ': ' + e.message);
+          // A 401, 404 or permission 403 is NOT an empty repo. Swallowing it would leave
+          // the board clear, so an expired token looked exactly like having no open PRs —
+          // the most reassuring possible way to be wrong.
+          faults.set(repo, { kind: e.kind || 'unreachable', errStatus: e.status || 0 });
+          WW.log('ghqueue: pulls ' + repo + ': ' + e.message);
         }
-        next.set(repo, entry);
       }
+
+      // The detail budget goes to the PRs most recently touched — across the whole
+      // board, not per repo, so one busy repo cannot starve the others' fresh pushes
+      // ONLY when it is genuinely busier. The rest keep their row with an unknown CI
+      // column rather than disappearing.
+      const detailed = [...prs].sort((a, b) => b.updated - a.updated).slice(0, MAX_PRS);
+      const overflow = prs.length - detailed.length;
+      let budgetSkipped = 0;     // PRs whose checks the sweep clock cut off — reported, not disguised
+      for (let i = 0; i < detailed.length; i++) {
+        const pr = detailed[i];
+        if (gen !== generation) return;
+        if (paused()) return;
+        // Same clock: past the budget the remaining PRs keep their rows with unknown
+        // verdicts — the next sweep retries — instead of holding the board hostage.
+        // COUNTED, because a row that was never checked must not read like a repo
+        // with no CI under a footer claiming the sweep was current.
+        if (Date.now() - pollAnchor > SWEEP_BUDGET) { budgetSkipped = detailed.length - i; break; }
+        try {
+          const r = await gh(API + '/repos/' + pr.repo + '/pulls/' + pr.number, budgetLeft());
+          if (!r.body || typeof r.body !== 'object') throw fault('format', 'reply was not a pull request');
+          // mergeable_state, bucketed by what each value actually PROMISES:
+          // "dirty" is a computed conflict. "clean"/"has_hooks" are the states in
+          // which GitHub will take the merge with nothing red anywhere — the only
+          // basis for "ready". "blocked" means protection is refusing the merge
+          // right now — "held". "unstable" (mergeable, but some non-Actions status
+          // is failing) and "behind" (out of date; mergeable unless the repo
+          // requires up-to-date branches, which this widget cannot see) are
+          // mergeable-with-an-asterisk: neither earns ready's promise nor blocked's
+          // accusation, so they land with "unknown" on the passing row.
+          const ms = r.body.mergeable_state;
+          pr.merge = ms === 'dirty' ? 'dirty'
+            : (ms === 'clean' || ms === 'has_hooks') ? 'ready'
+            : ms === 'blocked' ? 'held'
+            : 'unknown';
+          const talk = (Number(r.body.comments) || 0) + (Number(r.body.review_comments) || 0);
+          pr.talk = talk;
+          // The detail response is FRESHER than the list page: a force-push between
+          // the two would otherwise pair the OLD head's green workflows with the new
+          // head's clean merge state — a "ready" the new commit never earned. The
+          // runs question below targets the head the detail actually described.
+          if (r.body.head && typeof r.body.head.sha === 'string') pr.sha = r.body.head.sha;
+        } catch (e) {
+          if (e.rateLimitedUntil) throw e;
+          WW.log('ghqueue: detail ' + pr.repo + '#' + pr.number + ': ' + e.message);
+        }
+        if (paused()) return;
+        if (!pr.sha) continue;
+        // The clock is consulted BETWEEN the two calls too: a detail request that
+        // spends its full deadline just inside the budget must not buy the runs call
+        // another fifteen seconds past it.
+        if (Date.now() - pollAnchor > SWEEP_BUDGET) { budgetSkipped = detailed.length - i; break; }
+        try {
+          const r = await gh(API + '/repos/' + pr.repo + '/actions/runs?head_sha=' + pr.sha + '&per_page=' + RUNS_PAGE, budgetLeft());
+          if (!r.body || !Array.isArray(r.body.workflow_runs)) throw fault('format', 'reply was not a workflow run list');
+          // Complete when the page held everything: total_count says so when present,
+          // and a page shorter than what was asked for says so when it is not.
+          const runs = r.body.workflow_runs;
+          const complete = typeof r.body.total_count === 'number'
+            ? r.body.total_count <= runs.length
+            : runs.length < RUNS_PAGE;
+          pr.ci = foldRuns(runs, complete);
+        } catch (e) {
+          if (e.rateLimitedUntil) throw e;
+          // A failed CI question is an ANSWERED row, not a quiet one: logging alone
+          // left a token without Actions read rendering the same "—" as a repo with
+          // no workflows, under a footer claiming the sweep was healthy.
+          pr.ciFault = { kind: e.kind || 'unreachable', errStatus: e.status || 0 };
+          WW.log('ghqueue: runs ' + pr.repo + '#' + pr.number + ': ' + e.message);
+        }
+      }
+
       if (gen !== generation) return;
-      // A sweep in which NOTHING came back is a failed poll, and the outer catch has always
-      // treated a failed poll as a reason to dim what is on screen rather than throw it
-      // away. This path did the opposite: it replaced every last-known value with a
-      // fault-only map and cleared the stale marker, so a minute of network trouble wiped
-      // review counts that were true sixty seconds ago. Only the first sweep, which has
-      // nothing to keep, shows the faults themselves.
-      const anySucceeded = [...next.values()].some((e) => !e.reviewsFault || !e.runsFault);
-      if (next.size && !anySucceeded && state.size) {
+      // A sweep in which NOTHING came back is a failed poll: dim what is on screen
+      // rather than replace data that was true a minute ago with a fault-only board.
+      // A FIRST sweep that failed everywhere gets the error card and its Retry — a
+      // blank board with a small pill was every failure dressed as an empty queue.
+      const anySucceeded = faults.size < cfg.repos.length;
+      if (!anySucceeded) {
         fails++;
-        document.body.classList.add('stale');
-        render();
+        if (state) {
+          document.body.classList.add('stale');
+          render();
+        } else {
+          const f = faults.values().next().value || { kind: 'unreachable', errStatus: 0 };
+          showError(kindText(f.kind, f.errStatus));
+        }
         return;
       }
-      state = next;
+      // A repo that FAILED this sweep keeps its last-known rows: replacing the whole
+      // state made a listing hiccup silently delete visible failing PRs, which is
+      // worse than showing them a sweep old — the footer names the fault either way.
+      if (state) {
+        for (const repo of faults.keys()) {
+          for (const old of state.prs) if (old.repo === repo) prs.push({ ...old, carried: true });
+        }
+      }
+      state = { prs, faults, overflow, listShort, budgetSkipped };
       lastOk = Date.now();
       rateLimitedUntil = 0;
-      // A per-repo fault is caught inside the loop, so the sweep itself "succeeds" even
-      // when every single repo failed — and the backoff, which only counted thrown polls,
-      // never engaged for the case it exists for: a revoked token retried twenty times an
-      // interval, forever. A sweep where nothing came back counts as a failed poll (handled
-      // above, where there is state worth keeping). If ANY repo answered, data is flowing
-      // and the cadence goes back to normal.
-      fails = (next.size && !anySucceeded) ? fails + 1 : 0;
+      fails = 0;
       document.body.classList.remove('stale');
-      // A result can change WHICH repos deserve a row, not only what one says. Rebuilding
-      // first means a repo that just went red gets a card instead of having its verdict
-      // written to a row that does not exist.
-      if (cfg.hidden && visibleKey() !== [...rows.keys()].join('\n')) build();
+      // Results change WHICH PRs deserve a row, not only what one says. Rebuilding
+      // first means a PR that just went red gets a row instead of having its verdict
+      // written to a row that does not exist — and on a board that just emptied, that
+      // the OLD rows' DOM is actually gone: retained rows resurfaced closed PRs the
+      // moment a later failed poll unhid the board over the clear card.
+      build();
       render();
     } catch (e) {
       if (gen !== generation) return;
@@ -456,15 +640,15 @@
         // Rate limiting is not an error tile: the data on screen is still true, it is
         // just aging. Show it dimmed with how old it is.
         document.body.classList.add('stale');
-        // No Retry offered while limited: the gate at the top of tick() would turn it away
-        // without a request, leaving a card that says "Retrying" for the rest of the reset
-        // window. The one honest thing to show is the wait.
-        if (state.size) render(); else showWaiting('Rate limit reached. Waiting for it to reset.');
-      } else if (state.size) {
+        // No Retry offered while limited: the gate at the top of tick() would turn it
+        // away without a request, leaving a card that says "Retrying" for the rest of
+        // the reset window. The one honest thing to show is the wait.
+        if (state) render(); else showWaiting('Rate limit reached. Waiting for it to reset.');
+      } else if (state) {
         document.body.classList.add('stale');
         render();
       } else {
-        showError(kindText(e.kind));
+        showError(kindText(e.kind, e.status));
       }
       WW.log('ghqueue: ' + e.message);
     } finally {
@@ -487,7 +671,7 @@
 
   function pollDelay() {
     // Backoff on CONSECUTIVE failures. A token that has been revoked, or a network that
-    // is down for the evening, otherwise costs twenty requests every refresh interval
+    // is down for the evening, otherwise costs dozens of requests every refresh interval
     // forever. Any success resets it, so one blip does not stretch the cadence.
     if (!fails) return cfg.refreshMs;
     // The ceiling is a ceiling on the GROWTH, never a way to poll harder. Applying it
@@ -521,104 +705,116 @@
     return Math.round(secs / 3600) + 'h ago';
   }
 
-  // How a workflow conclusion should READ, in one place, so the row's colour and the
-  // summary pill cannot disagree. They did: anything non-success other than failure or
-  // timed_out styled the row amber but counted as nothing, so a repo whose last run ended
-  // `startup_failure` or `action_required` sat there in amber under a green "Clear".
-  // GitHub's other conclusions — neutral, skipped, cancelled, stale — are not the workflow
-  // asking for anything, so they stay quiet.
-  function runClass(conclusion, status) {
-    if (status && status !== 'completed') return 'running';
-    if (!conclusion) return 'none';
-    if (conclusion === 'success') return 'ok';
-    if (conclusion === 'failure' || conclusion === 'timed_out' || conclusion === 'startup_failure') return 'err';
-    if (conclusion === 'action_required') return 'warn';
-    return 'quiet';
+  // How long a PR has been open, in the shortest honest unit. Ages are glanced, not
+  // read, and "3d" against a row of "2h"s is the whole message.
+  function openFor(ms) {
+    if (!ms) return '';
+    const mins = Math.round((Date.now() - ms) / 60000);
+    if (mins < 90) return mins + 'm';
+    if (mins < 2880) return Math.round(mins / 60) + 'h';
+    return Math.round(mins / 1440) + 'd';
+  }
+
+  // The row's one-word verdict and its colour, from the same facts rank() sorts by, so
+  // the order and the labels cannot disagree. "passing" is green CI whose mergeability
+  // GitHub has not confirmed yet — deliberately NOT "ready", which is a promise.
+  function verdict(pr) {
+    if (pr.ci === 'fail') return { text: 'failing', cls: 'pill ci err' };
+    if (pr.merge === 'dirty') return { text: 'conflict', cls: 'pill ci warn' };
+    if (pr.ci === 'warn') return { text: 'needs ok', cls: 'pill ci warn' };
+    if (pr.ci === 'ok' && !pr.draft && pr.merge === 'ready') return { text: 'ready', cls: 'pill ci ok' };
+    // A CI question that FAILED is not a repo without CI: "?" says this row's verdict
+    // could not be obtained, and the footer says why.
+    if (pr.ciFault) return { text: '?', cls: 'pill ci err' };
+    if (pr.ci === 'ok' && !pr.draft && pr.merge === 'held') return { text: 'blocked', cls: 'pill ci muted' };
+    if (pr.ci === 'ok' && !pr.draft) return { text: 'passing', cls: 'pill ci' };
+    if (pr.ci === 'running') return { text: 'running', cls: 'pill ci' };
+    if (pr.draft) return { text: 'draft', cls: 'pill ci muted' };
+    return { text: '—', cls: 'pill ci muted' };
   }
 
   function render() {
-    let waiting = 0;
-    let failing = 0;
-    let attention = 0;
-    let errored = 0;
-    // Counted over EVERY configured repo; only the ROWS are limited to what fits. Scoping
-    // the counters to the visible ones meant a band showing three of five reported "3 to
-    // review" while its own footer said two more had been checked — the summary
-    // contradicting the line underneath it, and undercounting failures the same way.
-    for (const repo of cfg.repos) {
-      const s = state.get(repo);
-      if (!s) continue;
-      if (!s.reviewsFault && s.reviews) waiting += s.reviews;
-      if (s.reviewsFault || s.runsFault) errored++;
-      const cls = s.runsFault ? 'none' : runClass(s.conclusion, s.status);
-      if (cls === 'err') failing++;
-      if (cls === 'warn') attention++;
+    if (!state) return;
+    // The explicit all-clear survives every later render: a failed poll's repaint and
+    // a resize both route back here, and both used to trade the clear card for an
+    // empty (or worse, stale-row) board. Zero PRs with zero faults IS the state.
+    if (!state.prs.length && !state.faults.size) {
+      showClear();
+      return;
     }
-    for (const repo of visibleRepos()) {
-      const ui = rows.get(repo);
-      const s = state.get(repo);
-      if (!ui || !s) continue;
-      // Each half of the row answers for its OWN request. A workflow call that failed no
-      // longer erases a review count that arrived perfectly well.
-      if (s.reviewsFault) {
-        ui.reviews.textContent = 'unavailable';
-        ui.reviews.className = 'reviews';
-      } else if (s.reviews == null) {
-        ui.reviews.textContent = '·';
-        ui.reviews.className = 'reviews';
-      } else {
-        ui.reviews.textContent = s.reviews ? s.reviews + ' to review' : 'clear';
-        ui.reviews.className = 'reviews' + (s.reviews ? ' waiting' : '');
-      }
-      const cls = s.runsFault ? 'none' : runClass(s.conclusion, s.status);
-      ui.run.textContent = s.runsFault ? 'unavailable'
-        : cls === 'running' ? 'running' : (s.conclusion || 'none');
-      ui.run.className = 'pill run ' + (
-        cls === 'err' ? 'err' : cls === 'warn' ? 'warn' : cls === 'ok' ? 'ok'
-        : cls === 'running' ? '' : 'muted');
+    // Counted over EVERY tracked PR; only the ROWS are limited to what fits. Scoping
+    // the counters to the visible ones would let a band showing three rows contradict
+    // its own footer.
+    let failing = 0, conflicts = 0, needsOk = 0, ready = 0, ciFaults = 0;
+    let firstCiFault = null;
+    for (const pr of state.prs) {
+      if (pr.ciFault) { ciFaults++; if (!firstCiFault) firstCiFault = pr.ciFault; }
+      if (pr.ci === 'fail') failing++;
+      else if (pr.merge === 'dirty') conflicts++;
+      else if (pr.ci === 'warn') needsOk++;
+      else if (pr.ci === 'ok' && !pr.draft && pr.merge === 'ready') ready++;
+    }
+
+    for (const pr of visiblePrs()) {
+      const ui = rows.get(prKey(pr));
+      if (!ui) continue;
+      const v = verdict(pr);
+      ui.ci.textContent = v.text;
+      ui.ci.className = v.cls;
+      ui.msgs.textContent = pr.talk ? '💬' + pr.talk : '';
+      ui.age.textContent = openFor(pr.created);
     }
 
     const stale = document.body.classList.contains('stale');
     const pill = el('pill');
-    // Set explicitly on every branch: a pill hidden by the last healthy render has to come
-    // back the moment a queue turns.
+    // Set explicitly on every branch: a pill hidden by the last healthy render has to
+    // come back the moment the board turns.
     pill.hidden = false;
     if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
-    else if (errored) { pill.textContent = errored + ' unavailable'; pill.className = 'pill err'; }
+    else if (state.faults.size) { pill.textContent = state.faults.size + ' unavailable'; pill.className = 'pill err'; }
     else if (failing) { pill.textContent = failing + ' failing'; pill.className = 'pill err'; }
-    else if (attention) { pill.textContent = attention + ' needs action'; pill.className = 'pill warn'; }
-    else if (waiting) { pill.textContent = waiting + ' to review'; pill.className = 'pill'; }
-    else pill.hidden = true;   // healthy: the pill reports exceptions, not health
+    else if (conflicts) { pill.textContent = conflicts + ' conflicted'; pill.className = 'pill warn'; }
+    else if (needsOk) { pill.textContent = needsOk + ' needs action'; pill.className = 'pill warn'; }
+    else pill.hidden = true;   // ready and in-flight are HEALTH: the pill reports exceptions only (#211)
 
-    // The footer names the FIRST fault it can, rather than assuming a permissions problem
-    // for every one of them.
+    // The footer names the FIRST fault it can, rather than assuming a permissions
+    // problem for every one of them.
     let fail = null;
+    let failRepo = '';
     for (const repo of cfg.repos) {
-      const s = state.get(repo);
-      if (s && (s.reviewsFault || s.runsFault)) { fail = s.reviewsFault || s.runsFault; break; }
+      if (state.faults.has(repo)) { fail = state.faults.get(repo); failRepo = repo; break; }
     }
     const notes = [];
-    if (cfg.hidden) notes.push(cfg.hidden + ' more checked but no room to show in this slot');
-    if (cfg.dropped) notes.push(cfg.dropped + ' more configured than this widget checks (' + MAX_REPOS + ' max)');
+    if (cfg.hidden) notes.push(cfg.hidden + ' more tracked but no room to show in this slot');
+    if (state.overflow > 0) notes.push(state.overflow + ' more open than this widget checks in detail (' + MAX_PRS + ' max)');
+    if (state.budgetSkipped) notes.push(state.budgetSkipped + ' PR' + (state.budgetSkipped === 1 ? '' : 's') + ' not fully checked this sweep — GitHub answered slowly');
+    // "May": a repo with EXACTLY the cap's worth of PRs fills the last page too, and
+    // asserting omissions on that evidence would be the footer's own overclaim.
+    if (state.listShort) notes.push(state.listShort + ' repositor' + (state.listShort === 1 ? 'y' : 'ies') + ' may have more open PRs than this widget lists (' + (PER_PAGE * PAGES_MAX) + ' cap reached)');
+    if (ciFaults) notes.push('CI could not be checked for ' + ciFaults + ' PR' + (ciFaults === 1 ? '' : 's') + ' — '
+      + (firstCiFault.kind === 'http' && (firstCiFault.errStatus === 403 || firstCiFault.errStatus === 404)
+        ? "the token may lack Actions read permission"
+        : kindText(firstCiFault.kind, firstCiFault.errStatus)));
+    if (cfg.dropped) notes.push(cfg.dropped + ' more repositories configured than this widget checks (' + MAX_REPOS + ' max)');
     if (cfg.malformed) notes.push(cfg.malformed + ' entr' + (cfg.malformed === 1 ? 'y is' : 'ies are') + " not owner/name and can't be checked");
     notes.push(rateLimitedUntil > Date.now()
       ? 'rate limited — showing data from ' + ageText(lastOk)
-      : fail ? kindText(fail.kind, fail.errStatus)
+      : fail ? label(failRepo) + ': ' + kindText(fail.kind, fail.errStatus)
       : (lastOk ? 'updated ' + ageText(lastOk) : ''));
     el('meta').textContent = notes.filter(Boolean).join(' · ');
 
     el('state').hidden = true;
-    el('repos').hidden = false;
+    el('board').hidden = false;
   }
 
-  function stateCard(cls, icon, title, body, onRetry) {
+  function stateCard(cls, icon, title, body, onRetry, pillText) {
     // The header stays visible behind the state layer, so a stale "Loading" pill sits
     // next to an error card contradicting it.
     const pill = el('pill');
     // Explicitly shown: a healthy render may have hidden it (#205).
     pill.hidden = false;
-    pill.textContent = cls === 'err' ? 'Error' : 'Setup';
-    pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
+    pill.textContent = pillText || (cls === 'err' ? 'Error' : 'Setup');
+    pill.className = 'pill ' + (cls === 'err' ? 'err' : cls === 'ok' ? 'ok' : 'muted');
     const s = el('state');
     s.className = 'state-card' + (cls ? ' ' + cls : '');
     s.textContent = '';
@@ -640,7 +836,7 @@
       s.append(btn);
     }
     s.hidden = false;
-    el('repos').hidden = true;
+    el('board').hidden = true;
   }
 
   function showSetup() {
@@ -648,6 +844,53 @@
       !cfg.repos.length
         ? 'Add repositories in the widget settings, as owner/name.'
         : 'Add a personal access token in the widget settings — it needs read access to those repositories.');
+  }
+
+  // The spinner, for a board whose configuration just changed: the old rows are gone
+  // and the new sweep has not answered yet.
+  function showLoading() {
+    const s = el('state');
+    s.className = 'state-card';
+    s.textContent = '';
+    const sp = document.createElement('div');
+    sp.className = 'spinner';
+    s.appendChild(sp);
+    s.hidden = false;
+    const box = el('board');
+    box.hidden = true;
+    box.textContent = '';
+    const pill = el('pill');
+    pill.hidden = false;
+    pill.textContent = 'Loading';
+    pill.className = 'pill muted';
+  }
+
+  // The empty board is a designed state, not an absence: a clear card is the only way
+  // "nothing is open" can be told apart from a widget that died with an empty column.
+  // It speaks for the repositories that were CHECKED — an entry the config dropped or
+  // that is not owner/name may hold open PRs, and the early return here used to skip
+  // the footer that would have said so, turning "clear, with caveats" into "clear".
+  function showClear() {
+    const caveats = [];
+    if (cfg.malformed) caveats.push(cfg.malformed + ' configured entr' + (cfg.malformed === 1 ? 'y is' : 'ies are') + ' not owner/name and could not be checked.');
+    if (cfg.dropped) caveats.push(cfg.dropped + ' more ' + (cfg.dropped === 1 ? 'is' : 'are') + ' configured than this widget checks (' + MAX_REPOS + ' max).');
+    // A clear card over a FAILED or rate-limited sweep is a claim about the past, and
+    // it says so: the green pill and the plain wording belong only to data that is
+    // current. The error paths route back through render() into here, and used to get
+    // the fresh-looking card regardless.
+    const stale = document.body.classList.contains('stale');
+    const age = lastOk ? ageText(lastOk) : '';
+    stateCard(stale ? '' : 'ok', stale ? '◷' : '✓', 'No open pull requests',
+      (stale
+        ? (rateLimitedUntil > Date.now()
+          ? 'Rate limited — the board was clear as of ' + age + '.'
+          : 'The last check failed — the board was clear as of ' + age + '.')
+        : 'Every checked repository is clear.' + (age ? ' Checked ' + age + '.' : ''))
+      + (caveats.length ? ' ' + caveats.join(' ') : ''),
+      null, stale ? 'Stale' : (caveats.length ? 'Clear*' : ''));
+    // A healthy, uncaveated clear is NOMINAL: the card already says it, and the
+    // pill-quiet rule (#211) applies to empty boards exactly as to full ones.
+    if (!stale && !caveats.length) el('pill').hidden = true;
   }
 
   // A card with no Retry, for a wait that a button cannot shorten.
