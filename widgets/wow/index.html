@@ -383,8 +383,11 @@
       rep.t = record[rep.name].t;
     }
     try { localStorage.setItem(storeKey, JSON.stringify(record)); } catch (e) { /* full or blocked — selection just stays fallback */ }
+    // A faction that just CAPPED is the most recent push of all, and the in-progress
+    // test alone deleted it the moment it completed. Movement keeps a row regardless
+    // of completion; in-progress only gates the no-movement fallback.
     const inProgress = (r) => r.renown != null || r.value < r.max;
-    return all.filter(inProgress)
+    return all.filter((r) => r.t > 0 || inProgress(r))
       .sort((a, b) => (b.t - a.t) || (b.value / b.max - a.value / a.max))
       .slice(0, 3);
   }
@@ -408,19 +411,26 @@
       }
       if (!isObj(a.criteria)) continue;
       // Count the criteria LEAVES: children when there are children (recursively), the
-      // top criterion itself otherwise. A single-leaf achievement carries no usable
-      // fraction — "0/1" describes everything not started — so those are skipped.
+      // top criterion itself otherwise. A node whose OWN is_completed is true counts
+      // its whole subtree as done — Blizzard has already applied the node's operator
+      // (an any-of parent completes on one child), and that verdict is the only
+      // operator information this payload carries; the operators themselves live in
+      // the static achievement definitions, a call per achievement this card will
+      // not spend. Unsatisfied any-of parents therefore still read conservatively.
+      // A single-leaf achievement carries no usable fraction — "0/1" describes
+      // everything not started — so those are skipped.
       let done = 0, total = 0;
-      const walk = (c) => {
+      const walk = (c, satisfied) => {
         if (!isObj(c)) return;
+        const ok = satisfied || c.is_completed === true;
         if (Array.isArray(c.child_criteria) && c.child_criteria.length) {
-          for (const ch of c.child_criteria) walk(ch);
+          for (const ch of c.child_criteria) walk(ch, ok);
           return;
         }
         total++;
-        if (c.is_completed === true) done++;
+        if (ok) done++;
       };
-      walk(a.criteria);
+      walk(a.criteria, false);
       if (total < 2 || !done || done >= total) continue;
       const left = total - done;
       // The owner's bar, verbatim: one or two steps out, or at a certain percent.
@@ -495,6 +505,12 @@
       render();
     } catch (e) {
       if (gen !== generation) return;
+      // A rejection that lands while the panel is HIDDEN concludes nothing: charging
+      // the backoff would park the spinner for the backoff's length after the panel
+      // returns. Leave the sweep unfinished — it re-arms as due, the paused gate
+      // holds it while hidden, and the retry (with its honest verdict) happens in
+      // front of someone.
+      if (paused()) return;
       fails++;
       finished = true;
       if (data) {
