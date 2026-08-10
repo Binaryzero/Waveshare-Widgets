@@ -41,7 +41,7 @@
       "label": "Battle.net client secret",
       "type": "secret",
       "placeholder": "From develop.battle.net",
-      "help": "The client secret for that same Battle.net application. It buys a short-lived token for the token-price call and is never sent anywhere else."
+      "help": "The client secret for that same Battle.net application. It buys the short-lived token every character panel reads with, and is never sent anywhere but Battle.net's sign-in endpoint."
     },
     {
       "name": "refreshMinutes",

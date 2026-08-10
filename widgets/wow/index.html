@@ -319,6 +319,9 @@
   function readProfs(json) {
     if (!isObj(json)) throw new Error('professions: unexpected response');
     const out = [];
+    // Primaries first, then secondaries, one three-row cap over both: the spec promises
+    // professions, and a character with two primaries still cooks — gating secondaries
+    // on HAVING no primaries hid Cooking and Fishing from almost everyone.
     const take = (list) => {
       // Absent is a real answer — a character with no professions of that kind. A
       // present non-array is the API not answering this question at all.
@@ -338,7 +341,7 @@
       }
     };
     take(json.primaries);
-    if (!out.length) take(json.secondaries);
+    take(json.secondaries);
     return out.slice(0, 3);
   }
 
@@ -350,7 +353,12 @@
     return 'wowrep:' + cfg.region + ':' + slug(cfg.realm) + ':' + cfg.character.trim().toLowerCase();
   }
 
-  function readReps(json) {
+  // The storage key is CAPTURED by the caller before the request goes out: this reader
+  // runs right after an await, and a settings change mid-flight mutates cfg before the
+  // generation gate can look — deriving the key here would file the old character's
+  // standings under the new character's name, which later refreshes would read back as
+  // reputation movement that never happened.
+  function readReps(json, storeKey) {
     if (!isObj(json) || !Array.isArray(json.reputations)) throw new Error('reputations: unexpected response');
     const all = [];
     for (const r of json.reputations) {
@@ -362,7 +370,7 @@
       all.push({ name: r.faction.name, value: s.value, max: s.max, renown, tier });
     }
     let seen = {};
-    try { seen = JSON.parse(localStorage.getItem(repStoreKey()) || '{}') || {}; } catch (e) { seen = {}; }
+    try { seen = JSON.parse(localStorage.getItem(storeKey) || '{}') || {}; } catch (e) { seen = {}; }
     const now = Date.now();
     const record = {};
     for (const rep of all) {
@@ -374,7 +382,7 @@
       record[rep.name] = { cur, t: moved ? now : (prev ? prev.t : 0) };
       rep.t = record[rep.name].t;
     }
-    try { localStorage.setItem(repStoreKey(), JSON.stringify(record)); } catch (e) { /* full or blocked — selection just stays fallback */ }
+    try { localStorage.setItem(storeKey, JSON.stringify(record)); } catch (e) { /* full or blocked — selection just stays fallback */ }
     const inProgress = (r) => r.renown != null || r.value < r.max;
     return all.filter(inProgress)
       .sort((a, b) => (b.t - a.t) || (b.value / b.max - a.value / a.max))
@@ -429,7 +437,14 @@
     if (!started) return;
     const gen = generation;
     inFlight = true;
+    // A sweep that ends WITHOUT concluding — hidden mid-flight, most commonly during
+    // the very first load — must stay due: scheduling the full cadence parked the
+    // loading spinner for up to four hours after the panel came back.
+    let finished = false;
     const problems = [];
+    // Captured before ANY await: readReps files history under this key, and cfg may
+    // be someone else's by the time the response lands.
+    const repKey = repStoreKey();
     try {
       if (!cfg.clientId || !cfg.clientSecret) throw new Error(NO_CREDS);
       // Identity is the spine: if the character itself cannot be read there is no card,
@@ -453,7 +468,7 @@
       if (gen !== generation || paused()) return;
       await part('professions', async () => { next.profs = readProfs(await authed('professions', charBase() + '/professions' + ns())); });
       if (gen !== generation || paused()) return;
-      await part('reputation', async () => { next.reps = readReps(await authed('reputations', charBase() + '/reputations' + ns())); });
+      await part('reputation', async () => { next.reps = readReps(await authed('reputations', charBase() + '/reputations' + ns()), repKey); });
       if (gen !== generation || paused()) return;
       await part('mounts', async () => { next.mounts = readCount(await authed('mounts', charBase() + '/collections/mounts' + ns()), 'mounts'); });
       if (gen !== generation || paused()) return;
@@ -476,11 +491,17 @@
         el('portrait').removeAttribute('src');
       }
       document.body.classList.remove('stale');
+      finished = true;
       render();
     } catch (e) {
       if (gen !== generation) return;
       fails++;
+      finished = true;
       if (data) {
+        // The stale card must answer for THIS failure: keeping the previous sweep's
+        // problem list either explained nothing or kept blaming a section that was
+        // fine, while the footer aged quietly.
+        lastProblems = ['refresh failed — ' + (e.message || 'error')];
         document.body.classList.add('stale');
         render();
       } else {
@@ -488,7 +509,7 @@
       }
       WW.log('wow: ' + e.message);
     } finally {
-      if (gen === generation) { inFlight = false; schedule(nextDelayMs()); }
+      if (gen === generation) { inFlight = false; schedule(finished ? nextDelayMs() : 0); }
     }
   }
 
@@ -605,13 +626,17 @@
     else if (lastProblems.length) { pill.textContent = 'Partial'; pill.className = 'pill warn'; }
     else pill.hidden = true;   // healthy: the pill reports exceptions, not health
 
+    paintMeta();
+
+    el('state').hidden = true;
+    el('card').hidden = false;
+  }
+
+  function paintMeta() {
     const notes = [];
     if (lastProblems.length) notes.push('unavailable: ' + lastProblems.join(', '));
     if (lastOk) notes.push('updated ' + Math.max(0, Math.round((Date.now() - lastOk) / 60000)) + 'm ago');
     el('meta').textContent = notes.join(' · ');
-
-    el('state').hidden = true;
-    el('card').hidden = false;
   }
 
   // ---- States ---------------------------------------------------------------
@@ -728,15 +753,23 @@
       // hit the API on every settings keystroke; repaint what is already held. The
       // cadence is not part of the query, so a changed interval re-arms from now.
       if (data) render();
-      if (cfg.refreshMs !== hadCadence) schedule(Math.max(0, (lastOk || Date.now()) + nextDelayMs() - Date.now()));
+      // nextDelayMs() is already the REMAINING wait measured from lastOk —
+      // re-anchoring it to lastOk here subtracted the elapsed age twice.
+      if (cfg.refreshMs !== hadCadence) schedule(nextDelayMs());
     }
   });
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden || !started) return;
+    paintMeta();
     if (Date.now() >= dueAt) { clearTimeout(timer); tick(); }
     else schedule(dueAt - Date.now());
   });
+
+  // The footer's "updated Nm ago" is relative text over a 20-240 minute cadence:
+  // written only at render time it still said "0m ago" hours later. One repaint a
+  // minute keeps it honest, held while the panel is hidden like all other work.
+  setInterval(() => { if (!document.hidden && started && data) paintMeta(); }, 60000);
 </script>
 </body>
 </html>
