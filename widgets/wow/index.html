@@ -483,28 +483,36 @@
         throw e;
       }
       if (gen !== generation || paused()) return;
-      const next = { who, portrait: '', profs: [], reps: [], mounts: null, pets: null, latest: null, almost: [] };
+      // A transient section failure must not turn good data into "No … yet": the
+      // fresh model is SEEDED from the current one (same query — a query change
+      // nulls `data` first), so only sections that actually answer are replaced
+      // and a failed one keeps last refresh's truth, named in the footer.
+      const next = data
+        ? { who, portrait: data.portrait, profs: data.profs, reps: data.reps,
+            mounts: data.mounts, pets: data.pets, latest: data.latest, almost: data.almost }
+        : { who, portrait: '', profs: [], reps: [], mounts: null, pets: null, latest: null, almost: [] };
       // Everything else degrades per section: a failed collections call must not cost
-      // the professions their rows. Each failure is named once for the footer.
+      // the professions their rows. Each failure is named once for the footer. The
+      // six questions are independent, so they are asked CONCURRENTLY — serially,
+      // each 15-second deadline delayed every section behind it, and a slow portrait
+      // held the whole first paint for a minute and a half. One batch, one deadline
+      // window; the pre-batch pause gate still keeps a hidden panel from starting it.
       const part = async (label, run) => {
         try { await run(); }
         catch (e) { problems.push(label); WW.log('wow: ' + label + ': ' + e.message); }
       };
-      await part('portrait', async () => { next.portrait = readPortrait(await authed('media', charBase() + '/character-media' + ns())); });
-      if (gen !== generation || paused()) return;
-      await part('professions', async () => { next.profs = readProfs(await authed('professions', charBase() + '/professions' + ns())); });
-      if (gen !== generation || paused()) return;
-      await part('reputation', async () => { next.reps = readReps(await authed('reputations', charBase() + '/reputations' + ns()), repKey); });
-      if (gen !== generation || paused()) return;
-      await part('mounts', async () => { next.mounts = readCount(await authed('mounts', charBase() + '/collections/mounts' + ns()), 'mounts'); });
-      if (gen !== generation || paused()) return;
-      await part('pets', async () => { next.pets = readCount(await authed('pets', charBase() + '/collections/pets' + ns()), 'pets'); });
-      if (gen !== generation || paused()) return;
-      await part('achievements', async () => {
-        const a = readAchievements(await authed('achievements', charBase() + '/achievements' + ns()));
-        next.latest = a.latest; next.almost = a.almost;
-      });
-      if (gen !== generation || paused()) return;
+      await Promise.all([
+        part('portrait', async () => { next.portrait = readPortrait(await authed('media', charBase() + '/character-media' + ns())); }),
+        part('professions', async () => { next.profs = readProfs(await authed('professions', charBase() + '/professions' + ns())); }),
+        part('reputation', async () => { next.reps = readReps(await authed('reputations', charBase() + '/reputations' + ns()), repKey); }),
+        part('mounts', async () => { next.mounts = readCount(await authed('mounts', charBase() + '/collections/mounts' + ns()), 'mounts'); }),
+        part('pets', async () => { next.pets = readCount(await authed('pets', charBase() + '/collections/pets' + ns()), 'pets'); }),
+        part('achievements', async () => {
+          const a = readAchievements(await authed('achievements', charBase() + '/achievements' + ns()));
+          next.latest = a.latest; next.almost = a.almost;
+        }),
+      ]);
+      if (gen !== generation) return;
       data = next;
       lastOk = Date.now();
       lastProblems = problems;
@@ -561,9 +569,13 @@
 
   // ---- Rendering ------------------------------------------------------------
 
+  // Calendar days, not rounded 24-hour periods: "today" and "yesterday" are calendar
+  // words, and elapsed-time rounding had last night saying "today" after midnight
+  // and this morning saying "yesterday" by dinner.
   function ageText(ms) {
-    const days = Math.round((Date.now() - ms) / 86400000);
-    if (days < 1) return 'today';
+    const startOf = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const days = Math.round((startOf(new Date()) - startOf(new Date(ms))) / 86400000);
+    if (days <= 0) return 'today';
     if (days === 1) return 'yesterday';
     if (days < 60) return days + 'd ago';
     return Math.round(days / 30) + 'mo ago';
@@ -667,7 +679,7 @@
 
   function paintMeta() {
     const notes = [];
-    if (lastProblems.length) notes.push('unavailable: ' + lastProblems.join(', '));
+    if (lastProblems.length) notes.push('not refreshed: ' + lastProblems.join(', '));
     if (lastOk) notes.push('updated ' + Math.max(0, Math.round((Date.now() - lastOk) / 60000)) + 'm ago');
     el('meta').textContent = notes.join(' · ');
   }
