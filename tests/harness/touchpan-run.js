@@ -47,10 +47,20 @@ const check = (name, ok, detail) => {
   if (!ok) failures++;
 };
 
-// The shell, reduced to the part that matters: a horizontal snap scroller with two pages.
-// Mirrors shell.css — #pages is overflow-x:auto with scroll-snap-type:x mandatory, and each
-// page is a full-viewport snap target. Without a SECOND page there is nothing to scroll to
-// and T3 would pass against the unfixed build.
+// The runtime edge width is READ from shell.css rather than hardcoded, so these tests track
+// the shipped value: #213 narrowed the page-swipe strip from 36px to 16px so it stops
+// covering a control near a screen edge, and a regression back to 36 re-covers the
+// notifications eye and fails E2 below. The `.edge {` base rule is matched (not the
+// `body.editing .edge` override, which keeps the full 36px for the drop target).
+const EDGE_CSS = fs.readFileSync(path.join(SHELL, 'shell.css'), 'utf8');
+const EDGE_BLOCK = (EDGE_CSS.match(/(?:^|\n)\.edge\s*\{[^}]*\}/) || [''])[0];
+const EDGE_W = Number((EDGE_BLOCK.match(/width:\s*(\d+)px/) || [])[1]);
+
+// The shell, reduced to the part that matters: a horizontal snap scroller with two pages,
+// PLUS the two .edge overlays (#213) — fixed strips above the iframes that page on a tap.
+// bindEdge is mirrored from shell.js:1214 and the width comes from EDGE_W, so the overlap
+// geometry the E-tests measure is the shipped one. Without a SECOND page there is nothing
+// to scroll to and T3/E3 would pass against an unfixed build.
 const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title><style>'
   + 'html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#000;'
   + 'touch-action:manipulation}'
@@ -59,7 +69,17 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
   + '#pages::-webkit-scrollbar{display:none}'
   + '.page{flex:0 0 100vw;height:100%;scroll-snap-align:start;scroll-snap-stop:always}'
   + 'iframe{display:block;border:0;width:100%;height:100%}'
-  + '</style><div id="pages"><div class="page" id="p0"></div><div class="page" id="p1"></div></div>';
+  + '.edge{position:fixed;top:0;bottom:0;width:' + EDGE_W + 'px;z-index:5;touch-action:none}'
+  + '.edge.left{left:0}.edge.right{right:0}'
+  + '</style><div id="pages"><div class="page" id="p0"></div><div class="page" id="p1"></div></div>'
+  + '<div id="edgeLeft" class="edge left"></div><div id="edgeRight" class="edge right"></div>'
+  + '<script>(function(){function bindEdge(el,dir){var sx=null;'
+  + 'el.addEventListener("pointerdown",function(e){sx=e.clientX;try{el.setPointerCapture(e.pointerId);}catch(_){}});'
+  + 'el.addEventListener("pointerup",function(e){if(sx===null)return;var dx=e.clientX-sx;sx=null;'
+  + 'var pg=document.getElementById("pages");var to=Math.abs(dx)<12?dir:(dx<0?1:-1);'
+  + 'pg.scrollLeft=Math.max(0,Math.min(pg.scrollWidth-pg.clientWidth,pg.scrollLeft+to*pg.clientWidth));});'
+  + 'el.addEventListener("pointercancel",function(){sx=null;});}'
+  + 'bindEdge(document.getElementById("edgeLeft"),-1);bindEdge(document.getElementById("edgeRight"),1);})();<\/script>';
 
 const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   id: 'n' + i,
@@ -224,6 +244,58 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   const pressedAfter = await frame.evaluate(() => document.getElementById('eyeBtn').getAttribute('aria-pressed'));
   check('T4 ...and a tap on it still toggles, so T3 is not a dead control',
     pressedBefore !== pressedAfter, `aria-pressed ${pressedBefore} -> ${pressedAfter}`);
+
+  // ---- E1/E2/E3 · the edge overlay no longer steals a tap near the screen edge (#213) -----
+  // T3/T4 exercised the widget-side fix (#212). This exercises the SHELL side: the .edge
+  // strips page on a tap and sit above the iframes, so at 36px they covered the eye (~18px
+  // from the right edge) and a tap on it paged instead of toggling. The strip is now EDGE_W
+  // (16px), read from shell.css, so a revert to 36 fails E2b.
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await page.waitForTimeout(200);
+  const vw = await page.evaluate(() => window.innerWidth);
+  // The frame fills the viewport at scrollLeft 0, so the eye's frame-local box IS its screen
+  // box. Reset the eye first (T4 toggled it) so E2b's toggle assertion reads a clean edge.
+  await frame.evaluate(() => { const b = document.getElementById('eyeBtn'); if (b.getAttribute('aria-pressed') === 'true') b.click(); });
+  await page.waitForTimeout(150);
+  const eb = await frame.locator('#eyeBtn').boundingBox();
+  const eyeRight = eb.x + eb.width;
+  const eyeMidY = eb.y + eb.height / 2;
+  // A point on the eye inside the OLD 36px band but OUTSIDE the new EDGE_W band — the exact
+  // sliver the bug lived in. If the eye no longer reaches the 36px band this test cannot
+  // discriminate, so E1 fails LOUDLY to force a retune rather than passing hollow.
+  const testX = Math.round(((vw - 36) + (vw - EDGE_W)) / 2);
+  check('E1 setup: the eye reaches into the old 36px edge band, so this is discriminating',
+    EDGE_W < 36 && eb.x <= testX && testX <= eyeRight && (vw - eyeRight) < 36,
+    `EDGE_W ${EDGE_W}, eye ${Math.round(eb.x)}..${Math.round(eyeRight)}, testX ${testX}`);
+
+  const topAt = await page.evaluate(([x, y]) => {
+    const el = document.elementFromPoint(x, y);
+    return el ? (el.id || el.tagName.toLowerCase()) : null;
+  }, [testX, eyeMidY]);
+  // Two ways: the overlay is not the top element at the sliver point, AND the whole eye
+  // clears the strip (guards an intermediate creep like 20px, not just a revert to 36).
+  check('E2a the edge overlay does not cover the eye', topAt !== 'edgeRight' && eyeRight <= vw - EDGE_W,
+    `top ${topAt}, eyeRight ${Math.round(eyeRight)} vs strip start ${vw - EDGE_W}`);
+
+  const prBefore = await frame.evaluate(() => document.getElementById('eyeBtn').getAttribute('aria-pressed'));
+  const slBefore = await pagesLeft();
+  await page.touchscreen.tap(testX, eyeMidY);
+  await page.waitForTimeout(400);
+  const prAfter = await frame.evaluate(() => document.getElementById('eyeBtn').getAttribute('aria-pressed'));
+  const slAfter = await pagesLeft();
+  check('E2b a tap on the eye near the edge toggles it and does not page',
+    prBefore !== prAfter && Math.abs(slAfter - slBefore) < 5,
+    `aria-pressed ${prBefore} -> ${prAfter}, pages ${slBefore} -> ${slAfter}`);
+
+  // The swipe surface survives the narrowing: a tap INSIDE the strip still pages.
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await page.waitForTimeout(200);
+  const stripBefore = await pagesLeft();
+  await page.touchscreen.tap(vw - 3, 200);
+  await page.waitForTimeout(400);
+  const stripAfter = await pagesLeft();
+  check('E3 the narrowed edge still pages on a tap in the strip',
+    stripAfter - stripBefore > 100, `pages ${stripBefore} -> ${stripAfter}`);
 
   // ---- T5/T6 · what the shared stylesheet must NOT do ---------------------------------
   // The first version of this fix put `touch-action: none` on the widget document in
