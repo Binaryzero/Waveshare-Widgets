@@ -20,6 +20,11 @@
     position: relative;
     /* Every tile is at least a comfortable touch target even in a dense grid. */
     min-height: 44px;
+    /* A tile is a tap/long-press control that owns its gesture; it never pans (it clips,
+     * and the grid only ever shows what fits, so nothing here scrolls). Without this a
+     * finger drifting on a press chained the pan up to the shell's #pages and changed
+     * page under the acting finger (#221). none, not pan-y: the tile has no axis to give. */
+    touch-action: none;
   }
   .ent.on { border-color: rgba(var(--accent-rgb), 0.45); }
   .ent .name {
@@ -705,7 +710,7 @@
     s.append(i, t, b);
     if (onRetry) {
       const btn = document.createElement('button');
-      btn.className = 'btn';
+      btn.className = 'btn no-pan';
       btn.textContent = 'Retry';
       btn.addEventListener('click', onRetry);
       s.append(btn);

@@ -317,6 +317,32 @@ function loadPlaywright() {
       }
     } catch (e) { /* not present in this build */ }
   });
+  // #221 — tap-surface detector. There is no STATIC signal for "this element is
+  // tappable": a listener may sit on a plain div (Home Assistant's .ent), on the
+  // document itself (gallery, reddit), or on a control a render path CREATES after load
+  // (streamdeck's #picker button). So surfaces are caught at REGISTRATION — wrapping
+  // addEventListener marks any element that registers a tap-family listener, and records
+  // a listener placed on document/window (a whole-frame surface with no element to mark).
+  // The check near the other assertions then requires each to be guarded against paging
+  // #pages. Registered before the widget's own scripts so it cannot capture the native
+  // method first; runs in every frame (the widget document is where controls live).
+  await page.addInitScript(() => {
+    const marks = (window.__wwTapMarks = { els: [], doc: [] });
+    const TAP = { click: 1, pointerdown: 1, touchstart: 1 };
+    const proto = EventTarget.prototype;
+    const native = proto.addEventListener;
+    proto.addEventListener = function (type, listener, opts) {
+      try {
+        if (TAP[type]) {
+          // body/documentElement are Elements and carry an ancestor chain, so they are
+          // marked as elements; only document and window have no element to mark.
+          if (this instanceof Element) { if (marks.els.indexOf(this) < 0) marks.els.push(this); }
+          else if (this === document || this === window) { if (marks.doc.indexOf(type) < 0) marks.doc.push(type); }
+        }
+      } catch (e) { /* instrumentation must never break registration */ }
+      return native.call(this, type, listener, opts);
+    };
+  });
   await page.addInitScript(shim);
   // Host-bound messages, answered by the SHELL document. The widget's shim drops any
   // message whose ev.source is not window.parent, so a reply the widget's own document
@@ -524,6 +550,53 @@ function loadPlaywright() {
     document.documentElement.scrollWidth <= window.innerWidth &&
     document.body.scrollWidth <= window.innerWidth),
     await frame.evaluate(() => document.body.scrollWidth + 'w vs viewport ' + window.innerWidth));
+
+  // #221 — every registered tap surface must be guarded against paging the panel. #pages
+  // is a horizontal scroll-snap container one frame up, so a tap that drifts on a surface
+  // with no local horizontal handling hands the pan to it (that is the whole of #206/#213).
+  // A surface is guarded when something in its ancestor chain forbids horizontal panning
+  // (touch-action that does not permit the x-axis), or actually scrolls horizontally.
+  const tapAudit = await frame.evaluate(() => {
+    const marks = window.__wwTapMarks || { els: [], doc: [] };
+    const desc = (el) => {
+      let s = el.tagName.toLowerCase();
+      if (el.id) s += '#' + el.id;
+      else if (typeof el.className === 'string' && el.className.trim())
+        s += '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.');
+      return s;
+    };
+    // touch-action that still allows a horizontal pan: 'auto', 'manipulation', or any value
+    // naming an x-axis pan. Everything else ('none', 'pan-y', 'pan-y pinch-zoom', …) blocks
+    // horizontal and therefore guards. A REAL horizontal scroller guards too, tested by
+    // scrollWidth > clientWidth — NOT the computed overflow keyword, which normalization
+    // computes up to 'auto' on the cross axis of any overflow-y list and would excuse it.
+    const permitsX = (ta) => ta === 'auto' || ta === 'manipulation'
+      || /pan-x|pan-left|pan-right/.test(ta);
+    const guarded = (start) => {
+      for (let el = start; el; el = el.parentElement) {
+        if (!permitsX(getComputedStyle(el).touchAction)) return true;
+        if (el.scrollWidth - el.clientWidth > 1) return true;
+      }
+      return false;
+    };
+    const unguarded = [];
+    for (const el of marks.els) {
+      if (!el.isConnected) continue;  // a detached node is not a live surface
+      if (!guarded(el)) unguarded.push(desc(el));
+    }
+    const docUnguarded = [];
+    if (marks.doc.length) {
+      // A document/window tap covers the whole frame; its only possible guard is the
+      // root's own touch-action, since there is no smaller element to carry one.
+      const rootTa = getComputedStyle(document.documentElement).touchAction;
+      const bodyTa = document.body ? getComputedStyle(document.body).touchAction : 'auto';
+      if (permitsX(rootTa) && permitsX(bodyTa)) docUnguarded.push('document(' + marks.doc.join(',') + ')');
+    }
+    return { unguarded, docUnguarded };
+  });
+  const tapUnguarded = [...new Set([...tapAudit.unguarded, ...tapAudit.docUnguarded])];
+  check('every tap surface is guarded against paging (#221)', tapUnguarded.length === 0,
+    tapUnguarded.length ? tapUnguarded.join(', ') : 'all guarded');
 
   if (shot) await page.screenshot({ path: shot });
 

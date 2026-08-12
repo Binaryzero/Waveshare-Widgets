@@ -2,7 +2,7 @@
   "id": "ws.stock.homeassistant",
   "name": "Home Assistant",
   "author": "Plinth",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Entity states from Home Assistant with touch control for lights and switches. Locks and covers stay display-only until you arm them, and then need a long press.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
