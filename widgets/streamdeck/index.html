@@ -60,10 +60,11 @@
   .key.empty.hidden { background: transparent; border-color: transparent; box-shadow: none; }
   #picker {
     position: fixed; left: 0; right: 0; bottom: 0;
-    display: flex; gap: 6px; padding: 6px; justify-content: center;
+    display: flex; gap: 6px; padding: 6px 8px; justify-content: center;
     background: rgba(var(--surface-rgb), 0.85); flex-wrap: wrap;
   }
   #picker button {
+    min-width: 0; max-width: 100%; overflow-wrap: anywhere;
     font: inherit; font-size: clamp(9px, 3vh, 13px);
     color: var(--text); background: var(--control-bg); border: 1px solid var(--line);
     border-radius: var(--radius-control); padding: 4px 10px; cursor: pointer;
@@ -98,7 +99,9 @@
    * No background of its own — the body's panel paint shows through the letterbox,
    * so bgStyle behaves exactly as on the icon grid. */
   #live {
-    position: fixed; inset: 0;
+    /* The shell owns the outer 8px for page navigation. Keep this default, fully
+     * interactive mirror inside that rail just like the fallback grid below. */
+    position: fixed; inset: 0 8px;
     display: none;
     align-items: center; justify-content: center;
     /* The live mirror is the DEFAULT surface once the host supplies a capture — renderLive()

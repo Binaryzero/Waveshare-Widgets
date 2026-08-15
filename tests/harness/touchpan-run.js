@@ -30,6 +30,7 @@ const path = require('path');
 const REPO = path.resolve(__dirname, '..', '..');
 const SHELL = path.join(REPO, 'src', 'Plinth', 'Shell');
 const WIDGET = path.join(REPO, 'widgets', 'notifications');
+const STREAMDECK = path.join(REPO, 'widgets', 'streamdeck');
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
@@ -49,11 +50,10 @@ const check = (name, ok, detail) => {
 
 // The runtime edge width is READ from shell.css rather than hardcoded, so these tests track
 // the shipped value: #213 narrowed the page-swipe strip from 36px so it stops covering a
-// control near a screen edge, and #245 narrowed it further to 8px — the minimum stock
-// control inset — after 16px was found to still cover the notifications eye in a 320px
-// quarter slot. A regression toward either wider value re-covers the eye and fails E2 (640px)
-// or E5 (320px) below. The `.edge {` base rule is matched (not the `body.editing .edge`
-// override, which keeps the full 36px for the drop target).
+// control near a screen edge, and #245 narrowed it further to 8px after 16px was found to
+// still cover the notifications eye in a 320px quarter slot. The `.edge {` base rule is
+// matched (not the `body.editing .edge` override, which keeps the full 36px for the drop
+// target).
 const EDGE_CSS = fs.readFileSync(path.join(SHELL, 'shell.css'), 'utf8');
 const EDGE_BLOCK = (EDGE_CSS.match(/(?:^|\n)\.edge\s*\{[^}]*\}/) || [''])[0];
 const EDGE_W = Number((EDGE_BLOCK.match(/width:\s*(\d+)px/) || [])[1]);
@@ -102,6 +102,8 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   const page = await context.newPage();
   page.on('pageerror', (e) => { failures++; console.log('[pageerror]', String(e).slice(0, 300)); });
 
+  check('E0 the selected runtime rail remains exactly 8px', EDGE_W === 8, `EDGE_W ${EDGE_W}`);
+
   const serve = (route, dir, rel) => {
     const root = path.resolve(dir);
     const file = path.resolve(root, rel);
@@ -113,8 +115,10 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     serve(r, SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '')));
   await page.route('https://widget.test/**', (r) =>
     serve(r, WIDGET, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '') || 'index.html'));
+  await page.route('https://streamdeck.test/**', (r) =>
+    serve(r, STREAMDECK, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '') || 'index.html'));
   await page.route('https://shell.test/**', (r) => r.fulfill({ contentType: 'text/html', body: SHELL_PAGE }));
-  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|shell\.test)(?:[/?#]|$)).*/, (r) => r.abort());
+  await page.route(/https?:\/\/(?!(?:app\.plinth|widget\.test|streamdeck\.test|shell\.test)(?:[/?#]|$)).*/, (r) => r.abort());
 
   const shim = fs.readFileSync(path.join(SHELL, 'widget-api.js'), 'utf8') + '\n'
              + fs.readFileSync(path.join(SHELL, 'icue-compat.js'), 'utf8');
@@ -339,6 +343,149 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     prBefore2 !== prAfter2 && Math.abs(slAfter2 - slBefore2) < 5,
     `aria-pressed ${prBefore2} -> ${prAfter2}, pages ${slBefore2} -> ${slAfter2}`);
 
+  // ---- E6-E9 · real Stream Deck surfaces reserve the selected 8px rail --------------
+  // Notifications proves why 16px fails, but its 10px inset cannot guard the tighter
+  // stock boundary. Stream Deck has three distinct interactive render paths at 8px:
+  // fallback keys, the dynamically built profile picker, and the default live mirror.
+  // Exercise the shipped widget rather than a look-alike so a 9px strip steals these
+  // exact x=311 taps and fails, while x=317 still belongs to dashboard navigation.
+  const sdNames = [
+    'Alpha profile with a deliberately long descriptive name for this panel',
+    'BetaProfileWithOneDeliberatelyLongUnbrokenNameThatMustWrapInsideTheSafeInteractionRail',
+  ];
+  const sdProfile = { available: true, name: sdNames[0], rows: 1, cols: 2,
+    profiles: sdNames, buttons: [
+      { row: 0, col: 0, title: 'Left key' },
+      { row: 0, col: 1, title: 'Right key' },
+    ] };
+  const sdSettings = { bgStyle: 'solid', rowsOverride: 1, colsOverride: 2,
+    showEmpty: 'on', hideWindow: 'on', keyShape: 'fill', liveMode: 'off', liveRefresh: 1000 };
+
+  await page.evaluate(({ profile, settings }) => {
+    const old = document.querySelector('#p0 iframe');
+    if (old) old.remove();
+    const f = document.createElement('iframe');
+    f.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+    f.src = 'https://streamdeck.test/index.html#ww-slot=edge-streamdeck';
+    const state = window.__sd = { frame: f, profile, clicks: [], requests: [] };
+    const send = (msg) => f.contentWindow.postMessage(msg, 'https://streamdeck.test');
+    window.__sdInit = (next) => send({ type: 'ww-init', settings: next,
+      sensors: [], media: null, theme: {}, status: { elevated: false, apiVersion: 1 } });
+    window.__sdSetProfile = (next) => { state.profile = next; };
+    window.addEventListener('message', (ev) => {
+      if (ev.source !== f.contentWindow || ev.origin !== 'https://streamdeck.test') return;
+      const m = ev.data || {};
+      if (m.type === 'ww-ready') window.__sdInit(settings);
+      else if (m.type === 'ww-sd-profile') {
+        state.requests.push({ profileName: m.profileName || '', live: m.live === true });
+        send({ type: 'ww-sd-profile', id: m.id, profile: state.profile });
+      } else if (m.type === 'ww-sd-capture') {
+        const c = state.profile && state.profile.capture;
+        send({ type: 'ww-sd-capture-result', id: m.id, data: c
+          ? { image: c.image, w: c.w, h: c.h, hash: 'edge-live' }
+          : { available: false } });
+      } else if (m.type === 'ww-sd-click') state.clicks.push(m);
+    });
+    document.getElementById('p0').appendChild(f);
+  }, { profile: sdProfile, settings: sdSettings });
+
+  const sdFrameEl = await page.waitForSelector('#p0 iframe[src*="streamdeck.test"]', { timeout: 10000 });
+  const sdFrame = await sdFrameEl.contentFrame();
+  if (!sdFrame) throw new Error('Stream Deck frame did not attach');
+  await sdFrame.waitForSelector('.key:nth-child(2)', { timeout: 10000 });
+  await sdFrame.waitForSelector('#picker button:nth-child(2)', { timeout: 10000 });
+  await page.waitForTimeout(250);
+
+  const mainTopAt = (x, y) => page.evaluate(([px, py]) => {
+    const el = document.elementFromPoint(px, py);
+    return el ? (el.id || el.tagName.toLowerCase()) : null;
+  }, [x, y]);
+  const resetFirstPage = async () => {
+    await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+    await page.waitForTimeout(200);
+  };
+
+  await resetFirstPage();
+  const firstKeyBox = await sdFrame.locator('.key').nth(0).boundingBox();
+  const keyBox = await sdFrame.locator('.key').nth(1).boundingBox();
+  const keyRight = keyBox.x + keyBox.width;
+  const keyX = Math.floor(keyRight) - 1;
+  const keyY = keyBox.y + Math.min(keyBox.height / 2, 120);
+  const keyTop = await mainTopAt(keyX, keyY);
+  const keyClicksBefore = await page.evaluate(() => window.__sd.clicks.length);
+  const keyPageBefore = await pagesLeft();
+  await page.touchscreen.tap(keyX, keyY);
+  await page.waitForTimeout(400);
+  const keyClicksAfter = await page.evaluate(() => window.__sd.clicks.length);
+  const keyPageAfter = await pagesLeft();
+  check('E6 the real Stream Deck fallback key clears the 8px rail and receives x=311',
+    Math.abs(firstKeyBox.x - 8) < 0.5 && Math.abs((vw2 - keyRight) - 8) < 0.5
+      && keyX === 311 && keyTop === 'iframe'
+      && keyClicksAfter === keyClicksBefore + 1 && Math.abs(keyPageAfter - keyPageBefore) < 5,
+    `left ${firstKeyBox.x.toFixed(1)}, right gap ${(vw2 - keyRight).toFixed(1)}, x ${keyX}, top ${keyTop}, clicks ${keyClicksBefore} -> ${keyClicksAfter}, pages ${keyPageBefore} -> ${keyPageAfter}`);
+
+  await resetFirstPage();
+  const pickerBox = await sdFrame.locator('#picker button').nth(1).boundingBox();
+  const pickerRight = pickerBox.x + pickerBox.width;
+  const pickerX = Math.floor(pickerRight) - 1;
+  const pickerY = pickerBox.y + pickerBox.height / 2;
+  const pickerTop = await mainTopAt(pickerX, pickerY);
+  const requestsBefore = await page.evaluate(() => window.__sd.requests.length);
+  const pickerPageBefore = await pagesLeft();
+  await page.touchscreen.tap(pickerX, pickerY);
+  await page.waitForTimeout(400);
+  const pickerResult = await page.evaluate(({ before, wanted }) => ({
+    requested: window.__sd.requests.slice(before).some((r) => r.profileName === wanted),
+    page: document.getElementById('pages').scrollLeft,
+  }), { before: requestsBefore, wanted: sdNames[1] });
+  check('E7 the real Stream Deck profile picker clears the rail and remains clickable',
+    Math.abs(pickerBox.x - 8) < 0.5 && Math.abs((vw2 - pickerRight) - 8) < 0.5
+      && pickerBox.width <= vw2 - 16 + 0.5 && pickerX === 311 && pickerTop === 'iframe'
+      && pickerResult.requested && Math.abs(pickerResult.page - pickerPageBefore) < 5,
+    `button ${pickerBox.x.toFixed(1)}..${pickerRight.toFixed(1)}, x ${pickerX}, top ${pickerTop}, requested ${pickerResult.requested}, pages ${pickerPageBefore} -> ${pickerResult.page}`);
+
+  const liveImage = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='304' height='400'%3E%3Crect width='304' height='400' fill='%23135'/%3E%3C/svg%3E";
+  const liveProfile = Object.assign({}, sdProfile, { capture: { image: liveImage, w: 304, h: 400 } });
+  await page.evaluate(({ profile, settings }) => {
+    window.__sdSetProfile(profile);
+    window.__sdInit(Object.assign({}, settings, { liveMode: 'on' }));
+  }, { profile: liveProfile, settings: sdSettings });
+  await sdFrame.waitForFunction(() => {
+    const live = document.getElementById('live');
+    const img = document.getElementById('liveImg');
+    return getComputedStyle(live).display === 'flex' && img.naturalWidth > 0;
+  }, null, { timeout: 10000 });
+  await resetFirstPage();
+  const liveBox = await sdFrame.locator('#live').boundingBox();
+  const liveRight = liveBox.x + liveBox.width;
+  const liveX = Math.floor(liveRight) - 1;
+  const liveY = liveBox.y + liveBox.height / 2;
+  const liveTop = await mainTopAt(liveX, liveY);
+  const liveClicksBefore = await page.evaluate(() => window.__sd.clicks.length);
+  const livePageBefore = await pagesLeft();
+  await page.touchscreen.tap(liveX, liveY);
+  await page.waitForTimeout(400);
+  const liveClicksAfter = await page.evaluate(() => window.__sd.clicks.length);
+  const livePageAfter = await pagesLeft();
+  check('E8 the real default live mirror clears the rail and maps its edge tap',
+    Math.abs(liveBox.x - 8) < 0.5 && Math.abs((vw2 - liveRight) - 8) < 0.5
+      && liveX === 311 && liveTop === 'iframe' && liveClicksAfter === liveClicksBefore + 1
+      && Math.abs(livePageAfter - livePageBefore) < 5,
+    `live ${liveBox.x.toFixed(1)}..${liveRight.toFixed(1)}, x ${liveX}, top ${liveTop}, clicks ${liveClicksBefore} -> ${liveClicksAfter}, pages ${livePageBefore} -> ${livePageAfter}`);
+
+  await resetFirstPage();
+  const stockEdgeBefore = await pagesLeft();
+  const stockClicksBefore = await page.evaluate(() => window.__sd.clicks.length);
+  const stockEdgeTop = await mainTopAt(317, 200);
+  await page.touchscreen.tap(317, 200);
+  await page.waitForTimeout(500);
+  const stockEdgeAfter = await pagesLeft();
+  const stockClicksAfter = await page.evaluate(() => window.__sd.clicks.length);
+  check('E9 the remaining rail still pages without invoking Stream Deck',
+    stockEdgeTop === 'edgeRight' && stockEdgeAfter - stockEdgeBefore > 100
+      && stockClicksAfter === stockClicksBefore,
+    `top ${stockEdgeTop}, pages ${stockEdgeBefore} -> ${stockEdgeAfter}, clicks ${stockClicksBefore} -> ${stockClicksAfter}`);
+
   await page.setViewportSize({ width: 640, height: 400 });
   await page.waitForTimeout(200);
 
@@ -447,7 +594,8 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     ['volume', '#masterSlider'], ['notifications', '#eyeBtn'],
     ['media', '#controls .btn'], ['deck', '.key'], ['launcher', '.tile'],
     ['streamdeck', '.key'], ['streamdeck', '#live'], ['streamdeck', '#picker button'],
-    ['vitals', '.meter-row'],
+    ['gallery', '#touchSurface'], ['reddit', '#touchSurface'],
+    ['vitals', '.meter-row'], ['vitals', '#overlayDismiss'],
     // Hidden at load, which is why nothing reported them for so long — but PRESENT, so
     // their computed value is readable here. Withdrawing T11 took away the only thing
     // covering them; without these two the fixes in this very commit ship unguarded.
@@ -491,6 +639,95 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   }
   check('T10 every control marked .no-pan actually computes to touch-action: none',
     bad.length === 0, bad.join(' | ') || `${OPTED.length} controls checked`);
+
+  // The remaining stock full-bleed surfaces are either explicit hit layers or nested
+  // cross-origin frames. They cannot rely on a child control's own padding, so hold every
+  // one to the same 8px inline reservation, natural runtime reveal path and full-height
+  // hit geometry while Gallery/Reddit/Vitals visuals remain full bleed.
+  const SAFE_SURFACES = [
+    ['gallery', '#touchSurface', '.layer'],
+    ['reddit', '#touchSurface', '.layer'],
+    ['iframe', '#frame', null],
+    ['youtube', '#player', null],
+    ['twitch', '#frame', null],
+    ['vitals', '#overlayDismiss', '#overlay'],
+  ];
+  const SAFE_SETTINGS = {
+    iframe: { url: 'https://embedded.test/', zoom: 1.25 },
+    youtube: { videoUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      autoplay: 'off', muted: 'on', loop: 'off', controls: 'on', msgSize: 100 },
+    twitch: { channel: 'monstercat', theme: 'dark', msgSize: 100 },
+    vitals: { petName: 'Pip', pace: 'standard', quiet: 'on',
+      water: 'on', eyes: 'on', posture: 'on', stretch: 'on' },
+  };
+  const unsafe = [];
+  for (const [widgetName, surfaceSel, visualSel] of SAFE_SURFACES) {
+    const safePage = await context.newPage();
+    await safePage.setViewportSize({ width: 320, height: 400 });
+    await safePage.route('https://app.plinth/**', (r) =>
+      serve(r, SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '')));
+    await safePage.route('https://safe.test/**', (r) => r.fulfill({ contentType: 'text/html',
+      body: fs.readFileSync(path.join(REPO, 'widgets', widgetName, 'index.html')) }));
+    await safePage.route(/https:\/\/(?:embedded\.test|www\.youtube-nocookie\.com|www\.twitch\.tv)\/.*/, (r) =>
+      r.fulfill({ contentType: 'text/html', body: '<!doctype html><title>embedded fixture</title>' }));
+    await safePage.goto('https://safe.test/index.html');
+    if (SAFE_SETTINGS[widgetName]) {
+      await safePage.evaluate((settings) => window.postMessage({ type: 'ww-init', settings,
+        sensors: [], media: null, theme: {}, status: { elevated: false, apiVersion: 1 } },
+      window.location.origin), SAFE_SETTINGS[widgetName]);
+    }
+    if (widgetName === 'vitals') {
+      await safePage.waitForSelector('.meter-row', { state: 'visible', timeout: 5000 });
+      await safePage.locator('.meter-row').first().click();
+    }
+    await safePage.waitForSelector(surfaceSel, { state: 'visible', timeout: 5000 });
+    const geometry = await safePage.evaluate(({ surfaceSel: ss, visualSel: vs }) => {
+      const surface = document.querySelector(ss);
+      if (!surface) return null;
+      const r = surface.getBoundingClientRect();
+      const visual = vs && document.querySelector(vs);
+      const vr = visual && visual.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + 0.5, r.top + 1);
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom,
+        width: r.width, height: r.height, hit: !!hit && (hit === surface || surface.contains(hit)),
+        visual: vr ? { left: vr.left, right: vr.right, top: vr.top, bottom: vr.bottom } : null };
+    }, { surfaceSel, visualSel });
+    let behavior = { ok: true };
+    if (widgetName === 'gallery' || widgetName === 'reddit') {
+      const before = await safePage.locator('#paused').evaluate((e) => getComputedStyle(e).display);
+      await safePage.touchscreen.tap(160, 200);
+      const after = await safePage.locator('#paused').evaluate((e) => getComputedStyle(e).display);
+      behavior = { ok: before !== after && after === 'block', before, after };
+    } else if (widgetName === 'vitals') {
+      const card = await safePage.evaluate(() => {
+        const box = document.getElementById('cardBox');
+        const r = box.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + Math.min(20, r.height / 2);
+        const hit = document.elementFromPoint(x, y);
+        return { x, y, owned: !!hit && (hit === box || box.contains(hit)),
+          touchAction: getComputedStyle(box).touchAction };
+      });
+      await safePage.touchscreen.tap(card.x, card.y);
+      const openAfterCardTap = await safePage.locator('#overlay').evaluate((e) => !e.hidden);
+      await safePage.touchscreen.tap(9, 1);
+      const closedAfterBackdropTap = await safePage.locator('#overlay').evaluate((e) => e.hidden);
+      behavior = { ok: card.owned && card.touchAction === 'pan-y' && openAfterCardTap
+        && closedAfterBackdropTap, card, openAfterCardTap, closedAfterBackdropTap };
+    }
+    if (!geometry || Math.abs(geometry.left - 8) >= 0.5 || Math.abs(geometry.right - 312) >= 0.5
+        || Math.abs(geometry.top) >= 0.5 || Math.abs(geometry.bottom - 400) >= 0.5
+        || !geometry.hit || !behavior.ok
+        || (geometry.visual && (Math.abs(geometry.visual.left) >= 0.5
+          || Math.abs(geometry.visual.right - 320) >= 0.5
+          || Math.abs(geometry.visual.top) >= 0.5
+          || Math.abs(geometry.visual.bottom - 400) >= 0.5))) {
+      unsafe.push(`${widgetName}=${JSON.stringify({ geometry, behavior })}`);
+    }
+    await safePage.close();
+  }
+  check('E10 every stock full-bleed interaction reserves and exercises the 8px rails',
+    unsafe.length === 0, unsafe.join(' | ') || `${SAFE_SURFACES.length} surfaces checked`);
 
   // NO T11. A sweep that enumerates controls instead of checking T10's hand-maintained
   // list is the right idea — it is what #214 asked for — but it cannot be built here.

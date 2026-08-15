@@ -432,8 +432,10 @@ The panel is touch-only: no cursor, no hover, no tooltips.
   `:hover`, it does not exist on this device. Everything important is visible at rest.
 - Use real `<button class="btn">` elements — you get focus, `:disabled` (0.45 opacity)
   and the `:focus-visible` accent outline for free.
-- Don't fight the shell: page swiping is handled by edge zones; the widget owns the rest
-  of its slot for its own touch interactions.
+- Don't fight the shell: page swiping is handled by fixed **8px screen-edge rails** plus
+  the page dots. A widget cannot know whether its slot touches a physical screen edge, so
+  keep controls and whole-surface hit areas at least 8px inside both inline edges. Visuals
+  may remain full bleed underneath that reserved interaction rail.
 - **A control with no scrollable ancestor should carry `.no-pan`**, and **a scrollable
   region should set `touch-action: pan-y`.** Both exist for the same reason and neither is
   a document-level default, because this stylesheet is also linked by installed third-party
@@ -455,9 +457,10 @@ The panel is touch-only: no cursor, no hover, no tooltips.
   Do not put `.no-pan` on a control *inside* a scrolling region; that stops the region
   scrolling whenever a finger lands on the control.
 
-  **Known gap:** none of this reaches the shell's own `.edge` overlays — fixed 36px strips
-  at each screen edge, `z-index: 5`, which page on tap. A control within 36px of a screen
-  edge is partly covered by one, and that touch never reaches the widget at all. See #213.
+  The shell's `.edge` overlays receive the outermost 8px and do not forward those touches
+  into an iframe. A control or hit surface under that rail is partly untappable even if its
+  widget-side `touch-action` is correct; reserve the inset explicitly, including around a
+  nested interactive iframe.
 
 ---
 

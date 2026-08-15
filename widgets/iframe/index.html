@@ -7,6 +7,9 @@
 <style>
   /* Layout only — tokens, background/bgStyle handling, typography base and the
    * .state-card anatomy come from widget-base.css. */
+  /* The shell uses the outer 8px for dashboard page navigation. Keep arbitrary nested
+   * pages inside that interaction rail while preserving the widget's nominal viewport. */
+  #frameViewport { position: fixed; inset: 0 8px; overflow: hidden; }
   #frame {
     border: 0;
     display: block;
@@ -21,7 +24,9 @@
 </style>
 </head>
 <body>
-  <iframe id="frame" allow="autoplay; fullscreen"></iframe>
+  <div id="frameViewport" hidden>
+    <iframe id="frame" allow="autoplay; fullscreen"></iframe>
+  </div>
   <div id="empty" class="state-card">
     <span class="head state-title">No URL configured</span>
     <small class="sub state-body">Set one in Settings — e.g. http://localhost:28199 for StreamDeckEmbeded's Virtual Stream Deck.
@@ -36,20 +41,23 @@
 
     const url = String(s.url || '').trim();
     const zoom = Number(s.zoom) || 1;
+    const viewport = document.getElementById('frameViewport');
     const frame = document.getElementById('frame');
     const empty = document.getElementById('empty');
 
     if (!/^https?:\/\//i.test(url)) {
       empty.hidden = false;
+      viewport.hidden = true;
       frame.style.display = 'none';
       return;
     }
 
     empty.hidden = true;
+    viewport.hidden = false;
     frame.style.display = 'block';
     // Zoom by inverse-scaling: render larger, scale down (or vice versa).
-    frame.style.width = (100 / zoom) + 'vw';
-    frame.style.height = (100 / zoom) + 'vh';
+    frame.style.width = (100 / zoom) + '%';
+    frame.style.height = (100 / zoom) + '%';
     frame.style.transform = 'scale(' + zoom + ')';
     if (frame.src !== url) frame.src = url;
   });

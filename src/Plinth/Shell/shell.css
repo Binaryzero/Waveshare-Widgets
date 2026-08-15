@@ -188,15 +188,11 @@ html, body {
 #dots span.active { background-color: color-mix(in srgb, var(--text, #fff) 92%, transparent); background-clip: padding-box; }
 
 /* Edge swipe/tap zones for page switching (widgets consume touches everywhere else).
- * 8px, not 16px or 36px (#213, #245): the strip sits ABOVE the widget iframes and pages
- * on a tap, so it covers any control within its width of a screen edge. 36px covered the
- * notifications eye; 16px still covered it in a 320px quarter slot, where the eye sits
- * 10px from the edge and stream-deck keys 8px — the 640px harness masked it because the
- * eye's inset grows to 18px there. 8px is the MINIMUM stock control inset: every stock
- * widget's edge-adjacent controls (grid keys and hue rooms at --space-2 = 8px, the eye at
- * 10px) start at or beyond 8px, so a strip this wide sits entirely inside their outer
- * padding and covers none of them, at any supported slot. Swipe still pages across the
- * whole panel. EDIT MODE keeps the full 36px (below): there the same element is the
+ * 8px, not 16px or 36px (#213, #245): the old widths covered the notifications eye,
+ * including at the tighter 320px quarter geometry. Because this fixed overlay sits above
+ * widget iframes and pages on a tap, the widget standard reserves the same 8px inside
+ * both inline edges for controls and whole-surface hit areas; full-bleed visuals may still
+ * paint underneath. EDIT MODE keeps the full 36px (below): there the same element is the
  * move-to-adjacent-page drop target and widget controls are not live, so a generous
  * target is wanted and costs nothing. */
 .edge {

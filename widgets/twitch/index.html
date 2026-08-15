@@ -9,7 +9,11 @@
    * .state-card anatomy come from widget-base.css. The chat itself is Twitch's
    * embed; only the setup/invalid overlay renders locally. */
   #frame {
-    width: 100%;
+    /* Nested chat controls cannot know about the parent shell overlay, so reserve its
+     * 8px page-navigation rail on both sides of the embed. */
+    position: fixed;
+    inset: 0 auto 0 8px;
+    width: calc(100% - 16px);
     height: 100%;
     border: 0;
     display: block;
