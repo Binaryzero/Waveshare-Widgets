@@ -399,5 +399,7 @@ root and/or on any page:
 - Sensor/media updates arrive at the host cadence (~2 s); interpolate in the widget rather
   than polling faster.
 - Bundle every asset (including fonts) in the package; never assume a system font.
-- Page switching is handled by the shell (edge zones + dots); design widgets to use the
-  whole slot for their own content and touch interactions.
+- Page switching is handled by the shell (8px physical screen-edge rails + dots). A widget
+  cannot know whether it occupies an outer slot, so keep controls, whole-surface hit areas,
+  and nested interactive iframes at least 8px inside both inline edges. Full-bleed visuals
+  may extend underneath the reserved rails.

@@ -330,6 +330,10 @@ compliance checklist — is [WIDGET-STANDARD.md](WIDGET-STANDARD.md).
 ## Design guidance for the 1280×400 strip
 
 - The panel is ~170 PPI; keep touch targets ≥ 64 px and body text ≥ 12 px.
+- The shell owns the outermost 8px of each physical screen edge for page navigation and
+  does not forward those touches into a widget iframe. Because a widget cannot know which
+  slot it will occupy, keep controls, whole-surface hit areas, and nested interactive
+  iframes at least 8px inside both inline edges; full-bleed visuals may extend underneath.
 - **Fit dominant text with `WW.fitText`, not viewport units.** `vh`/`vw` do measure the
   slot — the iframe is the tile — but a rule written against one axis says nothing about
   the other, and that is a clipping bug rather than a cosmetic one. The stock clock sized

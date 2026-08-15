@@ -112,8 +112,12 @@
     padding: clamp(8px, 3vh, 20px);
     background: rgba(0, 0, 0, 0.55);
   }
+  /* Keep the full-bleed backdrop visual, but reserve the shell's 8px page rails from
+   * the whole-surface dismiss action. This is a sibling of the pan-y card so it cannot
+   * suppress vertical scrolling inside the dialog. */
+  #overlayDismiss { position: absolute; inset: 0 8px; z-index: 0; touch-action: none; }
   #cardBox {
-    position: relative;
+    position: relative; z-index: 1;
     width: min(440px, 94%); max-height: 100%;
     overflow-y: auto; scrollbar-width: none;
     /* pan-y, not auto: a HORIZONTAL drag starting on a control inside this list has
@@ -191,6 +195,7 @@
   </div>
   <div class="card" id="bubble" hidden></div>
   <div id="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="cardTitle">
+    <div id="overlayDismiss" aria-hidden="true"></div>
     <div class="card" id="cardBox">
       <span class="kicker" id="cardKicker"></span>
       <div id="cardTitle"></div>
@@ -690,8 +695,7 @@
     $('overlay').hidden = true;
   }
   // Backdrop tap closes WITHOUT refilling — a stray tap must never fake self-care.
-  $('overlay').addEventListener('click', (ev) => { if (ev.target === $('overlay')) closeCard(); });
-  $('cardBox').addEventListener('click', (ev) => ev.stopPropagation());
+  $('overlayDismiss').addEventListener('click', closeCard);
   $('cardClose').addEventListener('click', closeCard);
   $('cardDone').addEventListener('click', () => {
     const m = openMeter;

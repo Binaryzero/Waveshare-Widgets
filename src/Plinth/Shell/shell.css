@@ -187,18 +187,27 @@ html, body {
 }
 #dots span.active { background-color: color-mix(in srgb, var(--text, #fff) 92%, transparent); background-clip: padding-box; }
 
-/* Edge swipe/tap zones for page switching (widgets consume touches everywhere else) */
+/* Edge swipe/tap zones for page switching (widgets consume touches everywhere else).
+ * 8px, not 16px or 36px (#213, #245): the old widths covered the notifications eye,
+ * including at the tighter 320px quarter geometry. Because this fixed overlay sits above
+ * widget iframes and pages on a tap, the widget standard reserves the same 8px inside
+ * both inline edges for controls and whole-surface hit areas; full-bleed visuals may still
+ * paint underneath. EDIT MODE keeps the full 36px (below): there the same element is the
+ * move-to-adjacent-page drop target and widget controls are not live, so a generous
+ * target is wanted and costs nothing. */
 .edge {
   position: fixed;
   top: 0;
   bottom: 0;
-  width: 36px;
+  width: 8px;
   z-index: 5;
   display: flex;
   align-items: center;
   justify-content: center;
   color: color-mix(in srgb, var(--text, #fff) 45%, transparent);
-  font-size: 30px;
+  /* The chevron is a hint that overflows the thin strip; it is only ever briefly visible
+   * (.edge.idle fades it out), and the hit area is the 8px box, not the glyph. */
+  font-size: 14px;
   font-weight: 200;
   touch-action: none;
   cursor: pointer;
@@ -439,7 +448,10 @@ body.editing .hidden-shelf { display: flex; }
 /* While editing, the edge zones must never sit between the finger and a tile's
  * corner controls (field report: a right-column tile's size chips were dead under
  * the zone). They return as cross-page drop targets only while a drag is live. */
-body.editing .edge { pointer-events: none; opacity: 0.25; }
+/* Back to the full 36px in edit mode: the runtime narrowing (#213) is about clearing
+ * live widget controls, which do not exist here — this width is the cross-page drop
+ * target for a dragged tile, and a wider one is easier to hit. */
+body.editing .edge { pointer-events: none; opacity: 0.25; width: 36px; }
 body.editing.dragging .edge { pointer-events: auto; opacity: 0.85; }
 
 /* Fixed-position ghost that follows the finger during a drag. */
