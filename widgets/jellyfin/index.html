@@ -92,6 +92,13 @@
    * whether the client acted on it, so it says "sent, unconfirmed", not success. */
   @keyframes jf-pending { 0%, 100% { border-color: var(--line); } 50% { border-color: var(--warn); } }
   .pending-flash { animation: jf-pending 900ms ease-in-out 2; }
+  /* Color-only feedback, not motion — the base exempts its own flash classes from the
+   * reduced-motion collapse (widget-base.css) and this local one needs the same, or a
+   * "sent, unconfirmed" answer becomes a silent no-op exactly for the users who asked
+   * for less movement. */
+  @media (prefers-reduced-motion: reduce) {
+    .pending-flash { animation-duration: 900ms !important; }
+  }
 
   #axis { flex: none; }
   footer { flex: none; color: var(--text-dim); font-size: 11px; display: flex; gap: 12px; justify-content: space-between; min-width: 0; }
@@ -863,6 +870,17 @@
     tick(generation);
   }
 
+  // ...and once more shortly after. The immediate poll usually races the client's own
+  // progress report, so alone it shows the OLD track after a skip (and holds the pause
+  // hold open); one short follow-up lands after the client has reported, instead of
+  // leaving the answer to the regular schedule up to five minutes out.
+  let followTimer = null;
+  function followUp() {
+    const gen = generation;
+    clearTimeout(followTimer);
+    followTimer = setTimeout(() => { if (gen === generation) reconcile(); }, 2000);
+  }
+
   async function command(btn, kind) {
     if (acting || !playerSession || !playerSession.id) return;
     const sess = playerSession;
@@ -900,6 +918,7 @@
       // pause flip is its own confirmation.
       if (kind !== 'toggle') flash(btn, 'confirm-flash');
       reconcile();
+      followUp();
     } catch (e) {
       if (gen !== generation) return;
       // Only a status that DEFINITELY rejected the request counts as a refusal — a
@@ -921,6 +940,7 @@
       }
       WW.log('jellyfin: ' + cmd + ': ' + e.message);
       reconcile();
+      if (!definite) followUp();   // "sent, unconfirmed" needs the second look most
     } finally {
       acting = false;
       setControlsDisabled(false);
