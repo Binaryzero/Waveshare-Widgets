@@ -23,9 +23,11 @@
 // audit time instead (see auditInFrame), which keeps this wrapper minimal.
 function tapInitScript() {
   const marks = (window.__wwTapMarks = { els: [], doc: [] });
-  // pointerup joins the family: a control wired only on pointerup (a release-to-act button)
-  // is as much a finger target as one wired on pointerdown, and was a hole the review hit.
-  const TAP = { click: 1, pointerdown: 1, pointerup: 1, touchstart: 1 };
+  // The whole down/up family, pointer AND touch: a control wired only on the RELEASE event
+  // (pointerup, touchend) is as much a finger target as one wired on the press, and a touch
+  // drag fires touchend on the element it started on while still paging — both were holes
+  // the review hit. click covers the synthesized activation.
+  const TAP = { click: 1, pointerdown: 1, pointerup: 1, touchstart: 1, touchend: 1 };
   const proto = EventTarget.prototype;
   const native = proto.addEventListener;
   proto.addEventListener = function (type, listener, opts) {
@@ -57,6 +59,21 @@ function tapAuditInFrame() {
   // horizontal and therefore guards.
   const permitsX = (ta) => ta === 'auto' || ta === 'manipulation'
     || /pan-x|pan-left|pan-right/.test(ta);
+  // touch-action does not apply to every box. The Pointer Events spec excludes non-replaced
+  // inline elements and the table-internal display types, so a `touch-action: none` on a bare
+  // <span> is inert — the pan chains through it as if the declaration were not there (measured:
+  // an inline span paged #pages to 626 while the equivalent block stayed at 0). Only honour a
+  // touch-action guard where it actually takes effect. Replaced elements DO get it even when
+  // inline, so an inline <img>/<button>/form control is not excluded.
+  // https://www.w3.org/TR/pointerevents/#the-touch-action-css-property
+  const INERT_DISPLAY = new Set(['inline', 'table-row', 'table-row-group', 'table-header-group',
+    'table-footer-group', 'table-column', 'table-column-group']);
+  const REPLACED = new Set(['IMG', 'VIDEO', 'AUDIO', 'CANVAS', 'IFRAME', 'EMBED', 'OBJECT',
+    'INPUT', 'SELECT', 'TEXTAREA', 'BUTTON', 'PROGRESS', 'METER', 'SVG']);
+  const taApplies = (el, cs) => {
+    if (!INERT_DISPLAY.has(cs.display)) return true;
+    return cs.display === 'inline' && REPLACED.has(el.tagName);   // replaced inline still gets it
+  };
   // Actually scrollable in an axis: the overflow keyword must ALLOW user scrolling
   // (scroll/auto/overlay — not visible, and not the clip/hidden that overflow content past
   // a box the finger cannot move) AND the content must really overflow. Testing scrollWidth
@@ -77,7 +94,7 @@ function tapAuditInFrame() {
   const guarded = (start) => {
     for (let el = start; el; el = el.parentElement) {
       const cs = getComputedStyle(el);
-      if (!permitsX(cs.touchAction)) return true;
+      if (taApplies(el, cs) && !permitsX(cs.touchAction)) return true;   // an EFFECTIVE x-block guards
       if (scrollsX(el, cs)) return true;    // a real horizontal scroller takes the pan itself
       if (scrollsY(el, cs)) return false;   // nearest scroller is vertical-only, no x-guard at/below → unguarded
     }
@@ -89,7 +106,7 @@ function tapAuditInFrame() {
   //   * inline onclick and property .onclick — both surface as a non-null on* IDL attribute.
   //   * native activation — button, a[href], form controls, summary, a for-label: these
   //     fire on tap with no listener at all, and a finger still lands and drifts on them.
-  const ON = ['onclick', 'onpointerdown', 'onpointerup', 'ontouchstart'];
+  const ON = ['onclick', 'onpointerdown', 'onpointerup', 'ontouchstart', 'ontouchend'];
   const NATIVE = 'a[href],button,input,select,textarea,summary,label[for],[role="button"]';
   const surfaces = new Set();
   for (const el of marks.els) if (el.isConnected) surfaces.add(el);
@@ -97,11 +114,13 @@ function tapAuditInFrame() {
   for (const el of document.querySelectorAll(NATIVE)) surfaces.add(el);
   const unguarded = [];
   for (const el of surfaces) if (!guarded(el)) unguarded.push(desc(el));
-  // A document/window listener — or an on* handler on the root/body — covers the whole
-  // frame; its only possible guard is the root's or body's own touch-action, since there is
-  // no smaller element inside it to carry one.
+  // A document/window listener — or an on* handler on window, the document, or the root/body
+  // — covers the whole frame; its only possible guard is the root's or body's own
+  // touch-action, since there is no smaller element inside it to carry one. window carries the
+  // same property-assigned handlers (window.onclick = …) as window.addEventListener, so it is
+  // scanned alongside document.
   const docUnguarded = [];
-  const docOn = ON.some((k) => document[k] || (document.body && document.body[k]));
+  const docOn = ON.some((k) => window[k] || document[k] || (document.body && document.body[k]));
   if (marks.doc.length || docOn) {
     const rootTa = getComputedStyle(document.documentElement).touchAction;
     const bodyTa = document.body ? getComputedStyle(document.body).touchAction : 'auto';

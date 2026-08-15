@@ -1,0 +1,13 @@
+{
+  "profile": {
+    "available": true,
+    "profiles": ["Default", "Gaming"],
+    "rows": 2,
+    "cols": 3,
+    "buttons": [
+      { "row": 0, "col": 0, "title": "Alpha" },
+      { "row": 0, "col": 1, "title": "Bravo" },
+      { "row": 1, "col": 2, "title": "Charlie" }
+    ]
+  }
+}
