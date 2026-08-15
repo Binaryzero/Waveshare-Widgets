@@ -52,6 +52,10 @@ const derive = global.window.WWPalette.derive;
 // mattered, and then it would look like a widget bug.
 require(path.join(__dirname, '../src/Plinth/Shell/appearance.js'));
 const universalProperties = global.window.WWAppearance.universalProperties;
+// #221 tap-surface detector, shared with widget-harness.js. This runner is the one that
+// drives POPULATED render paths — the controls a widget only creates once data arrives — so
+// the same audit has to run here, not only offline. See tools/tap-audit.js.
+const { tapInitScript, auditTapSurfaces } = require('./tap-audit.js');
 
 const SHELL = path.join(__dirname, '../src/Plinth/Shell');
 const SLOTS = {
@@ -391,6 +395,9 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
       }
     } catch (e) { /* not present in this build */ }
   });
+  // #221 — tap-surface detector, before the widget's own scripts and in every frame. The
+  // audit runs after the populated state has settled, below. See tools/tap-audit.js.
+  await page.addInitScript(tapInitScript);
   await page.addInitScript(shim);
   // Host-bound messages, answered by the SHELL document — the widget's shim drops any
   // message whose ev.source is not window.parent, so a reply the widget's own document
@@ -679,6 +686,13 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     document.documentElement.scrollWidth <= window.innerWidth &&
     document.body.scrollWidth <= window.innerWidth),
     await frame.evaluate(() => document.body.scrollWidth + 'w vs viewport ' + window.innerWidth));
+
+  // #221 — every tap surface the POPULATED state created must be guarded against paging.
+  // This is the whole reason the audit is shared into this runner: the controls a widget
+  // builds from data (streamdeck's #picker, home-assistant's tiles) only exist here.
+  const tapUnguarded = await auditTapSurfaces(page.frames());
+  check('every tap surface is guarded against paging (#221)', tapUnguarded.length === 0,
+    tapUnguarded.length ? tapUnguarded.join(', ') : 'all guarded');
 
   if (shot) await page.screenshot({ path: shot });
 
