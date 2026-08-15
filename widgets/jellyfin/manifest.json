@@ -23,6 +23,14 @@
       "help": "A Jellyfin API key: Administration → Dashboard → Advanced → API Keys → +. An API key carries server-wide rights — it can read every library and see every user's activity — so treat it like the server's password."
     },
     {
+      "name": "certValidation",
+      "label": "Certificate check (https)",
+      "type": "select",
+      "options": ["Require a valid certificate", "Allow self-signed"],
+      "default": "Require a valid certificate",
+      "help": "Only matters for an https:// address. Every request carries the API key, so by default the certificate must prove the server is really yours before anything is sent. Choose Allow self-signed only if your server uses a certificate your PC doesn't trust (typically self-signed on a LAN IP) — that trades away the proof."
+    },
+    {
       "name": "view",
       "label": "View",
       "type": "select",

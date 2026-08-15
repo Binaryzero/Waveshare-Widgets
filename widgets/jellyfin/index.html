@@ -191,7 +191,7 @@
     'Hidden': '',
   };
 
-  const cfg = { base: '', key: '', types: 'Movie,Episode', refreshMs: 15000, view: 'overview', playerUser: '' };
+  const cfg = { base: '', key: '', types: 'Movie,Episode', refreshMs: 15000, view: 'overview', playerUser: '', selfSigned: false };
   let sessions = [];          // active streams (NowPlayingItem present), sorted
   let latest = [];            // recently added items
   let latestAt = 0;           // when the shelf's data last actually refreshed
@@ -225,6 +225,7 @@
   // The stream the player view is currently showing — commands go to THIS session id,
   // captured at render time, never recomputed at press time against fresher data.
   let playerSession = null;
+  let playerControllable = true;
   let acting = false;
   // Jellyfin's Playing/{Pause|Unpause} answers 204 when the command is QUEUED — the
   // session's IsPaused only changes after the client acts and files its next progress
@@ -251,7 +252,10 @@
     if (kind === 'http' && (status === 401 || status === 403)) return 'The API key was rejected — keys can be revoked from the Jellyfin dashboard.';
     if (kind === 'http' && status === 404) return "That address answered, but there's no Jellyfin API at it — check the port (Jellyfin's default is 8096).";
     if (kind === 'http') return 'Jellyfin answered ' + status + '.';
-    return "Couldn't reach Jellyfin at " + cfg.base + '.';
+    return "Couldn't reach Jellyfin at " + cfg.base + '.'
+      + (/^https:/i.test(cfg.base) && !cfg.selfSigned
+        ? " If the server uses a self-signed certificate, set 'Certificate check' to allow it in the widget settings."
+        : '');
   }
 
   function normalizeBase(value) {
@@ -267,7 +271,12 @@
   async function jf(path, init, deadlineMs, consume) {
     const abort = new AbortController();
     const deadline = setTimeout(() => abort.abort(), deadlineMs);
-    const opts = Object.assign({ insecure: true }, init || {});
+    // insecure (skip certificate validation) is NOT the default for https: every
+    // request carries the server-wide API key, and a LAN machine impersonating the
+    // server would be handed it. Plain http has no certificate to check, and an
+    // https user opts in explicitly via the certificate setting.
+    const insecure = /^http:/i.test(cfg.base) || cfg.selfSigned;
+    const opts = Object.assign({ insecure }, init || {});
     opts.signal = abort.signal;
     opts.headers = Object.assign({ 'X-Emby-Token': cfg.key }, (init && init.headers) || {});
     try {
@@ -649,11 +658,15 @@
     const pool = wantUser
       ? sessions.filter((s) => String(s.UserName || '').toLowerCase() === wantUser)
       : sessions;
-    // Most recent activity wins, NOT the overview's playing-before-paused order: the
-    // person who just paused wants the remote on THEIR stream — jumping to someone
-    // else's older playing session hands them a play button for the wrong house.
+    // Controllable streams first — a session that refuses remote control would give
+    // this remote dead buttons while hiding one the buttons could actually drive.
+    // Within that, most recent activity wins, NOT the overview's playing-before-paused
+    // order: the person who just paused wants the remote on THEIR stream — jumping to
+    // someone else's older playing session hands them a play button for the wrong house.
+    const controllable = (x) => x.SupportsRemoteControl !== false;
     const s = pool.slice().sort((a, b) =>
-      String(b.LastActivityDate || '').localeCompare(String(a.LastActivityDate || '')))[0] || null;
+      (controllable(b) - controllable(a))
+      || String(b.LastActivityDate || '').localeCompare(String(a.LastActivityDate || '')))[0] || null;
 
     if (!s) {
       playerSession = null;
@@ -679,6 +692,10 @@
       if (paused === holdPaused) holdUntil = 0;   // the server caught up — hold spent
       else paused = holdPaused;                    // lagging snapshot: keep the flip
     }
+    // The whole pool may be uncontrollable — still worth showing, but the transport
+    // must say so rather than offer taps that go nowhere.
+    playerControllable = controllable(s);
+    setControlsDisabled(!playerControllable);
     playerSession = { id: String(s.Id || ''), paused };
 
     el('pTitle').textContent = d.title;
@@ -689,6 +706,13 @@
       const tag = document.createElement('span');
       tag.className = 'tag warn';
       tag.textContent = 'Transcode';
+      sub.appendChild(tag);
+    }
+    if (!playerControllable) {
+      sub.appendChild(document.createTextNode('  '));
+      const tag = document.createElement('span');
+      tag.className = 'tag mute';
+      tag.textContent = 'No remote control';
       sub.appendChild(tag);
     }
 
@@ -887,16 +911,20 @@
     tick(generation);
   }
 
-  // ...and once more shortly after. The immediate poll usually races the client's own
+  // ...and again shortly after. The immediate poll usually races the client's own
   // progress report, so alone it shows the OLD track after a skip (and holds the pause
-  // hold open); one short follow-up lands after the client has reported, instead of
-  // leaving the answer to the regular schedule up to five minutes out.
+  // hold open). Two bounded follow-ups — ~2s and ~6s — catch a client that reports
+  // slowly, and the second lands just past the pause hold's expiry so a command the
+  // client ignored is found out in seconds, not at the next scheduled poll.
   let followTimer = null;
-  let holdTimer = null;
-  function followUp() {
+  function followUp(chain) {
     const gen = generation;
     clearTimeout(followTimer);
-    followTimer = setTimeout(() => { if (gen === generation) reconcile(); }, 2000);
+    followTimer = setTimeout(() => {
+      if (gen !== generation) return;
+      reconcile();
+      if (chain) followUp(false);
+    }, chain ? 2000 : 4000);
   }
 
   async function command(btn, kind) {
@@ -918,12 +946,6 @@
       holdId = sess.id;
       holdPaused = sess.paused;
       holdUntil = Date.now() + 5000;
-      // ...and one poll lands just PAST the hold: a client that ignored the command
-      // (or reports slowly) would otherwise keep the optimistic state on screen until
-      // the regular schedule, up to five minutes out. Skipped if a poll inside the
-      // window already confirmed the flip (holdUntil drops to 0 then).
-      clearTimeout(holdTimer);
-      holdTimer = setTimeout(() => { if (gen === generation && holdUntil) reconcile(); }, 5500);
       const r = rowRefs[0];
       if (r) {
         const now = Date.now();
@@ -947,7 +969,7 @@
       // pause flip is its own confirmation.
       if (kind !== 'toggle') flash(btn, 'confirm-flash');
       reconcile();
-      followUp();
+      followUp(true);
     } catch (e) {
       if (gen !== generation) return;
       // Only a status that DEFINITELY rejected the request counts as a refusal — a
@@ -976,10 +998,12 @@
       }
       WW.log('jellyfin: ' + cmd + ': ' + e.message);
       reconcile();
-      if (!definite) followUp();   // "sent, unconfirmed" needs the second look most
+      if (!definite) followUp(true);   // "sent, unconfirmed" needs the second look most
     } finally {
       acting = false;
-      setControlsDisabled(false);
+      // Re-enabled only if the stream on screen still accepts remote control — a
+      // render may have switched sessions while the command was in flight.
+      setControlsDisabled(!playerControllable);
     }
   }
 
@@ -1083,11 +1107,14 @@
 
   WW.onInit((s0) => {
     const s = s0.settings;
-    const prevIdentity = cfg.base + '\n' + cfg.key;
+    // The trust choice is part of the identity: flipping it is how a user fixes a
+    // connection, and the retry should start clean with the new transport rules.
+    const prevIdentity = cfg.base + '\n' + cfg.key + '\n' + cfg.selfSigned;
     const prevView = cfg.view;
     const prevTypes = cfg.types;
     cfg.base = normalizeBase(s.baseUrl);
     cfg.key = String(s.apiKey == null ? '' : s.apiKey);
+    cfg.selfSigned = s.certValidation === 'Allow self-signed';
     cfg.view = s.view === 'Player' ? 'player' : 'overview';
     cfg.playerUser = String(s.playerUser == null ? '' : s.playerUser);
     cfg.types = LATEST_TYPES[s.latestTypes] !== undefined ? LATEST_TYPES[s.latestTypes] : 'Movie,Episode';
@@ -1101,7 +1128,7 @@
 
     // A different server (or a different key onto the same one) is a different set of
     // facts — and a response already in flight belongs to the old identity.
-    if (prevIdentity !== cfg.base + '\n' + cfg.key) {
+    if (prevIdentity !== cfg.base + '\n' + cfg.key + '\n' + cfg.selfSigned) {
       sessions = [];
       latest = [];
       latestAt = 0;
