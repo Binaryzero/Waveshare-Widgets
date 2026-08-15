@@ -252,10 +252,30 @@
     if (kind === 'http' && (status === 401 || status === 403)) return 'The API key was rejected — keys can be revoked from the Jellyfin dashboard.';
     if (kind === 'http' && status === 404) return "That address answered, but there's no Jellyfin API at it — check the port (Jellyfin's default is 8096).";
     if (kind === 'http') return 'Jellyfin answered ' + status + '.';
-    return "Couldn't reach Jellyfin at " + cfg.base + '.'
-      + (/^https:/i.test(cfg.base) && !cfg.selfSigned
-        ? " If the server uses a self-signed certificate, set 'Certificate check' to allow it in the widget settings."
-        : '');
+    let hint = '';
+    if (/^https:/i.test(cfg.base)) {
+      // The self-signed allowance is honored by the host only for localhost and
+      // literal private IPv4 addresses — pointing someone at a setting that cannot
+      // work for their address is worse than saying so.
+      if (!cfg.selfSigned && privateLiteralHost(cfg.base))
+        hint = " If the server uses a self-signed certificate, set 'Certificate check' to allow it in the widget settings.";
+      else if (cfg.selfSigned && !privateLiteralHost(cfg.base))
+        hint = ' The self-signed allowance only works for a literal LAN IP address (like https://192.168.1.20) — at a named address the certificate must be one this PC trusts.';
+    }
+    return "Couldn't reach Jellyfin at " + cfg.base + '.' + hint;
+  }
+
+  // Mirrors the host's IsPrivateHost: loopback or literal RFC1918/link-local IPv4 —
+  // no DNS names, no IPv6. That is the exact set the self-signed allowance covers.
+  function privateLiteralHost(base) {
+    let host = '';
+    try { host = new URL(base).hostname; } catch (e) { return false; }
+    if (host === 'localhost' || host === '[::1]' || host === '::1') return true;
+    const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (!m) return false;
+    const a = Number(m[1]), b = Number(m[2]);
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168) || (a === 169 && b === 254);
   }
 
   function normalizeBase(value) {
@@ -271,11 +291,13 @@
   async function jf(path, init, deadlineMs, consume) {
     const abort = new AbortController();
     const deadline = setTimeout(() => abort.abort(), deadlineMs);
-    // insecure (skip certificate validation) is NOT the default for https: every
-    // request carries the server-wide API key, and a LAN machine impersonating the
-    // server would be handed it. Plain http has no certificate to check, and an
-    // https user opts in explicitly via the certificate setting.
-    const insecure = /^http:/i.test(cfg.base) || cfg.selfSigned;
+    // insecure (skip certificate validation) is requested ONLY for https with the
+    // explicit opt-in: every request carries the server-wide API key, and a LAN
+    // machine impersonating the server would be handed it. Plain http has no
+    // certificate to bypass — and the flag is not free there: the host serves
+    // insecure LAN requests through a single serialized connection, which would let
+    // one slow library query queue-starve the session poll.
+    const insecure = /^https:/i.test(cfg.base) && cfg.selfSigned;
     const opts = Object.assign({ insecure }, init || {});
     opts.signal = abort.signal;
     opts.headers = Object.assign({ 'X-Emby-Token': cfg.key }, (init && init.headers) || {});
