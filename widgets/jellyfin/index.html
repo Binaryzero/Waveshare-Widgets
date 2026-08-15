@@ -215,6 +215,13 @@
   // captured at render time, never recomputed at press time against fresher data.
   let playerSession = null;
   let acting = false;
+  // Jellyfin's Playing/{Pause|Unpause} answers 204 when the command is QUEUED — the
+  // session's IsPaused only changes after the client acts and files its next progress
+  // report. The reconcile poll usually outruns that report, so for a few seconds the
+  // toggled session's paused flag believes the finger, not the lagging server.
+  let holdId = '';
+  let holdPaused = false;
+  let holdUntil = 0;
 
   const el = (id) => document.getElementById(id);
   const paused = () => document.hidden;
@@ -543,7 +550,9 @@
 
       row.append(txt, time);
       wrap.appendChild(row);
-      rowRefs.push({ elapsed, fill, pos0: pos, dur, paused: isPaused, at: Date.now() });
+      // Anchored to when the POSITION was fetched, not when this render ran — a stale
+      // or resize re-render mid-window must not rewind the interpolated playhead.
+      rowRefs.push({ elapsed, fill, pos0: pos, dur, paused: isPaused, at: lastOk });
     }
 
     // Recently added.
@@ -641,7 +650,12 @@
 
     const d = describe(s.NowPlayingItem);
     const ps = s.PlayState || {};
-    playerSession = { id: String(s.Id || ''), paused: !!ps.IsPaused };
+    let paused = !!ps.IsPaused;
+    if (String(s.Id || '') === holdId && Date.now() < holdUntil) {
+      if (paused === holdPaused) holdUntil = 0;   // the server caught up — hold spent
+      else paused = holdPaused;                    // lagging snapshot: keep the flip
+    }
+    playerSession = { id: String(s.Id || ''), paused };
 
     el('pTitle').textContent = d.title;
     const sub = el('pSub');
@@ -680,7 +694,8 @@
     const elapsed = document.createElement('b');
     time.appendChild(elapsed);
     if (dur != null) time.appendChild(document.createTextNode(' / ' + fmt(dur)));
-    rowRefs = [{ elapsed, fill: null, pos0: pos, dur, paused: playerSession.paused, at: Date.now() }];
+    // at: lastOk, not Date.now() — see the overview rows: re-renders must not rewind.
+    rowRefs = [{ elapsed, fill: null, pos0: pos, dur, paused: playerSession.paused, at: lastOk }];
     axisRef = dur ? rowRefs[0] : null;
     el('axis').hidden = !axisRef;
     if (axisRef) el('axisEnd').textContent = fmt(dur);
@@ -862,6 +877,11 @@
     if (kind === 'toggle') {
       sess.paused = !wasPaused;
       setPausedUi(sess.paused);
+      // The hold outlives this handler: the reconcile poll's snapshot predates the
+      // client acting on the command, and must not snap the flip back.
+      holdId = sess.id;
+      holdPaused = sess.paused;
+      holdUntil = Date.now() + 5000;
       const r = rowRefs[0];
       if (r) {
         const now = Date.now();
@@ -891,6 +911,7 @@
         if (kind === 'toggle' && playerSession === sess) {
           sess.paused = wasPaused;
           setPausedUi(wasPaused);
+          holdUntil = 0;   // a refusal is definite — stop defending the flip
           const r = rowRefs[0];
           if (r) { r.at = Date.now(); r.paused = wasPaused; }
         }
@@ -1036,6 +1057,7 @@
       fails = 0;
       lastOk = 0;
       slowAt = 0;
+      holdUntil = 0;
       document.body.classList.remove('stale');
       flushImages();
       // The old server's streams are still painted, and nothing marks them as the old
