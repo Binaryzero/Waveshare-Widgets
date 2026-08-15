@@ -1,0 +1,1199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Jellyfin</title>
+<link rel="stylesheet" href="https://app.plinth/widget-base.css" />
+<style>
+  /* Layout only — colors, background, bgStyle and the typography base come from
+   * widget-base.css. */
+  body { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; }
+  header { flex: none; }
+
+  #main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+
+  /* Active streams: one card per session. Height is fixed so the JS row budget and
+   * the rendered rows can never disagree about what fits. */
+  #sessions { flex: none; display: grid; gap: 6px; grid-template-columns: minmax(0, 1fr); }
+  .sess { display: flex; align-items: center; gap: 10px; height: 52px; padding: 4px 10px 4px 4px; min-width: 0; }
+  .sess .art { height: 100%; aspect-ratio: 2 / 3; flex: none; }
+  .sess .txt { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .sess .t1 {
+    font-size: 13.5px; font-weight: 700; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .sess .t2 {
+    font-size: 12px; color: var(--text-muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Exception tags inside the sub-line: transcoding burns the server's CPU (amber),
+   * paused is merely quiet (muted). Healthy direct play says nothing. */
+  .sess .t2 .tag { font-size: 9.5px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; }
+  .sess .t2 .tag.warn { color: var(--warn); }
+  .sess .t2 .tag.mute { color: var(--text-dim); }
+  .sess .meter { width: 100%; }
+  .sess .time { flex: none; text-align: right; display: flex; flex-direction: column; gap: 2px; font-variant-numeric: tabular-nums; }
+  .sess .time b { font-size: 13px; font-weight: 700; color: var(--accent-fg); }
+  .sess .time span { font-size: 11px; color: var(--text-dim); }
+
+  /* Recently added: a shelf of posters. --ph is set by the JS layout budget so the
+   * shelf, the session rows and the footer always share the height honestly. */
+  #latestSec { flex: none; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  /* The shelf alone can go stale while the streams stay live — same treatment as the
+   * whole-tile stale state: keep the data, dim it, say so in the footer. */
+  #latestSec.stale-sec { opacity: 0.6; }
+  #strip { display: flex; gap: 8px; overflow: hidden; }
+  .tile { flex: none; width: calc(var(--ph) * 2 / 3); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .tile .art { height: var(--ph); width: 100%; }
+  .tile .cap {
+    font-size: 12px; color: var(--text-muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* Shared poster/placeholder look. The letter sits under the image and is hidden
+   * once real art paints over it. */
+  .art {
+    position: relative;
+    border: 1px solid var(--line);
+    background: var(--control-bg) center / cover no-repeat;
+    overflow: hidden;
+  }
+  .art .ph {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 700; color: var(--text-dim);
+  }
+
+  /* Player view: one stream, big art, touch transport. */
+  #player { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; gap: 4%; overflow: hidden; }
+  #player .art { height: 96%; aspect-ratio: 2 / 3; flex: none; }
+  #player .art .ph { font-size: clamp(18px, 8vh, 34px); }
+  #pInfo { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1.4vh; }
+  #pTitle {
+    font-size: clamp(17px, 8.5vh, 34px); font-weight: 700; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #pSub {
+    font-size: clamp(10px, 4vh, 13px); color: var(--text-muted); font-weight: 500;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #pSub .tag.warn { color: var(--warn); }
+  #pTime { font-size: clamp(11px, 4.2vh, 14px); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  #pTime b { color: var(--accent-fg); font-weight: 700; }
+  #pControls { display: flex; align-items: center; gap: 14px; margin-top: 0.4vh; }
+  #pControls .btn {
+    padding: 0;
+    width: clamp(42px, 13vh, 60px); height: clamp(42px, 13vh, 60px);
+    display: flex; align-items: center; justify-content: center;
+    /* none, not manipulation: nothing here scrolls, and manipulation still permits a
+     * pan — finger drift on a control would page the shell instead of pressing it. */
+    touch-action: none;
+  }
+  #pControls .btn svg { width: 40%; height: 40%; fill: currentColor; }
+  /* The command went out and no answer came back — the panel does not yet know
+   * whether the client acted on it, so it says "sent, unconfirmed", not success. */
+  @keyframes jf-pending { 0%, 100% { border-color: var(--line); } 50% { border-color: var(--warn); } }
+  .pending-flash { animation: jf-pending 900ms ease-in-out 2; }
+  /* Color-only feedback, not motion — the base exempts its own flash classes from the
+   * reduced-motion collapse (widget-base.css) and this local one needs the same, or a
+   * "sent, unconfirmed" answer becomes a silent no-op exactly for the users who asked
+   * for less movement. */
+  @media (prefers-reduced-motion: reduce) {
+    .pending-flash { animation-duration: 900ms !important; }
+  }
+
+  #axis { flex: none; }
+  footer { flex: none; color: var(--text-dim); font-size: 11px; display: flex; gap: 12px; justify-content: space-between; min-width: 0; }
+  footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #counts { letter-spacing: 0.08em; text-transform: uppercase; font-variant-numeric: tabular-nums; }
+  @media (max-height: 259px) { footer { display: none; } }
+
+  #state { position: fixed; inset: 0; }
+  body.stale #main, body.stale #player, body.stale #axis { opacity: 0.6; }
+</style>
+</head>
+<body>
+  <header class="hd">
+    <span class="kicker">Jellyfin</span>
+    <span style="display:flex; align-items:center; gap:10px">
+      <span class="pill muted" id="pill">Loading</span>
+      <span class="st" id="st"></span>
+    </span>
+  </header>
+
+  <div id="main" hidden>
+    <div id="sessions"></div>
+    <section id="latestSec" hidden>
+      <div class="kicker">Recently added</div>
+      <div id="strip"></div>
+    </section>
+  </div>
+
+  <div id="player" hidden>
+    <div class="art" id="pArt"><span class="ph" id="pPh"></span></div>
+    <div id="pInfo">
+      <div id="pTitle"></div>
+      <div id="pSub"></div>
+      <div id="pTime"></div>
+      <div id="pControls">
+        <button id="pPrev" class="btn" aria-label="Previous">
+          <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zM9.5 12 18 6v12z"/></svg>
+        </button>
+        <button id="pToggle" class="btn primary" aria-label="Play/Pause">
+          <svg id="pIconPlay" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          <svg id="pIconPause" viewBox="0 0 24 24" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+        </button>
+        <button id="pNext" class="btn" aria-label="Next">
+          <svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 6l8.5 6L6 18z"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- The tile's natural axis: the primary stream's position in its runtime. -->
+  <div class="scale" id="axis" style="--pitch: 10%" hidden>
+    <div class="rail"></div><div class="mns"></div>
+    <div class="mj e-l" style="left:0"><b>0:00</b></div>
+    <div class="mj e-r" style="left:100%"><b id="axisEnd">--</b></div>
+    <div class="fill" id="axisFill" style="width:0%"></div>
+    <div class="cur" id="axisCur" style="left:0%"></div>
+  </div>
+
+  <footer hidden>
+    <span id="counts"></span>
+    <span id="meta"></span>
+  </footer>
+
+  <div class="state-card" id="state">
+    <div class="spinner"></div>
+  </div>
+
+<script src="https://app.plinth/widget-api.js"></script>
+<script>
+  'use strict';
+  const POLL_DEADLINE = 20000;      // /Sessions — the fast lane the whole tile hangs off
+  const SLOW_DEADLINE = 20000;      // latest / counts / server name
+  const ACT_DEADLINE = 8000;        // a person is waiting with a finger on the glass
+  const SLOW_MS = 300000;           // library facts change rarely; don't ask like they don't
+  const IDLE_FLOOR = 5000;
+  const GATED_RECHECK = 60000;
+  const MAX_WAIT = 900000;          // backoff ceiling: a server that's off for the evening
+  const IMG_MAX_BYTES = 1536 * 1024;
+  const LIST_MAX_BYTES = 2 * 1024 * 1024;
+  const IMG_CACHE_MAX = 48;
+  const LATEST_FETCH = 16;
+
+  const LATEST_TYPES = {
+    'Movies & episodes': 'Movie,Episode',
+    'Movies only': 'Movie',
+    'Episodes only': 'Episode',
+    'Hidden': '',
+  };
+
+  const cfg = { base: '', key: '', types: 'Movie,Episode', refreshMs: 15000, view: 'overview', playerUser: '', selfSigned: false };
+  let sessions = [];          // active streams (NowPlayingItem present), sorted
+  let latest = [];            // recently added items
+  let latestAt = 0;           // when the shelf's data last actually refreshed
+  let counts = null;          // {movies, series, episodes}
+  let server = null;          // {name, version}
+  let extraSessions = 0;      // active streams beyond what the slot can show
+  let started = false;
+  let timer = null;
+  let inFlight = false;
+  let lastOk = 0;
+  let slowAt = 0;
+  let pollAnchor = 0;
+  let fails = 0;
+  let generation = 0;         // bumped when WHICH SERVER we talk to changes
+  let refreshQueued = false;
+
+  // Poster art: key "id|tag" -> blob URL. Bounded, and revoked on eviction — a 24/7
+  // panel that never revokes leaks a poster per library addition, forever.
+  const imgCache = new Map();
+  const imgPending = new Set();
+  // Negative cache: a poster that failed is not asked for again for a while — a
+  // deleted image whose tag lingers in metadata would otherwise be re-fetched on
+  // every poll, forever.
+  const imgFailed = new Map();
+  const IMG_RETRY_MS = 600000;
+  let imgWanted = new Set();
+
+  // What the interpolation timer advances between polls: one entry per rendered row.
+  let rowRefs = [];
+  let axisRef = null;
+  // The stream the player view is currently showing — commands go to THIS session id,
+  // captured at render time, never recomputed at press time against fresher data.
+  let playerSession = null;
+  let playerControllable = true;
+  let acting = false;
+  // Jellyfin's Playing/{Pause|Unpause} answers 204 when the command is QUEUED — the
+  // session's IsPaused only changes after the client acts and files its next progress
+  // report. The reconcile poll usually outruns that report, so for a few seconds the
+  // toggled session's paused flag believes the finger, not the lagging server.
+  let holdId = '';
+  let holdPaused = false;
+  let holdUntil = 0;
+
+  const el = (id) => document.getElementById(id);
+  const paused = () => document.hidden;
+
+  function fault(kind, message, status) {
+    const e = new Error(message);
+    e.kind = kind;
+    if (status) e.status = status;
+    return e;
+  }
+
+  function faultText(kind, status) {
+    if (kind === 'toolarge') return 'The reply was larger than the panel will load.';
+    if (kind === 'format') return "That address answered, but not with Jellyfin's data — check it points at Jellyfin and not a router or a proxy's login page.";
+    if (kind === 'timeout') return 'Jellyfin did not answer in time.';
+    if (kind === 'http' && (status === 401 || status === 403)) return 'The API key was rejected — keys can be revoked from the Jellyfin dashboard.';
+    if (kind === 'http' && status === 404) return "That address answered, but there's no Jellyfin API at it — check the port (Jellyfin's default is 8096).";
+    if (kind === 'http') return 'Jellyfin answered ' + status + '.';
+    let hint = '';
+    if (/^https:/i.test(cfg.base)) {
+      // The self-signed allowance is honored by the host only for localhost and
+      // literal private IPv4 addresses — pointing someone at a setting that cannot
+      // work for their address is worse than saying so.
+      if (!cfg.selfSigned && privateLiteralHost(cfg.base))
+        hint = " If the server uses a self-signed certificate, set 'Certificate check' to allow it in the widget settings.";
+      else if (cfg.selfSigned && !privateLiteralHost(cfg.base))
+        hint = ' The self-signed allowance only works for a literal LAN IP address (like https://192.168.1.20) — at a named address the certificate must be one this PC trusts.';
+    }
+    return "Couldn't reach Jellyfin at " + cfg.base + '.' + hint;
+  }
+
+  // Mirrors the host's IsPrivateHost: loopback or literal RFC1918/link-local IPv4 —
+  // no DNS names, no IPv6. That is the exact set the self-signed allowance covers.
+  function privateLiteralHost(base) {
+    let host = '';
+    try { host = new URL(base).hostname; } catch (e) { return false; }
+    if (host === 'localhost' || host === '[::1]' || host === '::1') return true;
+    const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (!m) return false;
+    const a = Number(m[1]), b = Number(m[2]);
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+
+  function normalizeBase(value) {
+    let s = String(value == null ? '' : value).trim();
+    if (!s) return '';
+    if (!/^https?:\/\//i.test(s)) s = 'http://' + s;
+    return s.replace(/\/+$/, '');
+  }
+
+  // Every call carries a deadline, and the body is read INSIDE the timed region — a
+  // server that sends headers and then stalls mid-stream must not hang the poll loop
+  // (see the Home Assistant widget, which learned this the slow way).
+  async function jf(path, init, deadlineMs, consume) {
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), deadlineMs);
+    // insecure (skip certificate validation) is requested ONLY for https with the
+    // explicit opt-in: every request carries the server-wide API key, and a LAN
+    // machine impersonating the server would be handed it. Plain http has no
+    // certificate to bypass — and the flag is not free there: the host serves
+    // insecure LAN requests through a single serialized connection, which would let
+    // one slow library query queue-starve the session poll.
+    const insecure = /^https:/i.test(cfg.base) && cfg.selfSigned;
+    const opts = Object.assign({ insecure }, init || {});
+    opts.signal = abort.signal;
+    opts.headers = Object.assign({ 'X-Emby-Token': cfg.key }, (init && init.headers) || {});
+    try {
+      let res;
+      try {
+        res = await WW.fetch(cfg.base + path, opts);
+      } catch (e) {
+        throw e instanceof RangeError ? fault('toolarge', 'reply too large')
+          : abort.signal.aborted ? fault('timeout', 'no answer in time')
+          : fault('unreachable', 'could not reach the server');
+      }
+      if (!res.ok) throw fault('http', 'HTTP ' + res.status, res.status);
+      return consume ? await consume(res, abort) : res;
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
+
+  async function jfJson(path, deadlineMs, maxBytes) {
+    return jf(path, { maxBytes }, deadlineMs, async (res, abort) => {
+      try {
+        return await res.json();
+      } catch (e) {
+        throw e instanceof RangeError ? fault('toolarge', 'reply too large')
+          : abort.signal.aborted ? fault('timeout', 'no answer in time')
+          : fault('format', 'reply was not JSON');
+      }
+    });
+  }
+
+  const ticksToSec = (ticks) => (typeof ticks === 'number' && isFinite(ticks) ? ticks / 10000000 : null);
+
+  function fmt(seconds) {
+    if (seconds == null || !isFinite(seconds)) return '--';
+    seconds = Math.max(0, Math.round(seconds));
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    return h > 0 ? h + ':' + pad(m) + ':' + pad(s) : m + ':' + pad(s);
+  }
+
+  // One reading of a NowPlayingItem / library item, null-guarded field by field —
+  // live TV has no runtime, a fresh rip has no image tag yet, and a session from a
+  // client we've never heard of may carry almost nothing.
+  function describe(item) {
+    if (!item || typeof item !== 'object') return { title: '?', sub: [], img: null };
+    const own = item.ImageTags && item.ImageTags.Primary && item.Id
+      ? { id: String(item.Id), tag: String(item.ImageTags.Primary) } : null;
+    if (item.Type === 'Episode') {
+      const season = item.ParentIndexNumber;
+      const ep = item.IndexNumber;
+      const code = season != null && ep != null ? 'S' + season + ' E' + ep : '';
+      return {
+        title: String(item.SeriesName || item.Name || '?'),
+        sub: [code, item.SeriesName ? item.Name : ''].filter(Boolean).map(String),
+        img: item.SeriesId && item.SeriesPrimaryImageTag
+          ? { id: String(item.SeriesId), tag: String(item.SeriesPrimaryImageTag) } : own,
+      };
+    }
+    if (item.Type === 'Audio') {
+      const artist = (Array.isArray(item.Artists) && item.Artists[0]) || item.AlbumArtist || '';
+      return {
+        title: String(item.Name || '?'),
+        sub: [artist, item.Album].filter(Boolean).map(String),
+        img: item.AlbumId && item.AlbumPrimaryImageTag
+          ? { id: String(item.AlbumId), tag: String(item.AlbumPrimaryImageTag) } : own,
+      };
+    }
+    return {
+      title: String(item.Name || '?'),
+      sub: item.ProductionYear != null ? [String(item.ProductionYear)] : [],
+      img: own,
+    };
+  }
+
+  // ---- the poll loop ---------------------------------------------------------------
+
+  async function tick(gen) {
+    if (gen !== generation) return;
+    if (paused() || inFlight) { armIn(GATED_RECHECK, gen); return; }
+    inFlight = true;
+    pollAnchor = Date.now();
+    const slowDue = !slowAt || Date.now() - slowAt >= SLOW_MS;
+    if (slowDue) refreshSlow(gen);
+    try {
+      const body = await jfJson('/Sessions?ActiveWithinSeconds=900', POLL_DEADLINE, LIST_MAX_BYTES);
+      if (gen !== generation) return;
+      if (!Array.isArray(body)) throw fault('format', 'reply was not a session list');
+      // A non-empty array of things that aren't sessions is not an idle server — a
+      // reverse proxy routing /Sessions somewhere else would otherwise read as
+      // "Nothing playing" with the stale marker cleared. An Id alone doesn't say
+      // "session" (users and library items carry one too); a session also carries
+      // its device/client/activity facts, so ask for at least one of those.
+      const sessionish = (s) => s && typeof s === 'object' && s.Id
+        && (s.DeviceId !== undefined || s.Client !== undefined
+          || s.PlayState !== undefined || s.LastActivityDate !== undefined);
+      if (body.length && !body.some(sessionish))
+        throw fault('format', 'reply was not a session list');
+      sessions = body
+        .filter((s) => s && s.NowPlayingItem)
+        .sort((a, b) => {
+          const ap = a.PlayState && a.PlayState.IsPaused ? 1 : 0;
+          const bp = b.PlayState && b.PlayState.IsPaused ? 1 : 0;
+          if (ap !== bp) return ap - bp;   // playing above paused
+          return String(b.LastActivityDate || '').localeCompare(String(a.LastActivityDate || ''));
+        });
+      lastOk = Date.now();
+      fails = 0;
+      document.body.classList.remove('stale');
+      render();
+    } catch (e) {
+      if (gen !== generation) return;
+      fails++;
+      if (lastOk) { document.body.classList.add('stale'); render(); }
+      else showError(faultText(e.kind, e.status));
+      WW.log('jellyfin: ' + e.message);
+    } finally {
+      if (gen === generation) {
+        inFlight = false;
+        if (refreshQueued) { refreshQueued = false; clearTimeout(timer); tick(gen); }
+        else arm(gen);
+      }
+    }
+  }
+
+  // Library facts: each degrades independently — a slow /Items query must not blank
+  // the streams, and vice versa. Failures keep whatever we had and try again next
+  // window; nothing here throws into the fast lane. The player view needs none of
+  // the library — only the server's name for its idle card.
+  function refreshSlow(gen) {
+    slowAt = Date.now();
+    if (cfg.types && cfg.view !== 'player') {
+      // Captured at request time: a filter change while this is in flight makes the
+      // reply an answer to a question nobody is asking any more — generation only
+      // guards the server identity, not the filter.
+      const typesAsked = cfg.types;
+      jfJson('/Items?SortBy=DateCreated&SortOrder=Descending&Recursive=true&IncludeItemTypes='
+        + encodeURIComponent(cfg.types) + '&Limit=' + LATEST_FETCH + '&ImageTypeLimit=1&EnableImageTypes=Primary',
+        SLOW_DEADLINE, LIST_MAX_BYTES)
+        .then((body) => {
+          if (gen !== generation || typesAsked !== cfg.types) return;
+          if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
+          latest = body.Items.filter((it) => it && it.Id);
+          latestAt = Date.now();
+          // Repaint only once the fast lane has succeeded: /System/Info/Public needs no
+          // auth, so a slow-lane success with a rejected API key would otherwise paint a
+          // healthy-looking quiet card straight over the error the user needs to see.
+          if (lastOk) render();
+        })
+        .catch((e) => WW.log('jellyfin: latest: ' + e.message));
+    } else if (!cfg.types) {
+      latest = [];
+    }
+    if (cfg.view !== 'player') {
+      jfJson('/Items/Counts', SLOW_DEADLINE, 64 * 1024)
+        .then((body) => {
+          if (gen !== generation) return;
+          if (!body || typeof body !== 'object') throw fault('format', 'reply had no counts');
+          counts = {
+            movies: Number(body.MovieCount) || 0,
+            series: Number(body.SeriesCount) || 0,
+            episodes: Number(body.EpisodeCount) || 0,
+          };
+          if (lastOk) render();   // see the latest handler: never paint over an error card
+        })
+        .catch((e) => WW.log('jellyfin: counts: ' + e.message));
+    }
+    jfJson('/System/Info/Public', SLOW_DEADLINE, 64 * 1024)
+      .then((body) => {
+        if (gen !== generation) return;
+        if (!body || typeof body !== 'object') throw fault('format', 'reply had no server info');
+        server = { name: String(body.ServerName || ''), version: String(body.Version || '') };
+        if (lastOk) render();   // see the latest handler: never paint over an error card
+      })
+      .catch((e) => WW.log('jellyfin: info: ' + e.message));
+  }
+
+  function pollDelay() {
+    if (!fails) return cfg.refreshMs;
+    return Math.max(cfg.refreshMs, Math.min(cfg.refreshMs * Math.pow(2, Math.min(fails, 5)), MAX_WAIT));
+  }
+
+  function armIn(ms, gen) {
+    clearTimeout(timer);
+    timer = setTimeout(() => tick(gen), Math.max(IDLE_FLOOR, ms));
+  }
+
+  function arm(gen) {
+    armIn(pollAnchor + pollDelay() - Date.now(), gen);
+  }
+
+  // ---- layout budget ---------------------------------------------------------------
+
+  // Fixed numbers instead of measuring: the row height and poster height are set here
+  // AND in the CSS, so the budget and the rendering cannot disagree about what fits.
+  // The chrome allowances are deliberately a few px generous — a row that would only
+  // just fit is a row one font metric away from being clipped.
+  function layout() {
+    const W = document.documentElement.clientWidth || 640;
+    const H = document.documentElement.clientHeight || 400;
+    const band = H < 260;
+    const active = sessions.length;
+    const latestWanted = !!cfg.types && latest.length > 0;
+    const latestShown = latestWanted && (!band || !active);
+    // padding + header (+gap) + axis (+gap) + footer (+gap), generous.
+    const avail = H - 20 - 28 - (active ? 30 : 0) - (band ? 0 : 24);
+    let posterH = 0;
+    let rows = 0;
+    if (latestShown && active) {
+      // Rows are budgeted against a minimum shelf, then the shelf absorbs whatever
+      // height the rows didn't use — no dead band above the axis.
+      rows = Math.max(1, Math.floor((avail - (88 + 45) + 6) / 58));
+      posterH = Math.max(64, Math.min(150, avail - (rows * 58 - 6) - 45));
+    } else if (latestShown) {
+      posterH = Math.max(64, Math.min(220, avail - 45));
+    } else if (active) {
+      rows = Math.max(1, Math.floor((avail + 6) / 58));
+    }
+    const cols = W >= 900 && active > 1 ? 2 : 1;
+    const posterW = Math.round(posterH * 2 / 3);
+    const posters = posterH ? Math.max(1, Math.floor((W - 24 + 8) / (posterW + 8))) : 0;
+    return { band, latestShown, posterH, posters, maxSessions: rows * cols, cols };
+  }
+
+  // ---- rendering -------------------------------------------------------------------
+
+  function render() {
+    if (cfg.view === 'player') renderPlayer();
+    else renderOverview();
+  }
+
+  function renderOverview() {
+    playerSession = null;
+    el('player').hidden = true;
+    const lay = layout();
+    const shown = sessions.slice(0, lay.maxSessions);
+    extraSessions = sessions.length - shown.length;
+
+    // Header annotation: the live state when streaming, the server's name at rest.
+    const st = el('st');
+    st.textContent = '';
+    st.className = 'st' + (sessions.length ? ' on' : '');
+    if (sessions.length) {
+      const dot = document.createElement('i');
+      dot.className = 'dot';
+      st.appendChild(dot);
+      st.appendChild(document.createTextNode(sessions.length === 1 ? 'Streaming' : sessions.length + ' streaming'));
+    } else if (server && server.name) {
+      st.textContent = server.name;
+    }
+
+    // Streams.
+    const wrap = el('sessions');
+    wrap.textContent = '';
+    wrap.style.gridTemplateColumns = 'repeat(' + Math.max(1, Math.min(lay.cols, shown.length)) + ', minmax(0, 1fr))';
+    rowRefs = [];
+    const wanted = new Set();
+    for (const s of shown) {
+      const d = describe(s.NowPlayingItem);
+      const ps = s.PlayState || {};
+      const isPaused = !!ps.IsPaused;
+      const pos = ticksToSec(ps.PositionTicks);
+      const dur = ticksToSec(s.NowPlayingItem.RunTimeTicks);
+
+      const row = document.createElement('div');
+      row.className = 'card sess';
+      row.appendChild(art(d, wanted));
+
+      const txt = document.createElement('div');
+      txt.className = 'txt';
+      const t1 = document.createElement('div');
+      t1.className = 't1';
+      t1.textContent = d.title;
+      const t2 = document.createElement('div');
+      t2.className = 't2';
+      const subBits = [String(s.UserName || s.Client || '')].concat(d.sub).filter(Boolean);
+      t2.appendChild(document.createTextNode(subBits.join(' · ')));
+      const method = ps.PlayMethod === 'Transcode' ? 'Transcode' : '';
+      for (const [text, cls] of [[method, 'warn'], [isPaused ? 'Paused' : '', 'mute']]) {
+        if (!text) continue;
+        t2.appendChild(document.createTextNode('  '));
+        const tag = document.createElement('span');
+        tag.className = 'tag ' + cls;
+        tag.textContent = text;
+        t2.appendChild(tag);
+      }
+      const meter = document.createElement('div');
+      meter.className = 'meter';
+      const fill = document.createElement('i');
+      meter.appendChild(fill);
+      txt.append(t1, t2, meter);
+
+      const time = document.createElement('div');
+      time.className = 'time';
+      const elapsed = document.createElement('b');
+      const total = document.createElement('span');
+      total.textContent = dur != null ? fmt(dur) : '';
+      time.append(elapsed, total);
+
+      row.append(txt, time);
+      wrap.appendChild(row);
+      // Anchored to when the POSITION was fetched, not when this render ran — a stale
+      // or resize re-render mid-window must not rewind the interpolated playhead.
+      rowRefs.push({ elapsed, fill, pos0: pos, dur, paused: isPaused, at: lastOk });
+    }
+
+    // Recently added. A shelf whose refresh has been failing for a while must not
+    // ride the session poll's healthy glow — old titles rendered bright read as new.
+    const shelfStale = lay.latestShown && latestAt > 0 && Date.now() - latestAt > SLOW_MS * 2 + 60000;
+    const sec = el('latestSec');
+    sec.hidden = !lay.latestShown;
+    sec.classList.toggle('stale-sec', shelfStale);
+    if (lay.latestShown) {
+      const strip = el('strip');
+      strip.textContent = '';
+      strip.style.setProperty('--ph', lay.posterH + 'px');
+      for (const item of latest.slice(0, lay.posters)) {
+        const d = describe(item);
+        const tile = document.createElement('div');
+        tile.className = 'tile';
+        tile.appendChild(art(d, wanted));
+        const cap = document.createElement('div');
+        cap.className = 'cap';
+        cap.textContent = d.title;
+        tile.append(cap);
+        strip.appendChild(tile);
+      }
+    }
+
+    // The axis: the primary stream's position in its runtime.
+    const primary = rowRefs[0];
+    axisRef = primary && primary.dur ? primary : null;
+    el('axis').hidden = !axisRef;
+    if (axisRef) el('axisEnd').textContent = fmt(axisRef.dur).toUpperCase();
+
+    // Footer.
+    el('counts').textContent = counts
+      ? ['Movies ' + counts.movies.toLocaleString(), 'Series ' + counts.series.toLocaleString(),
+         'Episodes ' + counts.episodes.toLocaleString()].join(' · ')
+      : '';
+    const notes = [];
+    if (extraSessions > 0) notes.push('+' + extraSessions + ' more streaming');
+    if (shelfStale) notes.push('shelf from ' + new Date(latestAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
+    if (lastOk) notes.push('updated ' + new Date(lastOk).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
+    el('meta').textContent = notes.join(' · ');
+
+    // Pill: exceptions only — hidden while everything is working.
+    const pill = el('pill');
+    const stale = document.body.classList.contains('stale');
+    pill.hidden = !stale;
+    if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
+
+    // Idle with the shelf hidden (by setting, or nothing fetched yet): a designed
+    // quiet card rather than an empty tile.
+    if (!shown.length && !lay.latestShown) {
+      stateCard('', '▷', 'Nothing playing',
+        'No one is streaming from ' + ((server && server.name) || 'Jellyfin') + ' right now.');
+      // The quiet card is informational, not a setup problem: undo stateCard's pill and
+      // keep the exception-only rule — Stale shows, health stays silent.
+      if (stale) { pill.hidden = false; pill.textContent = 'Stale'; pill.className = 'pill muted'; }
+      else pill.hidden = true;
+      applyTimes();
+      return;
+    }
+
+    el('state').hidden = true;
+    el('main').hidden = false;
+    document.querySelector('footer').hidden = false;
+    applyTimes();
+    ensureImages(wanted);
+  }
+
+  function renderPlayer() {
+    el('main').hidden = true;
+    const stale = document.body.classList.contains('stale');
+    const pill = el('pill');
+    const wantUser = cfg.playerUser.trim().toLowerCase();
+    const pool = wantUser
+      ? sessions.filter((s) => String(s.UserName || '').toLowerCase() === wantUser)
+      : sessions;
+    // Controllable streams first — a session that refuses remote control would give
+    // this remote dead buttons while hiding one the buttons could actually drive.
+    // Within that, most recent activity wins, NOT the overview's playing-before-paused
+    // order: the person who just paused wants the remote on THEIR stream — jumping to
+    // someone else's older playing session hands them a play button for the wrong house.
+    const controllable = (x) => x.SupportsRemoteControl !== false;
+    const s = pool.slice().sort((a, b) =>
+      (controllable(b) - controllable(a))
+      || String(b.LastActivityDate || '').localeCompare(String(a.LastActivityDate || '')))[0] || null;
+
+    if (!s) {
+      playerSession = null;
+      rowRefs = [];
+      axisRef = null;
+      // The header annotation is the previous stream's "Playing" until told otherwise.
+      const st = el('st');
+      st.className = 'st';
+      st.textContent = (server && server.name) || '';
+      stateCard('', '▷', 'Nothing playing',
+        wantUser
+          ? 'No stream from ' + cfg.playerUser.trim() + ' right now.'
+          : 'No one is streaming from ' + ((server && server.name) || 'Jellyfin') + ' right now.');
+      if (stale) { pill.hidden = false; pill.textContent = 'Stale'; pill.className = 'pill muted'; }
+      else pill.hidden = true;
+      return;
+    }
+
+    const d = describe(s.NowPlayingItem);
+    const ps = s.PlayState || {};
+    let paused = !!ps.IsPaused;
+    if (String(s.Id || '') === holdId && Date.now() < holdUntil) {
+      if (paused === holdPaused) holdUntil = 0;   // the server caught up — hold spent
+      else paused = holdPaused;                    // lagging snapshot: keep the flip
+    }
+    // The whole pool may be uncontrollable — still worth showing, but the transport
+    // must say so rather than offer taps that go nowhere.
+    playerControllable = controllable(s);
+    setControlsDisabled(!playerControllable);
+    playerSession = { id: String(s.Id || ''), paused };
+
+    el('pTitle').textContent = d.title;
+    const sub = el('pSub');
+    sub.textContent = [String(s.UserName || s.Client || '')].concat(d.sub).filter(Boolean).join(' · ');
+    if (ps.PlayMethod === 'Transcode') {
+      sub.appendChild(document.createTextNode('  '));
+      const tag = document.createElement('span');
+      tag.className = 'tag warn';
+      tag.textContent = 'Transcode';
+      sub.appendChild(tag);
+    }
+    if (!playerControllable) {
+      sub.appendChild(document.createTextNode('  '));
+      const tag = document.createElement('span');
+      tag.className = 'tag mute';
+      tag.textContent = 'No remote control';
+      sub.appendChild(tag);
+    }
+
+    // Art (a size of its own — the player shows it big).
+    const wanted = new Set();
+    const pArt = el('pArt');
+    const ph = el('pPh');
+    ph.textContent = (d.title || '?').slice(0, 1).toUpperCase();
+    delete pArt.dataset.imgkey;
+    pArt.style.backgroundImage = 'none';
+    ph.hidden = false;
+    if (d.img) {
+      const key = d.img.id + '|' + d.img.tag + '|500';
+      pArt.dataset.imgkey = key;
+      wanted.add(key);
+      const hit = imgCache.get(key);
+      if (hit) {
+        pArt.style.backgroundImage = 'url("' + hit + '")';
+        ph.hidden = true;
+      }
+    }
+
+    const pos = ticksToSec(ps.PositionTicks);
+    const dur = ticksToSec(s.NowPlayingItem.RunTimeTicks);
+    const time = el('pTime');
+    time.textContent = '';
+    const elapsed = document.createElement('b');
+    time.appendChild(elapsed);
+    if (dur != null) time.appendChild(document.createTextNode(' / ' + fmt(dur)));
+    // at: lastOk, not Date.now() — see the overview rows: re-renders must not rewind.
+    rowRefs = [{ elapsed, fill: null, pos0: pos, dur, paused: playerSession.paused, at: lastOk }];
+    axisRef = dur ? rowRefs[0] : null;
+    el('axis').hidden = !axisRef;
+    if (axisRef) el('axisEnd').textContent = fmt(dur);
+    setPausedUi(playerSession.paused);
+
+    el('counts').textContent = '';
+    const notes = [];
+    if (sessions.length > 1) notes.push('+' + (sessions.length - 1) + ' other stream' + (sessions.length === 2 ? '' : 's'));
+    if (lastOk) notes.push('updated ' + new Date(lastOk).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
+    el('meta').textContent = notes.join(' · ');
+
+    pill.hidden = !stale;
+    if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
+
+    el('state').hidden = true;
+    el('player').hidden = false;
+    document.querySelector('footer').hidden = false;
+    applyTimes();
+    ensureImages(wanted);
+  }
+
+  // The paused flag drives four things at once — icons, header annotation, and the
+  // interpolation base — so flips (optimistic or from a poll) go through one door.
+  function setPausedUi(paused) {
+    el('pIconPlay').style.display = paused ? 'block' : 'none';
+    el('pIconPause').style.display = paused ? 'none' : 'block';
+    const st = el('st');
+    st.textContent = '';
+    st.className = 'st' + (paused ? '' : ' on');
+    if (!paused) {
+      const dot = document.createElement('i');
+      dot.className = 'dot';
+      st.appendChild(dot);
+    }
+    st.appendChild(document.createTextNode(paused ? 'Paused' : 'Playing'));
+  }
+
+  function art(d, wanted) {
+    const box = document.createElement('div');
+    box.className = 'art';
+    const ph = document.createElement('span');
+    ph.className = 'ph';
+    ph.textContent = (d.title || '?').slice(0, 1).toUpperCase();
+    box.appendChild(ph);
+    if (d.img) {
+      const key = d.img.id + '|' + d.img.tag + '|330';
+      box.dataset.imgkey = key;
+      wanted.add(key);
+      const hit = imgCache.get(key);
+      if (hit) {
+        box.style.backgroundImage = 'url("' + hit + '")';
+        ph.hidden = true;
+      }
+    }
+    return box;
+  }
+
+  // Advance the clocks between polls: position text, row meters and the axis. Cheap
+  // (a handful of text/width writes at 1 Hz), skipped while the panel is hidden.
+  function applyTimes() {
+    const now = Date.now();
+    for (const r of rowRefs) {
+      let pos = r.pos0;
+      if (pos != null && !r.paused) pos = pos + (now - r.at) / 1000;
+      if (pos != null && r.dur != null) pos = Math.min(pos, r.dur);
+      if (r.elapsed) r.elapsed.textContent = pos != null ? fmt(pos) : '--';
+      if (r.fill) {
+        const pct = pos != null && r.dur ? Math.min(100, pos / r.dur * 100) : 0;
+        r.fill.style.width = pct.toFixed(1) + '%';
+      }
+    }
+    if (axisRef) {
+      let pos = axisRef.pos0 != null && !axisRef.paused
+        ? axisRef.pos0 + (now - axisRef.at) / 1000 : axisRef.pos0;
+      if (pos == null) return;
+      pos = Math.min(pos, axisRef.dur);
+      const pct = Math.min(100, pos / axisRef.dur * 100).toFixed(2) + '%';
+      el('axisFill').style.width = pct;
+      el('axisCur').style.left = pct;
+    }
+  }
+
+  // ---- poster art ------------------------------------------------------------------
+
+  function ensureImages(wanted) {
+    imgWanted = wanted;
+    for (const key of wanted) {
+      if (imgCache.has(key) || imgPending.has(key)) continue;
+      const failedAt = imgFailed.get(key);
+      if (failedAt && Date.now() - failedAt < IMG_RETRY_MS) continue;
+      imgPending.add(key);
+      fetchImage(key, generation);
+    }
+  }
+
+  async function fetchImage(key, gen) {
+    const [id, tag, height] = key.split('|');
+    try {
+      // The body is read inside the timed region too — a poster that stalls mid-stream
+      // must time out, not hang the pending set forever.
+      const blob = await jf('/Items/' + encodeURIComponent(id) + '/Images/Primary?fillHeight=' + (Number(height) || 330)
+        + '&quality=90&tag=' + encodeURIComponent(tag), { maxBytes: IMG_MAX_BYTES }, 15000, (res) => res.blob());
+      if (gen !== generation) return;
+      if (!/^image\//.test(blob.type)) throw new Error('not an image (' + (blob.type || 'no type') + ')');
+      const url = URL.createObjectURL(blob);
+      imgCache.set(key, url);
+      imgFailed.delete(key);
+      evictImages();
+      for (const node of document.querySelectorAll('[data-imgkey]')) {
+        if (node.dataset.imgkey !== key) continue;
+        node.style.backgroundImage = 'url("' + url + '")';
+        const ph = node.querySelector('.ph');
+        if (ph) ph.hidden = true;
+      }
+    } catch (e) {
+      // A missing poster is cosmetic: the letter placeholder stays, no state changes.
+      if (gen === generation) {
+        if (imgFailed.size > 200) imgFailed.clear();   // bounded, like everything else
+        imgFailed.set(key, Date.now());
+        WW.log('jellyfin: image ' + id + ': ' + e.message);
+      }
+    } finally {
+      imgPending.delete(key);
+    }
+  }
+
+  function evictImages() {
+    if (imgCache.size <= IMG_CACHE_MAX) return;
+    for (const [key, url] of imgCache) {
+      if (imgCache.size <= IMG_CACHE_MAX) break;
+      if (imgWanted.has(key)) continue;   // never evict what's on screen
+      imgCache.delete(key);
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  function flushImages() {
+    for (const url of imgCache.values()) URL.revokeObjectURL(url);
+    imgCache.clear();
+    imgPending.clear();
+    imgFailed.clear();
+    imgWanted = new Set();
+  }
+
+  // ---- player commands -------------------------------------------------------------
+
+  const FLASHES = ['confirm-flash', 'fail-flash', 'pending-flash'];
+  function flash(node, cls) {
+    // All three answer the same question; clear them all, then restart even mid-run.
+    for (const c of FLASHES) node.classList.remove(c);
+    void node.offsetWidth;
+    node.classList.add(cls);
+  }
+
+  function setControlsDisabled(disabled) {
+    for (const id of ['pPrev', 'pToggle', 'pNext']) el(id).disabled = disabled;
+  }
+
+  // Go and look, now: someone acting on the panel has asked for its current state.
+  function reconcile() {
+    fails = 0;
+    pollAnchor = 0;
+    if (inFlight) { refreshQueued = true; return; }
+    clearTimeout(timer);
+    tick(generation);
+  }
+
+  // ...and again shortly after. The immediate poll usually races the client's own
+  // progress report, so alone it shows the OLD track after a skip (and holds the pause
+  // hold open). Two bounded follow-ups — ~2s and ~6s — catch a client that reports
+  // slowly, and the second lands just past the pause hold's expiry so a command the
+  // client ignored is found out in seconds, not at the next scheduled poll.
+  let followTimer = null;
+  function followUp(chain) {
+    const gen = generation;
+    clearTimeout(followTimer);
+    followTimer = setTimeout(() => {
+      if (gen !== generation) return;
+      reconcile();
+      if (chain) followUp(false);
+    }, chain ? 2000 : 4000);
+  }
+
+  async function command(btn, kind) {
+    if (acting || !playerSession || !playerSession.id) return;
+    const sess = playerSession;
+    const wasPaused = sess.paused;
+    const cmd = kind === 'toggle' ? (wasPaused ? 'Unpause' : 'Pause')
+      : kind === 'next' ? 'NextTrack' : 'PreviousTrack';
+    const gen = generation;
+    acting = true;
+    setControlsDisabled(true);
+    // Optimistic flip: the panel answers the finger now and reconciles with the next
+    // poll. On a definite refusal we put it back AND fail-flash.
+    if (kind === 'toggle') {
+      sess.paused = !wasPaused;
+      setPausedUi(sess.paused);
+      // The hold outlives this handler: the reconcile poll's snapshot predates the
+      // client acting on the command, and must not snap the flip back.
+      holdId = sess.id;
+      holdPaused = sess.paused;
+      holdUntil = Date.now() + 5000;
+      const r = rowRefs[0];
+      if (r) {
+        const now = Date.now();
+        if (r.pos0 != null && !r.paused) {
+          const run = r.pos0 + (now - r.at) / 1000;
+          r.pos0 = r.dur != null ? Math.min(run, r.dur) : run;
+        }
+        r.at = now;
+        r.paused = sess.paused;
+      }
+    }
+    try {
+      // ONE fetch tier, no ladder: WW.fetch's escalation replays a request whose
+      // response was lost through the other tier, and a replayed NextTrack skips
+      // twice. proxy:'always' dials exactly once — an uncertain outcome lands in the
+      // pending path below and is reconciled, never resent.
+      await jf('/Sessions/' + encodeURIComponent(sess.id) + '/Playing/' + cmd,
+        { method: 'POST', proxy: 'always' }, ACT_DEADLINE);
+      if (gen !== generation) return;
+      // A track skip's success only becomes visible when the next poll lands; the
+      // pause flip is its own confirmation.
+      if (kind !== 'toggle') flash(btn, 'confirm-flash');
+      reconcile();
+      followUp(true);
+    } catch (e) {
+      if (gen !== generation) return;
+      // Only a status that DEFINITELY rejected the request counts as a refusal — a
+      // timeout or a gateway error may have executed anyway, and claiming failure
+      // invites the press that undoes it. Say "sent, unconfirmed" and go look.
+      const definite = e.kind === 'http' && e.status >= 400 && e.status < 500
+        && e.status !== 408 && e.status !== 429;
+      if (definite) {
+        if (kind === 'toggle') {
+          // The hold is cleared UNCONDITIONALLY: an intervening render (slow lane,
+          // resize, the reconcile poll) replaces playerSession with a fresh object for
+          // the same stream, and a rollback gated on object identity would leave the
+          // hold defending a state the server just refused. Matching by id keeps the
+          // UI revert scoped to the stream that was actually toggled.
+          holdUntil = 0;
+          if (playerSession && playerSession.id === sess.id) {
+            playerSession.paused = wasPaused;
+            setPausedUi(wasPaused);
+            const r = rowRefs[0];
+            if (r) { r.at = Date.now(); r.paused = wasPaused; }
+          }
+        }
+        flash(btn, 'fail-flash');
+      } else {
+        flash(btn, 'pending-flash');
+      }
+      WW.log('jellyfin: ' + cmd + ': ' + e.message);
+      reconcile();
+      if (!definite) followUp(true);   // "sent, unconfirmed" needs the second look most
+    } finally {
+      acting = false;
+      // Re-enabled only if the stream on screen still accepts remote control — a
+      // render may have switched sessions while the command was in flight.
+      setControlsDisabled(!playerControllable);
+    }
+  }
+
+  // ---- states ----------------------------------------------------------------------
+
+  function stateCard(cls, icon, title, body, onRetry) {
+    const pill = el('pill');
+    pill.hidden = false;
+    pill.textContent = cls === 'err' ? 'Error' : 'Setup';
+    pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
+    const s = el('state');
+    s.className = 'state-card' + (cls ? ' ' + cls : '');
+    s.textContent = '';
+    const i = document.createElement('div');
+    i.className = 'state-icon';
+    i.textContent = icon;
+    const t = document.createElement('div');
+    t.className = 'state-title';
+    t.textContent = title;
+    const b = document.createElement('div');
+    b.className = 'state-body';
+    b.textContent = body;
+    s.append(i, t, b);
+    if (onRetry) {
+      const btn = document.createElement('button');
+      btn.className = 'btn no-pan';
+      btn.textContent = 'Retry';
+      btn.addEventListener('click', onRetry);
+      s.append(btn);
+    }
+    s.hidden = false;
+    el('main').hidden = true;
+    el('player').hidden = true;
+    el('axis').hidden = true;
+    document.querySelector('footer').hidden = true;
+  }
+
+  function showLoading() {
+    const s = el('state');
+    s.className = 'state-card';
+    s.textContent = '';
+    const sp = document.createElement('div');
+    sp.className = 'spinner';
+    s.append(sp);
+    s.hidden = false;
+    el('main').hidden = true;
+    el('player').hidden = true;
+    el('axis').hidden = true;
+    document.querySelector('footer').hidden = true;
+    const pill = el('pill');
+    pill.hidden = false;
+    pill.textContent = 'Loading';
+    pill.className = 'pill muted';
+    const st = el('st');
+    st.className = 'st';
+    st.textContent = '';
+  }
+
+  function showSetup() {
+    stateCard('', '◎', 'Not configured yet',
+      !cfg.base ? 'Add your Jellyfin address in the widget settings.'
+      : 'Add an API key in the widget settings — Jellyfin Dashboard → API Keys.');
+  }
+
+  function showError(message) {
+    stateCard('err', '!', 'Jellyfin unavailable', message, () => {
+      stateCard('', '', 'Retrying', '');
+      fails = 0;
+      pollAnchor = 0;
+      clearTimeout(timer);
+      tick(generation);
+    });
+  }
+
+  // ---- wiring ----------------------------------------------------------------------
+
+  el('pPrev').addEventListener('click', function () { command(this, 'prev'); });
+  el('pToggle').addEventListener('click', function () { command(this, 'toggle'); });
+  el('pNext').addEventListener('click', function () { command(this, 'next'); });
+
+  let uiTimer = null;
+  function startUiClock() {
+    if (uiTimer) return;
+    uiTimer = setInterval(() => {
+      if (document.hidden || !rowRefs.length) return;
+      applyTimes();
+    }, 1000);
+  }
+
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    // The on-panel editor resizes the frame in place without another init.
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { if (started && lastOk) render(); }, 150);
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !started) return;
+    if (Date.now() - lastOk >= pollDelay()) { clearTimeout(timer); tick(generation); }
+  });
+
+  WW.onInit((s0) => {
+    const s = s0.settings;
+    // The trust choice is part of the identity: flipping it is how a user fixes a
+    // connection, and the retry should start clean with the new transport rules.
+    const prevIdentity = cfg.base + '\n' + cfg.key + '\n' + cfg.selfSigned;
+    const prevView = cfg.view;
+    const prevTypes = cfg.types;
+    cfg.base = normalizeBase(s.baseUrl);
+    cfg.key = String(s.apiKey == null ? '' : s.apiKey);
+    cfg.selfSigned = s.certValidation === 'Allow self-signed';
+    cfg.view = s.view === 'Player' ? 'player' : 'overview';
+    cfg.playerUser = String(s.playerUser == null ? '' : s.playerUser);
+    cfg.types = LATEST_TYPES[s.latestTypes] !== undefined ? LATEST_TYPES[s.latestTypes] : 'Movie,Episode';
+    cfg.refreshMs = Math.min(300, Math.max(5, Number(s.refreshSeconds) || 15)) * 1000;
+    // Switching views or the shelf's filter changes which slow-lane facts matter —
+    // refetch them next tick rather than showing the old filter's items for five minutes.
+    if (prevView !== cfg.view || prevTypes !== cfg.types) {
+      slowAt = 0;
+      if (prevTypes !== cfg.types) { latest = []; latestAt = 0; }
+    }
+
+    // A different server (or a different key onto the same one) is a different set of
+    // facts — and a response already in flight belongs to the old identity.
+    if (prevIdentity !== cfg.base + '\n' + cfg.key + '\n' + cfg.selfSigned) {
+      sessions = [];
+      latest = [];
+      latestAt = 0;
+      counts = null;
+      server = null;
+      rowRefs = [];
+      axisRef = null;
+      generation++;
+      inFlight = false;
+      fails = 0;
+      lastOk = 0;
+      slowAt = 0;
+      holdUntil = 0;
+      document.body.classList.remove('stale');
+      flushImages();
+      // The old server's streams are still painted, and nothing marks them as the old
+      // server's — back to the spinner until the new identity answers (the setup card
+      // below overrides this when the new identity is incomplete).
+      showLoading();
+    }
+    const gen = generation;
+
+    if (!cfg.base || !cfg.key) {
+      clearTimeout(timer);
+      generation++;
+      inFlight = false;
+      started = false;
+      showSetup();
+      return;
+    }
+    // Same identity (a theme push re-sends init): keep the data on screen rather than
+    // blanking to a spinner for a repaint.
+    if (lastOk) render();
+    clearTimeout(timer);
+    started = true;
+    startUiClock();
+    // A poll already in flight would swallow this tick (the gated-recheck branch) and
+    // its finally would re-arm the ordinary interval — with the slow lane just marked
+    // due, that parks an emptied shelf for up to the whole refresh interval. Queue the
+    // follow-up so the running poll hands off immediately.
+    if (inFlight) refreshQueued = true;
+    tick(gen);
+  });
+</script>
+</body>
+</html>

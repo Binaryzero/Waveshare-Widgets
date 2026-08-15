@@ -1,0 +1,66 @@
+{
+  "id": "ws.stock.jellyfin",
+  "name": "Jellyfin",
+  "author": "Plinth",
+  "version": "1.0.0",
+  "description": "Who's streaming what from your Jellyfin server and the titles that just landed in the library — or a touch player that remote-controls a stream. Read from Jellyfin's own API, because the web app refuses to render inside a frame.",
+  "min_api_version": 1,
+  "supported_slots": ["half", "full"],
+  "properties": [
+    {
+      "name": "baseUrl",
+      "label": "Jellyfin address",
+      "type": "text",
+      "default": "",
+      "placeholder": "http://192.168.1.20:8096",
+      "help": "The address you open Jellyfin on, including the port — typically http://<server>:8096. Use an https:// address if you have one: every poll sends the API key with the request, and over plain http that credential crosses your network in the clear."
+    },
+    {
+      "name": "apiKey",
+      "label": "API key",
+      "type": "secret",
+      "placeholder": "Dashboard → API Keys",
+      "help": "A Jellyfin API key: Administration → Dashboard → Advanced → API Keys → +. An API key carries server-wide rights — it can read every library and see every user's activity — so treat it like the server's password."
+    },
+    {
+      "name": "certValidation",
+      "label": "Certificate check (https)",
+      "type": "select",
+      "options": ["Require a valid certificate", "Allow self-signed"],
+      "default": "Require a valid certificate",
+      "help": "Only matters for an https:// address. Every request carries the API key, so by default the certificate must prove the server is really yours before anything is sent. Allow self-signed trades that proof away, and only works when the address is a literal LAN IP (like https://192.168.1.20) or localhost — at a named address the certificate must be one this PC trusts."
+    },
+    {
+      "name": "view",
+      "label": "View",
+      "type": "select",
+      "options": ["Server overview", "Player"],
+      "default": "Server overview",
+      "help": "Server overview lists every active stream plus the recently-added shelf. Player is a touch remote for one stream — art, progress, and pause/skip controls. Place two copies of the widget to have both."
+    },
+    {
+      "name": "playerUser",
+      "label": "Player follows user",
+      "type": "text",
+      "default": "",
+      "placeholder": "blank = most recent stream",
+      "help": "Player view only: control the stream this Jellyfin user is playing. Leave blank to follow whichever stream was active most recently."
+    },
+    {
+      "name": "latestTypes",
+      "label": "Recently added",
+      "type": "select",
+      "options": ["Movies & episodes", "Movies only", "Episodes only", "Hidden"],
+      "default": "Movies & episodes"
+    },
+    {
+      "name": "refreshSeconds",
+      "label": "Refresh every (seconds)",
+      "type": "number",
+      "min": 5,
+      "max": 300,
+      "step": 5,
+      "default": 15
+    }
+  ]
+}

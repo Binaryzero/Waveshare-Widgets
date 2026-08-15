@@ -1,0 +1,7 @@
+[
+ { "match": "/System/Info/Public",
+   "json": { "ServerName": "VAULT", "Version": "10.10.3", "Id": "fixture" } },
+ { "match": "/Sessions", "status": 401, "body": "" },
+ { "match": "SortBy=DateCreated", "status": 401, "body": "" },
+ { "match": "/Items/Counts", "status": 401, "body": "" }
+]
