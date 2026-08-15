@@ -1,0 +1,291 @@
+[
+ {
+  "match": "m-dune/Images",
+  "contentType": "image/svg+xml",
+  "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#3a2c14'/><stop offset='1' stop-color='#120c04'/></linearGradient></defs><rect width='220' height='330' fill='url(#g)'/><circle cx='110' cy='120' r='58' fill='#c98a3d' opacity='0.75'/><text x='110' y='300' text-anchor='middle' font-family='sans-serif' font-size='22' fill='#e8d5b5'>DUNE II</text></svg>"
+ },
+ {
+  "match": "s-severance/Images",
+  "contentType": "image/svg+xml",
+  "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><rect width='220' height='330' fill='#0d1f2d'/><rect x='40' y='60' width='140' height='180' fill='none' stroke='#5fd0c0' stroke-width='3'/><text x='110' y='290' text-anchor='middle' font-family='sans-serif' font-size='20' fill='#9fe8dc'>SEVERANCE</text></svg>"
+ },
+ {
+  "match": "al-chappell/Images",
+  "contentType": "image/svg+xml",
+  "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><rect width='220' height='330' fill='#3d1030'/><circle cx='110' cy='140' r='70' fill='#e05fa0' opacity='0.7'/><text x='110' y='295' text-anchor='middle' font-family='sans-serif' font-size='18' fill='#f5c0dd'>MIDWEST</text></svg>"
+ },
+ {
+  "match": "m-brutalist/Images",
+  "contentType": "image/svg+xml",
+  "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><rect width='220' height='330' fill='#2a2a2e'/><polygon points='60,260 110,60 160,260' fill='#8f8f98'/><text x='110' y='300' text-anchor='middle' font-family='sans-serif' font-size='16' fill='#d5d5da'>BRUTALIST</text></svg>"
+ },
+ {
+  "match": "m-nosferatu/Images",
+  "contentType": "image/svg+xml",
+  "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><rect width='220' height='330' fill='#101418'/><ellipse cx='110' cy='130' rx='55' ry='80' fill='#26333d'/><text x='110' y='300' text-anchor='middle' font-family='sans-serif' font-size='17' fill='#7d95a8'>NOSFERATU</text></svg>"
+ },
+ {
+  "match": "s-slowhorses/Images",
+  "contentType": "image/svg+xml",
+  "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><rect width='220' height='330' fill='#332b1a'/><rect x='30' y='90' width='160' height='110' fill='#6e5b2e'/><text x='110' y='295' text-anchor='middle' font-family='sans-serif' font-size='15' fill='#d8c68f'>SLOW HORSES</text></svg>"
+ },
+ {
+  "match": "m-conclave/Images",
+  "contentType": "image/svg+xml",
+  "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><rect width='220' height='330' fill='#38101a'/><rect x='85' y='60' width='50' height='160' fill='#b03648'/><text x='110' y='300' text-anchor='middle' font-family='sans-serif' font-size='17' fill='#e8aab5'>CONCLAVE</text></svg>"
+ },
+ {
+  "match": "s-shogun/Images",
+  "contentType": "image/svg+xml",
+  "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><rect width='220' height='330' fill='#14201a'/><circle cx='110' cy='130' r='60' fill='none' stroke='#4d8a63' stroke-width='6'/><text x='110' y='298' text-anchor='middle' font-family='sans-serif' font-size='18' fill='#a8d8b8'>SHOGUN</text></svg>"
+ },
+ {
+  "match": "m-anora/Images",
+  "contentType": "image/svg+xml",
+  "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><rect width='220' height='330' fill='#2d0f22'/><circle cx='80' cy='110' r='36' fill='#d84f7d'/><circle cx='145' cy='160' r='24' fill='#8a3057'/><text x='110' y='298' text-anchor='middle' font-family='sans-serif' font-size='19' fill='#f0b8cd'>ANORA</text></svg>"
+ },
+ {
+  "match": "m-furiosa/Images",
+  "contentType": "image/svg+xml",
+  "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><rect width='220' height='330' fill='#301708'/><path d='M20 250 L110 90 L200 250 Z' fill='#c26a20' opacity='0.8'/><text x='110' y='300' text-anchor='middle' font-family='sans-serif' font-size='18' fill='#eec49a'>FURIOSA</text></svg>"
+ },
+ {
+  "match": "m-wildrobot/Images",
+  "contentType": "image/svg+xml",
+  "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><rect width='220' height='330' fill='#12262e'/><rect x='70' y='80' width='80' height='100' rx='14' fill='#4d9ab0'/><text x='110' y='296' text-anchor='middle' font-family='sans-serif' font-size='15' fill='#b0dcea'>WILD ROBOT</text></svg>"
+ },
+ {
+  "match": "m-heretic/Images",
+  "contentType": "image/svg+xml",
+  "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><rect width='220' height='330' fill='#1c1c14'/><polygon points='110,70 150,200 70,200' fill='#8a8a3d'/><text x='110' y='298' text-anchor='middle' font-family='sans-serif' font-size='18' fill='#d5d59a'>HERETIC</text></svg>"
+ },
+ {
+  "match": "/Items/Counts",
+  "json": {
+   "MovieCount": 412,
+   "SeriesCount": 37,
+   "EpisodeCount": 1208,
+   "AlbumCount": 92,
+   "SongCount": 1810
+  }
+ },
+ {
+  "match": "SortBy=DateCreated",
+  "json": {
+   "TotalRecordCount": 1620,
+   "Items": [
+    {
+     "Id": "m-brutalist",
+     "Name": "The Brutalist",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {
+      "Primary": "tb1"
+     }
+    },
+    {
+     "Id": "e-sh-406",
+     "Name": "Hello Goodbye",
+     "Type": "Episode",
+     "SeriesName": "Slow Horses",
+     "SeriesId": "s-slowhorses",
+     "SeriesPrimaryImageTag": "tsh",
+     "ParentIndexNumber": 4,
+     "IndexNumber": 6,
+     "ImageTags": {}
+    },
+    {
+     "Id": "m-nosferatu",
+     "Name": "Nosferatu",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {
+      "Primary": "tn1"
+     }
+    },
+    {
+     "Id": "m-conclave",
+     "Name": "Conclave",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {
+      "Primary": "tc1"
+     }
+    },
+    {
+     "Id": "e-sg-109",
+     "Name": "Crimson Sky",
+     "Type": "Episode",
+     "SeriesName": "Shōgun",
+     "SeriesId": "s-shogun",
+     "SeriesPrimaryImageTag": "tsg",
+     "ParentIndexNumber": 1,
+     "IndexNumber": 9,
+     "ImageTags": {}
+    },
+    {
+     "Id": "m-anora",
+     "Name": "Anora",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {
+      "Primary": "ta1"
+     }
+    },
+    {
+     "Id": "m-furiosa",
+     "Name": "Furiosa: A Mad Max Saga",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {
+      "Primary": "tf1"
+     }
+    },
+    {
+     "Id": "m-wildrobot",
+     "Name": "The Wild Robot",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {
+      "Primary": "tw1"
+     }
+    },
+    {
+     "Id": "m-heretic",
+     "Name": "Heretic",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {
+      "Primary": "th1"
+     }
+    },
+    {
+     "Id": "m-realpain",
+     "Name": "A Real Pain",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {}
+    },
+    {
+     "Id": "m-flow",
+     "Name": "Flow",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {}
+    },
+    {
+     "Id": "m-twisters",
+     "Name": "Twisters",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {}
+    }
+   ]
+  }
+ },
+ {
+  "match": "/Playing/",
+  "status": 204,
+  "body": ""
+ },
+ {
+  "match": "/Sessions",
+  "json": [
+   {
+    "UserName": "will",
+    "Client": "Jellyfin Media Player",
+    "DeviceName": "living-room",
+    "LastActivityDate": "2026-08-15T09:12:41Z",
+    "PlayState": {
+     "PositionTicks": 28430000000,
+     "IsPaused": false,
+     "PlayMethod": "DirectPlay"
+    },
+    "NowPlayingItem": {
+     "Id": "m-dune",
+     "Name": "Dune: Part Two",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "RunTimeTicks": 99600000000,
+     "ImageTags": {
+      "Primary": "td1"
+     }
+    },
+    "Id": "sess-livingroom"
+   },
+   {
+    "UserName": "sam",
+    "Client": "Finamp",
+    "DeviceName": "phone",
+    "LastActivityDate": "2026-08-15T09:11:02Z",
+    "PlayState": {
+     "PositionTicks": 1120000000,
+     "IsPaused": false,
+     "PlayMethod": "DirectPlay"
+    },
+    "NowPlayingItem": {
+     "Id": "a-ppc",
+     "Name": "Pink Pony Club",
+     "Type": "Audio",
+     "Artists": [
+      "Chappell Roan"
+     ],
+     "Album": "The Rise and Fall of a Midwest Princess",
+     "AlbumId": "al-chappell",
+     "AlbumPrimaryImageTag": "tal1",
+     "RunTimeTicks": 2580000000,
+     "ImageTags": {}
+    },
+    "Id": "sess-phone"
+   },
+   {
+    "UserName": "emma",
+    "Client": "Jellyfin Web",
+    "DeviceName": "office-pc",
+    "LastActivityDate": "2026-08-15T09:04:17Z",
+    "PlayState": {
+     "PositionTicks": 7250000000,
+     "IsPaused": true,
+     "PlayMethod": "Transcode"
+    },
+    "NowPlayingItem": {
+     "Id": "e-sev-207",
+     "Name": "Chikhai Bardo",
+     "Type": "Episode",
+     "SeriesName": "Severance",
+     "SeriesId": "s-severance",
+     "SeriesPrimaryImageTag": "tsev",
+     "ParentIndexNumber": 2,
+     "IndexNumber": 7,
+     "RunTimeTicks": 34200000000,
+     "ImageTags": {}
+    },
+    "Id": "sess-office"
+   },
+   {
+    "UserName": "kiosk",
+    "Client": "Jellyfin Web",
+    "DeviceName": "hallway",
+    "LastActivityDate": "2026-08-15T07:30:00Z",
+    "PlayState": {
+     "PositionTicks": 0,
+     "IsPaused": false
+    },
+    "Id": "sess-hallway"
+   }
+  ]
+ },
+ {
+  "match": "/System/Info/Public",
+  "json": {
+   "ServerName": "VAULT",
+   "Version": "10.10.3",
+   "Id": "fixture"
+  }
+ },
+ {
+  "match": "/Images/Primary",
+  "contentType": "image/svg+xml",
+  "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><rect width='220' height='330' fill='#1e232b'/></svg>"
+ }
+]

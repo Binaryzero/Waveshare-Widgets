@@ -52,7 +52,7 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
 - **Settings UI**: tray → **Settings…** opens a visual editor for pages, slots, and
   every widget's declared properties (colors, sliders, sensor pickers, structured
   lists) — no JSON editing required — plus the Theme panel with a live preview.
-- **Thirty-one stock widgets**: CPU, GPU, Clock, Countdown, Now Playing, Weather,
+- **Thirty-two stock widgets**: CPU, GPU, Clock, Countdown, Now Playing, Weather,
   7-Day Forecast, Weather Radar, Reddit Photos, Ping Monitor, iFrame, Stream Deck
   mirror (live Virtual Stream Deck with clickable keys), Control Deck (a touch
   button grid — launch apps, open URLs, send hotkeys, control media; no Stream
@@ -85,7 +85,13 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   next thing on your calendar and a live countdown to it, read straight from a
   private ICS link — no OAuth and no account to connect; daily and weekly repeats
   are expanded, and any repeat it cannot read is counted on screen rather than
-  quietly dropped, so the tile never looks emptier than the calendar is), and WoW
+  quietly dropped, so the tile never looks emptier than the calendar is), Jellyfin
+  (who's streaming what from your server and what just landed in the library:
+  active sessions with live progress, transcode and paused flags, a
+  recently-added poster shelf, and library counts — or flip a tile to Player
+  view, a touch remote for one stream with art, progress, and pause/skip that
+  drives the playing client over the sessions API; read from Jellyfin's own
+  API either way, because its web app refuses to render inside a frame), and WoW
   Panel (your character on the panel: portrait, level, spec and guild, your
   professions with skill progress, the reputations you've pushed lately, mount
   and pet counts, your latest achievement, and the ones only a step or two from
