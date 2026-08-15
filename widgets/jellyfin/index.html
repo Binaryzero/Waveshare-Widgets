@@ -339,6 +339,12 @@
       const body = await jfJson('/Sessions?ActiveWithinSeconds=900', POLL_DEADLINE, LIST_MAX_BYTES);
       if (gen !== generation) return;
       if (!Array.isArray(body)) throw fault('format', 'reply was not a session list');
+      // A non-empty array of things that aren't sessions is not an idle server — a
+      // reverse proxy routing /Sessions somewhere else would otherwise read as
+      // "Nothing playing" with the stale marker cleared. Every real Jellyfin session,
+      // idle or streaming, carries an Id.
+      if (body.length && !body.some((s) => s && typeof s === 'object' && s.Id))
+        throw fault('format', 'reply was not a session list');
       sessions = body
         .filter((s) => s && s.NowPlayingItem)
         .sort((a, b) => {
@@ -610,12 +616,20 @@
     const pool = wantUser
       ? sessions.filter((s) => String(s.UserName || '').toLowerCase() === wantUser)
       : sessions;
-    const s = pool[0] || null;
+    // Most recent activity wins, NOT the overview's playing-before-paused order: the
+    // person who just paused wants the remote on THEIR stream — jumping to someone
+    // else's older playing session hands them a play button for the wrong house.
+    const s = pool.slice().sort((a, b) =>
+      String(b.LastActivityDate || '').localeCompare(String(a.LastActivityDate || '')))[0] || null;
 
     if (!s) {
       playerSession = null;
       rowRefs = [];
       axisRef = null;
+      // The header annotation is the previous stream's "Playing" until told otherwise.
+      const st = el('st');
+      st.className = 'st';
+      st.textContent = (server && server.name) || '';
       stateCard('', '▷', 'Nothing playing',
         wantUser
           ? 'No stream from ' + cfg.playerUser.trim() + ' right now.'
@@ -926,6 +940,27 @@
     document.querySelector('footer').hidden = true;
   }
 
+  function showLoading() {
+    const s = el('state');
+    s.className = 'state-card';
+    s.textContent = '';
+    const sp = document.createElement('div');
+    sp.className = 'spinner';
+    s.append(sp);
+    s.hidden = false;
+    el('main').hidden = true;
+    el('player').hidden = true;
+    el('axis').hidden = true;
+    document.querySelector('footer').hidden = true;
+    const pill = el('pill');
+    pill.hidden = false;
+    pill.textContent = 'Loading';
+    pill.className = 'pill muted';
+    const st = el('st');
+    st.className = 'st';
+    st.textContent = '';
+  }
+
   function showSetup() {
     stateCard('', '◎', 'Not configured yet',
       !cfg.base ? 'Add your Jellyfin address in the widget settings.'
@@ -973,14 +1008,19 @@
     const s = s0.settings;
     const prevIdentity = cfg.base + '\n' + cfg.key;
     const prevView = cfg.view;
+    const prevTypes = cfg.types;
     cfg.base = normalizeBase(s.baseUrl);
     cfg.key = String(s.apiKey == null ? '' : s.apiKey);
     cfg.view = s.view === 'Player' ? 'player' : 'overview';
     cfg.playerUser = String(s.playerUser == null ? '' : s.playerUser);
     cfg.types = LATEST_TYPES[s.latestTypes] !== undefined ? LATEST_TYPES[s.latestTypes] : 'Movie,Episode';
     cfg.refreshMs = Math.min(300, Math.max(5, Number(s.refreshSeconds) || 15)) * 1000;
-    // Switching views changes which slow-lane facts matter — refetch them next tick.
-    if (prevView !== cfg.view) slowAt = 0;
+    // Switching views or the shelf's filter changes which slow-lane facts matter —
+    // refetch them next tick rather than showing the old filter's items for five minutes.
+    if (prevView !== cfg.view || prevTypes !== cfg.types) {
+      slowAt = 0;
+      if (prevTypes !== cfg.types) latest = [];
+    }
 
     // A different server (or a different key onto the same one) is a different set of
     // facts — and a response already in flight belongs to the old identity.
@@ -998,6 +1038,10 @@
       slowAt = 0;
       document.body.classList.remove('stale');
       flushImages();
+      // The old server's streams are still painted, and nothing marks them as the old
+      // server's — back to the spinner until the new identity answers (the setup card
+      // below overrides this when the new identity is incomplete).
+      showLoading();
     }
     const gen = generation;
 
