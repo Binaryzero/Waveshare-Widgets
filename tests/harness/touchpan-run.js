@@ -48,10 +48,12 @@ const check = (name, ok, detail) => {
 };
 
 // The runtime edge width is READ from shell.css rather than hardcoded, so these tests track
-// the shipped value: #213 narrowed the page-swipe strip from 36px to 16px so it stops
-// covering a control near a screen edge, and a regression back to 36 re-covers the
-// notifications eye and fails E2 below. The `.edge {` base rule is matched (not the
-// `body.editing .edge` override, which keeps the full 36px for the drop target).
+// the shipped value: #213 narrowed the page-swipe strip from 36px so it stops covering a
+// control near a screen edge, and #245 narrowed it further to 8px — the minimum stock
+// control inset — after 16px was found to still cover the notifications eye in a 320px
+// quarter slot. A regression toward either wider value re-covers the eye and fails E2 (640px)
+// or E5 (320px) below. The `.edge {` base rule is matched (not the `body.editing .edge`
+// override, which keeps the full 36px for the drop target).
 const EDGE_CSS = fs.readFileSync(path.join(SHELL, 'shell.css'), 'utf8');
 const EDGE_BLOCK = (EDGE_CSS.match(/(?:^|\n)\.edge\s*\{[^}]*\}/) || [''])[0];
 const EDGE_W = Number((EDGE_BLOCK.match(/width:\s*(\d+)px/) || [])[1]);
@@ -248,8 +250,9 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   // ---- E1/E2/E3 · the edge overlay no longer steals a tap near the screen edge (#213) -----
   // T3/T4 exercised the widget-side fix (#212). This exercises the SHELL side: the .edge
   // strips page on a tap and sit above the iframes, so at 36px they covered the eye (~18px
-  // from the right edge) and a tap on it paged instead of toggling. The strip is now EDGE_W
-  // (16px), read from shell.css, so a revert to 36 fails E2b.
+  // from the right edge) and a tap on it paged instead of toggling. The strip is now EDGE_W,
+  // read from shell.css, so a revert to 36 fails E2b. This pass runs at 640px; E4/E5 below
+  // repeat the geometry at the 320px quarter slot, where the inset is tighter (#245).
   await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
   await page.waitForTimeout(200);
   const vw = await page.evaluate(() => window.innerWidth);
@@ -296,6 +299,48 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   const stripAfter = await pagesLeft();
   check('E3 the narrowed edge still pages on a tap in the strip',
     stripAfter - stripBefore > 100, `pages ${stripBefore} -> ${stripAfter}`);
+
+  // ---- E4/E5 · the same overlap at the 320px quarter slot (#245) -----------------------
+  // Notifications supports the 320px quarter slot, and its horizontal padding is a clamp
+  // that grows with width — 18px at 640px (which is what HID this), but only 10px at 320px.
+  // So the eye sits closer to the edge here, and a 16px strip that cleared it at 640px still
+  // covered it at 320px. Re-run the geometry at 320px, then restore the 640px viewport for
+  // the checks that follow.
+  await page.setViewportSize({ width: 320, height: 400 });
+  await page.waitForTimeout(250);
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await frame.evaluate(() => { const b = document.getElementById('eyeBtn'); if (b.getAttribute('aria-pressed') === 'true') b.click(); });
+  await page.waitForTimeout(150);
+  const vw2 = await page.evaluate(() => window.innerWidth);
+  const eb2 = await frame.locator('#eyeBtn').boundingBox();
+  const eyeRight2 = eb2.x + eb2.width;
+  const eyeMidY2 = eb2.y + eb2.height / 2;
+  // Discriminating: at 320px the eye must reach into the OLD 16px band, so a strip that wide
+  // WOULD have covered it — which is exactly what #245 measured. If it does not, this test
+  // cannot tell a fixed build from a broken one, so it fails loudly to force a retune.
+  check('E4 setup: at 320px the eye reaches into the old 16px edge band, so this discriminates',
+    EDGE_W < 16 && (vw2 - eyeRight2) < 16 && eb2.x < vw2 - EDGE_W,
+    `vw ${vw2}, eye ${Math.round(eb2.x)}..${Math.round(eyeRight2)}, old-band start ${vw2 - 16}, strip start ${vw2 - EDGE_W}`);
+  const testX2 = Math.round(((vw2 - 16) + (vw2 - EDGE_W)) / 2);
+  const topAt2 = await page.evaluate(([x, y]) => {
+    const el = document.elementFromPoint(x, y);
+    return el ? (el.id || el.tagName.toLowerCase()) : null;
+  }, [testX2, eyeMidY2]);
+  check('E5a at 320px the edge overlay does not cover the eye', topAt2 !== 'edgeRight' && eyeRight2 <= vw2 - EDGE_W,
+    `top ${topAt2}, eyeRight ${Math.round(eyeRight2)} vs strip start ${vw2 - EDGE_W}`);
+
+  const prBefore2 = await frame.evaluate(() => document.getElementById('eyeBtn').getAttribute('aria-pressed'));
+  const slBefore2 = await pagesLeft();
+  await page.touchscreen.tap(testX2, eyeMidY2);
+  await page.waitForTimeout(400);
+  const prAfter2 = await frame.evaluate(() => document.getElementById('eyeBtn').getAttribute('aria-pressed'));
+  const slAfter2 = await pagesLeft();
+  check('E5b at 320px a tap on the eye near the edge toggles it and does not page',
+    prBefore2 !== prAfter2 && Math.abs(slAfter2 - slBefore2) < 5,
+    `aria-pressed ${prBefore2} -> ${prAfter2}, pages ${slBefore2} -> ${slAfter2}`);
+
+  await page.setViewportSize({ width: 640, height: 400 });
+  await page.waitForTimeout(200);
 
   // ---- T5/T6 · what the shared stylesheet must NOT do ---------------------------------
   // The first version of this fix put `touch-action: none` on the widget document in

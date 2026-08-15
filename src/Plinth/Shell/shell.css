@@ -188,25 +188,30 @@ html, body {
 #dots span.active { background-color: color-mix(in srgb, var(--text, #fff) 92%, transparent); background-clip: padding-box; }
 
 /* Edge swipe/tap zones for page switching (widgets consume touches everywhere else).
- * 16px, not 36px (#213): the strip sits ABOVE the widget iframes and pages on a tap,
- * so at 36px it covered any control within 36px of a screen edge — the notifications
- * eye (18px from the edge in a 640px slot) had a tap on it flip the page instead of
- * toggling. 16px clears a 40px control sitting in typical slot padding while leaving a
- * usable swipe target; a control flush to the outer padding can still clip, the
- * accepted trade for keeping the swipe surface. EDIT MODE keeps the full 36px (below):
- * there the same element is the move-to-adjacent-page drop target and widget controls
- * are not live, so a generous target is wanted and costs nothing. */
+ * 8px, not 16px or 36px (#213, #245): the strip sits ABOVE the widget iframes and pages
+ * on a tap, so it covers any control within its width of a screen edge. 36px covered the
+ * notifications eye; 16px still covered it in a 320px quarter slot, where the eye sits
+ * 10px from the edge and stream-deck keys 8px — the 640px harness masked it because the
+ * eye's inset grows to 18px there. 8px is the MINIMUM stock control inset: every stock
+ * widget's edge-adjacent controls (grid keys and hue rooms at --space-2 = 8px, the eye at
+ * 10px) start at or beyond 8px, so a strip this wide sits entirely inside their outer
+ * padding and covers none of them, at any supported slot. Swipe still pages across the
+ * whole panel. EDIT MODE keeps the full 36px (below): there the same element is the
+ * move-to-adjacent-page drop target and widget controls are not live, so a generous
+ * target is wanted and costs nothing. */
 .edge {
   position: fixed;
   top: 0;
   bottom: 0;
-  width: 16px;
+  width: 8px;
   z-index: 5;
   display: flex;
   align-items: center;
   justify-content: center;
   color: color-mix(in srgb, var(--text, #fff) 45%, transparent);
-  font-size: 22px;
+  /* The chevron is a hint that overflows the thin strip; it is only ever briefly visible
+   * (.edge.idle fades it out), and the hit area is the 8px box, not the glyph. */
+  font-size: 14px;
   font-weight: 200;
   touch-action: none;
   cursor: pointer;
