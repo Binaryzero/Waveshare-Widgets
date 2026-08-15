@@ -39,6 +39,9 @@
   /* Recently added: a shelf of posters. --ph is set by the JS layout budget so the
    * shelf, the session rows and the footer always share the height honestly. */
   #latestSec { flex: none; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  /* The shelf alone can go stale while the streams stay live — same treatment as the
+   * whole-tile stale state: keep the data, dim it, say so in the footer. */
+  #latestSec.stale-sec { opacity: 0.6; }
   #strip { display: flex; gap: 8px; overflow: hidden; }
   .tile { flex: none; width: calc(var(--ph) * 2 / 3); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .tile .art { height: var(--ph); width: 100%; }
@@ -191,6 +194,7 @@
   const cfg = { base: '', key: '', types: 'Movie,Episode', refreshMs: 15000, view: 'overview', playerUser: '' };
   let sessions = [];          // active streams (NowPlayingItem present), sorted
   let latest = [];            // recently added items
+  let latestAt = 0;           // when the shelf's data last actually refreshed
   let counts = null;          // {movies, series, episodes}
   let server = null;          // {name, version}
   let extraSessions = 0;      // active streams beyond what the slot can show
@@ -393,13 +397,18 @@
   function refreshSlow(gen) {
     slowAt = Date.now();
     if (cfg.types && cfg.view !== 'player') {
+      // Captured at request time: a filter change while this is in flight makes the
+      // reply an answer to a question nobody is asking any more — generation only
+      // guards the server identity, not the filter.
+      const typesAsked = cfg.types;
       jfJson('/Items?SortBy=DateCreated&SortOrder=Descending&Recursive=true&IncludeItemTypes='
         + encodeURIComponent(cfg.types) + '&Limit=' + LATEST_FETCH + '&ImageTypeLimit=1&EnableImageTypes=Primary',
         SLOW_DEADLINE, LIST_MAX_BYTES)
         .then((body) => {
-          if (gen !== generation) return;
+          if (gen !== generation || typesAsked !== cfg.types) return;
           if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
           latest = body.Items.filter((it) => it && it.Id);
+          latestAt = Date.now();
           // Repaint only once the fast lane has succeeded: /System/Info/Public needs no
           // auth, so a slow-lane success with a rejected API key would otherwise paint a
           // healthy-looking quiet card straight over the error the user needs to see.
@@ -562,9 +571,12 @@
       rowRefs.push({ elapsed, fill, pos0: pos, dur, paused: isPaused, at: lastOk });
     }
 
-    // Recently added.
+    // Recently added. A shelf whose refresh has been failing for a while must not
+    // ride the session poll's healthy glow — old titles rendered bright read as new.
+    const shelfStale = lay.latestShown && latestAt > 0 && Date.now() - latestAt > SLOW_MS * 2 + 60000;
     const sec = el('latestSec');
     sec.hidden = !lay.latestShown;
+    sec.classList.toggle('stale-sec', shelfStale);
     if (lay.latestShown) {
       const strip = el('strip');
       strip.textContent = '';
@@ -595,6 +607,7 @@
       : '';
     const notes = [];
     if (extraSessions > 0) notes.push('+' + extraSessions + ' more streaming');
+    if (shelfStale) notes.push('shelf from ' + new Date(latestAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
     if (lastOk) notes.push('updated ' + new Date(lastOk).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
     el('meta').textContent = notes.join(' · ');
 
@@ -912,7 +925,12 @@
       }
     }
     try {
-      await jf('/Sessions/' + encodeURIComponent(sess.id) + '/Playing/' + cmd, { method: 'POST' }, ACT_DEADLINE);
+      // ONE fetch tier, no ladder: WW.fetch's escalation replays a request whose
+      // response was lost through the other tier, and a replayed NextTrack skips
+      // twice. proxy:'always' dials exactly once — an uncertain outcome lands in the
+      // pending path below and is reconciled, never resent.
+      await jf('/Sessions/' + encodeURIComponent(sess.id) + '/Playing/' + cmd,
+        { method: 'POST', proxy: 'always' }, ACT_DEADLINE);
       if (gen !== generation) return;
       // A track skip's success only becomes visible when the next poll lands; the
       // pause flip is its own confirmation.
@@ -927,12 +945,19 @@
       const definite = e.kind === 'http' && e.status >= 400 && e.status < 500
         && e.status !== 408 && e.status !== 429;
       if (definite) {
-        if (kind === 'toggle' && playerSession === sess) {
-          sess.paused = wasPaused;
-          setPausedUi(wasPaused);
-          holdUntil = 0;   // a refusal is definite — stop defending the flip
-          const r = rowRefs[0];
-          if (r) { r.at = Date.now(); r.paused = wasPaused; }
+        if (kind === 'toggle') {
+          // The hold is cleared UNCONDITIONALLY: an intervening render (slow lane,
+          // resize, the reconcile poll) replaces playerSession with a fresh object for
+          // the same stream, and a rollback gated on object identity would leave the
+          // hold defending a state the server just refused. Matching by id keeps the
+          // UI revert scoped to the stream that was actually toggled.
+          holdUntil = 0;
+          if (playerSession && playerSession.id === sess.id) {
+            playerSession.paused = wasPaused;
+            setPausedUi(wasPaused);
+            const r = rowRefs[0];
+            if (r) { r.at = Date.now(); r.paused = wasPaused; }
+          }
         }
         flash(btn, 'fail-flash');
       } else {
@@ -1060,7 +1085,7 @@
     // refetch them next tick rather than showing the old filter's items for five minutes.
     if (prevView !== cfg.view || prevTypes !== cfg.types) {
       slowAt = 0;
-      if (prevTypes !== cfg.types) latest = [];
+      if (prevTypes !== cfg.types) { latest = []; latestAt = 0; }
     }
 
     // A different server (or a different key onto the same one) is a different set of
@@ -1068,6 +1093,7 @@
     if (prevIdentity !== cfg.base + '\n' + cfg.key) {
       sessions = [];
       latest = [];
+      latestAt = 0;
       counts = null;
       server = null;
       rowRefs = [];
