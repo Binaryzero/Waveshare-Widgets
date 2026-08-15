@@ -359,9 +359,13 @@
       if (!Array.isArray(body)) throw fault('format', 'reply was not a session list');
       // A non-empty array of things that aren't sessions is not an idle server — a
       // reverse proxy routing /Sessions somewhere else would otherwise read as
-      // "Nothing playing" with the stale marker cleared. Every real Jellyfin session,
-      // idle or streaming, carries an Id.
-      if (body.length && !body.some((s) => s && typeof s === 'object' && s.Id))
+      // "Nothing playing" with the stale marker cleared. An Id alone doesn't say
+      // "session" (users and library items carry one too); a session also carries
+      // its device/client/activity facts, so ask for at least one of those.
+      const sessionish = (s) => s && typeof s === 'object' && s.Id
+        && (s.DeviceId !== undefined || s.Client !== undefined
+          || s.PlayState !== undefined || s.LastActivityDate !== undefined);
+      if (body.length && !body.some(sessionish))
         throw fault('format', 'reply was not a session list');
       sessions = body
         .filter((s) => s && s.NowPlayingItem)
@@ -888,6 +892,7 @@
   // hold open); one short follow-up lands after the client has reported, instead of
   // leaving the answer to the regular schedule up to five minutes out.
   let followTimer = null;
+  let holdTimer = null;
   function followUp() {
     const gen = generation;
     clearTimeout(followTimer);
@@ -913,6 +918,12 @@
       holdId = sess.id;
       holdPaused = sess.paused;
       holdUntil = Date.now() + 5000;
+      // ...and one poll lands just PAST the hold: a client that ignored the command
+      // (or reports slowly) would otherwise keep the optimistic state on screen until
+      // the regular schedule, up to five minutes out. Skipped if a poll inside the
+      // window already confirmed the flip (holdUntil drops to 0 then).
+      clearTimeout(holdTimer);
+      holdTimer = setTimeout(() => { if (gen === generation && holdUntil) reconcile(); }, 5500);
       const r = rowRefs[0];
       if (r) {
         const now = Date.now();
@@ -1127,6 +1138,11 @@
     clearTimeout(timer);
     started = true;
     startUiClock();
+    // A poll already in flight would swallow this tick (the gated-recheck branch) and
+    // its finally would re-arm the ordinary interval — with the slow lane just marked
+    // due, that parks an emptied shelf for up to the whole refresh interval. Queue the
+    // follow-up so the running poll hands off immediately.
+    if (inFlight) refreshQueued = true;
     tick(gen);
   });
 </script>
