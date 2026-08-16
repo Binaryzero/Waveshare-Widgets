@@ -133,6 +133,26 @@ const settle = (p) => p.waitForTimeout(250);   // real time — lets a routed fe
   check('N1b on resume the NEW calendar is fetched at once, not the old deadline re-armed',
     hitsTo('b.ics').length === bBefore + 1, `${hitsTo('b.ics').length - bBefore} B hits after resume`);
 
+  // N1c · a CADENCE-ONLY edit that arrives while STILL paused, after a source change, must not
+  // overwrite the "due now" the source change set. The cadence recompute anchors on `lastTry`;
+  // if that still points at the OLD calendar's attempt, it re-derives a future deadline and the
+  // new calendar stays on its spinner past resume (Codex review). Reset `lastTry` with the rest
+  // of the source-specific state, and keep an un-attempted source due now.
+  setCal('e1.ics', () => ({ status: 200, body: EMPTY_ICS }));
+  setCal('e2.ics', () => ({ status: 200, body: EMPTY_ICS }));
+  await init({ icsUrl: 'https://cal.test/e1.ics', refreshMinutes: 30, bgStyle: 'solid' });   // settle on e1
+  await settle(page);
+  await setHidden(true);
+  await init({ icsUrl: 'https://cal.test/e2.ics', refreshMinutes: 30, bgStyle: 'solid' });   // source change, paused
+  await settle(page);
+  const e2Before = hitsTo('e2.ics').length;
+  await init({ icsUrl: 'https://cal.test/e2.ics', refreshMinutes: 45, bgStyle: 'solid' });    // cadence-only, STILL paused
+  await settle(page);
+  await setHidden(false);                      // resume
+  await settle(page);
+  check('N1c a cadence edit while paused does not strand a just-changed source past resume',
+    hitsTo('e2.ics').length === e2Before + 1, `${hitsTo('e2.ics').length - e2Before} e2 hits after resume`);
+
   // ---- N2 · an error card over an empty calendar survives the 1 Hz repaint --------------
   setCal('c.ics', () => ({ status: 200, body: EMPTY_ICS }));
   await init({ icsUrl: 'https://cal.test/c.ics', refreshMinutes: 5, bgStyle: 'solid' });

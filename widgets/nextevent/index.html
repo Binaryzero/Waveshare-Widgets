@@ -142,6 +142,7 @@
       tickTimer = null;
       current = null;
       lastOk = 0;
+      lastTry = 0;
       failures = 0;
       started = false;
       showSetup();
@@ -172,6 +173,12 @@
       // is told no and re-arms that stale deadline, so the newly configured calendar is
       // not fetched for up to the old interval (12 hours at the cap). (#180)
       dueAt = 0;
+      // ...and drop the attempt anchor with the rest of the source-specific state. It points
+      // at the OLD calendar, and a cadence-only edit arriving while STILL paused would re-derive
+      // `dueAt` from it — undoing the reset above and stranding the new calendar on its spinner
+      // past resume. `lastTry === 0` now means "this source has not been fetched", which the
+      // cadence recompute reads as due-now. (#180 review)
+      lastTry = 0;
       errorShowing = false;
       document.body.classList.remove('stale');
       // Clear what is on SCREEN, not just the model behind it. Nulling `current` alone
@@ -199,8 +206,11 @@
       // the past and the edit fired an immediate retry — the one situation the backoff
       // exists for. `lastTry` is the attempt the current `nextDelayMs()` backoff is
       // measured from, so the two agree. (#180)
+      // A source not yet attempted (lastTry 0 — e.g. changed while paused) is due NOW, not a
+      // fresh interval out: recomputing from `Date.now()` there would push a pending fetch up
+      // to a full interval away and strand the calendar past resume.
       if (cadenceChanged) {
-        schedule(Math.max(0, (lastTry || Date.now()) + nextDelayMs() - Date.now()));
+        schedule(lastTry ? Math.max(0, lastTry + nextDelayMs() - Date.now()) : 0);
       }
     }
   });
