@@ -52,6 +52,10 @@ const derive = global.window.WWPalette.derive;
 // mattered, and then it would look like a widget bug.
 require(path.join(__dirname, '../src/Plinth/Shell/appearance.js'));
 const universalProperties = global.window.WWAppearance.universalProperties;
+// #221 tap-surface detector, shared with widget-harness.js. This runner is the one that
+// drives POPULATED render paths — the controls a widget only creates once data arrives — so
+// the same audit has to run here, not only offline. See tools/tap-audit.js.
+const { tapInitScript, auditTapSurfaces } = require('./tap-audit.js');
 
 const SHELL = path.join(__dirname, '../src/Plinth/Shell');
 const SLOTS = {
@@ -70,9 +74,9 @@ const opt = (name, dflt) => {
   return i >= 0 ? args[i + 1] : dflt;
 };
 if (!folder) {
-  console.error('usage: widget-datapath.js <widget-folder> --stubs <file.json> [--slot half] '
-    + '[--theme dark|light] [--settings {json}] [--expect "text"] [--reject "text"] [--allow-state] '
-    + '[--wait 1500] [--shot out.png] [--json]');
+  console.error('usage: widget-datapath.js <widget-folder> [--stubs <file.json>] [--sd <file.json>] '
+    + '[--slot half] [--theme dark|light] [--settings {json}] [--expect "text"] [--reject "text"] '
+    + '[--allow-state] [--wait 1500] [--shot out.png] [--json]');
   process.exit(1);
 }
 
@@ -109,6 +113,19 @@ const proxyForwardable = new Set(
 const stubs = (() => {
   const file = opt('stubs', null);
   if (!file) return [];
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+})();
+// The Virtual Stream Deck fixture. Stream Deck takes NO http path — its profile, keys and
+// live capture all arrive over the host bridge (ww-sd-profile / ww-sd-capture), which this
+// runner did not answer, so renderPicker() and the key grid never ran and the tap audit
+// passed vacuously for it (#221 review). `--sd file.json` supplies the host's reply:
+//   { "profile": { "available": true, "profiles": ["Default","Gaming"],
+//                  "rows": 2, "cols": 3, "buttons": [{"row":0,"col":0,"title":"A"}, …] },
+//     "capture": { "image": "data:…", "hash": "…" } }   // capture optional
+// profiles.length > 1 renders the picker buttons; buttons[] renders the key grid.
+const sd = (() => {
+  const file = opt('sd', null);
+  if (!file) return null;
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 })();
 const expects = [];
@@ -391,6 +408,9 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
       }
     } catch (e) { /* not present in this build */ }
   });
+  // #221 — tap-surface detector, before the widget's own scripts and in every frame. The
+  // audit runs after the populated state has settled, below. See tools/tap-audit.js.
+  await page.addInitScript(tapInitScript);
   await page.addInitScript(shim);
   // Host-bound messages, answered by the SHELL document — the widget's shim drops any
   // message whose ev.source is not window.parent, so a reply the widget's own document
@@ -398,7 +418,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // direct route uses, because a widget that escalates to the host proxy must reach the
   // same data it would have reached directly — otherwise the stub only covers whichever
   // tier happened to win.
-  await page.addInitScript(({ table, ceiling, widgetUrl, widgetOrigin, slotHash, initMessage, forwardable }) => {
+  await page.addInitScript(({ table, ceiling, widgetUrl, widgetOrigin, slotHash, initMessage, forwardable, sd }) => {
     if (window.top !== window) return;   // shell-side only; the widget frame gets the shim
     const proxyForwardable = new Set(forwardable);
     window.__wwProxyServed = [];
@@ -410,6 +430,9 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     // ww-audio-*, ww-sd-*, ww-secure-*, ww-log, ww-action, ww-open-url) is answered inside
     // the host process and reaches no network.
     window.__wwHostCalls = [];
+    // Virtual Stream Deck replies actually served (a profile handed back), so the data-path
+    // check can treat a populated deck — which makes no http request — as data delivered.
+    window.__wwSdServed = [];
     window.__wwReady = false;
     window.__wwInitSent = false;
     let frame = null;
@@ -571,6 +594,19 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         if ((kind === 'url' || kind === 'launch') && actAbs
             && (actAbs.protocol === 'http:' || actAbs.protocol === 'https:'))
           window.__wwHostCalls.push('ww-action ' + kind + ' ' + actAbs.href);
+      } else if (m.type === 'ww-sd-profile') {
+        // The host answers a profile request with the Virtual Stream Deck's state
+        // (DashboardWindow's SD bridge). With no --sd fixture the honest answer is the
+        // no-deck reply the widget's "No Virtual Stream Deck found" card is built for; with
+        // one, the profile renders the picker and key grid whose controls the audit checks.
+        const profile = (sd && sd.profile) || { available: false };
+        if (profile.available) window.__wwSdServed.push('ww-sd-profile');
+        reply({ type: 'ww-sd-profile', id: m.id, profile });
+      } else if (m.type === 'ww-sd-capture') {
+        // The capture-only fast path. A fixture may carry pixels; otherwise report none, so
+        // the widget falls back to the icon grid (which is where the key controls live).
+        const data = (sd && sd.capture) ? sd.capture : { available: false };
+        reply({ type: 'ww-sd-capture-result', id: m.id, data });
       } else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
       else if (m.type === 'ww-audio-get') reply({ type: 'ww-audio-result', id: m.id, available: false });
     });
@@ -587,6 +623,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     // panel too — stated rather than omitted, so the difference is a decision.
     initMessage: { type: 'ww-init', settings, sensors: [], media: null, theme,
       notifications: null, status: { elevated: false, apiVersion: 1 } },
+    sd,
     table: stubs.map((s) => ({
       match: s.match, status: s.status, statusText: s.statusText,
       contentType: s.contentType, json: s.json, bodyText: bodyOf(s),
@@ -669,16 +706,26 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // --allow-state, where not reaching the network IS the expected outcome (an
   // unconfigured widget makes no request at all).
   const proxyServed = await page.evaluate(() => window.__wwProxyServed || []);
+  // A Virtual Stream Deck reply is data delivered over the host bridge, not http — so a
+  // populated Stream Deck run (which makes no fetch) still counts as having touched data.
+  const sdServed = await page.evaluate(() => window.__wwSdServed || []);
   if (!allowState) {
-    check('a stubbed endpoint was actually requested (direct or proxy tier)',
-      served.length + proxyServed.length > 0,
-      served.length + ' direct, ' + proxyServed.length + ' proxied');
+    check('a stubbed endpoint or Stream Deck profile was actually served',
+      served.length + proxyServed.length + sdServed.length > 0,
+      served.length + ' direct, ' + proxyServed.length + ' proxied, ' + sdServed.length + ' stream-deck');
   }
 
   check('no horizontal overflow', await frame.evaluate(() =>
     document.documentElement.scrollWidth <= window.innerWidth &&
     document.body.scrollWidth <= window.innerWidth),
     await frame.evaluate(() => document.body.scrollWidth + 'w vs viewport ' + window.innerWidth));
+
+  // #221 — every tap surface the POPULATED state created must be guarded against paging.
+  // This is the whole reason the audit is shared into this runner: the controls a widget
+  // builds from data (streamdeck's #picker, home-assistant's tiles) only exist here.
+  const tapUnguarded = await auditTapSurfaces(page.frames());
+  check('every tap surface is guarded against paging (#221)', tapUnguarded.length === 0,
+    tapUnguarded.length ? tapUnguarded.join(', ') : 'all guarded');
 
   if (shot) await page.screenshot({ path: shot });
 

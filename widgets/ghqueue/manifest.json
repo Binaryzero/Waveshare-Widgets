@@ -2,7 +2,7 @@
   "id": "ws.stock.ghqueue",
   "name": "GitHub Queue",
   "author": "Plinth",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "The merge board: every open pull request across your repositories — title, age, CI verdict, review chatter — sorted worst first, so red and conflicted land on top. Uses conditional requests so it stays well inside the token's rate limit.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],

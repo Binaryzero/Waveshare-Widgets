@@ -28,6 +28,9 @@ const derive = global.window.WWPalette.derive;
 // mattered, and then it would look like a widget bug.
 require(path.join(__dirname, '../src/Plinth/Shell/appearance.js'));
 const universalProperties = global.window.WWAppearance.universalProperties;
+// #221 tap-surface detector, shared with widget-datapath.js so the populated render paths
+// are audited too. See tools/tap-audit.js.
+const { tapInitScript, auditTapSurfaces } = require('./tap-audit.js');
 
 const SHELL = path.join(__dirname, '../src/Plinth/Shell');
 const SLOTS = {
@@ -317,6 +320,10 @@ function loadPlaywright() {
       }
     } catch (e) { /* not present in this build */ }
   });
+  // #221 — tap-surface detector, registered before the widget's own scripts (so it cannot
+  // miss the native addEventListener) and in every frame (the widget document is where
+  // controls live). The audit runs near the other assertions below. See tools/tap-audit.js.
+  await page.addInitScript(tapInitScript);
   await page.addInitScript(shim);
   // Host-bound messages, answered by the SHELL document. The widget's shim drops any
   // message whose ev.source is not window.parent, so a reply the widget's own document
@@ -524,6 +531,12 @@ function loadPlaywright() {
     document.documentElement.scrollWidth <= window.innerWidth &&
     document.body.scrollWidth <= window.innerWidth),
     await frame.evaluate(() => document.body.scrollWidth + 'w vs viewport ' + window.innerWidth));
+
+  // #221 — every tap surface must be guarded against paging the panel, across the widget
+  // frame and any frame it created. See tools/tap-audit.js for the rule.
+  const tapUnguarded = await auditTapSurfaces(page.frames());
+  check('every tap surface is guarded against paging (#221)', tapUnguarded.length === 0,
+    tapUnguarded.length ? tapUnguarded.join(', ') : 'all guarded');
 
   if (shot) await page.screenshot({ path: shot });
 
