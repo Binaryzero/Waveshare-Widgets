@@ -397,6 +397,12 @@
     };
   }
 
+  // A shelf caption must tell two episodes of the same series apart — their posters
+  // and series names are identical, so the episode code (or name) is the identity.
+  function capFor(item, d) {
+    return item.Type === 'Episode' && d.sub[0] ? d.title + ' · ' + d.sub[0] : d.title;
+  }
+
   // ---- the poll loop ---------------------------------------------------------------
 
   async function tick(gen) {
@@ -644,7 +650,7 @@
         tile.appendChild(art(d, wanted));
         const cap = document.createElement('div');
         cap.className = 'cap';
-        cap.textContent = d.title;
+        cap.textContent = capFor(item, d);
         tile.append(cap);
         strip.appendChild(tile);
       }
@@ -739,7 +745,7 @@
       tile.appendChild(art(d, wanted));
       const cap = document.createElement('div');
       cap.className = 'cap';
-      cap.textContent = d.title;
+      cap.textContent = capFor(item, d);
       tile.append(cap);
       tile.addEventListener('click', () => startPlayback(item, d));
       strip.appendChild(tile);
@@ -923,10 +929,22 @@
   let resumeAt = 0;               // where playback was when an attempt died mid-title
   let timeBase = 0;               // offset of a StartTimeTicks transcode: clock = base + currentTime
   let pendingSeek = 0;            // direct-play resume: seek once metadata arrives
+  // Each startPlayback claims a token; a pre-flight that resolves after Back (or after
+  // a different title was tapped) finds a foreign token and mutates nothing.
+  let playToken = 0;
+  // Whether this widget's dashboard page is on screen, kept current by the observer
+  // below — the pre-flight's async gap needs the answer at continuation time.
+  let pageOff = false;
+
+  function setTransportDisabled(disabled) {
+    for (const id of ['tRew', 'tToggle', 'tFwd']) el(id).disabled = disabled;
+  }
 
   // One door onto pv.src: every attempt gets the startup deadline, and a mid-title
   // fallback carries the position along instead of starting the movie over.
   function setSource(url) {
+    // A source now exists, so pause and seek mean something again.
+    setTransportDisabled(false);
     clearTimeout(attemptTimer);
     timeBase = 0;
     pendingSeek = 0;
@@ -951,11 +969,15 @@
 
   async function startPlayback(item, d) {
     theaterOn = true;
+    const token = ++playToken;
     theaterItem = { title: d.title, isAudio: item.Type === 'Audio', imgKey: d.img ? d.img.id + '|' + d.img.tag + '|330' : null };
     resumeAt = 0;
     el('ovTitle').textContent = d.title;
     el('tError').hidden = true;
     el('tSpin').hidden = false;
+    // No source yet: pause and seek have nothing to act on, and a live pause button
+    // here would be answered by the pre-flight starting the stream anyway.
+    setTransportDisabled(true);
     // Audio has no frames — the poster (already in the browse cache) stands behind
     // the overlay instead of a black void.
     const tArt = el('tArt');
@@ -969,19 +991,27 @@
     setTheaterIcons(false);
     showOverlay();
     el('theater').hidden = false;
-    // The codec pre-flight decides the order; if it cannot answer, transcode leads —
-    // a transcode always has SOUND, and silent video is the failure a viewer cannot
-    // diagnose from the couch.
-    let direct = false;
-    try { direct = await directPlaySafe(item); } catch (e) { WW.log('jellyfin: preflight: ' + e.message); }
-    if (!theaterOn) return;   // backed out while the pre-flight was away
-    theaterAttempts = direct ? [directUrl(item), transcodeUrl(item)] : [transcodeUrl(item), directUrl(item)];
+    // The codec pre-flight decides the order. Three verdicts: safe leads direct;
+    // UNSAFE never offers the direct stream at all — falling back to it would recreate
+    // the silent video the pre-flight exists to prevent; unknown leads transcode with
+    // direct as a last resort, because a transcode always has SOUND.
+    let verdict = 'unknown';
+    try { verdict = (await directPlaySafe(item)) ? 'safe' : 'unsafe'; }
+    catch (e) { WW.log('jellyfin: preflight: ' + e.message); }
+    // The answer may belong to a theater that no longer exists: Back was pressed, a
+    // different poster was tapped, or the page was swiped away during the await.
+    if (!theaterOn || token !== playToken) return;
+    if (pageOff) { stopPlayback(); return; }
+    theaterAttempts = verdict === 'safe' ? [directUrl(item), transcodeUrl(item)]
+      : verdict === 'unsafe' ? [transcodeUrl(item)]
+      : [transcodeUrl(item), directUrl(item)];
     setSource(theaterAttempts.shift());
   }
 
   function stopPlayback() {
     if (!theaterOn) return;
     theaterOn = false;
+    playToken++;   // orphan any pre-flight still in the air
     clearTimeout(overlayTimer);
     clearTimeout(attemptTimer);
     resumeAt = 0;
@@ -1086,7 +1116,9 @@
   if (typeof IntersectionObserver === 'function') {
     new IntersectionObserver((entries) => {
       const last = entries[entries.length - 1];
-      if (last && last.intersectionRatio === 0 && theaterOn && !pv.paused) pv.pause();
+      if (!last) return;
+      pageOff = last.intersectionRatio === 0;
+      if (pageOff && theaterOn && !pv.paused) pv.pause();
     }).observe(document.documentElement);
   }
 
