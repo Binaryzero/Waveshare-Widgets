@@ -1189,6 +1189,17 @@
         .then((r) => WW.log('jellyfin: attempt ' + n + ' probe: HTTP ' + r.status
           + ' ' + (r.headers.get('content-type') || '')))
         .catch((e) => WW.log('jellyfin: attempt ' + n + ' probe failed: ' + ((e && e.name) || 'error')));
+      // Second probe, and the decisive one when the element dies with nothing: fetch
+      // the RELAY url natively (no proxy). A status here proves the host intercepts
+      // stream.plinth for fetch-context requests — narrowing a dead <video> to the
+      // media engine specifically — while a rejection means interception never saw
+      // the request at all. Together with the host's own relay log lines, one field
+      // run now names the failing layer instead of the next four guessing at it.
+      if (privateLiteralHost(cfg.base)) {
+        WW.fetch(relayUrl(lastSrcUrl), { method: 'HEAD', proxy: 'never' })
+          .then((r) => WW.log('jellyfin: attempt ' + n + ' relay-fetch probe: HTTP ' + r.status))
+          .catch((e) => WW.log('jellyfin: attempt ' + n + ' relay-fetch probe failed: ' + ((e && e.name) || 'error')));
+      }
     }
     // A failure on a screen nobody is looking at does not get to restart audio there —
     // back to the browse shelf; the viewer re-taps when they return.

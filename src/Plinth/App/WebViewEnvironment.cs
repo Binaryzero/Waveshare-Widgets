@@ -60,19 +60,107 @@ internal static class WebViewEnvironment
             });
     }
 
+    // The mirror's shared throttle: a noisy or hostile page (the embed widgets frame
+    // real internet sites) must not be able to drive sustained disk writes through
+    // the rolling log. Simple minute window, shared by every mirrored view and both
+    // event sources — diagnostics are for the first look, not for volume.
+    private static long _mirrorWindowStart;
+    private static int _mirrorCount;
+    private static bool _mirrorMuted;
+
+    private static bool MirrorBudget()
+    {
+        var now = Environment.TickCount64;
+        if (now - _mirrorWindowStart > 60_000)
+        {
+            _mirrorWindowStart = now;
+            _mirrorCount = 0;
+            _mirrorMuted = false;
+        }
+        if (++_mirrorCount <= 30)
+            return true;
+        if (!_mirrorMuted)
+        {
+            _mirrorMuted = true;
+            Log.Info("[renderer] mirror muted for the rest of the minute (volume)");
+        }
+        return false;
+    }
+
+    /// <summary>Every URL in renderer text collapses to scheme://authority/… before
+    /// logging. SafeUrl's rule, applied to embedded text: paths, userinfo and queries
+    /// are credential-bearing (the api_key rides a media URL's query), and logs get
+    /// pasted into bug reports whole.</summary>
+    private static string RedactUrls(string text)
+    {
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"https?://\S+", m =>
+            Uri.TryCreate(m.Value.TrimEnd('.', ',', ')', '"', '\''), UriKind.Absolute, out var u)
+                ? u.Scheme + "://" + u.Authority + "/…"
+                : "url…");
+        return System.Text.RegularExpressions.Regex.Replace(text, @"\?\S+", "?…");
+    }
+
     /// <summary>
-    /// Mirror the renderer's warning/error console entries into app.log. Chromium
-    /// announces every request it blocks — mixed content, Local Network Access, CORS,
-    /// CSP — in the console and NOWHERE a page can read, which is how four field
-    /// rounds got spent inferring gates from a media element's rs/ns numbers. Query
-    /// strings are stripped before logging: blocked-URL messages can quote a media
-    /// URL, and the api_key rides its query.
+    /// Mirror the renderer's own account of failures into app.log. Chromium announces
+    /// what it blocks — mixed content, Local Network Access, CORS, CSP — in places no
+    /// page can read: the console (Log.entryAdded) and the network stack
+    /// (Network.loadingFailed, which names the exact net::ERR_* and blocked reason).
+    /// Four field rounds were spent inferring gates from a media element's rs/ns
+    /// numbers, and a fifth discovered that silence: media failures may emit no
+    /// console entry at all, which is why the network tap rides along.
     /// </summary>
     public static async void MirrorRendererConsole(CoreWebView2 core)
     {
         try
         {
             await core.CallDevToolsProtocolMethodAsync("Log.enable", "{}");
+            await core.CallDevToolsProtocolMethodAsync("Network.enable", "{}");
+
+            // Network.loadingFailed carries no URL — map requestId → authority from
+            // requestWillBeSent, bounded so a busy page cannot grow it unbounded.
+            var urls = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
+            var order = new System.Collections.Concurrent.ConcurrentQueue<string>();
+
+            core.GetDevToolsProtocolEventReceiver("Network.requestWillBeSent").DevToolsProtocolEventReceived += (_, e) =>
+            {
+                try
+                {
+                    var node = System.Text.Json.Nodes.JsonNode.Parse(e.ParameterObjectAsJson);
+                    var id = node?["requestId"]?.GetValue<string>();
+                    var url = node?["request"]?["url"]?.GetValue<string>();
+                    if (id is null || url is null)
+                        return;
+                    var shown = Uri.TryCreate(url, UriKind.Absolute, out var u)
+                        ? u.Scheme + "://" + u.Authority + "/…" : "url…";
+                    if (urls.TryAdd(id, shown))
+                    {
+                        order.Enqueue(id);
+                        while (order.Count > 256 && order.TryDequeue(out var old))
+                            urls.TryRemove(old, out _);
+                    }
+                }
+                catch { /* diagnostics must never take the dashboard down */ }
+            };
+
+            core.GetDevToolsProtocolEventReceiver("Network.loadingFailed").DevToolsProtocolEventReceived += (_, e) =>
+            {
+                try
+                {
+                    var node = System.Text.Json.Nodes.JsonNode.Parse(e.ParameterObjectAsJson);
+                    if (node?["canceled"]?.GetValue<bool>() == true)
+                        return;
+                    if (!MirrorBudget())
+                        return;
+                    var id = node?["requestId"]?.GetValue<string>() ?? "";
+                    var type = node?["type"]?.GetValue<string>() ?? "?";
+                    var error = node?["errorText"]?.GetValue<string>() ?? "?";
+                    var blocked = node?["blockedReason"]?.GetValue<string>();
+                    Log.Info($"[renderer:net] {type} {(urls.TryGetValue(id, out var shown) ? shown : "?")} failed: {error}"
+                        + (string.IsNullOrEmpty(blocked) ? "" : $" (blocked: {blocked})"));
+                }
+                catch { /* as above */ }
+            };
+
             core.GetDevToolsProtocolEventReceiver("Log.entryAdded").DevToolsProtocolEventReceived += (_, e) =>
             {
                 try
@@ -81,18 +169,21 @@ internal static class WebViewEnvironment
                     var level = entry?["level"]?.GetValue<string>() ?? "";
                     if (level is not ("error" or "warning"))
                         return;
-                    var text = entry?["text"]?.GetValue<string>() ?? "";
-                    text = System.Text.RegularExpressions.Regex.Replace(text, @"\?\S+", "?…");
+                    if (!MirrorBudget())
+                        return;
+                    var text = RedactUrls(entry?["text"]?.GetValue<string>() ?? "");
                     if (text.Length > 300)
                         text = text[..300];
                     Log.Info($"[renderer:{level}] {text}");
                 }
-                catch { /* diagnostics must never take the dashboard down */ }
+                catch { /* as above */ }
             };
+
+            Log.Info("renderer mirror on (console + network failures)");
         }
         catch (Exception ex)
         {
-            Log.Warn($"renderer console mirror unavailable: {ex.Message}");
+            Log.Warn($"renderer mirror unavailable: {ex.Message}");
         }
     }
 }

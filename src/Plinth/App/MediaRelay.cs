@@ -42,15 +42,25 @@ internal static class MediaRelay
 
     // Infinite timeout on both: a movie is ONE response, and a client-level timeout
     // (the proxy's is 15 s) would cancel the body mid-stream right when playback is
-    // going well. Not shared with the proxy's clients either — the insecure proxy
-    // client serializes one connection per device for embedded-TLS IoT bridges, and
-    // a two-hour stream on that one connection would starve every API poll behind it.
-    private static readonly HttpClient Client = new(new SocketsHttpHandler())
+    // going well. (The header phase gets its own deadline per request below.) Not
+    // shared with the proxy's clients either — the insecure proxy client serializes
+    // one connection per device for embedded-TLS IoT bridges, and a two-hour stream
+    // on that one connection would starve every API poll behind it.
+    //
+    // Redirects are NOT followed: the target was validated as a private, allow-listed
+    // authority, and an auto-followed Location from an open redirect on that server
+    // would carry the relay to an authority nothing validated. A media endpoint that
+    // redirects fails honestly instead.
+    private static readonly HttpClient Client = new(new SocketsHttpHandler
+    {
+        AllowAutoRedirect = false,
+    })
     { Timeout = Timeout.InfiniteTimeSpan };
 
     // Validation-off variant for insecure=1 requests (self-signed LAN servers).
     private static readonly HttpClient ClientInsecure = new(new SocketsHttpHandler
     {
+        AllowAutoRedirect = false,
         SslOptions = new System.Net.Security.SslClientAuthenticationOptions
         {
             RemoteCertificateValidationCallback = (_, _, _, _) => true,
@@ -68,6 +78,10 @@ internal static class MediaRelay
     public static void Attach(CoreWebView2 core)
     {
         core.AddWebResourceRequestedFilter($"https://{Host}/*", CoreWebView2WebResourceContext.All);
+        // The field taught this the hard way: a relay that refuses silently is
+        // indistinguishable from a relay that never ran. Announce arming, and log
+        // every disposition below.
+        Log.Info("media relay armed");
         core.WebResourceRequested += async (_, e) =>
         {
             if (!e.Request.Uri.StartsWith($"https://{Host}/", StringComparison.OrdinalIgnoreCase))
@@ -105,17 +119,27 @@ internal static class MediaRelay
         return null;
     }
 
+    /// <summary>A logged refusal: the reason names the failed check (never the URL —
+    /// the api_key rides its query; a bare authority is safe and is the useful bit).</summary>
+    private static CoreWebView2WebResourceResponse Refuse(CoreWebView2Environment env, int status, string reason)
+    {
+        Log.Info($"media relay refused ({status}): {reason}");
+        return env.CreateWebResourceResponse(null, status, status == 405 ? "Method Not Allowed" : "Forbidden", "");
+    }
+
     private static async Task<CoreWebView2WebResourceResponse> BuildResponseAsync(
         CoreWebView2Environment env, CoreWebView2WebResourceRequest request)
     {
         if (request.Method != "GET" && request.Method != "HEAD")
-            return env.CreateWebResourceResponse(null, 405, "Method Not Allowed", "");
+            return Refuse(env, 405, "method " + request.Method);
         var outer = new Uri(request.Uri);
         if (!Uri.TryCreate(QueryValue(outer, "u"), UriKind.Absolute, out var target)
-            || (target.Scheme != Uri.UriSchemeHttp && target.Scheme != Uri.UriSchemeHttps)
-            || !DashboardWindow.IsPrivateHost(target)
-            || !AllowedAuthorities.ContainsKey(target.Scheme + "://" + target.Authority))
-            return env.CreateWebResourceResponse(null, 403, "Forbidden", "");
+            || (target.Scheme != Uri.UriSchemeHttp && target.Scheme != Uri.UriSchemeHttps))
+            return Refuse(env, 403, "no parseable http(s) target");
+        if (!DashboardWindow.IsPrivateHost(target))
+            return Refuse(env, 403, "not a private address: " + target.Host);
+        if (!AllowedAuthorities.ContainsKey(target.Scheme + "://" + target.Authority))
+            return Refuse(env, 403, "authority not registered: " + target.Scheme + "://" + target.Authority);
 
         var upstream = new HttpRequestMessage(new HttpMethod(request.Method), target);
         // Range is what makes a <video> seekable on a direct-played file; everything
@@ -125,11 +149,18 @@ internal static class MediaRelay
             upstream.Headers.TryAddWithoutValidation("Range", range);
 
         var client = QueryValue(outer, "insecure") == "1" ? ClientInsecure : Client;
+        // The HEADER phase gets a finite deadline: an upstream that accepts the
+        // connection and then stalls (a hung transcode) would otherwise pin this
+        // await, the deferral, and the connection forever — the widget's watchdog
+        // can replace pv.src but cannot cancel a host call. The timer dies with the
+        // `using` when headers arrive in time, so it never touches the body stream,
+        // which must be free to take hours.
+        using var headerDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         // NOT disposed here: the response object owns the connection the content
         // stream reads from, and WebView2 pulls that stream long after this method
         // returns. WebView2 closes the stream when the element is done (or gone),
         // which releases the connection.
-        var response = await client.SendAsync(upstream, HttpCompletionOption.ResponseHeadersRead);
+        var response = await client.SendAsync(upstream, HttpCompletionOption.ResponseHeadersRead, headerDeadline.Token);
 
         var headers = new System.Text.StringBuilder();
         void Copy(string name, string? value)
