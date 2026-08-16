@@ -838,6 +838,49 @@ const TOKEN = 'Bearer super-secret-probe-token';
   const rtResumed = await read();
   check('RT3 corrected auth settings lift the halt and the tile reads again',
     rtResumed.value === '1' && !rtResumed.bodyHidden, `${rtResumed.value} / ${rtResumed.title}`);
+
+  // RT4 · #176.1 review: a HALTED tile that already holds a reading must not un-halt itself
+  // on a presentation-only edit. The bug the fix closes: `last` is set (a good reading), an
+  // unsupported token type halts the tile behind its card, then a same-auth edit — relabel,
+  // decimals, unit — re-enters onInit's `else if (last)` branch and repaints the cached
+  // number, papering the halt card over with a stale value and no Stale pill, while
+  // restart()'s halt guard blocks the poll that would correct it. It sits there as if live,
+  // forever. Establish a Bearer reading first (so `last` is set), then rotate the token to a
+  // type this tile cannot present AND 401 the data endpoint — which drives the reactive
+  // getBearer(true) re-exchange and halts the tile. Finally edit ONLY the unit and assert the
+  // halt card survives rather than being replaced by the stale 42.
+  await page.evaluate(() => { window.__grants = 0; window.__tokenEndpoint = 'https://api.test/tokRT4';
+    window.__tokenResp = { access_token: 'bearer-4', token_type: 'Bearer', expires_in: 3600 }; });
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 42 }) });
+  const oauth4 = { url: 'https://api.test/oauthdata4', jsonPointer: '/v', pollSeconds: 60,
+    authMode: 'oauth2', tokenEndpoint: 'https://api.test/tokRT4', clientId: 'id', clientSecret: 'sec' };
+  await init(Object.assign({}, base, oauth4, { unit: 'x' }));
+  await wait(800);
+  const rt4Good = await read();
+  check('RT4 setup: a Bearer OAuth2 exchange gives the tile a real reading',
+    rt4Good.value === '42' && !rt4Good.bodyHidden, `${rt4Good.value} / ${rt4Good.title}`);
+  // The token now rotates to a type this tile cannot present, and the data endpoint 401s so
+  // the reactive re-exchange runs. Drive one poll through the visibility path — not the edit
+  // under test — so the halt is reached by polling, exactly as it would be in the field.
+  await page.evaluate(() => {
+    window.__tokenResp = { access_token: 'dpop-4', token_type: 'DPoP', expires_in: 3600 }; });
+  respond = () => ({ status: 401, body: '' });
+  await setHidden(true);
+  await setHidden(false);
+  await wait(800);
+  const rt4Halt = await read();
+  check('RT4 setup: an unsupported token type after a good read shows the halt card',
+    /Unsupported token type/.test(rt4Halt.title) && rt4Halt.bodyHidden,
+    `${rt4Halt.title} · bodyHidden ${rt4Halt.bodyHidden}`);
+  // The edit under test: change ONLY the unit — auth and source untouched, so onInit takes
+  // the `else if (last)` branch. Pre-fix this repaints the cached 42 and hides the card; the
+  // fix leaves the halt in place because a halted tile is not showing a reading to redraw.
+  await init(Object.assign({}, base, oauth4, { unit: 'y' }));
+  await wait(400);
+  const rt4After = await read();
+  check('RT4 a presentation-only edit on a halted tile keeps the halt card, not a stale reading',
+    /Unsupported token type/.test(rt4After.title) && rt4After.bodyHidden,
+    `title "${rt4After.title}" · bodyHidden ${rt4After.bodyHidden} · value "${rt4After.value}"`);
   await page.evaluate(() => { window.__tokenEndpoint = undefined; });   // clear for anything after
 
   // ---- populated screenshots (the eyes, not just the contract) ---------------------

@@ -889,8 +889,17 @@
       // `lastAt = now`, drops the Stale pill and clears the failure reason. Renaming a
       // tile would turn an hour-old survivor of a dead endpoint into "0s ago", live.
       // Presentation edits must not change what the tile claims about its data.
-      if (stale) showStale(staleWhy);
-      else { paintValue(last.text, last.cls); renderMeta(); }
+      //
+      // A halted tile is showing the "unsupported token type" card, not a reading.
+      // Repainting `last` here would paper that card over with a stale value and no
+      // Stale pill — and `restart()`'s halt guard then blocks the poll that would have
+      // corrected it, so the old number would sit there as if live and permanent. The
+      // re-derivation above is harmless (it only updates the cached data), but the tile
+      // must keep claiming what it actually knows: it is halted.
+      if (!halted) {
+        if (stale) showStale(staleWhy);
+        else { paintValue(last.text, last.cls); renderMeta(); }
+      }
     }
     startAgeTicker();
     restart();
