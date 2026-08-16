@@ -124,6 +124,10 @@ public sealed class DashboardWindow : Form
         core.Settings.IsStatusBarEnabled = false;
         core.Settings.IsZoomControlEnabled = false;
 
+        // Widget media (Jellyfin playback) streams straight from self-hosted LAN
+        // servers whose https is usually self-signed; see the helper for scope.
+        WebViewEnvironment.AllowLanSelfSignedCertificates(core);
+
         core.WebMessageReceived += OnWebMessageReceived;
 
         // Renderer/browser process failures (most likely under cold-start pressure)
@@ -623,8 +627,11 @@ public sealed class DashboardWindow : Form
     { Timeout = TimeSpan.FromSeconds(15) };
 
     /// <summary>Loopback or RFC1918/link-local private addresses only (no DNS lookups —
-    /// a hostname that isn't a literal private IP or localhost doesn't qualify).</summary>
-    private static bool IsPrivateHost(Uri uri)
+    /// a hostname that isn't a literal private IP or localhost doesn't qualify).
+    /// Internal because it is THE private-host policy: the WebView certificate
+    /// allowance (WebViewEnvironment.AllowLanSelfSignedCertificates) must gate on
+    /// exactly the same set the insecure proxy tier does.</summary>
+    internal static bool IsPrivateHost(Uri uri)
     {
         if (uri.IsLoopback)
             return true;

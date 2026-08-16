@@ -1151,11 +1151,15 @@
     // The transport is for a stream that no longer exists — the card owns the screen.
     clearTimeout(overlayTimer);
     el('overlay').classList.add('faded');
+    // A LAN IP (or localhost) address accepts self-signed certificates for the
+    // stream itself — the host allows certificate errors for exactly the private
+    // set privateLiteralHost mirrors — so a certificate is only worth suspecting
+    // at a named https address, where the browser still demands a trusted one.
     el('tErrorBody').textContent = 'Neither the original file nor a server transcode would play. '
       + 'The codec may be unsupported'
-      + (/^https:/i.test(cfg.base) && cfg.selfSigned
-        ? ", and the self-signed allowance covers the shelf only — playback needs a certificate this PC's browser trusts."
-        : ', or an https server’s certificate was refused.')
+      + (/^https:/i.test(cfg.base) && !privateLiteralHost(cfg.base)
+        ? ", or the certificate was refused — at a named https address it must be one this PC trusts (a LAN IP address accepts self-signed)."
+        : '.')
       + '  [' + attemptErrors.join(' · ') + ']';
     el('tError').hidden = false;
   }

@@ -49,6 +49,34 @@ internal static class WebViewEnvironment
     }
 
     /// <summary>
+    /// Accept certificate errors for PRIVATE hosts on this WebView — self-hosted LAN
+    /// services (Jellyfin above all) overwhelmingly run https with a self-signed
+    /// certificate or none at all, and demanding a CA-signed certificate from a home
+    /// server is demanding something most of them will never have. The event raises
+    /// for every web resource (unhandled, non-navigation requests like a widget's
+    /// &lt;video&gt; stream are cancelled silently), so this is the difference between
+    /// media playing and media dying with no story to tell.
+    ///
+    /// Scope is the same policy WW.fetch's insecure tier enforces: loopback or a
+    /// literal RFC1918/link-local IPv4 (<see cref="DashboardWindow.IsPrivateHost"/>) —
+    /// a named address still needs a certificate this PC trusts. An attacker who can
+    /// answer for a private IP on the panel's LAN could just as easily MITM the plain
+    /// http Jellyfin ships as its default, so this accepts no risk the baseline
+    /// deployment doesn't already carry. NEVER wire this on the secure fetch tier:
+    /// BrowserFetcher navigates untrusted external origins with credentials in reach.
+    /// </summary>
+    public static void AllowLanSelfSignedCertificates(CoreWebView2 core)
+    {
+        core.ServerCertificateErrorDetected += (_, e) =>
+        {
+            e.Action = Uri.TryCreate(e.RequestUri, UriKind.Absolute, out var uri)
+                       && DashboardWindow.IsPrivateHost(uri)
+                ? CoreWebView2ServerCertificateErrorAction.AlwaysAllow
+                : CoreWebView2ServerCertificateErrorAction.Default;
+        };
+    }
+
+    /// <summary>
     /// The environment for BrowserFetcher's bot-wall tier. That tier NAVIGATES real
     /// external origins and runs their page scripts with the caller's Authorization /
     /// API-key headers and full URL passed into an in-page fetch — the one place in
