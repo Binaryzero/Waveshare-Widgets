@@ -72,10 +72,15 @@
   let tickTimer = null;
   let inFlight = false;
   let lastOk = 0;
+  let lastTry = 0;         // when the last fetch was ATTEMPTED (success or not) — the anchor
+                           // the backoff is measured from, so a cadence edit during a backoff
+                           // re-arms from the failed attempt rather than the last success (#180)
   let failures = 0;        // consecutive failures — drives the retry backoff
   let generation = 0;      // bumped when the source changes; older answers are discarded
   let activeController = null;
   let dueAt = 0;           // when the next fetch is due, tracked even while paused
+  let errorShowing = false; // an error card is on screen; the 1 Hz paint() must not replace it
+                            // with "Nothing scheduled" when the calendar is empty-but-down (#180)
 
   // A calendar can be several megabytes and the direct fetch tier has no deadline of its
   // own, so a server that accepts the connection and then stalls would pin `inFlight`
@@ -137,6 +142,7 @@
       tickTimer = null;
       current = null;
       lastOk = 0;
+      lastTry = 0;
       failures = 0;
       started = false;
       showSetup();
@@ -161,6 +167,19 @@
       current = null;
       lastOk = 0;
       failures = 0;
+      // A source change means the next fetch is due NOW, paused or not. Without this,
+      // `dueAt` keeps the deadline computed for the PREVIOUS calendar: while hidden or
+      // gated, load() returns at the pause gate, and the resume path — "is it due?" —
+      // is told no and re-arms that stale deadline, so the newly configured calendar is
+      // not fetched for up to the old interval (12 hours at the cap). (#180)
+      dueAt = 0;
+      // ...and drop the attempt anchor with the rest of the source-specific state. It points
+      // at the OLD calendar, and a cadence-only edit arriving while STILL paused would re-derive
+      // `dueAt` from it — undoing the reset above and stranding the new calendar on its spinner
+      // past resume. `lastTry === 0` now means "this source has not been fetched", which the
+      // cadence recompute reads as due-now. (#180 review)
+      lastTry = 0;
+      errorShowing = false;
       document.body.classList.remove('stale');
       // Clear what is on SCREEN, not just the model behind it. Nulling `current` alone
       // left the old calendar's event rendered — under the new configuration, and for as
@@ -181,9 +200,17 @@
       // `remainingWait()` reads `dueAt`, which still holds the deadline the previous
       // interval produced — so re-arming with it just restored the same deadline and
       // cutting 12 hours to 5 minutes still took 12 hours. The due time belongs to the
-      // last answer plus the interval now configured; if that is already past, it is due.
+      // last ATTEMPT plus the interval now configured; if that is already past, it is due.
+      // Anchoring on `lastOk` (the last SUCCESS) discarded the backoff on a calendar that
+      // is down: while failing, `lastOk` predates the failed attempt, so the sum lands in
+      // the past and the edit fired an immediate retry — the one situation the backoff
+      // exists for. `lastTry` is the attempt the current `nextDelayMs()` backoff is
+      // measured from, so the two agree. (#180)
+      // A source not yet attempted (lastTry 0 — e.g. changed while paused) is due NOW, not a
+      // fresh interval out: recomputing from `Date.now()` there would push a pending fetch up
+      // to a full interval away and strand the calendar past resume.
       if (cadenceChanged) {
-        schedule(Math.max(0, (lastOk || Date.now()) + nextDelayMs() - Date.now()));
+        schedule(lastTry ? Math.max(0, lastTry + nextDelayMs() - Date.now()) : 0);
       }
     }
   });
@@ -204,6 +231,9 @@
     // right rather than leaving the chain unarmed.
     if (inFlight) { schedule(); return; }
     inFlight = true;
+    // The last ATTEMPT, stamped past the pause/in-flight gates so it counts only real
+    // fetches — the anchor the backoff and a mid-backoff cadence edit both measure from.
+    lastTry = Date.now();
     // Everything below belongs to the calendar as it was when the request left.
     const gen = generation;
     const superseded = () => gen !== generation;
@@ -248,6 +278,7 @@
       unreadable = found.unreadable || 0;
       lastOk = Date.now();
       failures = 0;
+      errorShowing = false;   // authoritative data now — the error card, if any, is gone
       document.body.classList.remove('stale');
       paint();
     } catch (e) {
@@ -393,6 +424,12 @@
   // Repaints from cached data only — no network, no parsing. Safe at 1 Hz forever.
   function paint() {
     if (!current) {
+      // An outage on an empty-but-valid calendar leaves `current` null while `lastOk`
+      // stays set, so this branch would repaint "Nothing scheduled" over the error card
+      // (and its Retry) at 1 Hz — the tile claiming Clear while the calendar is
+      // unreachable. showError holds `errorShowing` until the next good load. `showStale`
+      // is unaffected: it keeps `current`, so it never reaches this branch. (#180)
+      if (errorShowing) return;
       if (lastOk) {
         el('state').hidden = false;
         el('data').hidden = true;
@@ -508,6 +545,7 @@
   }
 
   function showError(message) {
+    errorShowing = true;   // paint() must not paint over this with "Nothing scheduled"
     stateCard('err', '!', 'Calendar unavailable', message, () => {
       // An explicit tap means "try properly now", not "keep backing off".
       failures = 0;
