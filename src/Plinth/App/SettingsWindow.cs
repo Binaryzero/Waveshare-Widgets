@@ -70,6 +70,7 @@ public sealed class SettingsWindow : Form
             // The live replica runs real widget iframes, so LAN media streams need
             // the same self-signed allowance the panel gets (scope in the helper).
             WebViewEnvironment.AllowLanSelfSignedCertificates(core);
+            WebViewEnvironment.GrantNewerPermissionKindsToPlinthPages(core);
             core.WebMessageReceived += OnWebMessageReceived;
             _hosts.MapFixed(core, ShellHost, AppPaths.ShellDir);
             // So the editor can preview chosen background images/videos.

@@ -127,6 +127,9 @@ public sealed class DashboardWindow : Form
         // Widget media (Jellyfin playback) streams straight from self-hosted LAN
         // servers whose https is usually self-signed; see the helper for scope.
         WebViewEnvironment.AllowLanSelfSignedCertificates(core);
+        // ...and the runtime may gate LAN requests behind a permission kind newer
+        // than this SDK (Local Network Access); grant it to our own pages only.
+        WebViewEnvironment.GrantNewerPermissionKindsToPlinthPages(core);
 
         core.WebMessageReceived += OnWebMessageReceived;
 

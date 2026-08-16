@@ -120,6 +120,36 @@ internal static class WebViewEnvironment
     }
 
     /// <summary>
+    /// Grant permission KINDS newer than this SDK's enum to Plinth's own pages. The
+    /// motivating kind is Chromium's Local Network Access permission (arrived after
+    /// the pinned SDK): if the runtime routes LAN-request approval through
+    /// PermissionRequested, an unhandled request is denied silently and widget media
+    /// dies exactly like the field logs show — so this rides alongside the
+    /// LocalNetworkAccessChecks disable as the second, scoped mechanism. Kinds the
+    /// SDK knows keep their existing default handling untouched.
+    ///
+    /// The grant is scoped to pages that can only be ours: the https shell host and
+    /// the https widget virtual hosts. A spoofed *.plinth name on a hostile LAN DNS
+    /// cannot reach this — mapped hosts never touch DNS, an unmapped https fake dies
+    /// on TLS (the certificate allowance above requires a literal private IP, which
+    /// a NAME never is), and http fakes fail the scheme test. Foreign pages framed
+    /// by the embed widgets never match: they keep default (deny) behavior.
+    /// </summary>
+    public static void GrantNewerPermissionKindsToPlinthPages(CoreWebView2 core)
+    {
+        core.PermissionRequested += (_, e) =>
+        {
+            if (Enum.IsDefined(e.PermissionKind))
+                return;
+            if (Uri.TryCreate(e.Uri, UriKind.Absolute, out var uri)
+                && uri.Scheme == Uri.UriSchemeHttps
+                && (uri.Host.Equals("app.plinth", StringComparison.OrdinalIgnoreCase)
+                    || uri.Host.EndsWith(".widgets.plinth", StringComparison.OrdinalIgnoreCase)))
+                e.State = CoreWebView2PermissionState.Allow;
+        };
+    }
+
+    /// <summary>
     /// The environment for BrowserFetcher's bot-wall tier. That tier NAVIGATES real
     /// external origins and runs their page scripts with the caller's Authorization /
     /// API-key headers and full URL passed into an in-page fetch — the one place in
