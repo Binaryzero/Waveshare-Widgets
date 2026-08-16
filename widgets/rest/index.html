@@ -26,9 +26,14 @@
   .readout { display: flex; align-items: baseline; gap: 6px; max-width: 100%; }
   #value {
     /* Bounded by BOTH axes: height keeps it inside a 200px band, width keeps it from
-     * looking lost on a 640/960px slot. */
-    font-size: calc(clamp(26px, min(24vh, 20vw), 132px) * var(--value-scale, 1));
+     * looking lost on a 640/960px slot. `--value-fit` is the measure-and-shrink factor
+     * (#173): the clamp sizes the number from the viewport, then script shrinks the font
+     * when a merely LONG value would overflow the tile's width, so the digits that carry
+     * the magnitude are not clipped away. Default 1 keeps the clamp's size when it fits;
+     * the ellipsis below is the last resort once the fit floor is reached. */
+    font-size: calc(clamp(26px, min(24vh, 20vw), 132px) * var(--value-scale, 1) * var(--value-fit, 1));
     line-height: 1.05;
+    min-width: 0;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   /* Threshold colouring. Normal deliberately keeps --text rather than the accent:
@@ -201,6 +206,28 @@
     el('body').hidden = false;
     el('value').textContent = text;
     el('value').className = 'value hero' + (cls ? ' ' + cls : '');
+    fitValue();
+  }
+
+  /** Measure-and-shrink so a long value is not clipped to an ellipsis (#173). The CSS
+   * clamp sizes the number from the viewport and bounds its HEIGHT; this shrinks the FONT
+   * (via `--value-fit`) when the rendered text is wider than the tile, down to a floor —
+   * below which the ellipsis is the honest fallback for a pathologically long string.
+   *
+   * `scrollWidth` (the full text) vs `clientWidth` (the visible box) is the measure, not
+   * WW.fitText: that reads getBoundingClientRect, which on this clipping, flex-shrunk
+   * element reports the clamped box rather than the text, so every ratio would come out 1.
+   * Text width scales linearly with font-size, so one ratio lands it; the 0.98 keeps the
+   * final glyph off the edge. */
+  function fitValue() {
+    const v = el('value');
+    if (el('body').hidden || !v.textContent) return;
+    v.style.setProperty('--value-fit', '1');   // read the natural (clamp) size first
+    const box = v.clientWidth;
+    const text = v.scrollWidth;
+    if (!box || text <= box + 1) return;        // it fits — leave the font at clamp size
+    const FLOOR = 0.45;                          // never shrink the number below ~45%
+    v.style.setProperty('--value-fit', String(Math.max(FLOOR, (box / text) * 0.98)));
   }
 
   /** A reading that genuinely just arrived: this is the only thing allowed to move
@@ -868,6 +895,12 @@
     renderMeta();          // the age is worth refreshing even when we will not poll
     resume();
   });
+
+  // The slot can be resized under a running widget (drag, or a panel size change) with no
+  // settings edit and no new reading, so nothing else would re-fit the value. Observe BODY,
+  // whose box tracks the slot; shrinking the value's own font never changes body's size, so
+  // this cannot loop. (#173)
+  if (window.ResizeObserver) new ResizeObserver(() => fitValue()).observe(document.body);
 </script>
 </body>
 </html>

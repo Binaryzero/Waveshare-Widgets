@@ -158,6 +158,19 @@ const TOKEN = 'Bearer super-secret-probe-token';
     text: document.body.innerText,
   }));
 
+  // #173 — the geometry of the value box: `clipped` is the bug (scrollWidth, the full
+  // text, exceeds clientWidth, the visible box), `fit` is the shrink factor script applied,
+  // `fontPx` the resulting size. A pageP argument lets a second page reuse it.
+  const readFit = (pageP) => (pageP || page).evaluate(() => {
+    const v = document.getElementById('value');
+    return {
+      text: v.textContent,
+      fontPx: parseFloat(getComputedStyle(v).fontSize),
+      fit: parseFloat(v.style.getPropertyValue('--value-fit')) || 1,
+      clipped: v.scrollWidth > v.clientWidth + 1,
+    };
+  });
+
   const base = { url: 'https://api.test/v1', pollSeconds: 5, bgStyle: 'solid' };
 
   // ---- R5 · no endpoint is a setup state -----------------------------------------
@@ -708,6 +721,77 @@ const TOKEN = 'Bearer super-secret-probe-token';
   check('R21c painting the value it just fetched',
     (await hiddenPage.evaluate(() => document.getElementById('value').textContent)) === '4');
   await hiddenPage.close();
+
+  // ---- RF · #173: a long value shrinks to fit instead of clipping to an ellipsis ----
+  // The reported bug: a value that is merely LONG (not tall) was clipped — 2841230…, so the
+  // digits carrying the magnitude vanished, and 2841230…/2841230000/2841230000000 all read
+  // the same. The tile takes strings too, so `degraded_performance` clipped the same way. The
+  // fix shrinks the font until the whole value fits, keeping the ellipsis only for the
+  // pathological case at the floor.
+  //
+  // Note on the cases chosen: this harness substitutes a narrower system font for the panel's
+  // Outfit (the .woff2 is served but the exact metrics differ), so the shrink THRESHOLD moves
+  // between here and the device. The cases below overflow in any sans — the issue's own string
+  // example on a half slot, and its ten-digit number on the tighter quarter — so what is
+  // asserted is the font-independent BEHAVIOUR (shrink-to-fit, floor, relax), not a pixel size.
+  await page.setViewportSize({ width: 640, height: 400 });
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 'degraded_performance' }) });
+  await init(Object.assign({}, base, { url: 'https://api.test/statusstr', jsonPointer: '/v', pollSeconds: 60 }));
+  await wait(400);
+  const longStr = await readFit();
+  check('RF1 a long value renders in full, not clipped to an ellipsis',
+    longStr.text === 'degraded_performance' && !longStr.clipped,
+    `"${longStr.text}" clipped=${longStr.clipped}`);
+  check('RF1b ...and it got there by shrinking the font (fit below 1, above the floor)',
+    longStr.fit < 1 && longStr.fit > 0.45, `--value-fit ${longStr.fit}, ${Math.round(longStr.fontPx)}px`);
+
+  // The issue's number example, on the quarter slot where a ten-digit value is tight: the
+  // whole magnitude stays on screen instead of "2841230…".
+  await page.setViewportSize({ width: 320, height: 400 });
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 2841230000 }) });
+  await init(Object.assign({}, base, { url: 'https://api.test/wowtoken', jsonPointer: '/v', pollSeconds: 60 }));
+  await wait(400);
+  const num = await readFit();
+  check('RF1c the ten-digit number keeps every digit rather than clipping the magnitude away',
+    num.text === '2841230000' && !num.clipped && num.fit < 1,
+    `"${num.text}" clipped=${num.clipped} fit=${num.fit}`);
+
+  // A value that already fits is left at the clamp size — the fit only engages on overflow,
+  // so an ordinary reading is not quietly shrunk, and stays LARGER than one that had to.
+  await page.setViewportSize({ width: 640, height: 400 });
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 21.4 }) });
+  await init(Object.assign({}, base, { url: 'https://api.test/short173', jsonPointer: '/v', pollSeconds: 60 }));
+  await wait(400);
+  const shortV = await readFit();
+  check('RF2 a value that already fits keeps the clamp size (fit stays 1, no shrink)',
+    shortV.fit === 1 && !shortV.clipped, `--value-fit ${shortV.fit}, "${shortV.text}"`);
+  check('RF2b the short value is rendered LARGER than the long one it did not have to shrink',
+    shortV.fontPx > longStr.fontPx + 1, `${Math.round(shortV.fontPx)}px vs ${Math.round(longStr.fontPx)}px`);
+
+  // The floor: a value too long even at the smallest the fit allows stops shrinking and
+  // lets the ellipsis take over — better a readable prefix than an unreadably tiny whole.
+  await page.setViewportSize({ width: 320, height: 400 });
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 'degraded_performance_across_every_region_right_now' }) });
+  await init(Object.assign({}, base, { url: 'https://api.test/long173', jsonPointer: '/v', pollSeconds: 60 }));
+  await wait(400);
+  const floorCase = await readFit();
+  check('RF3 a value too long even at the floor stops at the floor and lets the ellipsis take over',
+    Math.abs(floorCase.fit - 0.45) < 0.02 && floorCase.clipped,
+    `--value-fit ${floorCase.fit}, clipped=${floorCase.clipped}`);
+
+  // Resize re-fits: the long value cramped on a narrow slot has room on a wide one, so the
+  // fit relaxes when the slot grows under a running tile — the ResizeObserver path, no edit.
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 'degraded_performance' }) });
+  await page.setViewportSize({ width: 320, height: 400 });
+  await init(Object.assign({}, base, { url: 'https://api.test/relax', jsonPointer: '/v', pollSeconds: 60 }));
+  await wait(400);
+  const atQuarter = await readFit();
+  await page.setViewportSize({ width: 1280, height: 400 });
+  await wait(500);
+  const atFull = await readFit();
+  check('RF4 widening the slot relaxes the fit (ResizeObserver re-measures, no settings edit)',
+    atFull.fit > atQuarter.fit && !atFull.clipped,
+    `quarter fit ${atQuarter.fit} -> full fit ${atFull.fit}`);
 
   // ---- populated screenshots (the eyes, not just the contract) ---------------------
   respond = () => ({ status: 200, body: JSON.stringify({ data: { temperature: 87.3 } }) });
