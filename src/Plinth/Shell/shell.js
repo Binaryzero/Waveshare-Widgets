@@ -901,13 +901,24 @@
    * Greedy: take the largest free rectangle, mark it used, repeat. The rectangles
    * tile the free cells rather than enumerating every rectangle that fits in them,
    * so no two zones ever overlap and every free cell belongs to exactly one. */
-  function freeRegions(page, placements) {
+  /** The 2x4 occupancy grid [row][col] for a page: which cells its slots fill. Shared by
+   *  freeRegions (which partitions the FREE cells into non-overlapping zones) and
+   *  sizeInRegion (which sizes a widget against those free cells), so "is this cell free"
+   *  has a single answer on both. */
+  function occupancyGrid(page, placements) {
     const occupied = [new Array(4).fill(false), new Array(4).fill(false)];
     for (const place of placements || placeSlots(page.slots || [])) {
       if (!place) continue;
       const rows = place.band === 'full' ? [0, 1] : place.band === 'upper' ? [0] : [1];
       for (const r of rows) for (let i = 0; i < place.w; i++) occupied[r][place.col + i] = true;
     }
+    return occupied;
+  }
+
+  function freeRegions(page, placements) {
+    // Work on a COPY: the greedy pass marks each rectangle used as it extracts it, and
+    // sizeInRegion still needs the untouched occupancy to size against.
+    const occupied = occupancyGrid(page, placements).map((row) => row.slice());
     const regions = [];
     for (;;) {
       let best = null;
@@ -925,15 +936,42 @@
     }
   }
 
-  /** The size a widget would take in THIS region: widest supported width that fits
-   *  the region's columns, banded to the region's rows. Null when the widget cannot
-   *  fit at all, which is what makes a zone able to say why it is unavailable (#77). */
-  function sizeInRegion(widget, region) {
-    const band = region.h === 2 ? 'full' : (region.r === 0 ? 'upper' : 'lower');
+  /** The size a widget takes when added from the zone anchored at `region`. Null when the
+   *  widget cannot fit at all, which is what lets a zone say why it is unavailable (#77).
+   *  The column count comes from parseSize, not a second width table, so a widget is never
+   *  placed a column wider or narrower than the cells that were checked.
+   *
+   *  Two phases. First a fit BOUNDED by the tapped rectangle, banded to its own rows —
+   *  widest supported width that fits the region's columns. This keeps the #84 promise that
+   *  tapping a small hole gives a widget sized FOR it (a quarter stays a quarter) rather than
+   *  one that spills into its neighbours. Only when NOTHING fits the rectangle does the
+   *  partition itself become the problem #86 reports: the greedy free-space partition can
+   *  split a still-valid footprint across two rectangles (a three-quarter-upper across a 2x2
+   *  zone and the lone cell beside it), and a widget measured against either rectangle alone
+   *  has no way in. So the fallback sizes against the actual free space (`occupied`): iterate
+   *  widths widest-first, try the bands whose rows include the tapped region (its own shape
+   *  first), and take the first footprint — anchored at region.c, extending right — whose
+   *  every cell is free, even across two rectangles. That a pick can then extend past the
+   *  zone the user tapped is the deliberate trade: a wider widget that fills the row beats no
+   *  way to add one that fits. */
+  function sizeInRegion(widget, region, occupied) {
     const widths = allowedWidths(widget).slice().reverse();   // widest first
-    // Column count comes from parseSize rather than a second width table — the two
-    // drifting apart would place widgets a column wider or narrower than the hole.
-    for (const w of widths) if (parseSize(w).w <= region.w) return makeSize(w, band);
+    // Phase 1 — bounded by the rectangle (its cells are all free, being a free region).
+    const ownBand = region.h === 2 ? 'full' : (region.r === 0 ? 'upper' : 'lower');
+    for (const wName of widths) if (parseSize(wName).w <= region.w) return makeSize(wName, ownBand);
+    // Phase 2 — nothing fit the rectangle; reach into adjacent free cells (#86).
+    const bands = region.h === 2 ? ['full', 'upper', 'lower']
+      : region.r === 0 ? ['upper', 'full'] : ['lower', 'full'];
+    for (const wName of widths) {
+      const w = parseSize(wName).w;
+      if (region.c + w > 4) continue;   // would run off the grid
+      for (const band of bands) {
+        const rows = band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1];
+        let free = true;
+        for (const r of rows) for (let i = 0; i < w && free; i++) if (occupied[r][region.c + i]) free = false;
+        if (free) return makeSize(wName, band);
+      }
+    }
     return null;
   }
 
@@ -941,6 +979,9 @@
     const pageEl = pageEls.get(page);
     if (!pageEl) return;
     const regions = freeRegions(page, placements);
+    // The raw occupancy behind those regions — sizeInRegion sizes against the free cells,
+    // which may reach past a single zone's rectangle (#86).
+    const occupied = occupancyGrid(page, placements);
     const zones = [...pageEl.querySelectorAll('.add-zone')];
     // Reuse what is there and trim the rest: rebuilding every zone on every relayout
     // would restart the pulse animation on tiles the user is not touching.
@@ -967,7 +1008,7 @@
       // Unavailable WITH a reason (#77). A region no installed widget can occupy is
       // rare — every stock widget takes a quarter — but silence there would be the
       // same dead space this issue is about.
-      const fits = widgetLib.some((w) => sizeInRegion(w, region));
+      const fits = widgetLib.some((w) => sizeInRegion(w, region, occupied));
       z.disabled = !fits;
       z.classList.toggle('full', !fits);
       z.querySelector('.az-plus').textContent = fits ? '+' : '·';
@@ -2607,6 +2648,7 @@
       return;
     }
     paletteGrid.textContent = '';
+    const occupied = region ? occupancyGrid(page) : null;
     for (const widget of widgetLib) {
       const btn = document.createElement('button');
       const name = document.createElement('span');
@@ -2614,10 +2656,10 @@
       name.textContent = widget.name;
       const by = document.createElement('span');
       by.className = 'p-by';
-      // Sized against the REGION the user tapped, not the page. Answering "does this
-      // fit somewhere?" while the tap said "put it HERE" is how a zone over a small
-      // hole ends up filling a different one.
-      const size = region ? sizeInRegion(widget, region) : defaultSizeFor(page, widget);
+      // Sized against the free space anchored at the REGION the user tapped, not the page.
+      // Answering "does this fit somewhere?" while the tap said "put it HERE" is how a zone
+      // over a small hole ends up filling a different one.
+      const size = region ? sizeInRegion(widget, region, occupied) : defaultSizeFor(page, widget);
       by.textContent = size ? (widget.author || '')
         : (region ? 'Does not fit here' : 'No room on this page');
       btn.append(name, by);
@@ -2640,11 +2682,12 @@
   function addWidget(page, widget, region) {
     closePalette();
     mutate(() => {
-      // Region-targeted when the add came from a zone: the size is what fits THERE and
-      // `col` anchors it to that column, so the widget lands in the hole that was
-      // tapped rather than wherever first-fit would have flowed it. Without the
-      // anchor, tapping the small hole could fill the large one.
-      const size = region ? sizeInRegion(widget, region) : defaultSizeFor(page, widget);
+      // Region-targeted when the add came from a zone: the size is what fits the free space
+      // anchored at that column (it may reach past the tapped rectangle, #86), and `col`
+      // anchors it there, so the widget lands in the hole that was tapped rather than
+      // wherever first-fit would have flowed it. Without the anchor, tapping the small hole
+      // could fill the large one.
+      const size = region ? sizeInRegion(widget, region, occupancyGrid(page)) : defaultSizeFor(page, widget);
       if (!size) return;
       // instanceId minted upfront: a positional tag here could collide with an
       // identity another slot froze earlier (e.g. a previously adopted "p0s1").
