@@ -36,7 +36,7 @@
       "type": "select",
       "options": ["Server overview", "Player"],
       "default": "Server overview",
-      "help": "Server overview lists every active stream plus the recently-added shelf. Player turns the tile into a little theater: tap a recently-added title and it plays right on the panel. Place two copies of the widget to have both."
+      "help": "Server overview lists every active stream plus the recently-added shelf. Player turns the tile into a little theater: tap a recently-added title and it plays right on the panel. Panel playback is untracked — an API key belongs to the server, not to a user, so it does not mark titles watched or move anyone's resume position. Place two copies of the widget to have both."
     },
     {
       "name": "latestTypes",

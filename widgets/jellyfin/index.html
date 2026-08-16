@@ -965,12 +965,25 @@
       if (theaterOn && el('tError').hidden) theaterError();
     }, START_DEADLINE);
     pv.src = url;
-    // play() is called from a tap, so autoplay policy is satisfied. A rejection here
-    // (decoder refusal without an error event) lands in the same fallback. Off-screen
-    // (callers already refuse; belt and braces for future ones), the source loads but
-    // stays paused — nothing may sound into a page nobody is looking at.
-    if (!pageOff) pv.play().catch(() => { /* the error handler owns fallback */ });
-    else setTheaterIcons(true);
+    // play() descends from a tap, so autoplay policy is normally satisfied (Chromium's
+    // audible gate is sticky per frame once the user has tapped it). If a policy still
+    // refuses — activation expired across a slow pre-flight — that is not a broken
+    // source: land in a designed paused state with the play button ready, where one
+    // explicit tap carries fresh activation. Decoder refusals surface as error events
+    // and keep walking the fallback. Off-screen (callers already refuse; belt and
+    // braces for future ones), the source loads but stays paused.
+    if (!pageOff) {
+      pv.play().catch((e) => {
+        if (e && e.name === 'NotAllowedError' && theaterOn) {
+          clearTimeout(attemptTimer);
+          clearTimeout(stallTimer);
+          el('tSpin').hidden = true;
+          setTheaterIcons(true);
+          showOverlay();
+        }
+        /* anything else: the error handler owns fallback */
+      });
+    } else setTheaterIcons(true);
   }
 
   async function startPlayback(item, d) {
