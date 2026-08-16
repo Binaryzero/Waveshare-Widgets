@@ -135,8 +135,11 @@ internal static class WebViewEnvironment
                     if (urls.TryAdd(id, shown))
                     {
                         order.Enqueue(id);
+                        // `out var removed`, not `out _`: the enclosing lambda's sender
+                        // parameter is named `_`, which makes the bare discard resolve
+                        // to that object instead of a fresh string.
                         while (order.Count > 256 && order.TryDequeue(out var old))
-                            urls.TryRemove(old, out _);
+                            urls.TryRemove(old, out var removed);
                     }
                 }
                 catch { /* diagnostics must never take the dashboard down */ }
