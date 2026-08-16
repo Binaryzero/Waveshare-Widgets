@@ -119,12 +119,23 @@ internal static class MediaRelay
         return null;
     }
 
+    // Every relay response — refusals included — carries this header. The video
+    // element's no-cors request ignores it; the widget's diagnostic probe is an
+    // ordinary cross-origin fetch, and without it Chromium reports TypeError for a
+    // response the relay DID produce, making a working interceptor indistinguishable
+    // from a dead one (which is precisely the question the probe exists to answer).
+    // Statuses and media bytes are not secrets to the pages this WebView runs.
+    private const string CorsHeader = "Access-Control-Allow-Origin: *\n";
+
     /// <summary>A logged refusal: the reason names the failed check (never the URL —
-    /// the api_key rides its query; a bare authority is safe and is the useful bit).</summary>
+    /// the api_key rides its query; a bare authority is safe and is the useful bit).
+    /// Logging rides the shared diagnostics budget: refusals are reachable from any
+    /// page in the WebView, and a looping frame must not churn the rolling log.</summary>
     private static CoreWebView2WebResourceResponse Refuse(CoreWebView2Environment env, int status, string reason)
     {
-        Log.Info($"media relay refused ({status}): {reason}");
-        return env.CreateWebResourceResponse(null, status, status == 405 ? "Method Not Allowed" : "Forbidden", "");
+        if (WebViewEnvironment.DiagnosticsBudget())
+            Log.Info($"media relay refused ({status}): {reason}");
+        return env.CreateWebResourceResponse(null, status, status == 405 ? "Method Not Allowed" : "Forbidden", CorsHeader);
     }
 
     private static async Task<CoreWebView2WebResourceResponse> BuildResponseAsync(
@@ -162,7 +173,7 @@ internal static class MediaRelay
         // which releases the connection.
         var response = await client.SendAsync(upstream, HttpCompletionOption.ResponseHeadersRead, headerDeadline.Token);
 
-        var headers = new System.Text.StringBuilder();
+        var headers = new System.Text.StringBuilder(CorsHeader);
         void Copy(string name, string? value)
         {
             if (!string.IsNullOrEmpty(value))
@@ -174,8 +185,9 @@ internal static class MediaRelay
         Copy("Accept-Ranges", response.Headers.AcceptRanges.Count > 0 ? string.Join(", ", response.Headers.AcceptRanges) : null);
 
         var body = request.Method == "HEAD" ? null : await response.Content.ReadAsStreamAsync();
-        Log.Info($"media relay {SafeUrl.Describe(target)} -> {(int)response.StatusCode}"
-            + (range is null ? "" : " (ranged)"));
+        if (WebViewEnvironment.DiagnosticsBudget())
+            Log.Info($"media relay {SafeUrl.Describe(target)} -> {(int)response.StatusCode}"
+                + (range is null ? "" : " (ranged)"));
         return env.CreateWebResourceResponse(body, (int)response.StatusCode, response.ReasonPhrase ?? "", headers.ToString());
     }
 

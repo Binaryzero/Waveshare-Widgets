@@ -60,15 +60,16 @@ internal static class WebViewEnvironment
             });
     }
 
-    // The mirror's shared throttle: a noisy or hostile page (the embed widgets frame
+    // The diagnostics throttle: a noisy or hostile page (the embed widgets frame
     // real internet sites) must not be able to drive sustained disk writes through
-    // the rolling log. Simple minute window, shared by every mirrored view and both
-    // event sources — diagnostics are for the first look, not for volume.
+    // the rolling log. Simple minute window, shared by every mirrored view, both
+    // mirror event sources AND the media relay's dispositions — diagnostics are for
+    // the first look, not for volume.
     private static long _mirrorWindowStart;
     private static int _mirrorCount;
     private static bool _mirrorMuted;
 
-    private static bool MirrorBudget()
+    internal static bool DiagnosticsBudget()
     {
         var now = Environment.TickCount64;
         if (now - _mirrorWindowStart > 60_000)
@@ -152,7 +153,7 @@ internal static class WebViewEnvironment
                     var node = System.Text.Json.Nodes.JsonNode.Parse(e.ParameterObjectAsJson);
                     if (node?["canceled"]?.GetValue<bool>() == true)
                         return;
-                    if (!MirrorBudget())
+                    if (!DiagnosticsBudget())
                         return;
                     var id = node?["requestId"]?.GetValue<string>() ?? "";
                     var type = node?["type"]?.GetValue<string>() ?? "?";
@@ -172,7 +173,7 @@ internal static class WebViewEnvironment
                     var level = entry?["level"]?.GetValue<string>() ?? "";
                     if (level is not ("error" or "warning"))
                         return;
-                    if (!MirrorBudget())
+                    if (!DiagnosticsBudget())
                         return;
                     var text = RedactUrls(entry?["text"]?.GetValue<string>() ?? "");
                     if (text.Length > 300)
