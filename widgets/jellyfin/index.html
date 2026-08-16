@@ -948,10 +948,11 @@
   // Each startPlayback claims a token; a pre-flight that resolves after Back (or after
   // a different title was tapped) finds a foreign token and mutates nothing.
   let playToken = 0;
-  // What each attempt died of, for the terminal card and the log. MediaError codes:
-  // 1 aborted · 2 network · 3 decode · 4 source-not-supported (which is also what a
-  // mixed-content or certificate block reads as) — the difference decides whether the
-  // next field report points at codecs, the server, or the browser's gates.
+  // What each attempt died of — codes only, for the terminal card and the log.
+  // MediaError codes: 1 aborted · 2 network · 3 decode · 4 source-not-supported
+  // (which is also what a mixed-content or certificate block reads as) — the
+  // difference decides whether a field report points at codecs, the server, or the
+  // browser's gates.
   let attemptErrors = [];
   // Whether this widget's dashboard page is on screen, kept current by the observer
   // below — the pre-flight's async gap needs the answer at continuation time.
@@ -1113,14 +1114,21 @@
     clearTimeout(attemptTimer);
     clearTimeout(stallTimer);
     // Record what THIS attempt died of before anything advances — the codes are the
-    // whole diagnosis when both attempts fail in the field. Never the URL: it carries
-    // the api_key.
+    // whole diagnosis when both attempts fail in the field. The CARD carries the code
+    // alone: short enough for a 200px band's error card, and a code cannot leak the
+    // api_key. The implementation-defined message goes to the log only, redacted —
+    // such messages may quote the failing URL, the key rides that URL's query, and
+    // truncation is not redaction: the key is replaced wherever it appears and query
+    // strings are dropped wholesale.
     const me = pv.error;
-    const died = me
-      ? 'code ' + me.code + (me.message ? ' — ' + String(me.message).slice(0, 80) : '')
-      : 'watchdog (no media error)';
-    attemptErrors.push(died);
-    WW.log('jellyfin: playback attempt ' + attemptErrors.length + ' failed: ' + died);
+    attemptErrors.push(me ? 'code ' + me.code : 'watchdog');
+    let msg = me && me.message ? String(me.message) : '';
+    if (msg) {
+      if (cfg.key) msg = msg.split(cfg.key).join('[key]');
+      msg = msg.replace(/\?\S*/g, '?…').slice(0, 160);
+    }
+    WW.log('jellyfin: playback attempt ' + attemptErrors.length + ' failed: '
+      + attemptErrors[attemptErrors.length - 1] + (msg ? ' — ' + msg : ''));
     // A failure on a screen nobody is looking at does not get to restart audio there —
     // back to the browse shelf; the viewer re-taps when they return.
     if (outOfSight()) { stopPlayback(); return; }

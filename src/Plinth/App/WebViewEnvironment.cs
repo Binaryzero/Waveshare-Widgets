@@ -3,13 +3,18 @@ using Microsoft.Web.WebView2.Core;
 namespace Plinth.App;
 
 /// <summary>
-/// One shared CoreWebView2Environment for all windows. WebView2 requires every control
-/// sharing a user-data folder to be created with identical environment options, so both
-/// the dashboard and the settings window must come through here.
+/// One shared CoreWebView2Environment for all DASHBOARD windows. WebView2 requires every
+/// control sharing a user-data folder to be created with identical environment options,
+/// so both the dashboard and the settings window must come through here.
+///
+/// The browser-fetch tier does NOT: it navigates untrusted external origins with
+/// forwarded credentials in reach, so it gets <see cref="GetSecureAsync"/> — a separate
+/// profile without the dashboard's mixed-content allowance.
 /// </summary>
 internal static class WebViewEnvironment
 {
     private static Task<CoreWebView2Environment>? _instance;
+    private static Task<CoreWebView2Environment>? _secureInstance;
 
     public static Task<CoreWebView2Environment> GetAsync()
     {
@@ -40,6 +45,29 @@ internal static class WebViewEnvironment
                     "--disable-renderer-backgrounding " +
                     "--allow-running-insecure-content " +
                     "--disable-features=CalculateNativeWinOcclusion,AutoupgradeMixedContent",
+            });
+    }
+
+    /// <summary>
+    /// The environment for BrowserFetcher's bot-wall tier. That tier NAVIGATES real
+    /// external origins and runs their page scripts with the caller's Authorization /
+    /// API-key headers and full URL passed into an in-page fetch — the one place in
+    /// this app where a foreign page's scripts and a live credential share a world.
+    /// Granting it the dashboard's mixed-content allowance would let an https bootstrap
+    /// on a hostile network pull an http ACTIVE script into exactly that world, so this
+    /// environment carries none of it: full mixed-content blocking, own user-data
+    /// folder (WebView2 binds options per folder, so sharing the dashboard's was never
+    /// an option once the two diverged).
+    /// </summary>
+    public static Task<CoreWebView2Environment> GetSecureAsync()
+    {
+        return _secureInstance ??= CoreWebView2Environment.CreateAsync(null, AppPaths.WebViewFetchUserDataDir,
+            new CoreWebView2EnvironmentOptions
+            {
+                AdditionalBrowserArguments =
+                    "--disable-background-timer-throttling " +
+                    "--disable-renderer-backgrounding " +
+                    "--disable-features=CalculateNativeWinOcclusion",
             });
     }
 }
