@@ -1203,13 +1203,33 @@
     return region;
   }
 
-  /** The size a widget takes in a specific free region: widest offered width that
-   *  fits its columns, banded to its rows. Mirrors the shell's sizeInRegion — the two
-   *  answer the same question for the same tap, on either surface. */
-  function sizeInRegion(widget, region) {
-    const band = region.h === 2 ? 'full' : (region.row === 0 ? 'upper' : 'lower');
-    const widths = offeredWidths(widget).slice().reverse();
-    for (const w of widths) if (WIDTH_COLS[w] <= region.w) return w + (band === 'full' ? '' : '-' + band);
+  /** The size a widget takes when added from a specific free region. Mirrors the shell's
+   *  sizeInRegion — the two answer the same question for the same tap, on either surface.
+   *  Phase 1: widest offered width that fits the tapped rectangle, banded to its own rows,
+   *  so a small hole keeps a small widget (#84). Phase 2, only when nothing fits the
+   *  rectangle: size against actual free space (`occupied`) anchored at the region, widest
+   *  first over the bands whose rows include it, taking the first footprint every cell of
+   *  which is free even across two partition rectangles — the fit the area-first partition
+   *  can otherwise hide (#86). Null when nothing fits at all, which lets a tile say why (#77). */
+  function sizeInRegion(widget, region, occupied) {
+    const widths = offeredWidths(widget).slice().reverse();   // widest first
+    const size = (w, band) => w + (band === 'full' ? '' : '-' + band);
+    // Phase 1 — bounded by the rectangle (its cells are all free, being a free region).
+    const ownBand = region.h === 2 ? 'full' : (region.row === 0 ? 'upper' : 'lower');
+    for (const w of widths) if (WIDTH_COLS[w] <= region.w) return size(w, ownBand);
+    // Phase 2 — nothing fit the rectangle; reach into adjacent free cells (#86).
+    const bands = region.h === 2 ? ['full', 'upper', 'lower']
+      : region.row === 0 ? ['upper', 'full'] : ['lower', 'full'];
+    for (const wName of widths) {
+      const w = WIDTH_COLS[wName];
+      if (region.col + w > 4) continue;   // would run off the grid
+      for (const band of bands) {
+        const rows = band === 'full' ? [0, 1] : band === 'upper' ? [0] : [1];
+        let free = true;
+        for (const r of rows) for (let i = 0; i < w && free; i++) if (occupied[r][region.col + i]) free = false;
+        if (free) return size(wName, band);
+      }
+    }
     return null;
   }
 
@@ -1262,11 +1282,14 @@
     // When a replica "+" named a hole, the shelf answers for THAT hole: a widget the
     // region cannot take is offered as unavailable rather than enabled-and-inert.
     const region = activeAddTarget(page);
+    // The raw occupancy behind the region — sizeInRegion's #86 fallback sizes against the
+    // free cells, which can reach past the tapped rectangle.
+    const occupied = region ? occupancyOf(page.slots || []).occupied : null;
     for (const widget of state.widgets) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'gallery-item';
-      const size = region ? sizeInRegion(widget, region) : defaultSizeFor(page, widget);
+      const size = region ? sizeInRegion(widget, region, occupied) : defaultSizeFor(page, widget);
       const glyph = document.createElement('span');
       glyph.className = 'g-icon';
       glyph.textContent = paletteGlyph(widget.id);
@@ -1304,7 +1327,8 @@
     // A tap on a specific hole in the replica sizes and anchors to THAT hole; the
     // shelf's own "+" has no target and keeps the page-wide behaviour.
     const region = activeAddTarget(page);
-    const size = region ? sizeInRegion(widget, region) : defaultSizeFor(page, widget);
+    const size = region ? sizeInRegion(widget, region, occupancyOf(page.slots || []).occupied)
+      : defaultSizeFor(page, widget);
     if (!size) return;
     pendingAddTarget = null;   // one tap, one add
     galleryOpen = false;

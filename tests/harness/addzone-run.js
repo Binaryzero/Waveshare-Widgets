@@ -248,6 +248,46 @@ const overlaps = (a, b) =>
     dead ? `${JSON.stringify(dead.label)} disabled=${dead.disabled}` : 'no zone');
   await page.close();
 
+  // ---- A6 · a fit that spans two partition rectangles (#86) --------------------------
+  // Occupy upper c3 and lower c2-c3. Free cells: upper c0-c2, lower c0-c1. The area-first
+  // partition splits that into a 2x2 (c0-c1) and a lone upper c2. A widget declaring only
+  // `full` is also offered at three-quarter, and three-quarter-upper across c0-c2 fits the
+  // free space EXACTLY — but measured against either partition rectangle in isolation (2
+  // wide, then 1 wide) it is rejected, so the widget has no way in. Sized against free space
+  // anchored at the tapped cell it fits, spilling past the tapped rectangle into the lone
+  // cell — the accepted trade ("tap a small hole, get a wider widget that fills the row").
+  page = await boot(browser, { pages: [{ name: 'Span', slots: [
+    { widgetId: fullOnly.id, size: 'quarter-upper', col: 4, instanceId: 'u3' },
+    { widgetId: fullOnly.id, size: 'half-lower', col: 3, instanceId: 'l23' },
+  ] }] }, [fullOnly]);
+  view = await cells(page);
+  check('A6 setup: free space is a 2x2 at c0-c1 plus a lone upper c2',
+    view.zones.length === 2
+      && view.zones.some((z) => z.c === 0 && z.r === 0 && z.w === 2 && z.h === 2)
+      && view.zones.some((z) => z.c === 2 && z.r === 0 && z.w === 1 && z.h === 1),
+    JSON.stringify(view.zones.map((z) => [z.c, z.r, z.w, z.h])));
+  check('A6 the three-quarter-upper fit that spans both rectangles is offered, not hidden',
+    view.zones.some((z) => !z.disabled),
+    JSON.stringify(view.zones.map((z) => ({ cell: [z.c, z.r, z.w, z.h], disabled: z.disabled }))));
+  // Tap the 2x2 zone (grid-column "1 / span 2") and add the one installed widget.
+  await page.evaluate(() => {
+    const z = [...document.querySelectorAll('.add-zone')]
+      .find((e) => !e.disabled && /^1\s*\//.test(getComputedStyle(e).gridColumn));
+    if (z) z.click();
+  });
+  await page.waitForTimeout(400);
+  await page.evaluate(() => {
+    const b = document.querySelector('#palette button:not([disabled])');
+    if (b) b.click();
+  });
+  await page.waitForTimeout(900);
+  view = await cells(page);
+  const spanned = view.slots.find((s) => s.r === 0 && s.c === 0 && s.w === 3);
+  check('A6b it lands as a three-quarter-upper across c0-c2, past the tapped zone',
+    !!spanned && view.slots.length === 3,
+    `${view.slots.length} slots: ${JSON.stringify(view.slots.map((s) => [s.c, s.r, s.w, s.h]))}`);
+  await page.close();
+
   await browser.close();
   srv.close();
   console.log(failures ? `${failures} FAILURES` : 'ALL PASS');
