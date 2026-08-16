@@ -11,13 +11,6 @@ internal static class AppPaths
     public static string ConfigFile { get; } = Path.Combine(DataDir, "config.json");
     public static string WebViewUserDataDir { get; } = Path.Combine(DataDir, "webview2");
 
-    /// <summary>Separate profile for the browser-fetch tier. WebView2 requires every
-    /// control on a user-data folder to share identical environment options, and the
-    /// fetch tier must NOT share the dashboard's mixed-content allowance — it navigates
-    /// untrusted external origins with forwarded credentials in reach (see
-    /// WebViewEnvironment).</summary>
-    public static string WebViewFetchUserDataDir { get; } = Path.Combine(DataDir, "webview2-fetch");
-
     /// <summary>User-chosen dashboard background images/videos, served from a virtual host.</summary>
     public static string BackgroundsDir { get; } = Path.Combine(DataDir, "backgrounds");
 
@@ -47,7 +40,6 @@ internal static class AppPaths
         Directory.CreateDirectory(DataDir);
         Directory.CreateDirectory(WidgetsDir);
         Directory.CreateDirectory(WebViewUserDataDir);
-        Directory.CreateDirectory(WebViewFetchUserDataDir);
         Directory.CreateDirectory(BackgroundsDir);
         Directory.CreateDirectory(MediaDir);
     }

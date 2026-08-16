@@ -2,7 +2,7 @@
   "id": "ws.stock.jellyfin",
   "name": "Jellyfin",
   "author": "Plinth",
-  "version": "1.1.5",
+  "version": "1.1.0",
   "description": "Who's streaming what from your Jellyfin server and the titles that just landed in the library — or a player that streams a title straight to the panel. Read from Jellyfin's own API, because the web app refuses to render inside a frame.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
@@ -28,7 +28,7 @@
       "type": "select",
       "options": ["Require a valid certificate", "Allow self-signed"],
       "default": "Require a valid certificate",
-      "help": "Only matters for an https:// address. Every request carries the API key, so by default the certificate must prove the server is really yours before anything is sent. Allow self-signed trades that proof away — for API polling and Player-view playback alike — and only works when the address is a literal LAN IP (like https://192.168.1.20) or localhost; at a named address the certificate must be one this PC trusts. Most self-hosted servers have no signed certificate: pick Allow self-signed for those, which on the same LAN is no more exposed than the plain-http default Jellyfin ships with."
+      "help": "Only matters for an https:// address. Every request carries the API key, so by default the certificate must prove the server is really yours before anything is sent. Allow self-signed trades that proof away, and only works when the address is a literal LAN IP (like https://192.168.1.20) or localhost — at a named address the certificate must be one this PC trusts. Player-view playback is stricter still: the browser streams the video itself and always requires a trusted certificate (or a plain http address)."
     },
     {
       "name": "view",

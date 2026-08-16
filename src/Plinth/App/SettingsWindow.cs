@@ -67,9 +67,6 @@ public sealed class SettingsWindow : Form
             var core = _webView.CoreWebView2;
             core.Settings.IsStatusBarEnabled = false;
             core.Settings.IsZoomControlEnabled = false;
-            // The live replica runs real widget iframes, so LAN media streams need
-            // the same self-signed allowance the panel gets (scope in the helper).
-            WebViewEnvironment.AllowLanSelfSignedCertificates(core);
             core.WebMessageReceived += OnWebMessageReceived;
             _hosts.MapFixed(core, ShellHost, AppPaths.ShellDir);
             // So the editor can preview chosen background images/videos.
