@@ -318,9 +318,17 @@
     // machine impersonating the server would be handed it. Plain http has no
     // certificate to bypass — and the flag is not free there: the host serves
     // insecure LAN requests through a single serialized connection, which would let
-    // one slow library query queue-starve the session poll.
+    // one slow library query queue-starve the session poll. insecureMedia rides
+    // along because this widget plays media: it additionally asks the host to
+    // accept certificate errors for the host:port, which is what lets the <video>
+    // element stream from a self-signed server.
     const insecure = /^https:/i.test(cfg.base) && cfg.selfSigned;
-    const opts = Object.assign({ insecure }, init || {});
+    const opts = Object.assign({ insecure, insecureMedia: insecure }, init || {});
+    // Under strict certificate checking, the API key must never ride the browser's
+    // native fetch: ANOTHER widget's media opt-in may have relaxed certificate
+    // errors for this same host:port in the browser layer, and only the host
+    // proxy's validating client enforces this widget's own Require setting.
+    if (/^https:/i.test(cfg.base) && !cfg.selfSigned) opts.proxy = 'always';
     opts.signal = abort.signal;
     opts.headers = Object.assign({ 'X-Emby-Token': cfg.key }, (init && init.headers) || {});
     try {
@@ -1166,7 +1174,8 @@
     if (lastSrcUrl) {
       const n = attemptErrors.length;
       WW.fetch(lastSrcUrl, { method: 'HEAD', proxy: 'always',
-        insecure: /^https:/i.test(cfg.base) && cfg.selfSigned })
+        insecure: /^https:/i.test(cfg.base) && cfg.selfSigned,
+        insecureMedia: /^https:/i.test(cfg.base) && cfg.selfSigned })
         .then((r) => WW.log('jellyfin: attempt ' + n + ' probe: HTTP ' + r.status
           + ' ' + (r.headers.get('content-type') || '')))
         .catch((e) => WW.log('jellyfin: attempt ' + n + ' probe failed: ' + ((e && e.name) || 'error')));

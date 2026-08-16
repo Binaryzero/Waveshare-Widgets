@@ -251,7 +251,11 @@ pairs — all shapes survive the host proxy hop, so authenticated APIs keep thei
 `init.insecure: true` skips certificate validation — honored only for private/loopback
 literal IPs (for self-signed devices like the Hue bridge). Insecure LAN requests go
 over HTTP/1.1 on a single serialized connection per device, since embedded TLS
-servers mishandle h2 offers and parallel handshakes. `WW.listMedia()` URLs are on
+servers mishandle h2 offers and parallel handshakes. A widget that hands the same
+server to a media element (`<video>`/`<audio>` src) additionally passes
+`init.insecureMedia: true`: that asks the host to accept certificate errors for the
+host:port in the browser layer too, which a bare `insecure` deliberately does not do —
+a health probe must not loosen certificate handling for another widget's server. `WW.listMedia()` URLs are on
 `https://media.plinth/`, mapped to the media folder ("Open media folder" in Settings).
 
 **Body ceiling.** A `WW.fetch` response reads at most **5 MiB**. `text()`, `json()`,

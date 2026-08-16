@@ -582,6 +582,11 @@
       contentType: bodyContentType,
       headers,
       insecure: init.insecure === true,
+      // Declares that this insecure opt-in is for MEDIA the widget will hand to the
+      // browser (a <video>/<audio> src) — the host additionally relaxes certificate
+      // errors for the host:port, which bare init.insecure deliberately does not do
+      // (a health probe must not loosen another widget's certificate policy).
+      insecureMedia: init.insecureMedia === true,
       // The ceiling has to cross the hop, not just live in the page. Without it the host
       // fetches, buffers, base64-encodes and posts its full 5 MiB before the wrapper here
       // can refuse a byte of it — so a lowered ceiling would cost exactly as much as no

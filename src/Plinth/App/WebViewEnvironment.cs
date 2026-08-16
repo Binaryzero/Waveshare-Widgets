@@ -62,9 +62,12 @@ internal static class WebViewEnvironment
 
     /// <summary>
     /// Hosts whose certificate errors the dashboard-tier WebViews may accept. An entry
-    /// appears only when a widget exercises WW.fetch's documented insecure opt-in
-    /// (init.insecure, honored for private hosts only) — the Jellyfin widget sets it
-    /// exactly when its certificate-check setting says Allow self-signed. Keyed by
+    /// appears only when a widget exercises WW.fetch's MEDIA insecure opt-in
+    /// (init.insecureMedia riding init.insecure, honored for private hosts only) —
+    /// the Jellyfin widget sets both exactly when its certificate-check setting says
+    /// Allow self-signed. Bare init.insecure does NOT register: the Endpoints widget
+    /// sends it for every health probe, and a probe must not loosen certificate
+    /// handling for a different widget on the same authority. Keyed by
     /// scheme://authority; concurrent because proxy fetches register from worker
     /// threads while the certificate handler reads on the WebView's.
     /// </summary>

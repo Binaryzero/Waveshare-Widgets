@@ -685,11 +685,15 @@ public sealed class DashboardWindow : Form
 
             var insecureRequested = message["insecure"]?.GetValue<bool>() ?? false;
             var lanDevice = insecureRequested && IsPrivateHost(uri);
-            // The opt-in spans layers: the same flag that buys validation-free proxy
-            // transport here also unlocks certificate errors for this host in the
-            // dashboard WebViews, so Player-view media — which streams browser-side
-            // and cannot ride this proxy — obeys the widget's setting too.
-            if (lanDevice)
+            // The opt-in spans layers: a media-playing widget's insecure flag also
+            // unlocks certificate errors for this host in the dashboard WebViews, so
+            // Player-view media — which streams browser-side and cannot ride this
+            // proxy — obeys the widget's setting too. Gated on the EXPLICIT media
+            // marker, not bare insecure: the Endpoints widget probes every target
+            // with insecure:true as a matter of course, and a health check must not
+            // relax certificate handling for a different widget that shares the
+            // authority and demands validation.
+            if (lanDevice && (message["insecureMedia"]?.GetValue<bool>() ?? false))
                 WebViewEnvironment.AllowInsecureLanHost(uri);
 
             using var request = new HttpRequestMessage(new HttpMethod(method), uri)
@@ -782,7 +786,13 @@ public sealed class DashboardWindow : Form
             var imageOnly = method == "GET" && AcceptsOnlyImages(message);
             var softWall = response.IsSuccessStatusCode && imageOnly
                 && IsHtmlContent(response.Content.Headers.ContentType);
-            var bytes = softWall ? Array.Empty<byte>() : await ReadCappedAsync(response, cap);
+            // A HEAD response carries no body but still declares the Content-Length the
+            // body WOULD have — for the Jellyfin playback probe that is a whole movie,
+            // and ReadCappedAsync would refuse the declared size of bytes that will
+            // never be transferred. Status and headers are the entire answer.
+            var bytes = softWall || method == "HEAD"
+                ? Array.Empty<byte>()
+                : await ReadCappedAsync(response, cap);
 
             result["status"] = (int)response.StatusCode;
             result["statusText"] = response.ReasonPhrase ?? "";
