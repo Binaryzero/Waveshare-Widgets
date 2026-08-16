@@ -77,11 +77,18 @@ internal static class MediaRelay
     /// the host's own HTTP clients.</summary>
     public static void Attach(CoreWebView2 core)
     {
-        core.AddWebResourceRequestedFilter($"https://{Host}/*", CoreWebView2WebResourceContext.All);
+        // NOT the deprecated two-argument filter: the field proved it top-document-
+        // scoped — armed, and yet NOTHING from the widget iframes (not their <video>
+        // requests, not their fetches) ever reached the handler (ci.1186: zero
+        // dispositions while the widget's relay probe threw TypeError). Widgets live
+        // in cross-origin iframes; the explicit source-kinds overload covers every
+        // requester, workers included.
+        core.AddWebResourceRequestedFilter($"https://{Host}/*",
+            CoreWebView2WebResourceContext.All, CoreWebView2WebResourceRequestSourceKinds.All);
         // The field taught this the hard way: a relay that refuses silently is
         // indistinguishable from a relay that never ran. Announce arming, and log
         // every disposition below.
-        Log.Info("media relay armed");
+        Log.Info("media relay armed (all frames)");
         core.WebResourceRequested += async (_, e) =>
         {
             if (!e.Request.Uri.StartsWith($"https://{Host}/", StringComparison.OrdinalIgnoreCase))

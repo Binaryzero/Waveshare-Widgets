@@ -1189,16 +1189,21 @@
         .then((r) => WW.log('jellyfin: attempt ' + n + ' probe: HTTP ' + r.status
           + ' ' + (r.headers.get('content-type') || '')))
         .catch((e) => WW.log('jellyfin: attempt ' + n + ' probe failed: ' + ((e && e.name) || 'error')));
-      // Second probe, and the decisive one when the element dies with nothing: fetch
-      // the RELAY url natively (no proxy). A status here proves the host intercepts
-      // stream.plinth for fetch-context requests — narrowing a dead <video> to the
-      // media engine specifically — while a rejection means interception never saw
-      // the request at all. Together with the host's own relay log lines, one field
-      // run now names the failing layer instead of the next four guessing at it.
+      // The probe quartet, each isolating ONE layer from inside this frame. Reading
+      // the answers: an HTTP status (0 counts — no-cors responses are opaque) means
+      // that layer works; TypeError means that layer refused. relay-fetch → host
+      // interception; vhost-fetch → virtual hosts at all; direct-fetch → the LAN
+      // target with no relay; pna-fetch → the same but with Chromium's per-request
+      // Local Network Access opt-in, so if IT succeeds where direct-fetch fails,
+      // the gate finally has a name.
       if (privateLiteralHost(cfg.base)) {
-        WW.fetch(relayUrl(lastSrcUrl), { method: 'HEAD', proxy: 'never' })
-          .then((r) => WW.log('jellyfin: attempt ' + n + ' relay-fetch probe: HTTP ' + r.status))
-          .catch((e) => WW.log('jellyfin: attempt ' + n + ' relay-fetch probe failed: ' + ((e && e.name) || 'error')));
+        const probe = (tag, url, init) => WW.fetch(url, Object.assign({ method: 'HEAD', proxy: 'never' }, init || {}))
+          .then((r) => WW.log('jellyfin: attempt ' + n + ' ' + tag + ': HTTP ' + r.status))
+          .catch((e) => WW.log('jellyfin: attempt ' + n + ' ' + tag + ' failed: ' + ((e && e.name) || 'error')));
+        probe('relay-fetch', relayUrl(lastSrcUrl));
+        probe('vhost-fetch', 'https://media.plinth/', { mode: 'no-cors' });
+        probe('direct-fetch', lastSrcUrl, { mode: 'no-cors' });
+        probe('pna-fetch', lastSrcUrl, { mode: 'no-cors', targetAddressSpace: 'private' });
       }
     }
     // A failure on a screen nobody is looking at does not get to restart audio there —
