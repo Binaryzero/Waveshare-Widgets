@@ -135,16 +135,19 @@ function tapAuditInFrame() {
   // frame-local box; the caller knows the slot width and the shipped rail width and flags the
   // intrusions.
   //
-  // The geometry set is the tap surfaces PLUS <iframe> embed hosts. An <iframe> (iframe,
-  // twitch, youtube) is a full-area tap surface — a tap anywhere on it drives the embedded
-  // page — but it declares itself through none of the discovery routes above (not a native
-  // activation target, carries no listener of its own), so without this an embed's inline inset
-  // could be dropped and the check would stay green. <video> and <canvas> are painted full
-  // bleed as VISUALS by design (gallery, sensorchart) and are not tap surfaces, so only iframe
-  // is added, not every replaced element. document/window surfaces cover the whole frame (rails
-  // included) and are a docUnguarded concern, not a geometric one.
+  // The geometry set is the tap surfaces PLUS the native interaction surfaces the browser drives
+  // itself with no author listener, on* handler, or NATIVE-selector match, so none of the
+  // discovery routes above sees them: an <iframe> embed host (iframe, twitch, youtube — a tap
+  // anywhere on it drives the embedded page) and a <video>/<audio> element that exposes the
+  // browser's own transport via the `controls` attribute (its seek/volume/fullscreen buttons are
+  // tappable with no listener the audit can find). Without these, such an embed's inline inset
+  // could be dropped and the check would stay green. A <video>/<audio> WITHOUT controls, and a
+  // <canvas>, are painted full bleed as VISUALS by design (gallery's slideshow, jellyfin's
+  // widget-driven player, sensorchart) and are NOT tap surfaces — so this is gated on `controls`,
+  // not every replaced element. document/window surfaces cover the whole frame (rails included)
+  // and are a docUnguarded concern, not a geometric one.
   const geom = new Set(surfaces);
-  for (const el of document.querySelectorAll('iframe')) geom.add(el);
+  for (const el of document.querySelectorAll('iframe,video[controls],audio[controls]')) geom.add(el);
   const boxes = [];
   for (const el of geom) {
     if (!el.isConnected) continue;

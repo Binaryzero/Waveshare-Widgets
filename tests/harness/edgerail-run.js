@@ -84,6 +84,8 @@ const WIDGET_PAGE = '<!doctype html><meta charset="utf-8">'
   // really is 3px wide (a <button width:3px> inflates to ~16px and is correctly flagged).
   + '#tiny{top:360px;right:0;width:3px;box-sizing:border-box}'  // sub-4px sliver at the edge -> clear
   + '#kid{position:absolute;bottom:0;left:0;width:100px;height:60px;border:0}'
+  + '#vid{top:10px;right:0}'                           // <video controls>, flush right -> [R]
+  + '#vidNo{top:60px;left:0}'                          // <video> no controls, flush left -> clear
   + '</style>'
   + '<button class="c" id="natR">r</button>'
   + '<div class="c" id="roleL" role="button">l</div>'
@@ -93,6 +95,8 @@ const WIDGET_PAGE = '<!doctype html><meta charset="utf-8">'
   + '<button class="c" id="near">n</button>'
   + '<button class="c" id="hid">h</button>'
   + '<div class="c" id="tiny" role="button">t</div>'
+  + '<video class="c" id="vid" controls></video>'
+  + '<video class="c" id="vidNo"></video>'
   + '<iframe id="kid" src="https://widget.test/child.html"></iframe>'
   + '<script>document.getElementById("lisR").addEventListener("click", function(){});<\/script>';
 
@@ -149,6 +153,14 @@ const CHILD_PAGE = '<!doctype html><meta charset="utf-8">'
   // gap Codex flagged. Its cross-origin interior stays out of scope (G7); its box does not.
   check('G8 an <iframe> embed host flush to an edge IS flagged (embed containers are measured)',
     flagged('kid', 'L'), intr.join(' | '));
+  // G9 · a <video controls>/<audio controls> exposes the browser's own transport (seek/volume/
+  // fullscreen) with no author listener, so it is a native interaction surface like an iframe and
+  // must be measured; a media element WITHOUT controls is a visual (gallery's slideshow,
+  // jellyfin's widget-driven player) and must NOT be, or every full-bleed video would false-flag.
+  check('G9a a <video controls> flush to an edge IS flagged (native media transport)',
+    flagged('vid', 'R'), intr.join(' | '));
+  check('G9b a <video> WITHOUT controls is NOT flagged (a visual, not a tap surface)',
+    !flagged('vidNo'), intr.join(' | '));
 
   // ---- G6 · the real widget, the real control the report named -------------------------
   const notifPage = await context.newPage();
