@@ -97,10 +97,12 @@ internal static class WebViewEnvironment
         // Renderer-controlled text stays ONE log line: an embedded \r\n would let a
         // hostile frame mint entries that read as the app's own in a pasted log.
         text = text.Replace('\r', ' ').Replace('\n', ' ');
+        // IgnoreCase: URI schemes are case-insensitive, and an HTTPS:// spelling must
+        // not slip past the host-only collapse with its userinfo and path intact.
         text = System.Text.RegularExpressions.Regex.Replace(text, @"https?://\S+", m =>
             Uri.TryCreate(m.Value.TrimEnd('.', ',', ')', '"', '\''), UriKind.Absolute, out var u)
                 ? u.Scheme + "://" + u.Authority + "/…"
-                : "url…");
+                : "url…", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         return System.Text.RegularExpressions.Regex.Replace(text, @"\?\S+", "?…");
     }
 
