@@ -238,6 +238,30 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   that scrolls. They are kept because that is the invariant worth pinning, and because T3
   responding to the CSS while T5-T7 do not is what shows the gesture pipeline is really
   evaluating `touch-action` rather than the harness measuring nothing.
+- `edgerail-run.js` — proof that the #206 edge-reservation audit (`auditEdgeReservation` in
+  `tools/tap-audit.js`) discriminates, so its all-clear across the sweep means something.
+  `touchpan-run.js` proves the *shell* behaves and pins a hand-list of the controls known to
+  sit near a screen edge; this proves the *general tool* that now guards every widget in
+  `tools/widget-harness.js` (offline states) and `tools/widget-datapath.js` (populated states).
+  The `.edge` swipe strips are fixed overlays *above* the iframes that page on a tap, so a
+  control whose box pokes into the outer 8px rail is unreachable in an edge column no matter how
+  its `touch-action` is set — the geometric twin of the pan-chaining #221 catches. A synthetic
+  widget mounts controls flush to each inline edge by *every* route a control becomes tappable
+  (native tag, `[role=button]`, inline `on*`, `addEventListener`) and the audit flags each on the
+  correct side (G1); a control reserving exactly the rail is allowed while one a pixel inside is
+  flagged, so the boundary tracks `EDGE_W` read from `shell.css` rather than a hardcoded number
+  (G2/G3); a hidden control and a sub-4px sliver are not flagged, the visible-content threshold
+  stated on the record rather than left as a silent gap (G4/G5); a control flush to a *nested
+  child frame's* edge is not reported, because only the immediate widget frame maps 1:1 to the
+  slot (G7), while the `<iframe>` embed HOST itself — which carries an iframe/twitch/youtube
+  embed and declares itself through none of the discovery routes — IS measured, so dropping its
+  inset would be caught (G8); and the real notifications eye — the control #206 named — clears
+  the rail at the 320px quarter slot through the exact aggregator the sweep uses. G6 drives that
+  fixture from the *parent* frame over the real `ww-ready` handshake (widget-api rejects a
+  self-posted message) and asserts the eye actually rendered (G6a) before reading its clearance
+  (G6b), so the check cannot pass by measuring a widget that never drew. Without this file the
+  sweep's "all clear" could mean "measured nothing" and no test on this head would tell the
+  difference.
 - `pillquiet-run.js` — the header pill reports exceptions, not health (issue #205). Every
   stock tile carried a permanent corner badge reading LIVE, ALL UP, CLEAR, QUIET, LOADED
   or SCHEDULED: true from the moment the widget worked until the moment it stopped, on
