@@ -921,11 +921,13 @@
 
   const pv = el('pv');
   const START_DEADLINE = 20000;   // a source that stalls without erroring is still a failure
+  const STALL_DEADLINE = 30000;   // ...and so is one that rebuffers forever mid-title
   let theaterOn = false;
   let theaterAttempts = [];
   let theaterItem = null;
   let overlayTimer = null;
   let attemptTimer = null;
+  let stallTimer = null;
   let resumeAt = 0;               // where playback was when an attempt died mid-title
   let timeBase = 0;               // offset of a StartTimeTicks transcode: clock = base + currentTime
   let pendingSeek = 0;            // direct-play resume: seek once metadata arrives
@@ -946,6 +948,7 @@
     // A source now exists, so pause and seek mean something again.
     setTransportDisabled(false);
     clearTimeout(attemptTimer);
+    clearTimeout(stallTimer);
     timeBase = 0;
     pendingSeek = 0;
     if (resumeAt > 5) {
@@ -963,8 +966,11 @@
     }, START_DEADLINE);
     pv.src = url;
     // play() is called from a tap, so autoplay policy is satisfied. A rejection here
-    // (decoder refusal without an error event) lands in the same fallback.
-    pv.play().catch(() => { /* the error handler owns fallback */ });
+    // (decoder refusal without an error event) lands in the same fallback. Off-screen
+    // (callers already refuse; belt and braces for future ones), the source loads but
+    // stays paused — nothing may sound into a page nobody is looking at.
+    if (!pageOff) pv.play().catch(() => { /* the error handler owns fallback */ });
+    else setTheaterIcons(true);
   }
 
   async function startPlayback(item, d) {
@@ -1014,6 +1020,7 @@
     playToken++;   // orphan any pre-flight still in the air
     clearTimeout(overlayTimer);
     clearTimeout(attemptTimer);
+    clearTimeout(stallTimer);
     resumeAt = 0;
     timeBase = 0;
     pendingSeek = 0;
@@ -1061,6 +1068,10 @@
   function theaterError() {
     if (!theaterOn) return;
     clearTimeout(attemptTimer);
+    clearTimeout(stallTimer);
+    // A failure on a page nobody is looking at does not get to restart audio there —
+    // back to the browse shelf; the viewer re-taps when they return.
+    if (pageOff) { stopPlayback(); return; }
     // A mid-title death carries its position into the next attempt; only meaningful
     // progress overwrites, so the second attempt's instant failure at 0:00 does not
     // erase where the first one actually was.
@@ -1083,15 +1094,24 @@
   }
 
   pv.addEventListener('error', theaterError);
-  pv.addEventListener('playing', () => { clearTimeout(attemptTimer); el('tSpin').hidden = true; setTheaterIcons(false); showOverlay(); });
+  pv.addEventListener('playing', () => { clearTimeout(attemptTimer); clearTimeout(stallTimer); el('tSpin').hidden = true; setTheaterIcons(false); showOverlay(); });
   pv.addEventListener('loadedmetadata', () => {
     if (pendingSeek > 0 && isFinite(pv.duration)) {
       pv.currentTime = Math.min(pendingSeek, Math.max(0, pv.duration - 5));
       pendingSeek = 0;
     }
   });
-  pv.addEventListener('waiting', () => { if (theaterOn) el('tSpin').hidden = false; });
-  pv.addEventListener('pause', () => { if (theaterOn) { setTheaterIcons(true); showOverlay(); } });
+  // A rebuffer is a stall with a spinner: media elements can sit in `waiting` forever
+  // without an error event, and the startup deadline is long spent by then. The
+  // watchdog walks the fallback chain (carrying the position) if playback does not
+  // resume; anything that resumes or deliberately pauses calls it off.
+  pv.addEventListener('waiting', () => {
+    if (!theaterOn) return;
+    el('tSpin').hidden = false;
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => { if (theaterOn && el('tError').hidden) theaterError(); }, STALL_DEADLINE);
+  });
+  pv.addEventListener('pause', () => { if (theaterOn) { clearTimeout(stallTimer); setTheaterIcons(true); showOverlay(); } });
   pv.addEventListener('ended', stopPlayback);
   // timeupdate fires at the browser's own ~4 Hz — data cadence, no timer of ours.
   // The clock carries timeBase: a StartTimeTicks transcode restarts the element's own
