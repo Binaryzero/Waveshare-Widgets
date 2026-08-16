@@ -903,16 +903,28 @@
   // class: an unsupported audio track (DTS, AC3) does not fire an error event — the
   // video simply plays without sound — so codec safety is decided BEFORE direct play,
   // from the item's MediaStreams, and an unsafe title goes straight to the transcode.
-  // Container problems are the opposite: the demuxer fails loudly, and the error
-  // event walks the fallback list, so containers need no pre-flight.
+  // Containers fail loudly, but only AFTER a doomed attempt: field log of an MKV was
+  // `code 4 — Format error` on direct play before the transcode picked it up, and
+  // MKV is most of a typical Jellyfin library. So the container is pre-flighted too,
+  // and Matroska skips straight to the transcode instead of failing into it.
   const SAFE_VIDEO = new Set(['h264', 'vp8', 'vp9', 'av1']);
   const SAFE_AUDIO = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac']);
+  // What the demuxer opens from a bare src=: the ISO-BMFF family, WebM and Ogg.
+  // Jellyfin reports ffmpeg-style names, sometimes several at once ("mov,mp4,m4a").
+  const SAFE_CONTAINERS = new Set(['mp4', 'm4v', 'm4a', 'mov', '3gp', 'webm', 'ogg', 'ogv', 'oga']);
 
   async function directPlaySafe(item) {
-    const body = await jfJson('/Items?Ids=' + encodeURIComponent(String(item.Id)) + '&Fields=MediaStreams',
+    const body = await jfJson('/Items?Ids=' + encodeURIComponent(String(item.Id)) + '&Fields=MediaStreams,MediaSources',
       8000, 256 * 1024);
-    const streams = (body && Array.isArray(body.Items) && body.Items[0] && body.Items[0].MediaStreams) || null;
+    const it = (body && Array.isArray(body.Items) && body.Items[0]) || null;
+    const streams = (it && it.MediaStreams) || null;
     if (!Array.isArray(streams)) throw fault('format', 'no media streams');
+    // A missing container is not condemned — absence of evidence leaves the codec
+    // verdict standing; a KNOWN foreign one (mkv above all) is, before the demuxer
+    // has to find out the slow way.
+    const source = (Array.isArray(it.MediaSources) && it.MediaSources[0]) || null;
+    const container = String((source && source.Container) || it.Container || '').toLowerCase();
+    if (container && !container.split(',').some((c) => SAFE_CONTAINERS.has(c.trim()))) return false;
     const audio = streams.filter((s) => s && s.Type === 'Audio');
     const picked = audio.find((s) => s.IsDefault) || audio[0];
     if (picked && !SAFE_AUDIO.has(String(picked.Codec || '').toLowerCase())) return false;
@@ -949,10 +961,10 @@
   // a different title was tapped) finds a foreign token and mutates nothing.
   let playToken = 0;
   // What each attempt died of — codes only, for the terminal card and the log.
-  // MediaError codes: 1 aborted · 2 network · 3 decode · 4 source-not-supported
-  // (which is also what a mixed-content or certificate block reads as) — the
-  // difference decides whether a field report points at codecs, the server, or the
-  // browser's gates.
+  // MediaError codes: 1 aborted · 2 network · 3 decode · 4 source-not-supported —
+  // a foreign container ("Format error"), a mixed-content block and a certificate
+  // block all read as 4 — the difference decides whether a field report points at
+  // codecs, the server, or the browser's gates.
   let attemptErrors = [];
   // Whether this widget's dashboard page is on screen, kept current by the observer
   // below — the pre-flight's async gap needs the answer at continuation time.

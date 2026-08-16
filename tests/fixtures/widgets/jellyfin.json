@@ -5,6 +5,11 @@
    "Items": [
     {
      "Id": "m-brutalist",
+     "MediaSources": [
+      {
+       "Container": "mp4"
+      }
+     ],
      "MediaStreams": [
       {
        "Type": "Video",
