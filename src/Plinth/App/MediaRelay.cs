@@ -109,7 +109,9 @@ internal static class MediaRelay
                 // the rolling log either.
                 if (WebViewEnvironment.DiagnosticsBudget())
                     Log.Warn($"media relay failed: {ex.GetType().Name}");
-                try { e.Response = core.Environment.CreateWebResourceResponse(null, 502, "Bad Gateway", ""); }
+                // CORS here too: a 502 the probe reads as HTTP 502 is diagnosis; a
+                // 502 it reads as TypeError is the exact ambiguity the header kills.
+                try { e.Response = core.Environment.CreateWebResourceResponse(null, 502, "Bad Gateway", CorsHeader); }
                 catch { /* teardown race; the request dies with the view */ }
             }
             finally

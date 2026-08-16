@@ -136,7 +136,12 @@ internal static class WebViewEnvironment
                         return;
                     var shown = Uri.TryCreate(url, UriKind.Absolute, out var u)
                         ? u.Scheme + "://" + u.Authority + "/…" : "url…";
-                    if (urls.TryAdd(id, shown))
+                    // A redirect re-emits the same requestId with the NEW url, and a
+                    // later failure belongs to the last hop — always overwrite, but
+                    // enqueue an id for eviction only the first time it is seen.
+                    var fresh = !urls.ContainsKey(id);
+                    urls[id] = shown;
+                    if (fresh)
                     {
                         order.Enqueue(id);
                         // `out var removed`, not `out _`: the enclosing lambda's sender
