@@ -921,8 +921,12 @@ const layout = {
       const dest = occOf(l.pages[to].slots || []);
       for (let from = 0; from < to; from++) {
         const src = occOf(l.pages[from].slots || []);
+        // Free on both pages AND unexpandable on the tapped page (rightmost of its run, right
+        // neighbour occupied or off-grid). #86 reaches a target RIGHT into adjacent free
+        // cells, so a hole with a free neighbour on the SOURCE page would be offered as a
+        // half rather than "too big" — E26a needs the region verdict to be "too big".
         for (let r = 0; r < 2; r++) for (let c = 0; c < 4; c++)
-          if (!src[r][c] && !dest[r][c])
+          if (!src[r][c] && !dest[r][c] && (c === 3 || src[r][c + 1]))
             return { from, to, target: { col: c, row: r, w: 1, h: 1 },
               toSlots: (l.pages[to].slots || []).length };
       }
@@ -1060,9 +1064,15 @@ const layout = {
       const last = (pg.slots || []).length - 1;
       const before = window.__wwProbeOcc(idx);
       const after = window.__wwProbeOcc(idx, { i: last, size: 'half' });
+      // The tapped cell must be UNEXPANDABLE — the rightmost of its free run, its right
+      // neighbour occupied or off the grid. #86 sizes a target against free space anchored
+      // at the tap and reaches RIGHT, so a 1x1 hole with a free cell beside it now offers a
+      // half-lower (it expands into the neighbour) instead of "too big" — which would erase
+      // the region-vs-page discriminator E27a rests on. Anchored at the edge it can only be a
+      // quarter the catalog does not offer, so the region verdict stays "too big".
       let cell = null;
       for (let r = 0; r < 2 && !cell; r++) for (let c = 0; c < 4 && !cell; c++)
-        if (!before[r][c] && after[r][c]) cell = { col: c, row: r, w: 1, h: 1 };
+        if (!before[r][c] && after[r][c] && (c === 3 || before[r][c + 1])) cell = { col: c, row: r, w: 1, h: 1 };
       // No 2-wide run left afterwards, in either band: "no room" is then the CORRECT
       // page-wide answer, and the reason strings genuinely differ between the two worlds.
       const roomAfter = [0, 1].some((r) => {
