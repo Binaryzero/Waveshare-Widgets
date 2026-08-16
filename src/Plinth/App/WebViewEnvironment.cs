@@ -94,6 +94,9 @@ internal static class WebViewEnvironment
     /// pasted into bug reports whole.</summary>
     private static string RedactUrls(string text)
     {
+        // Renderer-controlled text stays ONE log line: an embedded \r\n would let a
+        // hostile frame mint entries that read as the app's own in a pasted log.
+        text = text.Replace('\r', ' ').Replace('\n', ' ');
         text = System.Text.RegularExpressions.Regex.Replace(text, @"https?://\S+", m =>
             Uri.TryCreate(m.Value.TrimEnd('.', ',', ')', '"', '\''), UriKind.Absolute, out var u)
                 ? u.Scheme + "://" + u.Authority + "/…"

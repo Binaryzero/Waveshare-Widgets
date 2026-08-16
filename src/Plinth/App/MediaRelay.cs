@@ -97,8 +97,11 @@ internal static class MediaRelay
             catch (Exception ex)
             {
                 // Type only: exception messages can echo the target URL, and the
-                // api_key rides that URL's query.
-                Log.Warn($"media relay failed: {ex.GetType().Name}");
+                // api_key rides that URL's query. Budgeted like every other
+                // disposition — a dead upstream hit concurrently must not churn
+                // the rolling log either.
+                if (WebViewEnvironment.DiagnosticsBudget())
+                    Log.Warn($"media relay failed: {ex.GetType().Name}");
                 try { e.Response = core.Environment.CreateWebResourceResponse(null, 502, "Bad Gateway", ""); }
                 catch { /* teardown race; the request dies with the view */ }
             }
