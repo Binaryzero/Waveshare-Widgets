@@ -104,7 +104,21 @@ const TOKEN = 'Bearer super-secret-probe-token';
       window.__probeHostError = 'host offline in probe';
       window.addEventListener('message', (ev) => {
         const m = ev.data || {};
-        if (m.type === 'ww-fetch') window.postMessage({ type: 'ww-fetch-result', id: m.id, error: window.__probeHostError }, '*');
+        if (m.type !== 'ww-fetch') return;
+        // OAuth2 token exchanges use proxy:'always', so they arrive here rather than on the
+        // browser tier. When a token endpoint is armed (RT, #176.1), answer it with a
+        // scriptable token body and COUNT the grant — that count is how the halt is proven,
+        // since the bug is one successful grant per poll. Everything else keeps the R22/R23
+        // host-error behaviour untouched.
+        if (window.__tokenEndpoint && String(m.url).indexOf(window.__tokenEndpoint) === 0) {
+          window.__grants = (window.__grants || 0) + 1;
+          const body = JSON.stringify(window.__tokenResp
+            || { access_token: 'probe-token', token_type: 'DPoP', expires_in: 3600 });
+          window.postMessage({ type: 'ww-fetch-result', id: m.id, status: 200,
+            contentType: 'application/json', bodyBase64: btoa(body) }, '*');
+          return;
+        }
+        window.postMessage({ type: 'ww-fetch-result', id: m.id, error: window.__probeHostError }, '*');
       });
     });
   }
@@ -792,6 +806,82 @@ const TOKEN = 'Bearer super-secret-probe-token';
   check('RF4 widening the slot relaxes the fit (ResizeObserver re-measures, no settings edit)',
     atFull.fit > atQuarter.fit && !atFull.clipped,
     `quarter fit ${atQuarter.fit} -> full fit ${atFull.fit}`);
+
+  // ---- RT · #176.1: an unsupported token type HALTS polling, not buys tokens forever ----
+  // OAuth2 client-credentials exchanges go through the proxy tier (proxy:'always'), which the
+  // harness answers above. Arm a token endpoint issuing a DPoP token — a type this tile cannot
+  // present — at the 5s floor: the pre-fix widget performs a fresh, SUCCESSFUL grant on every
+  // poll and discards it on type, twelve a minute forever behind a card that says it is not
+  // retrying. The fix stops the schedule until the auth settings change.
+  await page.evaluate(() => { window.__grants = 0; window.__tokenEndpoint = 'https://api.test/tok';
+    window.__tokenResp = { access_token: 'dpop-token', token_type: 'DPoP', expires_in: 3600 }; });
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 1 }) });
+  await init(Object.assign({}, base, { url: 'https://api.test/oauthdata', jsonPointer: '/v', pollSeconds: 5,
+    authMode: 'oauth2', tokenEndpoint: 'https://api.test/tok', clientId: 'id', clientSecret: 'sec' }));
+  await wait(800);
+  const rtCard = await read();
+  const grantsFirst = await page.evaluate(() => window.__grants);
+  check('RT setup: a non-Bearer token type shows the unsupported-token card',
+    /Unsupported token type/.test(rtCard.title), rtCard.title);
+  check('RT1 the first poll exchanges exactly once', grantsFirst === 1, `${grantsFirst} grants`);
+  // Two more poll intervals at the 5s floor — a halted tile grants nothing further.
+  await wait(11500);
+  const grantsLater = await page.evaluate(() => window.__grants);
+  check('RT2 a halted tile stops granting rather than buying a token every interval',
+    grantsLater === grantsFirst, `${grantsLater} grants after ~2 more 5s intervals`);
+  // Corrected auth — a new token endpoint issuing Bearer — lifts the halt and the tile reads.
+  await page.evaluate(() => { window.__tokenEndpoint = 'https://api.test/tok2';
+    window.__tokenResp = { access_token: 'bearer-token', token_type: 'Bearer', expires_in: 3600 }; });
+  await init(Object.assign({}, base, { url: 'https://api.test/oauthdata', jsonPointer: '/v', pollSeconds: 5,
+    authMode: 'oauth2', tokenEndpoint: 'https://api.test/tok2', clientId: 'id', clientSecret: 'sec' }));
+  await wait(800);
+  const rtResumed = await read();
+  check('RT3 corrected auth settings lift the halt and the tile reads again',
+    rtResumed.value === '1' && !rtResumed.bodyHidden, `${rtResumed.value} / ${rtResumed.title}`);
+
+  // RT4 · #176.1 review: a HALTED tile that already holds a reading must not un-halt itself
+  // on a presentation-only edit. The bug the fix closes: `last` is set (a good reading), an
+  // unsupported token type halts the tile behind its card, then a same-auth edit — relabel,
+  // decimals, unit — re-enters onInit's `else if (last)` branch and repaints the cached
+  // number, papering the halt card over with a stale value and no Stale pill, while
+  // restart()'s halt guard blocks the poll that would correct it. It sits there as if live,
+  // forever. Establish a Bearer reading first (so `last` is set), then rotate the token to a
+  // type this tile cannot present AND 401 the data endpoint — which drives the reactive
+  // getBearer(true) re-exchange and halts the tile. Finally edit ONLY the unit and assert the
+  // halt card survives rather than being replaced by the stale 42.
+  await page.evaluate(() => { window.__grants = 0; window.__tokenEndpoint = 'https://api.test/tokRT4';
+    window.__tokenResp = { access_token: 'bearer-4', token_type: 'Bearer', expires_in: 3600 }; });
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 42 }) });
+  const oauth4 = { url: 'https://api.test/oauthdata4', jsonPointer: '/v', pollSeconds: 60,
+    authMode: 'oauth2', tokenEndpoint: 'https://api.test/tokRT4', clientId: 'id', clientSecret: 'sec' };
+  await init(Object.assign({}, base, oauth4, { unit: 'x' }));
+  await wait(800);
+  const rt4Good = await read();
+  check('RT4 setup: a Bearer OAuth2 exchange gives the tile a real reading',
+    rt4Good.value === '42' && !rt4Good.bodyHidden, `${rt4Good.value} / ${rt4Good.title}`);
+  // The token now rotates to a type this tile cannot present, and the data endpoint 401s so
+  // the reactive re-exchange runs. Drive one poll through the visibility path — not the edit
+  // under test — so the halt is reached by polling, exactly as it would be in the field.
+  await page.evaluate(() => {
+    window.__tokenResp = { access_token: 'dpop-4', token_type: 'DPoP', expires_in: 3600 }; });
+  respond = () => ({ status: 401, body: '' });
+  await setHidden(true);
+  await setHidden(false);
+  await wait(800);
+  const rt4Halt = await read();
+  check('RT4 setup: an unsupported token type after a good read shows the halt card',
+    /Unsupported token type/.test(rt4Halt.title) && rt4Halt.bodyHidden,
+    `${rt4Halt.title} · bodyHidden ${rt4Halt.bodyHidden}`);
+  // The edit under test: change ONLY the unit — auth and source untouched, so onInit takes
+  // the `else if (last)` branch. Pre-fix this repaints the cached 42 and hides the card; the
+  // fix leaves the halt in place because a halted tile is not showing a reading to redraw.
+  await init(Object.assign({}, base, oauth4, { unit: 'y' }));
+  await wait(400);
+  const rt4After = await read();
+  check('RT4 a presentation-only edit on a halted tile keeps the halt card, not a stale reading',
+    /Unsupported token type/.test(rt4After.title) && rt4After.bodyHidden,
+    `title "${rt4After.title}" · bodyHidden ${rt4After.bodyHidden} · value "${rt4After.value}"`);
+  await page.evaluate(() => { window.__tokenEndpoint = undefined; });   // clear for anything after
 
   // ---- populated screenshots (the eyes, not just the contract) ---------------------
   respond = () => ({ status: 200, body: JSON.stringify({ data: { temperature: 87.3 } }) });
