@@ -104,7 +104,21 @@ const TOKEN = 'Bearer super-secret-probe-token';
       window.__probeHostError = 'host offline in probe';
       window.addEventListener('message', (ev) => {
         const m = ev.data || {};
-        if (m.type === 'ww-fetch') window.postMessage({ type: 'ww-fetch-result', id: m.id, error: window.__probeHostError }, '*');
+        if (m.type !== 'ww-fetch') return;
+        // OAuth2 token exchanges use proxy:'always', so they arrive here rather than on the
+        // browser tier. When a token endpoint is armed (RT, #176.1), answer it with a
+        // scriptable token body and COUNT the grant — that count is how the halt is proven,
+        // since the bug is one successful grant per poll. Everything else keeps the R22/R23
+        // host-error behaviour untouched.
+        if (window.__tokenEndpoint && String(m.url).indexOf(window.__tokenEndpoint) === 0) {
+          window.__grants = (window.__grants || 0) + 1;
+          const body = JSON.stringify(window.__tokenResp
+            || { access_token: 'probe-token', token_type: 'DPoP', expires_in: 3600 });
+          window.postMessage({ type: 'ww-fetch-result', id: m.id, status: 200,
+            contentType: 'application/json', bodyBase64: btoa(body) }, '*');
+          return;
+        }
+        window.postMessage({ type: 'ww-fetch-result', id: m.id, error: window.__probeHostError }, '*');
       });
     });
   }
@@ -792,6 +806,39 @@ const TOKEN = 'Bearer super-secret-probe-token';
   check('RF4 widening the slot relaxes the fit (ResizeObserver re-measures, no settings edit)',
     atFull.fit > atQuarter.fit && !atFull.clipped,
     `quarter fit ${atQuarter.fit} -> full fit ${atFull.fit}`);
+
+  // ---- RT · #176.1: an unsupported token type HALTS polling, not buys tokens forever ----
+  // OAuth2 client-credentials exchanges go through the proxy tier (proxy:'always'), which the
+  // harness answers above. Arm a token endpoint issuing a DPoP token — a type this tile cannot
+  // present — at the 5s floor: the pre-fix widget performs a fresh, SUCCESSFUL grant on every
+  // poll and discards it on type, twelve a minute forever behind a card that says it is not
+  // retrying. The fix stops the schedule until the auth settings change.
+  await page.evaluate(() => { window.__grants = 0; window.__tokenEndpoint = 'https://api.test/tok';
+    window.__tokenResp = { access_token: 'dpop-token', token_type: 'DPoP', expires_in: 3600 }; });
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 1 }) });
+  await init(Object.assign({}, base, { url: 'https://api.test/oauthdata', jsonPointer: '/v', pollSeconds: 5,
+    authMode: 'oauth2', tokenEndpoint: 'https://api.test/tok', clientId: 'id', clientSecret: 'sec' }));
+  await wait(800);
+  const rtCard = await read();
+  const grantsFirst = await page.evaluate(() => window.__grants);
+  check('RT setup: a non-Bearer token type shows the unsupported-token card',
+    /Unsupported token type/.test(rtCard.title), rtCard.title);
+  check('RT1 the first poll exchanges exactly once', grantsFirst === 1, `${grantsFirst} grants`);
+  // Two more poll intervals at the 5s floor — a halted tile grants nothing further.
+  await wait(11500);
+  const grantsLater = await page.evaluate(() => window.__grants);
+  check('RT2 a halted tile stops granting rather than buying a token every interval',
+    grantsLater === grantsFirst, `${grantsLater} grants after ~2 more 5s intervals`);
+  // Corrected auth — a new token endpoint issuing Bearer — lifts the halt and the tile reads.
+  await page.evaluate(() => { window.__tokenEndpoint = 'https://api.test/tok2';
+    window.__tokenResp = { access_token: 'bearer-token', token_type: 'Bearer', expires_in: 3600 }; });
+  await init(Object.assign({}, base, { url: 'https://api.test/oauthdata', jsonPointer: '/v', pollSeconds: 5,
+    authMode: 'oauth2', tokenEndpoint: 'https://api.test/tok2', clientId: 'id', clientSecret: 'sec' }));
+  await wait(800);
+  const rtResumed = await read();
+  check('RT3 corrected auth settings lift the halt and the tile reads again',
+    rtResumed.value === '1' && !rtResumed.bodyHidden, `${rtResumed.value} / ${rtResumed.title}`);
+  await page.evaluate(() => { window.__tokenEndpoint = undefined; });   // clear for anything after
 
   // ---- populated screenshots (the eyes, not just the contract) ---------------------
   respond = () => ({ status: 200, body: JSON.stringify({ data: { temperature: 87.3 } }) });

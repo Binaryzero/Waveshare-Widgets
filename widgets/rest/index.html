@@ -104,6 +104,12 @@
   let failures = 0;       // consecutive failures — drives the retry backoff
   let generation = 0;     // bumped when the source changes; older answers are discarded
   let activeController = null;
+  // A capability mismatch that no amount of polling can resolve — the token endpoint issues a
+  // type this tile cannot present (DPoP/MAC). Stop the schedule until the settings change, or
+  // every poll performs a fresh, SUCCESSFUL client-credentials grant and throws the token away
+  // on type: twelve real grants a minute at the floor, forever, behind a card that says the
+  // tile is not retrying. Cleared when the auth settings change. (#176)
+  let halted = false;
 
   // ---- value extraction ---------------------------------------------------------
   /** RFC 6901 JSON Pointer ("/a/b/0"), or a friendlier dotted path ("a.b.0").
@@ -380,6 +386,9 @@
    *  earns no Retry and charges no backoff. */
   function showSignInError(e, detail) {
     if (e && e.tokenType) {
+      // Waiting cannot change the answer, so stop polling entirely rather than re-exchanging
+      // for a token this tile will only discard again. onInit lifts it when auth/source change.
+      halted = true;
       showState('◎', 'Unsupported token type',
         'The service issued a "' + e.tokenType + '" access token, and this tile can only present ' +
         'Bearer tokens. Check whether the service offers a bearer-token client.', false);
@@ -503,7 +512,7 @@
   }
 
   async function poll() {
-    if (inFlight || !cfg.url) return;
+    if (inFlight || !cfg.url || halted) return;
     inFlight = true;
     // Everything below belongs to the source as it was when the request left. If the
     // user retargets the tile mid-flight, this answer describes the OLD endpoint and
@@ -753,7 +762,9 @@
   function schedule() {
     clearTimeout(timer);
     timer = null;
-    if (!cfg.url || document.hidden) return;
+    // `halted`: an unsupported token type earns no further polls until settings change, so the
+    // chain does not re-arm a timer that would grant-and-discard a token every interval (#176).
+    if (!cfg.url || document.hidden || halted) return;
     timer = setTimeout(async () => {
       timer = null;
       await poll();
@@ -776,6 +787,10 @@
       timer = null;
       return;
     }
+    // A halted tile keeps its unsupported-token card: showing a spinner and then a poll that
+    // no-ops on `halted` would strand it on the spinner. onInit clears `halted` when the
+    // auth/source changes, so a real retry reaches here with it already false. (#176)
+    if (halted) return;
     if (!last) showLoading();
     // A hidden panel gets no opening request. The shell answers `ww-ready` whether or
     // not the WebView is visible, so every cold start or reload while minimised would
@@ -823,6 +838,10 @@
     // costs nothing and there is no stored entry left for it to throw away.
     if (prevAuth !== cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope) {
       bearer = null;
+      // A new token endpoint/client/scope is the only thing that can resolve an unsupported
+      // token type, so lift the halt exactly here — not on an unrelated edit like pollSeconds,
+      // which would resume polling into the same rejected grant. (#176)
+      halted = false;
     }
 
     el('title').textContent = String(s.label || '').trim() || 'REST';
