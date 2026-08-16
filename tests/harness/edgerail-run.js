@@ -143,12 +143,32 @@ const CHILD_PAGE = '<!doctype html><meta charset="utf-8">'
   check('G5 a sub-4px sliver at the edge is NOT flagged (documented visible threshold)', !flagged('tiny'));
   check('G7 an edge-flush control in a NESTED child frame is NOT reported (immediate frame only)',
     !flagged('kidBtn'), intr.join(' | '));
+  // G8 · the embed HOST itself is measured. The #kid <iframe> sits flush to the left edge, and
+  // an <iframe> declares itself through none of the discovery routes, so this is the only thing
+  // that would catch an embed widget (iframe/twitch/youtube) dropping its inline inset — the
+  // gap Codex flagged. Its cross-origin interior stays out of scope (G7); its box does not.
+  check('G8 an <iframe> embed host flush to an edge IS flagged (embed containers are measured)',
+    flagged('kid', 'L'), intr.join(' | '));
 
   // ---- G6 · the real widget, the real control the report named -------------------------
   const notifPage = await context.newPage();
   await notifPage.addInitScript(tapInitScript);
+  // Drive the fixture from the PARENT frame. widget-api.js accepts protocol messages only when
+  // ev.source === window.parent (widget-api.js:379), so a self-post from inside the widget is
+  // dropped — the eye would never render and G6 would pass vacuously (its own absence read as
+  // "clears the rail"). On the widget's ww-ready the shell answers with ww-init then
+  // ww-notifications, the same handshake the real shell and touchpan-run.js use, so the eye is
+  // really on screen when the audit measures it. The listener is registered before the frame so
+  // it cannot miss ww-ready.
   const NSHELL = '<!doctype html><meta charset="utf-8"><title>ww shell</title>'
     + '<style>html,body{margin:0;height:100%}iframe{border:0;width:100vw;height:100vh;display:block}</style>'
+    + '<script>window.addEventListener("message",function(ev){'
+    + 'var f=document.getElementById("w");if(!f||ev.source!==f.contentWindow)return;'
+    + 'var m=ev.data||{};if(m.type!=="ww-ready")return;var o="https://widget.test";'
+    + 'f.contentWindow.postMessage({type:"ww-init",settings:{bgStyle:"solid",maxItems:24},'
+    + 'sensors:[],media:null,theme:{},status:{elevated:false,apiVersion:1}},o);'
+    + 'f.contentWindow.postMessage({type:"ww-notifications",data:{items:[{id:"x",app:"A",'
+    + 'title:"hi",time:Date.now()}],supported:true}},o);});<\/script>'
     + '<iframe id="w" src="https://widget.test/index.html#ww-slot=p0s0"></iframe>';
   await notifPage.route('https://app.plinth/**', (r) =>
     serve(r, SHELL, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '')));
@@ -157,16 +177,18 @@ const CHILD_PAGE = '<!doctype html><meta charset="utf-8">'
     serve(r, NOTIF, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '') || 'index.html'));
   await notifPage.route(/https?:\/\/(?!(?:app\.plinth|shell\.test|widget\.test)(?:[/?#]|$)).*/, (r) => r.abort());
   await notifPage.goto('https://shell.test/host.html');
-  const nframeEl = await notifPage.waitForSelector('#w', { timeout: 10000 });
-  const nframe = await nframeEl.contentFrame();
-  // Drive it to the rendered state so the eye is present and visible (renderInner un-hides it).
-  await nframe.evaluate(() => window.postMessage({ type: 'ww-notifications',
-    data: { items: [{ id: 'x', app: 'A', title: 'hi', time: Date.now() }], supported: true } }, '*'));
-  await nframe.waitForSelector('#eyeBtn:not([hidden])', { timeout: 5000 }).catch(() => {});
-  await notifPage.waitForTimeout(400);
+  await notifPage.waitForSelector('#w', { timeout: 10000 });
+  const nframe = notifPage.frames().find((f) => f.url().includes('widget.test'));
+  // The eye must actually be on screen. If it never un-hides, G6 would be vacuous — so this is
+  // an assertion, not a swallowed wait: a regression that stops the eye rendering fails here.
+  const eyeShown = nframe
+    ? await nframe.waitForSelector('#eyeBtn:not([hidden])', { timeout: 8000 }).then(() => true).catch(() => false)
+    : false;
+  check('G6a the notifications eye actually rendered (guards against a vacuous G6)', eyeShown);
+  await notifPage.waitForTimeout(200);
   const notifIntr = await auditEdgeReservation(notifPage.frames(), W, EDGE_W);
-  check('G6 the real notifications eye clears the rail at the 320px quarter slot',
-    !notifIntr.some((s) => s.includes('#eyeBtn')), notifIntr.join(' | ') || 'all clear');
+  check('G6b the real notifications eye clears the rail at the 320px quarter slot',
+    eyeShown && !notifIntr.some((s) => s.includes('#eyeBtn')), notifIntr.join(' | ') || 'all clear');
 
   await browser.close();
   console.log(failures > 0 ? `\n${failures} FAILURES` : '\nALL PASS');

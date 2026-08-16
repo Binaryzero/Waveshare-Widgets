@@ -131,12 +131,22 @@ function tapAuditInFrame() {
   // swipe strips, which are fixed overlays ABOVE the iframes (z-index 5) that page on a tap
   // and so STEAL any tap that lands on them. A control whose box pokes into the outer rail is
   // unreachable in an edge slot no matter how it is guarded — which is exactly what the report
-  // ("top right-hand corner … so close to the edge") described. Report every visible element
-  // surface's frame-local box; the caller knows the slot width and the shipped rail width and
-  // flags the intrusions. document/window surfaces cover the whole frame (rails included) and
-  // are a docUnguarded concern, not a geometric one, so only element surfaces are measured.
+  // ("top right-hand corner … so close to the edge") described. Report every visible surface's
+  // frame-local box; the caller knows the slot width and the shipped rail width and flags the
+  // intrusions.
+  //
+  // The geometry set is the tap surfaces PLUS <iframe> embed hosts. An <iframe> (iframe,
+  // twitch, youtube) is a full-area tap surface — a tap anywhere on it drives the embedded
+  // page — but it declares itself through none of the discovery routes above (not a native
+  // activation target, carries no listener of its own), so without this an embed's inline inset
+  // could be dropped and the check would stay green. <video> and <canvas> are painted full
+  // bleed as VISUALS by design (gallery, sensorchart) and are not tap surfaces, so only iframe
+  // is added, not every replaced element. document/window surfaces cover the whole frame (rails
+  // included) and are a docUnguarded concern, not a geometric one.
+  const geom = new Set(surfaces);
+  for (const el of document.querySelectorAll('iframe')) geom.add(el);
   const boxes = [];
-  for (const el of surfaces) {
+  for (const el of geom) {
     if (!el.isConnected) continue;
     const cs = getComputedStyle(el);
     if (cs.visibility === 'hidden' || cs.display === 'none') continue;
@@ -167,37 +177,36 @@ async function auditTapSurfaces(frames) {
 // frame maps 1:1 to the slot: it fills the viewport, so a frame-local x IS a slot x, and the
 // slot's inline edges are the panel's screen edges when the tile sits in an edge column. A
 // deeper frame (a widget's nested cross-origin embed — iframe/twitch/youtube) is positioned
-// INSIDE the widget, so its local coordinates do not map to the screen edge; the parent
-// widget's placement of that embed is what has to reserve the rail (touchpan-run.js E10),
-// and a cross-origin child cannot be evaluated from here anyway. `viewportWidth` is the slot
-// width and `edgeW` the shipped `.edge` strip width (read from shell.css by the caller, so a
-// change to the rail retunes this automatically). A surface intrudes when its box crosses into
-// the outer `edgeW` band on either inline edge — there the overlay would take its tap.
+// INSIDE the widget, so its own local coordinates do not map to the screen edge — but the
+// embed does not escape the check: the <iframe> ELEMENT that hosts it lives in this immediate
+// frame and is measured as a surface (see the geometry set in tapAuditInFrame), so the whole
+// embed's rail reservation is judged here even though its interior cannot be. `viewportWidth`
+// is the slot width and `edgeW` the shipped `.edge` strip width (read from shell.css by the
+// caller, so a change to the rail retunes this automatically). A surface intrudes when its box
+// crosses into the outer `edgeW` band on either inline edge — there the overlay would take its
+// tap. An immediate widget frame that cannot be evaluated FAILS CLOSED: it is reported as an
+// audit error rather than an empty (all-clear) box list, so an instrumentation failure — a
+// frame that navigated or detached mid-audit — cannot masquerade as a widget with no intrusion.
 async function auditEdgeReservation(frames, viewportWidth, edgeW) {
   const widgetFrames = frames.filter((f) => {
     const p = f.parentFrame && f.parentFrame();
     return p && p.parentFrame() === null;   // parent is the top shell frame → this is the widget
   });
   const perFrame = await Promise.all(widgetFrames.map((f) =>
-    f.evaluate(tapAuditInFrame).catch(() => ({ boxes: [] }))));
-  if (process.env.WW_TAP_DUMP) {
-    const all = [];
-    for (const r of perFrame) for (const b of (r.boxes || [])) all.push(b);
-    const byLeft = [...all].sort((a, b) => a.left - b.left).slice(0, 6);
-    const byRight = [...all].sort((a, b) => b.right - a.right).slice(0, 6);
-    console.error(`[DUMP W=${viewportWidth} edgeW=${edgeW}] boxes=${all.length}`);
-    for (const b of byLeft) console.error(`   L ${b.left.toFixed(1)} .. ${b.right.toFixed(1)}  ${b.desc}`);
-    console.error('   ---');
-    for (const b of byRight) console.error(`   R ${b.left.toFixed(1)} .. ${b.right.toFixed(1)}  ${b.desc}`);
-  }
+    f.evaluate(tapAuditInFrame)
+      .then((r) => (r && Array.isArray(r.boxes)) ? r : { boxes: [] })
+      .catch((e) => ({ auditError: String((e && e.message) || e).slice(0, 140) }))));
   const tol = 0.5;   // sub-pixel rounding; the rail is reserved to whole pixels
   const intrusions = [];
-  for (const r of perFrame) for (const b of (r.boxes || [])) {
-    const overLeft = b.left < edgeW - tol;
-    const overRight = b.right > viewportWidth - edgeW + tol;
-    if (overLeft || overRight)
-      intrusions.push(`${b.desc} x=${b.left.toFixed(0)}..${b.right.toFixed(0)}`
-        + (overLeft ? ' [L]' : '') + (overRight ? ' [R]' : ''));
+  for (const r of perFrame) {
+    if (r.auditError) { intrusions.push('<widget frame could not be audited: ' + r.auditError + '>'); continue; }
+    for (const b of r.boxes) {
+      const overLeft = b.left < edgeW - tol;
+      const overRight = b.right > viewportWidth - edgeW + tol;
+      if (overLeft || overRight)
+        intrusions.push(`${b.desc} x=${b.left.toFixed(0)}..${b.right.toFixed(0)}`
+          + (overLeft ? ' [L]' : '') + (overRight ? ' [R]' : ''));
+    }
   }
   return [...new Set(intrusions)];
 }

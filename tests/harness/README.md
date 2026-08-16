@@ -253,8 +253,13 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   (G2/G3); a hidden control and a sub-4px sliver are not flagged, the visible-content threshold
   stated on the record rather than left as a silent gap (G4/G5); a control flush to a *nested
   child frame's* edge is not reported, because only the immediate widget frame maps 1:1 to the
-  slot (G7); and the real notifications eye — the control #206 named — clears the rail at the
-  320px quarter slot through the exact aggregator the sweep uses (G6). Without this file the
+  slot (G7), while the `<iframe>` embed HOST itself — which carries an iframe/twitch/youtube
+  embed and declares itself through none of the discovery routes — IS measured, so dropping its
+  inset would be caught (G8); and the real notifications eye — the control #206 named — clears
+  the rail at the 320px quarter slot through the exact aggregator the sweep uses. G6 drives that
+  fixture from the *parent* frame over the real `ww-ready` handshake (widget-api rejects a
+  self-posted message) and asserts the eye actually rendered (G6a) before reading its clearance
+  (G6b), so the check cannot pass by measuring a widget that never drew. Without this file the
   sweep's "all clear" could mean "measured nothing" and no test on this head would tell the
   difference.
 - `pillquiet-run.js` — the header pill reports exceptions, not health (issue #205). Every
