@@ -49,21 +49,48 @@ internal static class WebViewEnvironment
     }
 
     /// <summary>
-    /// Accept certificate errors for PRIVATE hosts on this WebView — self-hosted LAN
-    /// services (Jellyfin above all) overwhelmingly run https with a self-signed
-    /// certificate or none at all, and demanding a CA-signed certificate from a home
-    /// server is demanding something most of them will never have. The event raises
-    /// for every web resource (unhandled, non-navigation requests like a widget's
-    /// &lt;video&gt; stream are cancelled silently), so this is the difference between
-    /// media playing and media dying with no story to tell.
+    /// Hosts whose certificate errors the dashboard-tier WebViews may accept. An entry
+    /// appears only when a widget exercises WW.fetch's documented insecure opt-in
+    /// (init.insecure, honored for private hosts only) — the Jellyfin widget sets it
+    /// exactly when its certificate-check setting says Allow self-signed. Keyed by
+    /// scheme://authority; concurrent because proxy fetches register from worker
+    /// threads while the certificate handler reads on the WebView's.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> InsecureLanHosts =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Record a widget's insecure (skip certificate validation) opt-in for a PRIVATE
+    /// host, unlocking browser-side media on it for this app run. The caller gates on
+    /// <see cref="DashboardWindow.IsPrivateHost"/>; this trusts, but keys narrowly.
+    /// The entry outlives a widget's later change of heart — accepted residue, and not
+    /// new: WebView2 caches an AlwaysAllow per host+certificate for the session anyway.
+    /// </summary>
+    public static void AllowInsecureLanHost(Uri uri) =>
+        InsecureLanHosts.TryAdd(uri.Scheme + "://" + uri.Authority, 0);
+
+    /// <summary>
+    /// Accept certificate errors on this WebView for hosts a widget explicitly opted
+    /// into. Self-hosted LAN services (Jellyfin above all) overwhelmingly run https
+    /// with a self-signed certificate, and the media they stream goes through the
+    /// browser — WW.fetch's insecure proxy tier cannot carry a &lt;video&gt; element.
+    /// The event raises for every web resource (unhandled, a non-navigation request
+    /// like that stream is cancelled silently), so without this the stream dies with
+    /// no story to tell.
     ///
-    /// Scope is the same policy WW.fetch's insecure tier enforces: loopback or a
-    /// literal RFC1918/link-local IPv4 (<see cref="DashboardWindow.IsPrivateHost"/>) —
-    /// a named address still needs a certificate this PC trusts. An attacker who can
-    /// answer for a private IP on the panel's LAN could just as easily MITM the plain
-    /// http Jellyfin ships as its default, so this accepts no risk the baseline
-    /// deployment doesn't already carry. NEVER wire this on the secure fetch tier:
-    /// BrowserFetcher navigates untrusted external origins with credentials in reach.
+    /// The scope is deliberately DOUBLE-gated rather than all private hosts: a blanket
+    /// private allowance would also let a widget's NATIVE fetch — which carries live
+    /// credentials like X-Emby-Token — sail past a bad certificate even when that
+    /// widget's own setting demands validation, silently bypassing the insecure:false
+    /// enforcement the proxy tier would have applied. A host qualifies only when it is
+    /// private (loopback or literal RFC1918/link-local IPv4, per
+    /// <see cref="DashboardWindow.IsPrivateHost"/>) AND registered through
+    /// <see cref="AllowInsecureLanHost"/> — the same opt-in contract the proxy
+    /// enforces, now spanning both layers. An attacker who can answer for a private IP
+    /// on the panel's LAN could as easily MITM the plain http Jellyfin ships as its
+    /// default, so the opt-in accepts no risk that baseline doesn't already carry.
+    /// NEVER wire this on the secure fetch tier: BrowserFetcher navigates untrusted
+    /// external origins with credentials in reach.
     /// </summary>
     public static void AllowLanSelfSignedCertificates(CoreWebView2 core)
     {
@@ -71,6 +98,7 @@ internal static class WebViewEnvironment
         {
             e.Action = Uri.TryCreate(e.RequestUri, UriKind.Absolute, out var uri)
                        && DashboardWindow.IsPrivateHost(uri)
+                       && InsecureLanHosts.ContainsKey(uri.Scheme + "://" + uri.Authority)
                 ? CoreWebView2ServerCertificateErrorAction.AlwaysAllow
                 : CoreWebView2ServerCertificateErrorAction.Default;
         };

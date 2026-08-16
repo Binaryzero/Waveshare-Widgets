@@ -685,6 +685,12 @@ public sealed class DashboardWindow : Form
 
             var insecureRequested = message["insecure"]?.GetValue<bool>() ?? false;
             var lanDevice = insecureRequested && IsPrivateHost(uri);
+            // The opt-in spans layers: the same flag that buys validation-free proxy
+            // transport here also unlocks certificate errors for this host in the
+            // dashboard WebViews, so Player-view media — which streams browser-side
+            // and cannot ride this proxy — obeys the widget's setting too.
+            if (lanDevice)
+                WebViewEnvironment.AllowInsecureLanHost(uri);
 
             using var request = new HttpRequestMessage(new HttpMethod(method), uri)
             {

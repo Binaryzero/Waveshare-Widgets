@@ -909,9 +909,12 @@
   // and Matroska skips straight to the transcode instead of failing into it.
   const SAFE_VIDEO = new Set(['h264', 'vp8', 'vp9', 'av1']);
   const SAFE_AUDIO = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac']);
-  // What the demuxer opens from a bare src=: the ISO-BMFF family, WebM and Ogg.
+  // What the demuxer opens from a bare src=: the ISO-BMFF family, WebM and Ogg —
+  // plus the bare-stream audio formats for Audio items, whose containers ARE their
+  // codecs (an "mp3" or "flac" container is exactly as playable as its codec row).
   // Jellyfin reports ffmpeg-style names, sometimes several at once ("mov,mp4,m4a").
   const SAFE_CONTAINERS = new Set(['mp4', 'm4v', 'm4a', 'mov', '3gp', 'webm', 'ogg', 'ogv', 'oga']);
+  const SAFE_AUDIO_CONTAINERS = new Set(['mp3', 'flac', 'wav', 'ogg', 'oga', 'opus', 'aac', 'm4a', 'm4b', 'mp4', 'webm']);
 
   async function directPlaySafe(item) {
     const body = await jfJson('/Items?Ids=' + encodeURIComponent(String(item.Id)) + '&Fields=MediaStreams,MediaSources',
@@ -924,7 +927,8 @@
     // has to find out the slow way.
     const source = (Array.isArray(it.MediaSources) && it.MediaSources[0]) || null;
     const container = String((source && source.Container) || it.Container || '').toLowerCase();
-    if (container && !container.split(',').some((c) => SAFE_CONTAINERS.has(c.trim()))) return false;
+    const safeSet = item.Type === 'Audio' ? SAFE_AUDIO_CONTAINERS : SAFE_CONTAINERS;
+    if (container && !container.split(',').some((c) => safeSet.has(c.trim()))) return false;
     const audio = streams.filter((s) => s && s.Type === 'Audio');
     const picked = audio.find((s) => s.IsDefault) || audio[0];
     if (picked && !SAFE_AUDIO.has(String(picked.Codec || '').toLowerCase())) return false;
@@ -985,6 +989,10 @@
   // or the dashboard window hidden entirely. Neither may start or continue a stream.
   const outOfSight = () => pageOff || document.hidden;
 
+  // The URL of the attempt currently in the element, kept for the failure probe —
+  // never logged (the api_key rides its query).
+  let lastSrcUrl = '';
+
   // One door onto pv.src: every attempt gets the startup deadline, and a mid-title
   // fallback carries the position along instead of starting the movie over.
   function setSource(url) {
@@ -1005,6 +1013,7 @@
       }
     }
     armStartDeadline();
+    lastSrcUrl = url;
     pv.src = url;
     // play() descends from a tap, so autoplay policy is normally satisfied (Chromium's
     // audible gate is sticky per frame once the user has tapped it). If a policy still
@@ -1147,6 +1156,20 @@
       + pv.videoWidth + 'x' + pv.videoHeight + ' t=' + (Math.round((pv.currentTime || 0) * 10) / 10);
     WW.log('jellyfin: playback attempt ' + attemptErrors.length + ' failed: '
       + attemptErrors[attemptErrors.length - 1] + ' [' + state + ']' + (msg ? ' — ' + msg : ''));
+    // One question the element cannot answer: did the request even reach the server?
+    // A renderer-side kill (mixed-content or certificate gate) and an HTTP error
+    // (rejected api_key, transcoder down) both read as code 4 with nothing decoded.
+    // The host proxy sits outside the renderer's gates, so probing the SAME URL
+    // through it splits the two: a 2xx probe means the server is fine and the block
+    // is local. Status and content-type only — the URL carries the api_key.
+    if (lastSrcUrl) {
+      const n = attemptErrors.length;
+      WW.fetch(lastSrcUrl, { method: 'HEAD', proxy: 'always',
+        insecure: /^https:/i.test(cfg.base) && cfg.selfSigned })
+        .then((r) => WW.log('jellyfin: attempt ' + n + ' probe: HTTP ' + r.status
+          + ' ' + (r.headers.get('content-type') || '')))
+        .catch((e) => WW.log('jellyfin: attempt ' + n + ' probe failed: ' + ((e && e.name) || 'error')));
+    }
     // A failure on a screen nobody is looking at does not get to restart audio there —
     // back to the browse shelf; the viewer re-taps when they return.
     if (outOfSight()) { stopPlayback(); return; }
@@ -1169,15 +1192,18 @@
     // The transport is for a stream that no longer exists — the card owns the screen.
     clearTimeout(overlayTimer);
     el('overlay').classList.add('faded');
-    // A LAN IP (or localhost) address accepts self-signed certificates for the
-    // stream itself — the host allows certificate errors for exactly the private
-    // set privateLiteralHost mirrors — so a certificate is only worth suspecting
-    // at a named https address, where the browser still demands a trusted one.
+    // Certificate hints mirror what the host actually enforces: it accepts
+    // certificate errors only for LAN hosts the widget has opted in via the
+    // self-signed setting — so at a LAN https address WITHOUT the opt-in the
+    // setting is the fix, and at a named https address only a trusted
+    // certificate is.
     el('tErrorBody').textContent = 'Neither the original file nor a server transcode would play. '
       + 'The codec may be unsupported'
       + (/^https:/i.test(cfg.base) && !privateLiteralHost(cfg.base)
-        ? ", or the certificate was refused — at a named https address it must be one this PC trusts (a LAN IP address accepts self-signed)."
-        : '.')
+        ? ", or the certificate was refused — at a named https address it must be one this PC trusts (a LAN IP address can use 'Allow self-signed')."
+        : /^https:/i.test(cfg.base) && !cfg.selfSigned
+          ? ", or the server's certificate was refused — if it is self-signed, set 'Certificate check' to allow it in the widget settings."
+          : '.')
       + '  [' + attemptErrors.join(' · ') + ']';
     el('tError').hidden = false;
   }
