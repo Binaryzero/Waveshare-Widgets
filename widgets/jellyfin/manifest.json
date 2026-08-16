@@ -2,8 +2,8 @@
   "id": "ws.stock.jellyfin",
   "name": "Jellyfin",
   "author": "Plinth",
-  "version": "1.0.0",
-  "description": "Who's streaming what from your Jellyfin server and the titles that just landed in the library — or a touch player that remote-controls a stream. Read from Jellyfin's own API, because the web app refuses to render inside a frame.",
+  "version": "1.1.0",
+  "description": "Who's streaming what from your Jellyfin server and the titles that just landed in the library — or a player that streams a title straight to the panel. Read from Jellyfin's own API, because the web app refuses to render inside a frame.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
   "properties": [
@@ -36,15 +36,7 @@
       "type": "select",
       "options": ["Server overview", "Player"],
       "default": "Server overview",
-      "help": "Server overview lists every active stream plus the recently-added shelf. Player is a touch remote for one stream — art, progress, and pause/skip controls. Place two copies of the widget to have both."
-    },
-    {
-      "name": "playerUser",
-      "label": "Player follows user",
-      "type": "text",
-      "default": "",
-      "placeholder": "blank = most recent stream",
-      "help": "Player view only: control the stream this Jellyfin user is playing. Leave blank to follow whichever stream was active most recently."
+      "help": "Server overview lists every active stream plus the recently-added shelf. Player turns the tile into a little theater: tap a recently-added title and it plays right on the panel. Place two copies of the widget to have both."
     },
     {
       "name": "latestTypes",

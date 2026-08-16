@@ -184,11 +184,6 @@
   }
  },
  {
-  "match": "/Playing/",
-  "status": 204,
-  "body": ""
- },
- {
   "match": "/Sessions",
   "json": [
    {
