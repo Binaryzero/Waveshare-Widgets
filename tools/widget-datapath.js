@@ -55,9 +55,15 @@ const universalProperties = global.window.WWAppearance.universalProperties;
 // #221 tap-surface detector, shared with widget-harness.js. This runner is the one that
 // drives POPULATED render paths — the controls a widget only creates once data arrives — so
 // the same audit has to run here, not only offline. See tools/tap-audit.js.
-const { tapInitScript, auditTapSurfaces } = require('./tap-audit.js');
+const { tapInitScript, auditTapSurfaces, auditEdgeReservation } = require('./tap-audit.js');
 
 const SHELL = path.join(__dirname, '../src/Plinth/Shell');
+// #206 — the shipped `.edge` swipe-rail width, read from shell.css (base `.edge {` rule, not
+// the editing override), so a data-created control that pokes into the rail is caught in the
+// same populated states the #221 audit already runs here. Mirrors tools/widget-harness.js.
+const EDGE_BLOCK = (fs.readFileSync(path.join(SHELL, 'shell.css'), 'utf8')
+  .match(/(?:^|\n)\.edge\s*\{[^}]*\}/) || [''])[0];
+const EDGE_W = Number((EDGE_BLOCK.match(/width:\s*(\d+)px/) || [])[1]) || 8;
 const SLOTS = {
   quarter: [320, 400], half: [640, 400], 'three-quarter': [960, 400], full: [1280, 400],
   'quarter-upper': [320, 200], 'half-upper': [640, 200], 'three-quarter-upper': [960, 200], 'full-upper': [1280, 200],
@@ -726,6 +732,13 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   const tapUnguarded = await auditTapSurfaces(page.frames());
   check('every tap surface is guarded against paging (#221)', tapUnguarded.length === 0,
     tapUnguarded.length ? tapUnguarded.join(', ') : 'all guarded');
+
+  // #206 — and every one of those data-created controls must also clear the inline edge rail,
+  // or the `.edge` overlay steals its tap in an edge slot. Same geometric check the offline
+  // harness runs, now over the populated controls only this runner produces.
+  const edgeIntrusions = await auditEdgeReservation(page.frames(), W, EDGE_W);
+  check(`every tap surface clears the ${EDGE_W}px inline edge rail (#206)`, edgeIntrusions.length === 0,
+    edgeIntrusions.length ? edgeIntrusions.join(', ') : 'all clear');
 
   if (shot) await page.screenshot({ path: shot });
 

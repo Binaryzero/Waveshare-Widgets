@@ -30,9 +30,17 @@ require(path.join(__dirname, '../src/Plinth/Shell/appearance.js'));
 const universalProperties = global.window.WWAppearance.universalProperties;
 // #221 tap-surface detector, shared with widget-datapath.js so the populated render paths
 // are audited too. See tools/tap-audit.js.
-const { tapInitScript, auditTapSurfaces } = require('./tap-audit.js');
+const { tapInitScript, auditTapSurfaces, auditEdgeReservation } = require('./tap-audit.js');
 
 const SHELL = path.join(__dirname, '../src/Plinth/Shell');
+// #206 — the shipped `.edge` swipe-rail width, read from shell.css (the base `.edge {` rule,
+// not the `body.editing .edge` override which keeps the full 36px for the drop target). A
+// control whose box pokes inside this band on an inline edge is stolen by the overlay in an
+// edge slot; the reservation the widget standard promises must be at least this wide. Reading
+// it here means a retune of the rail (36 → 16 → 8 across #213/#245) retunes the audit with it.
+const EDGE_BLOCK = (fs.readFileSync(path.join(SHELL, 'shell.css'), 'utf8')
+  .match(/(?:^|\n)\.edge\s*\{[^}]*\}/) || [''])[0];
+const EDGE_W = Number((EDGE_BLOCK.match(/width:\s*(\d+)px/) || [])[1]) || 8;
 const SLOTS = {
   quarter: [320, 400], half: [640, 400], 'three-quarter': [960, 400], full: [1280, 400],
   'quarter-upper': [320, 200], 'half-upper': [640, 200], 'three-quarter-upper': [960, 200], 'full-upper': [1280, 200],
@@ -537,6 +545,16 @@ function loadPlaywright() {
   const tapUnguarded = await auditTapSurfaces(page.frames());
   check('every tap surface is guarded against paging (#221)', tapUnguarded.length === 0,
     tapUnguarded.length ? tapUnguarded.join(', ') : 'all guarded');
+
+  // #206 — the geometric twin of the check above. Guarding stops pan-chaining; this stops the
+  // OTHER way a control near a screen edge loses its tap — the `.edge` overlay sitting on top
+  // of it. Every interactive control must clear the EDGE_W rail on both inline edges, at this
+  // width, so it stays reachable in the leftmost/rightmost column. The sweep runs each widget
+  // at every width it offers, and the reservation is tightest at the narrowest (percentage
+  // insets shrink), so a quarter-slot run is where this bites.
+  const edgeIntrusions = await auditEdgeReservation(page.frames(), W, EDGE_W);
+  check(`every tap surface clears the ${EDGE_W}px inline edge rail (#206)`, edgeIntrusions.length === 0,
+    edgeIntrusions.length ? edgeIntrusions.join(', ') : 'all clear');
 
   if (shot) await page.screenshot({ path: shot });
 
