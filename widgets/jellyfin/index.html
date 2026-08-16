@@ -1139,8 +1139,14 @@
       if (cfg.key) msg = msg.split(cfg.key).join('[key]');
       msg = msg.replace(/\?\S*/g, '?…').slice(0, 160);
     }
+    // The element's state is the evidence a silent death leaves behind: a watchdog
+    // kill has no MediaError, but readyState/networkState and the decoded frame
+    // dimensions still separate "no bytes ever arrived" from "bytes arrived, no
+    // frames decoded" (a decoder the browser lacks) from "decoded, then stalled".
+    const state = 'rs=' + pv.readyState + ' ns=' + pv.networkState + ' '
+      + pv.videoWidth + 'x' + pv.videoHeight + ' t=' + (Math.round((pv.currentTime || 0) * 10) / 10);
     WW.log('jellyfin: playback attempt ' + attemptErrors.length + ' failed: '
-      + attemptErrors[attemptErrors.length - 1] + (msg ? ' — ' + msg : ''));
+      + attemptErrors[attemptErrors.length - 1] + ' [' + state + ']' + (msg ? ' — ' + msg : ''));
     // A failure on a screen nobody is looking at does not get to restart audio there —
     // back to the browse shelf; the viewer re-taps when they return.
     if (outOfSight()) { stopPlayback(); return; }
