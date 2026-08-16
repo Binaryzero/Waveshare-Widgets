@@ -477,7 +477,14 @@
           // healthy-looking quiet card straight over the error the user needs to see.
           if (lastOk) render();
         })
-        .catch((e) => WW.log('jellyfin: latest: ' + e.message));
+        .catch((e) => {
+          WW.log('jellyfin: latest: ' + e.message);
+          // A shelf that has NEVER loaded is the player's whole browse surface —
+          // waiting out the full slow window after one transient failure leaves the
+          // view unusable for five minutes. Mark the lane due again so the next fast
+          // poll retries; once the shelf has ever had data, staleness handles it.
+          if (gen === generation && !latestAt) slowAt = 0;
+        });
     } else if (!cfg.types) {
       latest = [];
     }
@@ -715,9 +722,16 @@
     el('axis').hidden = true;
 
     if (!latest.length) {
-      stateCard('', '▷', 'Nothing to play yet',
-        'The recently-added shelf fills in as titles land in '
-        + ((server && server.name) || 'Jellyfin') + "'s library.");
+      // An unfetched shelf is not an empty library: only a shelf that has actually
+      // answered gets to claim there is nothing in it.
+      if (!latestAt) {
+        stateCard('', '▷', 'Loading the shelf',
+          "The recently-added list hasn't answered yet — retrying.");
+      } else {
+        stateCard('', '▷', 'Nothing to play yet',
+          'The recently-added shelf fills in as titles land in '
+          + ((server && server.name) || 'Jellyfin') + "'s library.");
+      }
       if (stale) { pill.hidden = false; pill.textContent = 'Stale'; pill.className = 'pill muted'; }
       else pill.hidden = true;
       return;
@@ -942,6 +956,17 @@
     for (const id of ['tRew', 'tToggle', 'tFwd']) el(id).disabled = disabled;
   }
 
+  function armStartDeadline() {
+    clearTimeout(attemptTimer);
+    attemptTimer = setTimeout(() => {
+      if (theaterOn && el('tError').hidden) theaterError();
+    }, START_DEADLINE);
+  }
+
+  // The whole surface can be out of sight two ways: this page scrolled off (pageOff)
+  // or the dashboard window hidden entirely. Neither may start or continue a stream.
+  const outOfSight = () => pageOff || document.hidden;
+
   // One door onto pv.src: every attempt gets the startup deadline, and a mid-title
   // fallback carries the position along instead of starting the movie over.
   function setSource(url) {
@@ -961,9 +986,7 @@
         pendingSeek = resumeAt;   // direct play seeks natively once metadata is in
       }
     }
-    attemptTimer = setTimeout(() => {
-      if (theaterOn && el('tError').hidden) theaterError();
-    }, START_DEADLINE);
+    armStartDeadline();
     pv.src = url;
     // play() descends from a tap, so autoplay policy is normally satisfied (Chromium's
     // audible gate is sticky per frame once the user has tapped it). If a policy still
@@ -972,7 +995,7 @@
     // explicit tap carries fresh activation. Decoder refusals surface as error events
     // and keep walking the fallback. Off-screen (callers already refuse; belt and
     // braces for future ones), the source loads but stays paused.
-    if (!pageOff) {
+    if (!outOfSight()) {
       pv.play().catch((e) => {
         if (e && e.name === 'NotAllowedError' && theaterOn) {
           clearTimeout(attemptTimer);
@@ -1018,9 +1041,10 @@
     try { verdict = (await directPlaySafe(item)) ? 'safe' : 'unsafe'; }
     catch (e) { WW.log('jellyfin: preflight: ' + e.message); }
     // The answer may belong to a theater that no longer exists: Back was pressed, a
-    // different poster was tapped, or the page was swiped away during the await.
+    // different poster was tapped, or the screen went away during the await — the
+    // page swiped off, or the whole dashboard hidden.
     if (!theaterOn || token !== playToken) return;
-    if (pageOff) { stopPlayback(); return; }
+    if (outOfSight()) { stopPlayback(); return; }
     theaterAttempts = verdict === 'safe' ? [directUrl(item), transcodeUrl(item)]
       : verdict === 'unsafe' ? [transcodeUrl(item)]
       : [transcodeUrl(item), directUrl(item)];
@@ -1082,9 +1106,9 @@
     if (!theaterOn) return;
     clearTimeout(attemptTimer);
     clearTimeout(stallTimer);
-    // A failure on a page nobody is looking at does not get to restart audio there —
+    // A failure on a screen nobody is looking at does not get to restart audio there —
     // back to the browse shelf; the viewer re-taps when they return.
-    if (pageOff) { stopPlayback(); return; }
+    if (outOfSight()) { stopPlayback(); return; }
     // A mid-title death carries its position into the next attempt; only meaningful
     // progress overwrites, so the second attempt's instant failure at 0:00 does not
     // erase where the first one actually was.
@@ -1095,6 +1119,12 @@
       return;
     }
     el('tSpin').hidden = true;
+    // The last source is UNLOADED, not merely abandoned: a watchdog-declared failure
+    // leaves the request live, and a server that recovers after the deadline would
+    // resume audio behind this card with the transport faded out of reach.
+    pv.pause();
+    pv.removeAttribute('src');
+    pv.load();
     // The transport is for a stream that no longer exists — the card owns the screen.
     clearTimeout(overlayTimer);
     el('overlay').classList.add('faded');
@@ -1124,7 +1154,10 @@
     clearTimeout(stallTimer);
     stallTimer = setTimeout(() => { if (theaterOn && el('tError').hidden) theaterError(); }, STALL_DEADLINE);
   });
-  pv.addEventListener('pause', () => { if (theaterOn) { clearTimeout(stallTimer); setTheaterIcons(true); showOverlay(); } });
+  // A pause — the user's, or ours for a hidden screen — calls off BOTH watchdogs: a
+  // deliberately paused stream is not a failed one, and the startup deadline firing
+  // through a pause would walk the fallback over the user's own choice.
+  pv.addEventListener('pause', () => { if (theaterOn) { clearTimeout(stallTimer); clearTimeout(attemptTimer); setTheaterIcons(true); showOverlay(); } });
   pv.addEventListener('ended', stopPlayback);
   // timeupdate fires at the browser's own ~4 Hz — data cadence, no timer of ours.
   // The clock carries timeBase: a StartTimeTicks transcode restarts the element's own
@@ -1165,8 +1198,14 @@
   el('tRew').addEventListener('click', () => seekBy(-10));
   el('tFwd').addEventListener('click', () => seekBy(30));
   el('tToggle').addEventListener('click', () => {
-    if (pv.paused) { pv.play().catch(() => {}); setTheaterIcons(false); }
-    else { pv.pause(); }
+    if (pv.paused) {
+      pv.play().catch(() => {});
+      setTheaterIcons(false);
+      // Resuming a source that never reached 'playing' re-enters the startup race —
+      // the deadline comes back so a dead source still ends at the fallback, not a
+      // spinner without a referee.
+      if (!el('tSpin').hidden) armStartDeadline();
+    } else { pv.pause(); }
     showOverlay();
   });
 
