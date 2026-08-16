@@ -318,17 +318,15 @@
     // machine impersonating the server would be handed it. Plain http has no
     // certificate to bypass — and the flag is not free there: the host serves
     // insecure LAN requests through a single serialized connection, which would let
-    // one slow library query queue-starve the session poll. insecureMedia rides
-    // along because this widget plays media: it additionally asks the host to
-    // accept certificate errors for the host:port, which is what lets the <video>
-    // element stream from a self-signed server.
+    // one slow library query queue-starve the session poll.
     const insecure = /^https:/i.test(cfg.base) && cfg.selfSigned;
-    const opts = Object.assign({ insecure, insecureMedia: insecure }, init || {});
-    // Under strict certificate checking, the API key must never ride the browser's
-    // native fetch: ANOTHER widget's media opt-in may have relaxed certificate
-    // errors for this same host:port in the browser layer, and only the host
-    // proxy's validating client enforces this widget's own Require setting.
-    if (/^https:/i.test(cfg.base) && !cfg.selfSigned) opts.proxy = 'always';
+    const opts = Object.assign({ insecure }, init || {});
+    // At a LAN address every call rides the host proxy outright: the renderer's
+    // network gates killed native fetches to private IPs in the field (the proxy is
+    // where those calls ended up anyway), and each proxied call registers the server
+    // as a media-relay target — which playback depends on. Determinism over a doomed
+    // native attempt per poll.
+    if (privateLiteralHost(cfg.base)) opts.proxy = 'always';
     opts.signal = abort.signal;
     opts.headers = Object.assign({ 'X-Emby-Token': cfg.key }, (init && init.headers) || {});
     try {
@@ -1002,6 +1000,19 @@
   // never logged (the api_key rides its query).
   let lastSrcUrl = '';
 
+  // Media at a LAN address rides the HOST's stream relay instead of the renderer's
+  // own network stack: four field rounds proved the renderer's gates (mixed content,
+  // Local Network Access) kill direct requests to private IPs before a byte leaves,
+  // flag or no flag. The relay serves from https://stream.plinth/ — same secure
+  // plinth space as the widget, nothing left to gate — and THIS widget's own
+  // certificate setting travels with each request, so another instance's choice for
+  // the same server never applies here. Named addresses stay direct: they face no
+  // LAN gates and public https plays natively.
+  function relayUrl(url) {
+    return 'https://stream.plinth/v?u=' + encodeURIComponent(url)
+      + (/^https:/i.test(cfg.base) && cfg.selfSigned ? '&insecure=1' : '');
+  }
+
   // One door onto pv.src: every attempt gets the startup deadline, and a mid-title
   // fallback carries the position along instead of starting the movie over.
   function setSource(url) {
@@ -1023,7 +1034,7 @@
     }
     armStartDeadline();
     lastSrcUrl = url;
-    pv.src = url;
+    pv.src = privateLiteralHost(cfg.base) ? relayUrl(url) : url;
     // play() descends from a tap, so autoplay policy is normally satisfied (Chromium's
     // audible gate is sticky per frame once the user has tapped it). If a policy still
     // refuses — activation expired across a slow pre-flight — that is not a broken
@@ -1174,8 +1185,7 @@
     if (lastSrcUrl) {
       const n = attemptErrors.length;
       WW.fetch(lastSrcUrl, { method: 'HEAD', proxy: 'always',
-        insecure: /^https:/i.test(cfg.base) && cfg.selfSigned,
-        insecureMedia: /^https:/i.test(cfg.base) && cfg.selfSigned })
+        insecure: /^https:/i.test(cfg.base) && cfg.selfSigned })
         .then((r) => WW.log('jellyfin: attempt ' + n + ' probe: HTTP ' + r.status
           + ' ' + (r.headers.get('content-type') || '')))
         .catch((e) => WW.log('jellyfin: attempt ' + n + ' probe failed: ' + ((e && e.name) || 'error')));

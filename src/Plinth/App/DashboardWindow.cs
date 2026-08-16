@@ -124,12 +124,12 @@ public sealed class DashboardWindow : Form
         core.Settings.IsStatusBarEnabled = false;
         core.Settings.IsZoomControlEnabled = false;
 
-        // Widget media (Jellyfin playback) streams straight from self-hosted LAN
-        // servers whose https is usually self-signed; see the helper for scope.
-        WebViewEnvironment.AllowLanSelfSignedCertificates(core);
-        // ...and the runtime may gate LAN requests behind a permission kind newer
-        // than this SDK (Local Network Access); grant it to our own pages only.
-        WebViewEnvironment.GrantNewerPermissionKindsToPlinthPages(core);
+        // Widget media (Jellyfin playback) streams from LAN servers through the host —
+        // the renderer's network gates each killed direct playback in the field.
+        MediaRelay.Attach(core);
+        // And if a renderer gate ever blocks anything again, the engine says so in
+        // its console, which now lands in app.log instead of nowhere.
+        WebViewEnvironment.MirrorRendererConsole(core);
 
         core.WebMessageReceived += OnWebMessageReceived;
 
@@ -631,9 +631,9 @@ public sealed class DashboardWindow : Form
 
     /// <summary>Loopback or RFC1918/link-local private addresses only (no DNS lookups —
     /// a hostname that isn't a literal private IP or localhost doesn't qualify).
-    /// Internal because it is THE private-host policy: the WebView certificate
-    /// allowance (WebViewEnvironment.AllowLanSelfSignedCertificates) must gate on
-    /// exactly the same set the insecure proxy tier does.</summary>
+    /// Internal because it is THE private-host policy: the media relay
+    /// (<see cref="MediaRelay"/>) must gate on exactly the same set the insecure
+    /// proxy tier does.</summary>
     internal static bool IsPrivateHost(Uri uri)
     {
         if (uri.IsLoopback)
@@ -688,16 +688,11 @@ public sealed class DashboardWindow : Form
 
             var insecureRequested = message["insecure"]?.GetValue<bool>() ?? false;
             var lanDevice = insecureRequested && IsPrivateHost(uri);
-            // The opt-in spans layers: a media-playing widget's insecure flag also
-            // unlocks certificate errors for this host in the dashboard WebViews, so
-            // Player-view media — which streams browser-side and cannot ride this
-            // proxy — obeys the widget's setting too. Gated on the EXPLICIT media
-            // marker, not bare insecure: the Endpoints widget probes every target
-            // with insecure:true as a matter of course, and a health check must not
-            // relax certificate handling for a different widget that shares the
-            // authority and demands validation.
-            if (lanDevice && (message["insecureMedia"]?.GetValue<bool>() ?? false))
-                WebViewEnvironment.AllowInsecureLanHost(uri);
+            // Any widget that reaches a private host through this proxy marks the
+            // authority as a legitimate media-relay target (see MediaRelay for why
+            // that list exists and what it does and doesn't authorize).
+            if (IsPrivateHost(uri))
+                MediaRelay.AllowHost(uri);
 
             using var request = new HttpRequestMessage(new HttpMethod(method), uri)
             {

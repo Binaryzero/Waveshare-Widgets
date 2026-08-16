@@ -2,7 +2,7 @@
   "id": "ws.stock.jellyfin",
   "name": "Jellyfin",
   "author": "Plinth",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "description": "Who's streaming what from your Jellyfin server and the titles that just landed in the library — or a player that streams a title straight to the panel. Read from Jellyfin's own API, because the web app refuses to render inside a frame.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
