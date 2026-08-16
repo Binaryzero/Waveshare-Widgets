@@ -1,5 +1,27 @@
 [
  {
+  "match": "Fields=MediaStreams",
+  "json": {
+   "Items": [
+    {
+     "Id": "m-brutalist",
+     "MediaStreams": [
+      {
+       "Type": "Video",
+       "Codec": "h264",
+       "IsDefault": true
+      },
+      {
+       "Type": "Audio",
+       "Codec": "aac",
+       "IsDefault": true
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
   "match": "m-dune/Images",
   "contentType": "image/svg+xml",
   "body": "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='330'><defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#3a2c14'/><stop offset='1' stop-color='#120c04'/></linearGradient></defs><rect width='220' height='330' fill='url(#g)'/><circle cx='110' cy='120' r='58' fill='#c98a3d' opacity='0.75'/><text x='110' y='300' text-anchor='middle' font-family='sans-serif' font-size='22' fill='#e8d5b5'>DUNE II</text></svg>"

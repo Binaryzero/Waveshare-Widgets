@@ -879,29 +879,80 @@
     return cfg.base + path + (path.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(cfg.key);
   }
 
-  // Two chances per title: the original file as-is (no server CPU), then a server
-  // transcode sized for the panel. The <video> error event walks this list.
-  function attemptsFor(item) {
+  // Codecs the panel's browser actually decodes. The point is the SILENT failure
+  // class: an unsupported audio track (DTS, AC3) does not fire an error event — the
+  // video simply plays without sound — so codec safety is decided BEFORE direct play,
+  // from the item's MediaStreams, and an unsafe title goes straight to the transcode.
+  // Container problems are the opposite: the demuxer fails loudly, and the error
+  // event walks the fallback list, so containers need no pre-flight.
+  const SAFE_VIDEO = new Set(['h264', 'vp8', 'vp9', 'av1']);
+  const SAFE_AUDIO = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac']);
+
+  async function directPlaySafe(item) {
+    const body = await jfJson('/Items?Ids=' + encodeURIComponent(String(item.Id)) + '&Fields=MediaStreams',
+      8000, 256 * 1024);
+    const streams = (body && Array.isArray(body.Items) && body.Items[0] && body.Items[0].MediaStreams) || null;
+    if (!Array.isArray(streams)) throw fault('format', 'no media streams');
+    const audio = streams.filter((s) => s && s.Type === 'Audio');
+    const picked = audio.find((s) => s.IsDefault) || audio[0];
+    if (picked && !SAFE_AUDIO.has(String(picked.Codec || '').toLowerCase())) return false;
+    const video = streams.find((s) => s && s.Type === 'Video');
+    if (video && !SAFE_VIDEO.has(String(video.Codec || '').toLowerCase())) return false;
+    return true;
+  }
+
+  function directUrl(item) {
     const id = encodeURIComponent(String(item.Id));
-    if (item.Type === 'Audio') {
-      return [mediaUrl('/Audio/' + id + '/stream?static=true'),
-              mediaUrl('/Audio/' + id + '/stream.mp3')];
-    }
-    return [mediaUrl('/Videos/' + id + '/stream?static=true'),
-            mediaUrl('/Videos/' + id + '/stream.mp4?VideoCodec=h264&AudioCodec=aac'
-              + '&MaxWidth=1280&MaxHeight=720&VideoBitrate=6000000&AudioBitrate=192000')];
+    return mediaUrl((item.Type === 'Audio' ? '/Audio/' : '/Videos/') + id + '/stream?static=true');
+  }
+
+  function transcodeUrl(item) {
+    const id = encodeURIComponent(String(item.Id));
+    if (item.Type === 'Audio') return mediaUrl('/Audio/' + id + '/stream.mp3');
+    return mediaUrl('/Videos/' + id + '/stream.mp4?VideoCodec=h264&AudioCodec=aac'
+      + '&MaxWidth=1280&MaxHeight=720&VideoBitrate=6000000&AudioBitrate=192000');
   }
 
   const pv = el('pv');
+  const START_DEADLINE = 20000;   // a source that stalls without erroring is still a failure
   let theaterOn = false;
   let theaterAttempts = [];
   let theaterItem = null;
   let overlayTimer = null;
+  let attemptTimer = null;
+  let resumeAt = 0;               // where playback was when an attempt died mid-title
+  let timeBase = 0;               // offset of a StartTimeTicks transcode: clock = base + currentTime
+  let pendingSeek = 0;            // direct-play resume: seek once metadata arrives
 
-  function startPlayback(item, d) {
+  // One door onto pv.src: every attempt gets the startup deadline, and a mid-title
+  // fallback carries the position along instead of starting the movie over.
+  function setSource(url) {
+    clearTimeout(attemptTimer);
+    timeBase = 0;
+    pendingSeek = 0;
+    if (resumeAt > 5) {
+      if (url.includes('/stream.mp4?')) {
+        // The server starts the transcode at the offset; the element's own clock
+        // restarts at zero, so the displayed times carry the base.
+        timeBase = resumeAt;
+        url += '&StartTimeTicks=' + Math.floor(resumeAt * 10000000);
+      } else {
+        pendingSeek = resumeAt;   // direct play seeks natively once metadata is in
+      }
+    }
+    attemptTimer = setTimeout(() => {
+      if (theaterOn && el('tError').hidden) theaterError();
+    }, START_DEADLINE);
+    pv.src = url;
+    // play() is called from a tap, so autoplay policy is satisfied. A rejection here
+    // (decoder refusal without an error event) lands in the same fallback.
+    pv.play().catch(() => { /* the error handler owns fallback */ });
+  }
+
+  async function startPlayback(item, d) {
     theaterOn = true;
     theaterItem = { title: d.title, isAudio: item.Type === 'Audio', imgKey: d.img ? d.img.id + '|' + d.img.tag + '|330' : null };
-    theaterAttempts = attemptsFor(item);
+    resumeAt = 0;
     el('ovTitle').textContent = d.title;
     el('tError').hidden = true;
     el('tSpin').hidden = false;
@@ -918,16 +969,24 @@
     setTheaterIcons(false);
     showOverlay();
     el('theater').hidden = false;
-    pv.src = theaterAttempts.shift();
-    // play() is called from a tap, so autoplay policy is satisfied. A rejection here
-    // (decoder refusal without an error event) lands in the same fallback.
-    pv.play().catch(() => { /* the error handler owns fallback */ });
+    // The codec pre-flight decides the order; if it cannot answer, transcode leads —
+    // a transcode always has SOUND, and silent video is the failure a viewer cannot
+    // diagnose from the couch.
+    let direct = false;
+    try { direct = await directPlaySafe(item); } catch (e) { WW.log('jellyfin: preflight: ' + e.message); }
+    if (!theaterOn) return;   // backed out while the pre-flight was away
+    theaterAttempts = direct ? [directUrl(item), transcodeUrl(item)] : [transcodeUrl(item), directUrl(item)];
+    setSource(theaterAttempts.shift());
   }
 
   function stopPlayback() {
     if (!theaterOn) return;
     theaterOn = false;
     clearTimeout(overlayTimer);
+    clearTimeout(attemptTimer);
+    resumeAt = 0;
+    timeBase = 0;
+    pendingSeek = 0;
     pv.pause();
     pv.removeAttribute('src');
     pv.load();   // actually stops the network stream, not just the picture
@@ -971,10 +1030,14 @@
 
   function theaterError() {
     if (!theaterOn) return;
+    clearTimeout(attemptTimer);
+    // A mid-title death carries its position into the next attempt; only meaningful
+    // progress overwrites, so the second attempt's instant failure at 0:00 does not
+    // erase where the first one actually was.
+    const at = timeBase + (pv.currentTime || 0);
+    if (at > 5) resumeAt = at;
     if (theaterAttempts.length) {
-      // The original file was refused (codec or container) — hand the server the job.
-      pv.src = theaterAttempts.shift();
-      pv.play().catch(() => { /* same handler */ });
+      setSource(theaterAttempts.shift());
       return;
     }
     el('tSpin').hidden = true;
@@ -982,26 +1045,50 @@
     clearTimeout(overlayTimer);
     el('overlay').classList.add('faded');
     el('tErrorBody').textContent = 'Neither the original file nor a server transcode would play. '
-      + 'The codec may be unsupported, or an https server’s certificate was refused.';
+      + 'The codec may be unsupported'
+      + (/^https:/i.test(cfg.base) && cfg.selfSigned
+        ? ", and the self-signed allowance covers the shelf only — playback needs a certificate this PC's browser trusts."
+        : ', or an https server’s certificate was refused.');
     el('tError').hidden = false;
   }
 
   pv.addEventListener('error', theaterError);
-  pv.addEventListener('playing', () => { el('tSpin').hidden = true; setTheaterIcons(false); showOverlay(); });
+  pv.addEventListener('playing', () => { clearTimeout(attemptTimer); el('tSpin').hidden = true; setTheaterIcons(false); showOverlay(); });
+  pv.addEventListener('loadedmetadata', () => {
+    if (pendingSeek > 0 && isFinite(pv.duration)) {
+      pv.currentTime = Math.min(pendingSeek, Math.max(0, pv.duration - 5));
+      pendingSeek = 0;
+    }
+  });
   pv.addEventListener('waiting', () => { if (theaterOn) el('tSpin').hidden = false; });
   pv.addEventListener('pause', () => { if (theaterOn) { setTheaterIcons(true); showOverlay(); } });
   pv.addEventListener('ended', stopPlayback);
   // timeupdate fires at the browser's own ~4 Hz — data cadence, no timer of ours.
+  // The clock carries timeBase: a StartTimeTicks transcode restarts the element's own
+  // clock at zero while the title is minutes in.
   pv.addEventListener('timeupdate', () => {
     if (!theaterOn) return;
-    el('ovElapsed').textContent = fmt(pv.currentTime);
+    el('ovElapsed').textContent = fmt(timeBase + pv.currentTime);
     if (isFinite(pv.duration) && pv.duration > 0) {
-      el('ovTotal').textContent = fmt(pv.duration);
-      const pct = Math.min(100, pv.currentTime / pv.duration * 100).toFixed(2) + '%';
+      const total = timeBase + pv.duration;
+      el('ovTotal').textContent = fmt(total);
+      const pct = Math.min(100, (timeBase + pv.currentTime) / total * 100).toFixed(2) + '%';
       el('ovFill').style.width = pct;
       el('ovCur').style.left = pct;
     }
   });
+
+  // The shell changes pages by SCROLLING #pages — this document never becomes hidden,
+  // so a page swipe would leave the stream decoding and playing audio into an
+  // off-screen page. An IntersectionObserver with no root measures against the
+  // top-level viewport even from inside a cross-origin iframe (the ad-viewability
+  // contract), which is exactly the signal a swipe produces.
+  if (typeof IntersectionObserver === 'function') {
+    new IntersectionObserver((entries) => {
+      const last = entries[entries.length - 1];
+      if (last && last.intersectionRatio === 0 && theaterOn && !pv.paused) pv.pause();
+    }).observe(document.documentElement);
+  }
 
   el('theater').addEventListener('click', (e) => {
     if (e.target.closest('.btn')) return;   // buttons speak for themselves
