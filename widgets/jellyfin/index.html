@@ -64,44 +64,53 @@
     font-size: 16px; font-weight: 700; color: var(--text-dim);
   }
 
-  /* Player view: one stream, big art, touch transport. */
-  #player { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; gap: 4%; overflow: hidden; }
-  #player .art { height: 96%; aspect-ratio: 2 / 3; flex: none; }
-  #player .art .ph { font-size: clamp(18px, 8vh, 34px); }
-  #pInfo { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1.4vh; }
-  #pTitle {
-    font-size: clamp(17px, 8.5vh, 34px); font-weight: 700; color: var(--text);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* Player view, browsing: the shelf again, but every poster is a play button. */
+  #player { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+  #pstrip { display: flex; gap: 8px; overflow: hidden; flex: 1 1 auto; min-height: 0; align-items: flex-start; }
+  #pstrip .tile { cursor: pointer; }
+  #pstrip .tile .art { border-width: 1px; }
+
+  /* Player view, playing: the tile becomes a little theater. Fixed over everything —
+   * header included — with true-black letterbox bars (a scrim, not chrome; the one
+   * sanctioned monochrome). */
+  #theater { position: fixed; inset: 0; background: rgba(0, 0, 0, 1); }
+  #pv { width: 100%; height: 100%; object-fit: contain; }
+  /* Audio items have no picture: the poster stands in behind the overlay. */
+  #tArt { position: absolute; inset: 0; background: center / contain no-repeat; }
+  #overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; justify-content: space-between;
+    padding: 10px 14px;
+    background: rgba(0, 0, 0, 0.45);
+    transition: opacity var(--dur-mid) var(--ease);
   }
-  #pSub {
-    font-size: clamp(10px, 4vh, 13px); color: var(--text-muted); font-weight: 500;
-    letter-spacing: 0.18em; text-transform: uppercase;
+  #overlay.faded { opacity: 0; pointer-events: none; }
+  /* Everything in the overlay sits on video frames and the black scrim, not on a themed
+   * surface — the theme's --text can be near-black, which would vanish here. Monochrome
+   * white/black alphas are the sanctioned palette for a scrim layer. */
+  #ovTitle {
+    font-size: clamp(15px, 7vh, 26px); font-weight: 700; color: rgba(255, 255, 255, 0.94);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 1);
   }
-  #pSub .tag.warn { color: var(--warn); }
-  #pTime { font-size: clamp(11px, 4.2vh, 14px); color: var(--text-dim); font-variant-numeric: tabular-nums; }
-  #pTime b { color: var(--accent-fg); font-weight: 700; }
-  #pControls { display: flex; align-items: center; gap: 14px; margin-top: 0.4vh; }
-  #pControls .btn {
+  #ovMid { display: flex; align-items: center; justify-content: center; gap: 16px; }
+  #ovMid .btn {
     padding: 0;
-    width: clamp(42px, 13vh, 60px); height: clamp(42px, 13vh, 60px);
+    width: clamp(44px, 14vh, 64px); height: clamp(44px, 14vh, 64px);
     display: flex; align-items: center; justify-content: center;
-    /* none, not manipulation: nothing here scrolls, and manipulation still permits a
-     * pan — finger drift on a control would page the shell instead of pressing it. */
-    touch-action: none;
   }
-  #pControls .btn svg { width: 40%; height: 40%; fill: currentColor; }
-  /* The command went out and no answer came back — the panel does not yet know
-   * whether the client acted on it, so it says "sent, unconfirmed", not success. */
-  @keyframes jf-pending { 0%, 100% { border-color: var(--line); } 50% { border-color: var(--warn); } }
-  .pending-flash { animation: jf-pending 900ms ease-in-out 2; }
-  /* Color-only feedback, not motion — the base exempts its own flash classes from the
-   * reduced-motion collapse (widget-base.css) and this local one needs the same, or a
-   * "sent, unconfirmed" answer becomes a silent no-op exactly for the users who asked
-   * for less movement. */
-  @media (prefers-reduced-motion: reduce) {
-    .pending-flash { animation-duration: 900ms !important; }
-  }
+  #ovMid .btn svg { width: 42%; height: 42%; fill: currentColor; }
+  #ovBottom { display: flex; align-items: center; gap: 10px; }
+  #ovBottom time { font-size: 12px; color: rgba(255, 255, 255, 0.9); font-variant-numeric: tabular-nums; flex: none; text-shadow: 0 1px 3px rgba(0, 0, 0, 1); }
+  #ovScale { flex: 1; }
+  #ovScale .rail { background: rgba(255, 255, 255, 0.3); }
+  #ovScale .fill, #ovScale .cur { transition: none; }
+  #tSpin { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  /* The error card borrows .state-card's anatomy but sits on the theater's black, so
+   * its text takes the scrim-white treatment — the theme's --text can be near-black. */
+  #tError { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.88); }
+  #tError .state-title { color: rgba(255, 255, 255, 0.94); }
+  #tError .state-body { color: rgba(255, 255, 255, 0.75); }
 
   #axis { flex: none; }
   footer { flex: none; color: var(--text-dim); font-size: 11px; display: flex; gap: 12px; justify-content: space-between; min-width: 0; }
@@ -131,23 +140,47 @@
   </div>
 
   <div id="player" hidden>
-    <div class="art" id="pArt"><span class="ph" id="pPh"></span></div>
-    <div id="pInfo">
-      <div id="pTitle"></div>
-      <div id="pSub"></div>
-      <div id="pTime"></div>
-      <div id="pControls">
-        <button id="pPrev" class="btn" aria-label="Previous">
-          <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zM9.5 12 18 6v12z"/></svg>
+    <div class="kicker">Recently added — tap to play</div>
+    <div id="pstrip"></div>
+  </div>
+
+  <!-- The theater: fixed over the whole tile while something plays on the panel. -->
+  <div id="theater" class="no-pan" hidden>
+    <div id="tArt" hidden></div>
+    <video id="pv" playsinline></video>
+    <div id="tSpin" hidden><div class="spinner"></div></div>
+    <div id="overlay">
+      <div id="ovTitle"></div>
+      <div id="ovMid">
+        <button id="tBack" class="btn no-pan" aria-label="Stop and go back">
+          <svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>
         </button>
-        <button id="pToggle" class="btn primary" aria-label="Play/Pause">
-          <svg id="pIconPlay" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-          <svg id="pIconPause" viewBox="0 0 24 24" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+        <button id="tRew" class="btn no-pan" aria-label="Back 10 seconds">
+          <svg viewBox="0 0 24 24"><path d="M11 6V2L4 8l7 6v-4c3.3 0 6 2.7 6 6s-2.7 6-6 6-6-2.7-6-6H3c0 4.4 3.6 8 8 8s8-3.6 8-8-3.6-8-8-8z"/></svg>
         </button>
-        <button id="pNext" class="btn" aria-label="Next">
-          <svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 6l8.5 6L6 18z"/></svg>
+        <button id="tToggle" class="btn primary no-pan" aria-label="Play/Pause">
+          <svg id="tIconPlay" viewBox="0 0 24 24" style="display:none"><path d="M8 5v14l11-7z"/></svg>
+          <svg id="tIconPause" viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+        </button>
+        <button id="tFwd" class="btn no-pan" aria-label="Forward 30 seconds">
+          <svg viewBox="0 0 24 24"><path d="M13 6V2l7 6-7 6v-4c-3.3 0-6 2.7-6 6s2.7 6 6 6 6-2.7 6-6h2c0 4.4-3.6 8-8 8s-8-3.6-8-8 3.6-8 8-8z"/></svg>
         </button>
       </div>
+      <div id="ovBottom">
+        <time id="ovElapsed">0:00</time>
+        <div class="scale" id="ovScale" style="--pitch: 10%">
+          <div class="rail"></div>
+          <div class="fill" id="ovFill" style="width:0%"></div>
+          <div class="cur" id="ovCur" style="left:0%"></div>
+        </div>
+        <time id="ovTotal">--</time>
+      </div>
+    </div>
+    <div id="tError" class="state-card err" hidden>
+      <div class="state-icon">!</div>
+      <div class="state-title">Couldn't play this title</div>
+      <div class="state-body" id="tErrorBody"></div>
+      <button id="tErrBack" class="btn no-pan">Back</button>
     </div>
   </div>
 
@@ -174,7 +207,6 @@
   'use strict';
   const POLL_DEADLINE = 20000;      // /Sessions — the fast lane the whole tile hangs off
   const SLOW_DEADLINE = 20000;      // latest / counts / server name
-  const ACT_DEADLINE = 8000;        // a person is waiting with a finger on the glass
   const SLOW_MS = 300000;           // library facts change rarely; don't ask like they don't
   const IDLE_FLOOR = 5000;
   const GATED_RECHECK = 60000;
@@ -191,7 +223,7 @@
     'Hidden': '',
   };
 
-  const cfg = { base: '', key: '', types: 'Movie,Episode', refreshMs: 15000, view: 'overview', playerUser: '', selfSigned: false };
+  const cfg = { base: '', key: '', types: 'Movie,Episode', refreshMs: 15000, view: 'overview', selfSigned: false };
   let sessions = [];          // active streams (NowPlayingItem present), sorted
   let latest = [];            // recently added items
   let latestAt = 0;           // when the shelf's data last actually refreshed
@@ -222,21 +254,11 @@
   // What the interpolation timer advances between polls: one entry per rendered row.
   let rowRefs = [];
   let axisRef = null;
-  // The stream the player view is currently showing — commands go to THIS session id,
-  // captured at render time, never recomputed at press time against fresher data.
-  let playerSession = null;
-  let playerControllable = true;
-  let acting = false;
-  // Jellyfin's Playing/{Pause|Unpause} answers 204 when the command is QUEUED — the
-  // session's IsPaused only changes after the client acts and files its next progress
-  // report. The reconcile poll usually outruns that report, so for a few seconds the
-  // toggled session's paused flag believes the finger, not the lagging server.
-  let holdId = '';
-  let holdPaused = false;
-  let holdUntil = 0;
 
   const el = (id) => document.getElementById(id);
-  const paused = () => document.hidden;
+  // Held while hidden AND while the theater has the screen: someone is watching actual
+  // content, and a poll competing with the stream for LAN bandwidth serves nobody.
+  const paused = () => document.hidden || theaterOn;
 
   function fault(kind, message, status) {
     const e = new Error(message);
@@ -375,6 +397,12 @@
     };
   }
 
+  // A shelf caption must tell two episodes of the same series apart — their posters
+  // and series names are identical, so the episode code (or name) is the identity.
+  function capFor(item, d) {
+    return item.Type === 'Episode' && d.sub[0] ? d.title + ' · ' + d.sub[0] : d.title;
+  }
+
   // ---- the poll loop ---------------------------------------------------------------
 
   async function tick(gen) {
@@ -431,7 +459,7 @@
   // the library — only the server's name for its idle card.
   function refreshSlow(gen) {
     slowAt = Date.now();
-    if (cfg.types && cfg.view !== 'player') {
+    if (cfg.types) {
       // Captured at request time: a filter change while this is in flight makes the
       // reply an answer to a question nobody is asking any more — generation only
       // guards the server identity, not the filter.
@@ -449,7 +477,14 @@
           // healthy-looking quiet card straight over the error the user needs to see.
           if (lastOk) render();
         })
-        .catch((e) => WW.log('jellyfin: latest: ' + e.message));
+        .catch((e) => {
+          WW.log('jellyfin: latest: ' + e.message);
+          // A shelf that has NEVER loaded is the player's whole browse surface —
+          // waiting out the full slow window after one transient failure leaves the
+          // view unusable for five minutes. Mark the lane due again so the next fast
+          // poll retries; once the shelf has ever had data, staleness handles it.
+          if (gen === generation && !latestAt) slowAt = 0;
+        });
     } else if (!cfg.types) {
       latest = [];
     }
@@ -532,7 +567,6 @@
   }
 
   function renderOverview() {
-    playerSession = null;
     el('player').hidden = true;
     const lay = layout();
     const shown = sessions.slice(0, lay.maxSessions);
@@ -623,7 +657,7 @@
         tile.appendChild(art(d, wanted));
         const cap = document.createElement('div');
         cap.className = 'cap';
-        cap.textContent = d.title;
+        cap.textContent = capFor(item, d);
         tile.append(cap);
         strip.appendChild(tile);
       }
@@ -672,108 +706,71 @@
     ensureImages(wanted);
   }
 
+  // Player view, browsing: the recently-added shelf, where every poster is a play
+  // button. Playback itself lives in the theater layer and never re-renders from polls.
   function renderPlayer() {
+    if (theaterOn) return;   // the theater owns the screen; polls must not repaint it
     el('main').hidden = true;
     const stale = document.body.classList.contains('stale');
     const pill = el('pill');
-    const wantUser = cfg.playerUser.trim().toLowerCase();
-    const pool = wantUser
-      ? sessions.filter((s) => String(s.UserName || '').toLowerCase() === wantUser)
-      : sessions;
-    // Controllable streams first — a session that refuses remote control would give
-    // this remote dead buttons while hiding one the buttons could actually drive.
-    // Within that, most recent activity wins, NOT the overview's playing-before-paused
-    // order: the person who just paused wants the remote on THEIR stream — jumping to
-    // someone else's older playing session hands them a play button for the wrong house.
-    const controllable = (x) => x.SupportsRemoteControl !== false;
-    const s = pool.slice().sort((a, b) =>
-      (controllable(b) - controllable(a))
-      || String(b.LastActivityDate || '').localeCompare(String(a.LastActivityDate || '')))[0] || null;
+    const st = el('st');
+    st.className = 'st';
+    st.textContent = (server && server.name) || '';
 
-    if (!s) {
-      playerSession = null;
-      rowRefs = [];
-      axisRef = null;
-      // The header annotation is the previous stream's "Playing" until told otherwise.
-      const st = el('st');
-      st.className = 'st';
-      st.textContent = (server && server.name) || '';
-      stateCard('', '▷', 'Nothing playing',
-        wantUser
-          ? 'No stream from ' + cfg.playerUser.trim() + ' right now.'
-          : 'No one is streaming from ' + ((server && server.name) || 'Jellyfin') + ' right now.');
+    rowRefs = [];
+    axisRef = null;
+    el('axis').hidden = true;
+
+    if (!latest.length) {
+      // An unfetched shelf is not an empty library: only a shelf that has actually
+      // answered gets to claim there is nothing in it.
+      if (!latestAt) {
+        stateCard('', '▷', 'Loading the shelf',
+          "The recently-added list hasn't answered yet — retrying.");
+      } else {
+        stateCard('', '▷', 'Nothing to play yet',
+          'The recently-added shelf fills in as titles land in '
+          + ((server && server.name) || 'Jellyfin') + "'s library.");
+      }
       if (stale) { pill.hidden = false; pill.textContent = 'Stale'; pill.className = 'pill muted'; }
       else pill.hidden = true;
       return;
     }
 
-    const d = describe(s.NowPlayingItem);
-    const ps = s.PlayState || {};
-    let paused = !!ps.IsPaused;
-    if (String(s.Id || '') === holdId && Date.now() < holdUntil) {
-      if (paused === holdPaused) holdUntil = 0;   // the server caught up — hold spent
-      else paused = holdPaused;                    // lagging snapshot: keep the flip
-    }
-    // The whole pool may be uncontrollable — still worth showing, but the transport
-    // must say so rather than offer taps that go nowhere.
-    playerControllable = controllable(s);
-    setControlsDisabled(!playerControllable);
-    playerSession = { id: String(s.Id || ''), paused };
+    // Same budget math as the overview's idle shelf: posters absorb the body.
+    const W = document.documentElement.clientWidth || 640;
+    const H = document.documentElement.clientHeight || 400;
+    const band = H < 260;
+    const avail = H - 20 - 28 - (band ? 0 : 24);
+    const posterH = Math.max(64, Math.min(220, avail - 45));
+    const posterW = Math.round(posterH * 2 / 3);
+    const count = Math.max(1, Math.floor((W - 24 + 8) / (posterW + 8)));
 
-    el('pTitle').textContent = d.title;
-    const sub = el('pSub');
-    sub.textContent = [String(s.UserName || s.Client || '')].concat(d.sub).filter(Boolean).join(' · ');
-    if (ps.PlayMethod === 'Transcode') {
-      sub.appendChild(document.createTextNode('  '));
-      const tag = document.createElement('span');
-      tag.className = 'tag warn';
-      tag.textContent = 'Transcode';
-      sub.appendChild(tag);
-    }
-    if (!playerControllable) {
-      sub.appendChild(document.createTextNode('  '));
-      const tag = document.createElement('span');
-      tag.className = 'tag mute';
-      tag.textContent = 'No remote control';
-      sub.appendChild(tag);
-    }
-
-    // Art (a size of its own — the player shows it big).
+    const strip = el('pstrip');
+    strip.textContent = '';
+    strip.style.setProperty('--ph', posterH + 'px');
     const wanted = new Set();
-    const pArt = el('pArt');
-    const ph = el('pPh');
-    ph.textContent = (d.title || '?').slice(0, 1).toUpperCase();
-    delete pArt.dataset.imgkey;
-    pArt.style.backgroundImage = 'none';
-    ph.hidden = false;
-    if (d.img) {
-      const key = d.img.id + '|' + d.img.tag + '|500';
-      pArt.dataset.imgkey = key;
-      wanted.add(key);
-      const hit = imgCache.get(key);
-      if (hit) {
-        pArt.style.backgroundImage = 'url("' + hit + '")';
-        ph.hidden = true;
-      }
+    for (const item of latest.slice(0, count)) {
+      const d = describe(item);
+      const tile = document.createElement('div');
+      // no-pan: a tappable poster with nothing local to pan must not hand finger
+      // drift to the shell pager (#221).
+      tile.className = 'tile pressable no-pan';
+      tile.appendChild(art(d, wanted));
+      const cap = document.createElement('div');
+      cap.className = 'cap';
+      cap.textContent = capFor(item, d);
+      tile.append(cap);
+      tile.addEventListener('click', () => startPlayback(item, d));
+      strip.appendChild(tile);
     }
 
-    const pos = ticksToSec(ps.PositionTicks);
-    const dur = ticksToSec(s.NowPlayingItem.RunTimeTicks);
-    const time = el('pTime');
-    time.textContent = '';
-    const elapsed = document.createElement('b');
-    time.appendChild(elapsed);
-    if (dur != null) time.appendChild(document.createTextNode(' / ' + fmt(dur)));
-    // at: lastOk, not Date.now() — see the overview rows: re-renders must not rewind.
-    rowRefs = [{ elapsed, fill: null, pos0: pos, dur, paused: playerSession.paused, at: lastOk }];
-    axisRef = dur ? rowRefs[0] : null;
-    el('axis').hidden = !axisRef;
-    if (axisRef) el('axisEnd').textContent = fmt(dur);
-    setPausedUi(playerSession.paused);
+    const shelfStale = latestAt > 0 && Date.now() - latestAt > SLOW_MS * 2 + 60000;
+    el('player').classList.toggle('stale-sec', shelfStale);
 
     el('counts').textContent = '';
     const notes = [];
-    if (sessions.length > 1) notes.push('+' + (sessions.length - 1) + ' other stream' + (sessions.length === 2 ? '' : 's'));
+    if (shelfStale) notes.push('shelf from ' + new Date(latestAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
     if (lastOk) notes.push('updated ' + new Date(lastOk).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
     el('meta').textContent = notes.join(' · ');
 
@@ -783,24 +780,7 @@
     el('state').hidden = true;
     el('player').hidden = false;
     document.querySelector('footer').hidden = false;
-    applyTimes();
     ensureImages(wanted);
-  }
-
-  // The paused flag drives four things at once — icons, header annotation, and the
-  // interpolation base — so flips (optimistic or from a poll) go through one door.
-  function setPausedUi(paused) {
-    el('pIconPlay').style.display = paused ? 'block' : 'none';
-    el('pIconPause').style.display = paused ? 'none' : 'block';
-    const st = el('st');
-    st.textContent = '';
-    st.className = 'st' + (paused ? '' : ' on');
-    if (!paused) {
-      const dot = document.createElement('i');
-      dot.className = 'dot';
-      st.appendChild(dot);
-    }
-    st.appendChild(document.createTextNode(paused ? 'Paused' : 'Playing'));
   }
 
   function art(d, wanted) {
@@ -910,124 +890,324 @@
     imgWanted = new Set();
   }
 
-  // ---- player commands -------------------------------------------------------------
+  // ---- the theater -----------------------------------------------------------------
+  // On-panel playback: an HTML5 <video> pointed straight at Jellyfin's stream
+  // endpoints. Media elements cannot send headers, so the api_key rides the query
+  // string — Jellyfin's own clients authenticate stream URLs exactly this way.
 
-  const FLASHES = ['confirm-flash', 'fail-flash', 'pending-flash'];
-  function flash(node, cls) {
-    // All three answer the same question; clear them all, then restart even mid-run.
-    for (const c of FLASHES) node.classList.remove(c);
-    void node.offsetWidth;
-    node.classList.add(cls);
+  function mediaUrl(path) {
+    return cfg.base + path + (path.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(cfg.key);
   }
 
-  function setControlsDisabled(disabled) {
-    for (const id of ['pPrev', 'pToggle', 'pNext']) el(id).disabled = disabled;
+  // Codecs the panel's browser actually decodes. The point is the SILENT failure
+  // class: an unsupported audio track (DTS, AC3) does not fire an error event — the
+  // video simply plays without sound — so codec safety is decided BEFORE direct play,
+  // from the item's MediaStreams, and an unsafe title goes straight to the transcode.
+  // Container problems are the opposite: the demuxer fails loudly, and the error
+  // event walks the fallback list, so containers need no pre-flight.
+  const SAFE_VIDEO = new Set(['h264', 'vp8', 'vp9', 'av1']);
+  const SAFE_AUDIO = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac']);
+
+  async function directPlaySafe(item) {
+    const body = await jfJson('/Items?Ids=' + encodeURIComponent(String(item.Id)) + '&Fields=MediaStreams',
+      8000, 256 * 1024);
+    const streams = (body && Array.isArray(body.Items) && body.Items[0] && body.Items[0].MediaStreams) || null;
+    if (!Array.isArray(streams)) throw fault('format', 'no media streams');
+    const audio = streams.filter((s) => s && s.Type === 'Audio');
+    const picked = audio.find((s) => s.IsDefault) || audio[0];
+    if (picked && !SAFE_AUDIO.has(String(picked.Codec || '').toLowerCase())) return false;
+    const video = streams.find((s) => s && s.Type === 'Video');
+    if (video && !SAFE_VIDEO.has(String(video.Codec || '').toLowerCase())) return false;
+    return true;
   }
 
-  // Go and look, now: someone acting on the panel has asked for its current state.
-  function reconcile() {
-    fails = 0;
-    pollAnchor = 0;
-    if (inFlight) { refreshQueued = true; return; }
-    clearTimeout(timer);
-    tick(generation);
+  function directUrl(item) {
+    const id = encodeURIComponent(String(item.Id));
+    return mediaUrl((item.Type === 'Audio' ? '/Audio/' : '/Videos/') + id + '/stream?static=true');
   }
 
-  // ...and again shortly after. The immediate poll usually races the client's own
-  // progress report, so alone it shows the OLD track after a skip (and holds the pause
-  // hold open). Two bounded follow-ups — ~2s and ~6s — catch a client that reports
-  // slowly, and the second lands just past the pause hold's expiry so a command the
-  // client ignored is found out in seconds, not at the next scheduled poll.
-  let followTimer = null;
-  function followUp(chain) {
-    const gen = generation;
-    clearTimeout(followTimer);
-    followTimer = setTimeout(() => {
-      if (gen !== generation) return;
-      reconcile();
-      if (chain) followUp(false);
-    }, chain ? 2000 : 4000);
+  function transcodeUrl(item) {
+    const id = encodeURIComponent(String(item.Id));
+    if (item.Type === 'Audio') return mediaUrl('/Audio/' + id + '/stream.mp3');
+    return mediaUrl('/Videos/' + id + '/stream.mp4?VideoCodec=h264&AudioCodec=aac'
+      + '&MaxWidth=1280&MaxHeight=720&VideoBitrate=6000000&AudioBitrate=192000');
   }
 
-  async function command(btn, kind) {
-    if (acting || !playerSession || !playerSession.id) return;
-    const sess = playerSession;
-    const wasPaused = sess.paused;
-    const cmd = kind === 'toggle' ? (wasPaused ? 'Unpause' : 'Pause')
-      : kind === 'next' ? 'NextTrack' : 'PreviousTrack';
-    const gen = generation;
-    acting = true;
-    setControlsDisabled(true);
-    // Optimistic flip: the panel answers the finger now and reconciles with the next
-    // poll. On a definite refusal we put it back AND fail-flash.
-    if (kind === 'toggle') {
-      sess.paused = !wasPaused;
-      setPausedUi(sess.paused);
-      // The hold outlives this handler: the reconcile poll's snapshot predates the
-      // client acting on the command, and must not snap the flip back.
-      holdId = sess.id;
-      holdPaused = sess.paused;
-      holdUntil = Date.now() + 5000;
-      const r = rowRefs[0];
-      if (r) {
-        const now = Date.now();
-        if (r.pos0 != null && !r.paused) {
-          const run = r.pos0 + (now - r.at) / 1000;
-          r.pos0 = r.dur != null ? Math.min(run, r.dur) : run;
-        }
-        r.at = now;
-        r.paused = sess.paused;
-      }
-    }
-    try {
-      // ONE fetch tier, no ladder: WW.fetch's escalation replays a request whose
-      // response was lost through the other tier, and a replayed NextTrack skips
-      // twice. proxy:'always' dials exactly once — an uncertain outcome lands in the
-      // pending path below and is reconciled, never resent.
-      await jf('/Sessions/' + encodeURIComponent(sess.id) + '/Playing/' + cmd,
-        { method: 'POST', proxy: 'always' }, ACT_DEADLINE);
-      if (gen !== generation) return;
-      // A track skip's success only becomes visible when the next poll lands; the
-      // pause flip is its own confirmation.
-      if (kind !== 'toggle') flash(btn, 'confirm-flash');
-      reconcile();
-      followUp(true);
-    } catch (e) {
-      if (gen !== generation) return;
-      // Only a status that DEFINITELY rejected the request counts as a refusal — a
-      // timeout or a gateway error may have executed anyway, and claiming failure
-      // invites the press that undoes it. Say "sent, unconfirmed" and go look.
-      const definite = e.kind === 'http' && e.status >= 400 && e.status < 500
-        && e.status !== 408 && e.status !== 429;
-      if (definite) {
-        if (kind === 'toggle') {
-          // The hold is cleared UNCONDITIONALLY: an intervening render (slow lane,
-          // resize, the reconcile poll) replaces playerSession with a fresh object for
-          // the same stream, and a rollback gated on object identity would leave the
-          // hold defending a state the server just refused. Matching by id keeps the
-          // UI revert scoped to the stream that was actually toggled.
-          holdUntil = 0;
-          if (playerSession && playerSession.id === sess.id) {
-            playerSession.paused = wasPaused;
-            setPausedUi(wasPaused);
-            const r = rowRefs[0];
-            if (r) { r.at = Date.now(); r.paused = wasPaused; }
-          }
-        }
-        flash(btn, 'fail-flash');
+  const pv = el('pv');
+  const START_DEADLINE = 20000;   // a source that stalls without erroring is still a failure
+  const STALL_DEADLINE = 30000;   // ...and so is one that rebuffers forever mid-title
+  let theaterOn = false;
+  let theaterAttempts = [];
+  let theaterItem = null;
+  let overlayTimer = null;
+  let attemptTimer = null;
+  let stallTimer = null;
+  let resumeAt = 0;               // where playback was when an attempt died mid-title
+  let timeBase = 0;               // offset of a StartTimeTicks transcode: clock = base + currentTime
+  let pendingSeek = 0;            // direct-play resume: seek once metadata arrives
+  // Each startPlayback claims a token; a pre-flight that resolves after Back (or after
+  // a different title was tapped) finds a foreign token and mutates nothing.
+  let playToken = 0;
+  // Whether this widget's dashboard page is on screen, kept current by the observer
+  // below — the pre-flight's async gap needs the answer at continuation time.
+  let pageOff = false;
+
+  function setTransportDisabled(disabled) {
+    for (const id of ['tRew', 'tToggle', 'tFwd']) el(id).disabled = disabled;
+  }
+
+  function armStartDeadline() {
+    clearTimeout(attemptTimer);
+    attemptTimer = setTimeout(() => {
+      if (theaterOn && el('tError').hidden) theaterError();
+    }, START_DEADLINE);
+  }
+
+  // The whole surface can be out of sight two ways: this page scrolled off (pageOff)
+  // or the dashboard window hidden entirely. Neither may start or continue a stream.
+  const outOfSight = () => pageOff || document.hidden;
+
+  // One door onto pv.src: every attempt gets the startup deadline, and a mid-title
+  // fallback carries the position along instead of starting the movie over.
+  function setSource(url) {
+    // A source now exists, so pause and seek mean something again.
+    setTransportDisabled(false);
+    clearTimeout(attemptTimer);
+    clearTimeout(stallTimer);
+    timeBase = 0;
+    pendingSeek = 0;
+    if (resumeAt > 5) {
+      if (url.includes('/stream.mp4?')) {
+        // The server starts the transcode at the offset; the element's own clock
+        // restarts at zero, so the displayed times carry the base.
+        timeBase = resumeAt;
+        url += '&StartTimeTicks=' + Math.floor(resumeAt * 10000000);
       } else {
-        flash(btn, 'pending-flash');
+        pendingSeek = resumeAt;   // direct play seeks natively once metadata is in
       }
-      WW.log('jellyfin: ' + cmd + ': ' + e.message);
-      reconcile();
-      if (!definite) followUp(true);   // "sent, unconfirmed" needs the second look most
-    } finally {
-      acting = false;
-      // Re-enabled only if the stream on screen still accepts remote control — a
-      // render may have switched sessions while the command was in flight.
-      setControlsDisabled(!playerControllable);
     }
+    armStartDeadline();
+    pv.src = url;
+    // play() descends from a tap, so autoplay policy is normally satisfied (Chromium's
+    // audible gate is sticky per frame once the user has tapped it). If a policy still
+    // refuses — activation expired across a slow pre-flight — that is not a broken
+    // source: land in a designed paused state with the play button ready, where one
+    // explicit tap carries fresh activation. Decoder refusals surface as error events
+    // and keep walking the fallback. Off-screen (callers already refuse; belt and
+    // braces for future ones), the source loads but stays paused.
+    if (!outOfSight()) {
+      pv.play().catch((e) => {
+        if (e && e.name === 'NotAllowedError' && theaterOn) {
+          clearTimeout(attemptTimer);
+          clearTimeout(stallTimer);
+          el('tSpin').hidden = true;
+          setTheaterIcons(true);
+          showOverlay();
+        }
+        /* anything else: the error handler owns fallback */
+      });
+    } else setTheaterIcons(true);
   }
+
+  async function startPlayback(item, d) {
+    theaterOn = true;
+    const token = ++playToken;
+    theaterItem = { title: d.title, isAudio: item.Type === 'Audio', imgKey: d.img ? d.img.id + '|' + d.img.tag + '|330' : null };
+    resumeAt = 0;
+    el('ovTitle').textContent = d.title;
+    el('tError').hidden = true;
+    el('tSpin').hidden = false;
+    // No source yet: pause and seek have nothing to act on, and a live pause button
+    // here would be answered by the pre-flight starting the stream anyway.
+    setTransportDisabled(true);
+    // Audio has no frames — the poster (already in the browse cache) stands behind
+    // the overlay instead of a black void.
+    const tArt = el('tArt');
+    const hit = theaterItem.imgKey && imgCache.get(theaterItem.imgKey);
+    tArt.hidden = !(theaterItem.isAudio && hit);
+    tArt.style.backgroundImage = theaterItem.isAudio && hit ? 'url("' + hit + '")' : 'none';
+    el('ovElapsed').textContent = '0:00';
+    el('ovTotal').textContent = '--';
+    el('ovFill').style.width = '0%';
+    el('ovCur').style.left = '0%';
+    setTheaterIcons(false);
+    showOverlay();
+    el('theater').hidden = false;
+    // The codec pre-flight decides the order. Three verdicts: safe leads direct;
+    // UNSAFE never offers the direct stream at all — falling back to it would recreate
+    // the silent video the pre-flight exists to prevent; unknown leads transcode with
+    // direct as a last resort, because a transcode always has SOUND.
+    let verdict = 'unknown';
+    try { verdict = (await directPlaySafe(item)) ? 'safe' : 'unsafe'; }
+    catch (e) { WW.log('jellyfin: preflight: ' + e.message); }
+    // The answer may belong to a theater that no longer exists: Back was pressed, a
+    // different poster was tapped, or the screen went away during the await — the
+    // page swiped off, or the whole dashboard hidden.
+    if (!theaterOn || token !== playToken) return;
+    if (outOfSight()) { stopPlayback(); return; }
+    theaterAttempts = verdict === 'safe' ? [directUrl(item), transcodeUrl(item)]
+      : verdict === 'unsafe' ? [transcodeUrl(item)]
+      : [transcodeUrl(item), directUrl(item)];
+    setSource(theaterAttempts.shift());
+  }
+
+  function stopPlayback() {
+    if (!theaterOn) return;
+    theaterOn = false;
+    playToken++;   // orphan any pre-flight still in the air
+    clearTimeout(overlayTimer);
+    clearTimeout(attemptTimer);
+    clearTimeout(stallTimer);
+    resumeAt = 0;
+    timeBase = 0;
+    pendingSeek = 0;
+    pv.pause();
+    pv.removeAttribute('src');
+    pv.load();   // actually stops the network stream, not just the picture
+    el('theater').hidden = true;
+    theaterItem = null;
+    // Polls were held while the theater had the screen; catch up if one is overdue.
+    if (started && Date.now() - lastOk >= pollDelay()) { clearTimeout(timer); tick(generation); }
+    render();
+  }
+
+  function setTheaterIcons(paused) {
+    el('tIconPlay').style.display = paused ? 'block' : 'none';
+    el('tIconPause').style.display = paused ? 'none' : 'block';
+  }
+
+  // The overlay auto-hides while playing (a theater, not a dashboard); any tap brings
+  // it back, and while paused it stays. Once the error card owns the screen, the
+  // media element's tail of pause/playing events must not resurrect the transport.
+  function showOverlay() {
+    if (!el('tError').hidden) return;
+    el('overlay').classList.remove('faded');
+    clearTimeout(overlayTimer);
+    overlayTimer = setTimeout(() => {
+      if (theaterOn && !pv.paused) el('overlay').classList.add('faded');
+    }, 3500);
+  }
+
+  function seekBy(delta) {
+    if (!isFinite(pv.duration)) return;
+    let t = pv.currentTime + delta;
+    // Clamp into what is actually seekable — a mid-flight transcode cannot jump
+    // past what the server has produced.
+    if (pv.seekable && pv.seekable.length) {
+      t = Math.max(pv.seekable.start(0), Math.min(t, pv.seekable.end(pv.seekable.length - 1)));
+    } else {
+      t = Math.max(0, Math.min(t, pv.duration));
+    }
+    pv.currentTime = t;
+    showOverlay();
+  }
+
+  function theaterError() {
+    if (!theaterOn) return;
+    clearTimeout(attemptTimer);
+    clearTimeout(stallTimer);
+    // A failure on a screen nobody is looking at does not get to restart audio there —
+    // back to the browse shelf; the viewer re-taps when they return.
+    if (outOfSight()) { stopPlayback(); return; }
+    // A mid-title death carries its position into the next attempt; only meaningful
+    // progress overwrites, so the second attempt's instant failure at 0:00 does not
+    // erase where the first one actually was.
+    const at = timeBase + (pv.currentTime || 0);
+    if (at > 5) resumeAt = at;
+    if (theaterAttempts.length) {
+      setSource(theaterAttempts.shift());
+      return;
+    }
+    el('tSpin').hidden = true;
+    // The last source is UNLOADED, not merely abandoned: a watchdog-declared failure
+    // leaves the request live, and a server that recovers after the deadline would
+    // resume audio behind this card with the transport faded out of reach.
+    pv.pause();
+    pv.removeAttribute('src');
+    pv.load();
+    // The transport is for a stream that no longer exists — the card owns the screen.
+    clearTimeout(overlayTimer);
+    el('overlay').classList.add('faded');
+    el('tErrorBody').textContent = 'Neither the original file nor a server transcode would play. '
+      + 'The codec may be unsupported'
+      + (/^https:/i.test(cfg.base) && cfg.selfSigned
+        ? ", and the self-signed allowance covers the shelf only — playback needs a certificate this PC's browser trusts."
+        : ', or an https server’s certificate was refused.');
+    el('tError').hidden = false;
+  }
+
+  pv.addEventListener('error', theaterError);
+  pv.addEventListener('playing', () => { clearTimeout(attemptTimer); clearTimeout(stallTimer); el('tSpin').hidden = true; setTheaterIcons(false); showOverlay(); });
+  pv.addEventListener('loadedmetadata', () => {
+    if (pendingSeek > 0 && isFinite(pv.duration)) {
+      pv.currentTime = Math.min(pendingSeek, Math.max(0, pv.duration - 5));
+      pendingSeek = 0;
+    }
+  });
+  // A rebuffer is a stall with a spinner: media elements can sit in `waiting` forever
+  // without an error event, and the startup deadline is long spent by then. The
+  // watchdog walks the fallback chain (carrying the position) if playback does not
+  // resume; anything that resumes or deliberately pauses calls it off.
+  pv.addEventListener('waiting', () => {
+    if (!theaterOn) return;
+    el('tSpin').hidden = false;
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => { if (theaterOn && el('tError').hidden) theaterError(); }, STALL_DEADLINE);
+  });
+  // A pause — the user's, or ours for a hidden screen — calls off BOTH watchdogs: a
+  // deliberately paused stream is not a failed one, and the startup deadline firing
+  // through a pause would walk the fallback over the user's own choice.
+  pv.addEventListener('pause', () => { if (theaterOn) { clearTimeout(stallTimer); clearTimeout(attemptTimer); setTheaterIcons(true); showOverlay(); } });
+  pv.addEventListener('ended', stopPlayback);
+  // timeupdate fires at the browser's own ~4 Hz — data cadence, no timer of ours.
+  // The clock carries timeBase: a StartTimeTicks transcode restarts the element's own
+  // clock at zero while the title is minutes in.
+  pv.addEventListener('timeupdate', () => {
+    if (!theaterOn) return;
+    el('ovElapsed').textContent = fmt(timeBase + pv.currentTime);
+    if (isFinite(pv.duration) && pv.duration > 0) {
+      const total = timeBase + pv.duration;
+      el('ovTotal').textContent = fmt(total);
+      const pct = Math.min(100, (timeBase + pv.currentTime) / total * 100).toFixed(2) + '%';
+      el('ovFill').style.width = pct;
+      el('ovCur').style.left = pct;
+    }
+  });
+
+  // The shell changes pages by SCROLLING #pages — this document never becomes hidden,
+  // so a page swipe would leave the stream decoding and playing audio into an
+  // off-screen page. An IntersectionObserver with no root measures against the
+  // top-level viewport even from inside a cross-origin iframe (the ad-viewability
+  // contract), which is exactly the signal a swipe produces.
+  if (typeof IntersectionObserver === 'function') {
+    new IntersectionObserver((entries) => {
+      const last = entries[entries.length - 1];
+      if (!last) return;
+      pageOff = last.intersectionRatio === 0;
+      if (pageOff && theaterOn && !pv.paused) pv.pause();
+    }).observe(document.documentElement);
+  }
+
+  el('theater').addEventListener('click', (e) => {
+    if (e.target.closest('.btn')) return;   // buttons speak for themselves
+    if (el('overlay').classList.contains('faded')) showOverlay();
+    else el('overlay').classList.add('faded');
+  });
+  el('tBack').addEventListener('click', stopPlayback);
+  el('tErrBack').addEventListener('click', stopPlayback);
+  el('tRew').addEventListener('click', () => seekBy(-10));
+  el('tFwd').addEventListener('click', () => seekBy(30));
+  el('tToggle').addEventListener('click', () => {
+    if (pv.paused) {
+      pv.play().catch(() => {});
+      setTheaterIcons(false);
+      // Resuming a source that never reached 'playing' re-enters the startup race —
+      // the deadline comes back so a dead source still ends at the fallback, not a
+      // spinner without a referee.
+      if (!el('tSpin').hidden) armStartDeadline();
+    } else { pv.pause(); }
+    showOverlay();
+  });
 
   // ---- states ----------------------------------------------------------------------
 
@@ -1102,10 +1282,6 @@
 
   // ---- wiring ----------------------------------------------------------------------
 
-  el('pPrev').addEventListener('click', function () { command(this, 'prev'); });
-  el('pToggle').addEventListener('click', function () { command(this, 'toggle'); });
-  el('pNext').addEventListener('click', function () { command(this, 'next'); });
-
   let uiTimer = null;
   function startUiClock() {
     if (uiTimer) return;
@@ -1123,7 +1299,9 @@
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden || !started) return;
+    // A hidden panel must not keep decoding video into the void.
+    if (document.hidden) { if (theaterOn && !pv.paused) pv.pause(); return; }
+    if (!started || theaterOn) return;
     if (Date.now() - lastOk >= pollDelay()) { clearTimeout(timer); tick(generation); }
   });
 
@@ -1138,14 +1316,18 @@
     cfg.key = String(s.apiKey == null ? '' : s.apiKey);
     cfg.selfSigned = s.certValidation === 'Allow self-signed';
     cfg.view = s.view === 'Player' ? 'player' : 'overview';
-    cfg.playerUser = String(s.playerUser == null ? '' : s.playerUser);
     cfg.types = LATEST_TYPES[s.latestTypes] !== undefined ? LATEST_TYPES[s.latestTypes] : 'Movie,Episode';
+    // "Hidden" hides the overview's shelf; the player IS the shelf, so it falls back
+    // to the default filter rather than an unbrowsable empty view.
+    if (cfg.view === 'player' && !cfg.types) cfg.types = 'Movie,Episode';
     cfg.refreshMs = Math.min(300, Math.max(5, Number(s.refreshSeconds) || 15)) * 1000;
     // Switching views or the shelf's filter changes which slow-lane facts matter —
     // refetch them next tick rather than showing the old filter's items for five minutes.
     if (prevView !== cfg.view || prevTypes !== cfg.types) {
       slowAt = 0;
       if (prevTypes !== cfg.types) { latest = []; latestAt = 0; }
+      // A view change pulls the screen out from under a playing title.
+      if (prevView !== cfg.view) stopPlayback();
     }
 
     // A different server (or a different key onto the same one) is a different set of
@@ -1163,8 +1345,9 @@
       fails = 0;
       lastOk = 0;
       slowAt = 0;
-      holdUntil = 0;
       document.body.classList.remove('stale');
+      // A stream from the OLD server must not keep playing under the new identity.
+      stopPlayback();
       flushImages();
       // The old server's streams are still painted, and nothing marks them as the old
       // server's — back to the spinner until the new identity answers (the setup card
@@ -1178,6 +1361,7 @@
       generation++;
       inFlight = false;
       started = false;
+      stopPlayback();
       showSetup();
       return;
     }

@@ -18,10 +18,21 @@ internal static class WebViewEnvironment
             {
                 // The dashboard is always visible but almost never focused; Chromium must
                 // not throttle its timers or renderer for being "in the background".
+                //
+                // AutoupgradeMixedContent is disabled because widgets live on https virtual
+                // hosts while the media they play lives on plain-http LAN servers (Jellyfin's
+                // default is http://<server>:8096). Chromium rewrites such <video>/<audio>
+                // requests to https and, when the server has no TLS on that port, kills them —
+                // so on-panel playback silently failed for the standard setup. Disabling the
+                // upgrade restores the older behavior for optionally-blockable content only:
+                // media and images load (with a console warning); ACTIVE mixed content —
+                // scripts, stylesheets, fetch, frames — stays blocked exactly as before.
+                // One --disable-features flag, comma-separated: repeating the switch would
+                // not merge, the last occurrence would win and silently drop the other.
                 AdditionalBrowserArguments =
                     "--disable-background-timer-throttling " +
                     "--disable-renderer-backgrounding " +
-                    "--disable-features=CalculateNativeWinOcclusion",
+                    "--disable-features=CalculateNativeWinOcclusion,AutoupgradeMixedContent",
             });
     }
 }
