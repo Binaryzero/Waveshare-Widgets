@@ -883,6 +883,54 @@ const TOKEN = 'Bearer super-secret-probe-token';
     `title "${rt4After.title}" · bodyHidden ${rt4After.bodyHidden} · value "${rt4After.value}"`);
   await page.evaluate(() => { window.__tokenEndpoint = undefined; });   // clear for anything after
 
+  // ---- AH · #60.3: the age ticker must not recompute the footer while HIDDEN --------
+  // The 30s ticker keeps the "Xs ago" label honest between polls (R11) — but while the
+  // panel is hidden nobody is reading it, so every tick is a wasted renderMeta. The tile
+  // already gates its poll and schedule on document.hidden; the ticker should match. Only
+  // a fake clock can see it: run past several 30s ticks under a hidden panel and the label
+  // must be exactly where it was when the panel went dark. Own page, like R11 — a fake
+  // clock would break the real-time waits everywhere else in the suite.
+  const agePage = await browser.newPage({ viewport: { width: 640, height: 400 } });
+  agePage.on('pageerror', (e) => { failures++; console.log('[pageerror:age]', String(e).slice(0, 300)); });
+  await agePage.clock.install();
+  await prepare(agePage);
+  await agePage.goto('https://widget.test/index.html');
+
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 1 }) });
+  await agePage.evaluate((s) => {
+    window.postMessage({ type: 'ww-init', settings: s, sensors: [], media: null, theme: null,
+      status: { elevated: false, apiVersion: 1 } }, '*');
+  }, Object.assign({}, base, { url: 'https://api.test/agehidden', jsonPointer: '/v', pollSeconds: 86400 }));
+  // Real time, not clock time: the fixture round-trip is genuine async work and the fake
+  // clock does not advance while it happens.
+  await wait(600);
+  // Hide the panel and take the baseline AFTER the hide — visibilitychange re-renders the
+  // label once on the way down, which is correct (hiding must not strand a stale age), and
+  // is a one-shot, not the ticker. What must not move is the label across the five minutes
+  // that follow: run the clock past ten 30s ticks, nowhere near the 24h poll, so any
+  // movement is the hidden ticker's doing and nothing else's. Comparing to the post-hide
+  // baseline also makes the assertion independent of sub-second real-clock drift.
+  await agePage.evaluate(() => { window.__hidden = true; document.dispatchEvent(new Event('visibilitychange')); });
+  const ageBaseline = await agePage.evaluate(() => document.getElementById('meta').textContent);
+  seen.length = 0;
+  await agePage.clock.runFor(300000);
+  const ageWhileHidden = await agePage.evaluate(() => document.getElementById('meta').textContent);
+  check('AH1 the age footer does not advance while the panel is hidden (#60.3)',
+    ageWhileHidden === ageBaseline, `${ageBaseline} -> ${ageWhileHidden} after 5m hidden`);
+  check('AH1b and the hidden ticker issued no request either', seen.length === 0, `${seen.length} requests`);
+  // Revealing the panel must refresh the label AT ONCE — the gate must not strand it stale.
+  // Read it inside the same evaluate as the dispatch: visibilitychange calls renderMeta()
+  // synchronously (→ "5m ago") and then resume() starts a poll whose success would reset
+  // lastAt to now; capturing before that async poll lands is what makes this deterministic.
+  const ageOnShow = await agePage.evaluate(() => {
+    window.__hidden = false;
+    document.dispatchEvent(new Event('visibilitychange'));
+    return document.getElementById('meta').textContent;
+  });
+  check('AH2 revealing the panel refreshes the age at once (visibilitychange re-renders)',
+    /^5m ago/.test(ageOnShow), ageOnShow);
+  await agePage.close();
+
   // ---- populated screenshots (the eyes, not just the contract) ---------------------
   respond = () => ({ status: 200, body: JSON.stringify({ data: { temperature: 87.3 } }) });
   for (const [w, h, name] of [[320, 400, 'quarter'], [640, 400, 'half'], [640, 200, 'half-upper']]) {

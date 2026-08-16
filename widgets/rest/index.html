@@ -773,10 +773,15 @@
   }
 
   /** The age label must not wait for the next poll — at the supported 24 h interval
-   * a fresh reading would otherwise claim "0s ago" for most of a day. */
+   * a fresh reading would otherwise claim "0s ago" for most of a day.
+   *
+   * Skip the recompute while the panel is hidden: nobody is reading the footer, so it
+   * is pure wasted work every 30 s — the same reason poll() and schedule() gate on
+   * `document.hidden`. `visibilitychange` re-renders the label the moment the panel is
+   * shown again, so nothing goes stale on screen. */
   function startAgeTicker() {
     clearInterval(ageTimer);
-    ageTimer = setInterval(() => { if (lastAt) renderMeta(); }, 30000);
+    ageTimer = setInterval(() => { if (lastAt && !document.hidden) renderMeta(); }, 30000);
   }
 
   function restart() {
