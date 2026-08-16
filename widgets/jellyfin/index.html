@@ -966,9 +966,10 @@
   let playToken = 0;
   // What each attempt died of — codes only, for the terminal card and the log.
   // MediaError codes: 1 aborted · 2 network · 3 decode · 4 source-not-supported —
-  // a foreign container ("Format error"), a mixed-content block and a certificate
-  // block all read as 4 — the difference decides whether a field report points at
-  // codecs, the server, or the browser's gates.
+  // a foreign container ("Format error"), a mixed-content block, a certificate
+  // block and the local-network-access gate all read as 4 — which is why the
+  // failure probe exists: rs=0 ns=3 with a 2xx probe means a renderer gate, not
+  // the server, and the field proved it (beta.3, 2026-08-16).
   let attemptErrors = [];
   // Whether this widget's dashboard page is on screen, kept current by the observer
   // below — the pre-flight's async gap needs the answer at continuation time.

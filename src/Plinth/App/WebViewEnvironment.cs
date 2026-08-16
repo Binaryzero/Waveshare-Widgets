@@ -38,13 +38,25 @@ internal static class WebViewEnvironment
                 // trusted code with LAN reach through WW.fetch, and the panel is a LAN
                 // appliance, so the added surface is accepted for working playback. A future
                 // alternative is a host-side streaming relay, which would let both flags go.
-                // One --disable-features flag, comma-separated: repeating the switch would
-                // not merge, the last occurrence would win and silently drop the other.
+                //
+                // LocalNetworkAccessChecks is the gate the mixed-content flags were blamed
+                // for: Chromium (~M138, default-on by M142) permission-gates every request
+                // from a "public" page to a private address, and a widget's virtual host
+                // counts as public while the media server's LAN IP counts as private — so
+                // the <video> request was cancelled before a byte went out (rs=0 ns=3 in
+                // the field, while the same URL probed HTTP 200 video/mp4 through the host
+                // proxy). Nothing in WebView2 grants that permission on the panel, so the
+                // check is disabled for this tier — a LAN appliance whose widgets exist to
+                // talk to the LAN. The PrivateNetworkAccess names cover the older preflight
+                // generation of the same machinery on earlier runtimes; Chromium ignores
+                // feature names it does not know.
                 AdditionalBrowserArguments =
                     "--disable-background-timer-throttling " +
                     "--disable-renderer-backgrounding " +
                     "--allow-running-insecure-content " +
-                    "--disable-features=CalculateNativeWinOcclusion,AutoupgradeMixedContent",
+                    "--disable-features=CalculateNativeWinOcclusion,AutoupgradeMixedContent," +
+                    "LocalNetworkAccessChecks,PrivateNetworkAccessSendPreflights," +
+                    "PrivateNetworkAccessRespectPreflightResults",
             });
     }
 
@@ -111,9 +123,10 @@ internal static class WebViewEnvironment
     /// this app where a foreign page's scripts and a live credential share a world.
     /// Granting it the dashboard's mixed-content allowance would let an https bootstrap
     /// on a hostile network pull an http ACTIVE script into exactly that world, so this
-    /// environment carries none of it: full mixed-content blocking, own user-data
-    /// folder (WebView2 binds options per folder, so sharing the dashboard's was never
-    /// an option once the two diverged).
+    /// environment carries none of it: full mixed-content blocking, local-network-access
+    /// checks left intact (a foreign page must not probe the LAN from this tier), own
+    /// user-data folder (WebView2 binds options per folder, so sharing the dashboard's
+    /// was never an option once the two diverged).
     /// </summary>
     public static Task<CoreWebView2Environment> GetSecureAsync()
     {
