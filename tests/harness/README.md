@@ -54,6 +54,20 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   no stacked pollers across repeated inits, and that a configured auth header reaches
   the request while appearing nowhere in the DOM. Also writes the populated
   `restvalue-*.png` screenshots. Routes are fulfilled in-process — no ports.
+- `nextfetch-run.js` — three scheduling/rendering follow-ups on the Next Event widget
+  (issue #180). All three are timing bugs the real-time probes on that PR could not place
+  inside a fix window minutes wide, so this drives the widget under Playwright's fake clock
+  (`page.clock`): the refresh timer, the 1 Hz repaint, and `Date.now()` all advance on
+  command, so the moment a scheduled fetch has to land is set exactly rather than guessed.
+  N1 changes the calendar while the panel is paused and asserts the resume path fetches the
+  NEW one at once rather than re-arming the old calendar's deadline (`dueAt` was not reset on
+  a source change). N2 fails a refresh on an empty-but-valid calendar and asserts the error
+  card and its Retry survive the 1 Hz repaint instead of being overwritten by "Nothing
+  scheduled", then that a good refresh clears it back (so the guard is not sticky). N3
+  reproduces the review's own example — a success, a later failure, then a cadence edit — and
+  asserts the edit does NOT fire an immediate fetch, because the backoff anchors on the last
+  ATTEMPT, not the last success. Each of N1b/N2b/N3b fails against the pre-fix widget, which
+  the file notes is the check that keeps the suite from passing hollow.
 - `widgetfit-run.js` — that widget text fits the SLOT rather than one axis of it
   (issue #76). A widget's iframe is sized to its slot, so `vh`/`vw` do measure the
   tile — but a rule written against one axis says nothing about the other, and the
