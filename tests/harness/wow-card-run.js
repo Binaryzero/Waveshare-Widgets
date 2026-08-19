@@ -228,6 +228,27 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
   const struck = /token price|affix|mythic|raid progress|m\+/i.exec(card.text);
   check('W8 no struck feature appears on the card', !struck, struck ? `found "${struck[0]}"` : 'clean');
 
+  // W9 · the skill/renown/achievement bars are actually PAINTED (#258). The card built
+  // its meter fill as `<div class="fill">`, but widget-base styles the shared meter fill
+  // as `.meter > i` — a bare .fill outside a .scale block gets no background and no
+  // height, so every progress bar rendered as an empty track with an invisible fill.
+  // Assert the first profession's fill has a non-transparent colour AND a non-zero box:
+  // both are false for the old div, so this fails against the pre-fix card.
+  const bar = await frame.evaluate(() => {
+    const fill = document.querySelector('#profs .trow .meter > i')
+      || document.querySelector('#profs .trow .meter > *');
+    if (!fill) return { present: false };
+    const cs = getComputedStyle(fill);
+    const box = fill.getBoundingClientRect();
+    const m = /rgba?\(([^)]+)\)/.exec(cs.backgroundColor || '');
+    const alpha = m ? (m[1].split(',')[3] === undefined ? 1 : parseFloat(m[1].split(',')[3])) : 0;
+    return { present: true, tag: fill.tagName.toLowerCase(), bg: cs.backgroundColor,
+      painted: alpha > 0, w: Math.round(box.width), h: Math.round(box.height) };
+  });
+  check('W9 the meter fill is painted, not an invisible track (#258)',
+    bar.present && bar.painted && bar.h > 0 && bar.w > 0,
+    JSON.stringify(bar));
+
   const shot = path.join(__dirname, 'wow-card.png');
   await page.screenshot({ path: shot });
   console.log(`  shot ${shot}`);
