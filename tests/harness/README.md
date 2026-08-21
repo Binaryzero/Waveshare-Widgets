@@ -45,7 +45,18 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   emptied it" is ambiguous unless the shell says which it meant: both the ✕ Clear and
   hand-deleting the characters must reach the host as a removal, while a never-set
   secret still sends `""`. Also covers the failed-protection banner, which is the
-  panel's only way to contradict its own optimistic re-render. Port used: 8952.
+  panel's only way to contradict its own optimistic re-render, and (N13f, #217) pushes a
+  floor-tuned CUSTOM palette through the same measurement — the case N13e's default theme
+  could not exercise. Port used: 8952.
+- `palettecontrast-run.js` — issue #217: muted text must stay legible on the GLASS
+  settings sheets, not only on the opaque surface. `#propSheet` / `#stylePanel` paint
+  `--surface` at 94% over the wallpaper, so `--text-muted` renders over surface
+  COMPOSITED with whatever is behind the glass — and a role tuned to 4.5:1 on the opaque
+  surface drops below it over a bright (or dark) wallpaper. Drives `WWPalette.derive`
+  over a theme battery and asserts muted clears 4.5:1 against `--surface` composited over
+  both pure white and pure black at the sheet alpha (the bracket the rendered page cannot
+  fall outside). Pure Node — no browser, no port. Fails against the pre-fix engine, which
+  repaired muted against the opaque surface only.
 - `restvalue-run.js` — the REST Value widget's data path (issue #16), which the widget
   harness cannot reach because it aborts every network call. Drives the real widget
   against a rescriptable fixture endpoint: JSON Pointer and dotted-path resolution,
