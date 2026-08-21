@@ -59,7 +59,7 @@ public static class PaletteEngine
         // Keep the glass repair only when it holds the opaque contrast at least as high as
         // the opaque-only repair; otherwise fall back to the opaque guarantee.
         var mutedOpaque = EnsureContrast(muted, [surface, surfaceAlt], MutedContrast);
-        var mutedGlass = EnsureContrast(muted, GlassSurfaces(surface, surfaceAlt), MutedContrast);
+        var mutedGlass = EnsureContrastF(muted, GlassSurfaces(surface, surfaceAlt), MutedContrast);
         double OpaqueMin((byte r, byte g, byte b) m) => Math.Min(Contrast(m, surface), Contrast(m, surfaceAlt));
         muted = OpaqueMin(mutedGlass) >= OpaqueMin(mutedOpaque) ? mutedGlass : mutedOpaque;
         dim = EnsureContrast(dim, surface, DimContrast);
@@ -321,9 +321,12 @@ public static class PaletteEngine
     /// Multi-surface repair against FLOAT backgrounds — the glass composites (#217 review),
     /// which the browser paints with fractional channels. The emitted colour is still a byte
     /// colour (Mix rounds); only the surfaces it is measured against stay in double, so the
-    /// byte result clears the ratio as actually rendered. Mirrors the byte overload above.
+    /// byte result clears the ratio as actually rendered. Mirrors the byte EnsureContrast; a
+    /// distinct NAME rather than an overload, because a `[surface, surfaceAlt]` collection
+    /// expression would otherwise be an ambiguous match for both the byte and double array
+    /// parameters (CS0121).
     /// </summary>
-    private static (byte r, byte g, byte b) EnsureContrast(
+    private static (byte r, byte g, byte b) EnsureContrastF(
         (byte r, byte g, byte b) color, (double r, double g, double b)[] surfaces, double target)
     {
         if (MinContrastF(color, surfaces) >= target)
