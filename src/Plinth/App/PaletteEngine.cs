@@ -17,6 +17,11 @@ public static class PaletteEngine
     private const double DimContrast = 3.0;
     private const double StateContrast = 4.5;
 
+    /// <summary>Opacity of the settings sheets (#propSheet / #stylePanel in shell.css) that
+    /// carry muted body text over the wallpaper. Kept in lockstep with palette.js's
+    /// SHEET_ALPHA — see <see cref="GlassSurfaces"/> and issue #217.</summary>
+    private const double SheetAlpha = 0.94;
+
     public static Dictionary<string, string> Derive(ThemeSpec? theme)
     {
         var spec = theme ?? new ThemeSpec();
@@ -44,7 +49,11 @@ public static class PaletteEngine
         // repaired against both of its surfaces in one pass — sequential repairs can
         // flip direction between mid-tone surfaces and undo the first guarantee.
         text = EnsureContrast(text, surface, TextContrast);
-        muted = EnsureContrast(muted, [surface, surfaceAlt], MutedContrast);
+        // Muted also renders on the GLASS settings sheets, which composite the surface with
+        // the wallpaper (#217), so it is repaired against those composites too — otherwise
+        // a role that clears 4.5:1 on the opaque surface drops below it over a bright or
+        // dark wallpaper. See GlassSurfaces.
+        muted = EnsureContrast(muted, GlassSurfaces(surface, surfaceAlt), MutedContrast);
         dim = EnsureContrast(dim, surface, DimContrast);
 
         // State colors: fixed hues repaired for the theme's surfaces — including the
@@ -119,6 +128,27 @@ public static class PaletteEngine
         ((byte)Math.Round(a.r + (b.r - a.r) * t),
          (byte)Math.Round(a.g + (b.g - a.g) * t),
          (byte)Math.Round(a.b + (b.b - a.b) * t));
+
+    /// <summary>
+    /// The surfaces muted text must clear (#217): the two OPAQUE surfaces widgets paint it
+    /// on, PLUS the glass composite. Every settings sheet that carries muted body text
+    /// (#propSheet / #stylePanel: .ps-help, labels, hints) paints <c>--surface</c> at 94%
+    /// opacity over the wallpaper — a sibling behind the glass, not an ancestor — so muted
+    /// there renders over <c>--surface</c> composited with whatever the wallpaper is.
+    /// Compositing <c>--surface</c> over pure white AND pure black at the sheet alpha
+    /// brackets any wallpaper, and the multi-surface EnsureContrast repairs against the
+    /// worst of them. (The more transparent chrome surfaces, 70–88%,
+    /// all carry <c>--text</c>, the 7:1 tier, not muted, so only the 94% sheet matters.
+    /// Mirrors palette.js's glassSurfaces.)
+    /// </summary>
+    private static (byte r, byte g, byte b)[] GlassSurfaces(
+        (byte r, byte g, byte b) surface, (byte r, byte g, byte b) surfaceAlt)
+    {
+        var white = ((byte)0xff, (byte)0xff, (byte)0xff);
+        var black = ((byte)0x00, (byte)0x00, (byte)0x00);
+        return [surface, surfaceAlt,
+            Mix(surface, white, 1 - SheetAlpha), Mix(surface, black, 1 - SheetAlpha)];
+    }
 
     private static double Luminance((byte r, byte g, byte b) c)
     {

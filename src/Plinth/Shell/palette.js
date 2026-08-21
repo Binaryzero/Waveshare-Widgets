@@ -60,6 +60,17 @@
       }
       return c;
     };
+    // The surfaces muted text must clear (#217): the two OPAQUE surfaces widgets paint it
+    // on, PLUS the glass composite. Every settings sheet that carries muted body text
+    // (#propSheet / #stylePanel: .ps-help, labels, hints) paints `--surface` at 94%
+    // opacity over the wallpaper — a sibling behind the glass — so `--surface` composited
+    // over pure white and pure black at that alpha brackets any wallpaper. (The more
+    // transparent chrome surfaces, 70–88%, all carry `--text`, the 7:1 tier, not muted, so
+    // only the 94% sheet alpha matters here. Keep it in lockstep with PaletteEngine.cs.)
+    const SHEET_ALPHA = 0.94;
+    const glassSurfaces = (s, sAlt) => [s, sAlt,
+      mixc(s, WHITE, 1 - SHEET_ALPHA), mixc(s, BLACK, 1 - SHEET_ALPHA)];
+
     const hexOf = (c) => '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('');
     const rgbOf = (c) => c[0] + ', ' + c[1] + ', ' + c[2];
     const tintOf = (c) => 'rgba(' + c[0] + ', ' + c[1] + ', ' + c[2] + ', 0.14)';
@@ -76,7 +87,16 @@
     let dim = mixc(text, surface, 0.60);
     const line = mixc(text, surface, 0.78);
     text = ensure(text, [surface], 7.0);
-    muted = ensure(muted, [surface, surfaceAlt], 4.5);
+    // #217 — the settings sheets (#propSheet / #stylePanel in shell.css) paint --surface
+    // at ~94% opacity over the user's wallpaper, which is a SIBLING behind the glass, not
+    // an ancestor. So muted text there renders over surface COMPOSITED with the wallpaper,
+    // not over the opaque surface — and a role that clears 4.5:1 on the opaque surface can
+    // fall below it once a bright (or dark) wallpaper bleeds through the 6% that is not
+    // surface. Repair against the surface composited over BOTH extremes at the sheet's
+    // alpha, bracketing every possible wallpaper, so muted stays legible whatever is
+    // behind the glass. (0.94 is the sheet opacity; any surface more opaque bleeds less
+    // and is covered a fortiori. Keep this constant in lockstep with PaletteEngine.cs.)
+    muted = ensure(muted, glassSurfaces(surface, surfaceAlt), 4.5);
     dim = ensure(dim, [surface], 3.0);
     const ok = ensureState([0x45, 0xd4, 0x83], surface, surfaceAlt);
     const warn = ensureState([0xff, 0xae, 0x52], surface, surfaceAlt);
