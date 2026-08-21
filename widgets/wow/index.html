@@ -8,60 +8,85 @@
   /* Layout only — colors, background, bgStyle and the typography base come from
    * widget-base.css. The card is three columns: who you are, what you're working
    * on (professions, reputations), and what you've gathered (collections, the
-   * latest achievement, the almost-done list). */
-  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+   * latest achievement, the almost-done list).
+   *
+   * The panel is wide (a full slot is 1280px) and the data is a fixed handful of
+   * rows, so the job of the layout is to SPEND that width rather than pool it in the
+   * gaps: the identity block is a real anchor on the left, and every row's meter
+   * GROWS to fill the space between its label and its value instead of a fixed strip
+   * with dead air on both sides. */
+  body { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; }
   header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
-  #card { flex: 1 1 auto; display: flex; gap: 14px; min-height: 0; overflow: hidden; }
-  #who { flex: 0 0 140px; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 6px; min-width: 0; text-align: center; }
+  #card { flex: 1 1 auto; display: flex; gap: 26px; min-height: 0; overflow: hidden; }
+  #who { flex: 0 0 176px; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 9px; min-width: 0; text-align: center; }
   #portrait {
-    width: 84px; height: 84px; border-radius: var(--radius-control);
+    width: 108px; height: 108px; border-radius: var(--radius-control);
     border: 1px solid var(--line); object-fit: cover; background: var(--card-surface);
   }
   #initial {
-    width: 84px; height: 84px; border-radius: var(--radius-control);
+    width: 108px; height: 108px; border-radius: var(--radius-control);
     border: 1px solid var(--line); background: var(--card-surface);
     display: flex; align-items: center; justify-content: center;
-    color: var(--accent-fg); font-size: 34px; font-weight: 700;
+    color: var(--accent-fg); font-size: 44px; font-weight: 700;
   }
   #cname {
-    color: var(--text); font-weight: 700; font-size: clamp(13px, 4vh, 18px);
+    color: var(--text); font-weight: 700; font-size: clamp(15px, 4.4vh, 20px);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
   }
   #cline, #guild {
     color: var(--text-muted); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
-    overflow: hidden; max-width: 100%;
+    overflow: hidden; max-width: 100%; line-height: 1.35;
   }
   #guild { color: var(--text-dim); white-space: nowrap; text-overflow: ellipsis; }
   /* The sections SPREAD over the column: this card replaced one whose bottom half was
    * a chart nobody wanted, and stacking everything at the top would waste the same
    * half a different way. */
-  .col { flex: 1 1 0; display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  .col { flex: 1 1 0; display: flex; flex-direction: column; gap: 10px; min-width: 0;
     overflow: hidden; justify-content: space-evenly; }
-  .sect { display: flex; flex-direction: column; gap: 5px; min-height: 0; }
-  .sect .kicker { flex: none; }
-  .trow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .sect { display: flex; flex-direction: column; gap: 7px; min-height: 0; }
+  .sect .kicker { flex: none; margin-bottom: 1px; }
+  .trow { display: flex; align-items: center; gap: 12px; min-width: 0; }
   .trow .lbl {
     color: var(--text); font-size: clamp(11px, 3vh, 13px); font-weight: 600;
-    flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .trow .meter { flex: 0 0 34%; }
+  /* The meter is the elastic member: it takes whatever space the label and value
+   * leave, so the row reads as one continuous "name ——— value" line with the bar
+   * doing the filling. It GROWS to eat spare width but SHRINKS eight times faster
+   * than the label, so on a narrow (half-slot) column the bar gives way first and the
+   * name stays whole rather than clipping to an ellipsis. */
+  .trow .meter { flex: 1 8 auto; min-width: 40px; height: 5px; }
+  /* A meterless row (a renown standing, the latest achievement) has no bar to stretch
+   * across the column, so its name and value stay together on the left instead of
+   * being flung to opposite edges with a canyon between them. */
+  .trow.nobar { justify-content: flex-start; gap: 14px; }
   .trow .val {
     color: var(--text-muted); font-size: clamp(10px, 2.8vh, 12px); font-weight: 600;
     flex: none; font-variant-numeric: tabular-nums; white-space: nowrap;
   }
   .none { color: var(--text-dim); font-size: 11px; }
-  #stats { display: flex; gap: 14px; flex: none; }
-  .stat { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-  .stat .value { font-size: clamp(15px, 5vh, 22px); }
+  #stats { display: flex; gap: 22px; flex: none; }
+  .stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .stat .value { font-size: clamp(17px, 5.4vh, 26px); }
   footer { color: var(--text-dim); font-size: 11px; flex: none; font-variant-numeric: tabular-nums;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #state { position: fixed; inset: 0; }
   body.stale #card { opacity: 0.6; }
+  /* Half slot (≈640px): the identity block does not need a full-slot anchor's width,
+   * and the two content columns are what get squeezed — so hand the width back to
+   * them and pull the portrait down to match. */
+  @media (max-width: 760px) {
+    #card { gap: 16px; }
+    #who { flex-basis: 132px; }
+    #portrait, #initial { width: 88px; height: 88px; font-size: 36px; }
+    #cname { font-size: clamp(14px, 4.4vh, 18px); }
+  }
   /* A 200px band: the portrait and the almost-list are the first things to give, so
    * professions and reputations keep readable rows. */
   @media (max-height: 240px) {
-    #portrait, #initial { width: 48px; height: 48px; font-size: 20px; }
+    #portrait, #initial { width: 52px; height: 52px; font-size: 22px; }
+    #who { flex-basis: 120px; }
     #guild, #almost { display: none; }
   }
 </style>
@@ -627,7 +652,7 @@
 
   function trow(label, fillPct, val) {
     const row = document.createElement('div');
-    row.className = 'trow';
+    row.className = 'trow' + (fillPct == null ? ' nobar' : '');
     const lbl = document.createElement('span');
     lbl.className = 'lbl';
     lbl.textContent = label;
@@ -635,8 +660,11 @@
     if (fillPct != null) {
       const meter = document.createElement('div');
       meter.className = 'meter';
-      const fill = document.createElement('div');
-      fill.className = 'fill';
+      // The fill is an <i>, not a <div class="fill">: widget-base styles the meter
+      // fill as `.meter > i` (the shared track+fill pattern every other tile uses),
+      // and a bare .fill outside a .scale block has no background — the bar rendered
+      // as an empty track with an invisible fill. This is the visible half of #258.
+      const fill = document.createElement('i');
       fill.style.width = Math.max(0, Math.min(100, fillPct)) + '%';
       meter.appendChild(fill);
       row.appendChild(meter);
