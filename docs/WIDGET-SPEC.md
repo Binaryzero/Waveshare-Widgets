@@ -251,7 +251,16 @@ pairs — all shapes survive the host proxy hop, so authenticated APIs keep thei
 `init.insecure: true` skips certificate validation — honored only for private/loopback
 literal IPs (for self-signed devices like the Hue bridge). Insecure LAN requests go
 over HTTP/1.1 on a single serialized connection per device, since embedded TLS
-servers mishandle h2 offers and parallel handshakes. `WW.listMedia()` URLs are on
+servers mishandle h2 offers and parallel handshakes.
+
+**Media from LAN servers** must not be handed to a `<video>`/`<audio>` element
+directly: the renderer's network gates (mixed content, Local Network Access) block
+requests from a widget page to a private IP. Build the element URL through the host's
+stream relay instead — `https://stream.plinth/v?u=<encodeURIComponent(absolute URL)>`,
+appending `&insecure=1` if the widget's own settings accept a self-signed certificate
+for that server — and the host streams it (Range-aware) outside the renderer
+entirely. The relay only serves literal private-IP targets whose host:port the widget
+has already reached through the `WW.fetch` proxy this run. `WW.listMedia()` URLs are on
 `https://media.plinth/`, mapped to the media folder ("Open media folder" in Settings).
 
 **Body ceiling.** A `WW.fetch` response reads at most **5 MiB**. `text()`, `json()`,

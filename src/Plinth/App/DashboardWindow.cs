@@ -124,6 +124,13 @@ public sealed class DashboardWindow : Form
         core.Settings.IsStatusBarEnabled = false;
         core.Settings.IsZoomControlEnabled = false;
 
+        // Widget media (Jellyfin playback) streams from LAN servers through the host —
+        // the renderer's network gates each killed direct playback in the field.
+        MediaRelay.Attach(core);
+        // And if a renderer gate ever blocks anything again, the engine says so in
+        // its console, which now lands in app.log instead of nowhere.
+        WebViewEnvironment.MirrorRendererConsole(core);
+
         core.WebMessageReceived += OnWebMessageReceived;
 
         // Renderer/browser process failures (most likely under cold-start pressure)
@@ -623,8 +630,11 @@ public sealed class DashboardWindow : Form
     { Timeout = TimeSpan.FromSeconds(15) };
 
     /// <summary>Loopback or RFC1918/link-local private addresses only (no DNS lookups —
-    /// a hostname that isn't a literal private IP or localhost doesn't qualify).</summary>
-    private static bool IsPrivateHost(Uri uri)
+    /// a hostname that isn't a literal private IP or localhost doesn't qualify).
+    /// Internal because it is THE private-host policy: the media relay
+    /// (<see cref="MediaRelay"/>) must gate on exactly the same set the insecure
+    /// proxy tier does.</summary>
+    internal static bool IsPrivateHost(Uri uri)
     {
         if (uri.IsLoopback)
             return true;
@@ -678,6 +688,11 @@ public sealed class DashboardWindow : Form
 
             var insecureRequested = message["insecure"]?.GetValue<bool>() ?? false;
             var lanDevice = insecureRequested && IsPrivateHost(uri);
+            // Any widget that reaches a private host through this proxy marks the
+            // authority as a legitimate media-relay target (see MediaRelay for why
+            // that list exists and what it does and doesn't authorize).
+            if (IsPrivateHost(uri))
+                MediaRelay.AllowHost(uri);
 
             using var request = new HttpRequestMessage(new HttpMethod(method), uri)
             {
@@ -769,7 +784,13 @@ public sealed class DashboardWindow : Form
             var imageOnly = method == "GET" && AcceptsOnlyImages(message);
             var softWall = response.IsSuccessStatusCode && imageOnly
                 && IsHtmlContent(response.Content.Headers.ContentType);
-            var bytes = softWall ? Array.Empty<byte>() : await ReadCappedAsync(response, cap);
+            // A HEAD response carries no body but still declares the Content-Length the
+            // body WOULD have — for the Jellyfin playback probe that is a whole movie,
+            // and ReadCappedAsync would refuse the declared size of bytes that will
+            // never be transferred. Status and headers are the entire answer.
+            var bytes = softWall || method == "HEAD"
+                ? Array.Empty<byte>()
+                : await ReadCappedAsync(response, cap);
 
             result["status"] = (int)response.StatusCode;
             result["statusText"] = response.ReasonPhrase ?? "";

@@ -321,6 +321,12 @@
     // one slow library query queue-starve the session poll.
     const insecure = /^https:/i.test(cfg.base) && cfg.selfSigned;
     const opts = Object.assign({ insecure }, init || {});
+    // At a LAN address every call rides the host proxy outright: the renderer's
+    // network gates killed native fetches to private IPs in the field (the proxy is
+    // where those calls ended up anyway), and each proxied call registers the server
+    // as a media-relay target — which playback depends on. Determinism over a doomed
+    // native attempt per poll.
+    if (privateLiteralHost(cfg.base)) opts.proxy = 'always';
     opts.signal = abort.signal;
     opts.headers = Object.assign({ 'X-Emby-Token': cfg.key }, (init && init.headers) || {});
     try {
@@ -903,16 +909,32 @@
   // class: an unsupported audio track (DTS, AC3) does not fire an error event — the
   // video simply plays without sound — so codec safety is decided BEFORE direct play,
   // from the item's MediaStreams, and an unsafe title goes straight to the transcode.
-  // Container problems are the opposite: the demuxer fails loudly, and the error
-  // event walks the fallback list, so containers need no pre-flight.
+  // Containers fail loudly, but only AFTER a doomed attempt: field log of an MKV was
+  // `code 4 — Format error` on direct play before the transcode picked it up, and
+  // MKV is most of a typical Jellyfin library. So the container is pre-flighted too,
+  // and Matroska skips straight to the transcode instead of failing into it.
   const SAFE_VIDEO = new Set(['h264', 'vp8', 'vp9', 'av1']);
   const SAFE_AUDIO = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac']);
+  // What the demuxer opens from a bare src=: the ISO-BMFF family, WebM and Ogg —
+  // plus the bare-stream audio formats for Audio items, whose containers ARE their
+  // codecs (an "mp3" or "flac" container is exactly as playable as its codec row).
+  // Jellyfin reports ffmpeg-style names, sometimes several at once ("mov,mp4,m4a").
+  const SAFE_CONTAINERS = new Set(['mp4', 'm4v', 'm4a', 'mov', '3gp', 'webm', 'ogg', 'ogv', 'oga']);
+  const SAFE_AUDIO_CONTAINERS = new Set(['mp3', 'flac', 'wav', 'ogg', 'oga', 'opus', 'aac', 'm4a', 'm4b', 'mp4', 'webm']);
 
   async function directPlaySafe(item) {
-    const body = await jfJson('/Items?Ids=' + encodeURIComponent(String(item.Id)) + '&Fields=MediaStreams',
+    const body = await jfJson('/Items?Ids=' + encodeURIComponent(String(item.Id)) + '&Fields=MediaStreams,MediaSources',
       8000, 256 * 1024);
-    const streams = (body && Array.isArray(body.Items) && body.Items[0] && body.Items[0].MediaStreams) || null;
+    const it = (body && Array.isArray(body.Items) && body.Items[0]) || null;
+    const streams = (it && it.MediaStreams) || null;
     if (!Array.isArray(streams)) throw fault('format', 'no media streams');
+    // A missing container is not condemned — absence of evidence leaves the codec
+    // verdict standing; a KNOWN foreign one (mkv above all) is, before the demuxer
+    // has to find out the slow way.
+    const source = (Array.isArray(it.MediaSources) && it.MediaSources[0]) || null;
+    const container = String((source && source.Container) || it.Container || '').toLowerCase();
+    const safeSet = item.Type === 'Audio' ? SAFE_AUDIO_CONTAINERS : SAFE_CONTAINERS;
+    if (container && !container.split(',').some((c) => safeSet.has(c.trim()))) return false;
     const audio = streams.filter((s) => s && s.Type === 'Audio');
     const picked = audio.find((s) => s.IsDefault) || audio[0];
     if (picked && !SAFE_AUDIO.has(String(picked.Codec || '').toLowerCase())) return false;
@@ -948,6 +970,13 @@
   // Each startPlayback claims a token; a pre-flight that resolves after Back (or after
   // a different title was tapped) finds a foreign token and mutates nothing.
   let playToken = 0;
+  // What each attempt died of — codes only, for the terminal card and the log.
+  // MediaError codes: 1 aborted · 2 network · 3 decode · 4 source-not-supported —
+  // a foreign container ("Format error"), a mixed-content block, a certificate
+  // block and the local-network-access gate all read as 4 — which is why the
+  // failure probe exists: rs=0 ns=3 with a 2xx probe means a renderer gate, not
+  // the server, and the field proved it (beta.3, 2026-08-16).
+  let attemptErrors = [];
   // Whether this widget's dashboard page is on screen, kept current by the observer
   // below — the pre-flight's async gap needs the answer at continuation time.
   let pageOff = false;
@@ -966,6 +995,23 @@
   // The whole surface can be out of sight two ways: this page scrolled off (pageOff)
   // or the dashboard window hidden entirely. Neither may start or continue a stream.
   const outOfSight = () => pageOff || document.hidden;
+
+  // The URL of the attempt currently in the element, kept for the failure probe —
+  // never logged (the api_key rides its query).
+  let lastSrcUrl = '';
+
+  // Media at a LAN address rides the HOST's stream relay instead of the renderer's
+  // own network stack: four field rounds proved the renderer's gates (mixed content,
+  // Local Network Access) kill direct requests to private IPs before a byte leaves,
+  // flag or no flag. The relay serves from https://stream.plinth/ — same secure
+  // plinth space as the widget, nothing left to gate — and THIS widget's own
+  // certificate setting travels with each request, so another instance's choice for
+  // the same server never applies here. Named addresses stay direct: they face no
+  // LAN gates and public https plays natively.
+  function relayUrl(url) {
+    return 'https://stream.plinth/v?u=' + encodeURIComponent(url)
+      + (/^https:/i.test(cfg.base) && cfg.selfSigned ? '&insecure=1' : '');
+  }
 
   // One door onto pv.src: every attempt gets the startup deadline, and a mid-title
   // fallback carries the position along instead of starting the movie over.
@@ -987,7 +1033,8 @@
       }
     }
     armStartDeadline();
-    pv.src = url;
+    lastSrcUrl = url;
+    pv.src = privateLiteralHost(cfg.base) ? relayUrl(url) : url;
     // play() descends from a tap, so autoplay policy is normally satisfied (Chromium's
     // audible gate is sticky per frame once the user has tapped it). If a policy still
     // refuses — activation expired across a slow pre-flight — that is not a broken
@@ -1014,6 +1061,7 @@
     const token = ++playToken;
     theaterItem = { title: d.title, isAudio: item.Type === 'Audio', imgKey: d.img ? d.img.id + '|' + d.img.tag + '|330' : null };
     resumeAt = 0;
+    attemptErrors = [];
     el('ovTitle').textContent = d.title;
     el('tError').hidden = true;
     el('tSpin').hidden = false;
@@ -1106,6 +1154,58 @@
     if (!theaterOn) return;
     clearTimeout(attemptTimer);
     clearTimeout(stallTimer);
+    // Record what THIS attempt died of before anything advances — the codes are the
+    // whole diagnosis when both attempts fail in the field. The CARD carries the code
+    // alone: short enough for a 200px band's error card, and a code cannot leak the
+    // api_key. The implementation-defined message goes to the log only, redacted —
+    // such messages may quote the failing URL, the key rides that URL's query, and
+    // truncation is not redaction: the key is replaced wherever it appears and query
+    // strings are dropped wholesale.
+    const me = pv.error;
+    attemptErrors.push(me ? 'code ' + me.code : 'watchdog');
+    let msg = me && me.message ? String(me.message) : '';
+    if (msg) {
+      if (cfg.key) msg = msg.split(cfg.key).join('[key]');
+      msg = msg.replace(/\?\S*/g, '?…').slice(0, 160);
+    }
+    // The element's state is the evidence a silent death leaves behind: a watchdog
+    // kill has no MediaError, but readyState/networkState and the decoded frame
+    // dimensions still separate "no bytes ever arrived" from "bytes arrived, no
+    // frames decoded" (a decoder the browser lacks) from "decoded, then stalled".
+    const state = 'rs=' + pv.readyState + ' ns=' + pv.networkState + ' '
+      + pv.videoWidth + 'x' + pv.videoHeight + ' t=' + (Math.round((pv.currentTime || 0) * 10) / 10);
+    WW.log('jellyfin: playback attempt ' + attemptErrors.length + ' failed: '
+      + attemptErrors[attemptErrors.length - 1] + ' [' + state + ']' + (msg ? ' — ' + msg : ''));
+    // One question the element cannot answer: did the request even reach the server?
+    // A renderer-side kill (mixed-content or certificate gate) and an HTTP error
+    // (rejected api_key, transcoder down) both read as code 4 with nothing decoded.
+    // The host proxy sits outside the renderer's gates, so probing the SAME URL
+    // through it splits the two: a 2xx probe means the server is fine and the block
+    // is local. Status and content-type only — the URL carries the api_key.
+    if (lastSrcUrl) {
+      const n = attemptErrors.length;
+      WW.fetch(lastSrcUrl, { method: 'HEAD', proxy: 'always',
+        insecure: /^https:/i.test(cfg.base) && cfg.selfSigned })
+        .then((r) => WW.log('jellyfin: attempt ' + n + ' probe: HTTP ' + r.status
+          + ' ' + (r.headers.get('content-type') || '')))
+        .catch((e) => WW.log('jellyfin: attempt ' + n + ' probe failed: ' + ((e && e.name) || 'error')));
+      // The probe quartet, each isolating ONE layer from inside this frame. Reading
+      // the answers: an HTTP status (0 counts — no-cors responses are opaque) means
+      // that layer works; TypeError means that layer refused. relay-fetch → host
+      // interception; vhost-fetch → virtual hosts at all; direct-fetch → the LAN
+      // target with no relay; pna-fetch → the same but with Chromium's per-request
+      // Local Network Access opt-in, so if IT succeeds where direct-fetch fails,
+      // the gate finally has a name.
+      if (privateLiteralHost(cfg.base)) {
+        const probe = (tag, url, init) => WW.fetch(url, Object.assign({ method: 'HEAD', proxy: 'never' }, init || {}))
+          .then((r) => WW.log('jellyfin: attempt ' + n + ' ' + tag + ': HTTP ' + r.status))
+          .catch((e) => WW.log('jellyfin: attempt ' + n + ' ' + tag + ' failed: ' + ((e && e.name) || 'error')));
+        probe('relay-fetch', relayUrl(lastSrcUrl));
+        probe('vhost-fetch', 'https://media.plinth/', { mode: 'no-cors' });
+        probe('direct-fetch', lastSrcUrl, { mode: 'no-cors' });
+        probe('pna-fetch', lastSrcUrl, { mode: 'no-cors', targetAddressSpace: 'private' });
+      }
+    }
     // A failure on a screen nobody is looking at does not get to restart audio there —
     // back to the browse shelf; the viewer re-taps when they return.
     if (outOfSight()) { stopPlayback(); return; }
@@ -1128,11 +1228,19 @@
     // The transport is for a stream that no longer exists — the card owns the screen.
     clearTimeout(overlayTimer);
     el('overlay').classList.add('faded');
+    // Certificate hints mirror what the host actually enforces: it accepts
+    // certificate errors only for LAN hosts the widget has opted in via the
+    // self-signed setting — so at a LAN https address WITHOUT the opt-in the
+    // setting is the fix, and at a named https address only a trusted
+    // certificate is.
     el('tErrorBody').textContent = 'Neither the original file nor a server transcode would play. '
       + 'The codec may be unsupported'
-      + (/^https:/i.test(cfg.base) && cfg.selfSigned
-        ? ", and the self-signed allowance covers the shelf only — playback needs a certificate this PC's browser trusts."
-        : ', or an https server’s certificate was refused.');
+      + (/^https:/i.test(cfg.base) && !privateLiteralHost(cfg.base)
+        ? ", or the certificate was refused — at a named https address it must be one this PC trusts (a LAN IP address can use 'Allow self-signed')."
+        : /^https:/i.test(cfg.base) && !cfg.selfSigned
+          ? ", or the server's certificate was refused — if it is self-signed, set 'Certificate check' to allow it in the widget settings."
+          : '.')
+      + '  [' + attemptErrors.join(' · ') + ']';
     el('tError').hidden = false;
   }
 

@@ -65,7 +65,7 @@ public sealed class BrowserFetcher : IDisposable
         if (_ready)
             return;
         _ = _host.Handle; // force handle creation without showing the form
-        await _webView.EnsureCoreWebView2Async(await WebViewEnvironment.GetAsync());
+        await _webView.EnsureCoreWebView2Async(await WebViewEnvironment.GetSecureAsync());
         var core = _webView.CoreWebView2;
         core.Settings.AreDefaultContextMenusEnabled = false;
         core.Settings.IsStatusBarEnabled = false;
