@@ -70,6 +70,48 @@
   #pstrip .tile { cursor: pointer; }
   #pstrip .tile .art { border-width: 1px; }
 
+  /* The browse bar: library tabs on the left, sort/genre on the right, and — when a
+   * TV drill-down is open — the breadcrumb takes the tabs' place, because the path
+   * back matters more than the siblings while you are inside a series. */
+  #pbar { display: flex; align-items: center; gap: 6px; flex: none; min-height: 26px; }
+  #ptabs, #pctl { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  #ptabs { flex: 1 1 auto; overflow: hidden; }
+  #pctl { flex: none; }
+  #pbar .btn { padding: 3px 10px; font-size: 11px; line-height: 1.4; white-space: nowrap; }
+  #ptabs .btn.on { border-color: var(--accent); color: var(--accent); }
+  #pcrumb { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
+  #pcrumbtxt {
+    font-size: 12px; font-weight: 600; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  /* The strip flanked by its pagers: horizontal panning belongs to the panel's page
+   * switcher, so moving through a library is a tap, not a swipe (#221). */
+  #pstriprow { display: flex; align-items: stretch; gap: 4px; flex: 1 1 auto; min-height: 0; }
+  #pstriprow .pager { flex: none; width: 30px; padding: 0; font-size: 16px; }
+  #pstriprow .pager[disabled] { opacity: 0.35; }
+  /* Episode cards are landscape — the still is the recognisable thing, not a poster. */
+  #pstrip .tile.wide .art { aspect-ratio: 16 / 9; }
+
+  /* The genre chooser: a scrim sheet over the tile, same sanctioned monochrome as the
+   * theater — its pills sit on video-dark, not on a themed surface. */
+  #chooser {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.88);
+    display: flex; flex-direction: column; gap: 8px; padding: 10px 14px;
+  }
+  #chHead { display: flex; align-items: center; gap: 8px; flex: none; }
+  #chTitle { font-size: 13px; font-weight: 700; color: rgba(255, 255, 255, 0.94); flex: 1; }
+  #chGrid {
+    display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start;
+    overflow-y: auto; flex: 1 1 auto; min-height: 0;
+  }
+  #chGrid .btn { padding: 6px 12px; font-size: 12px; }
+  #chGrid .btn.on { border-color: var(--accent); color: var(--accent); }
+  #pbar .btn.on { border-color: var(--accent); color: var(--accent); }
+  /* In-strip notes (loading, empty, a fetch fault): the browse bar stays interactive
+   * above them, so a dead genre or an unreachable page is never a dead END. */
+  .note { color: var(--text-dim); font-size: 12px; padding: 10px 4px; align-self: center; }
+  #chGrid .note { color: rgba(255, 255, 255, 0.75); align-self: flex-start; }
+
   /* Player view, playing: the tile becomes a little theater. Fixed over everything —
    * header included — with true-black letterbox bars (a scrim, not chrome; the one
    * sanctioned monochrome). */
@@ -140,8 +182,31 @@
   </div>
 
   <div id="player" hidden>
-    <div class="kicker">Recently added — tap to play</div>
-    <div id="pstrip"></div>
+    <div id="pbar">
+      <div id="ptabs"></div>
+      <div id="pcrumb" hidden>
+        <button id="pback" class="btn no-pan">‹ Back</button>
+        <span id="pcrumbtxt"></span>
+      </div>
+      <div id="pctl">
+        <button id="psort" class="btn no-pan" aria-label="Change sort order">A–Z</button>
+        <button id="pgenre" class="btn no-pan" aria-label="Filter by genre">Genre</button>
+      </div>
+    </div>
+    <div id="pstriprow">
+      <button id="pprev" class="btn no-pan pager" aria-label="Previous page">‹</button>
+      <div id="pstrip"></div>
+      <button id="pnext" class="btn no-pan pager" aria-label="Next page">›</button>
+    </div>
+  </div>
+
+  <!-- The genre chooser: pick once, the strip reloads filtered. -->
+  <div id="chooser" class="no-pan" hidden>
+    <div id="chHead">
+      <span id="chTitle">Genre</span>
+      <button id="chClose" class="btn no-pan">Close</button>
+    </div>
+    <div id="chGrid"></div>
   </div>
 
   <!-- The theater: fixed over the whole tile while something plays on the panel. -->
@@ -712,8 +777,313 @@
     ensureImages(wanted);
   }
 
-  // Player view, browsing: the recently-added shelf, where every poster is a play
-  // button. Playback itself lives in the theater layer and never re-renders from polls.
+  // ---- Player view: the library browser ---------------------------------------------
+  //
+  // The Player is a lean-back library browser: a tab per film/TV library (plus "New",
+  // the recently-added shelf the view opened with), a sort cycle, a genre filter, and
+  // for television the drill-down Series → Seasons → Episodes in broadcast order.
+  // Every move is a TAP — page-turns included — because horizontal panning belongs to
+  // the panel's page switcher (#221). And the API key is a SERVER credential, not a
+  // user: Jellyfin holds no watched state, resume points or next-up for it, so the
+  // filters are the library's own facts — genre, name, year, arrival — never the
+  // viewer's history.
+  const SORTS = [
+    { label: 'A–Z', by: 'SortName', order: 'Ascending' },
+    { label: 'Newest', by: 'DateCreated', order: 'Descending' },
+    { label: 'Year', by: 'ProductionYear', order: 'Descending' },
+    { label: 'Random', by: 'Random', order: 'Ascending' },
+  ];
+  const browse = {
+    tabs: null,      // [{id, name, tv}] once /Library/MediaFolders answers; null = not asked
+    tab: 'new',      // 'new' or a library id
+    path: [],        // TV drill-down: [{id, name, kind: 'series'|'season'}]
+    sort: 0,
+    genre: '',       // active genre name, '' = all — reset on tab switch (genres differ)
+    page: 0,
+    pageSize: 1,     // how many cards fit; the layout is measured before each fetch
+    total: 0,
+    items: [],       // the cards on screen
+    all: null,       // seasons/episodes arrive whole and page locally — see loadBrowse
+    loading: false,
+    error: '',
+    genres: null,    // Map(libraryId -> [names]), filled when the chooser first opens
+  };
+  let browseGen = 0;      // orphans answers that arrive after the question changed
+  let playQueue = null;   // { items, index }: the episode run being watched (auto-advance)
+
+  function browseReset() {
+    browse.tabs = null; browse.tab = 'new'; browse.path = [];
+    browse.sort = 0; browse.genre = ''; browse.page = 0;
+    browse.items = []; browse.all = null; browse.total = 0;
+    browse.loading = false; browse.error = ''; browse.genres = null;
+    browseGen++;
+    playQueue = null;
+  }
+
+  const activeTab = () => (browse.tabs || []).find((t) => t.id === browse.tab) || null;
+  const level = () => (browse.path.length ? browse.path[browse.path.length - 1].kind : 'top');
+
+  // The card budget, shared by fetching and drawing: how many fit IS the page size,
+  // so the layout is measured before the server is asked for a page.
+  function playerBudget(wide) {
+    const W = document.documentElement.clientWidth || 640;
+    const H = document.documentElement.clientHeight || 400;
+    const band = H < 260;
+    // Header, footer, browse bar, strip pagers: the posters absorb what remains.
+    const avail = H - 20 - 28 - 30 - (band ? 0 : 4);
+    const cardH = Math.max(64, Math.min(220, avail - 45));
+    const cardW = Math.round(wide ? cardH * 16 / 9 : cardH * 2 / 3);
+    const count = Math.max(1, Math.floor((W - 24 - 68 + 8) / (cardW + 8)));
+    return { cardH, count };
+  }
+
+  async function loadTabs() {
+    try {
+      const body = await jfJson('/Library/MediaFolders', 12000, 256 * 1024);
+      return ((body && body.Items) || [])
+        .filter((f) => f && f.Id && (f.CollectionType === 'movies' || f.CollectionType === 'tvshows'))
+        .map((f) => ({ id: String(f.Id), name: String(f.Name || '?'), tv: f.CollectionType === 'tvshows' }));
+    } catch (e) {
+      WW.log('jellyfin: libraries: ' + (e && e.message));
+      return [];
+    }
+  }
+
+  async function loadBrowse() {
+    const gen = ++browseGen;
+    browse.loading = true;
+    browse.error = '';
+    renderPlayer();
+    try {
+      if (!browse.tabs) {
+        const tabs = await loadTabs();
+        if (gen !== browseGen) return;
+        browse.tabs = tabs;
+        if (browse.tab !== 'new' && !activeTab()) browse.tab = 'new';
+      }
+      const tab = activeTab();
+      if (browse.tab === 'new' || !tab) {
+        browse.loading = false;
+        renderPlayer();
+        return;
+      }
+      const lv = level();
+      let path;
+      if (lv === 'series' || lv === 'season') {
+        // Seasons and episodes arrive as ONE list in broadcast order and page
+        // locally: the whole list is also the auto-advance queue, and a season
+        // outgrowing the cap is a data-entry story, not a pagination one.
+        path = '/Items?ParentId=' + encodeURIComponent(browse.path[browse.path.length - 1].id)
+          + '&IncludeItemTypes=' + (lv === 'series' ? 'Season' : 'Episode')
+          + '&SortBy=IndexNumber&SortOrder=Ascending&Limit=200';
+      } else {
+        browse.pageSize = playerBudget(false).count;
+        const s = SORTS[browse.sort];
+        path = '/Items?ParentId=' + encodeURIComponent(tab.id)
+          + '&IncludeItemTypes=' + (tab.tv ? 'Series' : 'Movie')
+          + '&Recursive=true&SortBy=' + s.by + '&SortOrder=' + s.order
+          + '&StartIndex=' + (browse.page * browse.pageSize)
+          + '&Limit=' + browse.pageSize
+          + (browse.genre ? '&Genres=' + encodeURIComponent(browse.genre) : '');
+      }
+      const body = await jfJson(path, 12000, LIST_MAX_BYTES);
+      if (gen !== browseGen) return;
+      const items = (body && Array.isArray(body.Items)) ? body.Items : [];
+      if (lv === 'series' || lv === 'season') {
+        browse.all = items;
+        browse.total = items.length;
+      } else {
+        browse.all = null;
+        browse.items = items;
+        browse.total = body && body.TotalRecordCount != null ? Number(body.TotalRecordCount) : items.length;
+      }
+    } catch (e) {
+      if (gen !== browseGen) return;
+      browse.error = faultText((e && e.kind) || '', e && e.status);
+    }
+    if (gen !== browseGen) return;
+    browse.loading = false;
+    renderPlayer();
+  }
+
+  function setTab(id) {
+    if (browse.tab === id && !browse.path.length) return;
+    browse.tab = id;
+    browse.path = [];
+    browse.page = 0;
+    browse.genre = '';
+    browse.items = [];
+    browse.all = null;
+    browse.total = 0;
+    if (id === 'new') { browseGen++; browse.loading = false; renderPlayer(); }
+    else loadBrowse();
+  }
+
+  function openItem(item, indexInAll) {
+    if (item.Type === 'Series' || item.Type === 'Season') {
+      browse.path.push({
+        id: String(item.Id),
+        name: String(item.Name || '?'),
+        kind: item.Type === 'Series' ? 'series' : 'season',
+      });
+      browse.page = 0;
+      loadBrowse();
+      return;
+    }
+    // Playable. From an episode run, the rest of the list is the queue — when one
+    // episode ends the next starts, which is what "watching a season" means on a
+    // lean-back surface. Movies and the New shelf play alone.
+    playQueue = (item.Type === 'Episode' && browse.all && indexInAll != null)
+      ? { items: browse.all.slice(), index: indexInAll }
+      : null;
+    startPlayback(item, describe(item));
+  }
+
+  function browseBack() {
+    browse.path.pop();
+    browse.page = 0;
+    loadBrowse();
+  }
+
+  function flipPage(delta) {
+    const pages = Math.max(1, Math.ceil(browse.total / Math.max(1, browse.pageSize)));
+    const next = Math.min(pages - 1, Math.max(0, browse.page + delta));
+    if (next === browse.page) return;
+    browse.page = next;
+    if (browse.all) renderPlayer();   // local lists page without another request
+    else loadBrowse();
+  }
+
+  async function openGenres() {
+    const tab = activeTab();
+    if (!tab) return;
+    const grid = el('chGrid');
+    grid.textContent = '';
+    el('chooser').hidden = false;
+    let names = browse.genres && browse.genres.get(tab.id);
+    if (!names) {
+      const note = document.createElement('div');
+      note.className = 'note';
+      note.textContent = 'Loading genres…';
+      grid.appendChild(note);
+      try {
+        const body = await jfJson('/Genres?ParentId=' + encodeURIComponent(tab.id)
+          + '&SortBy=SortName&SortOrder=Ascending&Limit=100', 12000, 256 * 1024);
+        names = ((body && body.Items) || []).map((g) => String((g && g.Name) || '')).filter(Boolean);
+      } catch (e) {
+        names = [];
+      }
+      browse.genres = browse.genres || new Map();
+      browse.genres.set(tab.id, names);
+      if (el('chooser').hidden) return;   // closed while the list was in flight
+      grid.textContent = '';
+    }
+    const pick = (name) => {
+      el('chooser').hidden = true;
+      if (browse.genre === name) return;
+      browse.genre = name;
+      browse.page = 0;
+      loadBrowse();
+    };
+    const mk = (label, value) => {
+      const b = document.createElement('button');
+      b.className = 'btn no-pan' + ((value || '') === browse.genre ? ' on' : '');
+      b.textContent = label;
+      b.addEventListener('click', () => pick(value));
+      grid.appendChild(b);
+    };
+    mk('All genres', '');
+    for (const name of names) mk(name, name);
+    if (!names.length) {
+      const note = document.createElement('div');
+      note.className = 'note';
+      note.textContent = 'No genres reported by this library.';
+      grid.appendChild(note);
+    }
+  }
+
+  el('pback').addEventListener('click', browseBack);
+  el('pprev').addEventListener('click', () => flipPage(-1));
+  el('pnext').addEventListener('click', () => flipPage(1));
+  el('psort').addEventListener('click', () => {
+    browse.sort = (browse.sort + 1) % SORTS.length;
+    browse.page = 0;
+    loadBrowse();
+  });
+  el('pgenre').addEventListener('click', openGenres);
+  el('chClose').addEventListener('click', () => { el('chooser').hidden = true; });
+
+  function renderBar() {
+    const drilled = browse.path.length > 0;
+    el('ptabs').hidden = drilled;
+    el('pcrumb').hidden = !drilled;
+    if (drilled) {
+      el('pcrumbtxt').textContent = browse.path.map((p) => p.name).join(' ▸ ');
+    } else {
+      const tabsEl = el('ptabs');
+      tabsEl.textContent = '';
+      const mk = (id, name) => {
+        const b = document.createElement('button');
+        b.className = 'btn no-pan' + (browse.tab === id ? ' on' : '');
+        b.textContent = name;
+        b.addEventListener('click', () => setTab(id));
+        tabsEl.appendChild(b);
+      };
+      mk('new', 'New');
+      for (const t of browse.tabs || []) mk(t.id, t.name);
+    }
+    const filterable = browse.tab !== 'new' && !drilled && !!activeTab();
+    el('psort').hidden = !filterable;
+    el('pgenre').hidden = !filterable;
+    el('psort').textContent = SORTS[browse.sort].label;
+    el('pgenre').textContent = browse.genre || 'Genre';
+    el('pgenre').classList.toggle('on', !!browse.genre);
+  }
+
+  /// One card row for every level: posters for movies/series/seasons, landscape
+  /// stills for episodes. Returns the keys it wants fetched.
+  function buildStrip(items, opts) {
+    const wide = !!(opts && opts.wide);
+    const budget = playerBudget(wide);
+    const strip = el('pstrip');
+    strip.textContent = '';
+    strip.style.setProperty('--ph', budget.cardH + 'px');
+    const wanted = new Set();
+    items.forEach((item, i) => {
+      const d = describe(item);
+      // Inside a season, every episode shares the series poster — the episode's own
+      // STILL is the recognisable thing, when the server has one.
+      if (wide && item.ImageTags && item.ImageTags.Primary && item.Id) {
+        d.img = { id: String(item.Id), tag: String(item.ImageTags.Primary) };
+      }
+      const tile = document.createElement('div');
+      // no-pan: a tappable poster with nothing local to pan must not hand finger
+      // drift to the shell pager (#221).
+      tile.className = 'tile pressable no-pan' + (wide ? ' wide' : '');
+      tile.appendChild(art(d, wanted));
+      const cap = document.createElement('div');
+      cap.className = 'cap';
+      cap.textContent = wide
+        ? [d.sub[0], String(item.Name || d.title)].filter(Boolean).join(' · ')
+        : capFor(item, d);
+      tile.append(cap);
+      tile.addEventListener('click', () => (opts && opts.onTap ? opts.onTap(item, i) : null));
+      strip.appendChild(tile);
+    });
+    return { wanted, count: budget.count };
+  }
+
+  function stripNote(text) {
+    const strip = el('pstrip');
+    strip.textContent = '';
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.textContent = text;
+    strip.appendChild(note);
+  }
+
+  // Player view, browsing. Playback itself lives in the theater layer and never
+  // re-renders from polls.
   function renderPlayer() {
     if (theaterOn) return;   // the theater owns the screen; polls must not repaint it
     el('main').hidden = true;
@@ -727,6 +1097,65 @@
     axisRef = null;
     el('axis').hidden = true;
 
+    // The library tabs are fetched on the view's first paint — after that, renders
+    // are pure and fetches happen only when a tap changes the question.
+    if (browse.tabs === null && !browse.loading) {
+      loadBrowse();
+      return;
+    }
+
+    renderBar();
+    el('state').hidden = true;
+    el('player').hidden = false;
+    document.querySelector('footer').hidden = false;
+
+    if (browse.tab === 'new') {
+      el('pprev').hidden = true;
+      el('pnext').hidden = true;
+      renderNewShelf(stale, pill);
+      return;
+    }
+
+    pill.hidden = !stale;
+    if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
+    el('player').classList.remove('stale-sec');
+
+    const lv = level();
+    const wide = lv === 'season';
+    // Local lists (seasons, episodes) slice here; server lists arrive pre-sliced.
+    browse.pageSize = playerBudget(wide).count;
+    const items = browse.all
+      ? browse.all.slice(browse.page * browse.pageSize, (browse.page + 1) * browse.pageSize)
+      : browse.items;
+
+    const pages = Math.max(1, Math.ceil(browse.total / Math.max(1, browse.pageSize)));
+    const paged = pages > 1 && !browse.loading && !browse.error;
+    el('pprev').hidden = !paged;
+    el('pnext').hidden = !paged;
+    el('pprev').disabled = browse.page <= 0;
+    el('pnext').disabled = browse.page >= pages - 1;
+    el('counts').textContent = paged ? 'Page ' + (browse.page + 1) + ' of ' + pages : '';
+    el('meta').textContent = browse.error ? '' : browse.total
+      ? browse.total + (lv === 'season' ? ' episodes' : lv === 'series' ? ' seasons'
+        : activeTab() && activeTab().tv ? ' series' : ' movies')
+      : '';
+
+    if (browse.loading) { stripNote('Loading…'); return; }
+    if (browse.error) { stripNote(browse.error); return; }
+    if (!items.length) {
+      stripNote(browse.genre ? 'Nothing here under ' + browse.genre + '.' : 'Nothing here yet.');
+      return;
+    }
+
+    const built = buildStrip(items, {
+      wide,
+      onTap: (item, i) => openItem(item, browse.all ? browse.page * browse.pageSize + i : null),
+    });
+    ensureImages(built.wanted);
+  }
+
+  // The "New" tab: the recently-added shelf, fed by the poll loop rather than taps.
+  function renderNewShelf(stale, pill) {
     if (!latest.length) {
       // An unfetched shelf is not an empty library: only a shelf that has actually
       // answered gets to claim there is nothing in it.
@@ -743,33 +1172,10 @@
       return;
     }
 
-    // Same budget math as the overview's idle shelf: posters absorb the body.
-    const W = document.documentElement.clientWidth || 640;
-    const H = document.documentElement.clientHeight || 400;
-    const band = H < 260;
-    const avail = H - 20 - 28 - (band ? 0 : 24);
-    const posterH = Math.max(64, Math.min(220, avail - 45));
-    const posterW = Math.round(posterH * 2 / 3);
-    const count = Math.max(1, Math.floor((W - 24 + 8) / (posterW + 8)));
-
-    const strip = el('pstrip');
-    strip.textContent = '';
-    strip.style.setProperty('--ph', posterH + 'px');
-    const wanted = new Set();
-    for (const item of latest.slice(0, count)) {
-      const d = describe(item);
-      const tile = document.createElement('div');
-      // no-pan: a tappable poster with nothing local to pan must not hand finger
-      // drift to the shell pager (#221).
-      tile.className = 'tile pressable no-pan';
-      tile.appendChild(art(d, wanted));
-      const cap = document.createElement('div');
-      cap.className = 'cap';
-      cap.textContent = capFor(item, d);
-      tile.append(cap);
-      tile.addEventListener('click', () => startPlayback(item, d));
-      strip.appendChild(tile);
-    }
+    const budget = playerBudget(false);
+    const built = buildStrip(latest.slice(0, budget.count), {
+      onTap: (item) => openItem(item, null),
+    });
 
     const shelfStale = latestAt > 0 && Date.now() - latestAt > SLOW_MS * 2 + 60000;
     el('player').classList.toggle('stale-sec', shelfStale);
@@ -783,10 +1189,7 @@
     pill.hidden = !stale;
     if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
 
-    el('state').hidden = true;
-    el('player').hidden = false;
-    document.querySelector('footer').hidden = false;
-    ensureImages(wanted);
+    ensureImages(built.wanted);
   }
 
   function art(d, wanted) {
@@ -1101,6 +1504,7 @@
   function stopPlayback() {
     if (!theaterOn) return;
     theaterOn = false;
+    playQueue = null;   // leaving the theater ends the run — Back means back
     playToken++;   // orphan any pre-flight still in the air
     clearTimeout(overlayTimer);
     clearTimeout(attemptTimer);
@@ -1265,7 +1669,20 @@
   // deliberately paused stream is not a failed one, and the startup deadline firing
   // through a pause would walk the fallback over the user's own choice.
   pv.addEventListener('pause', () => { if (theaterOn) { clearTimeout(stallTimer); clearTimeout(attemptTimer); setTheaterIcons(true); showOverlay(); } });
-  pv.addEventListener('ended', stopPlayback);
+  // Sequencing: an episode that finishes rolls straight into the next one in its
+  // season — that is what "watching a season" means on a lean-back surface. The
+  // queue was captured at tap time from the episode list already on screen; a
+  // finished MOVIE (no queue) closes the theater as before, and a run that ends
+  // off-screen must not restart audio on a page nobody is looking at.
+  pv.addEventListener('ended', () => {
+    if (theaterOn && playQueue && playQueue.index + 1 < playQueue.items.length && !outOfSight()) {
+      playQueue.index++;
+      const item = playQueue.items[playQueue.index];
+      startPlayback(item, describe(item));
+      return;
+    }
+    stopPlayback();
+  });
   // timeupdate fires at the browser's own ~4 Hz — data cadence, no timer of ours.
   // The clock carries timeBase: a StartTimeTicks transcode restarts the element's own
   // clock at zero while the title is minutes in.
@@ -1447,6 +1864,7 @@
       server = null;
       rowRefs = [];
       axisRef = null;
+      browseReset();   // the tabs, the drill-down and the queue all belong to the old server
       generation++;
       inFlight = false;
       fails = 0;

@@ -89,9 +89,11 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   (who's streaming what from your server and what just landed in the library:
   active sessions with live progress, transcode and paused flags, a
   recently-added poster shelf, and library counts — or flip a tile to Player
-  view and the tile becomes a little theater: tap a recently-added title and
-  it streams straight to the panel, direct play first with a server transcode
-  fallback; read from Jellyfin's own API either way, because its web app
+  view and the tile becomes a little theater: browse your movie and TV
+  libraries by tab, sort and filter by genre, step into a series' seasons and
+  episodes, and tap a title to stream it straight to the panel, direct play
+  first with a server transcode fallback and episodes rolling into the next
+  one; read from Jellyfin's own API either way, because its web app
   refuses to render inside a frame), and WoW
   Panel (your character on the panel: portrait, level, spec and guild, your
   professions with skill progress, the reputations you've pushed lately, mount
