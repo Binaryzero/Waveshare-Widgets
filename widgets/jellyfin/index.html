@@ -908,14 +908,29 @@
         return;
       }
       const lv = level();
-      let path;
       if (lv === 'series' || lv === 'season') {
         // Seasons and episodes arrive as ONE list in broadcast order and page
-        // locally: the whole list is also the auto-advance queue, and a season
-        // outgrowing the cap is a data-entry story, not a pagination one.
-        path = '/Items?ParentId=' + encodeURIComponent(browse.path[browse.path.length - 1].id)
+        // locally: the whole list is also the auto-advance queue. 'Whole' means
+        // following the server's pages to the end — a daily-show season outruns
+        // one 200-item response, and truncating there would strand every later
+        // episode and stop auto-advance at an invisible wall. The 1000 cap
+        // bounds a pathological library; the footer counts what actually loaded.
+        const whole = '/Items?ParentId=' + encodeURIComponent(browse.path[browse.path.length - 1].id)
           + '&IncludeItemTypes=' + (lv === 'series' ? 'Season' : 'Episode')
           + '&SortBy=IndexNumber&SortOrder=Ascending&Limit=200';
+        const all = [];
+        for (;;) {
+          const page = await jfJson(whole + (all.length ? '&StartIndex=' + all.length : ''),
+            12000, LIST_MAX_BYTES);
+          if (gen !== browseGen) return;
+          const got = (page && Array.isArray(page.Items)) ? page.Items : [];
+          all.push(...got);
+          const reported = page && page.TotalRecordCount != null
+            ? Number(page.TotalRecordCount) : all.length;
+          if (!got.length || all.length >= reported || all.length >= 1000) break;
+        }
+        browse.all = all;
+        browse.total = all.length;
       } else {
         browse.pageSize = playerBudget(false).count;
         const s = SORTS[browse.sort];
@@ -923,20 +938,15 @@
         // shuffle — page numbers would repeat and skip titles. One hand at a time,
         // always from 0; renderPlayer turns › into "deal another".
         if (s.by === 'Random') browse.page = 0;
-        path = '/Items?ParentId=' + encodeURIComponent(tab.id)
+        const path = '/Items?ParentId=' + encodeURIComponent(tab.id)
           + '&IncludeItemTypes=' + (tab.tv ? 'Series' : 'Movie')
           + '&Recursive=true&SortBy=' + s.by + '&SortOrder=' + s.order
           + '&StartIndex=' + (browse.page * browse.pageSize)
           + '&Limit=' + browse.pageSize
           + (browse.genre ? '&Genres=' + encodeURIComponent(browse.genre) : '');
-      }
-      const body = await jfJson(path, 12000, LIST_MAX_BYTES);
-      if (gen !== browseGen) return;
-      const items = (body && Array.isArray(body.Items)) ? body.Items : [];
-      if (lv === 'series' || lv === 'season') {
-        browse.all = items;
-        browse.total = items.length;
-      } else {
+        const body = await jfJson(path, 12000, LIST_MAX_BYTES);
+        if (gen !== browseGen) return;
+        const items = (body && Array.isArray(body.Items)) ? body.Items : [];
         browse.all = null;
         browse.items = items;
         browse.total = body && body.TotalRecordCount != null ? Number(body.TotalRecordCount) : items.length;
