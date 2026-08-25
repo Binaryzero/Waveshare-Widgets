@@ -238,9 +238,13 @@ internal static class MediaRelay
     /// callback is PROCESS DEATH, not a failed request — a mid-movie connection reset
     /// (a transcode the server killed, a Wi-Fi blip, the element abandoning a stream
     /// as it seeks) was taking the whole dashboard down with it. Every failure mode
-    /// becomes EOF instead: the element sees a short stream and raises its own media
-    /// error, the widget's fallback chain handles it, and the app stays up. Disposal
-    /// (which WebView2 also drives, racing the element) is swallowed the same way.
+    /// becomes EOF instead, and the app stays up. What the ELEMENT makes of that EOF
+    /// depends on the response: with a declared Content-Length the truncation
+    /// contradicts it and the element raises its own media error; a chunked response
+    /// (a live transcode) genuinely cannot be told apart from a normal end at this
+    /// layer, which is why the Jellyfin widget checks 'ended' against the item's own
+    /// runtime before treating it as a finish. Disposal (which WebView2 also drives,
+    /// racing the element) is swallowed the same way.
     /// </summary>
     private sealed class GuardedStream : Stream
     {

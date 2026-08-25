@@ -569,20 +569,27 @@
             if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
             return body.Items;
           })
-        : loadTabs().then((tabs) => {
-            if (!tabs) throw fault('unreachable', 'could not list libraries');
-            // 256 KiB per library, not the full list cap: each answer holds at most
-            // LATEST_FETCH shelf items, and loadTabs' 24-library bound makes the
-            // aggregate a few MiB worst case instead of a hostile server's gigabytes.
-            return Promise.all(tabs.map((t) =>
-              jfJson('/Items?ParentId=' + encodeURIComponent(t.id) + '&SortBy=DateCreated' + tail
+        : jfJson('/Library/MediaFolders', SLOW_DEADLINE, 256 * 1024).then((body) => {
+            if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
+            // EVERY un-hidden library participates, whatever its CollectionType —
+            // a mixed movies-and-shows library carries none, and borrowing the tab
+            // row's movies/tvshows filter here would silently drop its new titles
+            // from a shelf the no-hide query covers. IncludeItemTypes in each
+            // per-library query is what keeps the content right; the 24-library
+            // bound and the 256 KiB per-answer cap (each holds at most
+            // LATEST_FETCH items) keep a hostile server's thousands to a few MiB.
+            const libs = body.Items
+              .filter((f) => f && f.Id && !cfg.hide.has(String(f.Name || '').trim().toLowerCase()))
+              .slice(0, 24);
+            return Promise.all(libs.map((f) =>
+              jfJson('/Items?ParentId=' + encodeURIComponent(String(f.Id)) + '&SortBy=DateCreated' + tail
                 + '&Fields=DateCreated', SLOW_DEADLINE, 256 * 1024)
-                .then((body) => {
+                .then((page) => {
                   // Same contract as the no-hide path: a malformed 200 is a FAULT,
                   // not an empty library — treating it as [] would silently drop a
                   // library's titles from the shelf until the next slow window.
-                  if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
-                  return body.Items;
+                  if (!page || !Array.isArray(page.Items)) throw fault('format', 'reply had no Items');
+                  return page.Items;
                 })));
           }).then((lists) => {
             const seen = new Set();
@@ -920,12 +927,13 @@
       if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
       return body.Items
         .filter((f) => f && f.Id && (f.CollectionType === 'movies' || f.CollectionType === 'tvshows'))
-        // The hide list is the user's, by name: a hidden library gets no tab, no
-        // ⋯-sheet entry, and (through the shelf's per-library fetch) no New items.
+        // The hide list is the user's, by name: a hidden library gets no tab and
+        // no ⋯-sheet entry. (The shelf applies the same list over ALL library
+        // types in refreshSlow — this movies/tvshows set is the tab row's only.)
         .filter((f) => !cfg.hide.has(String(f.Name || '').trim().toLowerCase()))
         // Bounded like every other data-driven surface: 24 libraries outruns any
         // real panel, and a hostile server's thousands must not become thousands
-        // of tab buttons or a request fan-out (the shelf fetches one per entry).
+        // of tab buttons.
         .slice(0, 24)
         .map((f) => ({ id: String(f.Id), name: String(f.Name || '?'), tv: f.CollectionType === 'tvshows' }));
     } catch (e) {
@@ -968,12 +976,21 @@
     const asUser = cfg.user;
     try {
       const uid = await resolveUser();
-      if (!uid || cfg.user !== asUser) return false;
+      if (!uid) {
+        // The miss is logged, not silent: a finish that SHOULD have been tracked
+        // and wasn't is exactly what someone debugging a stuck Next up looks for.
+        WW.log('jellyfin: mark played skipped: no Jellyfin user named "' + asUser + '"');
+        return false;
+      }
+      if (cfg.user !== asUser) return false;
       await jf('/Users/' + encodeURIComponent(uid) + '/PlayedItems/' + encodeURIComponent(String(item.Id)),
         { method: 'POST', maxBytes: 64 * 1024 }, 12000);
       nextUpDirty = true;   // the shelf on screen no longer tells the truth
       return true;
     } catch (e) {
+      // 404 on the cached id: the user was deleted (or recreated under a new id) —
+      // drop the cache so the next attempt resolves fresh instead of failing forever.
+      if (e && e.status === 404) nextUser = { id: '' };
       WW.log('jellyfin: mark played: ' + (e && e.message));
       return false;
     }
@@ -1027,14 +1044,21 @@
           // Stay null → the render trigger retries, but not in a tight loop: the
           // timestamp gate means the next attempt rides a LATER poll's render.
           browse.tabsFailedAt = Date.now();
-          browse.loading = false;
-          renderPlayer();
-          return;
+          // Next up needs only /Users and /Shows/NextUp — a failed LIBRARY
+          // discovery must not paint it as a confidently empty queue, so that
+          // one tab falls through to its own fetch. Every other tab genuinely
+          // has nothing to show without discovery.
+          if (browse.tab !== 'next') {
+            browse.loading = false;
+            renderPlayer();
+            return;
+          }
+        } else {
+          browse.tabs = tabs;
+          // 'next' is synthetic — discovery recovering must not bounce a tapped
+          // Next up back to New just because no LIBRARY carries that id.
+          if (browse.tab !== 'new' && browse.tab !== 'next' && !activeTab()) browse.tab = 'new';
         }
-        browse.tabs = tabs;
-        // 'next' is synthetic — discovery recovering must not bounce a tapped
-        // Next up back to New just because no LIBRARY carries that id.
-        if (browse.tab !== 'new' && browse.tab !== 'next' && !activeTab()) browse.tab = 'new';
       }
       const tab = activeTab();
       if (browse.tab === 'new' || (browse.tab !== 'next' && !tab)) {
@@ -2065,6 +2089,23 @@
   // key alone cannot do.
   pv.addEventListener('ended', () => {
     const finished = theaterSource;
+    // 'ended' alone does not prove the title finished: the relay survives a
+    // mid-stream fault by turning it into EOF, and on a chunked transcode no
+    // declared length contradicts the truncation — Chromium plays out its buffer
+    // and fires 'ended' at minute 12 of 42. The item's own runtime is the check:
+    // an end meaningfully short of it is a died stream and takes the ERROR path
+    // (diagnostics, resume position, the fallback chain) — never a watched mark,
+    // never an advance. No runtime recorded (live TV) → the event is trusted.
+    if (theaterOn) {
+      const expected = ticksToSec(finished && finished.RunTimeTicks);
+      const played = timeBase + (pv.currentTime || 0);
+      if (expected && expected > 0 && played < expected - 120) {
+        WW.log('jellyfin: stream ended ' + Math.round(expected - played)
+          + 's short of the title’s runtime — treating as a fault');
+        theaterError();
+        return;
+      }
+    }
     if (theaterOn && playQueue && playQueue.index + 1 < playQueue.items.length && !outOfSight()) {
       markPlayed(finished);   // fire-and-forget: the on-screen list is the queue here
       playQueue.index++;
@@ -2244,8 +2285,10 @@
     if (cfg.view === 'player' && !cfg.types) cfg.types = 'Movie,Episode';
     cfg.refreshMs = Math.min(300, Math.max(5, Number(s.refreshSeconds) || 15)) * 1000;
     // Names compare case-insensitively: the setting is typed by hand against
-    // libraries whose exact casing nobody remembers.
-    cfg.hide = new Set(String(s.hideLibraries || '').split(',')
+    // libraries whose exact casing nobody remembers. A list property arrives as
+    // rows; bare strings are tolerated the way ping's host list tolerates them.
+    cfg.hide = new Set((Array.isArray(s.hideLibraries) ? s.hideLibraries : [])
+      .map((r) => (typeof r === 'string' ? r : String((r && r.name) || '')))
       .map((n) => n.trim().toLowerCase()).filter(Boolean));
     cfg.user = String(s.userName || '').trim();
     // Switching views or the shelf's filter changes which slow-lane facts matter —

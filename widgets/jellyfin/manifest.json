@@ -48,11 +48,14 @@
     },
     {
       "name": "hideLibraries",
-      "label": "Hide libraries",
-      "type": "text",
-      "default": "",
-      "placeholder": "Home Videos, Kids",
-      "help": "Comma-separated library names to leave out — gone from the Player's tabs and from the recently-added shelf alike. Names match as Jellyfin shows them, any capitalization. Blank shows every movie and TV library."
+      "label": "Hidden libraries",
+      "type": "list",
+      "itemLabel": "library",
+      "fields": [
+        { "key": "name", "label": "Library name", "type": "text", "placeholder": "Home Videos" }
+      ],
+      "default": [],
+      "help": "Libraries to leave out — gone from the Player's tabs and from the recently-added shelf alike. Names match as Jellyfin shows them, any capitalization. Empty shows every library."
     },
     {
       "name": "latestTypes",
