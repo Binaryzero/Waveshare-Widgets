@@ -1031,6 +1031,11 @@
           // mistaken for the end of the series.
           if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
           next = body.Items[0] || null;
+          // SeriesId is a documented NextUp filter (the web client's series page
+          // sends it), but a server that ignored it must degrade to 'run over' —
+          // never to hijacking the run with another show's episode and marking
+          // THAT watched when it ends.
+          if (next && String(next.SeriesId || '') !== String(seriesId)) next = null;
         }
       } catch (e) {
         WW.log('jellyfin: next up: ' + (e && e.message));
