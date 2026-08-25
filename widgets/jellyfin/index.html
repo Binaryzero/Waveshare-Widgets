@@ -77,7 +77,9 @@
   #ptabs, #pctl { display: flex; align-items: center; gap: 4px; min-width: 0; }
   #ptabs { flex: 1 1 auto; overflow: hidden; }
   #pctl { flex: none; }
-  #pbar .btn { padding: 3px 10px; font-size: 11px; line-height: 1.4; white-space: nowrap; }
+  /* 12px floor: these are mixed-case content strings (library names, genres), not
+   * uppercase micro-labels — the 8–11px tiers are not for sentences. */
+  #pbar .btn { padding: 3px 10px; font-size: 12px; line-height: 1.4; white-space: nowrap; }
   #ptabs .btn.on { border-color: var(--accent); color: var(--accent); }
   #pcrumb { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
   #pcrumbtxt {
@@ -89,8 +91,10 @@
   #pstriprow { display: flex; align-items: stretch; gap: 4px; flex: 1 1 auto; min-height: 0; }
   #pstriprow .pager { flex: none; width: 30px; padding: 0; font-size: 16px; }
   #pstriprow .pager[disabled] { opacity: 0.35; }
-  /* Episode cards are landscape — the still is the recognisable thing, not a poster. */
-  #pstrip .tile.wide .art { aspect-ratio: 16 / 9; }
+  /* Episode cards are landscape — the still is the recognisable thing, not a poster.
+   * The WIDTH carries the ratio: .art already fills the tile at height --ph, so a
+   * 16/9 tile makes a 16/9 still, and the page budget agrees with what renders. */
+  #pstrip .tile.wide { width: calc(var(--ph) * 16 / 9); }
 
   /* The genre chooser: a scrim sheet over the tile, same sanctioned monochrome as the
    * theater — its pills sit on video-dark, not on a themed surface. */
@@ -816,6 +820,7 @@
     browse.sort = 0; browse.genre = ''; browse.page = 0;
     browse.items = []; browse.all = null; browse.total = 0;
     browse.loading = false; browse.error = ''; browse.genres = null;
+    browse.tabsFailedAt = 0;
     browseGen++;
     playQueue = null;
   }
@@ -825,7 +830,7 @@
 
   // The card budget, shared by fetching and drawing: how many fit IS the page size,
   // so the layout is measured before the server is asked for a page.
-  function playerBudget(wide) {
+  function playerBudget(wide, pagers) {
     const W = document.documentElement.clientWidth || 640;
     const H = document.documentElement.clientHeight || 400;
     const band = H < 260;
@@ -833,10 +838,15 @@
     const avail = H - 20 - 28 - 30 - (band ? 0 : 4);
     const cardH = Math.max(64, Math.min(220, avail - 45));
     const cardW = Math.round(wide ? cardH * 16 / 9 : cardH * 2 / 3);
-    const count = Math.max(1, Math.floor((W - 24 - 68 + 8) / (cardW + 8)));
+    // The pager allowance is only charged on levels that HAVE pagers — the New
+    // shelf has none, and billing it a phantom 68px cost a whole poster at 1280.
+    const count = Math.max(1, Math.floor((W - 24 - (pagers === false ? 0 : 68) + 8) / (cardW + 8)));
     return { cardH, count };
   }
 
+  // Null on failure, NOT [] — a discovery that failed is not an empty server, and
+  // caching it as one would hide every library until the widget reloads. The caller
+  // leaves browse.tabs null so renderPlayer retries, gated by tabsFailedAt.
   async function loadTabs() {
     try {
       const body = await jfJson('/Library/MediaFolders', 12000, 256 * 1024);
@@ -845,7 +855,7 @@
         .map((f) => ({ id: String(f.Id), name: String(f.Name || '?'), tv: f.CollectionType === 'tvshows' }));
     } catch (e) {
       WW.log('jellyfin: libraries: ' + (e && e.message));
-      return [];
+      return null;
     }
   }
 
@@ -858,6 +868,14 @@
       if (!browse.tabs) {
         const tabs = await loadTabs();
         if (gen !== browseGen) return;
+        if (!tabs) {
+          // Stay null → the render trigger retries, but not in a tight loop: the
+          // timestamp gate means the next attempt rides a LATER poll's render.
+          browse.tabsFailedAt = Date.now();
+          browse.loading = false;
+          renderPlayer();
+          return;
+        }
         browse.tabs = tabs;
         if (browse.tab !== 'new' && !activeTab()) browse.tab = 'new';
       }
@@ -959,6 +977,7 @@
     if (!tab) return;
     const grid = el('chGrid');
     grid.textContent = '';
+    el('chTitle').textContent = 'Genre';   // the sheet is shared with the library list
     el('chooser').hidden = false;
     let names = browse.genres && browse.genres.get(tab.id);
     if (!names) {
@@ -1002,6 +1021,24 @@
     }
   }
 
+  // The chooser sheet doubles as the overflow home for library tabs that did not
+  // fit the row: same surface, same pills, picking switches tabs.
+  function openLibraryChooser() {
+    const grid = el('chGrid');
+    grid.textContent = '';
+    el('chTitle').textContent = 'Library';
+    el('chooser').hidden = false;
+    const mk = (id, name) => {
+      const b = document.createElement('button');
+      b.className = 'btn no-pan' + (browse.tab === id ? ' on' : '');
+      b.textContent = name;
+      b.addEventListener('click', () => { el('chooser').hidden = true; setTab(id); });
+      grid.appendChild(b);
+    };
+    mk('new', 'New');
+    for (const t of browse.tabs || []) mk(t.id, t.name);
+  }
+
   el('pback').addEventListener('click', browseBack);
   el('pprev').addEventListener('click', () => flipPage(-1));
   el('pnext').addEventListener('click', () => flipPage(1));
@@ -1031,6 +1068,22 @@
       };
       mk('new', 'New');
       for (const t of browse.tabs || []) mk(t.id, t.name);
+      // Enough libraries (or long names, or a half tile) overflow the row, and the
+      // row cannot pan — no-pan means touch-action:none here — so the tail collapses
+      // behind a ⋯ that opens the full library list as a sheet. Every library stays
+      // one or two taps away; clipping one off the edge would strand it. Measured,
+      // not guessed: the caller unhides the Player before this runs.
+      if (tabsEl.scrollWidth > tabsEl.clientWidth + 1) {
+        const more = document.createElement('button');
+        more.className = 'btn no-pan';
+        more.textContent = '⋯';
+        more.setAttribute('aria-label', 'All libraries');
+        more.addEventListener('click', openLibraryChooser);
+        tabsEl.appendChild(more);
+        while (tabsEl.scrollWidth > tabsEl.clientWidth + 1 && tabsEl.children.length > 2) {
+          tabsEl.removeChild(more.previousSibling);
+        }
+      }
     }
     const filterable = browse.tab !== 'new' && !drilled && !!activeTab();
     el('psort').hidden = !filterable;
@@ -1098,16 +1151,21 @@
     el('axis').hidden = true;
 
     // The library tabs are fetched on the view's first paint — after that, renders
-    // are pure and fetches happen only when a tap changes the question.
-    if (browse.tabs === null && !browse.loading) {
+    // are pure and fetches happen only when a tap changes the question. A FAILED
+    // discovery leaves tabs null with a timestamp: the retry rides a later render
+    // (the poll loop provides them) instead of spinning in place.
+    if (browse.tabs === null && !browse.loading
+        && Date.now() - (browse.tabsFailedAt || 0) > 30000) {
       loadBrowse();
       return;
     }
 
-    renderBar();
+    // Unhide BEFORE the bar renders: the tab-overflow pass measures real widths,
+    // and a hidden element measures zero.
     el('state').hidden = true;
     el('player').hidden = false;
     document.querySelector('footer').hidden = false;
+    renderBar();
 
     if (browse.tab === 'new') {
       el('pprev').hidden = true;
@@ -1122,11 +1180,26 @@
 
     const lv = level();
     const wide = lv === 'season';
-    // Local lists (seasons, episodes) slice here; server lists arrive pre-sliced.
-    browse.pageSize = playerBudget(wide).count;
-    const items = browse.all
-      ? browse.all.slice(browse.page * browse.pageSize, (browse.page + 1) * browse.pageSize)
-      : browse.items;
+    const measured = playerBudget(wide).count;
+    let items;
+    if (browse.all) {
+      // Local lists (seasons, episodes) re-slice freely at whatever now fits.
+      browse.pageSize = measured;
+      const localPages = Math.max(1, Math.ceil(browse.total / Math.max(1, measured)));
+      if (browse.page > localPages - 1) browse.page = localPages - 1;
+      items = browse.all.slice(browse.page * measured, (browse.page + 1) * measured);
+    } else {
+      // A server page was fetched under a specific size. If the tile was resized
+      // since (the on-panel editor does this in place), silently reusing the page
+      // number under a new size would skip or repeat records — refetch around the
+      // same first record instead, and only ever from a settled state.
+      if (!browse.loading && !browse.error && browse.total && measured !== browse.pageSize) {
+        browse.page = Math.floor((browse.page * browse.pageSize) / Math.max(1, measured));
+        loadBrowse();
+        return;
+      }
+      items = browse.items;
+    }
 
     const pages = Math.max(1, Math.ceil(browse.total / Math.max(1, browse.pageSize)));
     const paged = pages > 1 && !browse.loading && !browse.error;
@@ -1158,21 +1231,22 @@
   function renderNewShelf(stale, pill) {
     if (!latest.length) {
       // An unfetched shelf is not an empty library: only a shelf that has actually
-      // answered gets to claim there is nothing in it.
-      if (!latestAt) {
-        stateCard('', '▷', 'Loading the shelf',
-          "The recently-added list hasn't answered yet — retrying.");
-      } else {
-        stateCard('', '▷', 'Nothing to play yet',
-          'The recently-added shelf fills in as titles land in '
+      // answered gets to claim there is nothing in it. Either way the note lives IN
+      // THE STRIP — a state card would hide the whole Player, tabs included, and an
+      // empty New shelf must never wall off a full Movies library one tap away.
+      stripNote(!latestAt
+        ? "The recently-added list hasn't answered yet — retrying."
+        : 'Nothing new lately — this shelf fills in as titles land in '
           + ((server && server.name) || 'Jellyfin') + "'s library.");
-      }
+      el('counts').textContent = '';
+      el('meta').textContent = '';
+      el('player').classList.remove('stale-sec');
       if (stale) { pill.hidden = false; pill.textContent = 'Stale'; pill.className = 'pill muted'; }
       else pill.hidden = true;
       return;
     }
 
-    const budget = playerBudget(false);
+    const budget = playerBudget(false, false);
     const built = buildStrip(latest.slice(0, budget.count), {
       onTap: (item) => openItem(item, null),
     });
