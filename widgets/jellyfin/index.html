@@ -915,9 +915,15 @@
         // one 200-item response, and truncating there would strand every later
         // episode and stop auto-advance at an invisible wall. The 1000 cap
         // bounds a pathological library; the footer counts what actually loaded.
+        // IsMissing=false: Jellyfin keeps virtual placeholders for unaired and
+        // missing episodes (and all-missing seasons). With a server key there is
+        // no user preference filtering them, so without this a weekly show lists
+        // next month's episodes as un-playable cards — and auto-advance would roll
+        // a finished binge straight into one. (Not IsVirtualItem=false: folderless
+        // but present seasons are virtual-location and must stay.)
         const whole = '/Items?ParentId=' + encodeURIComponent(browse.path[browse.path.length - 1].id)
           + '&IncludeItemTypes=' + (lv === 'series' ? 'Season' : 'Episode')
-          + '&SortBy=IndexNumber&SortOrder=Ascending&Limit=200';
+          + '&SortBy=IndexNumber&SortOrder=Ascending&IsMissing=false&Limit=200';
         const all = [];
         for (;;) {
           const page = await jfJson(whole + (all.length ? '&StartIndex=' + all.length : ''),
@@ -1234,7 +1240,11 @@
     // A browse answer landing after the view switched away must not paint the Player
     // over the overview (or the setup card) — the view switch does not orphan
     // browseGen, deliberately: the browse state is still good when the user returns.
-    if (cfg.view !== 'player') return;
+    // The identity half matters too: an identity change with the theater open runs
+    // stopPlayback → render → here → loadBrowse with a POST-reset gen, and if the
+    // new identity is incomplete that completion would repaint over 'Not configured
+    // yet' with polling stopped — nothing would ever paint over it back.
+    if (cfg.view !== 'player' || !cfg.base || !cfg.key) return;
     el('main').hidden = true;
     const stale = document.body.classList.contains('stale');
     const pill = el('pill');
