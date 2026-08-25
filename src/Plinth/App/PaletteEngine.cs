@@ -17,6 +17,11 @@ public static class PaletteEngine
     private const double DimContrast = 3.0;
     private const double StateContrast = 4.5;
 
+    /// <summary>Opacity of the settings sheets (#propSheet / #stylePanel in shell.css) that
+    /// carry muted body text over the wallpaper. Kept in lockstep with palette.js's
+    /// SHEET_ALPHA — see <see cref="GlassSurfaces"/> and issue #217.</summary>
+    private const double SheetAlpha = 0.94;
+
     public static Dictionary<string, string> Derive(ThemeSpec? theme)
     {
         var spec = theme ?? new ThemeSpec();
@@ -44,7 +49,19 @@ public static class PaletteEngine
         // repaired against both of its surfaces in one pass — sequential repairs can
         // flip direction between mid-tone surfaces and undo the first guarantee.
         text = EnsureContrast(text, surface, TextContrast);
-        muted = EnsureContrast(muted, [surface, surfaceAlt], MutedContrast);
+        // Muted also renders on the GLASS settings sheets, which composite the surface with
+        // the wallpaper (#217), so it is repaired against those float composites too (see
+        // GlassSurfaces) — otherwise a role that clears 4.5:1 on the opaque surface drops
+        // below it over a bright or dark wallpaper. But muted is painted on the OPAQUE
+        // surfaces of widgets far more than on the sheet, so the glass repair must never
+        // regress that: when the glass constraints are jointly unreachable, the fallback can
+        // pick a pole that fixes the sheet while dropping below 4.5 on an opaque surface.
+        // Keep the glass repair only when it holds the opaque contrast at least as high as
+        // the opaque-only repair; otherwise fall back to the opaque guarantee.
+        var mutedOpaque = EnsureContrast(muted, [surface, surfaceAlt], MutedContrast);
+        var mutedGlass = EnsureContrastF(muted, GlassSurfaces(surface, surfaceAlt), MutedContrast);
+        double OpaqueMin((byte r, byte g, byte b) m) => Math.Min(Contrast(m, surface), Contrast(m, surfaceAlt));
+        muted = OpaqueMin(mutedGlass) >= OpaqueMin(mutedOpaque) ? mutedGlass : mutedOpaque;
         dim = EnsureContrast(dim, surface, DimContrast);
 
         // State colors: fixed hues repaired for the theme's surfaces — including the
@@ -115,10 +132,48 @@ public static class PaletteEngine
     private static string Rgb((byte r, byte g, byte b) c) => $"{c.r}, {c.g}, {c.b}";
     private static string Tint((byte r, byte g, byte b) c) => $"rgba({c.r}, {c.g}, {c.b}, 0.14)";
 
+    // MidpointRounding.AwayFromZero, NOT Math.Round's default banker's rounding: JavaScript's
+    // Math.round in palette.js rounds halves up, and channel values are never negative, so
+    // away-from-zero is the same rule. Without this the two engines disagree on exact .5
+    // ties by a channel — and once a tie feeds the contrast-pole choice for muted, that can
+    // flip the emitted colour between black and white, so the C# host palette and the JS
+    // settings preview would show the same theme differently (#217 review).
     private static (byte r, byte g, byte b) Mix((byte r, byte g, byte b) a, (byte r, byte g, byte b) b, double t) =>
-        ((byte)Math.Round(a.r + (b.r - a.r) * t),
-         (byte)Math.Round(a.g + (b.g - a.g) * t),
-         (byte)Math.Round(a.b + (b.b - a.b) * t));
+        ((byte)Math.Round(a.r + (b.r - a.r) * t, MidpointRounding.AwayFromZero),
+         (byte)Math.Round(a.g + (b.g - a.g) * t, MidpointRounding.AwayFromZero),
+         (byte)Math.Round(a.b + (b.b - a.b) * t, MidpointRounding.AwayFromZero));
+
+    // A composite background used ONLY for measuring contrast, kept in floating point (#217
+    // review): the browser paints the glass sheet with fractional channels, so rounding the
+    // synthetic composite to bytes before measuring can accept a muted colour that renders
+    // just under 4.5:1 on the real sheet. Emitted colours still go through Mix and round.
+    private static (double r, double g, double b) MixF(
+        (double r, double g, double b) a, (double r, double g, double b) b, double t) =>
+        (a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t);
+
+    private static (double r, double g, double b) ToDouble((byte r, byte g, byte b) c) => (c.r, c.g, c.b);
+
+    /// <summary>
+    /// The surfaces muted text must clear (#217): the two OPAQUE surfaces widgets paint it
+    /// on, PLUS the glass composite. Every settings sheet that carries muted body text
+    /// (#propSheet / #stylePanel: .ps-help, labels, hints) paints <c>--surface</c> at 94%
+    /// opacity over the wallpaper — a sibling behind the glass, not an ancestor — so muted
+    /// there renders over <c>--surface</c> composited with whatever the wallpaper is.
+    /// Compositing <c>--surface</c> over pure white AND pure black at the sheet alpha
+    /// brackets any wallpaper, and the multi-surface EnsureContrast repairs against the
+    /// worst of them. (The more transparent chrome surfaces, 70–88%,
+    /// all carry <c>--text</c>, the 7:1 tier, not muted, so only the 94% sheet matters.
+    /// Mirrors palette.js's glassSurfaces.)
+    /// </summary>
+    private static (double r, double g, double b)[] GlassSurfaces(
+        (byte r, byte g, byte b) surface, (byte r, byte g, byte b) surfaceAlt)
+    {
+        var s = ToDouble(surface);
+        var white = (255.0, 255.0, 255.0);
+        var black = (0.0, 0.0, 0.0);
+        return [ToDouble(surface), ToDouble(surfaceAlt),
+            MixF(s, white, 1 - SheetAlpha), MixF(s, black, 1 - SheetAlpha)];
+    }
 
     private static double Luminance((byte r, byte g, byte b) c)
     {
@@ -136,6 +191,35 @@ public static class PaletteEngine
         var lb = Luminance(b);
         var (hi, lo) = la > lb ? (la, lb) : (lb, la);
         return (hi + 0.05) / (lo + 0.05);
+    }
+
+    // Double-precision twins, used to measure a byte foreground against the FLOAT glass
+    // composites (#217 review). Same formulae as the byte versions — only the channel type
+    // differs — so a colour that passes here passes on the fractionally-composited sheet.
+    private static double Luminance((double r, double g, double b) c)
+    {
+        static double Channel(double v)
+        {
+            var s = v / 255.0;
+            return s <= 0.03928 ? s / 12.92 : Math.Pow((s + 0.055) / 1.055, 2.4);
+        }
+        return 0.2126 * Channel(c.r) + 0.7152 * Channel(c.g) + 0.0722 * Channel(c.b);
+    }
+
+    private static double Contrast((byte r, byte g, byte b) fg, (double r, double g, double b) bg)
+    {
+        var la = Luminance(fg);
+        var lb = Luminance(bg);
+        var (hi, lo) = la > lb ? (la, lb) : (lb, la);
+        return (hi + 0.05) / (lo + 0.05);
+    }
+
+    private static double MinContrastF((byte r, byte g, byte b) c, (double r, double g, double b)[] surfaces)
+    {
+        var min = double.MaxValue;
+        foreach (var s in surfaces)
+            min = Math.Min(min, Contrast(c, s));
+        return min;
     }
 
     /// <summary>
@@ -226,6 +310,44 @@ public static class PaletteEngine
         {
             var mid = (lo + hi) / 2;
             if (MinContrast(Mix(color, pole, mid)) >= target)
+                hi = mid;
+            else
+                lo = mid;
+        }
+        return Mix(color, pole, hi);
+    }
+
+    /// <summary>
+    /// Multi-surface repair against FLOAT backgrounds — the glass composites (#217 review),
+    /// which the browser paints with fractional channels. The emitted colour is still a byte
+    /// colour (Mix rounds); only the surfaces it is measured against stay in double, so the
+    /// byte result clears the ratio as actually rendered. Mirrors the byte EnsureContrast; a
+    /// distinct NAME rather than an overload, because a `[surface, surfaceAlt]` collection
+    /// expression would otherwise be an ambiguous match for both the byte and double array
+    /// parameters (CS0121).
+    /// </summary>
+    private static (byte r, byte g, byte b) EnsureContrastF(
+        (byte r, byte g, byte b) color, (double r, double g, double b)[] surfaces, double target)
+    {
+        if (MinContrastF(color, surfaces) >= target)
+            return color;
+
+        var towardWhite = Luminance(surfaces[0]) < 0.5;
+        var pole = towardWhite ? ((byte)0xff, (byte)0xff, (byte)0xff) : ((byte)0x00, (byte)0x00, (byte)0x00);
+        if (MinContrastF(pole, surfaces) < target)
+        {
+            var opposite = towardWhite ? ((byte)0x00, (byte)0x00, (byte)0x00) : ((byte)0xff, (byte)0xff, (byte)0xff);
+            if (MinContrastF(opposite, surfaces) > MinContrastF(pole, surfaces))
+                pole = opposite;
+            if (MinContrastF(pole, surfaces) < target)
+                return pole;
+        }
+
+        double lo = 0, hi = 1;
+        for (var i = 0; i < 18; i++)
+        {
+            var mid = (lo + hi) / 2;
+            if (MinContrastF(Mix(color, pole, mid), surfaces) >= target)
                 hi = mid;
             else
                 lo = mid;

@@ -60,6 +60,14 @@
       }
       return c;
     };
+    // A background used only for MEASURING contrast, kept in floating point (#217): the
+    // browser composites the glass settings sheet with fractional channels, so rounding a
+    // synthetic composite to bytes before measuring could accept a muted colour that
+    // renders just under 4.5:1 on the real sheet. `mixc` still rounds every EMITTED colour;
+    // only these measurement backgrounds stay unrounded.
+    const mixf = (a, b, t) => [0, 1, 2].map((i) => a[i] + (b[i] - a[i]) * t);
+    const minCon = (c, surfaces) => Math.min.apply(null, surfaces.map((s) => contrastc(c, s)));
+
     const hexOf = (c) => '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('');
     const rgbOf = (c) => c[0] + ', ' + c[1] + ', ' + c[2];
     const tintOf = (c) => 'rgba(' + c[0] + ', ' + c[1] + ', ' + c[2] + ', 0.14)';
@@ -76,7 +84,29 @@
     let dim = mixc(text, surface, 0.60);
     const line = mixc(text, surface, 0.78);
     text = ensure(text, [surface], 7.0);
-    muted = ensure(muted, [surface, surfaceAlt], 4.5);
+    // #217 — the settings sheets (#propSheet / #stylePanel in shell.css) paint --surface at
+    // ~94% opacity over the user's wallpaper, a SIBLING behind the glass, not an ancestor.
+    // So muted text there renders over surface COMPOSITED with the wallpaper, not the opaque
+    // surface, and a role that clears 4.5:1 on the opaque surface can fall below it once a
+    // bright (or dark) wallpaper bleeds through the 6% that is not surface. Repair against
+    // the surface composited over BOTH extremes (in float, so the emitted byte muted clears
+    // the ratio as actually rendered), bracketing any wallpaper. (0.94 is the sheet opacity;
+    // more opaque surfaces bleed less and are covered a fortiori. The 70–88% chrome carries
+    // --text, the 7:1 tier, not muted. Keep SHEET_ALPHA in lockstep with PaletteEngine.cs.)
+    //
+    // Muted is painted on the OPAQUE surfaces of widgets far more than on the sheet, so the
+    // glass repair must never REGRESS that. When the added glass constraints are jointly
+    // unreachable, ensure's fallback can pick a pole that satisfies the sheet while dropping
+    // muted below 4.5 on an opaque surface — an accessibility loss everywhere, to fix one
+    // sheet. Keep the glass repair only when it holds the opaque contrast at least as high
+    // as the opaque-only repair; otherwise fall back to the opaque guarantee.
+    const SHEET_ALPHA = 0.94;
+    const opaqueSurf = [surface, surfaceAlt];
+    const glassSurf = [surface, surfaceAlt,
+      mixf(surface, WHITE, 1 - SHEET_ALPHA), mixf(surface, BLACK, 1 - SHEET_ALPHA)];
+    const mutedOpaque = ensure(muted, opaqueSurf, 4.5);
+    const mutedGlass = ensure(muted, glassSurf, 4.5);
+    muted = minCon(mutedGlass, opaqueSurf) >= minCon(mutedOpaque, opaqueSurf) ? mutedGlass : mutedOpaque;
     dim = ensure(dim, [surface], 3.0);
     const ok = ensureState([0x45, 0xd4, 0x83], surface, surfaceAlt);
     const warn = ensureState([0xff, 0xae, 0x52], surface, surfaceAlt);

@@ -245,6 +245,29 @@ const widgets = [{
     JSON.stringify({ ratio: Math.round(contrast.ratio * 100) / 100,
       exact: contrast.exact, bounds: contrast.bounds, fontPx: contrast.fontPx, color: contrast.color }));
 
+  // N13f · #217 — N13e above measures the DEFAULT theme, whose muted carries headroom. A
+  // USER-derived palette tuned toward the floor is a supported configuration nothing here
+  // measured: the harness never pushed custom palette tokens, so the bound spoke only for
+  // the stock theme. Push a floor-tuned theme's DERIVED tokens onto :root and re-measure
+  // the same help text. Pre-fix, the palette engine repairs muted only against the OPAQUE
+  // surface, so behind the 94% sheet it falls below 4.5 the moment contrast.js brackets
+  // the wallpaper — this check fails against the pre-fix engine and passes once the derive
+  // repairs against the composited extremes. Tokens are reset after, so the checks below
+  // still see the stock chrome.
+  const wwpal = {};
+  new Function('window', fs.readFileSync(path.join(SHELL, 'palette.js'), 'utf8'))(wwpal);
+  const floorTokens = wwpal.WWPalette.derive({ accent: '#5fd08a', background: '#16220f', text: '#e6ecdf' });
+  await page.evaluate((tok) => {
+    window.__savedRootStyle = document.documentElement.getAttribute('style') || '';
+    for (const [k, v] of Object.entries(tok)) document.documentElement.style.setProperty(k, v);
+  }, floorTokens);
+  const floorContrast = await textContrast(tokenHelp);
+  await page.evaluate(() => { document.documentElement.setAttribute('style', window.__savedRootStyle); });
+  check(`N13f a floor-tuned custom palette keeps .ps-help legible behind the sheet (#217)`,
+    floorContrast.ratio >= AA_NORMAL && floorContrast.fontPx < LARGE_TEXT_PX,
+    JSON.stringify({ ratio: Math.round(floorContrast.ratio * 100) / 100, muted: floorTokens['--text-muted'],
+      exact: floorContrast.exact, bounds: floorContrast.bounds, color: floorContrast.color }));
+
   check('N13d a property without help grows no empty stub',
     await page.locator('#psRows .ps-field').filter({ hasText: 'Repository' })
       .locator('.ps-help').count() === 0);
