@@ -1030,6 +1030,11 @@
     // as the library list, or a server change all bump it, so a slow /Genres answer
     // can never repaint a sheet that has moved on.
     const session = ++chooserSession;
+    // The cache write gets its own, stricter gate: browseGen. Closing the sheet
+    // mid-flight bumps the session but the ANSWER is still this server's — worth
+    // keeping for the next open. An identity change bumps browseGen too, and that
+    // answer must not be cached: a migrated server can reuse the same library id.
+    const bgen = browseGen;
     const grid = el('chGrid');
     grid.textContent = '';
     el('chTitle').textContent = 'Genre';   // the sheet is shared with the library list
@@ -1045,13 +1050,30 @@
     if (!names) {
       note('Loading genres…');
       try {
-        const body = await jfJson('/Genres?ParentId=' + encodeURIComponent(tab.id)
-          + '&SortBy=SortName&SortOrder=Ascending&Limit=100', 12000, 256 * 1024);
-        names = ((body && body.Items) || []).map((g) => String((g && g.Name) || '')).filter(Boolean);
+        // Follow the server's pages like the episode list does — a music library
+        // can report hundreds of genres, and caching page one as the whole list
+        // would hide the rest for the widget's lifetime. 300 bounds the sheet.
+        const base = '/Genres?ParentId=' + encodeURIComponent(tab.id)
+          + '&SortBy=SortName&SortOrder=Ascending&Limit=100';
+        const got = [];
+        let fetched = 0;
+        for (;;) {
+          const body = await jfJson(base + (fetched ? '&StartIndex=' + fetched : ''),
+            12000, 256 * 1024);
+          const raw = (body && body.Items) || [];
+          fetched += raw.length;
+          got.push(...raw.map((g) => String((g && g.Name) || '')).filter(Boolean));
+          const reported = body && body.TotalRecordCount != null
+            ? Number(body.TotalRecordCount) : fetched;
+          if (!raw.length || fetched >= reported || fetched >= 300) break;
+        }
+        names = got;
         // Only an ANSWER is cached. A timeout cached as [] would read 'no genres
         // reported' for the rest of the session, with reopening no longer a retry.
-        browse.genres = browse.genres || new Map();
-        browse.genres.set(tab.id, names);
+        if (bgen === browseGen) {
+          browse.genres = browse.genres || new Map();
+          browse.genres.set(tab.id, names);
+        }
       } catch (e) {
         fault = faultText((e && e.kind) || '', e && e.status);
       }
