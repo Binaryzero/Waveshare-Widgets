@@ -359,6 +359,14 @@
       // origin says the widget is still the one in it.
       const widgetId = sender.def && sender.def.widgetId;
       if (!widgetId) return;
+      // #226 — the store scopes per INSTANCE under the widget id, so the slot's instanceId
+      // travels alongside widgetId, stamped by the shell from the SAME slot and never taken
+      // from the message: a widget naming its own instance could name another tile's bucket.
+      // An added tile has an id from placement; a never-edited legacy tile has none yet, and
+      // rather than fall back to a positional scope (which #68 forbids for a credential) the
+      // empty id is forwarded so the host answers `bad-scope` and the widget keeps its token
+      // in memory — the same fallback it takes when sealing is unavailable.
+      const instanceId = (sender.def && sender.def.instanceId) || '';
       // The settings preview answers here and forwards NOTHING. Two reasons, and the
       // second is why it is answered rather than dropped: the replica must never read
       // or write a live credential (it is a layout editor, and its widgets run outside
@@ -386,6 +394,7 @@
         type: msg.type.slice(3),          // ww-secure-get -> secure-get
         id: msg.id,
         widgetId,
+        instanceId,
         key: typeof msg.key === 'string' ? msg.key : '',
         value: typeof msg.value === 'string' ? msg.value : '',
       });

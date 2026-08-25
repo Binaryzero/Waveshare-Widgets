@@ -148,7 +148,7 @@ WW.log(message)                                // writes to the host app.log
 
 // Network
 WW.fetch(url, init)  // -> Promise<Response>; fetch with bot-wall/CORS relief
-WW.secureGet(key)          // -> Promise<string|null>   protected store, per widget
+WW.secureGet(key)          // -> Promise<string|null>   protected store, per instance
 WW.secureSet(key, value)   // -> Promise<{ok, error}>   CHECK ok — see below
 WW.secureDelete(key)       // -> Promise<{ok}>
 WW.ping(hosts)       // -> Promise<[{host, ok, rttMs?, error?}]>; real ICMP via the host
@@ -297,7 +297,7 @@ Widget → shell:
 | `ww-media-list` | `id` | list the user's media folder (images + videos) |
 | `ww-audio-get` | `id` | snapshot the Windows volume mixer (master + per-app sessions) |
 | `ww-audio-set` | `target, level?, muted?` | set master or per-session volume/mute |
-| `ww-secure-get` / `ww-secure-set` / `ww-secure-delete` | `id, key, value?` | the widget's protected store; the shell stamps `widgetId` from the sending slot |
+| `ww-secure-get` / `ww-secure-set` / `ww-secure-delete` | `id, key, value?` | the widget's protected store, scoped per instance; the shell stamps `widgetId` and `instanceId` from the sending slot |
 | `ww-sd-profile` | `profileName, hideWindow, live` | request the Virtual Stream Deck mirror; `live` adds a window screenshot |
 | `ww-sd-capture` | – | capture-only fast path (no profile re-parse; host dedups unchanged frames) |
 | `ww-sd-click` | `row, col, rows, cols` | trigger the VSD key at that grid cell |

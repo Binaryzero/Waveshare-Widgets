@@ -25,7 +25,8 @@
 //   P5 · secureDelete succeeds — nothing is stored, so the caller's intent holds
 //   P6 · NOTHING secure-* is posted up: the preview never names a scope to anyone
 //   P7 · the SAME widget code in a non-preview shell DOES reach the host — without this,
-//        P6 would pass just as well if the branch never worked at all
+//        P6 would pass just as well if the branch never worked at all — carrying both
+//        scopes the shell stamps from the slot: the widget id and the #226 instance id
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -222,10 +223,15 @@ const PARENT_HTML = `<!DOCTYPE html><meta charset="utf-8">
     check('P7 the same call in a real panel DOES reach the host',
       secure.length === 1 && secure[0].type === 'secure-get',
       JSON.stringify(secure.map((m) => m.type)));
-    // ...carrying the scope the SHELL stamped, which is the property the store rests on.
+    // ...carrying the scope the SHELL stamped, which is the property the store rests on:
+    // both the widget id and, since #226, the per-tile instance id — each taken from the
+    // slot that sent the message, never named by the widget.
     check('P7b ...scoped by the widget id the shell stamped, not by the widget',
       secure.length === 1 && secure[0].widgetId === 'test.oauth',
       secure.length ? String(secure[0].widgetId) : '(none)');
+    check('P7c ...and by the instanceId the shell stamped from the slot',
+      secure.length === 1 && secure[0].instanceId === 'o1',
+      secure.length ? String(secure[0].instanceId) : '(none)');
   }
 
   await browser.close();

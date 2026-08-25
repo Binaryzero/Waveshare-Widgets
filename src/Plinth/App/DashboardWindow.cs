@@ -985,15 +985,17 @@ public sealed class DashboardWindow : Form
     private static readonly object SecureStoreGate = new();
 
     /// <summary>
-    /// The widget-scoped protected store (#175): secure-get / secure-set / secure-delete.
+    /// The per-instance protected store (#175, re-scoped in #226): secure-get / secure-set / secure-delete.
     ///
-    /// <para>THE SCOPE COMES FROM THE SHELL, never from the widget. `widgetId` on this
-    /// message is stamped by shell.js from the SLOT that sent it — a slot it identified by
-    /// WindowProxy identity and re-checked by origin — because a widget naming its own
-    /// scope could name another widget's and read its tokens. That is the whole security
-    /// property here, and it is the same reasoning the shell's bridge already applies to
-    /// every other channel; the host cannot re-derive it, because by the time a message
-    /// arrives here the sender is the shell.</para>
+    /// <para>THE SCOPE COMES FROM THE SHELL, never from the widget. Both `widgetId` and
+    /// `instanceId` on this message are stamped by shell.js from the SLOT that sent it — a
+    /// slot it identified by WindowProxy identity and re-checked by origin — because a
+    /// widget naming its own scope could name another tile's and read its tokens. The store
+    /// scopes per instance under the widget id (#226); the host passes both through and
+    /// re-validates neither's provenance, because that provenance is the shell's to
+    /// establish and the host cannot re-derive it: by the time a message arrives here the
+    /// sender is the shell. An absent/blank instance id is refused downstream as a bad
+    /// scope, never widened into a shared bucket.</para>
     ///
     /// <para>Deliberately NOT routed in <see cref="HandlePreviewRequest"/>. The settings
     /// preview runs widget code outside a slot, so it has no trustworthy scope to be given
@@ -1004,6 +1006,7 @@ public sealed class DashboardWindow : Form
         var id = message?["id"]?.GetValue<string>() ?? "";
         var type = message?["type"]?.GetValue<string>() ?? "";
         var widgetId = message?["widgetId"]?.GetValue<string>();
+        var instanceId = message?["instanceId"]?.GetValue<string>();
         var key = message?["key"]?.GetValue<string>();
         var result = new JsonObject { ["id"] = id };
 
@@ -1016,7 +1019,7 @@ public sealed class DashboardWindow : Form
                 switch (type)
                 {
                     case "secure-get":
-                        var value = WidgetSecrets.Get(doc, widgetId, key);
+                        var value = WidgetSecrets.Get(doc, widgetId, instanceId, key);
                         result["ok"] = true;
                         // Absent and unreadable are one answer on purpose: in both cases
                         // the widget's next move is to go and get a new credential.
@@ -1024,7 +1027,7 @@ public sealed class DashboardWindow : Form
                         break;
 
                     case "secure-set":
-                        var wrote = WidgetSecrets.Set(doc, widgetId, key, message?["value"]?.GetValue<string>());
+                        var wrote = WidgetSecrets.Set(doc, widgetId, instanceId, key, message?["value"]?.GetValue<string>());
                         result["ok"] = wrote == WidgetSecrets.WriteResult.Ok;
                         if (wrote == WidgetSecrets.WriteResult.Ok)
                         {
@@ -1044,7 +1047,7 @@ public sealed class DashboardWindow : Form
                         break;
 
                     case "secure-delete":
-                        if (WidgetSecrets.Delete(doc, widgetId, key))
+                        if (WidgetSecrets.Delete(doc, widgetId, instanceId, key))
                         {
                             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                             DurableStore.Write(path, WidgetSecrets.Serialize(doc));

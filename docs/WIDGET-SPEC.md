@@ -121,7 +121,7 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   credential too, and `localStorage` is a plaintext file in the same WebView profile.
   Putting it there hands back exactly what the sealing withholds. Use `WW.secureSet` /
   `WW.secureGet` / `WW.secureDelete`, which seal the value with the same DPAPI envelope
-  and scope it to your widget id.
+  and scope it to this tile.
 
   Two rules that come with it. **Check the `ok` a set resolves with**: `error:
   'unavailable'` means protection is not working on this machine and *nothing was
@@ -130,9 +130,11 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   **a store is not a cache to lean on**: treat a missing value as normal (another
   machine, a cleared store, an expired entry) and be able to re-authenticate.
 
-  The store is scoped **per widget id**, matching the origin your virtual host already
-  gives you — two tiles of your widget share it, another widget can never read it.
-  Values are capped at 8 KiB and 16 keys per widget; keys are letters, digits, `.`, `-`
+  The store is scoped **per instance** — this tile's own bucket. Two tiles of your widget
+  each keep their own credentials, and another widget can never read either. (It was
+  shared per widget id before #226; a derived token is a credential, so a cloned or
+  replaced tile now starts without the last tile's token rather than inheriting it.)
+  Values are capped at 8 KiB and 16 keys per instance; keys are letters, digits, `.`, `-`
   and `_`, up to 64 characters.
 
   **In the settings preview the store is always empty**, and says so immediately: a get

@@ -85,11 +85,14 @@ public sealed class LayoutSlot
 {
     [JsonPropertyName("widgetId")] public string WidgetId { get; set; } = "";
 
-    /// <summary>Immutable per-instance identity backing widget-local storage keys
-    /// (the iCUE `uniqueId`). Assigned by the shell on first on-panel edit — adopting
-    /// the positional tag the instance is already running under, so stored widget
-    /// state survives rearranging. Null on layouts that were never edited on-panel
-    /// (identity stays positional, exactly as before).</summary>
+    /// <summary>Immutable per-instance identity backing widget-local storage keys and the
+    /// per-instance credential scope (the iCUE `uniqueId`). Assigned by the shell on add and
+    /// frozen on first on-panel edit — adopting the positional tag the instance is already
+    /// running under, so stored widget state survives rearranging. Null on layouts that were
+    /// never edited on-panel (identity stays positional, exactly as before); the per-instance
+    /// credential store (#226) keys on it and refuses to store under an absent id rather than
+    /// address a credential by grid position (#68), so an unedited legacy tile simply keeps
+    /// its derived token in memory until it acquires an id the ordinary way.</summary>
     [JsonPropertyName("instanceId")] public string? InstanceId { get; set; }
 
     /// <summary>Hide this widget while a fullscreen game is in the foreground —
