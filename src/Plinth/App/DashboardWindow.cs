@@ -1176,6 +1176,10 @@ public sealed class DashboardWindow : Form
             ["media"] = JsonSerializer.SerializeToNode(_hub.LatestMedia, BridgeJson),
             ["backgroundHost"] = BackgroundHost,
             ["theme"] = tokens,
+            // The relay credential rides the same payload as the revealed secrets:
+            // this channel already only reaches the dashboard shell, and the shell
+            // forwards it only to verified widget documents (ww-init). See MediaRelay.
+            ["mediaRelayToken"] = MediaRelay.Token,
             ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated, ["apiVersion"] = 1 },
             // What makes this document's generations distinguishable from the previous
             // document's. The shell counts from zero in every document, so without a base

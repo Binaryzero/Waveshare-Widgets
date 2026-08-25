@@ -189,13 +189,17 @@ self-signed certs like the Philips Hue bridge. Public hostnames always validate.
 Insecure LAN requests use HTTP/1.1 and are serialized through one connection per
 device — embedded TLS servers mishandle h2 offers and parallel handshakes.
 
-**Media relay (`stream.plinth`).** Media elements cannot load LAN URLs directly — the
-renderer's network gates (mixed content, Local Network Access) cancel them — so the
-host intercepts `https://stream.plinth/v?u=<encoded URL>[&insecure=1]` and streams the
-target itself, forwarding `Range` and the media headers. Targets are restricted to
-literal private-IP authorities some widget has already reached through the proxy this
-run; `insecure=1` applies the certificate-validation skip to that request only, so
-each widget instance's own setting governs its own streams.
+**Media relay (`stream.plinth` / `WW.mediaUrl`).** Media elements cannot load LAN
+URLs directly — the renderer's network gates (mixed content, Local Network Access)
+cancel them — so `WW.mediaUrl(url, { insecure })` builds a
+`https://stream.plinth/v?u=<encoded URL>[&insecure=1]&t=<token>` URL the host
+intercepts and streams itself, forwarding `Range` and the media headers. The `t`
+token is minted per app run and delivered only inside `ww-init` (which the shell
+sends exclusively to identity-and-origin-verified widget documents), so frames an
+embed widget hosts cannot use the relay. Targets are restricted to literal
+private-IP authorities some widget has already reached through the proxy this run;
+`insecure=1` applies the certificate-validation skip to that request only, so each
+widget instance's own setting governs its own streams.
 
 **Response headers survive the proxy hop, but only an allow-list of them.** The host
 carries back `ETag`, `Last-Modified`, `Retry-After`, `Link` and the `X-RateLimit-*`

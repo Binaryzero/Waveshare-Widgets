@@ -22,9 +22,8 @@ namespace Plinth.App;
 /// must be BOTH private (loopback or literal RFC1918/link-local IPv4 — the proxy's
 /// own policy) AND an authority some widget has already reached through the host
 /// proxy this run. Foreign pages have no path to the proxy — the shell refuses their
-/// origins — so they cannot mint entries; at worst they replay requests against a
-/// server a widget already uses, without its credentials, which any device on the
-/// LAN can do anyway.
+/// origins — so they cannot mint entries; and because the per-run <see cref="Token"/>
+/// gates every request, they cannot replay a widget's requests either.
 ///
 /// TLS policy is PER REQUEST, not per authority: the widget instance that builds the
 /// relay URL appends insecure=1 exactly when its own certificate setting says allow
@@ -36,6 +35,20 @@ namespace Plinth.App;
 internal static class MediaRelay
 {
     public const string Host = "stream.plinth";
+
+    /// <summary>
+    /// The per-run relay credential. Every relay request must carry it (t=), and it
+    /// travels ONE path: the dashboard init payload → the shell → each verified
+    /// widget document (the shell answers ww-init only to a slot frame whose
+    /// WindowProxy identity AND origin both check out — a channel descendant foreign
+    /// frames structurally cannot reach). That closes the review's replay concern:
+    /// an embedded internet page inside an Embed/YouTube/Twitch widget can name
+    /// stream.plinth but cannot present the token, so it gets 403 before any target
+    /// checks run. The settings editor channel is credential-free by design (secrets
+    /// are masked in its init), so the replica never receives the token — its widgets
+    /// run on masked settings and could not play media regardless.
+    /// </summary>
+    internal static readonly string Token = Guid.NewGuid().ToString("N");
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> AllowedAuthorities =
         new(StringComparer.OrdinalIgnoreCase);
@@ -156,6 +169,10 @@ internal static class MediaRelay
         if (request.Method != "GET" && request.Method != "HEAD")
             return Refuse(env, 405, "method " + request.Method);
         var outer = new Uri(request.Uri);
+        // The token gate comes first: a request from outside the widget channel is
+        // refused before any of its claims about a target are even parsed.
+        if (QueryValue(outer, "t") != Token)
+            return Refuse(env, 403, "missing or wrong relay token");
         if (!Uri.TryCreate(QueryValue(outer, "u"), UriKind.Absolute, out var target)
             || (target.Scheme != Uri.UriSchemeHttp && target.Scheme != Uri.UriSchemeHttps))
             return Refuse(env, 403, "no parseable http(s) target");

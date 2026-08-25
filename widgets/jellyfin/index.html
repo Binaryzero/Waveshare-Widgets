@@ -1003,14 +1003,13 @@
   // Media at a LAN address rides the HOST's stream relay instead of the renderer's
   // own network stack: four field rounds proved the renderer's gates (mixed content,
   // Local Network Access) kill direct requests to private IPs before a byte leaves,
-  // flag or no flag. The relay serves from https://stream.plinth/ — same secure
-  // plinth space as the widget, nothing left to gate — and THIS widget's own
+  // flag or no flag. WW.mediaUrl builds the relay URL — including the per-run token
+  // that proves a verified widget document is asking — and THIS widget's own
   // certificate setting travels with each request, so another instance's choice for
   // the same server never applies here. Named addresses stay direct: they face no
   // LAN gates and public https plays natively.
   function relayUrl(url) {
-    return 'https://stream.plinth/v?u=' + encodeURIComponent(url)
-      + (/^https:/i.test(cfg.base) && cfg.selfSigned ? '&insecure=1' : '');
+    return WW.mediaUrl(url, { insecure: /^https:/i.test(cfg.base) && cfg.selfSigned });
   }
 
   // One door onto pv.src: every attempt gets the startup deadline, and a mid-title

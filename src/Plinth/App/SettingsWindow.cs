@@ -67,9 +67,10 @@ public sealed class SettingsWindow : Form
             var core = _webView.CoreWebView2;
             core.Settings.IsStatusBarEnabled = false;
             core.Settings.IsZoomControlEnabled = false;
-            // The live replica runs real widget iframes, so LAN media needs the same
-            // host-side relay the panel uses (its allow-list is shared, host-wide).
-            MediaRelay.Attach(core);
+            // NO MediaRelay here, on purpose: the editor channel is credential-free
+            // by design — its init masks every secret — so the replica's widgets hold
+            // neither API keys nor the relay token, and could not play media anyway.
+            // Wiring the relay without the token would only be a 403 generator.
             WebViewEnvironment.MirrorRendererConsole(core);
             core.WebMessageReceived += OnWebMessageReceived;
             _hosts.MapFixed(core, ShellHost, AppPaths.ShellDir);
