@@ -108,8 +108,12 @@ internal static class MediaRelay
                 return;
             // The event arrives on the UI thread; the await hops off for the upstream
             // headers and the WinForms context brings the completion back, so the
-            // deferral completes where WebView2 expects it.
-            var deferral = e.GetDeferral();
+            // deferral completes where WebView2 expects it. This lambda is async
+            // void: ANY exception that escapes it is process death, so the deferral
+            // calls are guarded too — both race view teardown.
+            CoreWebView2Deferral deferral;
+            try { deferral = e.GetDeferral(); }
+            catch { return; }
             try
             {
                 e.Response = await BuildResponseAsync(core.Environment, e.Request);
@@ -129,7 +133,8 @@ internal static class MediaRelay
             }
             finally
             {
-                deferral.Complete();
+                try { deferral.Complete(); }
+                catch { /* already completed by teardown; nothing left to serve */ }
             }
         };
     }
@@ -213,7 +218,8 @@ internal static class MediaRelay
         Copy("Content-Range", response.Content.Headers.ContentRange?.ToString());
         Copy("Accept-Ranges", response.Headers.AcceptRanges.Count > 0 ? string.Join(", ", response.Headers.AcceptRanges) : null);
 
-        var body = request.Method == "HEAD" ? null : await response.Content.ReadAsStreamAsync();
+        var body = request.Method == "HEAD" ? null
+            : new GuardedStream(await response.Content.ReadAsStreamAsync());
         if (WebViewEnvironment.DiagnosticsBudget())
             Log.Info($"media relay {SafeUrl.Describe(target)} -> {(int)response.StatusCode}"
                 + (range is null ? "" : " (ranged)"));
@@ -224,5 +230,82 @@ internal static class MediaRelay
     {
         try { return request.Headers.Contains(name) ? request.Headers.GetHeader(name) : null; }
         catch { return null; }
+    }
+
+    /// <summary>
+    /// The upstream socket stream, made unable to throw. WebView2 pulls the response
+    /// body through a COM IStream on a non-UI thread, and an exception escaping that
+    /// callback is PROCESS DEATH, not a failed request — a mid-movie connection reset
+    /// (a transcode the server killed, a Wi-Fi blip, the element abandoning a stream
+    /// as it seeks) was taking the whole dashboard down with it. Every failure mode
+    /// becomes EOF instead: the element sees a short stream and raises its own media
+    /// error, the widget's fallback chain handles it, and the app stays up. Disposal
+    /// (which WebView2 also drives, racing the element) is swallowed the same way.
+    /// </summary>
+    private sealed class GuardedStream : Stream
+    {
+        private readonly Stream _inner;
+        private bool _faulted;
+
+        public GuardedStream(Stream inner) => _inner = inner;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        private int NoteFault(Exception ex)
+        {
+            if (!_faulted)
+            {
+                _faulted = true;
+                // Once, type only (messages can echo the target URL): the log says WHY
+                // playback died where the old build simply exited.
+                if (WebViewEnvironment.DiagnosticsBudget())
+                    Log.Warn($"media relay stream ended early: {ex.GetType().Name}");
+            }
+            return 0;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_faulted) return 0;
+            try { return _inner.Read(buffer, offset, count); }
+            catch (Exception ex) { return NoteFault(ex); }
+        }
+
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            if (_faulted) return 0;
+            try { return await _inner.ReadAsync(buffer.AsMemory(offset, count), cancellationToken); }
+            catch (Exception ex) { return NoteFault(ex); }
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (_faulted) return 0;
+            try { return await _inner.ReadAsync(buffer, cancellationToken); }
+            catch (Exception ex) { return NoteFault(ex); }
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                try { _inner.Dispose(); }
+                catch { /* the connection is gone either way */ }
+            }
+            base.Dispose(disposing);
+        }
     }
 }
