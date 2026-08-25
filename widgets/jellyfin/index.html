@@ -73,14 +73,17 @@
   /* The browse bar: library tabs on the left, sort/genre on the right, and — when a
    * TV drill-down is open — the breadcrumb takes the tabs' place, because the path
    * back matters more than the siblings while you are inside a series. */
-  #pbar { display: flex; align-items: center; gap: 6px; flex: none; min-height: 26px; }
+  #pbar { display: flex; align-items: center; gap: 6px; flex: none; min-height: 40px; }
   #ptabs, #pctl { display: flex; align-items: center; gap: 4px; min-width: 0; }
   #ptabs { flex: 1 1 auto; overflow: hidden; }
   #pctl { flex: none; }
   /* 12px floor: these are mixed-case content strings (library names, genres), not
-   * uppercase micro-labels — the 8–11px tiers are not for sentences. */
+   * uppercase micro-labels — the 8–11px tiers are not for sentences. The buttons
+   * stand at .btn's 40px touch minimum; playerBudget charges the bar accordingly. */
   #pbar .btn { padding: 3px 10px; font-size: 12px; line-height: 1.4; white-space: nowrap; }
-  #ptabs .btn.on { border-color: var(--accent); color: var(--accent); }
+  /* The genre button carries the active genre's NAME — capped, or 'Science Fiction'
+   * would spend the tab row's remaining width. */
+  #pctl .btn { max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
   #pcrumb { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
   #pcrumbtxt {
     font-size: 12px; font-weight: 600; color: var(--text);
@@ -89,15 +92,18 @@
   /* The strip flanked by its pagers: horizontal panning belongs to the panel's page
    * switcher, so moving through a library is a tap, not a swipe (#221). */
   #pstriprow { display: flex; align-items: stretch; gap: 4px; flex: 1 1 auto; min-height: 0; }
-  #pstriprow .pager { flex: none; width: 30px; padding: 0; font-size: 16px; }
+  /* 40px is .btn's min-width floor — declaring less would silently render 40 anyway,
+   * and playerBudget's pager allowance must charge what actually paints. */
+  #pstriprow .pager { flex: none; width: 40px; padding: 0; font-size: 16px; }
   #pstriprow .pager[disabled] { opacity: 0.35; }
   /* Episode cards are landscape — the still is the recognisable thing, not a poster.
    * The WIDTH carries the ratio: .art already fills the tile at height --ph, so a
    * 16/9 tile makes a 16/9 still, and the page budget agrees with what renders. */
   #pstrip .tile.wide { width: calc(var(--ph) * 16 / 9); }
 
-  /* The genre chooser: a scrim sheet over the tile, same sanctioned monochrome as the
-   * theater — its pills sit on video-dark, not on a themed surface. */
+  /* The genre chooser: a scrim sheet over the tile. The pills carry their own themed
+   * control surface, so their text behaves as anywhere else; only the scrim itself and
+   * bare notes sit on video-dark and take the theater's monochrome treatment. */
   #chooser {
     position: fixed; inset: 0; background: rgba(0, 0, 0, 0.88);
     display: flex; flex-direction: column; gap: 8px; padding: 10px 14px;
@@ -108,9 +114,15 @@
     display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start;
     overflow-y: auto; flex: 1 1 auto; min-height: 0;
   }
+  /* The grid scrolls: its pills would inherit .no-pan's touch-action:none and eat the
+   * scroll gesture, stranding every genre below the fold. pan-y keeps finger-scroll
+   * alive while still holding horizontal drift away from the shell pager (#221). */
+  #chGrid, #chGrid .no-pan { touch-action: pan-y; }
   #chGrid .btn { padding: 6px 12px; font-size: 12px; }
-  #chGrid .btn.on { border-color: var(--accent); color: var(--accent); }
-  #pbar .btn.on { border-color: var(--accent); color: var(--accent); }
+  /* Active pills draw in --accent-fg — the accent repaired against the control
+   * surfaces — because the raw seed is the user's exact pick and may sit invisibly
+   * on them (widget-base's .btn.primary makes the same choice). */
+  #pbar .btn.on, #chGrid .btn.on { border-color: var(--accent-fg); color: var(--accent-fg); }
   /* In-strip notes (loading, empty, a fetch fault): the browse bar stays interactive
    * above them, so a dead genre or an unreachable page is never a dead END. */
   .note { color: var(--text-dim); font-size: 12px; padding: 10px 4px; align-self: center; }
@@ -814,6 +826,12 @@
   };
   let browseGen = 0;      // orphans answers that arrive after the question changed
   let playQueue = null;   // { items, index }: the episode run being watched (auto-advance)
+  let chooserSession = 0; // orphans a /Genres answer still in flight for a closed or repurposed sheet
+
+  function closeChooser() {
+    chooserSession++;
+    el('chooser').hidden = true;
+  }
 
   function browseReset() {
     browse.tabs = null; browse.tab = 'new'; browse.path = [];
@@ -823,6 +841,8 @@
     browse.tabsFailedAt = 0;
     browseGen++;
     playQueue = null;
+    // The sheet (and anything it was still fetching) belongs to the old server too.
+    closeChooser();
   }
 
   const activeTab = () => (browse.tabs || []).find((t) => t.id === browse.tab) || null;
@@ -834,13 +854,15 @@
     const W = document.documentElement.clientWidth || 640;
     const H = document.documentElement.clientHeight || 400;
     const band = H < 260;
-    // Header, footer, browse bar, strip pagers: the posters absorb what remains.
-    const avail = H - 20 - 28 - 30 - (band ? 0 : 4);
+    // Header, footer, browse bar (its buttons stand at .btn's 40px touch floor),
+    // strip pagers: the posters absorb what remains.
+    const avail = H - 20 - 28 - 40 - (band ? 0 : 4);
     const cardH = Math.max(64, Math.min(220, avail - 45));
     const cardW = Math.round(wide ? cardH * 16 / 9 : cardH * 2 / 3);
     // The pager allowance is only charged on levels that HAVE pagers — the New
-    // shelf has none, and billing it a phantom 68px cost a whole poster at 1280.
-    const count = Math.max(1, Math.floor((W - 24 - (pagers === false ? 0 : 68) + 8) / (cardW + 8)));
+    // shelf has none, and billing it a phantom cost a whole poster at 1280. Where
+    // they exist they are 40px each (.btn's min-width floor), plus their two gaps.
+    const count = Math.max(1, Math.floor((W - 24 - (pagers === false ? 0 : 88) + 8) / (cardW + 8)));
     return { cardH, count };
   }
 
@@ -897,6 +919,10 @@
       } else {
         browse.pageSize = playerBudget(false).count;
         const s = SORTS[browse.sort];
+        // Random re-shuffles per request, so an offset is an offset into a DIFFERENT
+        // shuffle — page numbers would repeat and skip titles. One hand at a time,
+        // always from 0; renderPlayer turns › into "deal another".
+        if (s.by === 'Random') browse.page = 0;
         path = '/Items?ParentId=' + encodeURIComponent(tab.id)
           + '&IncludeItemTypes=' + (tab.tv ? 'Series' : 'Movie')
           + '&Recursive=true&SortBy=' + s.by + '&SortOrder=' + s.order
@@ -914,6 +940,15 @@
         browse.all = null;
         browse.items = items;
         browse.total = body && body.TotalRecordCount != null ? Number(body.TotalRecordCount) : items.length;
+        // A page fetched past a shrunken result set comes back empty while the count
+        // says pages exist — land on the last real page instead of stranding the
+        // footer on 'Page 6 of 3'. Bounded: the refetch's page is always in range.
+        const last = Math.max(0, Math.ceil(browse.total / Math.max(1, browse.pageSize)) - 1);
+        if (!items.length && browse.total > 0 && browse.page > last) {
+          browse.page = last;
+          loadBrowse();
+          return;
+        }
       }
     } catch (e) {
       if (gen !== browseGen) return;
@@ -925,7 +960,9 @@
   }
 
   function setTab(id) {
-    if (browse.tab === id && !browse.path.length) return;
+    // Re-tapping the active tab is a no-op — EXCEPT over a fetch fault, where it is
+    // the natural retry gesture and swallowing it makes the error a dead end.
+    if (browse.tab === id && !browse.path.length && !browse.error) return;
     browse.tab = id;
     browse.path = [];
     browse.page = 0;
@@ -964,6 +1001,10 @@
   }
 
   function flipPage(delta) {
+    if (level() === 'top' && SORTS[browse.sort].by === 'Random') {
+      if (delta > 0) loadBrowse();   // another hand, not a page — see loadBrowse
+      return;
+    }
     const pages = Math.max(1, Math.ceil(browse.total / Math.max(1, browse.pageSize)));
     const next = Math.min(pages - 1, Math.max(0, browse.page + delta));
     if (next === browse.page) return;
@@ -975,30 +1016,40 @@
   async function openGenres() {
     const tab = activeTab();
     if (!tab) return;
+    // The session ties the answer to THIS opening: closing the sheet, reopening it
+    // as the library list, or a server change all bump it, so a slow /Genres answer
+    // can never repaint a sheet that has moved on.
+    const session = ++chooserSession;
     const grid = el('chGrid');
     grid.textContent = '';
     el('chTitle').textContent = 'Genre';   // the sheet is shared with the library list
     el('chooser').hidden = false;
+    const note = (text) => {
+      const d = document.createElement('div');
+      d.className = 'note';
+      d.textContent = text;
+      grid.appendChild(d);
+    };
     let names = browse.genres && browse.genres.get(tab.id);
+    let fault = '';
     if (!names) {
-      const note = document.createElement('div');
-      note.className = 'note';
-      note.textContent = 'Loading genres…';
-      grid.appendChild(note);
+      note('Loading genres…');
       try {
         const body = await jfJson('/Genres?ParentId=' + encodeURIComponent(tab.id)
           + '&SortBy=SortName&SortOrder=Ascending&Limit=100', 12000, 256 * 1024);
         names = ((body && body.Items) || []).map((g) => String((g && g.Name) || '')).filter(Boolean);
+        // Only an ANSWER is cached. A timeout cached as [] would read 'no genres
+        // reported' for the rest of the session, with reopening no longer a retry.
+        browse.genres = browse.genres || new Map();
+        browse.genres.set(tab.id, names);
       } catch (e) {
-        names = [];
+        fault = faultText((e && e.kind) || '', e && e.status);
       }
-      browse.genres = browse.genres || new Map();
-      browse.genres.set(tab.id, names);
-      if (el('chooser').hidden) return;   // closed while the list was in flight
+      if (session !== chooserSession) return;
       grid.textContent = '';
     }
     const pick = (name) => {
-      el('chooser').hidden = true;
+      closeChooser();
       if (browse.genre === name) return;
       browse.genre = name;
       browse.page = 0;
@@ -1012,18 +1063,23 @@
       grid.appendChild(b);
     };
     mk('All genres', '');
-    for (const name of names) mk(name, name);
-    if (!names.length) {
-      const note = document.createElement('div');
-      note.className = 'note';
-      note.textContent = 'No genres reported by this library.';
-      grid.appendChild(note);
+    if (!names) {
+      note(fault);
+      const retry = document.createElement('button');
+      retry.className = 'btn no-pan';
+      retry.textContent = 'Retry';
+      retry.addEventListener('click', openGenres);
+      grid.appendChild(retry);
+      return;
     }
+    for (const name of names) mk(name, name);
+    if (!names.length) note('No genres reported by this library.');
   }
 
   // The chooser sheet doubles as the overflow home for library tabs that did not
   // fit the row: same surface, same pills, picking switches tabs.
   function openLibraryChooser() {
+    chooserSession++;   // a genre answer still in flight must not repaint this list
     const grid = el('chGrid');
     grid.textContent = '';
     el('chTitle').textContent = 'Library';
@@ -1032,7 +1088,7 @@
       const b = document.createElement('button');
       b.className = 'btn no-pan' + (browse.tab === id ? ' on' : '');
       b.textContent = name;
-      b.addEventListener('click', () => { el('chooser').hidden = true; setTab(id); });
+      b.addEventListener('click', () => { closeChooser(); setTab(id); });
       grid.appendChild(b);
     };
     mk('new', 'New');
@@ -1048,7 +1104,7 @@
     loadBrowse();
   });
   el('pgenre').addEventListener('click', openGenres);
-  el('chClose').addEventListener('click', () => { el('chooser').hidden = true; });
+  el('chClose').addEventListener('click', closeChooser);
 
   function renderBar() {
     const drilled = browse.path.length > 0;
@@ -1126,12 +1182,16 @@
     return { wanted, count: budget.count };
   }
 
-  function stripNote(text) {
+  function stripNote(text, onTap) {
     const strip = el('pstrip');
     strip.textContent = '';
     const note = document.createElement('div');
-    note.className = 'note';
+    note.className = 'note' + (onTap ? ' pressable no-pan' : '');
     note.textContent = text;
+    if (onTap) {
+      note.style.cursor = 'pointer';
+      note.addEventListener('click', onTap);
+    }
     strip.appendChild(note);
   }
 
@@ -1139,6 +1199,10 @@
   // re-renders from polls.
   function renderPlayer() {
     if (theaterOn) return;   // the theater owns the screen; polls must not repaint it
+    // A browse answer landing after the view switched away must not paint the Player
+    // over the overview (or the setup card) — the view switch does not orphan
+    // browseGen, deliberately: the browse state is still good when the user returns.
+    if (cfg.view !== 'player') return;
     el('main').hidden = true;
     const stale = document.body.classList.contains('stale');
     const pill = el('pill');
@@ -1202,19 +1266,27 @@
     }
 
     const pages = Math.max(1, Math.ceil(browse.total / Math.max(1, browse.pageSize)));
-    const paged = pages > 1 && !browse.loading && !browse.error;
+    const settled = !browse.loading && !browse.error;
+    // Under Random every request is a fresh shuffle, so a page counter would promise
+    // a stable enumeration the server is not providing: no counter, no ‹, and › deals
+    // another hand (flipPage refetches instead of paging).
+    const rnd = lv === 'top' && SORTS[browse.sort].by === 'Random';
+    const paged = settled && !rnd && pages > 1;
+    const reroll = settled && rnd && browse.total > browse.pageSize;
     el('pprev').hidden = !paged;
-    el('pnext').hidden = !paged;
+    el('pnext').hidden = !(paged || reroll);
     el('pprev').disabled = browse.page <= 0;
-    el('pnext').disabled = browse.page >= pages - 1;
+    el('pnext').disabled = paged && browse.page >= pages - 1;
     el('counts').textContent = paged ? 'Page ' + (browse.page + 1) + ' of ' + pages : '';
-    el('meta').textContent = browse.error ? '' : browse.total
+    // While a drill-down is loading, browse.total still counts the PREVIOUS level —
+    // '342 seasons' while a series opens. Say nothing until the answer is this level's.
+    el('meta').textContent = !settled ? '' : browse.total
       ? browse.total + (lv === 'season' ? ' episodes' : lv === 'series' ? ' seasons'
         : activeTab() && activeTab().tv ? ' series' : ' movies')
       : '';
 
     if (browse.loading) { stripNote('Loading…'); return; }
-    if (browse.error) { stripNote(browse.error); return; }
+    if (browse.error) { stripNote(browse.error + ' Tap to retry.', () => loadBrowse()); return; }
     if (!items.length) {
       stripNote(browse.genre ? 'Nothing here under ' + browse.genre + '.' : 'Nothing here yet.');
       return;
@@ -1924,8 +1996,10 @@
     if (prevView !== cfg.view || prevTypes !== cfg.types) {
       slowAt = 0;
       if (prevTypes !== cfg.types) { latest = []; latestAt = 0; }
-      // A view change pulls the screen out from under a playing title.
-      if (prevView !== cfg.view) stopPlayback();
+      // A view change pulls the screen out from under a playing title — and out
+      // from under an open chooser sheet, which would otherwise sit fixed over
+      // the overview with the Player's pills still live inside it.
+      if (prevView !== cfg.view) { stopPlayback(); closeChooser(); }
     }
 
     // A different server (or a different key onto the same one) is a different set of
