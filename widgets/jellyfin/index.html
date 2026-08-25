@@ -577,7 +577,13 @@
             return Promise.all(tabs.map((t) =>
               jfJson('/Items?ParentId=' + encodeURIComponent(t.id) + '&SortBy=DateCreated' + tail
                 + '&Fields=DateCreated', SLOW_DEADLINE, 256 * 1024)
-                .then((body) => (body && Array.isArray(body.Items)) ? body.Items : [])));
+                .then((body) => {
+                  // Same contract as the no-hide path: a malformed 200 is a FAULT,
+                  // not an empty library — treating it as [] would silently drop a
+                  // library's titles from the shelf until the next slow window.
+                  if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
+                  return body.Items;
+                })));
           }).then((lists) => {
             const seen = new Set();
             return lists.flat()
@@ -950,9 +956,12 @@
   // state would be handed the same episode back and replay it from zero.
   async function markPlayed(item) {
     if (!cfg.user || !item || !item.Id) return false;
+    // The run's user, captured before any await: a settings switch while /Users is
+    // in flight must not record A's finished episode on B's watch history.
+    const asUser = cfg.user;
     try {
       const uid = await resolveUser();
-      if (!uid) return false;
+      if (!uid || cfg.user !== asUser) return false;
       await jf('/Users/' + encodeURIComponent(uid) + '/PlayedItems/' + encodeURIComponent(String(item.Id)),
         { method: 'POST', maxBytes: 64 * 1024 }, 12000);
       nextUpDirty = true;   // the shelf on screen no longer tells the truth
@@ -1012,7 +1021,9 @@
           return;
         }
         browse.tabs = tabs;
-        if (browse.tab !== 'new' && !activeTab()) browse.tab = 'new';
+        // 'next' is synthetic — discovery recovering must not bounce a tapped
+        // Next up back to New just because no LIBRARY carries that id.
+        if (browse.tab !== 'new' && browse.tab !== 'next' && !activeTab()) browse.tab = 'new';
       }
       const tab = activeTab();
       if (browse.tab === 'new' || (browse.tab !== 'next' && !tab)) {
@@ -1160,7 +1171,9 @@
   }
 
   function flipPage(delta) {
-    if (level() === 'top' && SORTS[browse.sort].by === 'Random') {
+    // browse.sort persists across tabs, so 'is Random active' must also ask WHICH
+    // tab: Next up pages normally whatever a library's sort was left on.
+    if (browse.tab !== 'next' && level() === 'top' && SORTS[browse.sort].by === 'Random') {
       if (delta > 0) loadBrowse();   // another hand, not a page — see loadBrowse
       return;
     }
