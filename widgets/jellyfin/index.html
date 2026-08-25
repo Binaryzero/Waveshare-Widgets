@@ -571,9 +571,12 @@
           })
         : loadTabs().then((tabs) => {
             if (!tabs) throw fault('unreachable', 'could not list libraries');
+            // 256 KiB per library, not the full list cap: each answer holds at most
+            // LATEST_FETCH shelf items, and loadTabs' 24-library bound makes the
+            // aggregate a few MiB worst case instead of a hostile server's gigabytes.
             return Promise.all(tabs.map((t) =>
               jfJson('/Items?ParentId=' + encodeURIComponent(t.id) + '&SortBy=DateCreated' + tail
-                + '&Fields=DateCreated', SLOW_DEADLINE, LIST_MAX_BYTES)
+                + '&Fields=DateCreated', SLOW_DEADLINE, 256 * 1024)
                 .then((body) => (body && Array.isArray(body.Items)) ? body.Items : [])));
           }).then((lists) => {
             const seen = new Set();
@@ -910,6 +913,10 @@
         // The hide list is the user's, by name: a hidden library gets no tab, no
         // ⋯-sheet entry, and (through the shelf's per-library fetch) no New items.
         .filter((f) => !cfg.hide.has(String(f.Name || '').trim().toLowerCase()))
+        // Bounded like every other data-driven surface: 24 libraries outruns any
+        // real panel, and a hostile server's thousands must not become thousands
+        // of tab buttons or a request fan-out (the shelf fetches one per entry).
+        .slice(0, 24)
         .map((f) => ({ id: String(f.Id), name: String(f.Name || '?'), tv: f.CollectionType === 'tvshows' }));
     } catch (e) {
       WW.log('jellyfin: libraries: ' + (e && e.message));
