@@ -880,6 +880,16 @@
     el('chooser').hidden = true;
   }
 
+  // Consumes nextUpDirty when the Next up shelf is what's on screen. Called from
+  // BOTH sides of the race: stopPlayback (run ended, write already landed) and
+  // markPlayed (write landed late, after Back already closed the theater).
+  function refreshNextUpIfStale() {
+    if (nextUpDirty && !theaterOn && cfg.view === 'player' && browse.tab === 'next') {
+      nextUpDirty = false;
+      loadBrowse();
+    }
+  }
+
   function browseReset() {
     browse.tabs = null; browse.tab = 'new'; browse.path = [];
     browse.sort = 0; browse.genre = ''; browse.page = 0;
@@ -986,6 +996,9 @@
       await jf('/Users/' + encodeURIComponent(uid) + '/PlayedItems/' + encodeURIComponent(String(item.Id)),
         { method: 'POST', maxBytes: 64 * 1024 }, 12000);
       nextUpDirty = true;   // the shelf on screen no longer tells the truth
+      // The write can land AFTER stopPlayback already ran its check (Back pressed
+      // mid-POST) — consume the flag here too, whichever ordering happened.
+      refreshNextUpIfStale();
       return true;
     } catch (e) {
       // 404 on the cached id: the user was deleted (or recreated under a new id) —
@@ -1925,10 +1938,7 @@
     render();
     // A run that marked episodes watched walks out onto a Next up shelf still
     // listing them — refetch so the shelf tells the truth it just changed.
-    if (nextUpDirty && cfg.view === 'player' && browse.tab === 'next') {
-      nextUpDirty = false;
-      loadBrowse();
-    }
+    refreshNextUpIfStale();
   }
 
   function setTheaterIcons(paused) {
@@ -2099,7 +2109,10 @@
     if (theaterOn) {
       const expected = ticksToSec(finished && finished.RunTimeTicks);
       const played = timeBase + (pv.currentTime || 0);
-      if (expected && expected > 0 && played < expected - 120) {
+      // The grace scales down for short titles: a flat two minutes would swallow
+      // a three-minute episode whole and pass an instant fault-EOF as watched.
+      const grace = expected ? Math.min(120, expected * 0.1) : 0;
+      if (expected && expected > 0 && played < expected - grace) {
         WW.log('jellyfin: stream ended ' + Math.round(expected - played)
           + 's short of the title’s runtime — treating as a fault');
         theaterError();
