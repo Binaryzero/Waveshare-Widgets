@@ -5,6 +5,11 @@
    "Items": [
     {
      "Id": "m-brutalist",
+     "MediaSources": [
+      {
+       "Container": "mp4"
+      }
+     ],
      "MediaStreams": [
       {
        "Type": "Video",
@@ -17,6 +22,186 @@
        "IsDefault": true
       }
      ]
+    }
+   ]
+  }
+ },
+ {
+  "match": "MediaFolders",
+  "json": {
+   "Items": [
+    {
+     "Id": "lib-movies",
+     "Name": "Movies",
+     "CollectionType": "movies"
+    },
+    {
+     "Id": "lib-tv",
+     "Name": "TV Shows",
+     "CollectionType": "tvshows"
+    },
+    {
+     "Id": "lib-music",
+     "Name": "Music",
+     "CollectionType": "music"
+    }
+   ]
+  }
+ },
+ {
+  "match": "IncludeItemTypes=Series&",
+  "json": {
+   "TotalRecordCount": 3,
+   "Items": [
+    {
+     "Id": "s-severance",
+     "Name": "Severance",
+     "Type": "Series",
+     "ProductionYear": 2022,
+     "ImageTags": {
+      "Primary": "tsev"
+     }
+    },
+    {
+     "Id": "s-slowhorses",
+     "Name": "Slow Horses",
+     "Type": "Series",
+     "ProductionYear": 2022,
+     "ImageTags": {
+      "Primary": "tsh"
+     }
+    },
+    {
+     "Id": "s-shogun",
+     "Name": "Shōgun",
+     "Type": "Series",
+     "ProductionYear": 2024,
+     "ImageTags": {
+      "Primary": "tsg"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "match": "IncludeItemTypes=Season&SortBy=IndexNumber",
+  "json": {
+   "TotalRecordCount": 2,
+   "Items": [
+    {
+     "Id": "sea-sh-3",
+     "Name": "Season 3",
+     "Type": "Season",
+     "IndexNumber": 3,
+     "ImageTags": {}
+    },
+    {
+     "Id": "sea-sh-4",
+     "Name": "Season 4",
+     "Type": "Season",
+     "IndexNumber": 4,
+     "ImageTags": {}
+    }
+   ]
+  }
+ },
+ {
+  "match": "IncludeItemTypes=Episode&SortBy=IndexNumber",
+  "json": {
+   "TotalRecordCount": 3,
+   "Items": [
+    {
+     "Id": "e-sh-401",
+     "Name": "Identity Theft",
+     "Type": "Episode",
+     "SeriesName": "Slow Horses",
+     "SeriesId": "s-slowhorses",
+     "SeriesPrimaryImageTag": "tsh",
+     "ParentIndexNumber": 4,
+     "IndexNumber": 1,
+     "ImageTags": {
+      "Primary": "te401"
+     }
+    },
+    {
+     "Id": "e-sh-402",
+     "Name": "A Stranger Comes to Town",
+     "Type": "Episode",
+     "SeriesName": "Slow Horses",
+     "SeriesId": "s-slowhorses",
+     "SeriesPrimaryImageTag": "tsh",
+     "ParentIndexNumber": 4,
+     "IndexNumber": 2,
+     "ImageTags": {}
+    },
+    {
+     "Id": "e-sh-403",
+     "Name": "Cleaning Up",
+     "Type": "Episode",
+     "SeriesName": "Slow Horses",
+     "SeriesId": "s-slowhorses",
+     "SeriesPrimaryImageTag": "tsh",
+     "ParentIndexNumber": 4,
+     "IndexNumber": 3,
+     "ImageTags": {}
+    }
+   ]
+  }
+ },
+ {
+  "match": "IncludeItemTypes=Movie&Recursive",
+  "json": {
+   "TotalRecordCount": 30,
+   "Items": [
+    {
+     "Id": "m-anora",
+     "Name": "Anora",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {
+      "Primary": "ta1"
+     }
+    },
+    {
+     "Id": "m-brutalist",
+     "Name": "The Brutalist",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {
+      "Primary": "tb1"
+     }
+    },
+    {
+     "Id": "m-conclave",
+     "Name": "Conclave",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {
+      "Primary": "tc1"
+     }
+    },
+    {
+     "Id": "m-flow",
+     "Name": "Flow",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "ImageTags": {}
+    }
+   ]
+  }
+ },
+ {
+  "match": "/Genres",
+  "json": {
+   "Items": [
+    {
+     "Name": "Comedy"
+    },
+    {
+     "Name": "Drama"
+    },
+    {
+     "Name": "Sci-Fi"
     }
    ]
   }

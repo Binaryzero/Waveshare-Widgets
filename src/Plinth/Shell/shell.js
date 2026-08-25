@@ -40,6 +40,11 @@
   let slots = [];
   let latestSensors = [];
   let latestMedia = null;
+  // The media-relay credential from the host's init. Forwarded ONLY inside ww-init,
+  // which goes exclusively to verified slot documents (identity + origin checked) —
+  // that verification is what makes the token mean "a real widget asked". Empty in
+  // the settings replica: its channel is credential-free by design.
+  let mediaRelayToken = '';
   let latestTheme = null;
   let latestNotifications = null;   // last projected payload from the host
   let status = { elevated: false, apiVersion: 1 };
@@ -431,6 +436,7 @@
       settings: slot.settings,
       sensors: latestSensors,
       media: latestMedia,
+      relayToken: mediaRelayToken,
       theme: slotTheme(slot),
       // Only for a slot that asked. A re-init used to hand the latest toasts — app
       // name, title, body — to every widget on the panel, subscriber or not, so a
@@ -653,6 +659,7 @@
     if (PREVIEW && typeof data.page === 'number') previewPage = data.page;
     latestSensors = data.sensors || [];
     latestMedia = data.media;
+    if (typeof data.mediaRelayToken === 'string') mediaRelayToken = data.mediaRelayToken;
     status = data.status || status;
     // Game state rides init: a game already fullscreen when the shell loads fired
     // its transition before shell-ready, and the host's poll dedups it forever.

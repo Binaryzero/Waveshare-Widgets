@@ -70,6 +70,64 @@
   #pstrip .tile { cursor: pointer; }
   #pstrip .tile .art { border-width: 1px; }
 
+  /* The browse bar: library tabs on the left, sort/genre on the right, and — when a
+   * TV drill-down is open — the breadcrumb takes the tabs' place, because the path
+   * back matters more than the siblings while you are inside a series. */
+  #pbar { display: flex; align-items: center; gap: 6px; flex: none; min-height: 40px; }
+  #ptabs, #pctl { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  #ptabs { flex: 1 1 auto; overflow: hidden; }
+  #pctl { flex: none; }
+  /* 12px floor: these are mixed-case content strings (library names, genres), not
+   * uppercase micro-labels — the 8–11px tiers are not for sentences. The buttons
+   * stand at .btn's 40px touch minimum; playerBudget charges the bar accordingly. */
+  #pbar .btn { padding: 3px 10px; font-size: 12px; line-height: 1.4; white-space: nowrap; }
+  /* The genre button carries the active genre's NAME — capped, or 'Science Fiction'
+   * would spend the tab row's remaining width. */
+  #pctl .btn { max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
+  #pcrumb { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
+  #pcrumbtxt {
+    font-size: 12px; font-weight: 600; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  /* The strip flanked by its pagers: horizontal panning belongs to the panel's page
+   * switcher, so moving through a library is a tap, not a swipe (#221). */
+  #pstriprow { display: flex; align-items: stretch; gap: 4px; flex: 1 1 auto; min-height: 0; }
+  /* 40px is .btn's min-width floor — declaring less would silently render 40 anyway,
+   * and playerBudget's pager allowance must charge what actually paints. */
+  #pstriprow .pager { flex: none; width: 40px; padding: 0; font-size: 16px; }
+  #pstriprow .pager[disabled] { opacity: 0.35; }
+  /* Episode cards are landscape — the still is the recognisable thing, not a poster.
+   * The WIDTH carries the ratio: .art already fills the tile at height --ph, so a
+   * 16/9 tile makes a 16/9 still, and the page budget agrees with what renders. */
+  #pstrip .tile.wide { width: calc(var(--ph) * 16 / 9); }
+
+  /* The genre chooser: a scrim sheet over the tile. The pills carry their own themed
+   * control surface, so their text behaves as anywhere else; only the scrim itself and
+   * bare notes sit on video-dark and take the theater's monochrome treatment. */
+  #chooser {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.88);
+    display: flex; flex-direction: column; gap: 8px; padding: 10px 14px;
+  }
+  #chHead { display: flex; align-items: center; gap: 8px; flex: none; }
+  #chTitle { font-size: 13px; font-weight: 700; color: rgba(255, 255, 255, 0.94); flex: 1; }
+  #chGrid {
+    display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start;
+    overflow-y: auto; flex: 1 1 auto; min-height: 0;
+  }
+  /* The grid scrolls: its pills would inherit .no-pan's touch-action:none and eat the
+   * scroll gesture, stranding every genre below the fold. pan-y keeps finger-scroll
+   * alive while still holding horizontal drift away from the shell pager (#221). */
+  #chGrid, #chGrid .no-pan { touch-action: pan-y; }
+  #chGrid .btn { padding: 6px 12px; font-size: 12px; }
+  /* Active pills draw in --accent-fg — the accent repaired against the control
+   * surfaces — because the raw seed is the user's exact pick and may sit invisibly
+   * on them (widget-base's .btn.primary makes the same choice). */
+  #pbar .btn.on, #chGrid .btn.on { border-color: var(--accent-fg); color: var(--accent-fg); }
+  /* In-strip notes (loading, empty, a fetch fault): the browse bar stays interactive
+   * above them, so a dead genre or an unreachable page is never a dead END. */
+  .note { color: var(--text-dim); font-size: 12px; padding: 10px 4px; align-self: center; }
+  #chGrid .note { color: rgba(255, 255, 255, 0.75); align-self: flex-start; }
+
   /* Player view, playing: the tile becomes a little theater. Fixed over everything —
    * header included — with true-black letterbox bars (a scrim, not chrome; the one
    * sanctioned monochrome). */
@@ -140,8 +198,31 @@
   </div>
 
   <div id="player" hidden>
-    <div class="kicker">Recently added — tap to play</div>
-    <div id="pstrip"></div>
+    <div id="pbar">
+      <div id="ptabs"></div>
+      <div id="pcrumb" hidden>
+        <button id="pback" class="btn no-pan">‹ Back</button>
+        <span id="pcrumbtxt"></span>
+      </div>
+      <div id="pctl">
+        <button id="psort" class="btn no-pan" aria-label="Change sort order">A–Z</button>
+        <button id="pgenre" class="btn no-pan" aria-label="Filter by genre">Genre</button>
+      </div>
+    </div>
+    <div id="pstriprow">
+      <button id="pprev" class="btn no-pan pager" aria-label="Previous page">‹</button>
+      <div id="pstrip"></div>
+      <button id="pnext" class="btn no-pan pager" aria-label="Next page">›</button>
+    </div>
+  </div>
+
+  <!-- The genre chooser: pick once, the strip reloads filtered. -->
+  <div id="chooser" class="no-pan" hidden>
+    <div id="chHead">
+      <span id="chTitle">Genre</span>
+      <button id="chClose" class="btn no-pan">Close</button>
+    </div>
+    <div id="chGrid"></div>
   </div>
 
   <!-- The theater: fixed over the whole tile while something plays on the panel. -->
@@ -321,6 +402,12 @@
     // one slow library query queue-starve the session poll.
     const insecure = /^https:/i.test(cfg.base) && cfg.selfSigned;
     const opts = Object.assign({ insecure }, init || {});
+    // At a LAN address every call rides the host proxy outright: the renderer's
+    // network gates killed native fetches to private IPs in the field (the proxy is
+    // where those calls ended up anyway), and each proxied call registers the server
+    // as a media-relay target — which playback depends on. Determinism over a doomed
+    // native attempt per poll.
+    if (privateLiteralHost(cfg.base)) opts.proxy = 'always';
     opts.signal = abort.signal;
     opts.headers = Object.assign({ 'X-Emby-Token': cfg.key }, (init && init.headers) || {});
     try {
@@ -706,10 +793,458 @@
     ensureImages(wanted);
   }
 
-  // Player view, browsing: the recently-added shelf, where every poster is a play
-  // button. Playback itself lives in the theater layer and never re-renders from polls.
+  // ---- Player view: the library browser ---------------------------------------------
+  //
+  // The Player is a lean-back library browser: a tab per film/TV library (plus "New",
+  // the recently-added shelf the view opened with), a sort cycle, a genre filter, and
+  // for television the drill-down Series → Seasons → Episodes in broadcast order.
+  // Every move is a TAP — page-turns included — because horizontal panning belongs to
+  // the panel's page switcher (#221). And the API key is a SERVER credential, not a
+  // user: Jellyfin holds no watched state, resume points or next-up for it, so the
+  // filters are the library's own facts — genre, name, year, arrival — never the
+  // viewer's history.
+  const SORTS = [
+    { label: 'A–Z', by: 'SortName', order: 'Ascending' },
+    { label: 'Newest', by: 'DateCreated', order: 'Descending' },
+    { label: 'Year', by: 'ProductionYear', order: 'Descending' },
+    { label: 'Random', by: 'Random', order: 'Ascending' },
+  ];
+  const browse = {
+    tabs: null,      // [{id, name, tv}] once /Library/MediaFolders answers; null = not asked
+    tab: 'new',      // 'new' or a library id
+    path: [],        // TV drill-down: [{id, name, kind: 'series'|'season'}]
+    sort: 0,
+    genre: '',       // active genre name, '' = all — reset on tab switch (genres differ)
+    page: 0,
+    pageSize: 1,     // how many cards fit; the layout is measured before each fetch
+    total: 0,
+    items: [],       // the cards on screen
+    all: null,       // seasons/episodes arrive whole and page locally — see loadBrowse
+    loading: false,
+    error: '',
+    genres: null,    // Map(libraryId -> [names]), filled when the chooser first opens
+  };
+  let browseGen = 0;      // orphans answers that arrive after the question changed
+  let playQueue = null;   // { items, index }: the episode run being watched (auto-advance)
+  let chooserSession = 0; // orphans a /Genres answer still in flight for a closed or repurposed sheet
+
+  function closeChooser() {
+    chooserSession++;
+    el('chooser').hidden = true;
+  }
+
+  function browseReset() {
+    browse.tabs = null; browse.tab = 'new'; browse.path = [];
+    browse.sort = 0; browse.genre = ''; browse.page = 0;
+    browse.items = []; browse.all = null; browse.total = 0;
+    browse.loading = false; browse.error = ''; browse.genres = null;
+    browse.tabsFailedAt = 0;
+    browseGen++;
+    playQueue = null;
+    // The sheet (and anything it was still fetching) belongs to the old server too.
+    closeChooser();
+  }
+
+  const activeTab = () => (browse.tabs || []).find((t) => t.id === browse.tab) || null;
+  const level = () => (browse.path.length ? browse.path[browse.path.length - 1].kind : 'top');
+
+  // The card budget, shared by fetching and drawing: how many fit IS the page size,
+  // so the layout is measured before the server is asked for a page.
+  function playerBudget(wide, pagers) {
+    const W = document.documentElement.clientWidth || 640;
+    const H = document.documentElement.clientHeight || 400;
+    const band = H < 260;
+    // Header, footer, browse bar (its buttons stand at .btn's 40px touch floor),
+    // strip pagers: the posters absorb what remains.
+    const avail = H - 20 - 28 - 40 - (band ? 0 : 4);
+    const cardH = Math.max(64, Math.min(220, avail - 45));
+    const cardW = Math.round(wide ? cardH * 16 / 9 : cardH * 2 / 3);
+    // The pager allowance is only charged on levels that HAVE pagers — the New
+    // shelf has none, and billing it a phantom cost a whole poster at 1280. Where
+    // they exist they are 40px each (.btn's min-width floor), plus their two gaps.
+    const count = Math.max(1, Math.floor((W - 24 - (pagers === false ? 0 : 88) + 8) / (cardW + 8)));
+    return { cardH, count };
+  }
+
+  // Null on failure, NOT [] — a discovery that failed is not an empty server, and
+  // caching it as one would hide every library until the widget reloads. The caller
+  // leaves browse.tabs null so renderPlayer retries, gated by tabsFailedAt.
+  async function loadTabs() {
+    try {
+      const body = await jfJson('/Library/MediaFolders', 12000, 256 * 1024);
+      return ((body && body.Items) || [])
+        .filter((f) => f && f.Id && (f.CollectionType === 'movies' || f.CollectionType === 'tvshows'))
+        .map((f) => ({ id: String(f.Id), name: String(f.Name || '?'), tv: f.CollectionType === 'tvshows' }));
+    } catch (e) {
+      WW.log('jellyfin: libraries: ' + (e && e.message));
+      return null;
+    }
+  }
+
+  async function loadBrowse() {
+    const gen = ++browseGen;
+    browse.loading = true;
+    browse.error = '';
+    renderPlayer();
+    try {
+      if (!browse.tabs) {
+        const tabs = await loadTabs();
+        if (gen !== browseGen) return;
+        if (!tabs) {
+          // Stay null → the render trigger retries, but not in a tight loop: the
+          // timestamp gate means the next attempt rides a LATER poll's render.
+          browse.tabsFailedAt = Date.now();
+          browse.loading = false;
+          renderPlayer();
+          return;
+        }
+        browse.tabs = tabs;
+        if (browse.tab !== 'new' && !activeTab()) browse.tab = 'new';
+      }
+      const tab = activeTab();
+      if (browse.tab === 'new' || !tab) {
+        browse.loading = false;
+        renderPlayer();
+        return;
+      }
+      const lv = level();
+      if (lv === 'series' || lv === 'season') {
+        // Seasons and episodes arrive as ONE list in broadcast order and page
+        // locally: the whole list is also the auto-advance queue. 'Whole' means
+        // following the server's pages to the end — a daily-show season outruns
+        // one 200-item response, and truncating there would strand every later
+        // episode and stop auto-advance at an invisible wall. The 1000 cap
+        // bounds a pathological library; the footer counts what actually loaded.
+        // IsMissing=false: Jellyfin keeps virtual placeholders for unaired and
+        // missing episodes (and all-missing seasons). With a server key there is
+        // no user preference filtering them, so without this a weekly show lists
+        // next month's episodes as un-playable cards — and auto-advance would roll
+        // a finished binge straight into one. (Not IsVirtualItem=false: folderless
+        // but present seasons are virtual-location and must stay.)
+        const whole = '/Items?ParentId=' + encodeURIComponent(browse.path[browse.path.length - 1].id)
+          + '&IncludeItemTypes=' + (lv === 'series' ? 'Season' : 'Episode')
+          + '&SortBy=IndexNumber&SortOrder=Ascending&IsMissing=false&Limit=200';
+        const all = [];
+        for (;;) {
+          const page = await jfJson(whole + (all.length ? '&StartIndex=' + all.length : ''),
+            12000, LIST_MAX_BYTES);
+          if (gen !== browseGen) return;
+          const got = (page && Array.isArray(page.Items)) ? page.Items : [];
+          all.push(...got);
+          const reported = page && page.TotalRecordCount != null
+            ? Number(page.TotalRecordCount) : all.length;
+          if (!got.length || all.length >= reported || all.length >= 1000) break;
+        }
+        browse.all = all;
+        browse.total = all.length;
+      } else {
+        browse.pageSize = playerBudget(false).count;
+        const s = SORTS[browse.sort];
+        // Random re-shuffles per request, so an offset is an offset into a DIFFERENT
+        // shuffle — page numbers would repeat and skip titles. One hand at a time,
+        // always from 0; renderPlayer turns › into "deal another".
+        if (s.by === 'Random') browse.page = 0;
+        const path = '/Items?ParentId=' + encodeURIComponent(tab.id)
+          + '&IncludeItemTypes=' + (tab.tv ? 'Series' : 'Movie')
+          + '&Recursive=true&SortBy=' + s.by + '&SortOrder=' + s.order
+          + '&StartIndex=' + (browse.page * browse.pageSize)
+          + '&Limit=' + browse.pageSize
+          + (browse.genre ? '&Genres=' + encodeURIComponent(browse.genre) : '');
+        const body = await jfJson(path, 12000, LIST_MAX_BYTES);
+        if (gen !== browseGen) return;
+        const items = (body && Array.isArray(body.Items)) ? body.Items : [];
+        browse.all = null;
+        browse.items = items;
+        browse.total = body && body.TotalRecordCount != null ? Number(body.TotalRecordCount) : items.length;
+        // A page fetched past a shrunken result set comes back empty while the count
+        // says pages exist — land on the last real page instead of stranding the
+        // footer on 'Page 6 of 3'. Bounded: the refetch's page is always in range.
+        const last = Math.max(0, Math.ceil(browse.total / Math.max(1, browse.pageSize)) - 1);
+        if (!items.length && browse.total > 0 && browse.page > last) {
+          browse.page = last;
+          loadBrowse();
+          return;
+        }
+      }
+    } catch (e) {
+      if (gen !== browseGen) return;
+      browse.error = faultText((e && e.kind) || '', e && e.status);
+    }
+    if (gen !== browseGen) return;
+    browse.loading = false;
+    renderPlayer();
+  }
+
+  function setTab(id) {
+    // Re-tapping the active tab is a no-op — EXCEPT over a fetch fault, where it is
+    // the natural retry gesture and swallowing it makes the error a dead end.
+    if (browse.tab === id && !browse.path.length && !browse.error) return;
+    browse.tab = id;
+    browse.path = [];
+    browse.page = 0;
+    browse.genre = '';
+    browse.items = [];
+    browse.all = null;
+    browse.total = 0;
+    if (id === 'new') { browseGen++; browse.loading = false; renderPlayer(); }
+    else loadBrowse();
+  }
+
+  function openItem(item, indexInAll) {
+    if (item.Type === 'Series' || item.Type === 'Season') {
+      browse.path.push({
+        id: String(item.Id),
+        name: String(item.Name || '?'),
+        kind: item.Type === 'Series' ? 'series' : 'season',
+      });
+      browse.page = 0;
+      loadBrowse();
+      return;
+    }
+    // Playable. From an episode run, the rest of the list is the queue — when one
+    // episode ends the next starts, which is what "watching a season" means on a
+    // lean-back surface. Movies and the New shelf play alone.
+    playQueue = (item.Type === 'Episode' && browse.all && indexInAll != null)
+      ? { items: browse.all.slice(), index: indexInAll }
+      : null;
+    startPlayback(item, describe(item));
+  }
+
+  function browseBack() {
+    browse.path.pop();
+    browse.page = 0;
+    loadBrowse();
+  }
+
+  function flipPage(delta) {
+    if (level() === 'top' && SORTS[browse.sort].by === 'Random') {
+      if (delta > 0) loadBrowse();   // another hand, not a page — see loadBrowse
+      return;
+    }
+    const pages = Math.max(1, Math.ceil(browse.total / Math.max(1, browse.pageSize)));
+    const next = Math.min(pages - 1, Math.max(0, browse.page + delta));
+    if (next === browse.page) return;
+    browse.page = next;
+    if (browse.all) renderPlayer();   // local lists page without another request
+    else loadBrowse();
+  }
+
+  async function openGenres() {
+    const tab = activeTab();
+    if (!tab) return;
+    // The session ties the answer to THIS opening: closing the sheet, reopening it
+    // as the library list, or a server change all bump it, so a slow /Genres answer
+    // can never repaint a sheet that has moved on.
+    const session = ++chooserSession;
+    // The cache write gets its own, stricter gate: browseGen. Closing the sheet
+    // mid-flight bumps the session but the ANSWER is still this server's — worth
+    // keeping for the next open. An identity change bumps browseGen too, and that
+    // answer must not be cached: a migrated server can reuse the same library id.
+    const bgen = browseGen;
+    const grid = el('chGrid');
+    grid.textContent = '';
+    el('chTitle').textContent = 'Genre';   // the sheet is shared with the library list
+    el('chooser').hidden = false;
+    const note = (text) => {
+      const d = document.createElement('div');
+      d.className = 'note';
+      d.textContent = text;
+      grid.appendChild(d);
+    };
+    let names = browse.genres && browse.genres.get(tab.id);
+    let fault = '';
+    if (!names) {
+      note('Loading genres…');
+      try {
+        // Follow the server's pages like the episode list does — a music library
+        // can report hundreds of genres, and caching page one as the whole list
+        // would hide the rest for the widget's lifetime. 300 bounds the sheet.
+        const base = '/Genres?ParentId=' + encodeURIComponent(tab.id)
+          + '&SortBy=SortName&SortOrder=Ascending&Limit=100';
+        const got = [];
+        let fetched = 0;
+        for (;;) {
+          const body = await jfJson(base + (fetched ? '&StartIndex=' + fetched : ''),
+            12000, 256 * 1024);
+          const raw = (body && body.Items) || [];
+          fetched += raw.length;
+          got.push(...raw.map((g) => String((g && g.Name) || '')).filter(Boolean));
+          const reported = body && body.TotalRecordCount != null
+            ? Number(body.TotalRecordCount) : fetched;
+          if (!raw.length || fetched >= reported || fetched >= 300) break;
+        }
+        names = got;
+        // Only an ANSWER is cached. A timeout cached as [] would read 'no genres
+        // reported' for the rest of the session, with reopening no longer a retry.
+        if (bgen === browseGen) {
+          browse.genres = browse.genres || new Map();
+          browse.genres.set(tab.id, names);
+        }
+      } catch (e) {
+        fault = faultText((e && e.kind) || '', e && e.status);
+      }
+      if (session !== chooserSession) return;
+      grid.textContent = '';
+    }
+    const pick = (name) => {
+      closeChooser();
+      if (browse.genre === name) return;
+      browse.genre = name;
+      browse.page = 0;
+      loadBrowse();
+    };
+    const mk = (label, value) => {
+      const b = document.createElement('button');
+      b.className = 'btn no-pan' + ((value || '') === browse.genre ? ' on' : '');
+      b.textContent = label;
+      b.addEventListener('click', () => pick(value));
+      grid.appendChild(b);
+    };
+    mk('All genres', '');
+    if (!names) {
+      note(fault);
+      const retry = document.createElement('button');
+      retry.className = 'btn no-pan';
+      retry.textContent = 'Retry';
+      retry.addEventListener('click', openGenres);
+      grid.appendChild(retry);
+      return;
+    }
+    for (const name of names) mk(name, name);
+    if (!names.length) note('No genres reported by this library.');
+  }
+
+  // The chooser sheet doubles as the overflow home for library tabs that did not
+  // fit the row: same surface, same pills, picking switches tabs.
+  function openLibraryChooser() {
+    chooserSession++;   // a genre answer still in flight must not repaint this list
+    const grid = el('chGrid');
+    grid.textContent = '';
+    el('chTitle').textContent = 'Library';
+    el('chooser').hidden = false;
+    const mk = (id, name) => {
+      const b = document.createElement('button');
+      b.className = 'btn no-pan' + (browse.tab === id ? ' on' : '');
+      b.textContent = name;
+      b.addEventListener('click', () => { closeChooser(); setTab(id); });
+      grid.appendChild(b);
+    };
+    mk('new', 'New');
+    for (const t of browse.tabs || []) mk(t.id, t.name);
+  }
+
+  el('pback').addEventListener('click', browseBack);
+  el('pprev').addEventListener('click', () => flipPage(-1));
+  el('pnext').addEventListener('click', () => flipPage(1));
+  el('psort').addEventListener('click', () => {
+    browse.sort = (browse.sort + 1) % SORTS.length;
+    browse.page = 0;
+    loadBrowse();
+  });
+  el('pgenre').addEventListener('click', openGenres);
+  el('chClose').addEventListener('click', closeChooser);
+
+  function renderBar() {
+    const drilled = browse.path.length > 0;
+    el('ptabs').hidden = drilled;
+    el('pcrumb').hidden = !drilled;
+    if (drilled) {
+      el('pcrumbtxt').textContent = browse.path.map((p) => p.name).join(' ▸ ');
+    } else {
+      const tabsEl = el('ptabs');
+      tabsEl.textContent = '';
+      const mk = (id, name) => {
+        const b = document.createElement('button');
+        b.className = 'btn no-pan' + (browse.tab === id ? ' on' : '');
+        b.textContent = name;
+        b.addEventListener('click', () => setTab(id));
+        tabsEl.appendChild(b);
+      };
+      mk('new', 'New');
+      for (const t of browse.tabs || []) mk(t.id, t.name);
+      // Enough libraries (or long names, or a half tile) overflow the row, and the
+      // row cannot pan — no-pan means touch-action:none here — so the tail collapses
+      // behind a ⋯ that opens the full library list as a sheet. Every library stays
+      // one or two taps away; clipping one off the edge would strand it. Measured,
+      // not guessed: the caller unhides the Player before this runs.
+      if (tabsEl.scrollWidth > tabsEl.clientWidth + 1) {
+        const more = document.createElement('button');
+        more.className = 'btn no-pan';
+        more.textContent = '⋯';
+        more.setAttribute('aria-label', 'All libraries');
+        more.addEventListener('click', openLibraryChooser);
+        tabsEl.appendChild(more);
+        while (tabsEl.scrollWidth > tabsEl.clientWidth + 1 && tabsEl.children.length > 2) {
+          tabsEl.removeChild(more.previousSibling);
+        }
+      }
+    }
+    const filterable = browse.tab !== 'new' && !drilled && !!activeTab();
+    el('psort').hidden = !filterable;
+    el('pgenre').hidden = !filterable;
+    el('psort').textContent = SORTS[browse.sort].label;
+    el('pgenre').textContent = browse.genre || 'Genre';
+    el('pgenre').classList.toggle('on', !!browse.genre);
+  }
+
+  /// One card row for every level: posters for movies/series/seasons, landscape
+  /// stills for episodes. Returns the keys it wants fetched.
+  function buildStrip(items, opts) {
+    const wide = !!(opts && opts.wide);
+    const budget = playerBudget(wide);
+    const strip = el('pstrip');
+    strip.textContent = '';
+    strip.style.setProperty('--ph', budget.cardH + 'px');
+    const wanted = new Set();
+    items.forEach((item, i) => {
+      const d = describe(item);
+      // Inside a season, every episode shares the series poster — the episode's own
+      // STILL is the recognisable thing, when the server has one.
+      if (wide && item.ImageTags && item.ImageTags.Primary && item.Id) {
+        d.img = { id: String(item.Id), tag: String(item.ImageTags.Primary) };
+      }
+      const tile = document.createElement('div');
+      // no-pan: a tappable poster with nothing local to pan must not hand finger
+      // drift to the shell pager (#221).
+      tile.className = 'tile pressable no-pan' + (wide ? ' wide' : '');
+      tile.appendChild(art(d, wanted));
+      const cap = document.createElement('div');
+      cap.className = 'cap';
+      cap.textContent = wide
+        ? [d.sub[0], String(item.Name || d.title)].filter(Boolean).join(' · ')
+        : capFor(item, d);
+      tile.append(cap);
+      tile.addEventListener('click', () => (opts && opts.onTap ? opts.onTap(item, i) : null));
+      strip.appendChild(tile);
+    });
+    return { wanted, count: budget.count };
+  }
+
+  function stripNote(text, onTap) {
+    const strip = el('pstrip');
+    strip.textContent = '';
+    const note = document.createElement('div');
+    note.className = 'note' + (onTap ? ' pressable no-pan' : '');
+    note.textContent = text;
+    if (onTap) {
+      note.style.cursor = 'pointer';
+      note.addEventListener('click', onTap);
+    }
+    strip.appendChild(note);
+  }
+
+  // Player view, browsing. Playback itself lives in the theater layer and never
+  // re-renders from polls.
   function renderPlayer() {
     if (theaterOn) return;   // the theater owns the screen; polls must not repaint it
+    // A browse answer landing after the view switched away must not paint the Player
+    // over the overview (or the setup card) — the view switch does not orphan
+    // browseGen, deliberately: the browse state is still good when the user returns.
+    // The identity half matters too: an identity change with the theater open runs
+    // stopPlayback → render → here → loadBrowse with a POST-reset gen, and if the
+    // new identity is incomplete that completion would repaint over 'Not configured
+    // yet' with polling stopped — nothing would ever paint over it back.
+    if (cfg.view !== 'player' || !cfg.base || !cfg.key) return;
     el('main').hidden = true;
     const stale = document.body.classList.contains('stale');
     const pill = el('pill');
@@ -721,49 +1256,114 @@
     axisRef = null;
     el('axis').hidden = true;
 
+    // The library tabs are fetched on the view's first paint — after that, renders
+    // are pure and fetches happen only when a tap changes the question. A FAILED
+    // discovery leaves tabs null with a timestamp: the retry rides a later render
+    // (the poll loop provides them) instead of spinning in place.
+    if (browse.tabs === null && !browse.loading
+        && Date.now() - (browse.tabsFailedAt || 0) > 30000) {
+      loadBrowse();
+      return;
+    }
+
+    // Unhide BEFORE the bar renders: the tab-overflow pass measures real widths,
+    // and a hidden element measures zero.
+    el('state').hidden = true;
+    el('player').hidden = false;
+    document.querySelector('footer').hidden = false;
+    renderBar();
+
+    if (browse.tab === 'new') {
+      el('pprev').hidden = true;
+      el('pnext').hidden = true;
+      renderNewShelf(stale, pill);
+      return;
+    }
+
+    pill.hidden = !stale;
+    if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
+    el('player').classList.remove('stale-sec');
+
+    const lv = level();
+    const wide = lv === 'season';
+    const measured = playerBudget(wide).count;
+    let items;
+    if (browse.all) {
+      // Local lists (seasons, episodes) re-slice freely at whatever now fits.
+      browse.pageSize = measured;
+      const localPages = Math.max(1, Math.ceil(browse.total / Math.max(1, measured)));
+      if (browse.page > localPages - 1) browse.page = localPages - 1;
+      items = browse.all.slice(browse.page * measured, (browse.page + 1) * measured);
+    } else {
+      // A server page was fetched under a specific size. If the tile was resized
+      // since (the on-panel editor does this in place), silently reusing the page
+      // number under a new size would skip or repeat records — refetch around the
+      // same first record instead, and only ever from a settled state.
+      if (!browse.loading && !browse.error && browse.total && measured !== browse.pageSize) {
+        browse.page = Math.floor((browse.page * browse.pageSize) / Math.max(1, measured));
+        loadBrowse();
+        return;
+      }
+      items = browse.items;
+    }
+
+    const pages = Math.max(1, Math.ceil(browse.total / Math.max(1, browse.pageSize)));
+    const settled = !browse.loading && !browse.error;
+    // Under Random every request is a fresh shuffle, so a page counter would promise
+    // a stable enumeration the server is not providing: no counter, no ‹, and › deals
+    // another hand (flipPage refetches instead of paging).
+    const rnd = lv === 'top' && SORTS[browse.sort].by === 'Random';
+    const paged = settled && !rnd && pages > 1;
+    const reroll = settled && rnd && browse.total > browse.pageSize;
+    el('pprev').hidden = !paged;
+    el('pnext').hidden = !(paged || reroll);
+    el('pprev').disabled = browse.page <= 0;
+    el('pnext').disabled = paged && browse.page >= pages - 1;
+    el('counts').textContent = paged ? 'Page ' + (browse.page + 1) + ' of ' + pages : '';
+    // While a drill-down is loading, browse.total still counts the PREVIOUS level —
+    // '342 seasons' while a series opens. Say nothing until the answer is this level's.
+    el('meta').textContent = !settled ? '' : browse.total
+      ? browse.total + (lv === 'season' ? ' episodes' : lv === 'series' ? ' seasons'
+        : activeTab() && activeTab().tv ? ' series' : ' movies')
+      : '';
+
+    if (browse.loading) { stripNote('Loading…'); return; }
+    if (browse.error) { stripNote(browse.error + ' Tap to retry.', () => loadBrowse()); return; }
+    if (!items.length) {
+      stripNote(browse.genre ? 'Nothing here under ' + browse.genre + '.' : 'Nothing here yet.');
+      return;
+    }
+
+    const built = buildStrip(items, {
+      wide,
+      onTap: (item, i) => openItem(item, browse.all ? browse.page * browse.pageSize + i : null),
+    });
+    ensureImages(built.wanted);
+  }
+
+  // The "New" tab: the recently-added shelf, fed by the poll loop rather than taps.
+  function renderNewShelf(stale, pill) {
     if (!latest.length) {
       // An unfetched shelf is not an empty library: only a shelf that has actually
-      // answered gets to claim there is nothing in it.
-      if (!latestAt) {
-        stateCard('', '▷', 'Loading the shelf',
-          "The recently-added list hasn't answered yet — retrying.");
-      } else {
-        stateCard('', '▷', 'Nothing to play yet',
-          'The recently-added shelf fills in as titles land in '
+      // answered gets to claim there is nothing in it. Either way the note lives IN
+      // THE STRIP — a state card would hide the whole Player, tabs included, and an
+      // empty New shelf must never wall off a full Movies library one tap away.
+      stripNote(!latestAt
+        ? "The recently-added list hasn't answered yet — retrying."
+        : 'Nothing new lately — this shelf fills in as titles land in '
           + ((server && server.name) || 'Jellyfin') + "'s library.");
-      }
+      el('counts').textContent = '';
+      el('meta').textContent = '';
+      el('player').classList.remove('stale-sec');
       if (stale) { pill.hidden = false; pill.textContent = 'Stale'; pill.className = 'pill muted'; }
       else pill.hidden = true;
       return;
     }
 
-    // Same budget math as the overview's idle shelf: posters absorb the body.
-    const W = document.documentElement.clientWidth || 640;
-    const H = document.documentElement.clientHeight || 400;
-    const band = H < 260;
-    const avail = H - 20 - 28 - (band ? 0 : 24);
-    const posterH = Math.max(64, Math.min(220, avail - 45));
-    const posterW = Math.round(posterH * 2 / 3);
-    const count = Math.max(1, Math.floor((W - 24 + 8) / (posterW + 8)));
-
-    const strip = el('pstrip');
-    strip.textContent = '';
-    strip.style.setProperty('--ph', posterH + 'px');
-    const wanted = new Set();
-    for (const item of latest.slice(0, count)) {
-      const d = describe(item);
-      const tile = document.createElement('div');
-      // no-pan: a tappable poster with nothing local to pan must not hand finger
-      // drift to the shell pager (#221).
-      tile.className = 'tile pressable no-pan';
-      tile.appendChild(art(d, wanted));
-      const cap = document.createElement('div');
-      cap.className = 'cap';
-      cap.textContent = capFor(item, d);
-      tile.append(cap);
-      tile.addEventListener('click', () => startPlayback(item, d));
-      strip.appendChild(tile);
-    }
+    const budget = playerBudget(false, false);
+    const built = buildStrip(latest.slice(0, budget.count), {
+      onTap: (item) => openItem(item, null),
+    });
 
     const shelfStale = latestAt > 0 && Date.now() - latestAt > SLOW_MS * 2 + 60000;
     el('player').classList.toggle('stale-sec', shelfStale);
@@ -777,10 +1377,7 @@
     pill.hidden = !stale;
     if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
 
-    el('state').hidden = true;
-    el('player').hidden = false;
-    document.querySelector('footer').hidden = false;
-    ensureImages(wanted);
+    ensureImages(built.wanted);
   }
 
   function art(d, wanted) {
@@ -903,16 +1500,32 @@
   // class: an unsupported audio track (DTS, AC3) does not fire an error event — the
   // video simply plays without sound — so codec safety is decided BEFORE direct play,
   // from the item's MediaStreams, and an unsafe title goes straight to the transcode.
-  // Container problems are the opposite: the demuxer fails loudly, and the error
-  // event walks the fallback list, so containers need no pre-flight.
+  // Containers fail loudly, but only AFTER a doomed attempt: field log of an MKV was
+  // `code 4 — Format error` on direct play before the transcode picked it up, and
+  // MKV is most of a typical Jellyfin library. So the container is pre-flighted too,
+  // and Matroska skips straight to the transcode instead of failing into it.
   const SAFE_VIDEO = new Set(['h264', 'vp8', 'vp9', 'av1']);
   const SAFE_AUDIO = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac']);
+  // What the demuxer opens from a bare src=: the ISO-BMFF family, WebM and Ogg —
+  // plus the bare-stream audio formats for Audio items, whose containers ARE their
+  // codecs (an "mp3" or "flac" container is exactly as playable as its codec row).
+  // Jellyfin reports ffmpeg-style names, sometimes several at once ("mov,mp4,m4a").
+  const SAFE_CONTAINERS = new Set(['mp4', 'm4v', 'm4a', 'mov', '3gp', 'webm', 'ogg', 'ogv', 'oga']);
+  const SAFE_AUDIO_CONTAINERS = new Set(['mp3', 'flac', 'wav', 'ogg', 'oga', 'opus', 'aac', 'm4a', 'm4b', 'mp4', 'webm']);
 
   async function directPlaySafe(item) {
-    const body = await jfJson('/Items?Ids=' + encodeURIComponent(String(item.Id)) + '&Fields=MediaStreams',
+    const body = await jfJson('/Items?Ids=' + encodeURIComponent(String(item.Id)) + '&Fields=MediaStreams,MediaSources',
       8000, 256 * 1024);
-    const streams = (body && Array.isArray(body.Items) && body.Items[0] && body.Items[0].MediaStreams) || null;
+    const it = (body && Array.isArray(body.Items) && body.Items[0]) || null;
+    const streams = (it && it.MediaStreams) || null;
     if (!Array.isArray(streams)) throw fault('format', 'no media streams');
+    // A missing container is not condemned — absence of evidence leaves the codec
+    // verdict standing; a KNOWN foreign one (mkv above all) is, before the demuxer
+    // has to find out the slow way.
+    const source = (Array.isArray(it.MediaSources) && it.MediaSources[0]) || null;
+    const container = String((source && source.Container) || it.Container || '').toLowerCase();
+    const safeSet = item.Type === 'Audio' ? SAFE_AUDIO_CONTAINERS : SAFE_CONTAINERS;
+    if (container && !container.split(',').some((c) => safeSet.has(c.trim()))) return false;
     const audio = streams.filter((s) => s && s.Type === 'Audio');
     const picked = audio.find((s) => s.IsDefault) || audio[0];
     if (picked && !SAFE_AUDIO.has(String(picked.Codec || '').toLowerCase())) return false;
@@ -948,6 +1561,13 @@
   // Each startPlayback claims a token; a pre-flight that resolves after Back (or after
   // a different title was tapped) finds a foreign token and mutates nothing.
   let playToken = 0;
+  // What each attempt died of — codes only, for the terminal card and the log.
+  // MediaError codes: 1 aborted · 2 network · 3 decode · 4 source-not-supported —
+  // a foreign container ("Format error"), a mixed-content block, a certificate
+  // block and the local-network-access gate all read as 4 — which is why the
+  // failure probe exists: rs=0 ns=3 with a 2xx probe means a renderer gate, not
+  // the server, and the field proved it (beta.3, 2026-08-16).
+  let attemptErrors = [];
   // Whether this widget's dashboard page is on screen, kept current by the observer
   // below — the pre-flight's async gap needs the answer at continuation time.
   let pageOff = false;
@@ -966,6 +1586,22 @@
   // The whole surface can be out of sight two ways: this page scrolled off (pageOff)
   // or the dashboard window hidden entirely. Neither may start or continue a stream.
   const outOfSight = () => pageOff || document.hidden;
+
+  // The URL of the attempt currently in the element, kept for the failure probe —
+  // never logged (the api_key rides its query).
+  let lastSrcUrl = '';
+
+  // Media at a LAN address rides the HOST's stream relay instead of the renderer's
+  // own network stack: four field rounds proved the renderer's gates (mixed content,
+  // Local Network Access) kill direct requests to private IPs before a byte leaves,
+  // flag or no flag. WW.mediaUrl builds the relay URL — including the per-run token
+  // that proves a verified widget document is asking — and THIS widget's own
+  // certificate setting travels with each request, so another instance's choice for
+  // the same server never applies here. Named addresses stay direct: they face no
+  // LAN gates and public https plays natively.
+  function relayUrl(url) {
+    return WW.mediaUrl(url, { insecure: /^https:/i.test(cfg.base) && cfg.selfSigned });
+  }
 
   // One door onto pv.src: every attempt gets the startup deadline, and a mid-title
   // fallback carries the position along instead of starting the movie over.
@@ -987,7 +1623,8 @@
       }
     }
     armStartDeadline();
-    pv.src = url;
+    lastSrcUrl = url;
+    pv.src = privateLiteralHost(cfg.base) ? relayUrl(url) : url;
     // play() descends from a tap, so autoplay policy is normally satisfied (Chromium's
     // audible gate is sticky per frame once the user has tapped it). If a policy still
     // refuses — activation expired across a slow pre-flight — that is not a broken
@@ -1014,6 +1651,7 @@
     const token = ++playToken;
     theaterItem = { title: d.title, isAudio: item.Type === 'Audio', imgKey: d.img ? d.img.id + '|' + d.img.tag + '|330' : null };
     resumeAt = 0;
+    attemptErrors = [];
     el('ovTitle').textContent = d.title;
     el('tError').hidden = true;
     el('tSpin').hidden = false;
@@ -1054,6 +1692,7 @@
   function stopPlayback() {
     if (!theaterOn) return;
     theaterOn = false;
+    playQueue = null;   // leaving the theater ends the run — Back means back
     playToken++;   // orphan any pre-flight still in the air
     clearTimeout(overlayTimer);
     clearTimeout(attemptTimer);
@@ -1106,6 +1745,58 @@
     if (!theaterOn) return;
     clearTimeout(attemptTimer);
     clearTimeout(stallTimer);
+    // Record what THIS attempt died of before anything advances — the codes are the
+    // whole diagnosis when both attempts fail in the field. The CARD carries the code
+    // alone: short enough for a 200px band's error card, and a code cannot leak the
+    // api_key. The implementation-defined message goes to the log only, redacted —
+    // such messages may quote the failing URL, the key rides that URL's query, and
+    // truncation is not redaction: the key is replaced wherever it appears and query
+    // strings are dropped wholesale.
+    const me = pv.error;
+    attemptErrors.push(me ? 'code ' + me.code : 'watchdog');
+    let msg = me && me.message ? String(me.message) : '';
+    if (msg) {
+      if (cfg.key) msg = msg.split(cfg.key).join('[key]');
+      msg = msg.replace(/\?\S*/g, '?…').slice(0, 160);
+    }
+    // The element's state is the evidence a silent death leaves behind: a watchdog
+    // kill has no MediaError, but readyState/networkState and the decoded frame
+    // dimensions still separate "no bytes ever arrived" from "bytes arrived, no
+    // frames decoded" (a decoder the browser lacks) from "decoded, then stalled".
+    const state = 'rs=' + pv.readyState + ' ns=' + pv.networkState + ' '
+      + pv.videoWidth + 'x' + pv.videoHeight + ' t=' + (Math.round((pv.currentTime || 0) * 10) / 10);
+    WW.log('jellyfin: playback attempt ' + attemptErrors.length + ' failed: '
+      + attemptErrors[attemptErrors.length - 1] + ' [' + state + ']' + (msg ? ' — ' + msg : ''));
+    // One question the element cannot answer: did the request even reach the server?
+    // A renderer-side kill (mixed-content or certificate gate) and an HTTP error
+    // (rejected api_key, transcoder down) both read as code 4 with nothing decoded.
+    // The host proxy sits outside the renderer's gates, so probing the SAME URL
+    // through it splits the two: a 2xx probe means the server is fine and the block
+    // is local. Status and content-type only — the URL carries the api_key.
+    if (lastSrcUrl) {
+      const n = attemptErrors.length;
+      WW.fetch(lastSrcUrl, { method: 'HEAD', proxy: 'always',
+        insecure: /^https:/i.test(cfg.base) && cfg.selfSigned })
+        .then((r) => WW.log('jellyfin: attempt ' + n + ' probe: HTTP ' + r.status
+          + ' ' + (r.headers.get('content-type') || '')))
+        .catch((e) => WW.log('jellyfin: attempt ' + n + ' probe failed: ' + ((e && e.name) || 'error')));
+      // The probe quartet, each isolating ONE layer from inside this frame. Reading
+      // the answers: an HTTP status (0 counts — no-cors responses are opaque) means
+      // that layer works; TypeError means that layer refused. relay-fetch → host
+      // interception; vhost-fetch → virtual hosts at all; direct-fetch → the LAN
+      // target with no relay; pna-fetch → the same but with Chromium's per-request
+      // Local Network Access opt-in, so if IT succeeds where direct-fetch fails,
+      // the gate finally has a name.
+      if (privateLiteralHost(cfg.base)) {
+        const probe = (tag, url, init) => WW.fetch(url, Object.assign({ method: 'HEAD', proxy: 'never' }, init || {}))
+          .then((r) => WW.log('jellyfin: attempt ' + n + ' ' + tag + ': HTTP ' + r.status))
+          .catch((e) => WW.log('jellyfin: attempt ' + n + ' ' + tag + ' failed: ' + ((e && e.name) || 'error')));
+        probe('relay-fetch', relayUrl(lastSrcUrl));
+        probe('vhost-fetch', 'https://media.plinth/', { mode: 'no-cors' });
+        probe('direct-fetch', lastSrcUrl, { mode: 'no-cors' });
+        probe('pna-fetch', lastSrcUrl, { mode: 'no-cors', targetAddressSpace: 'private' });
+      }
+    }
     // A failure on a screen nobody is looking at does not get to restart audio there —
     // back to the browse shelf; the viewer re-taps when they return.
     if (outOfSight()) { stopPlayback(); return; }
@@ -1128,11 +1819,19 @@
     // The transport is for a stream that no longer exists — the card owns the screen.
     clearTimeout(overlayTimer);
     el('overlay').classList.add('faded');
+    // Certificate hints mirror what the host actually enforces: it accepts
+    // certificate errors only for LAN hosts the widget has opted in via the
+    // self-signed setting — so at a LAN https address WITHOUT the opt-in the
+    // setting is the fix, and at a named https address only a trusted
+    // certificate is.
     el('tErrorBody').textContent = 'Neither the original file nor a server transcode would play. '
       + 'The codec may be unsupported'
-      + (/^https:/i.test(cfg.base) && cfg.selfSigned
-        ? ", and the self-signed allowance covers the shelf only — playback needs a certificate this PC's browser trusts."
-        : ', or an https server’s certificate was refused.');
+      + (/^https:/i.test(cfg.base) && !privateLiteralHost(cfg.base)
+        ? ", or the certificate was refused — at a named https address it must be one this PC trusts (a LAN IP address can use 'Allow self-signed')."
+        : /^https:/i.test(cfg.base) && !cfg.selfSigned
+          ? ", or the server's certificate was refused — if it is self-signed, set 'Certificate check' to allow it in the widget settings."
+          : '.')
+      + '  [' + attemptErrors.join(' · ') + ']';
     el('tError').hidden = false;
   }
 
@@ -1158,7 +1857,20 @@
   // deliberately paused stream is not a failed one, and the startup deadline firing
   // through a pause would walk the fallback over the user's own choice.
   pv.addEventListener('pause', () => { if (theaterOn) { clearTimeout(stallTimer); clearTimeout(attemptTimer); setTheaterIcons(true); showOverlay(); } });
-  pv.addEventListener('ended', stopPlayback);
+  // Sequencing: an episode that finishes rolls straight into the next one in its
+  // season — that is what "watching a season" means on a lean-back surface. The
+  // queue was captured at tap time from the episode list already on screen; a
+  // finished MOVIE (no queue) closes the theater as before, and a run that ends
+  // off-screen must not restart audio on a page nobody is looking at.
+  pv.addEventListener('ended', () => {
+    if (theaterOn && playQueue && playQueue.index + 1 < playQueue.items.length && !outOfSight()) {
+      playQueue.index++;
+      const item = playQueue.items[playQueue.index];
+      startPlayback(item, describe(item));
+      return;
+    }
+    stopPlayback();
+  });
   // timeupdate fires at the browser's own ~4 Hz — data cadence, no timer of ours.
   // The clock carries timeBase: a StartTimeTicks transcode restarts the element's own
   // clock at zero while the title is minutes in.
@@ -1326,8 +2038,10 @@
     if (prevView !== cfg.view || prevTypes !== cfg.types) {
       slowAt = 0;
       if (prevTypes !== cfg.types) { latest = []; latestAt = 0; }
-      // A view change pulls the screen out from under a playing title.
-      if (prevView !== cfg.view) stopPlayback();
+      // A view change pulls the screen out from under a playing title — and out
+      // from under an open chooser sheet, which would otherwise sit fixed over
+      // the overview with the Player's pills still live inside it.
+      if (prevView !== cfg.view) { stopPlayback(); closeChooser(); }
     }
 
     // A different server (or a different key onto the same one) is a different set of
@@ -1340,6 +2054,7 @@
       server = null;
       rowRefs = [];
       axisRef = null;
+      browseReset();   // the tabs, the drill-down and the queue all belong to the old server
       generation++;
       inFlight = false;
       fails = 0;

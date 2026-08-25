@@ -21,6 +21,11 @@
   // standalone widget development. Until the shell has spoken, '*' is all we have.
   let shellOrigin = null;
   const shellTarget = () => shellOrigin || '*';
+  // The media-relay credential, delivered by ww-init. Empty until the shell speaks
+  // (and forever, in the settings replica and the offline harness) — WW.mediaUrl
+  // still builds a well-formed URL then; the relay refuses it, which is correct
+  // everywhere a token was never issued.
+  let relayToken = '';
   const pendingFetches = new Map();
   const pendingPings = new Map();
   const pendingMediaLists = new Map();
@@ -383,6 +388,10 @@
       state.sensors = msg.sensors || [];
       state.media = msg.media || null;
       state.status = msg.status || null;
+      // The media-relay credential (see WW.mediaUrl). Kept in this closure, never on
+      // state: WW.settings-style getters hand copies of state around, and the token
+      // has exactly one legitimate reader — the URL builder below.
+      if (typeof msg.relayToken === 'string') relayToken = msg.relayToken;
       if (msg.notifications !== undefined) state.notifications = msg.notifications;
       // Design tokens land on :root before init callbacks so first paint is themed.
       applyThemeTokens(msg.theme);
@@ -758,6 +767,24 @@
 
     /** Media transport: 'toggle' | 'next' | 'prev'. */
     mediaControl(action) { parent.postMessage({ type: 'ww-media-control', action }, shellTarget()); },
+
+    /** The URL a media element uses to stream a LAN server through the host relay.
+     *
+     * Media must not be handed to a <video>/<audio> element as a direct LAN URL: the
+     * renderer's network gates (mixed content, Local Network Access) cancel requests
+     * from a widget page to a private address before a byte leaves. The relay streams
+     * it host-side instead (Range-aware, so direct-played files stay seekable). The
+     * per-run token this stamps on the URL is what proves a real widget document
+     * asked — pages the shell never verified (anything an embed widget frames) hold
+     * no token and are refused. Targets are limited to literal private-IP authorities
+     * this widget has already reached through the WW.fetch proxy; pass
+     * `opts.insecure: true` to skip certificate validation for that request only
+     * (self-signed LAN servers), mirroring init.insecure's contract. */
+    mediaUrl(url, opts) {
+      return 'https://stream.plinth/v?u=' + encodeURIComponent(String(url))
+        + (opts && opts.insecure ? '&insecure=1' : '')
+        + (relayToken ? '&t=' + encodeURIComponent(relayToken) : '');
+    },
 
     /** Open a URL in the desktop browser. */
     openUrl(url) { parent.postMessage({ type: 'ww-open-url', url: String(url) }, shellTarget()); },
