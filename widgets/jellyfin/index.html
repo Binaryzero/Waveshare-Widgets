@@ -996,7 +996,11 @@
           const body = await jfJson('/Shows/NextUp?UserId=' + encodeURIComponent(uid)
             + '&SeriesId=' + encodeURIComponent(seriesId)
             + '&Limit=1&ImageTypeLimit=1&EnableImageTypes=Primary', 12000, LIST_MAX_BYTES);
-          next = ((body && body.Items) || [])[0] || null;
+          // Malformed 200s fault here like everywhere else: the run still ends
+          // (there is no better mid-run recovery), but as a LOGGED fault, not
+          // mistaken for the end of the series.
+          if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
+          next = body.Items[0] || null;
         }
       } catch (e) {
         WW.log('jellyfin: next up: ' + (e && e.message));
