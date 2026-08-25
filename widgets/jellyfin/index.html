@@ -856,6 +856,7 @@
   let browseGen = 0;      // orphans answers that arrive after the question changed
   let playQueue = null;   // { items, index }: the episode run being watched (auto-advance)
   let nextUpRun = null;   // SeriesId of the Next up episode on screen — 'ended' asks the server for its successor
+  let nextUpDirty = false; // a watched-state write landed; a Next up shelf on screen is stale until refetched
   let chooserSession = 0; // orphans a /Genres answer still in flight for a closed or repurposed sheet
 
   function closeChooser() {
@@ -872,6 +873,7 @@
     browseGen++;
     playQueue = null;
     nextUpRun = null;
+    nextUpDirty = false;
     // The sheet (and anything it was still fetching) belongs to the old server too.
     closeChooser();
   }
@@ -921,7 +923,12 @@
   // faults throw, so callers keep their own retry semantics.
   async function resolveUser() {
     if (nextUser.id) return nextUser.id;
+    // Captured before the fetch: a /Users answer that crosses a server change must
+    // not seed the NEW identity's cache with the OLD server's user id — the ids
+    // are unrelated, and one that happens to exist would target the wrong user.
+    const g = generation;
     const body = await jfJson('/Users', 12000, 256 * 1024);
+    if (g !== generation) return null;
     const hit = (Array.isArray(body) ? body : []).find((u) => u && typeof u.Name === 'string'
       && u.Name.trim().toLowerCase() === cfg.user.toLowerCase());
     if (!hit || !hit.Id) return null;
@@ -931,16 +938,21 @@
 
   // A finished title is marked played for the configured user — that is what lets
   // Next up advance past it. Only a NATURAL finish calls this ('ended'); stopping
-  // halfway marks nothing. Failures log and stay quiet: playback already happened.
+  // halfway marks nothing. Failures log and stay quiet — playback already happened
+  // — but the RETURN says whether the write landed: advancing on unchanged watch
+  // state would be handed the same episode back and replay it from zero.
   async function markPlayed(item) {
-    if (!cfg.user || !item || !item.Id) return;
+    if (!cfg.user || !item || !item.Id) return false;
     try {
       const uid = await resolveUser();
-      if (!uid) return;
+      if (!uid) return false;
       await jf('/Users/' + encodeURIComponent(uid) + '/PlayedItems/' + encodeURIComponent(String(item.Id)),
         { method: 'POST', maxBytes: 64 * 1024 }, 12000);
+      nextUpDirty = true;   // the shelf on screen no longer tells the truth
+      return true;
     } catch (e) {
       WW.log('jellyfin: mark played: ' + (e && e.message));
+      return false;
     }
   }
 
@@ -950,20 +962,27 @@
   async function advanceNextUp(finished, seriesId) {
     const tok = playToken;
     el('tSpin').hidden = false;
-    await markPlayed(finished);
+    // No watched write, no advance: Next up is computed FROM watch state, so on
+    // unchanged state the server hands the just-finished episode straight back.
+    const marked = await markPlayed(finished);
     let next = null;
-    try {
-      const uid = await resolveUser();
-      if (uid) {
-        const body = await jfJson('/Shows/NextUp?UserId=' + encodeURIComponent(uid)
-          + '&SeriesId=' + encodeURIComponent(seriesId)
-          + '&Limit=1&ImageTypeLimit=1&EnableImageTypes=Primary', 12000, LIST_MAX_BYTES);
-        next = ((body && body.Items) || [])[0] || null;
+    if (marked) {
+      try {
+        const uid = await resolveUser();
+        if (uid) {
+          const body = await jfJson('/Shows/NextUp?UserId=' + encodeURIComponent(uid)
+            + '&SeriesId=' + encodeURIComponent(seriesId)
+            + '&Limit=1&ImageTypeLimit=1&EnableImageTypes=Primary', 12000, LIST_MAX_BYTES);
+          next = ((body && body.Items) || [])[0] || null;
+        }
+      } catch (e) {
+        WW.log('jellyfin: next up: ' + (e && e.message));
       }
-    } catch (e) {
-      WW.log('jellyfin: next up: ' + (e && e.message));
     }
     if (!theaterOn || tok !== playToken) return;   // stopped or replaced while asking
+    // The write can land while the server's next-up view lags it — the same episode
+    // coming back would replay from zero. Ending the run is the honest fallback.
+    if (next && finished && String(next.Id) === String(finished.Id)) next = null;
     if (next && next.Id && !outOfSight()) startPlayback(next, describe(next));
     else stopPlayback();
   }
@@ -1839,6 +1858,12 @@
     // Polls were held while the theater had the screen; catch up if one is overdue.
     if (started && Date.now() - lastOk >= pollDelay()) { clearTimeout(timer); tick(generation); }
     render();
+    // A run that marked episodes watched walks out onto a Next up shelf still
+    // listing them — refetch so the shelf tells the truth it just changed.
+    if (nextUpDirty && cfg.view === 'player' && browse.tab === 'next') {
+      nextUpDirty = false;
+      loadBrowse();
+    }
   }
 
   function setTheaterIcons(paused) {
@@ -2204,6 +2229,10 @@
     if (prevUser !== cfg.user) {
       nextUser = { id: '' };
       browseReset();
+      // The tracked user is part of the playing run's identity: a title started
+      // under user A must not be marked watched for user B when it ends, and an
+      // auto-advance must not continue onto the new account's queue.
+      stopPlayback();
     }
 
     // A different server (or a different key onto the same one) is a different set of
