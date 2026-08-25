@@ -17,12 +17,27 @@ namespace Plinth.Widgets;
 /// so far has had to keep its token MEMORY-ONLY and re-authenticate on every app start,
 /// which is a workaround for a missing capability rather than a design.</para>
 ///
-/// <para>SCOPED PER WIDGET ID, deliberately — the same boundary a widget's virtual host
-/// already draws (<see cref="WidgetLibrary"/>), so this store is exactly as shareable as
-/// the <c>localStorage</c> it replaces: two instances of one widget see the same entries,
-/// two different widgets never see each other's. The id is supplied by the SHELL from the
-/// slot that sent the message, never by the message itself; a widget naming its own scope
-/// would be no scope at all.</para>
+/// <para>SCOPED PER INSTANCE, nested under the widget id (#226). The document is
+/// <c>widgets → widgetId → instanceId → key</c>. The widget id keeps the package boundary
+/// a widget's virtual host already draws (<see cref="WidgetLibrary"/>) — so an uninstall
+/// still drops a whole widget's credentials in one move — while each tile's derived tokens
+/// live in their OWN bucket, isolated exactly as that tile's settings already are. Two
+/// instances of one widget no longer share entries (the earlier <c>localStorage</c>-parity
+/// scoping, #175); two different widgets never did. A derived token is a credential, and a
+/// credential should not ride from one tile to another on clone, removal, or reuse — which
+/// is the whole of what #226 turns on. Removing an instance's bucket removes the widget
+/// node once its last instance is gone, so "purge when no live instance remains" needs no
+/// separate bookkeeping.</para>
+///
+/// <para>BOTH ids are supplied by the SHELL from the slot that sent the message, never by
+/// the message itself; a widget naming its own scope — widget OR instance — would be no
+/// scope at all. A freshly added tile carries an instance id from the moment it is placed,
+/// so a widget that stores a token can read it back. A slot from an older layout that was
+/// never edited on-panel has no id yet: rather than fall back to a shared or positional
+/// bucket, the write is refused (<see cref="WriteResult.BadScope"/>) and the widget keeps
+/// its token in memory — the same fallback it takes when sealing is unavailable. A
+/// credential is thus never addressed by grid position (#68), and an id-less tile shares
+/// no bucket with anything.</para>
 ///
 /// <para>SEALED WITH THE SAME ENVELOPE as <c>secret</c> properties, via
 /// <see cref="SecretStore"/>, so there is one protection story rather than two — and so
@@ -39,10 +54,10 @@ public static class WidgetSecrets
     /// using it for something other than a credential.</summary>
     public const int MaxValueBytes = 8 * 1024;
 
-    /// <summary>Keys one widget may hold. Bounded because the file is read whole, and
-    /// because a widget with more than a handful of derived credentials is not the case
-    /// this exists for.</summary>
-    public const int MaxKeysPerWidget = 16;
+    /// <summary>Keys one INSTANCE may hold (#226 re-scoped this from per-widget). Bounded
+    /// because the file is read whole, and because a tile with more than a handful of
+    /// derived credentials is not the case this exists for.</summary>
+    public const int MaxKeysPerInstance = 16;
 
     /// <summary>Longest key. Keys are JSON member names, not paths.</summary>
     public const int MaxKeyLength = 64;
@@ -115,6 +130,15 @@ public static class WidgetSecrets
     /// </summary>
     public static bool IsValidScope(string? widgetId) => IsValidKey(widgetId);
 
+    /// <summary>An instance id the store will accept: the shell-minted per-tile identity
+    /// (#226), the inner scope under a widget id. Same bounded alphabet as a key — an
+    /// instance id is <c>i&lt;base36&gt;-&lt;seq&gt;</c> or the frozen positional tag
+    /// (<c>p0s1</c>), both of which fit it. Blank is refused for the same reason a blank
+    /// widget scope is: an id-less tile would share one bucket with every other id-less
+    /// tile of the same widget, which is the shared scope per-instance isolation removes.
+    /// </summary>
+    public static bool IsValidInstance(string? instanceId) => IsValidKey(instanceId);
+
     /// <summary>Is protection actually working here? Answered by sealing and unsealing a
     /// probe value rather than by testing the platform, because "DPAPI exists" and "this
     /// process can use it" are different questions and only the second one matters.
@@ -133,9 +157,21 @@ public static class WidgetSecrets
     }
 
     // ---- the document ---------------------------------------------------------------
-    // { "version": 1, "widgets": { "<widgetId>": { "<key>": "dpapi:v1:..." } } }
+    // { "version": 2,
+    //   "widgets": { "<widgetId>": { "<instanceId>": { "<key>": "dpapi:v1:..." } } } }
+    //
+    // Version 1 (#175) was one level shallower — keys hung straight off the widget id,
+    // shared by every instance. Nothing shipped ever wrote it, so v2 does not migrate: a
+    // document that is not v2 loads as empty (below), which for this store means the widget
+    // re-derives its token, exactly what it did before the store existed.
 
     private const string WidgetsMember = "widgets";
+    private const string VersionMember = "version";
+
+    /// <summary>The on-disk shape this build reads and writes. A document at any other
+    /// version loads as empty rather than being read through the wrong shape — see
+    /// <see cref="Load"/>.</summary>
+    private const int SchemaVersion = 2;
 
     /// <summary>Parse, tolerating anything. A store that throws on a damaged file takes
     /// the widget's credentials with it and gives the field no way back; an unreadable
@@ -146,15 +182,23 @@ public static class WidgetSecrets
     {
         try
         {
+            // Only a document at the CURRENT schema version is read as-is. An older (v1)
+            // or unknown document is treated as empty rather than traversed through the
+            // wrong shape — reading v1's "widgetId → key" tree as v2's "widgetId →
+            // instanceId → key" would either miss everything or, worse, graft a v2 bucket
+            // beside v1 string keys and corrupt the file on the next write. v1 shipped in
+            // no build that stored anything, so this loses nothing real.
             if (!string.IsNullOrWhiteSpace(json) && JsonNode.Parse(json) is JsonObject root
-                && root[WidgetsMember] is JsonObject)
+                && root[WidgetsMember] is JsonObject
+                && root[VersionMember] is JsonValue v
+                && v.TryGetValue<int>(out var ver) && ver == SchemaVersion)
                 return root;
         }
         catch (JsonException)
         {
             // fall through to a fresh document
         }
-        return new JsonObject { ["version"] = 1, [WidgetsMember] = new JsonObject() };
+        return new JsonObject { [VersionMember] = SchemaVersion, [WidgetsMember] = new JsonObject() };
     }
 
     public static string Serialize(JsonObject doc) =>
@@ -164,11 +208,12 @@ public static class WidgetSecrets
     /// envelope this user/machine cannot open — which is the same answer as far as the
     /// caller is concerned, because in all three cases it has to go and get a new one.
     /// </summary>
-    public static string? Get(JsonObject doc, string? widgetId, string? key)
+    public static string? Get(JsonObject doc, string? widgetId, string? instanceId, string? key)
     {
-        if (!IsValidScope(widgetId) || !IsValidKey(key)) return null;
+        if (!IsValidScope(widgetId) || !IsValidInstance(instanceId) || !IsValidKey(key)) return null;
         if (doc[WidgetsMember] is not JsonObject widgets) return null;
-        if (widgets[widgetId!] is not JsonObject bucket) return null;
+        if (widgets[widgetId!] is not JsonObject byInstance) return null;
+        if (byInstance[instanceId!] is not JsonObject bucket) return null;
         if (bucket[key!] is not JsonValue value) return null;
         var stored = value.GetValue<string?>();
         if (string.IsNullOrEmpty(stored)) return null;
@@ -176,12 +221,16 @@ public static class WidgetSecrets
         catch (Exception) { return null; }
     }
 
-    /// <summary>Seal a value into the document. Returns what happened and mutates
-    /// <paramref name="doc"/> only on success — a refused write must not leave a
-    /// half-changed document behind for the caller to persist.</summary>
-    public static WriteResult Set(JsonObject doc, string? widgetId, string? key, string? value)
+    /// <summary>Seal a value into the document, in the instance's bucket under its widget.
+    /// Returns what happened and mutates <paramref name="doc"/> only on success — a refused
+    /// write must not leave a half-changed document behind for the caller to persist.
+    /// </summary>
+    public static WriteResult Set(JsonObject doc, string? widgetId, string? instanceId, string? key, string? value)
     {
-        if (!IsValidScope(widgetId)) return WriteResult.BadScope;
+        // The instance id is part of the scope, so a bad one is BadScope, not a fourth
+        // outcome: a widget's fallback for "no valid scope" is identical either way (keep
+        // the token in memory), and adding a new refusal name would be a wire change.
+        if (!IsValidScope(widgetId) || !IsValidInstance(instanceId)) return WriteResult.BadScope;
         if (!IsValidKey(key)) return WriteResult.BadKey;
         var plain = value ?? "";
         if (Encoding.UTF8.GetByteCount(plain) > MaxValueBytes) return WriteResult.TooLarge;
@@ -190,37 +239,66 @@ public static class WidgetSecrets
             widgets = new JsonObject();
             doc[WidgetsMember] = widgets;
         }
-        var bucket = widgets[widgetId!] as JsonObject;
+        var byInstance = widgets[widgetId!] as JsonObject;
+        var bucket = byInstance?[instanceId!] as JsonObject;
         // The cap counts keys that would EXIST after the write, so overwriting one of the
         // existing keys is always allowed. Counting before the distinction is what would
-        // make a widget at the limit unable to refresh the very token it already holds.
-        if (bucket is not null && bucket[key!] is null && bucket.Count >= MaxKeysPerWidget)
+        // make an instance at the limit unable to refresh the very token it already holds.
+        if (bucket is not null && bucket[key!] is null && bucket.Count >= MaxKeysPerInstance)
             return WriteResult.TooManyKeys;
         if (!TrySeal(plain, out var stored)) return WriteResult.Unavailable;
+        // Create the two levels lazily, and only now that the seal has succeeded — an
+        // Unavailable write above must leave the document exactly as it found it.
+        if (byInstance is null)
+        {
+            byInstance = new JsonObject();
+            widgets[widgetId!] = byInstance;
+        }
         if (bucket is null)
         {
             bucket = new JsonObject();
-            widgets[widgetId!] = bucket;
+            byInstance[instanceId!] = bucket;
         }
         bucket[key!] = stored;
         return WriteResult.Ok;
     }
 
-    /// <summary>Remove one key. Removing the last key removes the widget's bucket too, so
-    /// an uninstalled widget does not leave an empty shell behind in the file.</summary>
-    public static bool Delete(JsonObject doc, string? widgetId, string? key)
+    /// <summary>Remove one key. Removing the last key removes the instance's bucket, and
+    /// removing the last instance removes the widget node — so neither an emptied tile nor
+    /// an uninstalled widget leaves a shell behind in the file.</summary>
+    public static bool Delete(JsonObject doc, string? widgetId, string? instanceId, string? key)
     {
-        if (!IsValidScope(widgetId) || !IsValidKey(key)) return false;
+        if (!IsValidScope(widgetId) || !IsValidInstance(instanceId) || !IsValidKey(key)) return false;
         if (doc[WidgetsMember] is not JsonObject widgets) return false;
-        if (widgets[widgetId!] is not JsonObject bucket) return false;
+        if (widgets[widgetId!] is not JsonObject byInstance) return false;
+        if (byInstance[instanceId!] is not JsonObject bucket) return false;
         if (!bucket.Remove(key!)) return false;
-        if (bucket.Count == 0) widgets.Remove(widgetId!);
+        if (bucket.Count == 0) byInstance.Remove(instanceId!);
+        if (byInstance.Count == 0) widgets.Remove(widgetId!);
         return true;
     }
 
-    /// <summary>Drop everything a widget stored. For uninstall: a package that is gone
-    /// should not leave working credentials on disk, and the id is reusable by whatever
-    /// is installed next.</summary>
+    /// <summary>Drop one INSTANCE's whole bucket — the per-tile destroy behind Clear and
+    /// evict-on-cap (#226). Removing an instance empties and drops the widget node once it
+    /// was the last one, which is why "purge the shared bucket when no live instance
+    /// remains" needs no separate liveness check: there is no shared bucket to purge, and
+    /// the widget node disappears on its own.</summary>
+    public static bool ForgetInstance(JsonObject doc, string? widgetId, string? instanceId)
+    {
+        if (!IsValidScope(widgetId) || !IsValidInstance(instanceId)) return false;
+        if (doc[WidgetsMember] is not JsonObject widgets) return false;
+        if (widgets[widgetId!] is not JsonObject byInstance) return false;
+        if (!byInstance.Remove(instanceId!)) return false;
+        if (byInstance.Count == 0) widgets.Remove(widgetId!);
+        return true;
+    }
+
+    /// <summary>Drop everything a WIDGET stored — every instance's bucket at once. For
+    /// uninstall (#188): a package that is gone should not leave working credentials on
+    /// disk, and the id is reusable by whatever is installed next. Keyed by widget id, not
+    /// instance, because uninstall knows only that the whole package went — which is
+    /// exactly why the store stays nested under the widget id rather than flat by
+    /// instance.</summary>
     public static bool Forget(JsonObject doc, string? widgetId)
     {
         if (!IsValidScope(widgetId)) return false;
