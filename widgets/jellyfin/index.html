@@ -914,7 +914,11 @@
   async function loadTabs() {
     try {
       const body = await jfJson('/Library/MediaFolders', 12000, 256 * 1024);
-      return ((body && body.Items) || [])
+      // A 200 without Items is a FAULT, not a server with no libraries: returned
+      // as [] it would cache an empty tab row and silently blank the filtered
+      // shelf, both with their retry paths disarmed.
+      if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
+      return body.Items
         .filter((f) => f && f.Id && (f.CollectionType === 'movies' || f.CollectionType === 'tvshows'))
         // The hide list is the user's, by name: a hidden library gets no tab, no
         // ⋯-sheet entry, and (through the shelf's per-library fetch) no New items.
@@ -942,7 +946,10 @@
     const g = generation;
     const body = await jfJson('/Users', 12000, 256 * 1024);
     if (g !== generation) return null;
-    const hit = (Array.isArray(body) ? body : []).find((u) => u && typeof u.Name === 'string'
+    // A malformed 200 must not read as 'no such user' — that message sends the
+    // user to their settings for a fault that is the server's.
+    if (!Array.isArray(body)) throw fault('format', 'reply was not a user list');
+    const hit = body.find((u) => u && typeof u.Name === 'string'
       && u.Name.trim().toLowerCase() === cfg.user.toLowerCase());
     if (!hit || !hit.Id) return null;
     nextUser = { id: String(hit.Id) };
@@ -1047,7 +1054,10 @@
             + '&Limit=' + browse.pageSize
             + '&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true', 12000, LIST_MAX_BYTES);
           if (gen !== browseGen) return;
-          const items = (body && Array.isArray(body.Items)) ? body.Items : [];
+          // Malformed 200s fault everywhere in this function: settled-as-empty has
+          // no retry (the active tab swallows re-taps unless an error is showing).
+          if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
+          const items = body.Items;
           browse.all = null;
           browse.items = items;
           browse.total = body && body.TotalRecordCount != null ? Number(body.TotalRecordCount) : items.length;
@@ -1079,7 +1089,10 @@
           const page = await jfJson(whole + (all.length ? '&StartIndex=' + all.length : ''),
             12000, LIST_MAX_BYTES);
           if (gen !== browseGen) return;
-          const got = (page && Array.isArray(page.Items)) ? page.Items : [];
+          // A malformed page mid-follow faults the whole level rather than passing
+          // off a truncated season as complete.
+          if (!page || !Array.isArray(page.Items)) throw fault('format', 'reply had no Items');
+          const got = page.Items;
           all.push(...got);
           const reported = page && page.TotalRecordCount != null
             ? Number(page.TotalRecordCount) : all.length;
@@ -1102,7 +1115,8 @@
           + (browse.genre ? '&Genres=' + encodeURIComponent(browse.genre) : '');
         const body = await jfJson(path, 12000, LIST_MAX_BYTES);
         if (gen !== browseGen) return;
-        const items = (body && Array.isArray(body.Items)) ? body.Items : [];
+        if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
+        const items = body.Items;
         browse.all = null;
         browse.items = items;
         browse.total = body && body.TotalRecordCount != null ? Number(body.TotalRecordCount) : items.length;
@@ -1222,7 +1236,10 @@
         for (;;) {
           const body = await jfJson(base + (fetched ? '&StartIndex=' + fetched : ''),
             12000, 256 * 1024);
-          const raw = (body && body.Items) || [];
+          // Malformed 200s fault (and stay uncached) — as [] they would read
+          // 'no genres reported' with reopening no longer a retry.
+          if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
+          const raw = body.Items;
           fetched += raw.length;
           got.push(...raw.map((g) => String((g && g.Name) || '')).filter(Boolean));
           const reported = body && body.TotalRecordCount != null
