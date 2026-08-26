@@ -271,6 +271,13 @@ public sealed class DashboardWindow : Form
                             throw new InvalidDataException("Layout has no pages.");
                         foreach (var page in edited.Pages)
                             page.Slots.RemoveAll(s => string.IsNullOrWhiteSpace(s.WidgetId));
+                        var disk = LayoutStore.Load();
+                        // The attic reconcile (#226), before Seal so unioned-in entries
+                        // ride the same pipeline: a save from the OTHER window carries the
+                        // attic as it last saw it, and taking that list verbatim would
+                        // silently drop retained tiles (their sealed credentials with
+                        // them) that only the disk still knows about.
+                        LayoutStore.MergeRetainedFromDisk(edited, disk);
                         // The shell round-trips the DECRYPTED layout it was given, so
                         // seal before writing: plaintext credentials never hit disk.
                         // Seal with the manifests that REVEALED this shell's layout. The
@@ -282,11 +289,55 @@ public sealed class DashboardWindow : Form
                         // This is also the channel the on-panel editor never had: it can
                         // now say what the user cleared instead of having to infer it from
                         // a value, which is what Reveal could not express (#153).
-                        var secrets = SecretPolicy.Seal(edited, LayoutStore.Load(), RevealPlan(),
+                        var secrets = SecretPolicy.Seal(edited, disk, RevealPlan(),
                             SecretPolicy.ReadClearedMarkers(message["layout"]));
                         var secretFailures = secrets.Failures;
+                        // Cap the attic and destroy what fell off (#226): the evicted
+                        // entries' bytes leave layout.json with this save, and their
+                        // derived ww-secure buckets go with them — guarded by liveness,
+                        // so an id a surviving tile still uses is never purged (#188).
+                        // Destroy-before-Save on purpose: a failed save then leaves a
+                        // retained tile without a bucket (it re-authenticates), never a
+                        // destroyed tile with a live credential.
+                        var evicted = LayoutStore.CapRetained(edited);
+                        var forget = LayoutStore.InstancesToForget(evicted, edited);
+                        if (forget.Count > 0)
+                        {
+                            try
+                            {
+                                SecureStoreHost.Mutate(doc =>
+                                {
+                                    var changed = false;
+                                    foreach (var (w, inst) in forget)
+                                        changed |= WidgetSecrets.ForgetInstance(doc, w, inst);
+                                    return changed;
+                                });
+                                Log.Info($"Purged derived credentials for {forget.Count} evicted retained tile(s)");
+                            }
+                            catch (Exception ex)
+                            {
+                                // Never the ids: they scope credentials.
+                                Log.Warn($"Could not purge evicted retained credentials: {ex.GetType().Name}");
+                            }
+                        }
                         LayoutStore.Save(edited);
                         Log.Info("layout saved from on-panel editor");
+                        if (evicted.Count > 0)
+                        {
+                            // Tell the shell which attic entries the cap dropped, or its
+                            // in-memory copy re-ships them on every subsequent save and
+                            // the attic never converges. Correctness doesn't depend on
+                            // this — the union+cap above make the disk authoritative —
+                            // it stops the re-shipping loop.
+                            var gone = new JsonArray();
+                            foreach (var e in evicted)
+                                gone.Add(new JsonObject
+                                {
+                                    ["widgetId"] = e.Def?.WidgetId,
+                                    ["instanceId"] = e.Def?.InstanceId,
+                                });
+                            PostToShell("evicted-ids", gone);
+                        }
                         if (secrets.Minted.Count > 0)
                         {
                             // Ids were stamped onto the host's copy; the shell still holds
@@ -979,11 +1030,6 @@ public sealed class DashboardWindow : Form
         }
     }
 
-    /// <summary>Serializes read-modify-write on the secrets file. Every operation reads
-    /// the whole document, changes one member and writes it back, so two widgets saving
-    /// at once would otherwise lose one of the two writes.</summary>
-    private static readonly object SecureStoreGate = new();
-
     /// <summary>
     /// The per-instance protected store (#175, re-scoped in #226): secure-get / secure-set / secure-delete.
     ///
@@ -1012,56 +1058,49 @@ public sealed class DashboardWindow : Form
 
         try
         {
-            lock (SecureStoreGate)
+            // Load/persist and the write-lock live in SecureStoreHost — one gate for
+            // every writer of the file, now that evict-on-cap (#226) and uninstall also
+            // mutate it from other call sites.
+            switch (type)
             {
-                var path = AppPaths.WidgetSecretsFile;
-                var doc = WidgetSecrets.Load(File.Exists(path) ? File.ReadAllText(path) : null);
-                switch (type)
-                {
-                    case "secure-get":
-                        var value = WidgetSecrets.Get(doc, widgetId, instanceId, key);
-                        result["ok"] = true;
-                        // Absent and unreadable are one answer on purpose: in both cases
-                        // the widget's next move is to go and get a new credential.
-                        result["value"] = value;
-                        break;
+                case "secure-get":
+                    result["ok"] = true;
+                    // Absent and unreadable are one answer on purpose: in both cases
+                    // the widget's next move is to go and get a new credential.
+                    result["value"] = SecureStoreHost.Read(doc => WidgetSecrets.Get(doc, widgetId, instanceId, key));
+                    break;
 
-                    case "secure-set":
-                        var wrote = WidgetSecrets.Set(doc, widgetId, instanceId, key, message?["value"]?.GetValue<string>());
-                        result["ok"] = wrote == WidgetSecrets.WriteResult.Ok;
-                        if (wrote == WidgetSecrets.WriteResult.Ok)
-                        {
-                            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                            DurableStore.Write(path, WidgetSecrets.Serialize(doc));
-                        }
-                        else
-                        {
-                            // Named rather than collapsed into false: the widget's
-                            // fallback differs. "unavailable" means keep it in memory and
-                            // carry on; the rest are the widget's own bug. The names come
-                            // from WireName, not from the enum member — the documented
-                            // vocabulary is kebab-case, and a rename must not quietly
-                            // change what widgets branch on.
-                            result["error"] = WidgetSecrets.WireName(wrote);
-                        }
-                        break;
+                case "secure-set":
+                    var wrote = WidgetSecrets.WriteResult.Unavailable;
+                    SecureStoreHost.Mutate(doc =>
+                    {
+                        wrote = WidgetSecrets.Set(doc, widgetId, instanceId, key, message?["value"]?.GetValue<string>());
+                        return wrote == WidgetSecrets.WriteResult.Ok;
+                    });
+                    result["ok"] = wrote == WidgetSecrets.WriteResult.Ok;
+                    if (wrote != WidgetSecrets.WriteResult.Ok)
+                    {
+                        // Named rather than collapsed into false: the widget's
+                        // fallback differs. "unavailable" means keep it in memory and
+                        // carry on; the rest are the widget's own bug. The names come
+                        // from WireName, not from the enum member — the documented
+                        // vocabulary is kebab-case, and a rename must not quietly
+                        // change what widgets branch on.
+                        result["error"] = WidgetSecrets.WireName(wrote);
+                    }
+                    break;
 
-                    case "secure-delete":
-                        if (WidgetSecrets.Delete(doc, widgetId, instanceId, key))
-                        {
-                            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                            DurableStore.Write(path, WidgetSecrets.Serialize(doc));
-                        }
-                        // Deleting something absent is not a failure — the caller's
-                        // intent ("this must not be stored") holds either way.
-                        result["ok"] = true;
-                        break;
+                case "secure-delete":
+                    SecureStoreHost.Mutate(doc => WidgetSecrets.Delete(doc, widgetId, instanceId, key));
+                    // Deleting something absent is not a failure — the caller's
+                    // intent ("this must not be stored") holds either way.
+                    result["ok"] = true;
+                    break;
 
-                    default:
-                        result["ok"] = false;
-                        result["error"] = "unsupported";
-                        break;
-                }
+                default:
+                    result["ok"] = false;
+                    result["error"] = "unsupported";
+                    break;
             }
         }
         catch (Exception ex)

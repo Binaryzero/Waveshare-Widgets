@@ -282,7 +282,13 @@ public static class WidgetSecrets
     /// evict-on-cap (#226). Removing an instance empties and drops the widget node once it
     /// was the last one, which is why "purge the shared bucket when no live instance
     /// remains" needs no separate liveness check: there is no shared bucket to purge, and
-    /// the widget node disappears on its own.</summary>
+    /// the widget node disappears on its own.
+    ///
+    /// <para>Note the asymmetry with removal (#226): a RETIRED tile keeps its bucket on
+    /// purpose — the retained attic keeps the instance restorable, and a restored tile
+    /// reconnects to its tokens through the same instanceId. This fires only where the
+    /// app destroys the instance for real: attic eviction (through the save handlers'
+    /// liveness guard) and, later, an explicit Clear.</para></summary>
     public static bool ForgetInstance(JsonObject doc, string? widgetId, string? instanceId)
     {
         if (!IsValidScope(widgetId) || !IsValidInstance(instanceId)) return false;

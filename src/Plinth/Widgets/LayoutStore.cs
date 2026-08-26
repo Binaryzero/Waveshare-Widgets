@@ -13,6 +13,15 @@ public sealed class DashboardLayout
 
     /// <summary>Global theme seeds; null means the stock dark look.</summary>
     [JsonPropertyName("theme")] public ThemeSpec? Theme { get; set; }
+
+    /// <summary>Retained "attic" (#226): verbatim deep-copies of slots removed on-panel or
+    /// from the settings form, kept so a later change can restore them. Bounded
+    /// (<see cref="LayoutStore.MaxRetainedPerWidget"/> per widget id, oldest evicted
+    /// host-side on save). Nullable with NO initializer so a layout that never retired
+    /// anything round-trips byte-identically (the serializer omits null members).
+    /// Populated by shell.js removeSlot / settings.js removeSlotAt; unioned with disk and
+    /// capped host-side in both save handlers.</summary>
+    [JsonPropertyName("retained")] public List<RetainedSlot>? Retained { get; set; }
 }
 
 /// <summary>
@@ -118,9 +127,126 @@ public sealed class LayoutSlot
     [JsonPropertyName("settings")] public JsonObject? Settings { get; set; }
 }
 
+/// <summary>One retired slot in the attic (#226). <c>Def</c> is a verbatim deep-copy of
+/// the removed <see cref="LayoutSlot"/> (id-bearing: the shell mints an instanceId before
+/// retiring), so every SecretStore function operates on it unchanged and a later restore
+/// can deep-copy it back into a page. Addressed ONLY by identity
+/// (<c>widgetId|i:instanceId</c>, the same form SlotKey derives for an id-bearing live
+/// slot) — never by grid position (#68). A never-edited legacy tile (no instanceId in the
+/// STORED layout) loses its manifest secret when retired on the masked path, by the same
+/// #68 proof as the first-on-panel-edit loss — accepted and documented, not worked around
+/// (see docs/SECRET-ADDRESSING.md).</summary>
+public sealed class RetainedSlot
+{
+    [JsonPropertyName("def")] public LayoutSlot Def { get; set; } = new();
+
+    /// <summary>ISO-8601 UTC, shell-minted. A string rather than DateTimeOffset so a
+    /// malformed value cannot throw on Load and cost the whole file (Load's catch
+    /// regenerates the default layout). Sorts lexically == chronologically for
+    /// evict-oldest absent clock skew; a backward clock set can mis-order — which is a
+    /// mis-ordered eviction of tiles that are not live, never a loss of a live one.
+    /// </summary>
+    [JsonPropertyName("retiredAt")] public string? RetiredAt { get; set; }
+
+    /// <summary>The page NAME the slot was removed from. Advisory, for a later restore's
+    /// "put it back where it was" default — names can be renamed or deleted, so restore
+    /// treats a miss as "any page".</summary>
+    [JsonPropertyName("originPage")] public string? OriginPage { get; set; }
+}
+
 /// <summary>Loads/saves layout.json and creates the first-run default layout.</summary>
 public static class LayoutStore
 {
+    /// <summary>Retained tiles kept per widget id before the oldest is evicted (#226).
+    /// A bound rather than a guess: the attic exists so a removed credentialed tile can
+    /// come back, not as an unbounded archive of every layout ever tried.</summary>
+    public const int MaxRetainedPerWidget = 8;
+
+    /// <summary>Non-destructive attic reconcile, run host-side on every save: keep every
+    /// on-disk retained entry the incoming payload omits, EXCEPT one whose identity is
+    /// live in the incoming pages (last-writer-wins on a genuine live/retired conflict,
+    /// and never seats one instanceId in both pages and retained — the twin state the
+    /// stored-index poison would otherwise punish). This is what stops a stale save from
+    /// a second window silently shrinking the on-disk attic and skipping the
+    /// destroy-on-evict path.</summary>
+    public static void MergeRetainedFromDisk(DashboardLayout edited, DashboardLayout? disk)
+    {
+        if (disk?.Retained is null || disk.Retained.Count == 0) return;
+        var live = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var p in edited.Pages ?? [])
+            foreach (var s in p.Slots ?? [])
+                if (Key(s) is { } k) live.Add(k);
+        edited.Retained ??= [];
+        var have = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var r in edited.Retained)
+            if (Key(r?.Def) is { } k) have.Add(k);
+        foreach (var d in disk.Retained)
+        {
+            if (Key(d?.Def) is not { } k || have.Contains(k) || live.Contains(k)) continue;
+            edited.Retained.Add(d);
+            have.Add(k);
+        }
+    }
+
+    /// <summary>Trim the attic to <see cref="MaxRetainedPerWidget"/> per widget id,
+    /// evicting OLDEST by <see cref="RetainedSlot.RetiredAt"/> (tiebreak InstanceId,
+    /// ordinal — so re-running over the same list evicts the same entries). Returns the
+    /// evicted entries so the caller can destroy their derived credentials. Entries with
+    /// a null or id-less def are skipped, so one corrupt <c>"def": null</c> cannot take
+    /// down every save.</summary>
+    public static IReadOnlyList<RetainedSlot> CapRetained(DashboardLayout layout)
+    {
+        var evicted = new List<RetainedSlot>();
+        if (layout.Retained is null) return evicted;
+        foreach (var group in layout.Retained
+                     .Where(r => r?.Def is { WidgetId.Length: > 0 })
+                     .GroupBy(r => r.Def.WidgetId, StringComparer.Ordinal))
+        {
+            var surplus = group.Count() - MaxRetainedPerWidget;
+            if (surplus <= 0) continue;
+            foreach (var old in group
+                         .OrderBy(r => r.RetiredAt ?? "", StringComparer.Ordinal)
+                         .ThenBy(r => r.Def.InstanceId ?? "", StringComparer.Ordinal)
+                         .Take(surplus))
+                evicted.Add(old);
+        }
+        if (evicted.Count > 0) layout.Retained.RemoveAll(evicted.Contains);
+        return evicted;
+    }
+
+    /// <summary>Which just-evicted instances are safe to
+    /// <see cref="WidgetSecrets.ForgetInstance"/>: those NOT still referenced by any
+    /// surviving live-page or surviving-retained slot. Call AFTER
+    /// <see cref="CapRetained"/> has mutated <paramref name="survivors"/>. The guard is
+    /// what keeps evict from destroying a bucket a live tile still uses (a restored tile
+    /// keeps its instanceId, and corruption can duplicate one) — #188's rule: purge only
+    /// what the app itself removed, never on inference.</summary>
+    public static IReadOnlyList<(string WidgetId, string InstanceId)> InstancesToForget(
+        IReadOnlyList<RetainedSlot> evicted, DashboardLayout survivors)
+    {
+        var alive = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var p in survivors.Pages ?? [])
+            foreach (var s in p.Slots ?? [])
+                if (Key(s) is { } k) alive.Add(k);
+        foreach (var r in survivors.Retained ?? [])
+            if (Key(r?.Def) is { } k) alive.Add(k);
+        var result = new List<(string, string)>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var e in evicted)
+        {
+            if (Key(e?.Def) is not { } k || alive.Contains(k) || !seen.Add(k)) continue;
+            result.Add((e!.Def.WidgetId, e.Def.InstanceId!));
+        }
+        return result;
+    }
+
+    /// <summary>The attic's identity key — widgetId + "|i:" + instanceId, the same id
+    /// form SlotKey derives. Null for an id-less def: an id-less entry has no identity
+    /// to reconcile or destroy by, and is never matched positionally (#68).</summary>
+    private static string? Key(LayoutSlot? s) =>
+        s is null || string.IsNullOrEmpty(s.WidgetId) || string.IsNullOrEmpty(s.InstanceId)
+            ? null : s.WidgetId + "|i:" + s.InstanceId;
+
     /// <summary>Removes every slot referencing one of the given widget ids
     /// (retired stock migrations). Saves only when something changed.</summary>
     public static void RemoveWidgets(IEnumerable<string> widgetIds)
@@ -132,6 +258,13 @@ public static class LayoutStore
             var removed = 0;
             foreach (var page in layout.Pages)
                 removed += page.Slots.RemoveAll(s => s.WidgetId is not null && ids.Contains(s.WidgetId));
+            // The attic too (#226): a retired widget's retained tiles hold its sealed
+            // credentials, and a package the app removed must not leave those behind for
+            // whatever is installed under the id next. Folded into `removed` so an
+            // attic-only scrub still saves. (The derived ww-secure store is purged by
+            // ForgetSecrets on this same path, whole widget at once.)
+            removed += layout.Retained?.RemoveAll(
+                r => r?.Def?.WidgetId is { } id && ids.Contains(id)) ?? 0;
             if (removed > 0)
             {
                 Save(layout);

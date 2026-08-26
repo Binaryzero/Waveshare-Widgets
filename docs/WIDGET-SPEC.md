@@ -135,7 +135,11 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   shared per widget id before #226; a derived token is a credential, so a cloned or
   replaced tile now starts without the last tile's token rather than inheriting it.)
   Values are capped at 8 KiB and 16 keys per instance; keys are letters, digits, `.`, `-`
-  and `_`, up to 64 characters.
+  and `_`, up to 64 characters. A removed tile is *retired*, not destroyed: its config is
+  retained (bounded, oldest evicted — eviction purges the instance's bucket for real),
+  and a future restore of that tile is the same instance — same bucket — where a fresh
+  add of the same widget is a new instance with an empty one. Either way the missing-value
+  rule above already covers you: treat a miss as "re-authenticate".
 
   **In the settings preview the store is always empty**, and says so immediately: a get
   reads as a miss and a set answers `unavailable`. The preview is a layout editor, and
