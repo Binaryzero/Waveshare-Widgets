@@ -93,9 +93,11 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   libraries by tab, sort and filter by genre, step into a series' seasons and
   episodes, and tap a title to stream it straight to the panel, direct play
   first with a server transcode fallback and episodes rolling into the next
-  one; name a Jellyfin user and a Next up tab queues each series' next
-  unwatched episode, finished titles marked watched so the queue advances,
-  while a hide list keeps chosen libraries off the tabs and the shelf;
+  one; name a Jellyfin user and the panel keeps that user's history — Continue
+  resumes anything left part-watched (position saved as you watch, so it waits
+  on every client), Next up queues each series' next unwatched episode, and
+  finished titles are marked watched so both queues advance — while a hide
+  list keeps chosen libraries off the tabs and the shelf;
   read from Jellyfin's own API either way, because its web app
   refuses to render inside a frame), and WoW
   Panel (your character on the panel: portrait, level, spec and guild, your

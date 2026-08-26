@@ -214,6 +214,48 @@
   }
  },
  {
+  "match": "PlayingItems",
+  "tier": null,
+  "json": {}
+ },
+ {
+  "match": "/Items/Resume",
+  "tier": null,
+  "json": {
+   "Items": [
+    {
+     "Id": "e-res-1",
+     "Name": "Negotiation",
+     "Type": "Episode",
+     "SeriesId": "s-slowhorses",
+     "SeriesName": "Slow Horses",
+     "ParentIndexNumber": 4,
+     "IndexNumber": 2,
+     "RunTimeTicks": 28800000000,
+     "UserData": {
+      "PlaybackPositionTicks": 14400000000
+     },
+     "ImageTags": {},
+     "SeriesPrimaryImageTag": "tsh"
+    },
+    {
+     "Id": "m-dune",
+     "Name": "Dune: Part Two",
+     "Type": "Movie",
+     "ProductionYear": 2024,
+     "RunTimeTicks": 99000000000,
+     "UserData": {
+      "PlaybackPositionTicks": 24750000000
+     },
+     "ImageTags": {
+      "Primary": "td1"
+     }
+    }
+   ],
+   "TotalRecordCount": 2
+  }
+ },
+ {
   "match": "/Users",
   "tier": null,
   "json": [
