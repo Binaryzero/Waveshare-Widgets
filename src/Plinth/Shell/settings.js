@@ -252,6 +252,11 @@
           && r.def.widgetId === e.widgetId && r.def.instanceId === e.instanceId);
         if (idx >= 0) list.splice(idx, 1);
       }
+      // ...and on to the replica, whose own copy of the attic now feeds back through
+      // mergeReplicaCapture's union: without this a capped entry it still holds would be
+      // re-unioned into ours on the next capture and re-shipped forever.
+      if (Array.isArray(msg.evictedIds) && msg.evictedIds.length)
+        replicaPost({ type: 'evicted-ids', data: msg.evictedIds });
       // The layout saved, but a credential may not have: the host refuses to write one
       // in the clear when Windows protection is unavailable. "Saved" alone would tell
       // the user a token is active when it isn't.
@@ -443,15 +448,32 @@
         return merged;
       }),
     }));
-    // theme is never sent to the replica, so the capture's null is absence, not intent —
-    // and the attic likewise (#226): replicaLayout strips `retained`, so it is restored
-    // from the authoritative working copy here, or the first capture after a removal
-    // would silently erase every retired tile. (Consequence, documented: a removal made
-    // in the PREVIEW's edit mode does not retire in this release — its capture carries
-    // no attic — and the host-side union keeps whatever the panel itself retired.)
+    // theme is never sent to the replica, so the capture's null is absence, not intent.
+    //
+    // The attic (#226) is a UNION, not an override. replicaLayout strips `retained` on the
+    // way out, so the replica's list holds exactly what the PREVIEW's own edit-mode ✕
+    // retired this session — and the preview is the primary editing surface here. Taking
+    // only our copy discarded those retires, so the same tile removed by the preview's ✕
+    // lost its config and sealed credential while the slot-strip's ✕ retained them: two
+    // identical-looking buttons, opposite outcomes. Ours wins on a shared identity (it may
+    // have been through a save), and an id that is live in the merged pages is never seated
+    // in the attic — the pages-and-retained twin the host's stored index poisons.
+    const liveKeys = new Set();
+    for (const page of pages)
+      for (const s of (page.slots || []))
+        if (s && s.instanceId) liveKeys.add(s.widgetId + '|i:' + s.instanceId);
+    const attic = [];
+    const atticKeys = new Set();
+    for (const r of [...(((state.layout || {}).retained) || []), ...(captured.retained || [])]) {
+      if (!r || !r.def || !r.def.widgetId || !r.def.instanceId) continue;
+      const k = r.def.widgetId + '|i:' + r.def.instanceId;
+      if (liveKeys.has(k) || atticKeys.has(k)) continue;
+      atticKeys.add(k);
+      attic.push(r);
+    }
     return Object.assign({}, captured, {
       pages, theme: (state.layout || {}).theme ?? null,
-      retained: (state.layout || {}).retained,
+      retained: attic.length ? attic : undefined,
     });
   }
   // Test seam: the headless probes assert that nothing credential-shaped reaches the

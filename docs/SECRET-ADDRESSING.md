@@ -405,12 +405,22 @@ then transmits to whatever endpoint the new tile points at. Lost is retypable;
 misdelivered is not. Tiles that are id-bearing in the stored layout (everything added by
 `addWidget` or the settings gallery) preserve their secret through retire.
 
-**Restore (a later change) inherits four constraints from this model.** Restore keeps
+**A Clear that is followed by a Remove is honored, by identity.** The cleared-property
+channel is positional (`(page, slot)`), and a retired slot has no position — so when a
+user clears a credential and removes the tile before the next save, the marker travels
+*inside* the retired def where the positional reader never looks. Read only that way, Seal
+would see an ordinary blank, restore the stored ciphertext by identity, and put the
+credential the user explicitly destroyed back into the attic, ready to reconnect on
+restore. `ReadRetainedClearedMarkers` therefore reads the attic's markers off the raw node
+keyed by `widgetId|i:instanceId`, and `Seal` resolves them to slot references before
+walking, so one `Cleared()` answers for both address spaces. The check runs ahead of the
+value branches, so a clear drops a retired def's revealed plaintext (the on-panel path) and
+its ciphertext alike — exactly as it does for a live slot.
+
+**Restore (a later change) inherits three constraints from this model.** Restore keeps
 the retained `instanceId` (the derived ww-secure bucket reconnects through it) and must,
 in one mutation: (a) remove the entry from `retained[]` as it copies the def back into a
 page — else the pages∧retained twin arises and the poison blanks the just-restored
-credential; (b) strip any `secretsCleared` projection carried in the def — live again,
-the slot becomes addressable and a stale marker would clear the secret on first save;
-(c) mint a fresh id only on a genuine collision with a live tile; and (d) persist and
-re-init rather than render the moved def directly — `Reveal` is Pages-only, so a
-client-side restore would hand the widget sealed ciphertext as its setting.
+credential; (b) mint a fresh id only on a genuine collision with a live tile; and
+(c) persist and re-init rather than render the moved def directly — `Reveal` is Pages-only,
+so a client-side restore would hand the widget sealed ciphertext as its setting.

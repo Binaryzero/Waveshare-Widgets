@@ -451,6 +451,47 @@ public static class SecretPolicy
         return cleared;
     }
 
+    /// <summary>The same cleared-property lists for slots in the RETAINED attic, addressed
+    /// by IDENTITY (<c>widgetId|i:instanceId</c>) rather than by position.
+    ///
+    /// <para>A retired slot has no (page, slot) coordinates, so the positional channel
+    /// <see cref="ReadClearedMarkers"/> reads cannot name one — and a Clear that is followed
+    /// by a Remove before the next save travels INSIDE the retired def, where the positional
+    /// reader never looks. Left unread, Seal sees an ordinary blank, restores the stored
+    /// ciphertext by identity, and the credential the user explicitly destroyed comes back in
+    /// the attic — and would reconnect on restore. Identity is the right key here for the
+    /// same reason it is everywhere else in the attic: a retained def is id-bearing by
+    /// construction (both retire paths mint first) and is never addressed by position (#68).
+    /// </para>
+    ///
+    /// <para>Runs on the RAW node for the same reason its positional twin does: the model
+    /// carries no extension data, so by the time there is a <see cref="DashboardLayout"/>
+    /// the marker is already gone.</para></summary>
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> ReadRetainedClearedMarkers(
+        JsonNode? layoutNode)
+    {
+        var cleared = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        if (layoutNode?["retained"] is not JsonArray retained)
+            return cleared;
+        foreach (var entry in retained)
+        {
+            if (entry?["def"] is not JsonObject def) continue;
+            var widgetId = AsString(def["widgetId"]);
+            var instanceId = AsString(def["instanceId"]);
+            // An id-less retained def has no identity to address, and is skipped by
+            // WalkRetained anyway — there is nothing for a marker to name.
+            if (string.IsNullOrEmpty(widgetId) || string.IsNullOrEmpty(instanceId)) continue;
+            if (def[ClearedMarkerKey] is not JsonArray names) continue;
+            var list = new List<string>();
+            foreach (var name in names)
+                if (AsString(name) is { Length: > 0 } n)
+                    list.Add(n);
+            if (list.Count > 0)
+                cleared[widgetId + "|i:" + instanceId] = list;
+        }
+        return cleared;
+    }
+
     /// <summary>A hand-edited layout can hold a number/object/array where a secret
     /// belongs. <c>GetValue&lt;string&gt;()</c> would THROW on those, and this code runs
     /// inside the dashboard's init payload — one bad value would leave the shell with no
@@ -797,7 +838,8 @@ public static class SecretPolicy
     /// must hand back to the client that submitted the layout.</returns>
     public static SecretSealResult Seal(
         DashboardLayout layout, DashboardLayout? stored, SecretPlan plan,
-        IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>>? cleared = null)
+        IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>>? cleared = null,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? retainedCleared = null)
     {
         var incomingCounts = CountWidgets(layout);
         var previous = BuildStoredIndex(stored, plan, incomingCounts, out var storedCounts);
@@ -825,13 +867,38 @@ public static class SecretPolicy
         for (var p = 0; p < (layout.Pages?.Count ?? 0); p++)
             for (var i = 0; i < (layout.Pages![p].Slots?.Count ?? 0); i++)
                 address[layout.Pages[p].Slots![i]] = (p, i);
+        // The attic's half of the same question, resolved to slot REFERENCES up front so
+        // the visitor below needs no retained/live distinction: a retired def is named by
+        // identity (it has no position), and matching that identity here once is what lets
+        // Cleared() answer for both address spaces with one lookup shape.
+        var retainedClearedByRef =
+            new Dictionary<LayoutSlot, IReadOnlyList<string>>(ReferenceEqualityComparer.Instance);
+        if (retainedCleared is { Count: > 0 })
+        {
+            foreach (var entry in layout.Retained ?? [])
+            {
+                var def = entry?.Def;
+                if (def is null || string.IsNullOrEmpty(def.WidgetId)
+                    || string.IsNullOrEmpty(def.InstanceId)) continue;
+                if (retainedCleared.TryGetValue(def.WidgetId + "|i:" + def.InstanceId, out var names))
+                    retainedClearedByRef[def] = names;
+            }
+        }
+
         // "Did the user ask to remove THIS property?" — a name in a list the editor sent,
         // never a sentinel smuggled through the value. See ClearedMarkerKey.
+        //
+        // Two address spaces, one answer: live slots are named by (page, slot) and retired
+        // ones by identity. A Clear followed by a Remove before the next save travels into
+        // the attic with the def, and without the second lookup the blank it leaves behind
+        // reads as "untouched" — restoring the very credential the user destroyed (#226).
         bool Cleared(LayoutSlot slot, string name) =>
-            cleared is not null
-            && address.TryGetValue(slot, out var at)
-            && cleared.TryGetValue(at, out var names)
-            && names.Contains(name, StringComparer.Ordinal);
+            (cleared is not null
+                && address.TryGetValue(slot, out var at)
+                && cleared.TryGetValue(at, out var names)
+                && names.Contains(name, StringComparer.Ordinal))
+            || (retainedClearedByRef.TryGetValue(slot, out var retainedNames)
+                && retainedNames.Contains(name, StringComparer.Ordinal));
 
         // Minting an instance id below CHANGES a slot's key, so a widget with two secrets
         // would look up its second one under the brand-new id and find nothing. Resolve
@@ -841,10 +908,10 @@ public static class SecretPolicy
         // One visitor, run over the live pages AND the retained attic (#226) below. The
         // attic needs no special-casing precisely because its defs are id-bearing and
         // absent from `address`: SlotKey resolves them by |i: identity (never
-        // positionally), Cleared() misses (a retained secret cannot be cleared by an
-        // ordinary save), Stamp() no-ops, and the value branches do the right thing —
-        // a freshly-retired plaintext re-seals, a masked blank restores by identity from
-        // the stored index, sealed ciphertext keeps idempotently.
+        // positionally), Cleared() answers through the identity map resolved above,
+        // Stamp() no-ops, and the value branches do the right thing — a freshly-retired
+        // plaintext re-seals, a masked blank restores by identity from the stored index,
+        // sealed ciphertext keeps idempotently.
         Action<LayoutSlot, string, SecretIntent> visitor = (slot, name, intent) =>
         {
             if (!keyOf.TryGetValue(slot, out var key))

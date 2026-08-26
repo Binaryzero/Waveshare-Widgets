@@ -616,7 +616,8 @@ public sealed class SettingsWindow : Form
             // there is a DashboardLayout this projection is already gone. See
             // SecretPolicy.ClearedMarkerKey.
             var secrets = SecretPolicy.Seal(layout, disk, MaskedPlan(),
-                SecretPolicy.ReadClearedMarkers(layoutNode));
+                SecretPolicy.ReadClearedMarkers(layoutNode),
+                SecretPolicy.ReadRetainedClearedMarkers(layoutNode));
             var secretFailures = secrets.Failures;
             // Cap the attic and destroy what fell off (#226) — same order and reasoning
             // as the dashboard's save handler: liveness-guarded (#188), and destroy-

@@ -1699,6 +1699,46 @@ SecretPolicy.Seal(rg2Incoming, rg2Stored, Lookup);
 Check("R7b a live legacy tile restores its OWN stored value beside an attic twin",
     Value(rg2Incoming, "apiToken") == sealedLiveA, Value(rg2Incoming, "apiToken"));
 
+// R8 · Clear THEN Remove. The destroy intent travels inside the retired def, where the
+// positional cleared channel cannot reach it — a retired slot has no (page, slot). Read by
+// identity instead, or the blank the Clear left behind reads as "untouched" and Seal
+// restores the very credential the user destroyed, into the attic, ready to reconnect on
+// restore. The stored tile is still LIVE here, which is exactly what makes the resurrection
+// available.
+var rClearStored = LayoutWith(new JsonObject { ["apiToken"] = rSealedB! }, instanceId: "iC");
+var rClearRetire = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = "" }, "iC"));
+var rClearNode = JsonSerializer.SerializeToNode(rClearRetire)!;
+rClearNode["retained"]![0]!["def"]![SecretPolicy.ClearedMarkerKey] = new JsonArray("apiToken");
+var rClearMarkers = SecretPolicy.ReadRetainedClearedMarkers(rClearNode);
+Check("R8 setup: a retained def's cleared marker is read by IDENTITY, not position",
+    rClearMarkers.ContainsKey("test.widget|i:iC"),
+    string.Join(", ", rClearMarkers.Keys));
+SecretPolicy.Seal(rClearRetire, rClearStored, SecretPlan.FromManifests(Lookup), null, rClearMarkers);
+Check("R8b a Clear followed by a Remove DESTROYS the credential rather than resurrecting it",
+    RetainedValue(rClearRetire, 0, "apiToken") is null, RetainedValue(rClearRetire, 0, "apiToken"));
+
+// On the on-panel path the retired def carries revealed PLAINTEXT, and a clear must drop
+// that too — the pages path does, and re-sealing it into the attic would be the same
+// resurrection wearing a different value.
+var rClearPlain = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = Token }, "iD"));
+var rClearPlainNode = JsonSerializer.SerializeToNode(rClearPlain)!;
+rClearPlainNode["retained"]![0]!["def"]![SecretPolicy.ClearedMarkerKey] = new JsonArray("apiToken");
+SecretPolicy.Seal(rClearPlain, null, SecretPlan.FromManifests(Lookup), null,
+    SecretPolicy.ReadRetainedClearedMarkers(rClearPlainNode));
+Check("R8c ...and a cleared PLAINTEXT retire leaves neither a value nor the plaintext",
+    RetainedValue(rClearPlain, 0, "apiToken") is null
+    && !JsonSerializer.Serialize(rClearPlain).Contains(Token),
+    RetainedValue(rClearPlain, 0, "apiToken"));
+
+// An unmarked retire is untouched by any of this — R2 already pins that it RESTORES, and
+// the two must not be confused: the marker is the only thing separating them.
+Check("R8d the marker is projection-only and cannot reach layout.json",
+    !JsonSerializer.Serialize(JsonSerializer.Deserialize<DashboardLayout>(rClearNode.ToJsonString())!)
+        .Contains(SecretPolicy.ClearedMarkerKey));
+Check("R8e an id-less retained def has no identity to mark, and is skipped rather than throwing",
+    SecretPolicy.ReadRetainedClearedMarkers(
+        JsonNode.Parse("{\"retained\":[{\"def\":{\"widgetId\":\"w\",\"secretsCleared\":[\"k\"]}}]}")).Count == 0);
+
 // ---- C · the attic bound, destroy-on-evict inputs, and the disk union ----------------
 
 var capLayout = EmptyPages();
