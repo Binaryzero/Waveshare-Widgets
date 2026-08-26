@@ -31,14 +31,6 @@
   // "not set" again after any page/slot action, and emptying the field would send "",
   // which the host honours by restoring what it just stored.
   const secretsTypedHere = new Set();
-  // Attic identities the host has EVICTED this session, as "<widgetId>|i:<instanceId>".
-  // Tombstones rather than a plain splice, because the capture merge unions: a capture
-  // the replica emitted before it processed the eviction still carries the entry, and the
-  // union would put it straight back — and replicaPost DROPS the notice outright while the
-  // replica is not ready, which makes that permanent rather than momentary. An evicted
-  // identity is dead for good (the host destroyed its derived credentials with it and the
-  // id is never re-minted), so refusing it forever is exactly right.
-  const evictedTombstones = new Set();
   const secretKey = (slot, name) => {
     if (slot.instanceId) return 'i:' + slot.instanceId + '|' + name;
     // No id: the key must name the SLOT, not just the widget — two id-less instances of
@@ -254,19 +246,12 @@
       // re-ships them and the attic never converges on the disk's bounded list.
       // Matched by identity, never index — the two copies can be ordered differently.
       for (const e of (Array.isArray(msg.evictedIds) ? msg.evictedIds : [])) {
-        if (e && e.widgetId && e.instanceId)
-          evictedTombstones.add(e.widgetId + '|i:' + e.instanceId);
         const list = (state.layout || {}).retained;
-        if (!Array.isArray(list)) continue;
+        if (!Array.isArray(list)) break;
         const idx = list.findIndex((r) => r && r.def
           && r.def.widgetId === e.widgetId && r.def.instanceId === e.instanceId);
         if (idx >= 0) list.splice(idx, 1);
       }
-      // ...and on to the replica, whose own copy of the attic now feeds back through
-      // mergeReplicaCapture's union: without this a capped entry it still holds would be
-      // re-unioned into ours on the next capture and re-shipped forever.
-      if (Array.isArray(msg.evictedIds) && msg.evictedIds.length)
-        replicaPost({ type: 'evicted-ids', data: msg.evictedIds });
       // The layout saved, but a credential may not have: the host refuses to write one
       // in the clear when Windows protection is unavailable. "Saved" alone would tell
       // the user a token is active when it isn't.
@@ -458,53 +443,27 @@
         return merged;
       }),
     }));
-    // theme is never sent to the replica, so the capture's null is absence, not intent.
+    // theme is never sent to the replica, so the capture's null is absence, not intent —
+    // and the attic likewise (#226): replicaLayout strips `retained`, so it is restored from
+    // the authoritative working copy here, or the first capture after a removal would erase
+    // every retired tile.
     //
-    // The attic (#226) is a UNION, not an override. replicaLayout strips `retained` on the
-    // way out, so the replica's list holds exactly what the PREVIEW's own edit-mode ✕
-    // retired this session — and the preview is the primary editing surface here. Taking
-    // only our copy discarded those retires, so the same tile removed by the preview's ✕
-    // lost its config and sealed credential while the slot-strip's ✕ retained them: two
-    // identical-looking buttons, opposite outcomes. Ours wins on a shared identity (it may
-    // have been through a save), and an id that is live in the merged pages is never seated
-    // in the attic — the pages-and-retained twin the host's stored index poisons.
-    const liveKeys = new Set();
-    for (const page of pages)
-      for (const s of (page.slots || []))
-        if (s && s.instanceId) liveKeys.add(s.widgetId + '|i:' + s.instanceId);
-    const attic = [];
-    const atticKeys = new Set();
-    const addRetained = (r, fromCapture) => {
-      if (!r || !r.def || !r.def.widgetId || !r.def.instanceId) return;
-      const k = r.def.widgetId + '|i:' + r.def.instanceId;
-      // An evicted identity never comes back: the union would otherwise resurrect one the
-      // host has already destroyed the credentials for, out of a capture that predates the
-      // eviction (or out of a replica that never received the notice at all).
-      if (evictedTombstones.has(k) || liveKeys.has(k) || atticKeys.has(k)) return;
-      atticKeys.add(k);
-      if (!fromCapture) { attic.push(r); return; }
-      // A def retired in the REPLICA comes back with its secrets scrubbed — replicaLayout
-      // blanks them on the way out, so the preview never held them. The per-slot pass above
-      // cannot repair it: the slot has left captured.pages. Restore the values from the slot
-      // as WE last held it, matched by identity, or a credential typed and not yet saved is
-      // silently replaced by whatever is still on disk — and the two ✕ buttons diverge
-      // again, this time over WHICH credential the retired tile keeps. A pending Clear still
-      // wins: it rides along in the def and the host drops the value before any restore.
-      const prior = mine.get('i:' + r.def.instanceId);
-      const names = (prior && prior.widgetId === r.def.widgetId) ? secretsOf(r.def.widgetId) : [];
-      if (!names.length) { attic.push(r); return; }
-      const settings = Object.assign({}, r.def.settings);
-      for (const n of names) {
-        if (prior.settings && n in prior.settings) settings[n] = prior.settings[n];
-        else delete settings[n];
-      }
-      attic.push(Object.assign({}, r, { def: Object.assign({}, r.def, { settings }) }));
-    };
-    for (const r of (((state.layout || {}).retained) || [])) addRetained(r, false);
-    for (const r of (captured.retained || [])) addRetained(r, true);
+    // A removal made in the PREVIEW's edit mode therefore does NOT retire: its capture
+    // carries an attic we drop on the floor, and the tile is discarded exactly as before
+    // #226. That is a deliberate scope cut, not an oversight. Accepting the replica's attic
+    // here was tried and withdrawn: the replica is handed every secret SCRUBBED, so a def
+    // retired there arrives blank, and reuniting it with the value the user actually typed
+    // needs the prior slot — which is reachable by identity only for a slot that already had
+    // one. A legacy id-less slot gets a FRESH id minted by the replica at retire time, so
+    // nothing links the two, and the only bridges left are provenance the replica does not
+    // send or a "the sole id-less slot of this widget" guess — the exact inference #68
+    // forbids, being indistinguishable from "deleted the credentialed tile, added a fresh
+    // one". Retiring from the preview belongs on ONE retire path (route the preview's ✕
+    // through removeSlotAt, which holds the unscrubbed working copy) rather than a merge
+    // rule that has to reconstruct what the scrub removed.
     return Object.assign({}, captured, {
       pages, theme: (state.layout || {}).theme ?? null,
-      retained: attic.length ? attic : undefined,
+      retained: (state.layout || {}).retained,
     });
   }
   // Test seam: the headless probes assert that nothing credential-shaped reaches the
