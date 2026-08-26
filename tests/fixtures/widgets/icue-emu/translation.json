@@ -1,0 +1,10 @@
+{
+  "en": {
+    "translation": {
+      "greeting": "Compat says hello"
+    }
+  },
+  "en_FAKE": {
+    "translation": {}
+  }
+}

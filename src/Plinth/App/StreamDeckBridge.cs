@@ -510,6 +510,34 @@ public sealed class StreamDeckBridge
         }
     }
 
+    // A press that arrived as its own phase leaves the Qt window believing the mouse
+    // button is held — that is the point (long-press actions need a real hold) and
+    // the hazard: a widget that dies between down and up would wedge the deck. The
+    // pending press is remembered so the release lands on the SAME client pixel the
+    // press did even if the window moved or resized in between, and a safety timer
+    // releases it if no 'up' ever comes. One pending press, not a table: the VSD is
+    // one window and mouse messages model one button.
+    private readonly object _pressLock = new();
+    private IntPtr _pressedHwnd;
+    private IntPtr _pressedLParam;
+    private System.Threading.Timer? _pressSafety;
+
+    private void ReleasePendingPress()
+    {
+        IntPtr hwnd, lParam;
+        lock (_pressLock)
+        {
+            hwnd = _pressedHwnd;
+            lParam = _pressedLParam;
+            _pressedHwnd = IntPtr.Zero;
+            _pressedLParam = IntPtr.Zero;
+            _pressSafety?.Dispose();
+            _pressSafety = null;
+        }
+        if (hwnd != IntPtr.Zero)
+            PostMessage(hwnd, WM_LBUTTONUP, IntPtr.Zero, lParam);
+    }
+
     /// <summary>
     /// Triggers a button by clicking the VSD overlay window. When the caller supplies the
     /// exact tap point (fractions of the mirrored capture), the click lands on that exact
@@ -519,9 +547,22 @@ public sealed class StreamDeckBridge
     /// assumes the keys fill the window edge to edge, and the field showed they do not —
     /// the window carries its own top strip INSIDE the client area, so cell centers sat
     /// high and taps fired the key above the one pressed.
+    ///
+    /// <paramref name="phase"/> splits the click for callers with real pointer state
+    /// (the iCUE Streamdeck plugin emulation sends the widget's own pointerdown and
+    /// pointerup): "down" presses and holds, "up" releases the held press, null stays
+    /// the original atomic tap. An "up" with nothing held is a no-op, which is what
+    /// the duplicate releases a pointerup+pointerleave pair produces deserve.
     /// </summary>
-    public bool ClickCell(int row, int col, int rows, int cols, double? fx = null, double? fy = null)
+    public bool ClickCell(int row, int col, int rows, int cols, double? fx = null, double? fy = null,
+        string? phase = null)
     {
+        if (phase == "up")
+        {
+            ReleasePendingPress();
+            return true;
+        }
+
         if (rows <= 0 || cols <= 0)
             return false;
 
@@ -552,6 +593,25 @@ public sealed class StreamDeckBridge
             how = "cell center";
         }
         var lParam = (IntPtr)((y << 16) | (x & 0xFFFF));
+
+        // Whatever this call is, a press still held from before it must resolve first —
+        // two downs in a row would be swallowed as a double-click by some Qt controls.
+        ReleasePendingPress();
+
+        if (phase == "down")
+        {
+            PostMessage(vsd, WM_LBUTTONDOWN, (IntPtr)1, lParam);
+            lock (_pressLock)
+            {
+                _pressedHwnd = vsd;
+                _pressedLParam = lParam;
+                _pressSafety = new System.Threading.Timer(_ => ReleasePendingPress(), null,
+                    10_000, Timeout.Infinite);
+            }
+            Log.Info($"Stream Deck: pressed {how} row={row} col={col} of {rows}x{cols} at ({x},{y}) " +
+                     $"in {rect.Right}x{rect.Bottom} window");
+            return true;
+        }
 
         PostMessage(vsd, WM_LBUTTONDOWN, (IntPtr)1, lParam);
         Thread.Sleep(40);

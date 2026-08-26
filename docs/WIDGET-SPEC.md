@@ -305,22 +305,45 @@ provides a compatibility layer inside every widget iframe:
 - `window.plugins.Sensorsdataprovider` with the Qt-style async contract
   (`method(requestId, …)` answered via the `asyncResponse` signal), plus
   `sensorValueChanged` / `sensorUnitsChanged` / `sensorAdded` / `sensorRemoved` signals.
-- Lifecycle callbacks: `pluginSensorsdataproviderEvents.onInitialized()`,
-  `pluginLinkproviderEvents.onInitialized()` and `icueEvents.onICUEInitialized()` after
-  DOM-ready, `icueEvents.onDataUpdated()` when settings are re-delivered.
+- `window.plugins.Streamdeck` — iCUE's virtual Stream Deck plugin, backed by the same
+  Elgato Virtual Stream Deck bridge the stock Stream Deck widget mirrors: per-key
+  faces arrive as `buttonIconUpdated` pushes (live capture slices, or profile icons as
+  the fallback) and `sendKeyPress` lands as a real press/release on the VSD window.
+  Requires the Elgato software with a VSD open; the pairing signals
+  (`authenticationRequired` / `authenticationRejected`) never fire.
+- `window.plugins.Notificationsprovider` — `getNotificationCount` and the
+  `notificationCountChanged` signal, backed by the host's Windows notification mirror
+  (demand-gated: polling starts only when a widget touches the plugin).
+- Lifecycle callbacks: `plugin<Name>Events.onInitialized()` for every emulated plugin
+  and `icueEvents.onICUEInitialized()` after DOM-ready, `icueEvents.onDataUpdated()`
+  when settings are re-delivered. `icueEvents` and the `plugin<Name>Events` globals are
+  predeclared (stock widgets assign them bare from strict-mode module scripts), and
+  the `plugin<Name>_initialized` flags flip true when the events fire, matching iCUE's
+  late-load handshake.
 - `<meta name="x-icue-property">` declarations are parsed into the Settings UI
   (`switch`, `slider`, `color`, `textfield`, and `sensors-factory` — the add-sensors
-  list). Values are injected as global variables before the lifecycle events fire.
-- `tr()` backed by the package's `translation.json` (flat or per-language maps).
+  list). Values are injected as global variables before the lifecycle events fire; a
+  declared property whose default we can't evaluate still gets its global (as
+  `undefined`), and the environment calls the stock clocks use for defaults —
+  `iCUE.defaultTimeZone()`, `iCUE.default24HourFormat()`, `iCUE.allTimeZones()` — are
+  evaluated for real.
+- `tr()` backed by the package's `translation.json` (flat, per-language, or iCUE's
+  nested i18next shape). The returned value is a thenable string: stock code that
+  calls `tr(…).then(…)` or `await tr(…)` works, and so does plain string use.
+- The shared `common/` helper tree stock iCUE widgets reference from outside their
+  package (`../common/…`, `../../widgets/common/…`) is served as Plinth-authored
+  stand-ins (`Shell/icue-common/`) — promise wrappers, `MediaViewer`, `TickerTracker`,
+  `DateFormatter`, `ColorTools`. A package that vendors its own copies keeps them.
 - `window.plugins.Linkprovider.open(url)` opens the URL in the default desktop browser.
 - CORS relief: iCUE's embedded browser is CORS-relaxed, ours is not — so when a
   widget's `fetch()` fails at the network/CORS layer, the shim transparently retries it
   through the host process (GET/POST/HEAD, 5 MB cap, 15 s timeout). Reddit readers and
   similar API widgets work unmodified.
 
-Not emulated: `media-selector` properties (background media), Corsair-device-specific
-sensors, and the Virtual Stream Deck integration. Sensor ids differ from iCUE's, so
-sensor selections must be (re)made in our Settings UI.
+Not emulated: `media-selector` properties (background media — the `MediaViewer`
+stand-in exists so widgets construct and degrade cleanly, but there is no asset picker,
+so `backgroundMedia` stays undefined) and Corsair-device-specific sensors. Sensor ids
+differ from iCUE's, so sensor selections must be (re)made in our Settings UI.
 
 ## Rules of the sandbox
 

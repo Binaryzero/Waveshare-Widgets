@@ -1,0 +1,10 @@
+{
+  "id": "test.icue.emu",
+  "name": "iCUE Emulation Probe",
+  "author": "Plinth tests",
+  "version": "1.0.0",
+  "description": "Fixture exercising the iCUE compatibility surface: strict-mode module lifecycle globals, shared-common/ serving, thenable tr() with nested translation.json, and the Streamdeck/Notificationsprovider plugin emulations.",
+  "min_api_version": 1,
+  "supported_slots": ["half"],
+  "properties": []
+}

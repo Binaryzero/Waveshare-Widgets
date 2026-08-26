@@ -104,11 +104,14 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   done — each section degrades independently, so one slow API cannot blank the
   card).
 - **iCUE widget compatibility**: many `.icuewidget` packages from the
-  [Elgato Marketplace](https://marketplace.elgato.com/icue/widgets) install and run
-  as-is — the runtime emulates the `Sensorsdataprovider` plugin API and reads
-  `x-icue-property` settings (including sensor lists) into the Settings UI. Widgets
-  wired to our sensor engine expose whatever your machine provides; iCUE-only data
-  sources (Corsair device internals, background media) are not available.
+  [Elgato Marketplace](https://marketplace.elgato.com/icue/widgets) — and iCUE's own
+  stock widgets — install and run as-is. The runtime emulates the iCUE plugin APIs
+  (sensors, media with change signals, notifications count, link opening, and the
+  Stream Deck plugin backed by our Virtual Stream Deck mirror), serves stand-ins for
+  the shared `common/` helpers stock widgets reference from outside their package,
+  and reads `x-icue-property` settings (including sensor lists) into the Settings UI.
+  Widgets wired to our sensor engine expose whatever your machine provides; iCUE-only
+  data sources (Corsair device internals, background media) are not available.
 
 ## Hardware setup (do this first)
 
@@ -251,8 +254,8 @@ Full references:
 - **[docs/PLINTH-API-REFERENCE.md](docs/PLINTH-API-REFERENCE.md)** — the complete
   `window.WW` API, sensor/media models, property types, and the host bridge protocol.
 - **[docs/ICUE-API-REFERENCE.md](docs/ICUE-API-REFERENCE.md)** — the iCUE Widget API
-  (v1.4.0) this runtime emulates, with per-feature notes on what's supported. Most
-  Elgato Marketplace `.icuewidget` files run as-is.
+  (v1.5.0) this runtime emulates, with per-feature notes on what's supported. Most
+  Elgato Marketplace `.icuewidget` files — and iCUE's own stock widgets — run as-is.
 
 ## Building from source
 

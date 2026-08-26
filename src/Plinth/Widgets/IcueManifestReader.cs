@@ -125,11 +125,17 @@ public static partial class IcueManifestReader
     private static partial Regex QuotedStringPattern();
 
     /// <summary>data-values is a JS-ish array: either [{'key':'hot','value':tr('Hot')}, …]
-    /// (the keys are what the widget expects) or a simple ['a', 'b', 'c'] list.</summary>
+    /// (the keys are what the widget expects) or a simple ['a', 'b', 'c'] list. One
+    /// expression is understood rather than parsed: iCUE.allTimeZones(), which the stock
+    /// clocks use for their timezone combobox — without evaluating it the control
+    /// rendered with ZERO options, so the user could never supply the value whose
+    /// absence was crashing the widget.</summary>
     private static List<string>? ParseValueKeys(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
             return null;
+        if (raw.Trim() == "iCUE.allTimeZones()")
+            return AllTimeZoneIds();
         var keys = ValueKeyPattern().Matches(raw).Select(m => m.Groups[1].Value).ToList();
         if (keys.Count == 0 && !raw.Contains('{'))
             keys = QuotedStringPattern().Matches(raw).Select(m => m.Groups[1].Value)
@@ -154,7 +160,10 @@ public static partial class IcueManifestReader
 
     /// <summary>data-default holds a JS expression: 'string', true/false, a number, or an
     /// arbitrary call (e.g. plugins.….getDefaultSensorIdBlock('temperature')). Literals are
-    /// converted; expressions become null and the widget falls back to its own default.</summary>
+    /// converted; the iCUE environment calls the stock clocks lean on are evaluated here
+    /// (their values feed globals the widgets read BARE, so a null default meant a
+    /// ReferenceError on a fresh install); any other expression becomes null and the
+    /// widget falls back to its own default.</summary>
     private static JsonNode? ParseDefault(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
@@ -168,7 +177,63 @@ public static partial class IcueManifestReader
             return JsonValue.Create(boolean);
         if (double.TryParse(text, System.Globalization.CultureInfo.InvariantCulture, out var number))
             return JsonValue.Create(number);
+        if (text == "iCUE.defaultTimeZone()")
+            return JsonValue.Create(DefaultTimeZoneId());
+        if (text == "iCUE.default24HourFormat()")
+            return JsonValue.Create(Default24HourKey());
         return null;
+    }
+
+    /// <summary>The machine's time zone as the IANA id the widgets expect (they pass it
+    /// to Intl, and split(' ')[0] first — a bare id survives both).</summary>
+    private static string DefaultTimeZoneId()
+    {
+        try
+        {
+            var local = TimeZoneInfo.Local;
+            if (local.HasIanaId)
+                return local.Id;
+            return TimeZoneInfo.TryConvertWindowsIdToIanaId(local.Id, out var iana) ? iana : local.Id;
+        }
+        catch
+        {
+            return "UTC";
+        }
+    }
+
+    /// <summary>The tab-buttons KEY the stock clocks declare ('12h'/'24h'), chosen the
+    /// way iCUE chooses it: from the system's own short time format.</summary>
+    private static string Default24HourKey()
+    {
+        try
+        {
+            return System.Globalization.CultureInfo.CurrentCulture.DateTimeFormat
+                .ShortTimePattern.Contains('H') ? "24h" : "12h";
+        }
+        catch
+        {
+            return "24h";
+        }
+    }
+
+    private static List<string>? AllTimeZoneIds()
+    {
+        try
+        {
+            var ids = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var zone in TimeZoneInfo.GetSystemTimeZones())
+            {
+                if (zone.HasIanaId)
+                    ids.Add(zone.Id);
+                else if (TimeZoneInfo.TryConvertWindowsIdToIanaId(zone.Id, out var iana))
+                    ids.Add(iana);
+            }
+            return ids.Count > 0 ? [.. ids] : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static double? ParseDouble(string? raw) =>

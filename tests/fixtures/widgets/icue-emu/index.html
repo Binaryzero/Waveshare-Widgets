@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<title>tr('iCUE Emulation Probe')</title>
+	<!-- Declared the iCUE way so the shim treats this as an iCUE package (translation
+	     probe included). The value is unused by the probe's own logic. -->
+	<meta
+		name="x-icue-property"
+		content="textColor"
+		data-label="tr('Color')"
+		data-type="color"
+		data-default="'#ffffff'"
+	>
+	<!-- The shared-common escapes exactly as Corsair's stock widgets write them: the
+	     paths clamp at the origin root and are served by the compat stand-ins unless
+	     the package vendors its own copies. -->
+	<script src="../common/plugins/IcueWidgetApiWrapper.js"></script>
+	<script src="../common/plugins/SimpleNotificationsApiWrapper.js"></script>
+	<script src="../common/tools/ColorTools.js"></script>
+	<script src="../common/tools/media_viewer/MediaViewer.js"></script>
+	<link rel="stylesheet" href="../common/tools/media_viewer/MediaViewer.css">
+</head>
+<body>
+	<div id="bg"></div>
+	<pre id="log"></pre>
+	<!-- type="module" ON PURPOSE: strict mode makes the bare `icueEvents = {…}`
+	     assignment below a ReferenceError unless the runtime predeclared the global —
+	     the exact failure that blanked Corsair's Calendar/Sensor/SensorList widgets. -->
+	<script type="module">
+	icueEvents = {
+		onICUEInitialized: onInit,
+		onDataUpdated: () => {},
+	};
+	pluginStreamdeckEvents = {
+		onInitialized: onSdInit,
+	};
+
+	const log = (line) => {
+		document.getElementById('log').append(line + '\n');
+	};
+	log('module-alive');
+
+	const viewer = new MediaViewer({ container: document.getElementById('bg') });
+	viewer.clear();
+	log('mediaviewer-ok');
+	log('hex:' + hexToRGB('#FF0039'));
+
+	function onInit() {
+		// Thenable tr() + the i18next-nested translation.json shape iCUE ships.
+		tr('greeting').then((t) => log('tr-then:' + t));
+		// Wrapper round trip against the emulated Notifications provider: requestId
+		// out, asyncResponse back, promise resolves (0 — the mirror is unwatched
+		// until this very call arms it, and no push has arrived).
+		const api = new SimpleNotificationsApiWrapper(window.plugins.Notificationsprovider);
+		api.getNotificationCount().then((n) => log('notif:' + n));
+	}
+
+	let icons = 0;
+	let created = false;
+	let live = false;
+	function onSdInit() {
+		const sd = window.plugins.Streamdeck;
+		sd.virtualDeviceCreated.connect(() => {
+			if (created) return;
+			created = true;
+			log('device-created');
+		});
+		sd.buttonIconUpdated.connect((widgetId, index, icon) => {
+			if (!icon) return;
+			icons++;
+			// The --sd fixture carries three titled keys; all three land inside the
+			// 3x2 grid requested below, as generated title tiles.
+			if (icons === 3) {
+				log('icons:3');
+				sd.sendKeyPress(0, true);
+				sd.sendKeyPress(0, false);
+				log('click-sent');
+			}
+			// Once the fixture's capture frame flows, the faces become PNG slices of
+			// the live window — the dynamic-key-face path.
+			if (!live && icon.startsWith('data:image/png')) {
+				live = true;
+				log('live-tiles');
+			}
+		});
+		sd.connectStreamDeck(uniqueId, '', 3, 2);
+	}
+	</script>
+</body>
+</html>

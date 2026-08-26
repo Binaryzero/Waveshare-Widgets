@@ -73,6 +73,9 @@ public sealed class SettingsWindow : Form
             // Wiring the relay without the token would only be a 403 generator.
             WebViewEnvironment.MirrorRendererConsole(core);
             core.WebMessageReceived += OnWebMessageReceived;
+            // The replica hosts the same widget origins, so imported iCUE widgets need
+            // the same shared-common/ stand-ins here (vendored copies win).
+            IcueCommonAssets.Attach(core, () => _library.Widgets);
             _hosts.MapFixed(core, ShellHost, AppPaths.ShellDir);
             // So the editor can preview chosen background images/videos.
             _hosts.MapFixed(core, BackgroundHost, AppPaths.BackgroundsDir);

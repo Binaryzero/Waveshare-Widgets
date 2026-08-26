@@ -1,4 +1,5 @@
-// iCUE widget compatibility shim (Widget API 1.4.0 surface). Injected (with
+// iCUE widget compatibility shim (Widget API 1.5.0 surface — the documented 1.4.0
+// contract plus what iCUE's own stock widgets observably rely on). Injected (with
 // widget-api.js) into every widget iframe, it emulates the runtime surface iCUE
 // widgets are written against, per the official plugin references:
 //
@@ -9,9 +10,12 @@
 //     lifecycle events fire (the documented late-load path).
 //   - Plugins: Sensorsdataprovider (full contract: requestId/asyncResponse,
 //     change signals, default-sensor lookup, documented type/kind vocabulary),
-//     Mediadataprovider (song/artist + transport triggers), Linkprovider,
-//     plus Fpsdataprovider/Deviceactionprovider stubs that report no data so
-//     dependent widgets degrade instead of hanging.
+//     Mediadataprovider (song/artist + property-NOTIFY signals + transport
+//     triggers), Linkprovider, Notificationsprovider (count backed by the host's
+//     Windows notification mirror), Streamdeck (virtual-deck contract backed by
+//     the host's Elgato VSD bridge: profile faces, live capture sliced per key,
+//     press/release click injection), plus Fpsdataprovider/Deviceactionprovider
+//     stubs that report no data so dependent widgets degrade instead of hanging.
 //   - Lifecycle: plugin<Name>Events.onInitialized() then icueEvents.onICUEInitialized()
 //     once DOM + first data + translations are ready; icueEvents.onDataUpdated() on
 //     settings re-delivery.
@@ -52,6 +56,24 @@
     defaultTemperatureUnit() {
       return /^en-(us|bs|bz|ky|pw|pr)/i.test(navigator.language || '') ? '°F' : '°C';
     },
+    // Undocumented members the stock clocks lean on (their combobox data-values and
+    // data-default expressions call these; some widgets also read them at runtime).
+    allTimeZones() {
+      try { return Intl.supportedValuesOf('timeZone'); }
+      catch (e) { return [this.defaultTimeZone()]; }
+    },
+    defaultTimeZone() {
+      try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
+      catch (e) { return 'UTC'; }
+    },
+    default24HourFormat() {
+      // Returns the tab-buttons KEY the stock clocks declare, not a boolean.
+      try {
+        const cycle = new Intl.DateTimeFormat(navigator.language, { hour: 'numeric' })
+          .resolvedOptions().hourCycle;
+        return cycle === 'h23' || cycle === 'h24' ? '24h' : '12h';
+      } catch (e) { return '24h'; }
+    },
   };
 
   const readings = new Map();   // sensorId -> {id, name, device, deviceType, type, units, value}
@@ -65,7 +87,17 @@
 
   function setPropertyGlobals(settings) {
     for (const [name, value] of Object.entries(settings || {})) {
-      if (value === undefined || value === null) continue;
+      if (value === undefined || value === null) {
+        // A DECLARED property whose default was an expression the reader couldn't
+        // evaluate arrives as null. iCUE always creates the global, and widgets read
+        // it BARE (`timeZone || fallback`) — so the binding must exist, as undefined,
+        // which their own typeof/|| guards handle. Skipping it entirely turned every
+        // such read into a top-level ReferenceError that killed the widget script.
+        if (!(name in window)) {
+          try { window[name] = undefined; injected.add(name); } catch (e) { /* non-writable */ }
+        }
+        continue;
+      }
       // Never clobber real window members (location, name, ...) we did not create.
       if (name in window && !injected.has(name)) continue;
       try {
@@ -86,8 +118,16 @@
 
   let translations = null;
   if (!('tr' in window)) {
+    // In iCUE's page runtime tr() returns a PROMISE — stock widgets call
+    // tr('AM').then(...) and `await tr(...)`. Plinth resolves translations
+    // synchronously, so hand back the string boxed with a spec-shaped then():
+    // string contexts (textContent, template literals, concatenation) read the
+    // text via toString, while .then()/await/Promise.all see a thenable.
     window.tr = function (key) {
-      return (translations && translations[key] != null) ? String(translations[key]) : String(key);
+      const text = (translations && translations[key] != null) ? String(translations[key]) : String(key);
+      const boxed = new String(text);
+      boxed.then = (onFulfilled, onRejected) => Promise.resolve(text).then(onFulfilled, onRejected);
+      return boxed;
     };
   }
   // Only iCUE packages carry translation.json — fetching it unconditionally put a
@@ -114,8 +154,16 @@
       })
       .then((json) => {
         if (json && typeof json === 'object') {
-          // Either a flat {key: text} map or nested per-language tables.
-          translations = (json.en && typeof json.en === 'object') ? json.en : json;
+          // Shapes seen in the field: a flat {key: text} map, per-language tables
+          // {en: {...}}, and the i18next nesting iCUE's own packages ship —
+          // {en: {translation: {...}}} — whose extra level made every lookup miss
+          // and silently disabled localization. Select by UI language, then unwrap.
+          const lang = String((window.iCUE && window.iCUE.iCUELanguage) || 'en');
+          let table = json[lang] || json[lang.split('-')[0]] || json.en || json;
+          if (table && typeof table === 'object' &&
+              table.translation && typeof table.translation === 'object')
+            table = table.translation;
+          if (table && typeof table === 'object') translations = table;
         }
       })
       // A rejected fetch is NOT a missing file: transient navigation/network
@@ -234,6 +282,11 @@
 
   const media = {
     asyncResponse: makeSignal(),
+    // Qt property-NOTIFY signals for songName/artist. Undocumented but load-bearing:
+    // the stock Media widget polls once at init and then refreshes ONLY from these,
+    // so without them it froze on the first track forever.
+    songNameChanged: makeSignal(),
+    artistChanged: makeSignal(),
     songName: '',
     artist: '',
     getSongName(rid) { respond(media.asyncResponse, rid, media.songName); },
@@ -244,8 +297,14 @@
   };
 
   function applyMedia(state) {
-    media.songName = (state && state.title) || '';
-    media.artist = (state && state.artist) || '';
+    const song = (state && state.title) || '';
+    const artist = (state && state.artist) || '';
+    const songChanged = song !== media.songName;
+    const artistChanged = artist !== media.artist;
+    media.songName = song;
+    media.artist = artist;
+    if (songChanged) media.songNameChanged.__emit(song);
+    if (artistChanged) media.artistChanged.__emit(artist);
   }
 
   // --- Fpsdataprovider / Deviceactionprovider: honest no-data stubs ---
@@ -274,17 +333,315 @@
     open(url) { parent.postMessage({ type: 'ww-open-url', url: String(url) }, '*'); },
   };
 
+  // --- Notificationsprovider (widgetbuilder.notificationsprovider) ---
+  //
+  // Backed by the host's Windows notification mirror — the same demand-gated
+  // ww-notifications channel the stock Notifications widget rides. The watch is
+  // armed only when a widget actually touches the plugin, so an iCUE package that
+  // merely COULD count notifications never starts the host polling.
+
+  let notifCount = 0;
+  let notifWatchArmed = false;
+
+  function armNotifWatch() {
+    if (notifWatchArmed) return;
+    notifWatchArmed = true;
+    parent.postMessage({ type: 'ww-notifications-watch', on: true }, '*');
+  }
+
+  function applyNotifications(data) {
+    const count = (data && data.state === 'allowed' && Array.isArray(data.items))
+      ? data.items.length : 0;
+    if (count === notifCount) return;
+    notifCount = count;
+    notifications.notificationCountChanged.__emit();
+  }
+
+  const notifications = {
+    asyncResponse: makeSignal(),
+    notificationCountChanged: makeSignal(),
+    getNotificationCount(rid) {
+      armNotifWatch();
+      respond(notifications.asyncResponse, rid, notifCount);
+    },
+  };
+  {
+    // First interest arms the mirror: either a count request (above) or a signal
+    // subscription — the stock widget subscribes before it ever polls.
+    const baseConnect = notifications.notificationCountChanged.connect;
+    notifications.notificationCountChanged.connect = (cb) => { armNotifWatch(); baseConnect(cb); };
+  }
+
+  // --- Streamdeck (widgetbuilder.streamdeck) ---
+  //
+  // iCUE's plugin registers a VIRTUAL Stream Deck device over Corsair's internal
+  // bridge to the Stream Deck app — a channel Plinth cannot reach. This emulation
+  // keeps the plugin's contract (connect → virtualDeviceCreated, per-key
+  // buttonIconUpdated pushes, sendKeyPress with press/release) and backs it with
+  // the host's Elgato Virtual Stream Deck bridge instead, the same one the stock
+  // Stream Deck widget mirrors: the VSD profile supplies fallback key faces, the
+  // live window capture is sliced into per-key tiles for dynamic faces, and key
+  // presses land as down/up click phases on the VSD window.
+  //
+  // Consequences of that backing, documented rather than hidden: the deck shown is
+  // the user's open Virtual Stream Deck (its grid mapped position-for-position into
+  // the size the widget asked for, extra VSD keys falling off the edge), the
+  // authentication signals never fire (there is no pairing handshake to fail), and
+  // streamdeckUnreachable means "no VSD window", with the Stream Deck app's own
+  // guidance living in the stock widget's empty state.
+
+  const sdState = {
+    widgetId: null,
+    cols: 0, rows: 0,          // the grid the WIDGET asked for
+    connected: false,
+    announced: false,          // virtualDeviceCreated emitted for the current deck
+    unreachable: false,        // last availability signalled, to emit transitions only
+    profile: null,             // last available ww-sd-profile payload
+    tiles: [],                 // slot index -> last data URL emitted (dedup)
+    captureHash: '',           // `have` receipt for the capture fast path
+    profileTimer: null,
+    captureTimer: null,
+    pending: new Map(),        // request id -> 'profile' | 'capture'
+    seq: 0,
+    canvas: null,
+  };
+
+  function sdTrack(kind) {
+    const id = 'icue-sd-' + (++sdState.seq);
+    sdState.pending.set(id, kind);
+    // The shell's reply route expires at 15s; a reply that never comes must not
+    // leave the id behind forever.
+    setTimeout(() => sdState.pending.delete(id), 15000);
+    return id;
+  }
+
+  function sdPollProfile() {
+    parent.postMessage({
+      type: 'ww-sd-profile', id: sdTrack('profile'),
+      profileName: '', hideWindow: true, live: false,
+    }, '*');
+  }
+
+  function sdPollCapture() {
+    parent.postMessage({ type: 'ww-sd-capture', id: sdTrack('capture'), have: sdState.captureHash }, '*');
+  }
+
+  function sdStopTimers() {
+    clearInterval(sdState.profileTimer);
+    clearInterval(sdState.captureTimer);
+    sdState.profileTimer = null;
+    sdState.captureTimer = null;
+  }
+
+  function sdStartTimers() {
+    sdStopTimers();
+    if (!sdState.connected || document.hidden) return;
+    // The capture poll runs under 1s deliberately: it is the live mirror (native
+    // widget default is 400ms), and the host answers {unchanged:true} for identical
+    // frames, so an idle deck costs a hash compare, not pixels.
+    sdState.profileTimer = setInterval(sdPollProfile, 4000);
+    sdState.captureTimer = setInterval(sdPollCapture, 500);
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { sdStopTimers(); return; }
+    if (sdState.connected) { sdStartTimers(); sdPollProfile(); sdPollCapture(); }
+  });
+
+  function sdEmitTile(index, dataUrl) {
+    if (sdState.tiles[index] === dataUrl) return;
+    sdState.tiles[index] = dataUrl;
+    sd.buttonIconUpdated.__emit(sdState.widgetId, index, dataUrl);
+  }
+
+  // A face for a key that has a title but no image — the widget renders ONLY what
+  // buttonIconUpdated hands it, so a text-only key must become pixels here. Empty
+  // cells emit '' and the widget substitutes its own blank-key art.
+  function sdTitleTile(title) {
+    if (!title) return '';
+    const safe = String(title).slice(0, 20)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">' +
+      '<rect x="2" y="2" width="92" height="92" rx="14" fill="#222" stroke="#3a3a3a"/>' +
+      '<text x="48" y="53" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#eee">' +
+      safe + '</text></svg>';
+    return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+  }
+
+  // Fallback faces from the parsed profile — only while no live frame has arrived;
+  // once the capture is flowing, its tiles own the key faces.
+  function sdPaintFromProfile() {
+    const profile = sdState.profile;
+    if (!profile || sdState.captureHash) return;
+    const byCell = new Map();
+    for (const b of profile.buttons || []) byCell.set(b.row + ',' + b.col, b);
+    for (let r = 0; r < sdState.rows; r++) {
+      for (let c = 0; c < sdState.cols; c++) {
+        const button = byCell.get(r + ',' + c);
+        sdEmitTile(r * sdState.cols + c, button ? (button.image || sdTitleTile(button.title)) : '');
+      }
+    }
+  }
+
+  // Slice one whole-window frame into per-key tiles. The capture is the VSD client
+  // area; cells are the uniform VSD grid (the same assumption the click math makes),
+  // contain-fitted into square PNGs so off-square cells letterbox instead of squash.
+  function sdSliceCapture(imageDataUri) {
+    const profile = sdState.profile;
+    if (!profile) return;
+    const img = new Image();
+    img.onload = () => {
+      const vRows = profile.rows || 3;
+      const vCols = profile.cols || 5;
+      const cellW = img.naturalWidth / vCols;
+      const cellH = img.naturalHeight / vRows;
+      if (!(cellW > 0) || !(cellH > 0)) return;
+      const size = 96;
+      const canvas = sdState.canvas || (sdState.canvas = document.createElement('canvas'));
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      const fit = Math.min(size / cellW, size / cellH);
+      const drawW = cellW * fit, drawH = cellH * fit;
+      for (let r = 0; r < sdState.rows; r++) {
+        for (let c = 0; c < sdState.cols; c++) {
+          const index = r * sdState.cols + c;
+          if (r >= vRows || c >= vCols) { sdEmitTile(index, ''); continue; }
+          ctx.clearRect(0, 0, size, size);
+          ctx.drawImage(img, c * cellW, r * cellH, cellW, cellH,
+            (size - drawW) / 2, (size - drawH) / 2, drawW, drawH);
+          sdEmitTile(index, canvas.toDataURL('image/png'));
+        }
+      }
+    };
+    img.src = imageDataUri;
+  }
+
+  function sdOnProfile(profile) {
+    if (!profile || !profile.available) {
+      sdState.profile = null;
+      sdState.announced = false;
+      sdState.captureHash = '';
+      if (!sdState.unreachable) {
+        sdState.unreachable = true;
+        sd.streamdeckUnreachable.__emit(sdState.widgetId);
+      }
+      return;
+    }
+    sdState.unreachable = false;
+    sdState.profile = profile;
+    if (!sdState.announced) {
+      sdState.announced = true;
+      sd.virtualDeviceCreated.__emit(sdState.widgetId, window.device.deviceId);
+    }
+    sdPaintFromProfile();
+  }
+
+  function sdOnCapture(data) {
+    if (!data || data.unchanged) return;
+    if (data.available === false) {
+      // Only a TRANSITION (we had frames, now none: window went away) forgets the
+      // frame and refreshes availability early. A deck whose capture never works —
+      // some GPU pipelines refuse PrintWindow — answers available:false on every
+      // poll, and reacting to each would re-poll the profile at capture cadence
+      // forever; steady-state stays on profile icons and the 4s profile timer.
+      if (sdState.captureHash) {
+        sdState.captureHash = '';
+        sdPollProfile();
+      }
+      return;
+    }
+    if (!data.image || typeof data.hash !== 'string') return;
+    sdState.captureHash = data.hash;
+    sdSliceCapture(data.image);
+  }
+
+  const sd = {
+    virtualDeviceCreated: makeSignal(),
+    buttonIconUpdated: makeSignal(),
+    streamdeckUnreachable: makeSignal(),
+    authenticationRequired: makeSignal(),  // never emitted: no pairing in this backend
+    authenticationRejected: makeSignal(),  // never emitted
+    connectStreamDeck(widgetId, deviceId, columns, rows) {
+      sdState.widgetId = widgetId;
+      sdState.cols = Math.max(1, columns | 0);
+      sdState.rows = Math.max(1, rows | 0);
+      sdState.tiles = [];
+      sdState.connected = true;
+      sdStartTimers();
+      sdPollProfile();
+    },
+    reconnectStreamDeck(widgetId) {
+      if (!sdState.connected) return;
+      sdStartTimers();
+      sdPollProfile();
+    },
+    disconnectStreamDeck(widgetId) {
+      sdState.connected = false;
+      sdStopTimers();
+    },
+    updateVirtualDeviceSize(widgetId, columns, rows) {
+      const cols = Math.max(1, columns | 0);
+      const rows2 = Math.max(1, rows | 0);
+      if (cols === sdState.cols && rows2 === sdState.rows) return;
+      sdState.cols = cols;
+      sdState.rows = rows2;
+      sdState.tiles = [];
+      sdPaintFromProfile();
+      if (sdState.connected) sdPollCapture();
+    },
+    sendKeyPress(widgetId, buttonIndex, pressed) {
+      const profile = sdState.profile;
+      if (!profile || !sdState.cols) return;
+      const index = buttonIndex | 0;
+      const row = Math.floor(index / sdState.cols);
+      const col = index % sdState.cols;
+      const vRows = profile.rows || 3;
+      const vCols = profile.cols || 5;
+      // Beyond the mirrored deck's grid there is nothing to press.
+      if (row < 0 || col < 0 || row >= vRows || col >= vCols) return;
+      parent.postMessage({
+        type: 'ww-sd-click',
+        row, col, rows: vRows, cols: vCols,
+        // Cell center as fractions of the capture — the same uniform-grid escape
+        // hatch the mirror widget uses for exact click placement.
+        fx: (col + 0.5) / vCols,
+        fy: (row + 0.5) / vRows,
+        // True press/release: the widget sends down on pointerdown and up on
+        // pointerup/leave/cancel, so holds reach the deck as holds.
+        phase: pressed ? 'down' : 'up',
+      }, '*');
+    },
+  };
+
   window.plugins = window.plugins || {};
   window.plugins.Sensorsdataprovider = sensors;
   window.plugins.Mediadataprovider = media;
   window.plugins.Fpsdataprovider = fps;
   window.plugins.Deviceactionprovider = deviceAction;
   window.plugins.Linkprovider = link;
-  window.pluginSensorsdataprovider_initialized = true;
-  window.pluginMediadataprovider_initialized = true;
-  window.pluginFpsdataprovider_initialized = true;
-  window.pluginDeviceactionprovider_initialized = true;
-  window.pluginLinkprovider_initialized = true;
+  window.plugins.Streamdeck = sd;
+  window.plugins.Notificationsprovider = notifications;
+
+  const pluginNames = ['Sensorsdataprovider', 'Mediadataprovider', 'Fpsdataprovider',
+    'Deviceactionprovider', 'Linkprovider', 'Streamdeck', 'Notificationsprovider'];
+  for (const name of pluginNames) {
+    // Late-load handshake parity with iCUE: the *_initialized flags exist from the
+    // first parsed line (widgets read them BARE, so the bindings must exist) but
+    // flip true only when maybeInit fires the onInitialized events. The old
+    // always-true flags made the documented handshake run handlers twice — once
+    // from the widget's own flag check at parse time, again from the event.
+    if (!('plugin' + name + '_initialized' in window))
+      window['plugin' + name + '_initialized'] = false;
+    // Stock widgets ASSIGN `plugin<Name>Events = {...}` (and `icueEvents = {...}`)
+    // as bare identifiers. In a <script type="module"> — strict mode — that throws
+    // ReferenceError unless the global property already exists, killing the module
+    // on its first statement. iCUE's bootstrap predeclares them; so must this shim.
+    if (!('plugin' + name + 'Events' in window))
+      window['plugin' + name + 'Events'] = undefined;
+  }
+  if (!('icueEvents' in window)) window.icueEvents = undefined;
 
   // --- fetch fallback: iCUE's runtime is CORS-relaxed, standards WebView2 is not ---
 
@@ -586,12 +943,11 @@
     if (initialized || !gotInit || !domReady || !trReady) return;
     initialized = true;
     window.iCUE_initialized = true;
+    // Flags flip BEFORE the events fire, so a handler that re-checks its flag —
+    // the documented pattern — sees the state the event announces.
+    for (const name of pluginNames) window['plugin' + name + '_initialized'] = true;
     const fire = (fn) => { try { fn && fn(); } catch (e) { console.error('[icue-shim]', e); } };
-    fire(window.pluginSensorsdataproviderEvents?.onInitialized);
-    fire(window.pluginMediadataproviderEvents?.onInitialized);
-    fire(window.pluginFpsdataproviderEvents?.onInitialized);
-    fire(window.pluginDeviceactionproviderEvents?.onInitialized);
-    fire(window.pluginLinkproviderEvents?.onInitialized);
+    for (const name of pluginNames) fire(window['plugin' + name + 'Events']?.onInitialized);
     fire(window.icueEvents?.onICUEInitialized);
   }
 
@@ -607,6 +963,7 @@
       setPropertyGlobals(msg.settings);
       applySensors(msg.sensors, !initialized);
       applyMedia(msg.media);
+      if (msg.notifications) applyNotifications(msg.notifications);
       if (initialized) {
         try { window.icueEvents?.onDataUpdated?.(); } catch (e) { console.error('[icue-shim]', e); }
       } else {
@@ -617,6 +974,18 @@
       applySensors(msg.sensors, false);
     } else if (msg.type === 'ww-media') {
       applyMedia(msg.media);
+    } else if (msg.type === 'ww-notifications') {
+      applyNotifications(msg.data);
+    } else if (msg.type === 'ww-sd-profile') {
+      // Both shims listen on this document; each consumes only ids it minted
+      // (widget-api.js keys on its own sdRequests set the same way).
+      if (sdState.pending.get(msg.id) !== 'profile') return;
+      sdState.pending.delete(msg.id);
+      sdOnProfile(msg.profile || { available: false });
+    } else if (msg.type === 'ww-sd-capture-result') {
+      if (sdState.pending.get(msg.id) !== 'capture') return;
+      sdState.pending.delete(msg.id);
+      sdOnCapture(msg.data || { available: false });
     } else if (msg.type === 'ww-fetch-result') {
       onFetchResult(msg);
     }
