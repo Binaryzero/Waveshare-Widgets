@@ -842,7 +842,10 @@ public static class SecretPolicy
         IReadOnlyDictionary<string, IReadOnlyList<string>>? retainedCleared = null)
     {
         var incomingCounts = CountWidgets(layout);
-        var previous = BuildStoredIndex(stored, plan, incomingCounts, out var storedCounts);
+        var incomingIdless = CountIdlessWidgets(layout);
+        // The stored counts stay inside BuildStoredIndex, where the |w:0 alias still uses
+        // them; Seal itself addresses only through the incoming id-less population.
+        var previous = BuildStoredIndex(stored, plan, incomingCounts, incomingIdless, out _);
         // The STORED layout's twins, as KEYS rather than slot references.
         //
         // Reveal and Mask ask this of the layout they were handed, so a reference set works
@@ -857,7 +860,7 @@ public static class SecretPolicy
             foreach (var page in stored?.Pages ?? [])
                 foreach (var s in page.Slots ?? [])
                     if (ambiguousStored.Contains(s)
-                        && SlotKey(s, storedCounts, incomingCounts) is { } k)
+                        && SlotKey(s, incomingIdless) is { } k)
                         storedAmbiguousKeys.Add(k);
         }
         var failures = new List<SecretSealFailure>();
@@ -915,7 +918,7 @@ public static class SecretPolicy
         Action<LayoutSlot, string, SecretIntent> visitor = (slot, name, intent) =>
         {
             if (!keyOf.TryGetValue(slot, out var key))
-                keyOf[slot] = key = SlotKey(slot, storedCounts, incomingCounts);
+                keyOf[slot] = key = SlotKey(slot, incomingIdless);
             var node = slot.Settings?[name];
             var value = AsString(node);
 
@@ -1144,6 +1147,21 @@ public static class SecretPolicy
         return counts;
     }
 
+    /// <summary>Per widget, how many slots carry NO instance id — the population that
+    /// competes for the positional <c>|w:0</c> key. <see cref="SlotKey"/> gates on this
+    /// rather than on every slot of the widget, so tiles that have their own identity
+    /// neither claim the positional key nor disqualify the tile that legitimately holds
+    /// it.</summary>
+    private static Dictionary<string, int> CountIdlessWidgets(DashboardLayout? layout)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var page in layout?.Pages ?? [])
+            foreach (var slot in page.Slots ?? [])
+                if (!string.IsNullOrEmpty(slot.WidgetId) && string.IsNullOrEmpty(slot.InstanceId))
+                    counts[slot.WidgetId] = counts.TryGetValue(slot.WidgetId, out var n) ? n + 1 : 1;
+        return counts;
+    }
+
     /// <summary>Indexes stored secret values — protected AND legacy plaintext, since a
     /// `text` → `secret` upgrade must be encrypted on the next save, not discarded.</summary>
     /// The index carries the raw NODE, not a string. A layout can hold a list, object or
@@ -1154,7 +1172,8 @@ public static class SecretPolicy
     /// other broke. Storing the node satisfies both.
     private static Dictionary<(string Slot, string Name), JsonNode?> BuildStoredIndex(
         DashboardLayout? stored, SecretPlan plan,
-        Dictionary<string, int> incomingCounts, out Dictionary<string, int> counts)
+        Dictionary<string, int> incomingCounts, Dictionary<string, int> incomingIdless,
+        out Dictionary<string, int> counts)
     {
         counts = CountWidgets(stored);
         var index = new Dictionary<(string, string), JsonNode?>();
@@ -1176,7 +1195,7 @@ public static class SecretPolicy
             // out and find nothing on the way in.
             if (!SecretIntents.Withholds(intent))
                 return;
-            var key = SlotKey(slot, storedCounts, incomingCounts);
+            var key = SlotKey(slot, incomingIdless);
             // Register the identity BEFORE the value check: a colliding slot whose secret
             // is unset still proves the key is ambiguous. Returning early would leave the
             // twin's credential in the index for BOTH slots to inherit.
@@ -1234,14 +1253,33 @@ public static class SecretPolicy
     /// trusted (several instances of one widget, counts changed by a move/delete) —
     /// carrying over then risks handing one instance another's credential, so the user
     /// re-enters it instead.</summary>
-    private static string? SlotKey(LayoutSlot slot,
-        Dictionary<string, int> storedCounts, Dictionary<string, int> incomingCounts)
+    private static string? SlotKey(LayoutSlot slot, Dictionary<string, int> incomingIdless)
     {
         if (!string.IsNullOrEmpty(slot.InstanceId))
             return slot.WidgetId + "|i:" + slot.InstanceId;
-        storedCounts.TryGetValue(slot.WidgetId, out var before);
-        incomingCounts.TryGetValue(slot.WidgetId, out var after);
-        if (before == 1 && after == 1)
+        // Gated on how many INCOMING slots of this widget are id-less — the population that
+        // can actually claim this key. An id-BEARING slot resolves to "|i:" and never looks
+        // at "|w:0", so counting it answers a question nobody asked; and the stored side is
+        // deliberately not counted here, because the publisher may legitimately be an
+        // id-BEARING stored slot reached through the alias below (a client that has not yet
+        // adopted a host mint). Two stored slots publishing this key collide in the index
+        // and are POISONED there, which is the publisher-side guarantee.
+        //
+        // Counting every slot instead let an UNRELATED action destroy a credential: add a
+        // second tile of the same widget from the gallery, the total goes 1 -> 2, this
+        // returned null for the untouched legacy tile, its stored value became unreachable,
+        // and the masked blank it round-trips read as "the user emptied it" — removed, on a
+        // clean save, reporting nothing. One tile added, a different tile's credential gone.
+        //
+        // This does NOT reopen #68. That danger is a FRESH tile inheriting a DELETED one's
+        // credential, and a fresh tile is always minted id-bearing by both editors, so it
+        // contributes nothing to this count and can never claim the key: delete the sole
+        // credentialed tile, add a new one, and the incoming id-less count is 0 — no key, no
+        // carry-over, exactly as before (P32/P32c). What changes is only that a tile which
+        // stayed id-less on BOTH sides keeps being recognised while its neighbours come and
+        // go. Two id-less incoming tiles are still ambiguous and still refused.
+        incomingIdless.TryGetValue(slot.WidgetId, out var claimants);
+        if (claimants == 1)
             return slot.WidgetId + "|w:0";
         return null;
     }
