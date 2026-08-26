@@ -444,11 +444,23 @@
       }),
     }));
     // theme is never sent to the replica, so the capture's null is absence, not intent —
-    // and the attic likewise (#226): replicaLayout strips `retained`, so it is restored
-    // from the authoritative working copy here, or the first capture after a removal
-    // would silently erase every retired tile. (Consequence, documented: a removal made
-    // in the PREVIEW's edit mode does not retire in this release — its capture carries
-    // no attic — and the host-side union keeps whatever the panel itself retired.)
+    // and the attic likewise (#226): replicaLayout strips `retained`, so it is restored from
+    // the authoritative working copy here, or the first capture after a removal would erase
+    // every retired tile.
+    //
+    // A removal made in the PREVIEW's edit mode therefore does NOT retire: its capture
+    // carries an attic we drop on the floor, and the tile is discarded exactly as before
+    // #226. That is a deliberate scope cut, not an oversight. Accepting the replica's attic
+    // here was tried and withdrawn: the replica is handed every secret SCRUBBED, so a def
+    // retired there arrives blank, and reuniting it with the value the user actually typed
+    // needs the prior slot — which is reachable by identity only for a slot that already had
+    // one. A legacy id-less slot gets a FRESH id minted by the replica at retire time, so
+    // nothing links the two, and the only bridges left are provenance the replica does not
+    // send or a "the sole id-less slot of this widget" guess — the exact inference #68
+    // forbids, being indistinguishable from "deleted the credentialed tile, added a fresh
+    // one". Retiring from the preview belongs on ONE retire path (route the preview's ✕
+    // through removeSlotAt, which holds the unscrubbed working copy) rather than a merge
+    // rule that has to reconstruct what the scrub removed.
     return Object.assign({}, captured, {
       pages, theme: (state.layout || {}).theme ?? null,
       retained: (state.layout || {}).retained,
