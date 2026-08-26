@@ -2,8 +2,8 @@
   "id": "ws.stock.jellyfin",
   "name": "Jellyfin",
   "author": "Plinth",
-  "version": "1.2.0",
-  "description": "Who's streaming what from your Jellyfin server and the titles that just landed in the library — or a player that browses your movie and TV libraries (genres, sorting, series → seasons → episodes) and streams straight to the panel. Read from Jellyfin's own API, because the web app refuses to render inside a frame.",
+  "version": "1.3.0",
+  "description": "Who's streaming what from your Jellyfin server and the titles that just landed in the library — or a player that browses your movie and TV libraries (genres, sorting, series → seasons → episodes), queues what's next up, and streams straight to the panel. Read from Jellyfin's own API, because the web app refuses to render inside a frame.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
   "properties": [
@@ -31,12 +31,31 @@
       "help": "Only matters for an https:// address. Every request carries the API key, so by default the certificate must prove the server is really yours before anything is sent. Allow self-signed trades that proof away — for API polling and Player-view playback alike — and only works when the address is a literal LAN IP (like https://192.168.1.20) or localhost; at a named address the certificate must be one this PC trusts. Most self-hosted servers have no signed certificate: pick Allow self-signed for those, which on the same LAN is no more exposed than the plain-http default Jellyfin ships with."
     },
     {
+      "name": "userName",
+      "label": "Jellyfin username",
+      "type": "text",
+      "default": "",
+      "placeholder": "Optional — for Next up",
+      "help": "Optional. Name a Jellyfin user (Administration → Users) and the Player gains a Next up tab — the next unwatched episode of every series that user has in progress — and titles that play to the end on the panel are marked watched for them, which is what moves Next up forward. Blank keeps panel playback untracked. The API key already holds server-wide rights; the name only chooses whose watch history the panel reads and advances."
+    },
+    {
       "name": "view",
       "label": "View",
       "type": "select",
       "options": ["Server overview", "Player"],
       "default": "Server overview",
-      "help": "Server overview lists every active stream plus the recently-added shelf. Player turns the tile into a little theater: browse your movie and TV libraries by tab — sort, filter by genre, step into a series' seasons and episodes — and tap a title to play it right on the panel; an episode that ends rolls into the next one. Panel playback is untracked — an API key belongs to the server, not to a user, so it does not mark titles watched or move anyone's resume position, and there is no watched/next-up filter to offer. Place two copies of the widget to have both."
+      "help": "Server overview lists every active stream plus the recently-added shelf. Player turns the tile into a little theater: browse your movie and TV libraries by tab — sort, filter by genre, step into a series' seasons and episodes — and tap a title to play it right on the panel; an episode that ends rolls into the next one. Playback is untracked unless a username is set above — an API key alone belongs to the server, not to a user — and with one set, a Next up tab appears and finished titles are marked watched. Place two copies of the widget to have both views."
+    },
+    {
+      "name": "hideLibraries",
+      "label": "Hidden libraries",
+      "type": "list",
+      "itemLabel": "library",
+      "fields": [
+        { "key": "name", "label": "Library name", "type": "text", "placeholder": "Home Videos" }
+      ],
+      "default": [],
+      "help": "Libraries to leave out — gone from the Player's tabs and from the recently-added shelf alike. Names match as Jellyfin shows them, any capitalization. Empty shows every library."
     },
     {
       "name": "latestTypes",
