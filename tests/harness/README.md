@@ -328,11 +328,14 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
 - `icue-emu-run.js` — the iCUE compatibility surface the Corsair stock-widget dump
   exposed as broken, driven end-to-end through the real shims via a probe widget in
   iCUE's own idioms (`tests/fixtures/widgets/icue-emu`): a strict-mode module assigning
-  `icueEvents` bare (needs the predeclared global), the shared-`common/` escapes served
-  as Plinth's stand-ins (MediaViewer, ColorTools, the promise wrappers), thenable
-  `tr()` against the nested i18next `translation.json`, the Notificationsprovider
-  requestId/asyncResponse round trip, and the Streamdeck plugin emulation against the
-  `--sd` fixture (`virtualDeviceCreated`, per-key `buttonIconUpdated` title tiles,
-  `sendKeyPress` down/up). Text-level: the click `phase` field crosses shim → shell →
-  host → bridge, and every whitelisted compat asset in `IcueCommonAssets.cs` actually
-  ships in `Shell/icue-common/`.
+  `icueEvents` bare (needs the predeclared global), the shared-`common/` helpers
+  (MediaViewer, ColorTools, the promise wrappers) reached as injected globals —
+  the probe's own `../common/…` script tags 404 here on purpose, because that is
+  the device condition and the markers passing is what proves the globals carry it —
+  thenable `tr()` against the nested i18next `translation.json`, the
+  Notificationsprovider requestId/asyncResponse round trip, and the Streamdeck plugin
+  emulation against the `--sd` fixture (`virtualDeviceCreated`, per-key
+  `buttonIconUpdated` title tiles, `sendKeyPress` down/up). Text-level: the click
+  `phase` field crosses shim → shell → host → bridge, `Shell/icue-common.js` defines
+  every helper as a window property (so a vendored copy shadows rather than
+  collides), and every surface that injects the shims injects it.
