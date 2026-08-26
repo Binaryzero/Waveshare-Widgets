@@ -635,7 +635,7 @@ public sealed class SettingsWindow : Form
             // before-Save so a failed save can strand a re-authenticating tile but never
             // a live credential for a destroyed one.
             var evicted = LayoutStore.CapRetained(layout);
-            var forget = LayoutStore.InstancesToForget(evicted, layout);
+            var forget = LayoutStore.InstancesToForget(evicted, layout, disk);
             if (forget.Count > 0)
             {
                 try

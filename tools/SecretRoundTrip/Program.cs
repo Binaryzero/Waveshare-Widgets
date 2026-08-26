@@ -1772,6 +1772,19 @@ var capForget = LayoutStore.InstancesToForget(capForgetEvicted, EmptyPages());
 Check("C3b ...and names exactly the evicted instance when nothing references it",
     capForget.Count == 1 && capForget[0] == ("test.widget", "iX"));
 
+// A save carries only the window that sent it, and a window can be STALE: its pages may
+// have dropped a tile the other window still shows and will save straight back. Judging
+// liveness from the incoming layout alone destroys that tile's derived credentials while
+// it is still on the panel — so the layout being overwritten counts as live too.
+Check("C3c evict never forgets an instance the DISK still has live",
+    LayoutStore.InstancesToForget(
+        capForgetEvicted, EmptyPages(), LayoutWith(new JsonObject(), instanceId: "iX")).Count == 0);
+// ...but the disk's ATTIC must not protect anything: folding it in would shield the very
+// entries eviction exists to remove, and nothing would ever be forgotten.
+var capDiskAttic = WithRetained(EmptyPages(), Retire(new JsonObject(), "iX"));
+Check("C3d ...while the disk's own attic protects nothing",
+    LayoutStore.InstancesToForget(capForgetEvicted, EmptyPages(), capDiskAttic).Count == 1);
+
 // The disk union: a save whose attic is stale (the other window retired since) keeps
 // the disk's entries — except one whose identity is LIVE in the saving window's pages,
 // which must not be seated in both pages and retained.
