@@ -1061,6 +1061,10 @@
     browse.error = '';
     renderPlayer();
     try {
+      // With the shelf hidden, 'new' is not a place. The queue takes the landing
+      // when a user is named — it needs no discovery — else the first library
+      // does, once discovery answers below.
+      if (!cfg.types && browse.tab === 'new' && cfg.user) browse.tab = 'next';
       if (!browse.tabs) {
         const tabs = await loadTabs();
         if (gen !== browseGen) return;
@@ -1082,6 +1086,9 @@
           // 'next' is synthetic — discovery recovering must not bounce a tapped
           // Next up back to New just because no LIBRARY carries that id.
           if (browse.tab !== 'new' && browse.tab !== 'next' && !activeTab()) browse.tab = 'new';
+          // The hidden-shelf landing, second half: no user named, so the first
+          // library is the front door (a server with none keeps the shelf note).
+          if (!cfg.types && browse.tab === 'new' && tabs[0]) browse.tab = tabs[0].id;
         }
       }
       const tab = activeTab();
@@ -1362,7 +1369,7 @@
       b.addEventListener('click', () => { closeChooser(); setTab(id); });
       grid.appendChild(b);
     };
-    mk('new', 'New');
+    if (cfg.types) mk('new', 'New');
     if (cfg.user) mk('next', 'Next up');
     for (const t of browse.tabs || []) mk(t.id, t.name);
   }
@@ -1394,7 +1401,7 @@
         b.addEventListener('click', () => setTab(id));
         tabsEl.appendChild(b);
       };
-      mk('new', 'New');
+      if (cfg.types) mk('new', 'New');
       if (cfg.user) mk('next', 'Next up');
       for (const t of browse.tabs || []) mk(t.id, t.name);
       // Enough libraries (or long names, or a half tile) overflow the row, and the
@@ -2311,10 +2318,11 @@
     cfg.key = String(s.apiKey == null ? '' : s.apiKey);
     cfg.selfSigned = s.certValidation === 'Allow self-signed';
     cfg.view = s.view === 'Player' ? 'player' : 'overview';
+    // "Hidden" now applies to the Player too: when the Player was ONLY the shelf,
+    // hiding it would have meant an unbrowsable view and the setting was quietly
+    // overridden — but the Player has libraries and Next up now, so Hidden removes
+    // the New tab and the landing moves to the queue or the first library.
     cfg.types = LATEST_TYPES[s.latestTypes] !== undefined ? LATEST_TYPES[s.latestTypes] : 'Movie,Episode';
-    // "Hidden" hides the overview's shelf; the player IS the shelf, so it falls back
-    // to the default filter rather than an unbrowsable empty view.
-    if (cfg.view === 'player' && !cfg.types) cfg.types = 'Movie,Episode';
     cfg.refreshMs = Math.min(300, Math.max(5, Number(s.refreshSeconds) || 15)) * 1000;
     // Names compare case-insensitively: the setting is typed by hand against
     // libraries whose exact casing nobody remembers. A list property arrives as
@@ -2328,6 +2336,9 @@
     if (prevView !== cfg.view || prevTypes !== cfg.types) {
       slowAt = 0;
       if (prevTypes !== cfg.types) { latest = []; latestAt = 0; }
+      // Hiding or unhiding the shelf changes the Player's TAB SET, not just the
+      // shelf's content — the landing tab must recompute from scratch.
+      if ((prevTypes === '') !== (cfg.types === '')) browseReset();
       // A view change pulls the screen out from under a playing title — and out
       // from under an open chooser sheet, which would otherwise sit fixed over
       // the overview with the Player's pills still live inside it.

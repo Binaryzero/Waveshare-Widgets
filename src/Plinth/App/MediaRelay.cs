@@ -250,6 +250,7 @@ internal static class MediaRelay
     {
         private readonly Stream _inner;
         private bool _faulted;
+        private long _served;
 
         public GuardedStream(Stream inner) => _inner = inner;
 
@@ -279,21 +280,21 @@ internal static class MediaRelay
         public override int Read(byte[] buffer, int offset, int count)
         {
             if (_faulted) return 0;
-            try { return _inner.Read(buffer, offset, count); }
+            try { var n = _inner.Read(buffer, offset, count); _served += n; return n; }
             catch (Exception ex) { return NoteFault(ex); }
         }
 
         public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
             if (_faulted) return 0;
-            try { return await _inner.ReadAsync(buffer.AsMemory(offset, count), cancellationToken); }
+            try { var n = await _inner.ReadAsync(buffer.AsMemory(offset, count), cancellationToken); _served += n; return n; }
             catch (Exception ex) { return NoteFault(ex); }
         }
 
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
             if (_faulted) return 0;
-            try { return await _inner.ReadAsync(buffer, cancellationToken); }
+            try { var n = await _inner.ReadAsync(buffer, cancellationToken); _served += n; return n; }
             catch (Exception ex) { return NoteFault(ex); }
         }
 
@@ -306,6 +307,14 @@ internal static class MediaRelay
         {
             if (disposing)
             {
+                // How far this stream actually got separates the field's failure
+                // modes: 0 bytes at close means WebView2 never read (or the element
+                // abandoned the response unopened), a few KB means the head arrived
+                // but never parsed, megabytes means playback and a normal seek or
+                // stop. One line per stream, budgeted like every disposition.
+                if (WebViewEnvironment.DiagnosticsBudget())
+                    Log.Info($"media relay stream closed after {_served} bytes"
+                        + (_faulted ? " (faulted)" : ""));
                 try { _inner.Dispose(); }
                 catch { /* the connection is gone either way */ }
             }
