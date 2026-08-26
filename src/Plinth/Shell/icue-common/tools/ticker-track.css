@@ -1,0 +1,31 @@
+/* Plinth-authored stand-in for the ticker stylesheet from iCUE's shared common/
+ * folder (served when the package didn't vendor its own copy). The class names are
+ * the ones stock widgets put on their own markup; the sweep animates transform only
+ * (24/7 panel — no layout/paint churn), with holds at each end so the string is
+ * readable before it moves. */
+
+.ticker {
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.ticker-track {
+	display: inline-block;
+	white-space: nowrap;
+	will-change: transform;
+}
+
+.ticker-item {
+	display: inline-block;
+	white-space: nowrap;
+}
+
+@keyframes ww-ticker-scroll {
+	0%, 12% { transform: translateX(0); }
+	44%, 56% { transform: translateX(var(--ww-ticker-shift, 0px)); }
+	88%, 100% { transform: translateX(0); }
+}
+
+.ww-ticker-scroll {
+	animation: ww-ticker-scroll var(--ww-ticker-secs, 8s) linear infinite;
+}

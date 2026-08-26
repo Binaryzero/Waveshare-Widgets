@@ -169,6 +169,19 @@ function loadPlaywright() {
     if ((file === widgetRoot || file.startsWith(widgetRoot + path.sep))
         && fs.existsSync(file) && fs.statSync(file).isFile())
       return route.fulfill({ contentType: MIME[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
+    // The device serves Plinth-authored stand-ins for iCUE's shared common/ helpers at
+    // the clamp paths stock Corsair widgets reference them from (../common/… →
+    // /common/…, ../../widgets/common/… → /widgets/common/…), package-local copies
+    // winning (IcueCommonAssets.cs). Same rule here — the local check above already
+    // failed by this line — or an imported iCUE widget passes on the panel and fails
+    // in the harness.
+    const common = rel.match(/^(?:widgets\/)?common\/(.+)$/);
+    if (common) {
+      const compatRoot = path.resolve(SHELL, 'icue-common');
+      const compat = path.resolve(compatRoot, common[1]);
+      if (compat.startsWith(compatRoot + path.sep) && fs.existsSync(compat) && fs.statSync(compat).isFile())
+        return route.fulfill({ contentType: MIME[path.extname(compat)] || 'text/plain', body: fs.readFileSync(compat) });
+    }
     return route.fulfill({ status: 404, body: '' });
   });
   // media.plinth and backgrounds.plinth are LOCAL virtual hosts, not the network:

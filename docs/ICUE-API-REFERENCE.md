@@ -1,10 +1,13 @@
-# iCUE Widget API Reference (v1.4.0)
+# iCUE Widget API Reference (v1.5.0)
 
 A consolidated reference for the Corsair/Elgato iCUE HTML widget runtime, compiled from
-the official documentation (docs.elgato.com/icue/widgets). This documents the **contract
-that iCUE widgets are written against** — the same contract Plinth emulates so
-those widgets run on the panel. For what *our* runtime supports of it, see the
-"Plinth compatibility" callouts and [WIDGET-SPEC.md](WIDGET-SPEC.md).
+the official documentation (docs.elgato.com/icue/widgets) and extended with the contract
+iCUE's **own stock widgets** are actually written against (observed from the iCUE 5.x
+stock-widget set: undocumented plugins, environment calls, and runtime behaviors the
+official docs omit — each marked *observed* below). This documents the **contract that
+iCUE widgets are written against** — the same contract Plinth emulates so those widgets
+run on the panel. For what *our* runtime supports of it, see the "Plinth compatibility"
+callouts and [WIDGET-SPEC.md](WIDGET-SPEC.md).
 
 > Runtime engine in iCUE: QtWebEngine 6.9.3 (Chromium 130). Minimum iCUE: 5.47.
 > A widget is plain HTML/JS/CSS; iCUE injects globals and plugin objects at load.
@@ -22,6 +25,7 @@ those widgets run on the panel. For what *our* runtime supports of it, see the
   - [Link Provider](#link-provider)
   - [FPS Data Provider](#fps-data-provider)
   - [Device Action Provider](#device-action-provider)
+  - [Notifications Provider](#notifications-provider)
   - [Stream Deck](#stream-deck)
 - [Storage](#storage)
 - [Translations & common tools](#translations--common-tools)
@@ -88,6 +92,12 @@ icueEvents = {
 if (iCUE_initialized) { init(); }
 ```
 
+*Observed:* `icueEvents` and every `plugin<Name>Events` global are **predeclared** by
+the runtime — stock widgets assign them as bare identifiers from
+`<script type="module">` (strict mode), which throws ReferenceError unless the global
+property already exists. Some stock widgets also register a third hook,
+`icueEvents.onUpdateRequested` (a host-driven manual refresh).
+
 `onDataUpdated` fires on **every** property change, with the new values already assigned
 to the corresponding globals. No page reload occurs on a settings change.
 
@@ -102,9 +112,12 @@ Where `<Name>` is the plugin module's last dotted segment with its first letter
 capitalized (`sensorsdataprovider` → `Sensorsdataprovider`).
 
 **Plinth compatibility:** all of the above are emulated (`icue-compat.js`). Property
-globals are injected before widget scripts via the iframe URL fragment; `iCUE_initialized`
-flips true when the init events fire; every `plugin<Name>_initialized` flag and
-`onInitialized` callback fires.
+globals are injected before widget scripts via the iframe URL fragment — a declared
+property whose value we can't compute still gets its global, as `undefined`, since
+widgets read them bare. `icueEvents` and every `plugin<Name>Events` global are
+predeclared. `iCUE_initialized` and the `plugin<Name>_initialized` flags flip true
+when the init events fire (not before — otherwise the documented late-load handshake
+runs handlers twice). `onUpdateRequested` is never fired.
 
 ---
 
@@ -143,7 +156,16 @@ Example:
 `color`/`combobox`/`tab-buttons`/`sensors-factory` are fully supported; `sensors-combobox`
 maps to our native sensor picker. `search-combobox` degrades to a text field (its options
 come from widget ES-modules we don't execute), and `media-selector` shows a
-"not supported yet" note.
+"not supported yet" note. Expression values are literal-parsed, with three evaluated for
+real (see [the `iCUE` global](#the-icue-and-device-globals)): `iCUE.allTimeZones()` as
+`data-values`, `iCUE.defaultTimeZone()` / `iCUE.default24HourFormat()` as `data-default`.
+
+*Observed meta names beyond the documented one:* `x-icue-info` (a settings-pane status
+row, e.g. `data-type="app-status" application="stream-deck"` on the StreamDeck widget),
+`x-icue-widget-group` (marketplace grouping, e.g. `tr('Clock Face')`), and
+`x-icue-widget-preview` (a preview image path). Plinth ignores all three — they carry
+no runtime behavior. Group entries may also carry an `info` (or `description`) field of
+help text; Plinth drops it.
 
 ---
 
@@ -175,13 +197,24 @@ toggle.
 | `fpsLimit` | number | Render FPS limit (default 30) |
 | `isPreview` | boolean | True in preview/mimic mode, false on a real device |
 | `defaultTemperatureUnit()` | → string | `"°C"` or `"°F"` per iCUE settings |
+| `allTimeZones()` *(observed)* | → string[] | Timezone option keys for the stock clocks' comboboxes; keys are shaped `"Area/City ±HH:MM"` (widgets do `.split(' ')[0]`, so bare IANA ids satisfy them too) |
+| `defaultTimeZone()` *(observed)* | → string | The machine's timezone in that same key shape |
+| `default24HourFormat()` *(observed)* | → string | `"24h"` or `"12h"` — the tab-buttons KEY, not a boolean |
+| `ipRegistryApiKey` *(observed)* | string | A Corsair-provisioned api.ipregistry.co key the weather widgets' settings modules use for geo-IP lookup |
 
 `device` object: `deviceId` (string) — UUID without braces, identifies the displaying
 device. Injected before widget scripts; pass to plugin methods that need a device id.
 
 **Plinth compatibility:** both emulated. `iCUE.isPreview` is always false;
 `defaultTemperatureUnit()` derives from the OS locale; `device.deviceId` is a stable
-per-slot pseudo-UUID.
+per-slot pseudo-UUID. The three observed timezone/format calls are provided (backed by
+`Intl`), and the *reader* also evaluates them when they appear as meta expressions:
+`iCUE.allTimeZones()` in `data-values` becomes the real option list,
+`iCUE.defaultTimeZone()` / `iCUE.default24HourFormat()` in `data-default` become real
+defaults — previously they parsed to null, so the stock clocks ReferenceError'd on a
+fresh install with an option-less combobox no user could repair. `ipRegistryApiKey` is
+NOT provided (we have no key to hand out; the modules that read it never execute on
+Plinth anyway).
 
 ---
 
@@ -232,10 +265,13 @@ model to the vocabulary above.
 Properties: `songName` (string), `artist` (string).
 Methods: `getSongName(rid)` → string, `getArtist(rid)` → string (async);
 `triggerPlayPause()`, `triggerNextTrack()`, `triggerPreviousTrack()` (synchronous).
-Signal: `asyncResponse(rid, value)`. **No artwork is exposed by this plugin.**
+Signals: `asyncResponse(rid, value)`, plus *(observed)* the property-NOTIFY pair
+`songNameChanged(value)` / `artistChanged(value)` — the stock Media widget polls once
+at init and then refreshes ONLY from these. **No artwork is exposed by this plugin.**
 
 **Plinth compatibility:** fully implemented, backed by the Windows media session (the
-same source our Now Playing widget uses). Transport controls work.
+same source our Now Playing widget uses), NOTIFY signals included (emitted whenever
+the mirrored values change). Transport controls work.
 
 ### Link Provider
 
@@ -268,6 +304,24 @@ Signal: `dialTriggered(actionType, dialIndex)` where `actionType` ∈ {`"press"`
 **Plinth compatibility:** stub — the panel has no dials, so `initDevice` is a no-op and
 `dialTriggered` never fires (matching documented preview behavior).
 
+### Notifications Provider
+
+*(observed — absent from the official docs; contract extracted from the stock
+WindowsNotifications widget and the SDK's `SimpleNotificationsApiWrapper`)*
+
+`widgetbuilder.notificationsprovider:Notifications:1.0` —
+`window.plugins.Notificationsprovider`
+
+Method (async via `requestId`): `getNotificationCount(rid)` → int.
+Signals: `asyncResponse(rid, value)`, `notificationCountChanged()` (no arguments —
+subscribers re-poll the count). Standard lifecycle pair:
+`pluginNotificationsprovider_initialized` / `pluginNotificationsproviderEvents`.
+
+**Plinth compatibility:** implemented, backed by the host's Windows notification
+mirror (the same demand-gated source the stock Notifications widget uses). The count
+is the number of currently mirrored toasts; when notification access is denied or
+unavailable it reports 0. Polling starts only when a widget first touches the plugin.
+
 ### Stream Deck
 
 `widgetbuilder.streamdeck:StreamDeck:1.0` — `window.plugins.Streamdeck`.
@@ -280,11 +334,28 @@ Signals: `virtualDeviceCreated(widgetId, deviceId)`,
 `streamdeckUnreachable`, `authenticationRequired`, `authenticationRejected`.
 Uses `iCUE.widgetId` and `iCUE.streamDeckDeviceId`.
 
-**Plinth compatibility:** not implemented — this plugin bridges to Corsair's internal
-Stream Deck provider, which we can't reach. See [WIDGET-SPEC.md](WIDGET-SPEC.md) and the
-README for the **Embed URL** approach (point it at a localhost Stream Deck bridge such as
-StreamDeckEmbeded's `http://localhost:28199`) to get a touch Stream Deck without this
-plugin.
+**Plinth compatibility:** emulated. Corsair's internal provider (an authenticated
+bridge into the Stream Deck app) is unreachable from outside iCUE, so the plugin is
+backed by the host's Elgato **Virtual Stream Deck mirror** instead — the same bridge
+the stock Stream Deck widget uses. Semantics under that backing:
+
+- `connectStreamDeck(widgetId, deviceId, cols, rows)` starts the mirror;
+  `virtualDeviceCreated(widgetId, deviceId)` fires when a VSD window is found (the
+  deviceId is the slot's stable pseudo-UUID). Requires the Elgato software with a
+  Virtual Stream Deck open and "Hide unused keys" OFF.
+- `buttonIconUpdated(widgetId, index, iconDataUrl)` pushes per-key faces: slices of
+  the live window capture (dynamic faces included) at ~2 Hz, or the profile's key
+  icons when capture is unavailable; a titled key without an icon gets a generated
+  title tile; empty cells push `""`. The VSD grid maps position-for-position into the
+  requested `cols`×`rows` (extra VSD keys fall off the edge).
+- `sendKeyPress(widgetId, index, pressed)` lands as a REAL press/release on the VSD
+  window (press-and-hold works; a press with no release is safety-released after 10 s).
+- `updateVirtualDeviceSize` remaps; `streamdeckUnreachable` means "no VSD window";
+  `authenticationRequired` / `authenticationRejected` **never fire** (there is no
+  pairing handshake in this backend), so widgets never show their pairing states.
+
+The **Embed URL** approach (point an Embed widget at a localhost Stream Deck bridge
+such as StreamDeckEmbeded's `http://localhost:28199`) remains as an alternative.
 
 ---
 
@@ -313,11 +384,24 @@ reloads. Each widget runs on its own origin, so `localStorage` is naturally isol
 used, a `translation.json` file must sit in the widget root. Current language:
 `iCUE.iCUELanguage`.
 
+*Observed:* in the **page** runtime `tr()` returns a **Promise** — stock widgets call
+`tr('AM').then(…)` and `await tr(…)` (only meta expressions use it synchronously, in
+iCUE's settings host). And the `translation.json` iCUE's own packages ship is
+i18next-nested — `{"<lang>": {"translation": {key: text}}}` — not the flat map the
+official docs imply.
+
 iCUE ships a `common/` folder of helper JS/CSS (the plugin promise-wrappers, a
-`MediaViewer` for `media-selector` output) that widgets copy into their package before
-building.
+`MediaViewer` for `media-selector` output, `TickerTracker`, `DateFormatter`,
+`ColorTools`). Marketplace guidance says widgets copy it into their package before
+building — but iCUE's **stock** widgets reference it in place, outside their package
+(`../common/…`; the StreamDeck widget `../../widgets/common/…`).
 
 **Plinth compatibility:** `tr()` is implemented, backed by the package's
-`translation.json` (flat map or per-language). The promise-wrappers work because the
-underlying plugin objects match the documented API. `MediaViewer` isn't provided (no
-`media-selector` support yet).
+`translation.json` (flat map, per-language, or the nested i18next shape, selected by
+UI language), and returns a thenable string — `.then()`/`await` and plain string use
+both work. The out-of-package `common/` references are answered with Plinth-authored,
+API-compatible stand-ins served at those paths (`Shell/icue-common/` — the Corsair
+originals are all-rights-reserved and are not shipped); a package that vendored its
+own copies keeps them. That includes a `MediaViewer` stand-in, so widgets construct
+and degrade cleanly even though `media-selector` itself stays unsupported. Fonts
+referenced over Qt's `qrc:/` scheme silently fall back to the CSS fallback stack.

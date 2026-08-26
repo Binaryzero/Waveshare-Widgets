@@ -127,6 +127,9 @@ public sealed class DashboardWindow : Form
         // Widget media (Jellyfin playback) streams from LAN servers through the host —
         // the renderer's network gates each killed direct playback in the field.
         MediaRelay.Attach(core);
+        // Stock iCUE widgets reference a shared common/ folder from OUTSIDE their
+        // package; this serves our stand-ins at those paths (vendored copies win).
+        IcueCommonAssets.Attach(core, () => _library.Widgets);
         // And if a renderer gate ever blocks anything again, the engine says so in
         // its console, which now lands in app.log instead of nowhere.
         WebViewEnvironment.MirrorRendererConsole(core);
@@ -386,13 +389,17 @@ public sealed class DashboardWindow : Form
 
                 case "sd-click":
                     _streamDeck ??= new StreamDeckBridge();
+                    // phase: "down"/"up" from callers with real pointer state (the iCUE
+                    // Streamdeck emulation), anything else the original atomic tap.
+                    var sdPhase = message["phase"]?.GetValue<string>();
                     _streamDeck.ClickCell(
                         message["row"]?.GetValue<int>() ?? 0,
                         message["col"]?.GetValue<int>() ?? 0,
                         message["rows"]?.GetValue<int>() ?? 3,
                         message["cols"]?.GetValue<int>() ?? 5,
                         message["fx"]?.GetValue<double>(),
-                        message["fy"]?.GetValue<double>());
+                        message["fy"]?.GetValue<double>(),
+                        sdPhase is "down" or "up" ? sdPhase : null);
                     break;
 
                 case "fetch":

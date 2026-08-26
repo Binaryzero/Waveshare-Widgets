@@ -300,7 +300,7 @@ Widget → shell:
 | `ww-secure-get` / `ww-secure-set` / `ww-secure-delete` | `id, key, value?` | the widget's protected store, scoped per instance; the shell stamps `widgetId` and `instanceId` from the sending slot |
 | `ww-sd-profile` | `profileName, hideWindow, live` | request the Virtual Stream Deck mirror; `live` adds a window screenshot |
 | `ww-sd-capture` | – | capture-only fast path (no profile re-parse; host dedups unchanged frames) |
-| `ww-sd-click` | `row, col, rows, cols` | trigger the VSD key at that grid cell |
+| `ww-sd-click` | `row, col, rows, cols, fx?, fy?, phase?` | trigger the VSD key at that grid cell; `fx`/`fy` land the click on that exact fraction of the capture; `phase` `'down'`/`'up'` splits it into a real press/release (held presses get a 10 s safety release), absent = atomic tap |
 
 Shell → widget:
 
