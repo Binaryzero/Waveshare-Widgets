@@ -272,11 +272,28 @@ public static partial class WidgetIdentity
     /// name. Aggressive on purpose — the collision this exists for is a user staring at
     /// two tiles that read the same to a human, and a space is not what tells them
     /// apart.</summary>
+    /// <remarks>
+    /// Letters and digits of ANY script survive. An ASCII-only class looked equivalent
+    /// and was not: it erased a name written in non-Latin script ENTIRELY, so "天气" and
+    /// "时钟" both folded to the empty string and every such widget landed in one group —
+    /// visibly different names, all annotated as though they collided.
+    /// </remarks>
     public static string NormalizeName(string? name) =>
         name is null ? "" : NamePattern().Replace(name.ToLowerInvariant(), "");
 
-    [GeneratedRegex("[^a-z0-9]+")]
+    [GeneratedRegex(@"[^\p{L}\p{N}]+")]
     private static partial Regex NamePattern();
+
+    /// <summary>Collapses runs of whitespace, the way rendering the string into the UI
+    /// does. Authors are compared AND shown in this form: "Corsair Team" and
+    /// "Corsair  Team" are one author to anyone reading the screen, so treating them as
+    /// two produced a pair of suffixes that told the widgets apart in the source and not
+    /// at all on the panel.</summary>
+    private static string CollapseSpaces(string? value) =>
+        value is null ? "" : SpacePattern().Replace(value.Trim(), " ");
+
+    [GeneratedRegex(@"\s+")]
+    private static partial Regex SpacePattern();
 
     /// <summary>
     /// The label each widget should be shown under, given everything installed.
@@ -314,7 +331,7 @@ public static partial class WidgetIdentity
                 continue;
             // A blank name would make every blank-named widget one group; the id is the
             // only honest label left, and IsValid should have refused it long before here.
-            byId[id] = (string.IsNullOrWhiteSpace(name) ? id : name.Trim(), author?.Trim());
+            byId[id] = (string.IsNullOrWhiteSpace(name) ? id : name.Trim(), CollapseSpaces(author));
         }
 
         var groups = byId.GroupBy(kv => NormalizeName(kv.Value.Name), StringComparer.Ordinal);
@@ -338,6 +355,25 @@ public static partial class WidgetIdentity
                 display[id] = authorIsDistinct ? $"{name} — {author}" : $"{name} ({id})";
             }
         }
+
+        // A label is only worth generating if it is unique against EVERY other label,
+        // generated or declared. Nothing above compares across groups, so a widget whose
+        // manifest name is literally "Clock — Plinth" sat beside a generated
+        // "Clock — Plinth" and the pickers showed the pair this method exists to prevent.
+        //
+        // One pass settles it: ids are unique, so the id form separates any group it is
+        // applied to. It could only re-collide with a manifest name that literally spells
+        // out another widget's id in parentheses, which is a name chosen to impersonate
+        // and still lands on a label carrying the impersonator's own id.
+        // Materialized before the writes: overwriting an existing key happens not to
+        // invalidate a Dictionary enumerator on this runtime, but a deferred query
+        // reading what the loop is rewriting is not a thing to leave resting on that.
+        var clashing = display.GroupBy(kv => kv.Value, StringComparer.OrdinalIgnoreCase)
+                              .Where(g => g.Count() > 1)
+                              .SelectMany(g => g.Select(kv => kv.Key))
+                              .ToList();
+        foreach (var id in clashing)
+            display[id] = $"{byId[id].Name} ({id})";
         return display;
     }
 

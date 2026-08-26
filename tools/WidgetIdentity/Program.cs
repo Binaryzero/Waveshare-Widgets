@@ -408,5 +408,57 @@ var blank = WidgetIdentity.DisplayNames(new (string, string?, string?)[]
 Check("I28c a blank name degrades to the id, never to an empty tile",
     blank["com.example.nameless"] == "com.example.nameless", blank["com.example.nameless"]);
 
+// Four holes the Codex review found in the labelling above (PR #270). Each one ended in
+// the same place the whole method exists to prevent: two entries a person cannot tell
+// apart, or an annotation on two names that never collided.
+
+// A GENERATED label can collide with a LITERAL one. Nothing in the per-group pass
+// compares across groups, so a widget whose manifest name is spelled "Clock \u2014 Plinth"
+// sat beside a generated "Clock \u2014 Plinth".
+var literal = WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+{
+    ("com.a.clock", "Clock", "Plinth"),
+    ("com.b.clock", "Clock", "OtherCo"),
+    ("com.c.clock", "Clock \u2014 Plinth", "ThirdCo"),
+});
+Check("I30 a generated label never collides with another widget's literal name",
+    literal.Values.Select(v => v.ToLowerInvariant()).Distinct().Count() == 3,
+    string.Join(" | ", literal.Values));
+
+// Non-Latin scripts survive the fold. The ASCII-only class erased them entirely, so
+// every widget named in one landed in a single empty-key group and got annotated.
+Check("I31 a non-Latin name is not erased by normalization",
+    WidgetIdentity.NormalizeName("\u5929\u6c14") != "" &&
+    WidgetIdentity.NormalizeName("\u5929\u6c14") != WidgetIdentity.NormalizeName("\u65f6\u949f"),
+    WidgetIdentity.NormalizeName("\u5929\u6c14"));
+var cjk = WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+{
+    ("com.a.weather", "\u5929\u6c14", "A"),
+    ("com.b.clock", "\u65f6\u949f", "B"),
+});
+Check("I31b ...so two visibly different non-Latin names are left alone",
+    cjk["com.a.weather"] == "\u5929\u6c14" && cjk["com.b.clock"] == "\u65f6\u949f",
+    cjk["com.a.weather"] + " | " + cjk["com.b.clock"]);
+Check("I31c ...while separators are still folded within one script",
+    WidgetIdentity.NormalizeName("\u5929 \u6c14") == WidgetIdentity.NormalizeName("\u5929\u6c14"));
+
+// Authors that differ only in whitespace render identically, so they cannot be the
+// discriminator: the label has to fall back to the id.
+var spacedAuthors = WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+{
+    ("com.a.deck", "Deck", "Corsair Team"),
+    ("com.b.deck", "Deck", "Corsair  Team"),
+});
+Check("I32 authors differing only in whitespace are one author, so ids decide",
+    spacedAuthors["com.a.deck"] == "Deck (com.a.deck)"
+        && spacedAuthors["com.b.deck"] == "Deck (com.b.deck)",
+    spacedAuthors["com.a.deck"] + " | " + spacedAuthors["com.b.deck"]);
+Check("I32b ...and a surviving author suffix renders collapsed",
+    WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+    {
+        ("com.a.deck", "Deck", "Corsair  Team"),
+        ("com.b.deck", "Deck", "Someone Else"),
+    })["com.a.deck"] == "Deck \u2014 Corsair Team");
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;

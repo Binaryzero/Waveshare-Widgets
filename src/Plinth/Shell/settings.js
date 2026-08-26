@@ -1536,7 +1536,11 @@
     const widgetSelect = document.createElement('select');
     widgetSelect.className = 'widget';
     for (const w of state.widgets) {
-      const opt = new Option((w.displayName || w.name) + '  (' + w.id + ')', w.id, false, w.id === slot.widgetId);
+      // This picker always spells out the id. displayName may ALREADY have fallen back
+      // to the "name (id)" form, and appending again rendered it twice.
+      const label = w.displayName || w.name;
+      const withId = label.includes('(' + w.id + ')') ? label : label + '  (' + w.id + ')';
+      const opt = new Option(withId, w.id, false, w.id === slot.widgetId);
       widgetSelect.add(opt);
     }
     if (slot.widgetId && !widgetsById.has(slot.widgetId)) {
