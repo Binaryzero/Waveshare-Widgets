@@ -31,6 +31,14 @@
   // "not set" again after any page/slot action, and emptying the field would send "",
   // which the host honours by restoring what it just stored.
   const secretsTypedHere = new Set();
+  // Attic identities the host has EVICTED this session, as "<widgetId>|i:<instanceId>".
+  // Tombstones rather than a plain splice, because the capture merge unions: a capture
+  // the replica emitted before it processed the eviction still carries the entry, and the
+  // union would put it straight back — and replicaPost DROPS the notice outright while the
+  // replica is not ready, which makes that permanent rather than momentary. An evicted
+  // identity is dead for good (the host destroyed its derived credentials with it and the
+  // id is never re-minted), so refusing it forever is exactly right.
+  const evictedTombstones = new Set();
   const secretKey = (slot, name) => {
     if (slot.instanceId) return 'i:' + slot.instanceId + '|' + name;
     // No id: the key must name the SLOT, not just the widget — two id-less instances of
@@ -246,8 +254,10 @@
       // re-ships them and the attic never converges on the disk's bounded list.
       // Matched by identity, never index — the two copies can be ordered differently.
       for (const e of (Array.isArray(msg.evictedIds) ? msg.evictedIds : [])) {
+        if (e && e.widgetId && e.instanceId)
+          evictedTombstones.add(e.widgetId + '|i:' + e.instanceId);
         const list = (state.layout || {}).retained;
-        if (!Array.isArray(list)) break;
+        if (!Array.isArray(list)) continue;
         const idx = list.findIndex((r) => r && r.def
           && r.def.widgetId === e.widgetId && r.def.instanceId === e.instanceId);
         if (idx >= 0) list.splice(idx, 1);
@@ -467,7 +477,10 @@
     for (const r of [...(((state.layout || {}).retained) || []), ...(captured.retained || [])]) {
       if (!r || !r.def || !r.def.widgetId || !r.def.instanceId) continue;
       const k = r.def.widgetId + '|i:' + r.def.instanceId;
-      if (liveKeys.has(k) || atticKeys.has(k)) continue;
+      // An evicted identity never comes back: the union would otherwise resurrect one the
+      // host has already destroyed the credentials for, out of a capture that predates the
+      // eviction (or out of a replica that never received the notice at all).
+      if (evictedTombstones.has(k) || liveKeys.has(k) || atticKeys.has(k)) continue;
       atticKeys.add(k);
       attic.push(r);
     }
