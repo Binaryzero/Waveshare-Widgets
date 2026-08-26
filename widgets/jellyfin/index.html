@@ -974,6 +974,13 @@
     return nextUser.id;
   }
 
+  // A 404 on a user-scoped call means the cached id no longer exists — the user
+  // was deleted, perhaps recreated under a new id. Drop the cache so the NEXT
+  // attempt resolves fresh instead of erroring forever on a ghost.
+  function invalidateUserOn404(e) {
+    if (e && e.status === 404) nextUser = { id: '' };
+  }
+
   // A finished title is marked played for the configured user — that is what lets
   // Next up advance past it. Only a NATURAL finish calls this ('ended'); stopping
   // halfway marks nothing. Failures log and stay quiet — playback already happened
@@ -1001,9 +1008,7 @@
       refreshNextUpIfStale();
       return true;
     } catch (e) {
-      // 404 on the cached id: the user was deleted (or recreated under a new id) —
-      // drop the cache so the next attempt resolves fresh instead of failing forever.
-      if (e && e.status === 404) nextUser = { id: '' };
+      invalidateUserOn404(e);
       WW.log('jellyfin: mark played: ' + (e && e.message));
       return false;
     }
@@ -1038,6 +1043,7 @@
           if (next && String(next.SeriesId || '') !== String(seriesId)) next = null;
         }
       } catch (e) {
+        invalidateUserOn404(e);
         WW.log('jellyfin: next up: ' + (e && e.message));
       }
     }
@@ -1095,10 +1101,18 @@
         if (!uid) {
           browse.error = 'No Jellyfin user named “' + cfg.user + '” — check the widget settings.';
         } else {
-          const body = await jfJson('/Shows/NextUp?UserId=' + encodeURIComponent(uid)
-            + '&StartIndex=' + (browse.page * browse.pageSize)
-            + '&Limit=' + browse.pageSize
-            + '&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true', 12000, LIST_MAX_BYTES);
+          let body;
+          try {
+            body = await jfJson('/Shows/NextUp?UserId=' + encodeURIComponent(uid)
+              + '&StartIndex=' + (browse.page * browse.pageSize)
+              + '&Limit=' + browse.pageSize
+              + '&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true', 12000, LIST_MAX_BYTES);
+          } catch (e) {
+            // The read path heals like markPlayed: the retry tap after this
+            // error re-resolves the user instead of replaying a ghost id.
+            invalidateUserOn404(e);
+            throw e;
+          }
           if (gen !== browseGen) return;
           // Malformed 200s fault everywhere in this function: settled-as-empty has
           // no retry (the active tab swallows re-taps unless an error is showing).
