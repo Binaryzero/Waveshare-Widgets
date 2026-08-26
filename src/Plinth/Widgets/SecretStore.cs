@@ -841,11 +841,10 @@ public static class SecretPolicy
         IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>>? cleared = null,
         IReadOnlyDictionary<string, IReadOnlyList<string>>? retainedCleared = null)
     {
-        var incomingCounts = CountWidgets(layout);
         var incomingIdless = CountIdlessWidgets(layout);
         // The stored counts stay inside BuildStoredIndex, where the |w:0 alias still uses
         // them; Seal itself addresses only through the incoming id-less population.
-        var previous = BuildStoredIndex(stored, plan, incomingCounts, incomingIdless, out _);
+        var previous = BuildStoredIndex(stored, plan, incomingIdless, out _);
         // The STORED layout's twins, as KEYS rather than slot references.
         //
         // Reveal and Mask ask this of the layout they were handed, so a reference set works
@@ -1172,8 +1171,7 @@ public static class SecretPolicy
     /// other broke. Storing the node satisfies both.
     private static Dictionary<(string Slot, string Name), JsonNode?> BuildStoredIndex(
         DashboardLayout? stored, SecretPlan plan,
-        Dictionary<string, int> incomingCounts, Dictionary<string, int> incomingIdless,
-        out Dictionary<string, int> counts)
+        Dictionary<string, int> incomingIdless, out Dictionary<string, int> counts)
     {
         counts = CountWidgets(stored);
         var index = new Dictionary<(string, string), JsonNode?>();
@@ -1230,11 +1228,22 @@ public static class SecretPolicy
             // the positional |w:0 alias would hand it to the LIVE legacy slot — a
             // retired tile's credential inherited by position, exactly what #68 forbids.
             // The attic is reachable by |i: identity only.
+            // The consumer side of this alias is an incoming ID-LESS slot, so the gate
+            // counts those — matching SlotKey — while the stored side stays a total,
+            // because it is asking a different question: is there exactly ONE stored slot
+            // of this widget, so that "the value at |w:0" is unambiguous?
+            //
+            // Counting incoming TOTALS here left the other half of the same credential
+            // loss open. The host stamps the sole tile on a masked save; before the client
+            // adopts that id, the user adds a second tile. The legacy tile still claims
+            // |w:0, but the total went 1 -> 2, so this published nothing, the lookup missed
+            // and the untouched credential was removed — the identical outcome, reached
+            // through the alias rather than through SlotKey.
             if (!isRetained && !string.IsNullOrEmpty(slot.InstanceId))
             {
-                storedCounts.TryGetValue(slot.WidgetId, out var before);
-                incomingCounts.TryGetValue(slot.WidgetId, out var after);
-                if (before == 1 && after == 1)
+                storedCounts.TryGetValue(slot.WidgetId, out var storedTotal);
+                incomingIdless.TryGetValue(slot.WidgetId, out var claimants);
+                if (storedTotal == 1 && claimants == 1)
                     index.TryAdd((slot.WidgetId + "|w:0", name), storedNode.DeepClone());
             }
         }

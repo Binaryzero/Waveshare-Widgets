@@ -1643,6 +1643,28 @@ Check("N4 a legacy tile and an id-bearing sibling both keep their own credential
     (ValueAt(nMixedIncoming, 0, "apiToken") ?? "(removed)") + " | " +
     (ValueAt(nMixedIncoming, 1, "apiToken") ?? "(removed)"));
 
+// N5 · the same loss through the ALIAS half of the path. The host stamps the sole tile on
+// a masked save; before the client adopts that id (the mintedIds ack is in flight), the
+// user adds a second tile and saves again. The legacy tile still claims |w:0, so the alias
+// that publishes it must be gated on the same id-less claimant count — gated on the
+// incoming TOTAL, the new sibling made it 2, nothing was published, and the untouched
+// credential was removed exactly as in N1.
+var nAliasStored = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
+SecretPolicy.Seal(nAliasStored, null, Lookup);   // Seal stamps: stored is now id-BEARING
+Check("N5 setup: the host stamped the stored tile",
+    !string.IsNullOrEmpty(Slot(nAliasStored).InstanceId));
+var nAliasSealed = Value(nAliasStored, "apiToken");
+// The client has not adopted the mint, so it still sends the tile id-LESS — beside a
+// freshly added, id-bearing sibling.
+var nAliasIncoming = TwoInstances(new JsonObject { ["apiToken"] = "" },
+                                  new JsonObject { ["apiToken"] = "" }, null, "iNewSibling");
+SecretPolicy.Seal(nAliasIncoming, nAliasStored, Lookup);
+Check("N5 a not-yet-adopted mint survives a sibling being added alongside it",
+    ValueAt(nAliasIncoming, 0, "apiToken") == nAliasSealed,
+    ValueAt(nAliasIncoming, 0, "apiToken") ?? "(removed)");
+Check("N5b ...and the sibling still inherits nothing",
+    string.IsNullOrEmpty(ValueAt(nAliasIncoming, 1, "apiToken")));
+
 // ---- R · the retained attic (#226) ---------------------------------------------------
 // A removed slot's def moves to layout.retained, addressed ONLY by widgetId|i:instanceId.
 // Seal must re-seal a freshly retired plaintext (the shell held it revealed), restore a
