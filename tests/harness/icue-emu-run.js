@@ -30,9 +30,13 @@
 //        harness cannot execute): the click phase field crosses every hop — the shim
 //        sends phase down/up, shell.js forwards it validated, DashboardWindow passes
 //        it through, and StreamDeckBridge holds/releases with a safety release.
-//   E4 · the compat whitelist and the shipped files agree: every path
-//        IcueCommonAssets.cs offers exists under Shell/icue-common (a rename in one
-//        place must not silently 404 on the device).
+//   E4 · the helper bundle is DEFINED, not fetched, and is injected everywhere the
+//        other two shims are. Serving those files over their clamped URLs was tried
+//        first and failed in the field — the classes were still undefined on a build
+//        carrying the hook, and a filter miss and a missing file present as the same
+//        silent 404. The probe widget's <script src="../common/…"> tags 404 here on
+//        purpose: that IS the device condition, and the markers above passing proves
+//        the globals alone carry it.
 'use strict';
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -90,15 +94,23 @@ check('E3 click phase crosses every hop (shim → shell → host → bridge)',
     && /is "down" or "up"/.test(dash)
     && /ReleasePendingPress/.test(bridge) && /_pressSafety/.test(bridge));
 
-// E4 — whitelist ↔ files agreement. The Provided list is parsed out of the C# source
-// so a path added there without a file (or renamed on one side only) fails here.
-const assets = fs.readFileSync(path.join(REPO, 'src', 'Plinth', 'App', 'IcueCommonAssets.cs'), 'utf8');
-const provided = [...assets.matchAll(/"((?:plugins|tools)\/[^"]+)"/g)].map((m) => m[1]);
-const missing = provided.filter((p) =>
-  !fs.existsSync(path.join(REPO, 'src', 'Plinth', 'Shell', 'icue-common', ...p.split('/'))));
-check('E4 every whitelisted compat asset ships in Shell/icue-common',
-  provided.length >= 11 && missing.length === 0,
-  missing.length ? 'missing: ' + missing.join(', ') : `${provided.length} assets`);
+// E4 — the bundle defines every helper the stock widgets construct, and every surface
+// that injects the other two shims injects it too. A helper added to one and not the
+// other is the failure this replaced: silent, and only visible on a real device.
+const bundle = fs.readFileSync(path.join(REPO, 'src', 'Plinth', 'Shell', 'icue-common.js'), 'utf8');
+const HELPERS = ['IcueWidgetApiWrapper', 'SimpleSensorApiWrapper', 'SimpleMediaApiWrapper',
+  'SimpleFpsApiWrapper', 'SimpleNotificationsApiWrapper', 'hexToRGB', 'DateFormatter',
+  'TickerTracker', 'MediaViewer'];
+const undefined_ = HELPERS.filter((h) => !bundle.includes('window.' + h + ' ='));
+check('E4 the bundle defines every helper, as a window property (vendored copies shadow)',
+  undefined_.length === 0, undefined_.length ? 'missing: ' + undefined_.join(', ') : `${HELPERS.length} helpers`);
+
+const injectors = ['src/Plinth/App/DashboardWindow.cs', 'src/Plinth/App/SettingsWindow.cs',
+  'tools/widget-harness.js', 'tools/widget-datapath.js'];
+const notInjecting = injectors.filter((f) =>
+  !fs.readFileSync(path.join(REPO, f), 'utf8').includes('icue-common.js'));
+check('E4b every surface that injects the shims injects the bundle',
+  notInjecting.length === 0, notInjecting.join(', ') || injectors.length + ' surfaces');
 
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
 process.exit(failures ? 1 : 0);

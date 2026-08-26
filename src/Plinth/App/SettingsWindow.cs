@@ -73,9 +73,6 @@ public sealed class SettingsWindow : Form
             // Wiring the relay without the token would only be a 403 generator.
             WebViewEnvironment.MirrorRendererConsole(core);
             core.WebMessageReceived += OnWebMessageReceived;
-            // The replica hosts the same widget origins, so imported iCUE widgets need
-            // the same shared-common/ stand-ins here (vendored copies win).
-            IcueCommonAssets.Attach(core, () => _library.Widgets);
             _hosts.MapFixed(core, ShellHost, AppPaths.ShellDir);
             // So the editor can preview chosen background images/videos.
             _hosts.MapFixed(core, BackgroundHost, AppPaths.BackgroundsDir);
@@ -85,7 +82,8 @@ public sealed class SettingsWindow : Form
             _hosts.Sync(core, _library.Widgets);
             // The replica's widget iframes rely on the injected shim, same as the panel.
             var shim = File.ReadAllText(Path.Combine(AppPaths.ShellDir, "widget-api.js")) + "\n" +
-                       File.ReadAllText(Path.Combine(AppPaths.ShellDir, "icue-compat.js"));
+                       File.ReadAllText(Path.Combine(AppPaths.ShellDir, "icue-compat.js")) +
+                       "\n" + File.ReadAllText(Path.Combine(AppPaths.ShellDir, "icue-common.js"));
             await core.AddScriptToExecuteOnDocumentCreatedAsync(shim);
             _hub.SensorsUpdated += OnSensorsUpdated;
             _hub.MediaUpdated += OnMediaUpdated;

@@ -399,9 +399,14 @@ building — but iCUE's **stock** widgets reference it in place, outside their p
 **Plinth compatibility:** `tr()` is implemented, backed by the package's
 `translation.json` (flat map, per-language, or the nested i18next shape, selected by
 UI language), and returns a thenable string — `.then()`/`await` and plain string use
-both work. The out-of-package `common/` references are answered with Plinth-authored,
-API-compatible stand-ins served at those paths (`Shell/icue-common/` — the Corsair
-originals are all-rights-reserved and are not shipped); a package that vendored its
-own copies keeps them. That includes a `MediaViewer` stand-in, so widgets construct
+both work. The out-of-package `common/` references are answered by DEFINING the helpers in the
+injected shim (`Shell/icue-common.js` — Plinth-authored and API-compatible; the Corsair
+originals are all-rights-reserved and are not shipped). The `<script src>` tags
+themselves still 404 — nothing serves a path outside the package — but the classes
+exist before the widget's first line runs, so that 404 changes nothing. Serving those
+URLs was tried first and withdrawn: it failed on a real device while the code was
+present, and a filter miss and a missing file are the same silent 404. Each helper is a
+window property, so a vendored copy (served normally by the package's own folder
+mapping) shadows ours rather than colliding with it. That includes a `MediaViewer` stand-in, so widgets construct
 and degrade cleanly even though `media-selector` itself stays unsupported. Fonts
 referenced over Qt's `qrc:/` scheme silently fall back to the CSS fallback stack.
