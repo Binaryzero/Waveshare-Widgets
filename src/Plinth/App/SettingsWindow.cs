@@ -480,16 +480,24 @@ public sealed class SettingsWindow : Form
 
     /// <summary>The widget palette as the editor sees it. Shared by the initial payload
     /// and the live refresh, so the two can never describe the library differently.</summary>
-    private object WidgetCatalog() => _library.Widgets.Select(w => new
+    private object WidgetCatalog()
     {
-        id = w.Manifest.Id,
-        name = w.Manifest.Name,
-        author = w.Manifest.Author,
-        version = w.Manifest.Version,
-        url = $"https://{w.VirtualHost}/index.html",
-        supportedSlots = w.Manifest.SupportedSlots,
-        properties = w.Manifest.Properties,
-    });
+        // See DashboardWindow.BuildInitPayload: the label is a property of the whole
+        // installed set, not of one manifest, so both payloads derive it the same way.
+        var labels = WidgetIdentity.DisplayNames(
+            _library.Widgets.Select(w => (w.Manifest.Id, (string?)w.Manifest.Name, (string?)w.Manifest.Author)));
+        return _library.Widgets.Select(w => new
+        {
+            id = w.Manifest.Id,
+            name = w.Manifest.Name,
+            displayName = labels.TryGetValue(w.Manifest.Id, out var label) ? label : w.Manifest.Name,
+            author = w.Manifest.Author,
+            version = w.Manifest.Version,
+            url = $"https://{w.VirtualHost}/index.html",
+            supportedSlots = w.Manifest.SupportedSlots,
+            properties = w.Manifest.Properties,
+        });
+    }
 
     /// <summary>Widgets on disk that the library refused to load. Without this the
     /// refusal is a line in app.log and, to the user, a tile that stopped existing.</summary>
