@@ -365,3 +365,52 @@ Learned at cost on #61, #65 and #69; they apply to every step above.
 - **Where identity cannot be established, refuse and let the user re-enter.** Losing a
   credential is recoverable by retyping it; transmitting an old one to a new endpoint is
   not.
+
+## The retained attic (#226): an identity-only address space
+
+A slot removed on-panel or from the settings form is RETIRED, not discarded: its def
+moves verbatim into the top-level `retained[]` array of `layout.json`, addressed solely
+by `widgetId|i:instanceId` — the same key `SlotKey` derives for an id-bearing live slot,
+and never by grid position. The retire paths (`shell.js removeSlot`, `settings.js
+removeSlotAt`) mint an `instanceId` first when the def has none, so every attic entry is
+id-bearing; `Seal` and `BuildStoredIndex` visit retained slots (an on-panel-retired
+tile's revealed plaintext is re-sealed; an already-retired tile's ciphertext is findable
+across saves), while `Reveal`, `Mask`, and the `(page,slot)` cleared-marker channel
+deliberately do **not** — a retained tile never renders, so its secret travels to both
+editors and rests on disk as `dpapi:v1:` ciphertext only. Two consequences follow from
+identity-only addressing: the stored index's duplicate-key poison treats one instanceId
+seated in both pages and retained as ambiguity and blanks BOTH (the retire paths resolve
+the live tree before pushing, precisely so this state never arises in normal flow), and
+the positional `|w:0` alias is never published for a retained entry — a widget with one
+live and one retired copy must not hand the retired credential to the live tile by
+position.
+
+The attic is bounded (`LayoutStore.MaxRetainedPerWidget` per widget id) and reconciled
+host-side on every save: the incoming attic is UNIONED with the disk's (a stale save from
+the other window cannot silently shrink it), then capped evict-oldest by `retiredAt`.
+Destroying an evicted entry removes its bytes from `layout.json` AND purges its derived
+ww-secure bucket (`WidgetSecrets.ForgetInstance`) — guarded by liveness, so an id a
+surviving tile still references is never purged, per #188's rule that the app purges only
+what it knowingly removed.
+
+**Legacy loss (accepted, by the same #68 proof).** A tile never edited on-panel has no
+`instanceId` in the *stored* layout. When it is retired, the retire path mints
+`widgetId|i:<new>`, but the stored value is reachable only under `widgetId|w:0` — the
+carry-over misses, and on the masked retire path the manifest secret is dropped. This is
+byte-identical to the loss already shipped on a legacy tile's first on-panel edit:
+stored-id-less + incoming-id-bearing is indistinguishable from "deleted the sole
+credentialed tile, added a fresh instance of the same widget", and a positional retry
+that recovered the first would hand the second a deleted instance's credential — which
+then transmits to whatever endpoint the new tile points at. Lost is retypable;
+misdelivered is not. Tiles that are id-bearing in the stored layout (everything added by
+`addWidget` or the settings gallery) preserve their secret through retire.
+
+**Restore (a later change) inherits four constraints from this model.** Restore keeps
+the retained `instanceId` (the derived ww-secure bucket reconnects through it) and must,
+in one mutation: (a) remove the entry from `retained[]` as it copies the def back into a
+page — else the pages∧retained twin arises and the poison blanks the just-restored
+credential; (b) strip any `secretsCleared` projection carried in the def — live again,
+the slot becomes addressable and a stale marker would clear the secret on first save;
+(c) mint a fresh id only on a genuine collision with a live tile; and (d) persist and
+re-init rather than render the moved def directly — `Reveal` is Pages-only, so a
+client-side restore would hand the widget sealed ciphertext as its setting.

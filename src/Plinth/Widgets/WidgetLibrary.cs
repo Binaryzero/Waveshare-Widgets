@@ -240,15 +240,18 @@ public sealed partial class WidgetLibrary : IDisposable
     {
         try
         {
-            var path = AppPaths.WidgetSecretsFile;
-            if (!File.Exists(path)) return;
-            var doc = WidgetSecrets.Load(File.ReadAllText(path));
-            var dropped = 0;
-            foreach (var id in widgetIds)
-                if (WidgetSecrets.Forget(doc, id)) dropped++;
-            if (dropped == 0) return;
-            DurableStore.Write(path, WidgetSecrets.Serialize(doc));
-            Log.Info($"Cleared stored credentials for {dropped} removed widget(s)");
+            // Through the shared gate (#226): seeding runs at startup while both window
+            // message loops may be writing the same file, and an ungated read-modify-
+            // write here could silently lose a widget's freshly stored token.
+            SecureStoreHost.Mutate(doc =>
+            {
+                var dropped = 0;
+                foreach (var id in widgetIds)
+                    if (WidgetSecrets.Forget(doc, id)) dropped++;
+                if (dropped > 0)
+                    Log.Info($"Cleared stored credentials for {dropped} removed widget(s)");
+                return dropped > 0;
+            });
         }
         catch (Exception ex)
         {

@@ -153,6 +153,19 @@
         def.instanceId = m.instanceId;
       }
     }
+    else if (msg.type === 'evicted-ids') {
+      // The host's attic cap dropped these entries (#226) and destroyed their derived
+      // credentials. Drop them from the in-memory copy too, or every subsequent save
+      // re-ships them and the attic never converges on the disk's bounded list. Matched
+      // by identity, never index — this copy and the host's can be ordered differently.
+      for (const e of (Array.isArray(msg.data) ? msg.data : [])) {
+        const list = layoutData.retained;
+        if (!Array.isArray(list)) break;
+        const idx = list.findIndex((r) => r && r.def
+          && r.def.widgetId === e.widgetId && r.def.instanceId === e.instanceId);
+        if (idx >= 0) list.splice(idx, 1);
+      }
+    }
     else if (msg.type === 'secrets-failed') {
       // The panel already re-rendered as if the save were clean, but the host could not
       // protect a credential and refuses to write one in the clear. Say so on glass —
@@ -1588,12 +1601,43 @@
     if (propTarget === record) closePropSheet(false);
     if (selected === record) selectRecord(null); // tell the host its detail target is gone
     mutate(() => {
-      const defs = record.page.slots || [];
+      // Retire only a def that is still LIVE in the current tree. A stale record — its
+      // page/def orphaned by an init that reassigned layoutData while the confirm was
+      // armed, or a double invoke on an already-spliced def — must NOT push into the
+      // current attic: that would seat one instanceId in both pages and retained, the
+      // twin state the host's stored-index poison then punishes by blanking the LIVE
+      // credential. Resolve from layoutData, not record.page.
+      const page = layoutData.pages.find((p) => (p.slots || []).indexOf(record.def) >= 0);
+      if (!page) {
+        record.el.remove();
+        slots = slots.filter((s) => s !== record);
+        return;
+      }
+      const defs = page.slots;
       const i = defs.indexOf(record.def);
-      if (i >= 0) defs.splice(i, 1);
+      // Removal RETIRES, not discards (#226): the def moves to the attic so its config —
+      // sealed credentials included — can come back. Mint identity first: the attic is
+      // addressed only by widgetId|i:instanceId (never by grid position, #68), so an
+      // id-less def gets one now, under the same generator persistLayout and addWidget
+      // use. A def that was id-less in the STORED layout still loses its manifest secret
+      // on the masked retire path — the accepted #68 "legacy loss", identical to the
+      // first-on-panel-edit loss; see docs/SECRET-ADDRESSING.md.
+      if (!record.def.instanceId)
+        record.def.instanceId = 'i' + Date.now().toString(36) + '-' + (++instanceSeq);
+      // A JSON deep-copy, so later page edits cannot reach the retired bytes. No cap
+      // here: the cap is host-authoritative (the host alone can destroy the evicted
+      // instance's derived credentials); an over-full in-memory attic is not rendered
+      // and is trimmed by the host on this very save.
+      layoutData.retained = layoutData.retained || [];
+      layoutData.retained.push({
+        def: JSON.parse(JSON.stringify(record.def)),
+        retiredAt: new Date().toISOString(),
+        originPage: page.name,
+      });
+      defs.splice(i, 1);
       record.el.remove();
       slots = slots.filter((s) => s !== record);
-      relayoutPage(record.page);
+      relayoutPage(page);
       syncNotificationDemand();
     });
   }

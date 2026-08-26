@@ -241,6 +241,17 @@
         }
         slot.instanceId = m.instanceId;
       }
+      // The host's attic cap dropped these retained entries (#226) and destroyed their
+      // derived credentials. Drop them from this copy too, or every subsequent save
+      // re-ships them and the attic never converges on the disk's bounded list.
+      // Matched by identity, never index — the two copies can be ordered differently.
+      for (const e of (Array.isArray(msg.evictedIds) ? msg.evictedIds : [])) {
+        const list = (state.layout || {}).retained;
+        if (!Array.isArray(list)) break;
+        const idx = list.findIndex((r) => r && r.def
+          && r.def.widgetId === e.widgetId && r.def.instanceId === e.instanceId);
+        if (idx >= 0) list.splice(idx, 1);
+      }
       // The layout saved, but a credential may not have: the host refuses to write one
       // in the clear when Windows protection is unavailable. "Saved" alone would tell
       // the user a token is active when it isn't.
@@ -361,7 +372,12 @@
         return Object.assign({}, slot, { settings });
       }),
     })) };
-    return Object.assign({}, state.layout, copy, { theme: null });
+    const out = Object.assign({}, state.layout, copy, { theme: null });
+    // The attic never travels to the replica (#226): the preview neither renders nor
+    // needs retired tiles, and their settings hold sealed ciphertext — which has no
+    // business in a surface whose rule is that credentials never reach it.
+    delete out.retained;
+    return out;
   }
   const replicaLayoutJson = () => JSON.stringify(replicaLayout());
 
@@ -427,8 +443,16 @@
         return merged;
       }),
     }));
-    // theme is never sent to the replica, so the capture's null is absence, not intent.
-    return Object.assign({}, captured, { pages, theme: (state.layout || {}).theme ?? null });
+    // theme is never sent to the replica, so the capture's null is absence, not intent —
+    // and the attic likewise (#226): replicaLayout strips `retained`, so it is restored
+    // from the authoritative working copy here, or the first capture after a removal
+    // would silently erase every retired tile. (Consequence, documented: a removal made
+    // in the PREVIEW's edit mode does not retire in this release — its capture carries
+    // no attic — and the host-side union keeps whatever the panel itself retired.)
+    return Object.assign({}, captured, {
+      pages, theme: (state.layout || {}).theme ?? null,
+      retained: (state.layout || {}).retained,
+    });
   }
   // Test seam: the headless probes assert that nothing credential-shaped reaches the
   // preview. Reading a projection is harmless; it exposes no state the page lacks.
@@ -1453,6 +1477,29 @@
   }
 
   function removeSlotAt(page, i) {
+    // Same invariant guard as the panel's removeSlot: retire only a def that is live in
+    // the CURRENT tree. A stale closure over a page object a settings-init has since
+    // replaced must not push into the current attic — one instanceId seated in both
+    // pages and retained is the twin state the host's stored-index poison punishes by
+    // blanking the live credential.
+    if (!state.layout || (state.layout.pages || []).indexOf(page) < 0) { renderEditor(); return; }
+    const slot = (page.slots || [])[i];
+    if (slot) {
+      // Removal RETIRES, not discards (#226). Mint identity first — the attic is
+      // addressed only by widgetId|i:instanceId, never by position (#68); same
+      // generator as the gallery add below. This editor holds secrets MASKED, so the
+      // retired def carries a blank the host restores by identity from the stored
+      // layout on save; a def that was id-less in the STORED layout loses it — the
+      // accepted #68 "legacy loss", see docs/SECRET-ADDRESSING.md.
+      if (!slot.instanceId)
+        slot.instanceId = 'i' + Date.now().toString(36) + '-' + (++instanceSeq);
+      state.layout.retained = state.layout.retained || [];
+      state.layout.retained.push({
+        def: JSON.parse(JSON.stringify(slot)),
+        retiredAt: new Date().toISOString(),
+        originPage: page.name,
+      });
+    }
     page.slots.splice(i, 1);
     if (selectedSlot !== null) {
       if (selectedSlot === i) selectedSlot = null;

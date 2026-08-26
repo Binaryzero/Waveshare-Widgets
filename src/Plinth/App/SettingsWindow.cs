@@ -604,18 +604,63 @@ public sealed class SettingsWindow : Form
             foreach (var page in layout.Pages)
                 page.Slots.RemoveAll(s => string.IsNullOrWhiteSpace(s.WidgetId));
 
+            var disk = LayoutStore.Load();
+            // The attic reconcile (#226), before Seal so unioned-in entries ride the same
+            // pipeline: this editor's copy of the attic can be stale against removals the
+            // panel retired since, and taking its list verbatim would silently drop those
+            // retained tiles — their sealed credentials with them.
+            LayoutStore.MergeRetainedFromDisk(layout, disk);
             // Newly typed secrets get encrypted; masked ones the user didn't retype keep
             // the ciphertext already on disk instead of being wiped.
             // Read off the RAW node: the model carries no extension data, so by the time
             // there is a DashboardLayout this projection is already gone. See
             // SecretPolicy.ClearedMarkerKey.
-            var secrets = SecretPolicy.Seal(layout, LayoutStore.Load(), MaskedPlan(),
+            var secrets = SecretPolicy.Seal(layout, disk, MaskedPlan(),
                 SecretPolicy.ReadClearedMarkers(layoutNode));
             var secretFailures = secrets.Failures;
+            // Cap the attic and destroy what fell off (#226) — same order and reasoning
+            // as the dashboard's save handler: liveness-guarded (#188), and destroy-
+            // before-Save so a failed save can strand a re-authenticating tile but never
+            // a live credential for a destroyed one.
+            var evicted = LayoutStore.CapRetained(layout);
+            var forget = LayoutStore.InstancesToForget(evicted, layout);
+            if (forget.Count > 0)
+            {
+                try
+                {
+                    SecureStoreHost.Mutate(doc =>
+                    {
+                        var changed = false;
+                        foreach (var (w, inst) in forget)
+                            changed |= WidgetSecrets.ForgetInstance(doc, w, inst);
+                        return changed;
+                    });
+                    Log.Info($"Purged derived credentials for {forget.Count} evicted retained tile(s)");
+                }
+                catch (Exception ex)
+                {
+                    // Never the ids: they scope credentials.
+                    Log.Warn($"Could not purge evicted retained credentials: {ex.GetType().Name}");
+                }
+            }
             LayoutStore.Save(layout);
             LayoutSaved?.Invoke();
             var ok = new JsonObject { ["type"] = "saved" };
             if (seq is not null) ok["seq"] = seq.Value;
+            if (evicted.Count > 0)
+            {
+                // Which attic entries the cap dropped — the editor splices them from its
+                // copy, or it re-ships them on every save and the attic never converges
+                // (the union+cap keep the disk correct regardless; this stops the loop).
+                var gone = new JsonArray();
+                foreach (var ev in evicted)
+                    gone.Add(new JsonObject
+                    {
+                        ["widgetId"] = ev.Def?.WidgetId,
+                        ["instanceId"] = ev.Def?.InstanceId,
+                    });
+                ok["evictedIds"] = gone;
+            }
             if (secrets.Minted.Count > 0)
             {
                 // Ids were stamped onto the host's copy; the editor still holds the

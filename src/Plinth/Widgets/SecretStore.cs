@@ -838,7 +838,14 @@ public static class SecretPolicy
         // each slot's key once, before anything can mint.
         var keyOf = new Dictionary<LayoutSlot, string?>(ReferenceEqualityComparer.Instance);
 
-        Walk(layout, plan, (slot, name, intent) =>
+        // One visitor, run over the live pages AND the retained attic (#226) below. The
+        // attic needs no special-casing precisely because its defs are id-bearing and
+        // absent from `address`: SlotKey resolves them by |i: identity (never
+        // positionally), Cleared() misses (a retained secret cannot be cleared by an
+        // ordinary save), Stamp() no-ops, and the value branches do the right thing —
+        // a freshly-retired plaintext re-seals, a masked blank restores by identity from
+        // the stored index, sealed ciphertext keeps idempotently.
+        Action<LayoutSlot, string, SecretIntent> visitor = (slot, name, intent) =>
         {
             if (!keyOf.TryGetValue(slot, out var key))
                 keyOf[slot] = key = SlotKey(slot, storedCounts, incomingCounts);
@@ -962,7 +969,13 @@ public static class SecretPolicy
             else
                 slot.Settings!.Remove(name);
             failures.Add(new SecretSealFailure(slot.WidgetId, name));
-        });
+        };
+
+        Walk(layout, plan, visitor);
+        // The attic (#226). Mandatory, not optional: on the on-panel path a freshly
+        // retired def carries the live-REVEALED plaintext the shell was holding, and
+        // skipping it here would write that plaintext to disk verbatim.
+        WalkRetained(layout, plan, visitor);
 
         return new SecretSealResult(failures, minted);
 
@@ -1088,7 +1101,7 @@ public static class SecretPolicy
         // inherits, and the user re-enters — the same refusal ambiguous positions get.
         var poisoned = new HashSet<(string, string)>();
         var seen = new HashSet<(string, string)>();
-        Walk(stored, plan, (slot, name, intent) =>
+        void Visit(LayoutSlot slot, string name, SecretIntent intent, bool isRetained)
         {
             // Withholds, not Protects: RestoreIfUntouched is not encrypted, but its whole
             // safety argument is that Seal can put the blanked value back, and this index
@@ -1100,6 +1113,13 @@ public static class SecretPolicy
             // Register the identity BEFORE the value check: a colliding slot whose secret
             // is unset still proves the key is ambiguous. Returning early would leave the
             // twin's credential in the index for BOTH slots to inherit.
+            //
+            // `seen` is SHARED between the pages pass and the retained pass (#226), and
+            // that sharing is the collision guard: one instanceId appearing both live and
+            // retired (corruption, or a save race the retire paths guard against) double-
+            // registers here, poisons the key, and neither side inherits — the same
+            // refusal ambiguous positions get, instead of one twin reading the other's
+            // credential.
             if (key is not null && !seen.Add((key, name)))
                 poisoned.Add((key, name));
             var storedNode = slot.Settings?[name];
@@ -1118,14 +1138,25 @@ public static class SecretPolicy
             // save would otherwise look like a slot with no stored secret, and the
             // masked empty value would delete the credential. Same unambiguity gate as
             // any positional match, so at most one incoming slot can claim it.
-            if (!string.IsNullOrEmpty(slot.InstanceId))
+            //
+            // NEVER for a retained slot (#226): a widget with one live and one retired
+            // copy can have both counts at 1, and publishing the RETAINED value under
+            // the positional |w:0 alias would hand it to the LIVE legacy slot — a
+            // retired tile's credential inherited by position, exactly what #68 forbids.
+            // The attic is reachable by |i: identity only.
+            if (!isRetained && !string.IsNullOrEmpty(slot.InstanceId))
             {
                 storedCounts.TryGetValue(slot.WidgetId, out var before);
                 incomingCounts.TryGetValue(slot.WidgetId, out var after);
                 if (before == 1 && after == 1)
                     index.TryAdd((slot.WidgetId + "|w:0", name), storedNode.DeepClone());
             }
-        });
+        }
+        Walk(stored, plan, (s, n, i) => Visit(s, n, i, false));
+        // The stored attic too (#226): an already-retired tile's secret must be findable
+        // across saves — the incoming attic round-trips it masked-blank from the settings
+        // window, and without this index entry that blank would delete it.
+        WalkRetained(stored, plan, (s, n, i) => Visit(s, n, i, true));
         foreach (var key in poisoned)
             index.Remove(key);
         return index;
@@ -1167,6 +1198,36 @@ public static class SecretPolicy
                 foreach (var (name, intent) in planned)
                     visit(slot, name, intent);
             }
+        }
+    }
+
+    /// <summary>The attic's counterpart to <see cref="Walk"/> (#226): visits every
+    /// planned (slot, property) pair of the retained list. Called by Seal (so a retired
+    /// def's plaintext is re-sealed and a masked blank restores by identity) and by
+    /// BuildStoredIndex (so an already-retired secret is findable across saves) — and
+    /// deliberately NOT by Reveal or Mask: a retained tile never renders, so its secret
+    /// travels to both editors and rests on disk as ciphertext only.</summary>
+    private static void WalkRetained(DashboardLayout layout, SecretPlan plan,
+        Action<LayoutSlot, string, SecretIntent> visit)
+    {
+        foreach (var entry in layout.Retained ?? [])
+        {
+            var slot = entry?.Def;
+            if (slot is null || string.IsNullOrEmpty(slot.WidgetId))
+                continue;
+            // An id-LESS retained def would fall to SlotKey's positional |w:0 branch and
+            // could alias a live legacy slot of the same widget — a retired credential
+            // leaking to a live tile by position (#68). Skip it entirely. The retire
+            // paths always mint before retiring, so this is belt-and-suspenders; for a
+            // def that somehow arrives id-less, the skip IS the accepted legacy loss.
+            if (string.IsNullOrEmpty(slot.InstanceId))
+                continue;
+            var planned = plan.For(slot);
+            if (planned.Count == 0)
+                continue;
+            slot.Settings ??= new JsonObject();
+            foreach (var (name, intent) in planned)
+                visit(slot, name, intent);
         }
     }
 }

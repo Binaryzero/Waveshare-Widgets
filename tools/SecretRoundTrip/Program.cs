@@ -1590,6 +1590,164 @@ Check("P37k6 the projection is indexed over slots that SURVIVE the placeholder f
     blankRead.ContainsKey((0, 0)) && !blankRead.ContainsKey((0, 1)),
     string.Join(", ", blankRead.Keys.Select(k => $"({k.Page},{k.Slot})")));
 
+// ---- R · the retained attic (#226) ---------------------------------------------------
+// A removed slot's def moves to layout.retained, addressed ONLY by widgetId|i:instanceId.
+// Seal must re-seal a freshly retired plaintext (the shell held it revealed), restore a
+// masked blank by identity — from the stored PAGES twin on the first save and from the
+// stored ATTIC on every save after — keep ciphertext idempotently, and never let a
+// retired value travel positionally. The legacy loss is asserted as the accepted outcome.
+
+static RetainedSlot Retire(JsonObject settings, string? instanceId = "iR",
+    string? retiredAt = "2026-08-25T12:00:00Z") => new()
+{
+    Def = new LayoutSlot
+    {
+        WidgetId = "test.widget", InstanceId = instanceId, Size = "half", Settings = settings,
+    },
+    RetiredAt = retiredAt,
+    OriginPage = "P",
+};
+static DashboardLayout EmptyPages() => new() { Pages = [new LayoutPage { Name = "P", Slots = [] }] };
+static DashboardLayout WithRetained(DashboardLayout l, params RetainedSlot[] retained)
+{
+    l.Retained = [.. retained];
+    return l;
+}
+static string? RetainedValue(DashboardLayout l, int i, string name) =>
+    l.Retained?[i].Def?.Settings?[name] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+string SealOf(string plain)
+{
+    var l = LayoutWith(new JsonObject { ["apiToken"] = plain });
+    SecretPolicy.Seal(l, null, Lookup);
+    return Value(l, "apiToken")!;
+}
+
+// R1 · on-panel retire: the shell held the value REVEALED, so the attic entry arrives
+// with plaintext — Seal must re-seal it or that plaintext hits disk verbatim.
+var rFresh = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = Token }, "iA"));
+SecretPolicy.Seal(rFresh, null, Lookup);
+Check("R1 a freshly retired def's plaintext is re-sealed in the attic",
+    SecretStore.CanUnprotect(RetainedValue(rFresh, 0, "apiToken")), RetainedValue(rFresh, 0, "apiToken"));
+Check("R1b ...and the serialized layout holds no plaintext",
+    !JsonSerializer.Serialize(rFresh).Contains(Token));
+
+// R2 · settings-form retire: the editor held the value MASKED (blank); the first save
+// restores the ciphertext from the stored layout's still-live twin, matched by identity.
+var rStoredLive = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: "iB");
+SecretPolicy.Seal(rStoredLive, null, Lookup);
+var rSealedB = Value(rStoredLive, "apiToken");
+var rMaskedRetire = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = "" }, "iB"));
+SecretPolicy.Seal(rMaskedRetire, rStoredLive, Lookup);
+Check("R2 a masked retire restores the ciphertext from the stored LIVE twin by identity",
+    RetainedValue(rMaskedRetire, 0, "apiToken") == rSealedB, RetainedValue(rMaskedRetire, 0, "apiToken"));
+
+// R3 · an attic entry round-tripping as ciphertext is kept idempotently.
+var rIdem = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = rSealedB! }, "iB"));
+SecretPolicy.Seal(rIdem, rMaskedRetire, Lookup);
+Check("R3 an already-retired ciphertext round-trips idempotently",
+    RetainedValue(rIdem, 0, "apiToken") == rSealedB);
+
+// R4 · the load-bearing case for indexing the stored ATTIC: the settings editor's copy
+// of a retired def stays blank after its first save (the host sealed its own copy), so
+// the SECOND save's blank must restore from the stored retained entry — the pages twin
+// is long gone by then.
+var rStoredAttic = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = rSealedB! }, "iB"));
+var rBlankAgain = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = "" }, "iB"));
+SecretPolicy.Seal(rBlankAgain, rStoredAttic, Lookup);
+Check("R4 a masked retained secret restores from the stored ATTIC across saves",
+    RetainedValue(rBlankAgain, 0, "apiToken") == rSealedB, RetainedValue(rBlankAgain, 0, "apiToken"));
+
+// R5 · the accepted legacy loss (#68), pinned so a "fix" cannot land silently: the
+// stored tile is id-less (never edited on-panel), the retire minted a fresh id, and no
+// carry-over may bridge them — a positional retry that recovered this case would also
+// hand a DELETED instance's credential to a look-alike fresh tile.
+var rLegacyStored = LayoutWith(new JsonObject { ["apiToken"] = rSealedB! }, instanceId: null);
+var rLegacyRetire = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = "" }, "iMinted"));
+SecretPolicy.Seal(rLegacyRetire, rLegacyStored, Lookup);
+Check("R5 legacy loss: an id-less stored tile's secret does NOT follow a masked retire",
+    RetainedValue(rLegacyRetire, 0, "apiToken") is null, RetainedValue(rLegacyRetire, 0, "apiToken"));
+
+// R6 · one instanceId seated in BOTH stored pages and stored retained (corruption / a
+// save race the retire paths guard against) poisons the key: neither side inherits, the
+// user re-enters. A refusal, never a leak.
+var rTwinStored = LayoutWith(new JsonObject { ["apiToken"] = rSealedB! }, instanceId: "iT");
+rTwinStored.Retained = [Retire(new JsonObject { ["apiToken"] = rSealedB! }, "iT")];
+var rTwinIncoming = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "iT");
+SecretPolicy.Seal(rTwinIncoming, rTwinStored, Lookup);
+Check("R6 a pages-and-retained twin poisons the key — a refusal, not a leak",
+    string.IsNullOrEmpty(Value(rTwinIncoming, "apiToken")), Value(rTwinIncoming, "apiToken"));
+
+// R7 · the positional w:0 alias must never serve a RETAINED value. Stored: a live
+// legacy tile with NO stored secret plus an attic twin holding one; incoming: the live
+// legacy tile saving a blank. If the alias block ran for retained entries, the retired
+// ciphertext would come back on the LIVE tile here — a retired credential inherited by
+// grid position.
+var sealedLiveA = SealOf("tok-live-A");
+var sealedRetiredB = SealOf("tok-retired-B");
+var rgStored = LayoutWith(new JsonObject(), instanceId: null);
+rgStored.Retained = [Retire(new JsonObject { ["apiToken"] = sealedRetiredB }, "iG")];
+var rgIncoming = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
+SecretPolicy.Seal(rgIncoming, rgStored, Lookup);
+Check("R7 a retired value is NEVER published under the positional w:0 alias",
+    string.IsNullOrEmpty(Value(rgIncoming, "apiToken")), Value(rgIncoming, "apiToken"));
+// ...while a live legacy tile that HAS its own stored value keeps exactly that one
+// beside an attic twin of the same widget.
+var rg2Stored = LayoutWith(new JsonObject { ["apiToken"] = sealedLiveA }, instanceId: null);
+rg2Stored.Retained = [Retire(new JsonObject { ["apiToken"] = sealedRetiredB }, "iG")];
+var rg2Incoming = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
+SecretPolicy.Seal(rg2Incoming, rg2Stored, Lookup);
+Check("R7b a live legacy tile restores its OWN stored value beside an attic twin",
+    Value(rg2Incoming, "apiToken") == sealedLiveA, Value(rg2Incoming, "apiToken"));
+
+// ---- C · the attic bound, destroy-on-evict inputs, and the disk union ----------------
+
+var capLayout = EmptyPages();
+capLayout.Retained = [];
+for (var capI = 1; capI <= 10; capI++)
+    capLayout.Retained.Add(Retire(new JsonObject(), "i" + capI.ToString("d2"),
+        "2026-08-25T00:" + capI.ToString("d2") + ":00Z"));
+var capEvicted = LayoutStore.CapRetained(capLayout);
+Check($"C1 the cap evicts the OLDEST beyond {LayoutStore.MaxRetainedPerWidget}",
+    capEvicted.Count == 2 && capLayout.Retained.Count == LayoutStore.MaxRetainedPerWidget
+    && capEvicted[0].Def.InstanceId == "i01" && capEvicted[1].Def.InstanceId == "i02",
+    string.Join(", ", capEvicted.Select(e => e.Def?.InstanceId)));
+Check("C1b the survivors are the newest",
+    capLayout.Retained.All(r => string.CompareOrdinal(r.RetiredAt, "2026-08-25T00:02:00Z") > 0));
+
+// A corrupt "def": null entry is skipped, not thrown on — one damaged attic entry must
+// not take down every save.
+var capNull = EmptyPages();
+capNull.Retained = [new RetainedSlot { Def = null! }, Retire(new JsonObject(), "iOK")];
+var capNullEvicted = LayoutStore.CapRetained(capNull);
+Check("C2 a corrupt def:null attic entry cannot take down the cap pass",
+    capNullEvicted.Count == 0 && capNull.Retained.Count == 2);
+
+// The liveness guard on destroy-on-evict: an evicted instanceId still referenced by a
+// surviving tile is never forgotten (#188 — purge only what the app really removed).
+var capForgetEvicted = new List<RetainedSlot> { Retire(new JsonObject(), "iX") };
+var capSurviveLive = LayoutWith(new JsonObject(), instanceId: "iX");
+Check("C3 evict never forgets an instance a LIVE tile still uses",
+    LayoutStore.InstancesToForget(capForgetEvicted, capSurviveLive).Count == 0);
+var capForget = LayoutStore.InstancesToForget(capForgetEvicted, EmptyPages());
+Check("C3b ...and names exactly the evicted instance when nothing references it",
+    capForget.Count == 1 && capForget[0] == ("test.widget", "iX"));
+
+// The disk union: a save whose attic is stale (the other window retired since) keeps
+// the disk's entries — except one whose identity is LIVE in the saving window's pages,
+// which must not be seated in both pages and retained.
+var uDisk = EmptyPages();
+uDisk.Retained = [Retire(new JsonObject(), "iKeep"), Retire(new JsonObject(), "iLive")];
+var uEdited = LayoutWith(new JsonObject(), instanceId: "iLive");
+LayoutStore.MergeRetainedFromDisk(uEdited, uDisk);
+Check("C4 the union keeps a disk attic entry a stale save omitted",
+    uEdited.Retained is { Count: 1 } && uEdited.Retained[0].Def.InstanceId == "iKeep",
+    string.Join(", ", (uEdited.Retained ?? []).Select(r => r.Def?.InstanceId)));
+Check("C4b ...but never seats an id in both pages and retained",
+    (uEdited.Retained ?? []).All(r => r.Def?.InstanceId != "iLive"));
+LayoutStore.MergeRetainedFromDisk(uEdited, uDisk);
+Check("C4c the union is idempotent",
+    uEdited.Retained is { Count: 1 });
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 

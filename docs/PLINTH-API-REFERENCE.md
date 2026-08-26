@@ -344,6 +344,13 @@ Layout lives in `%LocalAppData%\Plinth\layout.json` (pages → slots → widget 
 size, per-instance settings) and is edited by the Settings window. Widgets should be
 fluid across their `supported_slots`.
 
+Removing a widget RETIRES its slot rather than discarding it: the def moves verbatim
+into the layout's top-level `retained` array (with `retiredAt` and the origin page
+name), keeping its per-instance settings — sealed credentials included, as ciphertext —
+so a later restore can bring the tile back configured. The attic is bounded (8 per
+widget id, oldest evicted; eviction also purges the instance's protected store) and is
+addressed only by `widgetId` + `instanceId`, never by grid position.
+
 ---
 
 ## Backgrounds (wallpaper)
