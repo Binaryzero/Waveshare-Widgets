@@ -304,7 +304,7 @@ public sealed class DashboardWindow : Form
                         // retained tile without a bucket (it re-authenticates), never a
                         // destroyed tile with a live credential.
                         var evicted = LayoutStore.CapRetained(edited);
-                        var forget = LayoutStore.InstancesToForget(evicted, edited);
+                        var forget = LayoutStore.InstancesToForget(evicted, edited, disk);
                         if (forget.Count > 0)
                         {
                             try

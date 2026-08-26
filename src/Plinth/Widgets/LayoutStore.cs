@@ -220,9 +220,19 @@ public static class LayoutStore
     /// <see cref="CapRetained"/> has mutated <paramref name="survivors"/>. The guard is
     /// what keeps evict from destroying a bucket a live tile still uses (a restored tile
     /// keeps its instanceId, and corruption can duplicate one) — #188's rule: purge only
-    /// what the app itself removed, never on inference.</summary>
+    /// what the app itself removed, never on inference.
+    ///
+    /// <para>The layout being OVERWRITTEN counts as live too, which is why
+    /// <paramref name="disk"/> exists. A save carries only the window that sent it, and a
+    /// window can be stale: its pages may have dropped a tile the OTHER window still shows
+    /// and will save straight back. Judging liveness from the incoming layout alone
+    /// destroys that tile's derived credentials while it is, in every sense the user can
+    /// see, still on the panel. Only the disk's PAGES are consulted — folding in its attic
+    /// would protect the very entries eviction exists to remove. Worst case now is a bucket
+    /// that outlives its tile by a save, which the next eviction collects; the failure it
+    /// replaces was unrecoverable.</para></summary>
     public static IReadOnlyList<(string WidgetId, string InstanceId)> InstancesToForget(
-        IReadOnlyList<RetainedSlot> evicted, DashboardLayout survivors)
+        IReadOnlyList<RetainedSlot> evicted, DashboardLayout survivors, DashboardLayout? disk = null)
     {
         var alive = new HashSet<string>(StringComparer.Ordinal);
         foreach (var p in survivors.Pages ?? [])
@@ -230,6 +240,9 @@ public static class LayoutStore
                 if (Key(s) is { } k) alive.Add(k);
         foreach (var r in survivors.Retained ?? [])
             if (Key(r?.Def) is { } k) alive.Add(k);
+        foreach (var p in disk?.Pages ?? [])
+            foreach (var s in p.Slots ?? [])
+                if (Key(s) is { } k) alive.Add(k);
         var result = new List<(string, string)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var e in evicted)
