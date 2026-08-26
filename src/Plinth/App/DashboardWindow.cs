@@ -330,11 +330,11 @@ public sealed class DashboardWindow : Form
                             // this — the union+cap above make the disk authoritative —
                             // it stops the re-shipping loop.
                             var gone = new JsonArray();
-                            foreach (var e in evicted)
+                            foreach (var ev in evicted)
                                 gone.Add(new JsonObject
                                 {
-                                    ["widgetId"] = e.Def?.WidgetId,
-                                    ["instanceId"] = e.Def?.InstanceId,
+                                    ["widgetId"] = ev.Def?.WidgetId,
+                                    ["instanceId"] = ev.Def?.InstanceId,
                                 });
                             PostToShell("evicted-ids", gone);
                         }

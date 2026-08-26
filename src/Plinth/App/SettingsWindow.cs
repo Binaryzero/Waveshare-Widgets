@@ -653,11 +653,11 @@ public sealed class SettingsWindow : Form
                 // copy, or it re-ships them on every save and the attic never converges
                 // (the union+cap keep the disk correct regardless; this stops the loop).
                 var gone = new JsonArray();
-                foreach (var e in evicted)
+                foreach (var ev in evicted)
                     gone.Add(new JsonObject
                     {
-                        ["widgetId"] = e.Def?.WidgetId,
-                        ["instanceId"] = e.Def?.InstanceId,
+                        ["widgetId"] = ev.Def?.WidgetId,
+                        ["instanceId"] = ev.Def?.InstanceId,
                     });
                 ok["evictedIds"] = gone;
             }

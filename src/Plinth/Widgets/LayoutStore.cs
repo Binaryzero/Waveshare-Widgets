@@ -182,7 +182,7 @@ public static class LayoutStore
             if (Key(r?.Def) is { } k) have.Add(k);
         foreach (var d in disk.Retained)
         {
-            if (Key(d?.Def) is not { } k || have.Contains(k) || live.Contains(k)) continue;
+            if (d is null || Key(d.Def) is not { } k || have.Contains(k) || live.Contains(k)) continue;
             edited.Retained.Add(d);
             have.Add(k);
         }
@@ -234,8 +234,8 @@ public static class LayoutStore
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var e in evicted)
         {
-            if (Key(e?.Def) is not { } k || alive.Contains(k) || !seen.Add(k)) continue;
-            result.Add((e!.Def.WidgetId, e.Def.InstanceId!));
+            if (e is null || Key(e.Def) is not { } k || alive.Contains(k) || !seen.Add(k)) continue;
+            result.Add((e.Def.WidgetId, e.Def.InstanceId!));
         }
         return result;
     }
