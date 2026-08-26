@@ -474,16 +474,34 @@
         if (s && s.instanceId) liveKeys.add(s.widgetId + '|i:' + s.instanceId);
     const attic = [];
     const atticKeys = new Set();
-    for (const r of [...(((state.layout || {}).retained) || []), ...(captured.retained || [])]) {
-      if (!r || !r.def || !r.def.widgetId || !r.def.instanceId) continue;
+    const addRetained = (r, fromCapture) => {
+      if (!r || !r.def || !r.def.widgetId || !r.def.instanceId) return;
       const k = r.def.widgetId + '|i:' + r.def.instanceId;
       // An evicted identity never comes back: the union would otherwise resurrect one the
       // host has already destroyed the credentials for, out of a capture that predates the
       // eviction (or out of a replica that never received the notice at all).
-      if (evictedTombstones.has(k) || liveKeys.has(k) || atticKeys.has(k)) continue;
+      if (evictedTombstones.has(k) || liveKeys.has(k) || atticKeys.has(k)) return;
       atticKeys.add(k);
-      attic.push(r);
-    }
+      if (!fromCapture) { attic.push(r); return; }
+      // A def retired in the REPLICA comes back with its secrets scrubbed — replicaLayout
+      // blanks them on the way out, so the preview never held them. The per-slot pass above
+      // cannot repair it: the slot has left captured.pages. Restore the values from the slot
+      // as WE last held it, matched by identity, or a credential typed and not yet saved is
+      // silently replaced by whatever is still on disk — and the two ✕ buttons diverge
+      // again, this time over WHICH credential the retired tile keeps. A pending Clear still
+      // wins: it rides along in the def and the host drops the value before any restore.
+      const prior = mine.get('i:' + r.def.instanceId);
+      const names = (prior && prior.widgetId === r.def.widgetId) ? secretsOf(r.def.widgetId) : [];
+      if (!names.length) { attic.push(r); return; }
+      const settings = Object.assign({}, r.def.settings);
+      for (const n of names) {
+        if (prior.settings && n in prior.settings) settings[n] = prior.settings[n];
+        else delete settings[n];
+      }
+      attic.push(Object.assign({}, r, { def: Object.assign({}, r.def, { settings }) }));
+    };
+    for (const r of (((state.layout || {}).retained) || [])) addRetained(r, false);
+    for (const r of (captured.retained || [])) addRetained(r, true);
     return Object.assign({}, captured, {
       pages, theme: (state.layout || {}).theme ?? null,
       retained: attic.length ? attic : undefined,
