@@ -1590,6 +1590,81 @@ Check("P37k6 the projection is indexed over slots that SURVIVE the placeholder f
     blankRead.ContainsKey((0, 0)) && !blankRead.ContainsKey((0, 1)),
     string.Join(", ", blankRead.Keys.Select(k => $"({k.Page},{k.Slot})")));
 
+// ---- N · an unrelated tile must not cost a legacy tile its credential -----------------
+// The positional |w:0 key is counted over the ID-LESS population, not every slot of the
+// widget. Counting all of them made adding a SECOND tile of the same widget flip the count
+// 1 -> 2, strand the untouched legacy tile's stored value behind a null key, and take its
+// masked blank for a deliberate empty — removing a credential the user never touched, on a
+// clean save. N1 is that sequence; N2 and N3 are the #68 danger twin and the ambiguous
+// case, both of which must still refuse.
+
+// N1 · stored: ONE id-less credentialed tile. Incoming: that same untouched tile (masked
+// blank) plus a freshly added, id-BEARING second tile of the same widget.
+var nStored = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
+SecretPolicy.Seal(nStored, null, Lookup);
+Slot(nStored).InstanceId = null;   // Seal stamps on the way through; the case is id-LESS at rest
+var nSealed = Value(nStored, "apiToken");
+var nIncoming = TwoInstances(new JsonObject { ["apiToken"] = "" },
+                             new JsonObject { ["apiToken"] = "" }, null, "iNew");
+SecretPolicy.Seal(nIncoming, nStored, Lookup);
+Check("N1 adding a second tile of a widget does not destroy the first's stored credential",
+    ValueAt(nIncoming, 0, "apiToken") == nSealed, ValueAt(nIncoming, 0, "apiToken"));
+Check("N1b ...and the newly added tile inherits nothing",
+    string.IsNullOrEmpty(ValueAt(nIncoming, 1, "apiToken")), ValueAt(nIncoming, 1, "apiToken"));
+
+// N2 · the #68 danger twin, which must still be REFUSED: the sole credentialed tile is
+// deleted and a fresh one added. The fresh tile is id-bearing (both editors mint), so the
+// incoming id-less count is 0 — no positional key, no inheritance.
+var nTwin = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "iFresh");
+SecretPolicy.Seal(nTwin, nStored, Lookup);
+Check("N2 a fresh tile replacing a deleted credentialed one still inherits NOTHING (#68)",
+    string.IsNullOrEmpty(Value(nTwin, "apiToken")), Value(nTwin, "apiToken"));
+
+// N3 · two id-less tiles of one widget stay ambiguous: neither may claim the key.
+var nAmbiguous = TwoInstances(new JsonObject { ["apiToken"] = "" },
+                              new JsonObject { ["apiToken"] = "" }, null, null);
+SecretPolicy.Seal(nAmbiguous, nStored, Lookup);
+Check("N3 two id-less tiles of one widget are ambiguous — neither inherits",
+    string.IsNullOrEmpty(ValueAt(nAmbiguous, 0, "apiToken"))
+    && string.IsNullOrEmpty(ValueAt(nAmbiguous, 1, "apiToken")));
+
+// N4 · and an id-bearing sibling is untouched by any of this: it carries its own identity
+// and restores through it, beside the legacy tile restoring positionally.
+var nMixedStored = TwoInstances(new JsonObject { ["apiToken"] = Token },
+                                new JsonObject { ["apiToken"] = Token }, null, "iKeep");
+SecretPolicy.Seal(nMixedStored, null, Lookup);
+nMixedStored.Pages[0].Slots[0].InstanceId = null;   // the legacy half stays id-less at rest
+var nMixedIncoming = TwoInstances(new JsonObject { ["apiToken"] = "" },
+                                  new JsonObject { ["apiToken"] = "" }, null, "iKeep");
+SecretPolicy.Seal(nMixedIncoming, nMixedStored, Lookup);
+Check("N4 a legacy tile and an id-bearing sibling both keep their own credential",
+    ValueAt(nMixedIncoming, 0, "apiToken") == ValueAt(nMixedStored, 0, "apiToken")
+    && ValueAt(nMixedIncoming, 1, "apiToken") == ValueAt(nMixedStored, 1, "apiToken"),
+    (ValueAt(nMixedIncoming, 0, "apiToken") ?? "(removed)") + " | " +
+    (ValueAt(nMixedIncoming, 1, "apiToken") ?? "(removed)"));
+
+// N5 · the same loss through the ALIAS half of the path. The host stamps the sole tile on
+// a masked save; before the client adopts that id (the mintedIds ack is in flight), the
+// user adds a second tile and saves again. The legacy tile still claims |w:0, so the alias
+// that publishes it must be gated on the same id-less claimant count — gated on the
+// incoming TOTAL, the new sibling made it 2, nothing was published, and the untouched
+// credential was removed exactly as in N1.
+var nAliasStored = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
+SecretPolicy.Seal(nAliasStored, null, Lookup);   // Seal stamps: stored is now id-BEARING
+Check("N5 setup: the host stamped the stored tile",
+    !string.IsNullOrEmpty(Slot(nAliasStored).InstanceId));
+var nAliasSealed = Value(nAliasStored, "apiToken");
+// The client has not adopted the mint, so it still sends the tile id-LESS — beside a
+// freshly added, id-bearing sibling.
+var nAliasIncoming = TwoInstances(new JsonObject { ["apiToken"] = "" },
+                                  new JsonObject { ["apiToken"] = "" }, null, "iNewSibling");
+SecretPolicy.Seal(nAliasIncoming, nAliasStored, Lookup);
+Check("N5 a not-yet-adopted mint survives a sibling being added alongside it",
+    ValueAt(nAliasIncoming, 0, "apiToken") == nAliasSealed,
+    ValueAt(nAliasIncoming, 0, "apiToken") ?? "(removed)");
+Check("N5b ...and the sibling still inherits nothing",
+    string.IsNullOrEmpty(ValueAt(nAliasIncoming, 1, "apiToken")));
+
 // ---- R · the retained attic (#226) ---------------------------------------------------
 // A removed slot's def moves to layout.retained, addressed ONLY by widgetId|i:instanceId.
 // Seal must re-seal a freshly retired plaintext (the shell held it revealed), restore a
@@ -1771,6 +1846,19 @@ Check("C3 evict never forgets an instance a LIVE tile still uses",
 var capForget = LayoutStore.InstancesToForget(capForgetEvicted, EmptyPages());
 Check("C3b ...and names exactly the evicted instance when nothing references it",
     capForget.Count == 1 && capForget[0] == ("test.widget", "iX"));
+
+// A save carries only the window that sent it, and a window can be STALE: its pages may
+// have dropped a tile the other window still shows and will save straight back. Judging
+// liveness from the incoming layout alone destroys that tile's derived credentials while
+// it is still on the panel — so the layout being overwritten counts as live too.
+Check("C3c evict never forgets an instance the DISK still has live",
+    LayoutStore.InstancesToForget(
+        capForgetEvicted, EmptyPages(), LayoutWith(new JsonObject(), instanceId: "iX")).Count == 0);
+// ...but the disk's ATTIC must not protect anything: folding it in would shield the very
+// entries eviction exists to remove, and nothing would ever be forgotten.
+var capDiskAttic = WithRetained(EmptyPages(), Retire(new JsonObject(), "iX"));
+Check("C3d ...while the disk's own attic protects nothing",
+    LayoutStore.InstancesToForget(capForgetEvicted, EmptyPages(), capDiskAttic).Count == 1);
 
 // The disk union: a save whose attic is stale (the other window retired since) keeps
 // the disk's entries — except one whose identity is LIVE in the saving window's pages,
