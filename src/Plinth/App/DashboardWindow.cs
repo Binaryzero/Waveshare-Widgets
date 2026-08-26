@@ -127,9 +127,6 @@ public sealed class DashboardWindow : Form
         // Widget media (Jellyfin playback) streams from LAN servers through the host —
         // the renderer's network gates each killed direct playback in the field.
         MediaRelay.Attach(core);
-        // Stock iCUE widgets reference a shared common/ folder from OUTSIDE their
-        // package; this serves our stand-ins at those paths (vendored copies win).
-        IcueCommonAssets.Attach(core, () => _library.Widgets);
         // And if a renderer gate ever blocks anything again, the engine says so in
         // its console, which now lands in app.log instead of nowhere.
         WebViewEnvironment.MirrorRendererConsole(core);
@@ -147,7 +144,8 @@ public sealed class DashboardWindow : Form
         // Inject the widget API + iCUE compatibility shim into every widget iframe, so
         // packages (including .icuewidget imports) work without including any script tag.
         var shim = File.ReadAllText(Path.Combine(AppPaths.ShellDir, "widget-api.js")) + "\n" +
-                   File.ReadAllText(Path.Combine(AppPaths.ShellDir, "icue-compat.js"));
+                   File.ReadAllText(Path.Combine(AppPaths.ShellDir, "icue-compat.js")) +
+                   "\n" + File.ReadAllText(Path.Combine(AppPaths.ShellDir, "icue-common.js"));
         await core.AddScriptToExecuteOnDocumentCreatedAsync(shim);
 
         MapVirtualHosts();

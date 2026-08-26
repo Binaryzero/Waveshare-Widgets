@@ -331,10 +331,14 @@ provides a compatibility layer inside every widget iframe:
 - `tr()` backed by the package's `translation.json` (flat, per-language, or iCUE's
   nested i18next shape). The returned value is a thenable string: stock code that
   calls `tr(…).then(…)` or `await tr(…)` works, and so does plain string use.
-- The shared `common/` helper tree stock iCUE widgets reference from outside their
-  package (`../common/…`, `../../widgets/common/…`) is served as Plinth-authored
-  stand-ins (`Shell/icue-common/`) — promise wrappers, `MediaViewer`, `TickerTracker`,
-  `DateFormatter`, `ColorTools`. A package that vendors its own copies keeps them.
+- The shared `common/` helpers stock iCUE widgets reference from outside their package
+  (`../common/…`, `../../widgets/common/…`) are **defined by the injected shim**
+  (`Shell/icue-common.js`) — promise wrappers, `MediaViewer`, `TickerTracker`,
+  `DateFormatter`, `ColorTools`, plus their stylesheets. Those `<script src>` tags still
+  404 (they point outside the package, and nothing serves them); the classes simply
+  already exist by the time the widget's first line runs, so the 404 is harmless. Each
+  is a window property, so a package that vendors its own copy — served normally by its
+  own folder mapping — shadows ours cleanly instead of hitting a redeclaration error.
 - `window.plugins.Linkprovider.open(url)` opens the URL in the default desktop browser.
 - CORS relief: iCUE's embedded browser is CORS-relaxed, ours is not — so when a
   widget's `fetch()` fails at the network/CORS layer, the shim transparently retries it
