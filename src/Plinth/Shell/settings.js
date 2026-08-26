@@ -106,7 +106,7 @@
     const page = state.layout.pages[selectedPage];
     const slot = page && selectedSlot != null ? (page.slots || [])[selectedSlot] : null;
     const widget = slot && widgetsById.get(slot.widgetId);
-    return widget ? widget.name : 'Widget';
+    return widget ? (widget.displayName || widget.name) : 'Widget';
   }
   // Keep the canvas and the dock in agreement about who has what height. Runs on
   // every resize and toolbar reflow, because a window shrink or a page with more
@@ -1331,7 +1331,9 @@
       glyph.textContent = paletteGlyph(widget.id);
       const name = document.createElement('span');
       name.className = 'g-name';
-      name.textContent = widget.name;
+      // displayName carries a disambiguator ONLY when another installed widget shares
+      // this name (WidgetIdentity.DisplayNames); otherwise it is the plain name.
+      name.textContent = widget.displayName || widget.name;
       btn.append(glyph, name);
       // Unavailable WITH a reason (#77) — but in two words, because a full sentence
       // per tile was what turned this shelf into a wall of text. The banner above
@@ -1467,7 +1469,7 @@
       main.className = 'chip-main';
       const w = widgetsById.get(slot.widgetId);
       const name = document.createElement('span');
-      name.textContent = w ? w.name : slot.widgetId;
+      name.textContent = w ? (w.displayName || w.name) : slot.widgetId;
       const size = document.createElement('span');
       size.className = 'chip-size';
       const parts = parseSize(slot.size);
@@ -1546,7 +1548,11 @@
     const widgetSelect = document.createElement('select');
     widgetSelect.className = 'widget';
     for (const w of state.widgets) {
-      const opt = new Option(w.name + '  (' + w.id + ')', w.id, false, w.id === slot.widgetId);
+      // This picker always spells out the id. displayName may ALREADY have fallen back
+      // to the "name (id)" form, and appending again rendered it twice.
+      const label = w.displayName || w.name;
+      const withId = label.includes('(' + w.id + ')') ? label : label + '  (' + w.id + ')';
+      const opt = new Option(withId, w.id, false, w.id === slot.widgetId);
       widgetSelect.add(opt);
     }
     if (slot.widgetId && !widgetsById.has(slot.widgetId)) {

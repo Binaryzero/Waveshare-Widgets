@@ -266,6 +266,117 @@ public static partial class WidgetIdentity
                       .ToHashSet(StringComparer.Ordinal);
     }
 
+
+    /// <summary>Folds a display name to the form two names are COMPARED in: case and
+    /// every separator removed, so "Stream Deck", "StreamDeck" and "stream-deck" are one
+    /// name. Aggressive on purpose — the collision this exists for is a user staring at
+    /// two tiles that read the same to a human, and a space is not what tells them
+    /// apart.</summary>
+    /// <remarks>
+    /// Letters and digits of ANY script survive. An ASCII-only class looked equivalent
+    /// and was not: it erased a name written in non-Latin script ENTIRELY, so "天气" and
+    /// "时钟" both folded to the empty string and every such widget landed in one group —
+    /// visibly different names, all annotated as though they collided.
+    /// </remarks>
+    public static string NormalizeName(string? name) =>
+        name is null ? "" : NamePattern().Replace(name.ToLowerInvariant(), "");
+
+    [GeneratedRegex(@"[^\p{L}\p{N}]+")]
+    private static partial Regex NamePattern();
+
+    /// <summary>Collapses runs of whitespace, the way rendering the string into the UI
+    /// does. Authors are compared AND shown in this form: "Corsair Team" and
+    /// "Corsair  Team" are one author to anyone reading the screen, so treating them as
+    /// two produced a pair of suffixes that told the widgets apart in the source and not
+    /// at all on the panel.</summary>
+    private static string CollapseSpaces(string? value) =>
+        value is null ? "" : SpacePattern().Replace(value.Trim(), " ");
+
+    [GeneratedRegex(@"\s+")]
+    private static partial Regex SpacePattern();
+
+    /// <summary>
+    /// The label each widget should be shown under, given everything installed.
+    /// </summary>
+    /// <remarks>
+    /// Identity is the id and always was — distinct ids get distinct origins, settings and
+    /// secrets, so two widgets sharing a name collide nowhere in the runtime. They collide
+    /// in the only place that matters to the person using it: every picker prints the bare
+    /// manifest name, so an imported package called "StreamDeck" and the stock "Stream
+    /// Deck" are two tiles that read identically and behave completely differently.
+    ///
+    /// So this disambiguates at DISPLAY time, and only for the widgets actually contested.
+    /// Rewriting an imported package's manifest was the obvious alternative and is wrong
+    /// twice over: it would break the content fingerprint stock identity is decided by, and
+    /// it would misstate what the author called their own widget.
+    ///
+    /// The suffix is the author when the author is the thing that differs, and the id when
+    /// it is not (two builds of one widget, or a package with no author) — decided per id
+    /// against its own name group, so in a group of three the two that share an author fall
+    /// back to ids while the third still gets the readable form. "name (id)" is the shape
+    /// the slot picker already used for this, kept rather than invented.
+    ///
+    /// Everything uncontested keeps its plain name: the cost of this has to land on the
+    /// collision, not on every widget that never had one.
+    /// </remarks>
+    public static IReadOnlyDictionary<string, string> DisplayNames(
+        IEnumerable<(string Id, string? Name, string? Author)> candidates)
+    {
+        // Ordinal on the id, matching every other identity decision here: ids differing
+        // only in case are two different widgets.
+        var byId = new Dictionary<string, (string Name, string? Author)>(StringComparer.Ordinal);
+        foreach (var (id, name, author) in candidates)
+        {
+            if (id is null)
+                continue;
+            // A blank name would make every blank-named widget one group; the id is the
+            // only honest label left, and IsValid should have refused it long before here.
+            byId[id] = (string.IsNullOrWhiteSpace(name) ? id : name.Trim(), CollapseSpaces(author));
+        }
+
+        var groups = byId.GroupBy(kv => NormalizeName(kv.Value.Name), StringComparer.Ordinal);
+        var display = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var group in groups)
+        {
+            var members = group.ToList();
+            foreach (var member in members)
+            {
+                var id = member.Key;
+                var name = member.Value.Name;
+                var author = member.Value.Author;
+                if (members.Count == 1)
+                {
+                    display[id] = name;
+                    continue;
+                }
+                // Does the author actually tell ME apart from the rest of my group?
+                var authorIsDistinct = !string.IsNullOrWhiteSpace(author) &&
+                    members.Count(m => string.Equals(m.Value.Author, author, StringComparison.OrdinalIgnoreCase)) == 1;
+                display[id] = authorIsDistinct ? $"{name} — {author}" : $"{name} ({id})";
+            }
+        }
+
+        // A label is only worth generating if it is unique against EVERY other label,
+        // generated or declared. Nothing above compares across groups, so a widget whose
+        // manifest name is literally "Clock — Plinth" sat beside a generated
+        // "Clock — Plinth" and the pickers showed the pair this method exists to prevent.
+        //
+        // One pass settles it: ids are unique, so the id form separates any group it is
+        // applied to. It could only re-collide with a manifest name that literally spells
+        // out another widget's id in parentheses, which is a name chosen to impersonate
+        // and still lands on a label carrying the impersonator's own id.
+        // Materialized before the writes: overwriting an existing key happens not to
+        // invalidate a Dictionary enumerator on this runtime, but a deferred query
+        // reading what the loop is rewriting is not a thing to leave resting on that.
+        var clashing = display.GroupBy(kv => kv.Value, StringComparer.OrdinalIgnoreCase)
+                              .Where(g => g.Count() > 1)
+                              .SelectMany(g => g.Select(kv => kv.Key))
+                              .ToList();
+        foreach (var id in clashing)
+            display[id] = $"{byId[id].Name} ({id})";
+        return display;
+    }
+
     /// <summary>
     /// Assigns a virtual host to every id that does not already have one, without letting
     /// enumeration order decide who gets the clean host.

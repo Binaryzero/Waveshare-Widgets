@@ -871,7 +871,7 @@
       const widget = widgetsById.get(def.widgetId);
       const chip = document.createElement('button');
       chip.className = 'hs-chip';
-      chip.textContent = widget ? widget.name : def.widgetId;
+      chip.textContent = widget ? (widget.displayName || widget.name) : def.widgetId;
       chip.title = 'Registered but no room to render — tap to place it back (shrinks if needed)';
       chip.addEventListener('click', () => restoreHiddenSlot(page, def, chip));
       shelf.appendChild(chip);
@@ -1523,7 +1523,7 @@
 
     const grip = document.createElement('span');
     grip.className = 'grip';
-    grip.textContent = widget ? widget.name : record.def.widgetId;
+    grip.textContent = widget ? (widget.displayName || widget.name) : record.def.widgetId;
     ov.appendChild(grip);
 
     const remove = document.createElement('button');
@@ -1720,7 +1720,7 @@
   /** Why a size change did nothing. `onlyOne` distinguishes "this widget has no other
    * size" from "no room right now" — the first is permanent and the second is not. */
   function explainNoSize(widget, onlyOne) {
-    const name = (widget && widget.name) || 'This widget';
+    const name = (widget && (widget.displayName || widget.name)) || 'This widget';
     showPanelNotice(onlyOne
       ? name + ' has only one size.'
       : 'No room on this page for another size — move or remove a widget first.');
@@ -1783,7 +1783,7 @@
     closePropSheet();    // one right-docked editor at a time
     styleTarget = record;
     const widget = widgetsById.get(record.def.widgetId);
-    spTitle.textContent = widget ? widget.name : record.def.widgetId;
+    spTitle.textContent = widget ? (widget.displayName || widget.name) : record.def.widgetId;
     for (const s of slots) s.el.classList.toggle('style-editing', s === record);
     buildStyleRows();
     stylePanel.hidden = false;
@@ -1944,7 +1944,7 @@
     closeStyleEditor();  // one right-docked editor at a time
     propTarget = record;
     const widget = widgetsById.get(record.def.widgetId);
-    psTitle.textContent = widget ? widget.name : record.def.widgetId;
+    psTitle.textContent = widget ? (widget.displayName || widget.name) : record.def.widgetId;
     for (const s of slots) s.el.classList.toggle('style-editing', s === record);
     buildPropRows(record, widget);
     propSheet.hidden = false;
@@ -2716,7 +2716,9 @@
       const btn = document.createElement('button');
       const name = document.createElement('span');
       name.className = 'p-name';
-      name.textContent = widget.name;
+      // Disambiguated only when another installed widget shares the name; see
+      // WidgetIdentity.DisplayNames.
+      name.textContent = widget.displayName || widget.name;
       const by = document.createElement('span');
       by.className = 'p-by';
       // Sized against the free space anchored at the REGION the user tapped, not the page.
@@ -2866,7 +2868,7 @@
     ghost.style.width = Math.min(280, Math.max(120, rect.width * 0.6)) + 'px';
     ghost.style.height = Math.min(140, Math.max(70, rect.height * 0.5)) + 'px';
     const widget = widgetsById.get(record.def.widgetId);
-    ghost.textContent = widget ? widget.name : record.def.widgetId;
+    ghost.textContent = widget ? (widget.displayName || widget.name) : record.def.widgetId;
     document.body.appendChild(ghost);
     record.el.classList.add('drag-src');
     document.body.classList.add('dragging'); // re-enables the edge zones as drop targets

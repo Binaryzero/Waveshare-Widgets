@@ -330,5 +330,135 @@ Check("I25c ...and an id nobody holds installs normally",
     !WidgetIdentity.WouldStealId("com.example.new",
         new[] { ("com.example.cpu", "my-cpu-widget") }));
 
+// Display labels: two widgets may share a NAME while being entirely different widgets.
+// Identity never suffered from this (distinct ids, distinct origins) but every picker
+// prints the name, so the collision is the user's problem and nobody else's. The probes
+// describe what a user actually installs — iCUE's own "StreamDeck" landing beside the
+// stock "Stream Deck" — and assert the labels stay tellable apart while everything
+// uncontested is left alone.
+
+// The real case, and the reason the comparison ignores separators: these two read
+// identically to a human, so a space cannot be what distinguishes them.
+var mixed = WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+{
+    ("ws.stock.streamdeck", "Stream Deck", "Plinth"),
+    ("com.corsair.streamdeck", "StreamDeck", "Corsair Team"),
+    ("ws.stock.clock", "Clock", "Plinth"),
+});
+Check("I26 a contested name is disambiguated by author",
+    mixed["ws.stock.streamdeck"] == "Stream Deck \u2014 Plinth"
+        && mixed["com.corsair.streamdeck"] == "StreamDeck \u2014 Corsair Team",
+    mixed["ws.stock.streamdeck"] + " | " + mixed["com.corsair.streamdeck"]);
+Check("I26b ...and \"StreamDeck\" collides with \"Stream Deck\" despite the space",
+    WidgetIdentity.NormalizeName("StreamDeck") == WidgetIdentity.NormalizeName("Stream Deck")
+        && WidgetIdentity.NormalizeName("stream-deck") == WidgetIdentity.NormalizeName("Stream Deck"));
+Check("I26c an UNcontested name pays nothing for the collision",
+    mixed["ws.stock.clock"] == "Clock", mixed["ws.stock.clock"]);
+
+// Same name AND same author — the author cannot be the discriminator, so the id is.
+var sameAuthor = WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+{
+    ("com.example.deck", "Deck", "Same Co"),
+    ("com.other.deck", "Deck", "Same Co"),
+});
+Check("I27 a name+author collision falls back to the id",
+    sameAuthor["com.example.deck"] == "Deck (com.example.deck)"
+        && sameAuthor["com.other.deck"] == "Deck (com.other.deck)",
+    sameAuthor["com.example.deck"] + " | " + sameAuthor["com.other.deck"]);
+
+// Three-way: the two that share an author cannot use it, the third still can. The
+// decision is per widget against its own group, not per group.
+var threeWay = WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+{
+    ("com.a.deck", "Deck", "Same Co"),
+    ("com.b.deck", "Deck", "Same Co"),
+    ("com.c.deck", "Deck", "Lone Co"),
+});
+Check("I27b ...per widget, so the distinguishable one keeps the readable label",
+    threeWay["com.c.deck"] == "Deck \u2014 Lone Co"
+        && threeWay["com.a.deck"] == "Deck (com.a.deck)"
+        && threeWay["com.b.deck"] == "Deck (com.b.deck)",
+    threeWay["com.c.deck"] + " | " + threeWay["com.a.deck"]);
+
+// A package with no author at all cannot borrow one.
+var noAuthor = WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+{
+    ("ws.stock.weather", "Weather", "Plinth"),
+    ("com.someone.weather", "Weather", null),
+});
+Check("I28 a missing author falls back to the id, and does not blank the label",
+    noAuthor["com.someone.weather"] == "Weather (com.someone.weather)"
+        && noAuthor["ws.stock.weather"] == "Weather \u2014 Plinth",
+    noAuthor["com.someone.weather"]);
+
+// Ids differing only in case are two widgets everywhere else here; they are two here too.
+var caseIds = WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+{
+    ("com.example.Deck", "Deck", "Co"),
+    ("com.example.deck", "Deck", "Co"),
+});
+Check("I28b ids differing only in case stay two widgets", caseIds.Count == 2, $"{caseIds.Count} labels");
+
+// A blank name would otherwise group every blank-named widget together and render an
+// empty tile; the id is the only honest label left.
+var blank = WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+{
+    ("com.example.nameless", "   ", "Co"),
+});
+Check("I28c a blank name degrades to the id, never to an empty tile",
+    blank["com.example.nameless"] == "com.example.nameless", blank["com.example.nameless"]);
+
+// Four holes the Codex review found in the labelling above (PR #270). Each one ended in
+// the same place the whole method exists to prevent: two entries a person cannot tell
+// apart, or an annotation on two names that never collided.
+
+// A GENERATED label can collide with a LITERAL one. Nothing in the per-group pass
+// compares across groups, so a widget whose manifest name is spelled "Clock \u2014 Plinth"
+// sat beside a generated "Clock \u2014 Plinth".
+var literal = WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+{
+    ("com.a.clock", "Clock", "Plinth"),
+    ("com.b.clock", "Clock", "OtherCo"),
+    ("com.c.clock", "Clock \u2014 Plinth", "ThirdCo"),
+});
+Check("I30 a generated label never collides with another widget's literal name",
+    literal.Values.Select(v => v.ToLowerInvariant()).Distinct().Count() == 3,
+    string.Join(" | ", literal.Values));
+
+// Non-Latin scripts survive the fold. The ASCII-only class erased them entirely, so
+// every widget named in one landed in a single empty-key group and got annotated.
+Check("I31 a non-Latin name is not erased by normalization",
+    WidgetIdentity.NormalizeName("\u5929\u6c14") != "" &&
+    WidgetIdentity.NormalizeName("\u5929\u6c14") != WidgetIdentity.NormalizeName("\u65f6\u949f"),
+    WidgetIdentity.NormalizeName("\u5929\u6c14"));
+var cjk = WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+{
+    ("com.a.weather", "\u5929\u6c14", "A"),
+    ("com.b.clock", "\u65f6\u949f", "B"),
+});
+Check("I31b ...so two visibly different non-Latin names are left alone",
+    cjk["com.a.weather"] == "\u5929\u6c14" && cjk["com.b.clock"] == "\u65f6\u949f",
+    cjk["com.a.weather"] + " | " + cjk["com.b.clock"]);
+Check("I31c ...while separators are still folded within one script",
+    WidgetIdentity.NormalizeName("\u5929 \u6c14") == WidgetIdentity.NormalizeName("\u5929\u6c14"));
+
+// Authors that differ only in whitespace render identically, so they cannot be the
+// discriminator: the label has to fall back to the id.
+var spacedAuthors = WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+{
+    ("com.a.deck", "Deck", "Corsair Team"),
+    ("com.b.deck", "Deck", "Corsair  Team"),
+});
+Check("I32 authors differing only in whitespace are one author, so ids decide",
+    spacedAuthors["com.a.deck"] == "Deck (com.a.deck)"
+        && spacedAuthors["com.b.deck"] == "Deck (com.b.deck)",
+    spacedAuthors["com.a.deck"] + " | " + spacedAuthors["com.b.deck"]);
+Check("I32b ...and a surviving author suffix renders collapsed",
+    WidgetIdentity.DisplayNames(new (string, string?, string?)[]
+    {
+        ("com.a.deck", "Deck", "Corsair  Team"),
+        ("com.b.deck", "Deck", "Someone Else"),
+    })["com.a.deck"] == "Deck \u2014 Corsair Team");
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;

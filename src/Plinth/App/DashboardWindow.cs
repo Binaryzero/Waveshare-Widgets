@@ -1205,10 +1205,17 @@ public sealed class DashboardWindow : Form
         // for THIS payload only — layout.json keeps the DPAPI ciphertext.
         SnapshotManifests();
         var blanked = SecretPolicy.Reveal(layout, RevealPlan());
+        // Two widgets may legitimately share a name (an imported iCUE "StreamDeck" beside
+        // the stock "Stream Deck"), and every picker on the panel prints the name. The
+        // label is decided once, here and in SettingsWindow.WidgetCatalog, from the whole
+        // installed set — a widget cannot know on its own whether it is contested.
+        var labels = WidgetIdentity.DisplayNames(
+            _library.Widgets.Select(w => (w.Manifest.Id, (string?)w.Manifest.Name, (string?)w.Manifest.Author)));
         var widgets = _library.Widgets.Select(w => new
         {
             id = w.Manifest.Id,
             name = w.Manifest.Name,
+            displayName = labels.TryGetValue(w.Manifest.Id, out var label) ? label : w.Manifest.Name,
             url = $"https://{w.VirtualHost}/index.html",
             supportedSlots = w.Manifest.SupportedSlots,
             properties = w.Manifest.Properties,
