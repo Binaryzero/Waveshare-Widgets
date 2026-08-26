@@ -63,7 +63,7 @@ the folder into `%LocalAppData%\Plinth\widgets\`. Files hot-reload.
 | Field | Req | Notes |
 |---|---|---|
 | `id` | ✓ | Unique, reverse-DNS. Determines install folder and origin. |
-| `name` | ✓ | Display name. |
+| `name` | ✓ | Display name. If another installed widget claims the same name (ignoring case and spacing, so "StreamDeck" collides with "Stream Deck"), the UI shows both disambiguated — by `author`, or by `id` when the authors match too. Uncontested names are shown exactly as written. |
 | `author`, `version`, `description` | – | Metadata. `version` enables stock-widget in-place upgrades. |
 | `min_api_version` | – | Currently `1`. |
 | `preview_icon` | – | Path relative to the widget folder. |
