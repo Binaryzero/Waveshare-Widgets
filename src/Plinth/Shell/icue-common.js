@@ -338,24 +338,50 @@
   // Bebas Neue Pro, …) and would go stale the moment a package used a new one.
   const FONT_SUBSTITUTE = 'local("Segoe UI"), local("Tahoma"), local("Arial"), local("Helvetica")';
 
-  function defuseQrcFonts() {
+  // `src` is an ORDERED fallback list, so dropping the whole descriptor because one
+  // entry is unusable would discard a perfectly good sibling — a package-relative
+  // .woff2, or an installed branded face the widget would otherwise have got. Split the
+  // list, remove only the qrc: entries, and fall back to local() ONLY when nothing else
+  // is left. Commas inside url(…)/format(…) are not separators, hence the paren guard.
+  function stripQrcSources(src) {
+    const parts = String(src).split(/,(?![^(]*\))/);
+    const kept = parts.map((s) => s.trim()).filter((s) => s && s.indexOf('qrc:') === -1);
+    return kept.length ? kept.join(', ') : FONT_SUBSTITUTE;
+  }
+
+  function defuseSheet(sheet, seen) {
     let patched = 0;
+    // A cross-origin sheet throws on .cssRules; widgets' own sheets are same-origin.
+    let rules;
+    try { rules = sheet.cssRules; } catch (e) { return 0; }
+    if (!rules || seen.has(sheet)) return 0;
+    seen.add(sheet);
+    for (const rule of Array.from(rules)) {
+      if (!rule) continue;
+      // An @import's sheet is reached through the rule, never as its own
+      // document.styleSheets entry, so a widget that imports its font sheet kept
+      // flooding the console while this reported success.
+      if (rule.type === 3 /* CSSRule.IMPORT_RULE */) {
+        try { if (rule.styleSheet) patched += defuseSheet(rule.styleSheet, seen); }
+        catch (e) { /* cross-origin import */ }
+        continue;
+      }
+      if (rule.type !== 5 /* CSSRule.FONT_FACE_RULE */) continue;
+      let value;
+      try { value = rule.style.getPropertyValue('src'); } catch (e) { continue; }
+      if (!value || value.indexOf('qrc:') === -1) continue;
+      try { rule.style.setProperty('src', stripQrcSources(value)); patched++; }
+      catch (e) { /* read-only sheet: leave it */ }
+    }
+    return patched;
+  }
+
+  function defuseQrcFonts() {
     let sheets;
     try { sheets = Array.from(document.styleSheets); } catch (e) { return 0; }
-    for (const sheet of sheets) {
-      let rules;
-      // A cross-origin sheet throws on .cssRules; widgets' own sheets are same-origin.
-      try { rules = sheet.cssRules; } catch (e) { continue; }
-      if (!rules) continue;
-      for (const rule of Array.from(rules)) {
-        if (!rule || rule.type !== 5 /* CSSRule.FONT_FACE_RULE */) continue;
-        let src;
-        try { src = rule.style.getPropertyValue('src'); } catch (e) { continue; }
-        if (!src || src.indexOf('qrc:') === -1) continue;
-        try { rule.style.setProperty('src', FONT_SUBSTITUTE); patched++; }
-        catch (e) { /* read-only sheet: leave it */ }
-      }
-    }
+    const seen = new Set();
+    let patched = 0;
+    for (const sheet of sheets) patched += defuseSheet(sheet, seen);
     return patched;
   }
 

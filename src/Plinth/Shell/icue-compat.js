@@ -400,6 +400,7 @@
     tiles: [],                 // slot index -> last data URL emitted (dedup)
     captureHash: '',           // `have` receipt for the capture fast path
     answered: false,           // has the host answered a profile poll at all?
+    connectGen: 0,             // which connect a pending no-reply timer belongs to
     profileTimer: null,
     captureTimer: null,
     pending: new Map(),        // request id -> 'profile' | 'capture'
@@ -532,9 +533,15 @@
     const first = !sdState.answered;
     sdState.answered = true;
     if (!profile || !profile.available) {
+      // Deliberately NOT "there is no deck": available:false is also what an
+      // unreadable or unparseable profile produces, and — since the recognized device
+      // models are a list the iCUE-created type may not be on yet — what a deck this
+      // bridge does not recognize produces. Naming the host log is what separates them;
+      // asserting the categorical answer sent the last round chasing the wrong repair.
       if (first || !sdState.unreachable)
-        sdLog('host reports NO Virtual Stream Deck — it looks for a *.sdProfile whose ' +
-              'Device.Model is "UI Stream Deck" under %APPDATA%/Elgato/StreamDeck/ProfilesV3');
+        sdLog('host found no compatible Stream Deck profile it could read — see the ' +
+              'app.log "Stream Deck:" lines for which profiles exist and why each was ' +
+              'skipped (unrecognized device model, unreadable manifest, or none present)');
     } else if (first || sdState.unreachable) {
       sdLog('deck available: "' + (profile.name || '') + '" ' +
             (profile.rows || 0) + 'x' + (profile.cols || 0) + ', ' +
@@ -594,8 +601,15 @@
       sdLog('connect requested for a ' + sdState.cols + 'x' + sdState.rows + ' deck');
       // If the poll is never answered the widget sits on its parse-time card forever,
       // which is exactly what an available:false answer looks like. Say which it was.
+      //
+      // Stamped with the connect it belongs to: connectStreamDeck can run again (the
+      // widget's own reconnect path is right below), and `connected`/`answered` are
+      // shared, so an earlier timer would otherwise observe the NEW connection and
+      // report "after 10s" moments after it — breaking both the timing claim and the
+      // one-shot bound this comment promises.
+      const gen = ++sdState.connectGen;
       setTimeout(() => {
-        if (sdState.connected && !sdState.answered)
+        if (sdState.connectGen === gen && sdState.connected && !sdState.answered)
           sdLog('NO REPLY from the host to the profile poll after 10s — the bridge did not answer');
       }, 10000);
       sdStartTimers();
