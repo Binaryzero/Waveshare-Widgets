@@ -122,6 +122,44 @@
 	log('mediaviewer-ok');
 	log('hex:' + hexToRGB('#FF0039'));
 
+	// A data: URI carries no filename, so an extension test calls this video an image and
+	// builds an <img> that can never render it. The MIME is right there in the URI.
+	const vprobe = document.createElement('div');
+	document.body.appendChild(vprobe);
+	new MediaViewer({ container: vprobe }).loadMedia({
+		path: 'data:video/mp4;base64,AAAAIGZ0eXBpc29t',
+	});
+	log('datavideo:' + (vprobe.querySelector('video') ? 'video' : 
+		(vprobe.querySelector('img') ? 'img' : 'none')));
+
+	// Two wrappers over ONE plugin. Each connects its own asyncResponse listener, so a
+	// per-instance id sequence gives both the same id 1 — and the first reply settles
+	// both waiters, resolving B with A's value. The fake plugin records the ids issued
+	// and replays each reply to every listener, exactly as a real Qt signal would.
+	const listeners = [];
+	const issued = [];
+	const fakePlugin = {
+		asyncResponse: { connect: (cb) => listeners.push(cb) },
+		ask(requestId) { issued.push(requestId); },
+	};
+	const wrapA = new IcueWidgetApiWrapper(fakePlugin);
+	const wrapB = new IcueWidgetApiWrapper(fakePlugin);
+	const answers = Promise.all([
+		wrapA.request(fakePlugin.ask),
+		wrapB.request(fakePlugin.ask),
+	]);
+	for (let i = 0; i < issued.length; i++) {
+		for (const cb of listeners) cb(issued[i], i === 0 ? 'A' : 'B');
+	}
+	answers.then((r) => log('wrapids:' + r.join(','))).catch(() => log('wrapids:threw'));
+
+	// A formatter that has never rendered must produce a date even when the caller's
+	// lastDay already equals today: the rendered value turns over with the CONFIGURED
+	// zone's day, which the caller's local getDay cannot speak for.
+	new DateFormatter('en-US', 'Asia/Tokyo', true)
+		.getDateText('05/04/2020', new Date().getDay(), false)
+		.then((t) => log('datefirst:' + (t ? 'rendered' : 'skipped')));
+
 	function onInit() {
 		// Thenable tr() + the i18next-nested translation.json shape iCUE ships.
 		tr('greeting').then((t) => log('tr-then:' + t));

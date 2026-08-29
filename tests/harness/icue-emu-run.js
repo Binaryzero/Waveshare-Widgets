@@ -24,6 +24,18 @@
 //                          mirrored grid.
 //        live-tiles      — the fixture's capture frame was sliced into per-key PNG
 //                          faces (the dynamic-key-face path replacing profile icons).
+//        datavideo:video — a `data:video/…` URI builds a <video>. It carries no filename,
+//                          so an extension test called it an image and built an <img>
+//                          that could never render it; the MIME is in the URI.
+//        wrapids:A,B     — two wrappers over ONE plugin get distinct request ids. Each
+//                          connects its own asyncResponse listener, so a per-instance
+//                          sequence handed both id 1 and the first reply settled BOTH
+//                          waiters: B resolved with A's value and its real answer was
+//                          dropped. Reads `wrapids:A,A` against that — silent wrong data.
+//        datefirst:rendered — a clock in another time zone renders its date instead of
+//                          waiting for the MACHINE's day to turn over. The rendered value
+//                          tracks the configured zone's day, which the caller's local
+//                          getDay cannot speak for; it read `skipped` before.
 //        qrc-left:none   — every Qt-resource (`qrc:`) @font-face was defused. Chromium
 //                          cannot load that scheme and logs a "Fallback font will be
 //                          used" intervention per waiting element — hundreds of lines
@@ -81,7 +93,7 @@ const check = (name, ok, detail) => {
 
 const MARKERS = ['module-alive', 'mediaviewer-ok', 'hex:255, 0, 57',
   'tr-then:Compat says hello', 'notif:0', 'device-created', 'icons:3', 'click-sent',
-  'live-tiles', 'qrc-left:none'];
+  'live-tiles', 'qrc-left:none', 'datavideo:video', 'wrapids:A,B', 'datefirst:rendered'];
 
 // icue-sd.json, not streamdeck-sd.json: same deck plus a capture frame, so the
 // slice-into-per-key-faces path runs (the capture poll fires at 500ms — the --wait

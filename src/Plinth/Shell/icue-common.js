@@ -38,12 +38,21 @@
   // Universal promise wrapper over the documented plugin contract: async getters take a
   // caller-chosen integer requestId and answer through the plugin's Qt-style
   // asyncResponse(requestId, value) signal.
+
+  // ONE counter for every wrapper in the frame, not one per instance. Each instance
+  // connects its own asyncResponse listener to the shared plugin, so a per-instance
+  // sequence hands two wrappers the same id 1 — and the first reply then settles BOTH
+  // waiters, resolving the second wrapper's promise with the first one's value and
+  // discarding its real answer. Silent, and wrong in the direction that looks like data.
+  // The id only has to be unique among requests in flight to one plugin; being unique
+  // frame-wide is simpler and costs nothing.
+  let requestSeq = 0;
+
   window.IcueWidgetApiWrapper = class IcueWidgetApiWrapper {
     constructor(plugin, timeoutMs = 5000) {
       this.plugin = plugin || null;
       this.timeoutMs = timeoutMs;
       this._waiters = new Map();
-      this._seq = 1;
       if (this.plugin && this.plugin.asyncResponse &&
           typeof this.plugin.asyncResponse.connect === 'function') {
         this.plugin.asyncResponse.connect((requestId, value) => this._settle(requestId, value));
@@ -64,7 +73,7 @@
           reject(new Error('plugin unavailable'));
           return;
         }
-        const requestId = this._seq++;
+        const requestId = ++requestSeq;
         const timer = setTimeout(() => {
           if (this._waiters.delete(requestId)) reject(new Error('request timed out'));
         }, this.timeoutMs);
@@ -150,10 +159,32 @@
       return part ? part.value : '';
     }
 
+    // The weekday index in the CONFIGURED zone, which is the only day the rendered date
+    // depends on. Falls back to the machine's day if the zone is unresolvable, matching
+    // _parts' own degradation.
+    _zoneDay() {
+      const NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      try {
+        const name = new Intl.DateTimeFormat('en-US',
+          { timeZone: this.timeZone, weekday: 'short' }).format(new Date());
+        const i = NAMES.indexOf(name);
+        return i === -1 ? new Date().getDay() : i;
+      } catch (e) {
+        return new Date().getDay();
+      }
+    }
+
     getDateText(formatKey, lastDay, forceUpdate) {
-      // Callers track lastDay with the local Date#getDay, so the skip check matches
-      // their bookkeeping rather than second-guessing the time zone.
-      if (!forceUpdate && lastDay === new Date().getDay()) return Promise.resolve(undefined);
+      // Two conditions, because the caller's bookkeeping and the rendered value do not
+      // track the same clock. Callers pass lastDay from the local Date#getDay, so that
+      // alone kept a clock configured for another time zone showing yesterday's date for
+      // as long as the two zones disagreed — hours, every night. The rendered date turns
+      // over with the ZONE's day, tracked here; the caller's own signal is still honoured
+      // so an explicit mismatch still forces a refresh.
+      const zoneDay = this._zoneDay();
+      if (!forceUpdate && this._lastZoneDay === zoneDay && lastDay === new Date().getDay())
+        return Promise.resolve(undefined);
+      this._lastZoneDay = zoneDay;
 
       const key = String(formatKey == null ? 'None' : formatKey);
       if (key === 'None') return Promise.resolve('');
@@ -235,6 +266,19 @@
   // backgroundMedia is normally undefined and widgets call clear(). loadMedia still
   // renders URL-shaped sources faithfully, and reports anything else through
   // onMediaError instead of throwing.
+  // Extension alone is wrong for the two schemes that carry no filename. A
+  // `data:video/mp4;…` URI states its type outright, and an explicit descriptor hint
+  // beats guessing; only a path falls through to the extension. A `blob:` URL with no
+  // hint is genuinely undecidable from the string — the caller has the metadata and can
+  // pass `mediaType`.
+  function looksLikeVideo(src, desc) {
+    const hint = String((desc && (desc.mediaType || desc.type)) || '').toLowerCase();
+    if (hint) return hint.indexOf('video') !== -1;
+    const dataMime = /^data:([^;,]+)/i.exec(src);
+    if (dataMime) return /^video\//i.test(dataMime[1].trim());
+    return /\.(webm|mp4|mkv|mov|m4v)(\?|#|$)/i.test(src);
+  }
+
   window.MediaViewer = class MediaViewer {
     constructor(options) {
       const opts = options || {};
@@ -262,7 +306,7 @@
         return;
       }
 
-      const isVideo = /\.(webm|mp4|mkv)(\?|#|$)/i.test(src);
+      const isVideo = looksLikeVideo(src, desc);
       const el = document.createElement(isVideo ? 'video' : 'img');
       if (isVideo) {
         el.muted = true;
