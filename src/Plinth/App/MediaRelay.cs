@@ -270,23 +270,37 @@ internal static class MediaRelay
         // attempt the watchdog gave up on, a diagnostic probe that read its window and
         // cancelled — would hold the upstream socket, and with it a live ffmpeg
         // transcode, until the process exits. One per failed attempt adds up on the
-        // server long before it does here. So the stream releases ITSELF once nobody
-        // has read from it for a while; the relay is range-based, so a reader that
-        // comes back simply asks for a new window.
-        private const int IdleMs = 120_000;
+        // server long before it does here. So a stream releases ITSELF once nobody has
+        // read it for long enough.
+        //
+        // "Long enough" has to tell an abandoned stream from a PAUSED one, because a
+        // paused element deliberately stops reading while its source stays perfectly
+        // valid, and closing that upstream turns the next read into a truncated
+        // response — a media error, not a polite re-request. So the two cases get very
+        // different clocks: a stream that never delivered a byte is dead beyond
+        // argument and goes in two minutes, while one that was feeding a real element
+        // gets fifteen, past any plausible pause. Even that worst case self-heals:
+        // truncation walks the widget's fallback chain, which carries the position, so
+        // an unusually long pause costs a reload from the same spot rather than the
+        // playback.
+        private const int DeadMs = 120_000;
+        private const int IdleMs = 900_000;
 
         public GuardedStream(Stream inner, long? length)
         {
             _inner = inner;
             _length = length;
-            _idle = new System.Threading.Timer(_ => IdleCheck(), null, IdleMs, IdleMs);
+            _idle = new System.Threading.Timer(_ => IdleCheck(), null, DeadMs, DeadMs);
         }
 
         private void IdleCheck()
         {
-            if (_released || Environment.TickCount64 - Interlocked.Read(ref _lastRead) < IdleMs) return;
+            if (_released) return;
+            var quiet = Environment.TickCount64 - Interlocked.Read(ref _lastRead);
+            if (quiet < (_served == 0 ? DeadMs : IdleMs)) return;
             if (WebViewEnvironment.DiagnosticsBudget())
-                Log.Info($"media relay stream idle after {_served} bytes — releasing the upstream");
+                Log.Info($"media relay stream idle {quiet / 1000}s after {_served} bytes"
+                    + " — releasing the upstream");
             Dispose();
         }
 
