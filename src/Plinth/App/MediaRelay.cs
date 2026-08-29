@@ -139,6 +139,40 @@ internal static class MediaRelay
         };
     }
 
+    /// <summary>How much of an open-ended range is answered at once.
+    ///
+    /// A media element asks for "the rest of the file" — <c>Range: bytes=0-</c> — and a
+    /// direct-play answer to that is the whole file. WebView2 then pulls it as fast as
+    /// the LAN allows into a buffer nothing on this side bounds, and when the element
+    /// cannot start (a container whose moov sits at the END has nothing to play until
+    /// the index is found) nothing is consuming it either. The field log of a 9.6 GB
+    /// title has one attempt reading 268 MB in three seconds at readyState 0, abandoned
+    /// attempts holding 883 MB, 259 MB and 222 MB at once, and then the process simply
+    /// stops — no exception, no line, gone.
+    ///
+    /// So an open-ended range is answered a window at a time. The 206 still carries the
+    /// real total in its Content-Range, so the element knows the size and asks for the
+    /// next window when it wants one — which is what every ordinary HTTP media server
+    /// makes it do. Memory per stream becomes the window instead of the file, and an
+    /// abandoned attempt strands 8 MiB rather than most of a gigabyte.
+    ///
+    /// A range the renderer already bounded is its own business and passes untouched.</summary>
+    private const long RangeWindow = 8L * 1024 * 1024;
+
+    private static string BoundRange(string range)
+    {
+        var text = range.Trim();
+        if (!text.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase)) return range;
+        var spec = text[6..];
+        // Multipart ranges are not ours to rewrite, and a suffix range ("-500", the last
+        // 500 bytes) is already bounded by construction.
+        if (spec.Contains(',')) return range;
+        var dash = spec.IndexOf('-');
+        if (dash <= 0 || dash != spec.Length - 1) return range;
+        if (!long.TryParse(spec[..dash], out var start) || start < 0) return range;
+        return $"bytes={start}-{start + RangeWindow - 1}";
+    }
+
     /// <summary>Query values from the relay URL, parsed by hand: the target URL is a
     /// full encodeURIComponent blob and the only fields are ours.</summary>
     private static string? QueryValue(Uri outer, string name)
@@ -221,10 +255,11 @@ internal static class MediaRelay
 
         var upstream = new HttpRequestMessage(new HttpMethod(request.Method), target);
         // Range is what makes a <video> seekable on a direct-played file; everything
-        // else about the renderer's request is noise the upstream doesn't need.
+        // else about the renderer's request is noise the upstream doesn't need. It is
+        // BOUNDED on the way out — see RangeWindow.
         var range = TryGetHeader(request, "Range");
         if (range is not null)
-            upstream.Headers.TryAddWithoutValidation("Range", range);
+            upstream.Headers.TryAddWithoutValidation("Range", BoundRange(range));
 
         var client = QueryValue(outer, "insecure") == "1" ? ClientInsecure : Client;
         // The HEADER phase gets a finite deadline: an upstream that accepts the

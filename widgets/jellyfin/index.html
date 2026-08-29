@@ -2720,11 +2720,21 @@
         // an unparseable head); a short count or a throw names the transport.
         WW.fetch(relayUrl(lastSrcUrl), { proxy: 'never', headers: { Range: 'bytes=0-65535' } })
           .then(async (r) => {
-            // Bounded HERE, not by trusting the server to honour Range: the transcode
-            // endpoint answers 200 and streams for as long as ffmpeg runs, and reading
-            // that to the end would trip the fetch cap and report a WORKING relay as a
-            // failure — the exact false negative this probe exists to prevent. Cancelling
-            // at the window also spares the server a transcode nobody watches.
+            // A 200 means the endpoint ignored the Range — the transcode does, because a
+            // stream ffmpeg is still producing has no positions to serve. There is no
+            // window to count there, and DRAINING it was the mistake: reading a few
+            // frames and cancelling does not stop the shim's own pump, which went on
+            // pulling megabytes until it hit the 5 MiB fetch cap and rejected inside
+            // itself — an unhandled rejection this .catch never sees, once per failed
+            // attempt, on a title already in trouble. Report what came back and let the
+            // body go.
+            if (r.status !== 206) {
+              WW.log('jellyfin: attempt ' + n + ' body-fetch: HTTP ' + r.status + ' (range not honoured)');
+              try { if (r.body && r.body.cancel) r.body.cancel(); } catch (e) { /* already gone */ }
+              return;
+            }
+            // Bounded HERE as well as by the server: belt and braces on the one path
+            // that does honour the window.
             const reader = r.body && r.body.getReader ? r.body.getReader() : null;
             if (!reader) {
               WW.log('jellyfin: attempt ' + n + ' body-fetch: HTTP ' + r.status + ' (no readable body)');
