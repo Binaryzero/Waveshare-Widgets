@@ -257,9 +257,22 @@ check('E5d3 the release path runs BEFORE the profile guard that used to swallow 
 // capture is driving the faces"), so the deck comes back blank and stays blank. Asserted
 // on connectStreamDeck, which is where a FRESH connect needs them reset too.
 const connectBody = (/connectStreamDeck\(widgetId, deviceId, columns, rows\) \{[\s\S]*?\n    \},/.exec(shim) || [''])[0];
-check('E5f2 connect resets the per-connection state a reconnect depends on',
-  /sdState\.announced = false/.test(connectBody) && /sdState\.captureHash = ''/.test(connectBody),
-  connectBody ? 'announced + captureHash reset in connectStreamDeck' : 'could not locate connectStreamDeck');
+const freshBody = (/function sdFreshConnection\(\) \{[\s\S]*?\n  \}/.exec(shim) || [''])[0];
+// Reset from ONE definition rather than field by field. Enumerating them in connect meant
+// remembering each: announced, captureHash and unreachable were each missed and found
+// separately, and every one of them silently withheld a signal the widget was waiting for.
+const PER_CONNECTION = ['announced', 'unreachable', 'profile', 'tiles',
+  'captureHash', 'answered', 'warnedNoWindow', 'hasWindow'];
+const missing = PER_CONNECTION.filter((f) => !new RegExp('\\b' + f + ':').test(freshBody));
+check('E5f2 connect resets every per-connection field, from a single definition',
+  /Object\.assign\(sdState, sdFreshConnection\(\)\)/.test(connectBody) && missing.length === 0,
+  missing.length ? 'not reset: ' + missing.join(', ')
+    : `${PER_CONNECTION.length} fields, applied via sdFreshConnection()`);
+
+// pressOutstanding must NOT be reset: a press the host already accepted still owes its
+// release, and clearing the flag strands WM_LBUTTONDOWN until the 10s safety timer.
+check('E5f3 ...but not the outstanding press, whose release must still be delivered',
+  !/\bpressOutstanding:/.test(freshBody));
 
 check('E5f reconnect actually reconnects after a disconnect',
   !/reconnectStreamDeck\(widgetId\) \{\s*\n\s*if \(!sdState\.connected\) return;/.test(shim)

@@ -442,6 +442,23 @@
     catch (e) { /* frame gone */ }
   }
 
+  // What "a new connection" means, in one place. sendKeyPress's `pressOutstanding` is
+  // deliberately NOT here: a press the host already accepted still owes its release, and
+  // that release is the one message that must survive anything — clearing the flag would
+  // strand WM_LBUTTONDOWN on a real window until the host's 10s safety timer.
+  function sdFreshConnection() {
+    return {
+      announced: false,      // virtualDeviceCreated must fire again for this connection
+      unreachable: false,    // …and so must streamdeckUnreachable, if it still applies
+      profile: null,         // the previous deck is not this connection's deck
+      tiles: [],             // no face has been pushed yet
+      captureHash: '',       // nothing received, so nothing to dedup against
+      answered: false,       // the no-reply diagnostic is armed for this connection
+      warnedNoWindow: false, // a new connection may say it once more
+      hasWindow: true,       // optimistic until a reply says otherwise
+    };
+  }
+
   function sdTrack(kind) {
     const id = 'icue-sd-' + (++sdState.seq);
     sdState.pending.set(id, kind);
@@ -639,20 +656,19 @@
     authenticationRequired: makeSignal(),  // never emitted: no pairing in this backend
     authenticationRejected: makeSignal(),  // never emitted
     connectStreamDeck(widgetId, deviceId, columns, rows) {
+      Object.assign(sdState, sdFreshConnection());
       sdState.widgetId = widgetId;
       sdState.cols = Math.max(1, columns | 0);
       sdState.rows = Math.max(1, rows | 0);
-      sdState.tiles = [];
       sdState.connected = true;
-      sdState.answered = false;
-      // PER-CONNECTION, so a new connection starts from nothing. Left standing, `announced`
-      // suppresses virtualDeviceCreated for the new connection (the widget cleared its
-      // device on disconnect and never learns of another), and a stale `captureHash` makes
-      // sdPaintFromProfile bail — it reads a set hash as "live capture is driving the
-      // faces" — while the capture poll quotes that hash so an unchanged host frame
-      // returns no pixels. The deck comes back blank and stays blank.
-      sdState.announced = false;
-      sdState.captureHash = '';
+      // Every field that describes ONE connection, reset from a single definition. Doing
+      // it by hand here meant remembering each one: `announced` suppressed
+      // virtualDeviceCreated for the new connection, a stale `captureHash` made
+      // sdPaintFromProfile bail (a set hash reads as "live capture is driving the faces")
+      // while the capture poll quoted it so an unchanged host frame returned no pixels,
+      // and `unreachable` swallowed streamdeckUnreachable so a widget that cleared its
+      // state on disconnect got no terminal answer at all. Three of those were found one
+      // at a time. Adding state to sdFreshConnection is now what resets it.
       // Replies owed to the PREVIOUS connection are not answers to this one. Left in
       // place, a late one would set `answered` on the connection that just reset it —
       // suppressing this connection's no-reply diagnostic and announcing the old deck as
