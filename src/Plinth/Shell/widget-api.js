@@ -886,7 +886,9 @@
     },
 
     /** Request the Stream Deck profile; delivered via onStreamDeck(cb).
-     * opts: { profileName, hideWindow, live }. With live:true the reply also carries
+     * opts: { profileName, hideWindow, live }. Omit hideWindow to leave the deck window
+     * wherever the user last put it; only a stated boolean is forwarded, so a widget with
+     * no preference does not override one that has one. With live:true the reply also carries
      * `capture` — a screenshot of the deck window ({image,w,h}) for real-time mirroring
      * of dynamic key faces — when the host can capture it. The profile is read from
      * disk, so it stays complete when the deck's window is closed; `windowAvailable`
@@ -896,7 +898,13 @@
       // The id is what lets the shell send the answer to THIS frame rather than to
       // everyone who ever asked (#127). Callback-shaped API is unchanged.
       const id = trackSdRequest(reqId('sd'));
-      parent.postMessage({ type: 'ww-sd-profile', id, profileName: opts.profileName || '', hideWindow: opts.hideWindow !== false, live: opts.live === true }, shellTarget());
+      // hideWindow is sent only when the caller stated one. `!== false` turned "no
+      // opinion" into "hide it", so a widget with no preference overrode one that had a
+      // preference — every poll, in both directions. Fixing this only in the shell left
+      // the coercion here, which is upstream of it.
+      const sdMsg = { type: 'ww-sd-profile', id, profileName: opts.profileName || '', live: opts.live === true };
+      if (typeof opts.hideWindow === 'boolean') sdMsg.hideWindow = opts.hideWindow;
+      parent.postMessage(sdMsg, shellTarget());
     },
     /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}],
      * model, windowAvailable, capture?}. `windowAvailable:false` = the deck's window is

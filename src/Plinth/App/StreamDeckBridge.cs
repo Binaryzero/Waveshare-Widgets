@@ -33,7 +33,7 @@ public sealed class StreamDeckBridge
     /// Network decks are excluded: offering one would let the user pick a deck whose keys
     /// cannot be pressed, which is the outcome this whole path exists to avoid.</summary>
     public static IReadOnlyList<string> ListProfileNames() =>
-        ListVsdProfiles(out _).Where(p => DeckManifest.IsLocalWindowModel(p.Model))
+        ListVsdProfiles(out _, out _).Where(p => DeckManifest.IsLocalWindowModel(p.Model))
                          .Select(p => p.Name).ToList();
 
     /// <summary>Models already named in the log, so the 4s profile poll reports each
@@ -57,21 +57,32 @@ public sealed class StreamDeckBridge
     /// do nothing.
     /// </remarks>
     /// <param name="skippedModels">Models found on disk that this build does not
-    /// recognize, and therefore dropped. Surfaced rather than kept private because "every
-    /// deck I found is unmirrorable" and "every deck on this machine is unmirrorable" are
-    /// different claims the moment anything was dropped — and it is the second one the
-    /// user is shown.</param>
+    /// recognize. For the LOG, which needs the strings to tell the user what to report.</param>
+    /// <param name="droppedAny">Whether any profile directory was passed over for ANY
+    /// reason. For the user-facing claim, which needs the weaker question answered
+    /// honestly: "every deck I found is unmirrorable" and "every deck on this machine is
+    /// unmirrorable" differ the moment anything was dropped, and it is the second one the
+    /// user is shown.
+    ///
+    /// Derived by counting, not maintained by hand. A flag set at each skip point has to
+    /// be remembered at four of them today and at every one added later; one was already
+    /// missed that way — an unreadable manifest counted as nothing, so a machine with an
+    /// unreadable LOCAL profile beside a network deck still claimed to be network-only.
+    /// Comparing what came in against what came out cannot be forgotten.</param>
     private static List<(string Name, string Dir, string Model)> ListVsdProfiles(
-        out List<string> skippedModels)
+        out List<string> skippedModels, out bool droppedAny)
     {
         var result = new List<(string Name, string Dir, string Model)>();
         var skipped = new List<string>();
         skippedModels = skipped;
+        droppedAny = false;
         if (!Directory.Exists(ProfilesDir))
             return result;
 
+        var seen = 0;
         foreach (var profileDir in Directory.GetDirectories(ProfilesDir, "*.sdProfile"))
         {
+            seen++;
             var manifestPath = Path.Combine(profileDir, "manifest.json");
             if (!File.Exists(manifestPath))
                 continue;
@@ -95,6 +106,10 @@ public sealed class StreamDeckBridge
             }
             catch { /* skip unreadable */ }
         }
+        // Every profile directory that did not become a result was dropped, whatever the
+        // reason: no manifest, unparseable JSON, no Device.Model, or a model this build
+        // does not know. Only the last of those has a string worth logging.
+        droppedAny = seen > result.Count;
 
         // Gated on finding no deck this app can MIRROR, not on recognizing nothing at all.
         // Those differ exactly when a network deck sits beside an unrecognized model: the
@@ -137,7 +152,7 @@ public sealed class StreamDeckBridge
             // directory was briefly unavailable.
             LastReadWasUnmirrorableOnly = false;
 
-            var profiles = ListVsdProfiles(out var skippedModels);
+            var profiles = ListVsdProfiles(out _, out var droppedAny);
             if (profiles.Count == 0)
                 return null;
 
@@ -153,7 +168,7 @@ public sealed class StreamDeckBridge
                 // — a different and weaker claim than the one the user is shown, and false
                 // advice for someone whose local deck this build simply does not know.
                 LastReadWasUnmirrorableOnly = DeckManifest.IsUnmirrorableOnly(
-                    profiles.Select(p => p.Model).ToList(), skippedModels.Count);
+                    profiles.Select(p => p.Model).ToList(), droppedAny);
                 // Every deck on the machine is one we cannot drive. Say so once, with the
                 // fix — this is the whole difference between "the widget is broken" and
                 // "there is no Virtual Stream Deck yet".

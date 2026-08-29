@@ -222,18 +222,18 @@ Console.WriteLine("Is this machine unmirrorable-only?");
 
 static IReadOnlyList<string> M(params string[] m) => m;
 
-Check("U1 only network decks, nothing skipped, is unmirrorable-only",
-    DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi", "VSD/WiFi"), 0));
-Check("U2 a skipped model means the machine is NOT known to be unmirrorable-only",
-    !DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi"), 1),
-    "the skipped model may be the local deck the user expects to mirror");
+Check("U1 only network decks, nothing dropped, is unmirrorable-only",
+    DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi", "VSD/WiFi"), false));
+Check("U2 anything dropped means the machine is NOT known to be unmirrorable-only",
+    !DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi"), true),
+    "the dropped profile may be the local deck the user expects to mirror");
 Check("U3 a local deck among them is not unmirrorable-only",
-    !DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi", "UI Stream Deck"), 0));
+    !DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi", "UI Stream Deck"), false));
 Check("U4 no profiles at all is not unmirrorable-only — that needs the other advice",
-    !DeckManifest.IsUnmirrorableOnly(M(), 0) && !DeckManifest.IsUnmirrorableOnly(null, 0));
+    !DeckManifest.IsUnmirrorableOnly(M(), false) && !DeckManifest.IsUnmirrorableOnly(null, false));
 Check("U5 both conditions are required, not either",
-    !DeckManifest.IsUnmirrorableOnly(M("UI Stream Deck"), 0)
-    && !DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi"), 2));
+    !DeckManifest.IsUnmirrorableOnly(M("UI Stream Deck"), false)
+    && !DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi"), true));
 
 Console.WriteLine("Wired up");
 
@@ -284,6 +284,14 @@ else
     var earlyReturnAt = readBody.IndexOf("if (profiles.Count == 0)", StringComparison.Ordinal);
     // The user-facing flag must go through the predicate above, not re-derive the rule.
     // Re-deriving it is exactly how it came to disagree with the log line beside it.
+    // DERIVED, not maintained. A flag set by hand at each skip point has to be
+    // remembered at four today and at every one added later, and one was already missed
+    // that way — an unreadable manifest counted as nothing, so a machine with an
+    // unreadable LOCAL profile beside a network deck still claimed to be network-only.
+    // Counting what came in against what came out cannot be forgotten.
+    Check("M6m 'was anything dropped' is counted, not tracked by hand",
+        code.Contains("droppedAny = seen > result.Count;"),
+        "a hand-maintained flag misses whichever skip path its author forgets");
     Check("M6l the user-facing claim is decided by IsUnmirrorableOnly, not re-derived",
         code.Contains("DeckManifest.IsUnmirrorableOnly(")
         && !code.Contains("profiles.Any(p => DeckManifest.IsUnmirrorableModel(p.Model))"),

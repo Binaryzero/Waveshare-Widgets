@@ -251,6 +251,16 @@ check('E5d3 the release path runs BEFORE the profile guard that used to swallow 
 // E5f — a documented API that accepts the call and does nothing is the same defect class
 // as a deck that renders and cannot be pressed. reconnectStreamDeck guarded on `connected`
 // and so was a permanent no-op after disconnect: the one state it exists for.
+// E5f2 — reconnect has to hand back a USABLE deck, not just re-enter connect. `announced`
+// and `captureHash` are per-connection: left standing they suppress virtualDeviceCreated
+// for the new connection and make sdPaintFromProfile bail (a set hash reads as "live
+// capture is driving the faces"), so the deck comes back blank and stays blank. Asserted
+// on connectStreamDeck, which is where a FRESH connect needs them reset too.
+const connectBody = (/connectStreamDeck\(widgetId, deviceId, columns, rows\) \{[\s\S]*?\n    \},/.exec(shim) || [''])[0];
+check('E5f2 connect resets the per-connection state a reconnect depends on',
+  /sdState\.announced = false/.test(connectBody) && /sdState\.captureHash = ''/.test(connectBody),
+  connectBody ? 'announced + captureHash reset in connectStreamDeck' : 'could not locate connectStreamDeck');
+
 check('E5f reconnect actually reconnects after a disconnect',
   !/reconnectStreamDeck\(widgetId\) \{\s*\n\s*if \(!sdState\.connected\) return;/.test(shim)
     && /reconnectStreamDeck\(widgetId\) \{[\s\S]*?sd\.connectStreamDeck\(/.test(shim));
@@ -263,6 +273,14 @@ check('E5g an unstated hideWindow stays unstated across every hop',
   !/hideWindow: true/.test(shim)
     && /typeof msg\.hideWindow === 'boolean'/.test(shell)
     && /message\["hideWindow"\] is \{ \} hideNode/.test(dash.replace(/\{\s*\}/g, '{ }')));
+
+// E5g2 — the PUBLIC api is upstream of the shell, so fixing only the shell left the
+// coercion in place for every native widget: WW.requestStreamDeck() with no stated
+// preference still asserted "hide it" on every poll and still fought a widget that had one.
+const api = fs.readFileSync(path.join(REPO, 'src', 'Plinth', 'Shell', 'widget-api.js'), 'utf8');
+check('E5g2 ...including through the public widget API, not only the shell',
+  !/hideWindow: opts\.hideWindow !== false/.test(api)
+    && /typeof opts\.hideWindow === 'boolean'/.test(api));
 
 // E5e — the user-visible decision, asserted where it is made. A network deck's profile
 // reads perfectly, so mirroring it yields a convincing deck with dead keys; the bridge

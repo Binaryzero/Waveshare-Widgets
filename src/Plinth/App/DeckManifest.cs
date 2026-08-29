@@ -149,20 +149,24 @@ public static class DeckManifest
     /// only state in which telling the user "your decks are network-attached" is true.
     /// </summary>
     /// <remarks>
-    /// <paramref name="skippedCount"/> is the load-bearing argument. Discovery drops
-    /// profiles whose model it does not recognize, so "everything I found is unmirrorable"
-    /// and "everything on the machine is unmirrorable" are different claims whenever
-    /// anything was dropped — and it is the second one the user is shown. A machine with a
-    /// network deck beside a local deck of an unrecognized model satisfies the first and
-    /// not the second: advising that user to create another deck is wrong, when what they
-    /// need is to report the model string they already have.
+    /// <paramref name="droppedAny"/> is the load-bearing argument. Discovery passes over
+    /// profiles it cannot use — no manifest, unparseable JSON, no Device.Model, or a model
+    /// it does not recognize — so "everything I found is unmirrorable" and "everything on
+    /// the machine is unmirrorable" are different claims whenever anything was dropped,
+    /// and it is the second one the user is shown. A machine with a network deck beside a
+    /// local deck that was dropped satisfies the first and not the second: advising that
+    /// user to create another deck is wrong, when what they need is to fix or report the
+    /// profile they already have.
+    ///
+    /// A boolean rather than a count, deliberately: the question is "is this claim safe to
+    /// make", and every drop reason answers it the same way.
     ///
     /// The same distinction is already made for the log line one level up; this exists so
     /// the user-facing message cannot drift from it again.
     /// </remarks>
-    public static bool IsUnmirrorableOnly(IReadOnlyList<string> foundModels, int skippedCount)
+    public static bool IsUnmirrorableOnly(IReadOnlyList<string> foundModels, bool droppedAny)
     {
-        if (skippedCount != 0 || foundModels is null || foundModels.Count == 0)
+        if (droppedAny || foundModels is null || foundModels.Count == 0)
             return false;
         foreach (var model in foundModels)
             if (!IsUnmirrorableModel(model))

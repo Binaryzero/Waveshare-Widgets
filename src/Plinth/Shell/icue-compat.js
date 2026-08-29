@@ -645,6 +645,14 @@
       sdState.tiles = [];
       sdState.connected = true;
       sdState.answered = false;
+      // PER-CONNECTION, so a new connection starts from nothing. Left standing, `announced`
+      // suppresses virtualDeviceCreated for the new connection (the widget cleared its
+      // device on disconnect and never learns of another), and a stale `captureHash` makes
+      // sdPaintFromProfile bail — it reads a set hash as "live capture is driving the
+      // faces" — while the capture poll quotes that hash so an unchanged host frame
+      // returns no pixels. The deck comes back blank and stays blank.
+      sdState.announced = false;
+      sdState.captureHash = '';
       // Replies owed to the PREVIOUS connection are not answers to this one. Left in
       // place, a late one would set `answered` on the connection that just reset it —
       // suppressing this connection's no-reply diagnostic and announcing the old deck as
