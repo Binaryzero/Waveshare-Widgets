@@ -1742,6 +1742,10 @@
 
   function renderSlotStrip(page) {
     const strip = el('slotList');
+    // Room for one more of each, computed off a SNAPSHOT: fitsFixed probes by pushing and
+    // popping page.slots, and doing that from inside an iteration over the same array is
+    // the kind of thing that works until someone changes fitsFixed.
+    const room = (page.slots || []).slice().map((s) => fitsFixed(page, s.size, null));
     page.slots.forEach((slot, i) => {
       const chip = document.createElement('div');
       chip.className = 'slot-chip' + (i === selectedSlot ? ' active' : '');
@@ -1757,7 +1761,13 @@
       size.textContent = CHIP_WIDTH[parts.width] + CHIP_BAND[parts.band];
       main.append(name, size);
       main.addEventListener('click', () => selectSlot(i));
-      chip.append(main, iconButton('✕', 'Remove', () => removeSlotAt(page, i), true));
+      // ⧉ before ✕ — the constructive one first, and the destructive one stays where the
+      // hand already knows to find it.
+      const dupe = iconButton('⧉', 'Add another one like this (without its credentials)',
+        () => duplicateSlotAt(page, i));
+      dupe.disabled = !room[i];
+      if (dupe.disabled) dupe.title = 'No room on this page for another one';
+      chip.append(main, dupe, iconButton('✕', 'Remove', () => removeSlotAt(page, i), true));
       strip.appendChild(chip);
     });
   }
@@ -1769,6 +1779,53 @@
     if (selectedSlot != null) openPanel('widget'); // chip select opens the inspector
     // Mirror into the replica (index -1 clears its highlight).
     replicaPost({ type: 'select-slot', page: selectedPage, index: selectedSlot == null ? -1 : selectedSlot });
+  }
+
+  // A value the host sealed. Mirrors SecretStore.LooksLikeEnvelope closely enough for the
+  // one thing it is used for here: never letting a clone start life holding ciphertext.
+  const ENVELOPE = /^dpapi:v1:[A-Za-z0-9+/]*={0,2}$/;
+
+  // Duplicate (#226): another tile of the same widget, same size and settings — minus
+  // every credential, and with an identity of its own.
+  //
+  // The fresh instanceId is not cosmetic. A clone without one becomes a second id-less
+  // claimant for this widget, and the positional key a LEGACY source's credential is
+  // addressed by only survives while there is exactly one — so an id-less clone would
+  // destroy the credential of the very tile being duplicated. Probes E2-E3 pin it.
+  //
+  // The credential scrub is two passes for the same reason the panel's is: the declared
+  // `secret` names are the ordinary case, and the second pass catches what the manifest
+  // cannot name — a REFUSED widget's credential, or one whose property was demoted to
+  // `text` (#66). Here the declared ones are blank anyway (this editor never holds them),
+  // so the pass that matters is the second; deleting rather than blanking is deliberate,
+  // since a blank would read as "the user cleared it" on the way back.
+  function duplicateSlotAt(page, i) {
+    // Same live-tree guard as removeSlotAt: a stale closure over a page a settings-init
+    // has since replaced must not push into the current one.
+    if (!state.layout || (state.layout.pages || []).indexOf(page) < 0) { renderEditor(); return; }
+    const source = (page.slots || [])[i];
+    if (!source) return;
+    if (!fitsFixed(page, source.size, null)) return;
+    const settings = JSON.parse(JSON.stringify(source.settings || {}));
+    for (const n of knownSecretNames(source.widgetId)) delete settings[n];
+    for (const [name, value] of Object.entries(settings))
+      if (typeof value === 'string' && ENVELOPE.test(value)) delete settings[name];
+    const def = {
+      widgetId: source.widgetId,
+      size: source.size,
+      instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
+      settings,
+    };
+    if (source.style) def.style = JSON.parse(JSON.stringify(source.style));
+    // No `col`: the source's anchor is where the SOURCE sits, and the clone flowing into
+    // the first free spot beats the two of them contesting one column. No projection
+    // markers either — secretsSet and its siblings describe the SOURCE's stored state,
+    // and on a tile with no credentials they would be a claim about nothing.
+    page.slots.push(def);
+    selectedSlot = page.slots.length - 1;
+    openPanel('widget');   // the clone is what the user configures next
+    renderPageList();      // the strip's widget count changed
+    renderEditor();
   }
 
   function removeSlotAt(page, i) {

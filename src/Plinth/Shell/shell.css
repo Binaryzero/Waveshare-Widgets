@@ -675,6 +675,10 @@ body.editing.dragging .edge { pointer-events: auto; }
 .ps-remove { min-width: 38px; min-height: 30px; color: #ff7676; }
 .ps-cap { font-size: 10.5px; color: var(--text-muted, #8e9196); margin: 0; }
 .edit-overlay .gear { bottom: 4px; left: 46px; }
+/* ⧉ duplicate (#226) — third in the bottom-left run, after 🎨 and ⚙. A quarter slot is
+ * 320px wide and the size/band chips own the bottom right from 44px in, so three buttons
+ * at 42px pitch is the most this row takes without them meeting. */
+.edit-overlay .dupe { bottom: 4px; left: 88px; }
 
 /* On-device emoji picker: same grid as the desktop popover, token-styled. */
 .emoji-pop {

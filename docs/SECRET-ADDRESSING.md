@@ -417,6 +417,21 @@ walking, so one `Cleared()` answers for both address spaces. The check runs ahea
 value branches, so a clear drops a retired def's revealed plaintext (the on-panel path) and
 its ciphertext alike — exactly as it does for a live slot.
 
+**Duplicate (#226) needs no addressing at all, which is the point.** A duplicate copies the
+settings MINUS every credential and mints a fresh `instanceId`, so it is an ordinary
+client-side add: no marker channel, no host operation, nothing new in this pipeline. The
+design that reached this document first had an opt-in to copy the stored credential, keyed
+by a `secretsCopiedFrom` marker naming the source instance — a second inbound marker channel
+and a second-chance lookup inside `Seal`, for one gesture. It was cut, and what remains is a
+gesture with no credential semantics to get wrong.
+
+One thing it does depend on: the clone must be **id-bearing**. `SlotKey` gives an id-less
+slot the positional `|w:0` key only while its widget has exactly one id-less claimant, so an
+id-less clone would be the second claimant and the source's credential would vanish on the
+next save — destroyed by the act of duplicating it. Probes E2/E3 pin both directions, E3
+deliberately asserting the loss that an unminted clone would cause, so a later simplification
+of the duplicate path fails there rather than in the field.
+
 **Restore inherits three constraints from this model, and honors all three.** Restore
 keeps the retained `instanceId` (the derived ww-secure bucket reconnects through it) and
 must, in one mutation: (a) remove the entry from `retained[]` as it copies the def back
