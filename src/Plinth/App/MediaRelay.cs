@@ -149,6 +149,39 @@ internal static class MediaRelay
         return null;
     }
 
+    /// <summary>The live body stream for each piece of media, keyed by the target
+    /// URL without its query. A server-side seek asks for a NEW transcode of the same
+    /// title at a different offset and the element simply drops the old response on
+    /// the floor; nothing else can release it (WebView2 never disposes a managed
+    /// content stream), so without this every seek strands an upstream socket — and
+    /// the ffmpeg behind it — for the whole idle window. A fresh stream for the same
+    /// media therefore retires the one it replaces, immediately rather than in
+    /// fifteen minutes.
+    ///
+    /// The key is the PATH, so a new position still matches the stream it supersedes.
+    /// Two widgets playing the same title in the same instant would collide on it,
+    /// and the loser takes a truncation its fallback chain recovers from, carrying
+    /// its position — much the cheaper mistake than leaking a transcode per tap.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, GuardedStream> Live = new();
+
+    private static void Supersede(Uri target, GuardedStream fresh)
+    {
+        var key = target.GetLeftPart(UriPartial.Path);
+        if (Live.TryGetValue(key, out var prior) && !ReferenceEquals(prior, fresh))
+        {
+            if (WebViewEnvironment.DiagnosticsBudget())
+                Log.Info("media relay retiring an earlier stream of the same media");
+            // OFF the UI thread: this runs inside the WebResourceRequested continuation,
+            // and tearing a socket down there is the shape of mistake that has already
+            // cost this file one field crash. Racing the registration below is harmless
+            // — the entry is removed by (key, value), so a doomed stream can never take
+            // its successor out with it.
+            System.Threading.Tasks.Task.Run(() => { try { prior.Dispose(); } catch { } });
+        }
+        fresh.Key = key;
+        Live[key] = fresh;
+    }
+
     // Every relay response — refusals included — carries this header. The video
     // element's no-cors request ignores it; the widget's diagnostic probe is an
     // ordinary cross-origin fetch, and without it Chromium reports TypeError for a
@@ -230,6 +263,10 @@ internal static class MediaRelay
         var body = request.Method == "HEAD" ? null
             : new GuardedStream(await response.Content.ReadAsStreamAsync(),
                 response.Content.Headers.ContentLength);
+        // A HEAD carries no stream and so supersedes nothing — the pre-flight probes
+        // this widget fires must never retire the stream that is actually playing.
+        if (body is not null)
+            Supersede(target, body);
         if (WebViewEnvironment.DiagnosticsBudget())
             Log.Info($"media relay {SafeUrl.Describe(target)} -> {(int)response.StatusCode}"
                 + (range is null ? "" : " (ranged)"));
@@ -267,6 +304,11 @@ internal static class MediaRelay
         private long _milestone = 64 * 1024;
         private long _lastRead = Environment.TickCount64;
         private readonly System.Threading.Timer _idle;
+
+        // The key this stream is registered under in <see cref="Live"/>, so releasing
+        // it — by supersession, by the idle timer, however — takes it back out and the
+        // registry never names a dead stream.
+        internal string? Key;
 
         // Nothing else ever closes this. WebView2 does not dispose a managed content
         // stream (a tracked defect of its own), so an abandoned response — a playback
@@ -418,6 +460,8 @@ internal static class MediaRelay
             {
                 _released = true;
                 _idle.Dispose();
+                if (Key is not null)
+                    Live.TryRemove(new KeyValuePair<string, GuardedStream>(Key, this));
                 // How far this stream got separates the failure modes: never announced
                 // means WebView2 never pulled a byte; a few KB means the head arrived
                 // and never parsed; megabytes means playback and an ordinary stop.
