@@ -91,7 +91,26 @@
 
   /* Player view, browsing: the shelf again, but every poster is a play button. */
   #player { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
-  #pstrip { display: flex; gap: 8px; overflow: hidden; flex: 1 1 auto; min-height: 0; align-items: flex-start; }
+  /* The browse grid. It was one long row paged by tapping ‹ ›, which spent the whole
+   * height of the tile on a single row of posters and made every move a tap. It wraps
+   * now — two rows wherever the height affords them — and a finger moves through it.
+   *
+   * The scroll is VERTICAL and pinned that way. Horizontal still belongs to the shell's
+   * page switcher (#221), so touch-action stays an x-block rather than becoming auto;
+   * pan-y is exactly that, and it is the same trade the chooser sheet already makes. */
+  #pstrip {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    overflow-y: auto; overflow-x: hidden;
+    flex: 1 1 auto; min-height: 0;
+    align-items: flex-start; align-content: flex-start;
+    touch-action: pan-y;
+    scrollbar-width: none;
+  }
+  #pstrip::-webkit-scrollbar { width: 0; height: 0; }
+  /* A tile in the grid gives up .no-pan's touch-action:none for pan-y: none would block
+   * the very drag that now moves the grid, while pan-y still refuses the horizontal pan
+   * that would page the panel out from under the finger. */
+  #pstrip .tile, #pstrip .tile.no-pan { touch-action: pan-y; }
   #pstrip .tile { cursor: pointer; }
   #pstrip .tile .art { border-width: 1px; }
 
@@ -1114,20 +1133,67 @@
 
   // The card budget, shared by fetching and drawing: how many fit IS the page size,
   // so the layout is measured before the server is asked for a page.
-  function playerBudget(wide, pagers) {
+  function playerBudget(wide, pagers, showing) {
     const W = document.documentElement.clientWidth || 640;
     const H = document.documentElement.clientHeight || 400;
     const band = H < 260;
     // Header, footer, browse bar (its buttons stand at .btn's 40px touch floor),
     // strip pagers: the posters absorb what remains.
     const avail = H - 20 - 28 - 40 - (band ? 0 : 4);
-    const cardH = Math.max(64, Math.min(220, avail - 45));
-    const cardW = Math.round(wide ? cardH * 16 / 9 : cardH * 2 / 3);
+    // What a row costs on top of its poster — the caption line and the tile's own gap
+    // above it — and what separates one row from the next.
+    const ROW_EXTRA = 24;
+    const ROW_GAP = 8;
+    // A second row is only worth having if BOTH still hold a poster worth looking at;
+    // below that it is a wall of thumbnails.
+    const MIN_POSTER = 110;
+    // ...and the rows stop just short of filling the height, so a sliver of the next one
+    // shows under the fold. Two rows sized to fit EXACTLY says nothing about the twelve
+    // more behind them; a cut-off row is the whole affordance, and cheaper than a
+    // scrollbar on a surface with no pointer to put one under.
+    const PEEK = 20;
     // The pager allowance is only charged on levels that HAVE pagers — the New
     // shelf has none, and billing it a phantom cost a whole poster at 1280. Where
     // they exist they are 40px each (.btn's min-width floor), plus their two gaps.
-    const count = Math.max(1, Math.floor((W - 24 - (pagers === false ? 0 : 88) + 8) / (cardW + 8)));
-    return { cardH, count };
+    const widthOf = (h) => Math.round(wide ? h * 16 / 9 : h * 2 / 3);
+    const colsFor = (h) => Math.max(1, Math.floor(
+      (W - 24 - (pagers === false ? 0 : 88) + 8) / (widthOf(h) + 8)));
+    // One row as tall as the space allows — what the shelf has always been — and the
+    // two-row grid that replaces it wherever the height can carry both.
+    const tallH = Math.max(64, Math.min(220, avail - ROW_EXTRA));
+    const twoH = Math.min(220, Math.floor((avail - ROW_GAP - PEEK) / 2) - ROW_EXTRA);
+    const twoUp = twoH >= MIN_POSTER;
+    const gridH = twoUp ? twoH : tallH;
+    const rowsUp = twoUp ? 2 : 1;
+    // The biggest poster at which everything on this page still fits the rows that height
+    // allows, found by stepping DOWN from the tall single row. Four movies keep the full
+    // 220; a season's three stills, which are 16/9 and so only fit two per tall row, give
+    // up a few pixels instead of half their height; a full page of a library lands on the
+    // two-row grid because nothing above it holds them. Sizing on the count matters most
+    // for the shelves with least in them — a short season, Continue on a quiet week, a
+    // library's last page — which are exactly the ones a fixed small poster would strand
+    // in a mostly empty tile.
+    //
+    // Without a count this is the PAGE budget, sizing a fetch before its answer exists,
+    // and the grid is what it must plan for.
+    const rowsAt = (h) => Math.max(1, Math.floor((avail + ROW_GAP) / (h + ROW_EXTRA + ROW_GAP)));
+    let cardH = gridH;
+    if (showing != null) {
+      for (let h = tallH; h > gridH; h -= 4) {
+        if (rowsAt(h) * colsFor(h) >= showing) { cardH = h; break; }
+      }
+    }
+    // One row more than fits, so the grid always has somewhere to scroll and the row
+    // half-showing under the fold says so without a scrollbar. The pager then moves a
+    // whole page at a time — a gesture reached for occasionally instead of constantly.
+    // Always from the GRID height, never the tall one: the page size may not depend on
+    // the answer it is sizing, or renderPlayer would refetch it on sight.
+    return {
+      cardH,
+      rows: rowsAt(cardH),
+      cols: colsFor(cardH),
+      count: colsFor(gridH) * (rowsUp + 1),
+    };
   }
 
   // Null on failure, NOT [] — a discovery that failed is not an empty server, and
@@ -1910,12 +1976,21 @@
     el('pgenre').classList.toggle('on', !!browse.genre);
   }
 
+  // Where the grid was scrolled to, and for WHICH list. The poll repaints the strip
+  // every few seconds and a repaint rebuilds every tile, so without this a viewer who
+  // had scrolled down would be yanked back to the top on the next tick. The position is
+  // kept while the question is the same and dropped when it changes — another tab, page,
+  // level, sort or genre is a different list and starts at its own beginning.
+  let stripAt = { key: '', top: 0 };
+
   /// One card row for every level: posters for movies/series/seasons, landscape
   /// stills for episodes. Returns the keys it wants fetched.
   function buildStrip(items, opts) {
     const wide = !!(opts && opts.wide);
-    const budget = playerBudget(wide);
+    const budget = playerBudget(wide, opts && opts.pagers, items.length);
     const strip = el('pstrip');
+    const key = (opts && opts.key) || '';
+    const top = key === stripAt.key ? strip.scrollTop : 0;
     // The tiles about to be destroyed may have presses armed against them.
     cancelHolds();
     strip.textContent = '';
@@ -1975,11 +2050,18 @@
       if (opts && opts.onHold && cfg.user) armHold(tile, box, () => opts.onHold(item, i));
       strip.appendChild(tile);
     });
+    // After the tiles exist, or there is no height to scroll back to. Every tile's size
+    // is fixed up front, so the posters arriving later cannot move this.
+    stripAt = { key, top };
+    strip.scrollTop = top;
     return { wanted, count: budget.count };
   }
 
   function stripNote(text, onTap) {
     const strip = el('pstrip');
+    // A note is one line, and the next real list is a fresh question either way.
+    stripAt = { key: '', top: 0 };
+    strip.scrollTop = 0;
     // The other writer of this strip, and holds die here too: a second finger reaching
     // a tab while a first is still pressing a poster takes the loading path, not
     // buildStrip, and the detached tile's timer would open a sheet for the old item
@@ -2115,6 +2197,10 @@
     const built = buildStrip(items, {
       wide,
       mixed: nextTab,
+      // What makes this list THIS list: change any of them and the grid is answering a
+      // different question, so it starts at the top rather than where the last one sat.
+      key: [browse.tab, browse.path.map((p) => p.id).join('/'), browse.page,
+        browse.sort, browse.genre].join('|'),
       onTap: (item, i) => openItem(item, absolute(i)),
       // Play from the sheet is the same call as the tap — but the index is worked out
       // HERE, when the tile was held, not when Play is finally tapped. The sheet
@@ -2155,6 +2241,8 @@
     // favourited and what is watched — and New holds like every other tab. With no
     // user named there is nothing to know and buildStrip arms no press at all.
     const built = buildStrip(latest.slice(0, budget.count), {
+      key: 'new',
+      pagers: false,
       onTap: (item) => openItem(item, null),
       onHold: (item) => openItemSheet(item, () => openItem(item, null)),
     });
