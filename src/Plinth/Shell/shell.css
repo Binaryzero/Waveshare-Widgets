@@ -553,6 +553,48 @@ body.editing .add-zone { display: grid; place-items: center; align-content: cent
 #paletteGrid button .p-by { font-size: 10px; color: var(--text-muted, #8e9196); }
 #paletteGrid button:disabled { opacity: 0.4; pointer-events: none; }
 
+/* Retired tiles (#226): rows rather than cards — each carries two actions, and a grid
+ * cell that holds buttons stops reading as a button itself. */
+#paletteRetired[hidden] { display: none; }
+#paletteRetired {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--text, #fff) 12%, transparent);
+}
+#paletteRetired .p-section { font-size: 11px; font-weight: 800; letter-spacing: 0.4px; text-transform: uppercase; color: var(--text-muted, #8e9196); margin-bottom: 8px; }
+#paletteRetired .p-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 4px;
+}
+/* Sibling combinator, not :first-of-type — the section heading is a div too, so
+ * :first-of-type would never match a row and every list kept a stray top rule. */
+#paletteRetired .p-row + .p-row {
+  border-top: 1px solid color-mix(in srgb, var(--text, #fff) 8%, transparent);
+}
+#paletteRetired .p-row .p-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+#paletteRetired .p-row .p-name { font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#paletteRetired .p-row .p-by { font-size: 10px; color: var(--text-muted, #8e9196); }
+#paletteRetired .p-row button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--text, #fff) 18%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text, #dde2e8);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+#paletteRetired .p-row button:active { transform: scale(0.96); }
+#paletteRetired .p-row button:disabled { opacity: 0.35; pointer-events: none; }
+#paletteRetired .p-row button.danger { color: var(--err, #ff6268); border-color: color-mix(in srgb, var(--err, #ff6268) 45%, transparent); }
+#paletteRetired .p-row button.confirm { background: var(--err, #ff6268); border-color: transparent; color: #fff; }
+
 /* While editing: keep chrome awake, hide the empty-state, dim wallpaper slightly. */
 body.editing #empty { display: none; }
 body.editing #dots, body.editing .edge { opacity: 0.85; }

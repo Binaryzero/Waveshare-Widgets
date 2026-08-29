@@ -417,10 +417,72 @@ walking, so one `Cleared()` answers for both address spaces. The check runs ahea
 value branches, so a clear drops a retired def's revealed plaintext (the on-panel path) and
 its ciphertext alike — exactly as it does for a live slot.
 
-**Restore (a later change) inherits three constraints from this model.** Restore keeps
-the retained `instanceId` (the derived ww-secure bucket reconnects through it) and must,
-in one mutation: (a) remove the entry from `retained[]` as it copies the def back into a
-page — else the pages∧retained twin arises and the poison blanks the just-restored
+**Restore inherits three constraints from this model, and honors all three.** Restore
+keeps the retained `instanceId` (the derived ww-secure bucket reconnects through it) and
+must, in one mutation: (a) remove the entry from `retained[]` as it copies the def back
+into a page — else the pages∧retained twin arises and the poison blanks the just-restored
 credential; (b) mint a fresh id only on a genuine collision with a live tile; and
 (c) persist and re-init rather than render the moved def directly — `Reveal` is Pages-only,
 so a client-side restore would hand the widget sealed ciphertext as its setting.
+`LayoutStore.RestoreRetained` is that mutation. Two details are worth naming because they
+are not obvious from the constraints alone:
+
+- (a) is `RemoveAll` by identity, not "remove the matched entry". A duplicate-identity
+  attic is a corruption class this code already assumes it must survive — the stored
+  index shares one seen-set across the pages and retained walks precisely for it — so
+  restoring "the" entry and leaving its twin would manufacture the twin state the
+  constraint exists to avoid.
+- On the (b) re-mint path the ww-secure bucket stays with the live tile holding the old
+  id, which is correct under #188's rule: it is that tile's. So a re-minted restore
+  reconnects **Axis A only** — the DPAPI envelope is user-scoped, not instance-scoped, and
+  rides along — while the widget re-authenticates Axis B. Restoring an uncontested id (the
+  overwhelmingly common case) reconnects both.
+
+The def a settings-side restore hands back to the editor is masked over a wrapper that is
+literally `{"pages":[{"slots":[def]}]}` with the window's own `MaskedPlan()`. Both halves
+are load-bearing: `Mask` returns having done *nothing* unless it finds `layoutNode["pages"]`,
+and a manifest-only plan walks straight past a **refused** widget's plaintext residue —
+either mistake posts a credential into the editor's model, which is the state the
+host-performed restore exists to prevent.
+
+**Clear destroys, and fails closed.** `ClearRetained` drops the entry (again `RemoveAll` by
+identity: a leftover twin would sit in the survivors' attic and talk the liveness guard out
+of the destroy, so the Clear would neither empty the row nor purge the bucket) and computes
+the forget set with `InstancesToForget` over the post-removal layout — eviction's rule
+exactly. Unlike eviction, a failure to write the secure store aborts the whole operation
+without saving: eviction tolerates catch-and-continue because blocking an ordinary save on
+secure-store trouble is the worse failure, but Clear is a dedicated destroy with its own
+ack, and saving a layout that no longer names the instance while its bucket survives would
+strand a *working* credential nothing references.
+
+**Cross-window convergence for Clear.** The union (`MergeRetainedFromDisk`) only ever ADDS
+disk entries the incoming payload omits — that asymmetry is what protects the attic from a
+stale window shrinking it — so an incoming entry the disk lacks is never questioned, and a
+still-open window re-ships a cleared entry from memory. `Seal` then keeps its still-openable
+ciphertext idempotently, and a later Restore would hand back a *working* credential the user
+explicitly destroyed. So each destroy is mirrored to the other window, both ways:
+settings→panel through `DashboardWindow.PostRetainedGone` (the shell's `evicted-ids`
+splice), panel→settings through the `DashboardWindow.RetainedGone` event that
+`SettingsWindow.Dashboard`'s setter subscribes to (the editor's `retained-gone` splice).
+The settings→panel direction is the one that would fail constantly without it — the panel
+re-ships its whole model on every drag and resize — but neither race is worth leaving open
+once the wiring exists.
+
+Both clients drop **every** entry under the identity, not the first match, exactly as the
+host does: a leftover twin is re-shipped on the next save, seating that identity in pages
+and retained at once — the poison state again.
+
+No tombstones. The mirror is best-effort by construction (a window opened after the destroy
+re-reads disk and is correct by definition), and a persistent tombstone list with no expiry
+story, for a same-machine race whose residue would be visible rather than silent, buys less
+than it costs.
+
+**The ack claims something about disk, so it waits for disk.** `LayoutStore.Save` swallows
+its write failures — a save is triggered by ordinary editing on both surfaces, and throwing
+out of those paths would take something visible down with it — but it now REPORTS whether
+the write landed, and Clear and Restore both check. Clear has already destroyed the bucket
+by then (destroy-before-Save, so the surviving state is a retained tile that
+re-authenticates, never a destroyed tile with a live credential), so its ack carries
+`saved` and the clients keep the row when it is false: telling the user "deleted for good"
+while the entry sits on disk with a still-openable envelope is the one lie this operation
+cannot afford.

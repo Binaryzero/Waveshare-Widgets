@@ -261,6 +261,129 @@ public static class LayoutStore
         return result;
     }
 
+    /// <summary>What <see cref="RestoreRetained"/> did.</summary>
+    public enum RestoreOutcome
+    {
+        /// <summary>The def left the attic and landed on the named page.</summary>
+        Ok,
+
+        /// <summary>No attic entry carries that identity — already restored, cleared, or
+        /// evicted, plausibly by the other window. The client's list is stale.</summary>
+        NotFound,
+
+        /// <summary>The index names no page on disk. Refused, never clamped: the client
+        /// names a page it is looking at, and silently restoring onto some OTHER page is
+        /// worse than a refusal the user can see and retry.</summary>
+        BadPage,
+    }
+
+    /// <summary>Moves one retained def back onto a live page (#226) — the whole restore,
+    /// as a single mutation of <paramref name="layout"/>, so no intermediate state ever
+    /// reaches disk.
+    ///
+    /// <para>Why one mutation: an identity seated in BOTH pages and retained poisons its
+    /// own key in the stored index (SecretStore.BuildStoredIndex shares one seen-set
+    /// across the pages and retained walks), and the next masked save would then read the
+    /// restored slot's blank as "untouched" and REMOVE the credential the restore just
+    /// reconnected. Hence the <see cref="List{T}.RemoveAll"/> rather than removing "the"
+    /// match: a duplicate-identity attic (corruption, or two windows minting
+    /// independently) would otherwise leave a twin behind and produce exactly that
+    /// state.</para>
+    ///
+    /// <para>The instanceId is KEPT — it is what reconnects the derived ww-secure bucket —
+    /// and re-minted only on a genuine collision with a live tile, where two slots would
+    /// otherwise share one identity. On that path the bucket stays with the collision
+    /// holder (it is that tile's, by #188's rule) and the restored tile re-authenticates;
+    /// its Axis-A manifest secret still rides along, DPAPI being user-scoped rather than
+    /// instance-scoped.</para>
+    ///
+    /// <para>The column anchor survives only onto the page it was retired from: off its
+    /// origin page a stale <see cref="LayoutSlot.Col"/> pins the tile at an arbitrary
+    /// column, and because the shell places every anchor before any unanchored slot, it
+    /// could take a column out from under a tile the user can currently see. Both editors
+    /// mirror this rule in their own fit check, so the button they enable and the
+    /// placement the host performs agree.</para></summary>
+    /// <param name="restored">The def now living on the page (id possibly re-minted), for
+    /// the caller to mask and ack; null unless the outcome is <see cref="RestoreOutcome.Ok"/>.</param>
+    /// <param name="expectPageName">What the client believes page <paramref name="page"/>
+    /// is called. An index alone is not an identity: the settings editor is an
+    /// explicit-save editor, so its page list can be reordered locally, and an index that
+    /// is still in range then names a DIFFERENT page on disk — the tile lands somewhere
+    /// the user was not looking, silently. Null skips the check.</param>
+    public static RestoreOutcome RestoreRetained(
+        DashboardLayout layout, string? widgetId, string? instanceId, int page,
+        out LayoutSlot? restored, string? expectPageName = null)
+    {
+        restored = null;
+        if (string.IsNullOrEmpty(widgetId) || string.IsNullOrEmpty(instanceId))
+            return RestoreOutcome.NotFound;
+        var key = widgetId + "|i:" + instanceId;
+        var entry = layout.Retained?.FirstOrDefault(r => Key(r?.Def) == key);
+        if (entry is null) return RestoreOutcome.NotFound;
+        if (page < 0 || layout.Pages is null || page >= layout.Pages.Count)
+            return RestoreOutcome.BadPage;
+        if (expectPageName is not null
+            && !string.Equals(layout.Pages[page].Name, expectPageName, StringComparison.Ordinal))
+            return RestoreOutcome.BadPage;
+
+        var target = layout.Pages[page];
+        target.Slots ??= [];
+        var def = entry.Def;
+
+        // Every entry under this identity, not just the matched one (see the twin note).
+        layout.Retained!.RemoveAll(r => Key(r?.Def) == key);
+
+        if (!string.Equals(entry.OriginPage, target.Name, StringComparison.Ordinal))
+            def.Col = null;
+
+        var live = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var p in layout.Pages)
+            foreach (var s in p.Slots ?? [])
+                if (Key(s) is { } k) live.Add(k);
+        if (live.Contains(key)) def.InstanceId = NewInstanceId();
+
+        target.Slots.Add(def);
+        restored = def;
+        return RestoreOutcome.Ok;
+    }
+
+    /// <summary>Destroys one retained entry for real (#226): drops it from the attic and
+    /// reports which instance's derived ww-secure bucket the caller should forget.
+    ///
+    /// <para>The forget set comes from <see cref="InstancesToForget"/> over this single
+    /// entry and the POST-removal layout, so Clear obeys exactly the rule eviction does —
+    /// never an id a surviving live or retained slot still references (#188). Removing
+    /// every entry under the identity rather than the first match matters here for a
+    /// second reason: a leftover twin would sit in the survivors' attic, the liveness
+    /// guard would correctly decline the forget, and the user's Clear would neither
+    /// destroy the bucket nor empty the row they were looking at.</para>
+    ///
+    /// <para>Callers must treat the forget as the FIRST step and fail closed: if the
+    /// secure store cannot be written, do NOT save the layout. Aborting costs nothing
+    /// (only this in-memory copy was mutated) and leaves the entry restorable, whereas
+    /// saving anyway would strand a working credential bucket that nothing references and
+    /// only a whole-widget uninstall would ever collect.</para></summary>
+    /// <returns>True when an entry was removed; false leaves <paramref name="layout"/>
+    /// untouched.</returns>
+    public static bool ClearRetained(
+        DashboardLayout layout, string? widgetId, string? instanceId,
+        out IReadOnlyList<(string WidgetId, string InstanceId)> toForget)
+    {
+        toForget = [];
+        if (string.IsNullOrEmpty(widgetId) || string.IsNullOrEmpty(instanceId)) return false;
+        var key = widgetId + "|i:" + instanceId;
+        var entry = layout.Retained?.FirstOrDefault(r => Key(r?.Def) == key);
+        if (entry is null) return false;
+        layout.Retained!.RemoveAll(r => Key(r?.Def) == key);
+        toForget = InstancesToForget([entry], layout);
+        return true;
+    }
+
+    /// <summary>A fresh instance identity, in the shell's own shape — the collision
+    /// re-mint above cannot borrow Seal's stamper, which is a local function that
+    /// deliberately no-ops on the id-bearing slots an attic def always is.</summary>
+    private static string NewInstanceId() => "s" + Guid.NewGuid().ToString("n")[..12];
+
     /// <summary>The attic's identity key — widgetId + "|i:" + instanceId, the same id
     /// form SlotKey derives. Null for an id-less def: an id-less entry has no identity
     /// to reconcile or destroy by, and is never matched positionally (#68).</summary>
@@ -325,15 +448,26 @@ public static class LayoutStore
         return fallback;
     }
 
-    public static void Save(DashboardLayout layout)
+    /// <summary>Writes layout.json, swallowing the failure — a save is triggered by
+    /// ordinary editing on both surfaces, and throwing out of those paths would take
+    /// something visible down with it.
+    ///
+    /// <para>Returns whether the write actually landed, for the one caller that has to
+    /// know: a destructive op (#226's Clear) acks the client, and a client told "done"
+    /// after a silently failed write drops a row that reappears at the next init. Every
+    /// other caller ignores it, deliberately — reporting a failed layout save into an
+    /// ordinary edit is a notification with nothing behind it.</para></summary>
+    public static bool Save(DashboardLayout layout)
     {
         try
         {
             DurableStore.Write(AppPaths.LayoutFile, JsonSerializer.Serialize(layout, JsonOptions));
+            return true;
         }
         catch (Exception ex)
         {
             Log.Warn($"Failed to save layout.json: {ex.Message}");
+            return false;
         }
     }
 

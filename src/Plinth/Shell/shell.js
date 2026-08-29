@@ -84,6 +84,7 @@
   // window.postMessage — ww-shell wraps outgoing messages, ww-host wraps incoming.
   const PREVIEW = new URLSearchParams(location.search).has('preview');
   let previewPage = null; // page the settings window wants the replica to show
+  let initPage = null;    // one-shot page the host asks this NEW document to open on (#226)
   let previewGen = 0;     // init generation this document state was built under;
                           // echoed on every persist so the settings window can drop
                           // captures that raced a newer init (posting is async)
@@ -154,17 +155,40 @@
       }
     }
     else if (msg.type === 'evicted-ids') {
-      // The host's attic cap dropped these entries (#226) and destroyed their derived
-      // credentials. Drop them from the in-memory copy too, or every subsequent save
-      // re-ships them and the attic never converges on the disk's bounded list. Matched
-      // by identity, never index — this copy and the host's can be ordered differently.
-      for (const e of (Array.isArray(msg.data) ? msg.data : [])) {
-        const list = layoutData.retained;
-        if (!Array.isArray(list)) break;
-        const idx = list.findIndex((r) => r && r.def
-          && r.def.widgetId === e.widgetId && r.def.instanceId === e.instanceId);
-        if (idx >= 0) list.splice(idx, 1);
+      // These attic entries are gone from disk (#226) — dropped by the cap, or cleared
+      // by the user in either window — and their derived credentials with them. Drop
+      // them from the in-memory copy too, or every subsequent save re-ships them: the
+      // cap would undo itself, and a Clear would come straight back, sealed bytes and
+      // all, on the panel's very next drag or resize. Matched by identity, never index —
+      // this copy and the host's can be ordered differently.
+      for (const e of (Array.isArray(msg.data) ? msg.data : [])) dropRetained(e.widgetId, e.instanceId);
+      refreshRetiredUi();
+    }
+    else if (msg.type === 'retained-cleared') {
+      // The user destroyed this one from THIS panel. On a failed write the host says so:
+      // the bucket is gone (destroy-before-Save) but the entry is still on disk, so
+      // dropping the row would hide something the next init brings back.
+      const e = msg.data || {};
+      if (e.saved !== false) {
+        dropRetained(e.widgetId, e.instanceId);
+        showPanelNotice('Deleted, with its saved credentials.');
+      } else {
+        showPanelNotice('Its saved credentials are gone, but the layout could not be written. Try again.');
       }
+      refreshRetiredUi();
+    }
+    else if (msg.type === 'retained-error') {
+      // Restore/Clear refused. 'not-found' means the disk no longer holds that entry
+      // (the other window got there first), so drop it: leaving the row would offer
+      // the same two dead buttons for as long as the document lives.
+      const e = msg.data || {};
+      if (e.reason === 'not-found') dropRetained(e.widgetId, e.instanceId);
+      refreshRetiredUi();
+      showPanelNotice(e.reason === 'not-found'
+        ? 'That widget is no longer in the removed list.'
+        : e.reason === 'bad-page'
+          ? 'That page has changed — open the removed list again.'
+          : 'Could not do that. Try again.');
     }
     else if (msg.type === 'secrets-failed') {
       // The panel already re-rendered as if the save were clean, but the host could not
@@ -682,6 +706,12 @@
     if (data.genBase !== undefined && data.genBase !== null) genBase = String(data.genBase);
     if (PREVIEW) previewGen = data.gen | 0;
     if (PREVIEW && typeof data.page === 'number') previewPage = data.page;
+    // A restore reloads the whole document (the attic def is ciphertext here, so only the
+    // host can move it) — and a reload otherwise drops the user on page 0 with the chrome
+    // idle, the restored tile off-screen, the operation reading as "nothing happened".
+    // The host stamps this hint on exactly the one payload that reload produces.
+    if (!PREVIEW && typeof data.page === 'number') initPage = data.page;
+    const resumeEditing = !PREVIEW && data.editing === true;
     latestSensors = data.sensors || [];
     latestMedia = data.media;
     if (typeof data.mediaRelayToken === 'string') mediaRelayToken = data.mediaRelayToken;
@@ -723,6 +753,8 @@
     });
 
     renderAll();
+    // After the render, so the edit chrome measures a page that exists.
+    if (resumeEditing && !editing) setEditing(true);
 
     if (reMinted && !PREVIEW) {
       // Heal the stored layout so the dupes never come back. The replica skips
@@ -737,8 +769,12 @@
     closePalette(); // palette entries capture page objects this rebuild replaces
     closeStyleEditor(false); // its record is about to be replaced
     closePropSheet(false);   // ditto for the settings sheet
+    // A re-init (hot reload, replica refresh) keeps the page — and a document that was
+    // just reloaded FOR a restore has no page to keep, so the host's one-shot hint stands
+    // in. Consumed here: a later renderAll in the same document is an ordinary re-render.
     const keepPage = (PREVIEW && previewPage != null) ? previewPage
-      : currentPage(); // a re-init (hot reload, replica refresh) keeps the page
+      : (initPage != null ? initPage : currentPage());
+    initPage = null;
     refreshBgSpecs();
     bg.reset();
 
@@ -1322,7 +1358,10 @@
   }
   const paletteEl = document.getElementById('palette');
   const paletteGrid = document.getElementById('paletteGrid');
+  const paletteTitle = document.getElementById('paletteTitle');
+  const paletteRetired = document.getElementById('paletteRetired');
   const pageDeleteBtn = document.getElementById('pageDelete');
+  const retiredBtn = document.getElementById('retiredBtn');
 
   const WIDTH_ORDER = ['quarter', 'half', 'three-quarter', 'full'];
   const WIDTH_LABELS = { quarter: '¼', half: '½', 'three-quarter': '¾', full: 'Full' };
@@ -1449,7 +1488,14 @@
     document.getElementById('pageMoveLeft').disabled = i <= 0;
     document.getElementById('pageMoveRight').disabled = i >= layoutData.pages.length - 1;
     pageDeleteBtn.disabled = layoutData.pages.length <= 1;
+    // Hidden rather than disabled when the attic is empty: an always-visible button for a
+    // feature most users never trigger is clutter on a 1280×400 capsule.
+    retiredBtn.hidden = retainedEntries().length === 0;
   }
+  retiredBtn.addEventListener('click', () => {
+    const page = layoutData.pages[editIndex()];
+    if (page) openPalette(page, null, true);
+  });
 
   // Two-tap confirm for destructive buttons (no native dialogs on the panel).
   function confirmThen(btn, restoreText, needsConfirm, action) {
@@ -1642,6 +1688,9 @@
       slots = slots.filter((s) => s !== record);
       relayoutPage(page);
       syncNotificationDemand();
+      // The attic just went from empty to not — reveal the way back to it, or the very
+      // removal that created the entry leaves its only entry point hidden.
+      if (editing) updateEditBar();
     });
   }
 
@@ -2696,7 +2745,7 @@
     return found;
   }
 
-  function openPalette(page, region) {
+  function openPalette(page, region, focusRetired) {
     cancelDrag(); // a second finger can reach the add-zone while a drag holds
     // Toggle: pressing "+" again dismisses instead of stacking a re-open (#46).
     if (!paletteEl.hidden) { closePalette(); return; }
@@ -2739,9 +2788,154 @@
       note.textContent = 'This page is full — remove a widget or add a page.';
       paletteGrid.prepend(note);
     }
+    palettePage = page;
+    renderRetired(page);
+    // One card, two jobs — so it says which one it was opened for. Coming from the
+    // Retired button the list is well below the widget grid, off the bottom of a 400px
+    // panel, and a card that opens on "Add a widget" reads as the wrong card entirely.
+    paletteTitle.textContent = focusRetired ? 'Removed widgets' : 'Add a widget';
     paletteEl.hidden = false;
+    if (focusRetired && !paletteRetired.hidden) paletteRetired.scrollIntoView({ block: 'start' });
   }
-  function closePalette() { paletteEl.hidden = true; }
+  function closePalette() { paletteEl.hidden = true; palettePage = null; }
+
+  // The page the open palette is showing, so a host ack can re-render the retired list
+  // against the same page its Restore buttons were sized for.
+  let palettePage = null;
+
+  function refreshRetiredUi() {
+    if (editing) updateEditBar();
+    if (paletteEl.hidden || !palettePage) return;
+    if (layoutData.pages.indexOf(palettePage) < 0) { closePalette(); return; }
+    renderRetired(palettePage);
+  }
+
+  // ---- The retired attic (#226), on glass ------------------------------------------
+  // Entries the host holds for us: removed tiles, keyed by identity, whose settings the
+  // shell only ever sees as ciphertext. Restore and Clear are therefore HOST operations —
+  // this list posts a request and waits for the answer; it moves nothing itself.
+
+  function retainedEntries() {
+    const list = Array.isArray(layoutData.retained) ? layoutData.retained : [];
+    // An entry with no identity cannot be addressed, so it cannot be restored or cleared
+    // either — showing a row with two dead buttons is worse than showing nothing.
+    return list.filter((r) => r && r.def && r.def.widgetId && r.def.instanceId);
+  }
+
+  // EVERY entry under the identity, matching the host's own RemoveAll. Dropping only the
+  // first would leave a twin behind, and this copy is re-shipped on the next save — which
+  // seats that identity in pages AND retained, the state whose stored-index poison blanks
+  // the credential on the save after that.
+  function dropRetained(widgetId, instanceId) {
+    const list = layoutData.retained;
+    if (!Array.isArray(list) || !widgetId || !instanceId) return;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const d = list[i] && list[i].def;
+      if (d && d.widgetId === widgetId && d.instanceId === instanceId) list.splice(i, 1);
+    }
+  }
+
+  // "3d ago", give or take. retiredAt is deliberately unvalidated on load (a malformed
+  // one must not cost the whole layout file), and the model's own note admits a backward
+  // clock set — so an unparseable or negative age says nothing rather than "NaNd ago".
+  function retiredAgo(iso) {
+    const t = Date.parse(iso || '');
+    if (!Number.isFinite(t)) return '';
+    const mins = Math.floor((Date.now() - t) / 60000);
+    if (mins < 0) return '';
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    if (mins < 1440) return Math.floor(mins / 60) + 'h ago';
+    return Math.floor(mins / 1440) + 'd ago';
+  }
+
+  // The column anchor is origin-page-local, matching what the host does on restore: off
+  // its origin page a stale `col` pins the tile at an arbitrary column, and because
+  // anchors are seated before any unanchored slot it could take a column from a tile the
+  // user can currently see. The two must agree, or the button says "fits" about a
+  // placement the host will not perform (or the reverse).
+  function retainedProbe(page, entry) {
+    return {
+      size: entry.def.size,
+      col: entry.originPage === page.name ? entry.def.col : null,
+    };
+  }
+
+  function renderRetired(page) {
+    paletteRetired.textContent = '';
+    const entries = retainedEntries()
+      .slice()
+      .sort((a, b) => String(b.retiredAt || '').localeCompare(String(a.retiredAt || '')));
+    paletteRetired.hidden = entries.length === 0;
+    if (!entries.length) return;
+
+    const head = document.createElement('div');
+    head.className = 'p-section';
+    head.textContent = 'Removed widgets';
+    paletteRetired.appendChild(head);
+
+    for (const entry of entries) {
+      const row = document.createElement('div');
+      row.className = 'p-row';
+      const info = document.createElement('div');
+      info.className = 'p-info';
+      const name = document.createElement('span');
+      name.className = 'p-name';
+      const widget = widgetsById.get(entry.def.widgetId);
+      // Falls back to the raw id, as every other name site does: a tile of a widget that
+      // has since been uninstalled is still restorable, and says so where its name goes.
+      name.textContent = widget ? (widget.displayName || widget.name) : entry.def.widgetId;
+      const meta = document.createElement('span');
+      meta.className = 'p-by';
+      const fits = pageFits(page, retainedProbe(page, entry));
+      // Every reason is INLINE text, never a `title`: a tooltip needs a hover, and this
+      // is a touch panel. The size is here to tell eight entries of one widget apart,
+      // which is otherwise only possible by their timestamps.
+      meta.textContent = [
+        widget ? '' : 'Not installed',
+        WIDTH_LABELS[sizeParts(entry.def.size).width] || '',
+        entry.originPage ? 'from ' + entry.originPage : '',
+        retiredAgo(entry.retiredAt),
+        fits ? '' : 'no room on this page',
+      ].filter(Boolean).join(' · ');
+      info.append(name, meta);
+
+      const restore = document.createElement('button');
+      restore.textContent = 'Restore';
+      restore.disabled = !fits;
+      restore.addEventListener('click', () => {
+        closePalette();
+        // A restore reloads the whole document, so anything still open here would be
+        // thrown away mid-edit. Both closers FLUSH (no argument), and their save lands
+        // ahead of the restore in the host's message queue.
+        closeStyleEditor();
+        closePropSheet();
+        postToHost({
+          type: 'restore-retained',
+          widgetId: entry.def.widgetId,
+          instanceId: entry.def.instanceId,
+          page: layoutData.pages.indexOf(page),
+          pageName: page.name,
+        });
+      });
+
+      // "Delete", not "Clear": next to a ✕ that only retires, the destructive one has to
+      // say so in the label rather than in a tooltip nobody on a touch panel can open.
+      const clear = document.createElement('button');
+      clear.className = 'danger';
+      clear.textContent = 'Delete';
+      clear.addEventListener('click', () => confirmThen(clear, 'Delete', true, () => {
+        postToHost({
+          type: 'clear-retained',
+          widgetId: entry.def.widgetId,
+          instanceId: entry.def.instanceId,
+        });
+      }));
+
+      row.append(info, restore, clear);
+      paletteRetired.appendChild(row);
+    }
+  }
   document.getElementById('paletteBackdrop').addEventListener('click', closePalette);
 
   function addWidget(page, widget, region) {

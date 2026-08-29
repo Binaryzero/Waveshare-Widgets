@@ -35,6 +35,10 @@
     <button id="pageMoveRight" title="Next page">&#8250;</button>
     <button id="pageAdd" title="Add a page">+ Page</button>
     <button id="pageDelete" class="danger" title="Delete this page">&#10005; Page</button>
+    <!-- Unconditional entry point to the retired list (#226). The palette is otherwise
+         reachable only through an add-zone, and those vanish exactly when the page is
+         full — which is when a removed tile is most likely waiting to come back. -->
+    <button id="retiredBtn" title="Widgets you removed">Removed</button>
     <button id="editDone" class="primary">Done</button>
   </div>
 
@@ -59,6 +63,10 @@
     <div id="paletteCard">
       <div id="paletteTitle">Add a widget</div>
       <div id="paletteGrid"></div>
+      <!-- Removed tiles kept by the attic (#226). A sibling of the grid, not part of it,
+           so the "everything is disabled" check that prints the page-full note still
+           reads the widget list alone. -->
+      <div id="paletteRetired" hidden></div>
     </div>
   </div>
 
