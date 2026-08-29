@@ -337,6 +337,10 @@
   let nextUser = { id: '' };
   let sessions = [];          // active streams (NowPlayingItem present), sorted
   let latest = [];            // recently added items
+  // Set when the shelf declined to fetch because the configured username does not
+  // resolve. 'Retrying' is true but useless for a typo — the note should name the
+  // field to fix, the way every other user-scoped surface already does.
+  let latestNoUser = false;
   let latestAt = 0;           // when the shelf's data last actually refreshed
   let counts = null;          // {movies, series, episodes}
   let server = null;          // {name, version}
@@ -600,13 +604,21 @@
       // and the two views are always separate widget instances with separate settings.
       // Scoping also brings UserData back with the shelf, which is what lets New carry
       // the same marks and the same press as every other tab.
-      const scoped = cfg.view === 'player' && cfg.user
-        ? resolveUser().catch(() => '') : Promise.resolve('');
+      const wantUser = cfg.view === 'player' && !!cfg.user;
+      const userAsked = cfg.user;
+      const scoped = wantUser ? resolveUser().catch(() => null) : Promise.resolve('');
       // With no hide list, one server-wide query. With one, the shelf is assembled
       // from the libraries that survive it: per-library top-N queries merged by
       // DateCreated (the top N of a union of per-library top Ns is exact). Items
       // carry no library id, so a hidden library cannot be filtered after the fact.
       const fetchLatest = scoped.then((uid) => {
+        // Fail CLOSED. A username that will not resolve — a typo, or /Users merely
+        // unreachable this minute — must not quietly widen the Player's shelf back to
+        // the whole server: showing MORE than was asked for is the wrong direction to
+        // degrade in, and it would do it exactly when the scoping cannot be checked.
+        // The shelf keeps what it already has, which the staleness pill states, and
+        // the catch below marks the lane due again so the next poll retries.
+        if (wantUser && !uid) throw fault('user', 'the player shelf has no resolved user');
         const tail = '&SortOrder=Descending&Recursive=true&IncludeItemTypes='
           + encodeURIComponent(typesAsked) + '&Limit=' + LATEST_FETCH + '&ImageTypeLimit=1&EnableImageTypes=Primary'
           + (uid ? '&userId=' + encodeURIComponent(uid) : '');
@@ -651,8 +663,11 @@
       });
       fetchLatest
         .then((items) => {
-          if (gen !== generation || typesAsked !== cfg.types
+          // The user joins the other three: this query is scoped to them now, so an
+          // answer for the PREVIOUS user is as wrong as one for the previous filter.
+          if (gen !== generation || typesAsked !== cfg.types || userAsked !== cfg.user
               || hideAsked !== Array.from(cfg.hide).sort().join('\n')) return;
+          latestNoUser = false;
           latest = items.filter((it) => it && it.Id);
           latestAt = Date.now();
           // Repaint only once the fast lane has succeeded: /System/Info/Public needs no
@@ -661,6 +676,7 @@
           if (lastOk) render();
         })
         .catch((e) => {
+          if (gen === generation && userAsked === cfg.user) latestNoUser = e && e.kind === 'user';
           WW.log('jellyfin: latest: ' + e.message);
           // A shelf that has NEVER loaded is the player's whole browse surface —
           // waiting out the full slow window after one transient failure leaves the
@@ -1519,6 +1535,16 @@
         // client. Without a name the lists stay server-wide and the tiles stay plain.
         const stateUid = cfg.user ? await resolveUser() : '';
         if (gen !== browseGen) return;
+        // Named but not found: say so, exactly as the queue tabs do, rather than
+        // listing the whole server. A username is a narrowing, and answering a
+        // narrowing nobody could apply with MORE titles is the wrong answer — the
+        // message names the one field that fixes it.
+        if (cfg.user && !stateUid) {
+          browse.error = 'No Jellyfin user named “' + cfg.user + '” — check the widget settings.';
+          browse.loading = false;
+          renderPlayer();
+          return;
+        }
         const asUser = stateUid
           ? '&userId=' + encodeURIComponent(stateUid) + '&Fields=UserData' : '';
         // Every read below re-resolves the user on a 404, exactly as the queue reads
@@ -2058,7 +2084,9 @@
       // answered gets to claim there is nothing in it. Either way the note lives IN
       // THE STRIP — a state card would hide the whole Player, tabs included, and an
       // empty New shelf must never wall off a full Movies library one tap away.
-      stripNote(!latestAt
+      stripNote(latestNoUser
+        ? 'No Jellyfin user named “' + cfg.user + '” — check the widget settings.'
+        : !latestAt
         ? "The recently-added list hasn't answered yet — retrying."
         : 'Nothing new lately — this shelf fills in as titles land in '
           + ((server && server.name) || 'Jellyfin') + "'s library.");
@@ -2999,6 +3027,13 @@
     }
     if (prevUser !== cfg.user) {
       nextUser = { id: '' };
+      // The Player's shelf is scoped to the user too, so it is the previous user's
+      // shelf now — drop it and refetch rather than showing their titles for up to a
+      // whole slow window. (Same three lines the hide list already needs, and for the
+      // same reason: a different question, not a staler answer to the same one.)
+      latest = [];
+      latestAt = 0;
+      slowAt = 0;
       browseReset();
       // The tracked user is part of the playing run's identity: a title started
       // under user A must not be marked watched for user B when it ends, and an
