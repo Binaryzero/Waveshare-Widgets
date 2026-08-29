@@ -329,7 +329,12 @@
       // comes back the next time this window opens.
       if (msg.saved !== false) {
         dropRetained(msg.widgetId, msg.instanceId);
-        toast('Deleted for good, with its saved credentials');
+        // `credentials` is false when a live tile still owns this identity: the liveness
+        // guard declined the destroy, so only the retired ROW went. Saying otherwise
+        // leaves the user believing a credential that is still live has been destroyed.
+        toast(msg.credentials === false
+          ? 'Removed from the list — its saved credentials stay with the copy still on a page'
+          : 'Deleted for good, with its saved credentials');
       } else {
         // NOT "its credentials are gone": destroy-before-Save took the derived bucket,
         // but the def's own sealed secrets are still in layout.json, and a Restore would

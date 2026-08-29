@@ -1965,6 +1965,25 @@ Check("M4 a collision with a LIVE tile re-mints the restored id",
     mCollided?.InstanceId);
 Check("M4b ...and only then — an uncontested id is kept, or the bucket would be orphaned",
     SlotOn(mLayout, 1, 0)?.InstanceId == "iM1");
+// Collision is a GLOBAL instanceId question. The shell's duplicate healing builds one
+// seenIds set over every page with no widget id in it, so a different widget holding the
+// same id collides there and the second is re-minted after the fact — detaching whichever
+// tile it picks from its widget-local storage and its bucket. Keying this by widget is the
+// same mistake SecretStore.AmbiguousSlots documents having made once already.
+var mOther = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [new LayoutSlot
+    {
+        WidgetId = "other.widget", InstanceId = "iM4x", Size = "half",
+    }] }],
+    Retained = [Retire(new JsonObject { ["apiToken"] = mSealed }, "iM4x")],
+};
+LayoutStore.RestoreRetained(mOther, "test.widget", "iM4x", 0, out var mOtherDef);
+Check("M4e a DIFFERENT widget holding the id is still a collision, and re-mints",
+    mOtherDef?.InstanceId is { Length: > 1 } && mOtherDef.InstanceId != "iM4x",
+    mOtherDef?.InstanceId);
+Check("M4f ...and the widget that already had the id keeps it",
+    mOther.Pages[0].Slots[0].InstanceId == "iM4x");
 
 // A duplicate-identity attic must not survive the restore: leaving a twin behind seats
 // the id in both pages and retained, which poisons the key and blanks the credential on

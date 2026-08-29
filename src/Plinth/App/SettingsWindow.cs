@@ -806,6 +806,11 @@ public sealed class SettingsWindow : Form
                 ["type"] = "retained-cleared",
                 ["widgetId"] = widgetId,
                 ["instanceId"] = instanceId,
+                // Whether anything was actually forgotten. An empty forget set means a live
+                // tile still owns this identity, so only the retired ROW went — telling the
+                // user their credentials were destroyed would be false in the direction
+                // that matters, leaving them believing a live credential is gone.
+                ["credentials"] = forget.Count > 0,
                 // See the panel's handler: the bucket is gone either way, but the entry is
                 // still on disk if the write failed, so the row must not vanish.
                 ["saved"] = saved,
@@ -1063,7 +1068,15 @@ public sealed class SettingsWindow : Form
     protected override void Dispose(bool disposing)
     {
         if (disposing)
+        {
+            // Belt and braces over the FormClosed handler, which is installed part-way
+            // through InitializeAsync: a window closed during that await, or an init that
+            // threw before reaching it, would otherwise leave the panel holding this
+            // window — and its WebView — alive through the relay delegates for the rest of
+            // the process, once per early close.
+            Dashboard = null;
             _webView.Dispose();
+        }
         base.Dispose(disposing);
     }
 }

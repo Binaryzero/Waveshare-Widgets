@@ -171,7 +171,12 @@
       const e = msg.data || {};
       if (e.saved !== false) {
         dropRetained(e.widgetId, e.instanceId);
-        showPanelNotice('Deleted, with its saved credentials.');
+        // `credentials` is false when a live tile still owns this identity: the liveness
+        // guard declined the destroy, so only the retired ROW went. Saying otherwise
+        // leaves the user believing a credential that is still live has been destroyed.
+        showPanelNotice(e.credentials === false
+          ? 'Removed from the list. Its credentials stay with the copy still on a page.'
+          : 'Deleted, with its saved credentials.');
       } else {
         // NOT "its credentials are gone": destroy-before-Save took the derived bucket,
         // but the def's own sealed secrets are still in layout.json, and a Restore would

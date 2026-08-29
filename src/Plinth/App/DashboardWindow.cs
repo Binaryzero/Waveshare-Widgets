@@ -747,6 +747,11 @@ public sealed class DashboardWindow : Form
             {
                 ["widgetId"] = widgetId,
                 ["instanceId"] = instanceId,
+                // Whether anything was actually forgotten. An empty forget set means a live
+                // tile still owns this identity, so only the retired ROW went — telling the
+                // user their credentials were destroyed would be false in the direction
+                // that matters, leaving them believing a live credential is gone.
+                ["credentials"] = forget.Count > 0,
                 // The bucket is gone either way (destroy-before-Save, so a failed write
                 // leaves a retained tile that re-authenticates — never a destroyed tile
                 // with a live credential). But the entry is still on disk, and telling the

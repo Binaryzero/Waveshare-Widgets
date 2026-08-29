@@ -352,11 +352,17 @@ public static class LayoutStore
         if (!string.Equals(entry.OriginPage, target.Name, StringComparison.Ordinal))
             def.Col = null;
 
+        // Collision is a question about the RAW instanceId, not about this widget's copy of
+        // it. The shell's duplicate healing builds one seenIds set across every page with no
+        // widget id in it, so two different widgets sharing an id collide there and the
+        // second is re-minted — under our nose, after this restore, detaching whichever tile
+        // it picks from its widget-local storage and its protected-store bucket. Keying this
+        // by widget was the same mistake SecretStore.AmbiguousSlots documents having made.
         var live = new HashSet<string>(StringComparer.Ordinal);
         foreach (var p in layout.Pages)
             foreach (var s in p.Slots ?? [])
-                if (Key(s) is { } k) live.Add(k);
-        if (live.Contains(key)) def.InstanceId = NewInstanceId();
+                if (!string.IsNullOrEmpty(s?.InstanceId)) live.Add(s.InstanceId!);
+        if (live.Contains(instanceId!)) def.InstanceId = NewInstanceId();
 
         target.Slots.Add(def);
         restored = def;
