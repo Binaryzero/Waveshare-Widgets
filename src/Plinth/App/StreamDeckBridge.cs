@@ -57,7 +57,7 @@ public sealed class StreamDeckBridge
     /// </remarks>
     private static List<(string Name, string Dir, string Model)> ListVsdProfiles()
     {
-        var result = new List<(string, string, string)>();
+        var result = new List<(string Name, string Dir, string Model)>();
         if (!Directory.Exists(ProfilesDir))
             return result;
 
@@ -88,16 +88,19 @@ public sealed class StreamDeckBridge
             catch { /* skip unreadable */ }
         }
 
-        // Only when nothing matched: a machine with a working deck should say nothing,
-        // and a machine WITHOUT one should say which models it did find, because that
-        // string is the whole answer to "why does the widget report no deck".
-        if (result.Count == 0 && skipped.Count > 0)
+        // Gated on finding no deck this app can MIRROR, not on recognizing nothing at all.
+        // Those differ exactly when a network deck sits beside an unrecognized model: the
+        // network deck made the recognized set non-empty, so the one log that would have
+        // named the unrecognized model went quiet, and the user — who has a real local
+        // deck of a model this build has never heard of — was told to go and create one.
+        // A machine with a working deck still says nothing.
+        if (!result.Any(p => DeckManifest.IsLocalWindowModel(p.Model)) && skipped.Count > 0)
         {
             var unreported = skipped.Distinct(StringComparer.OrdinalIgnoreCase)
                                     .Where(m => ReportedModels.Add(m))
                                     .ToList();
             if (unreported.Count > 0)
-                Log.Info("Stream Deck: no readable profile. Recognized models are [" +
+                Log.Info("Stream Deck: no deck this app can mirror. Recognized models are [" +
                          string.Join(", ", DeckManifest.KnownModels) + "]; this machine also " +
                          "has [" + string.Join(", ", unreported) + "]. If one of those is the " +
                          "deck you expect to mirror, report that model string to have it added.");
@@ -135,7 +138,7 @@ public sealed class StreamDeckBridge
                 if (!_loggedNetworkOnly)
                 {
                     _loggedNetworkOnly = true;
-                    Log.Info("Stream Deck: the only decks on this machine are network decks (" +
+                    Log.Info("Stream Deck: every profile this app can read is a network deck (" +
                              string.Join(", ", profiles.Select(p => $"\"{p.Name}\" [{p.Model}]")) +
                              "). A network deck — the kind iCUE creates — has no window on this " +
                              "desktop, so its keys cannot be captured live or pressed, and it is " +

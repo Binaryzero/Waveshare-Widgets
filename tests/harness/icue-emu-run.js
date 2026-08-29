@@ -27,11 +27,16 @@
 //        qrc-left:none   — every Qt-resource (`qrc:`) @font-face was defused. Chromium
 //                          cannot load that scheme and logs a "Fallback font will be
 //                          used" intervention per waiting element — hundreds of lines
-//                          from one widget. The probe plants three, in the three places
-//                          a sweep can miss: top level, inside an @media group (not
-//                          itself a FONT_FACE_RULE, so a type test on the outermost
-//                          rule never sees it), and in a <style> appended 1.4 s after
-//                          load, past every scheduled sweep. The marker names the
+//                          from one widget. The probe plants four, in the four places a
+//                          sweep can miss: top level; inside an @media group (not itself
+//                          a FONT_FACE_RULE, so a type test on the outermost rule never
+//                          sees it); in a <style> appended 1.4 s after load, past every
+//                          scheduled sweep; and in a <style> nested inside a container
+//                          appended 1.7 s after load, where the mutation record names
+//                          only the container. The last two are separated in time on
+//                          purpose — in one turn, the direct <style> schedules a sweep
+//                          that walks every sheet and defuses the nested one incidentally,
+//                          so the nested case would prove nothing. The marker names the
 //                          survivors, so a regression says WHICH placement broke.
 //   E2 · teeth for the Stream Deck path: the --sd fixture was actually served (the
 //        runner's own "profile was served" check is part of the green run).
@@ -110,7 +115,7 @@ const phases = (out) => {
   return m ? m[1].split(',').map((p) => p.trim()).filter(Boolean) : [];
 };
 
-const { ok, out } = run('icue-sd.json', MARKERS, 3500);
+const { ok, out } = run('icue-sd.json', MARKERS, 4500);
 const failLines = out.split('\n').filter((l) => l.includes('FAIL')).map((l) => l.trim()).join(' | ');
 
 // E1 — the probe ran green, which includes every marker's --expect and the runner's
@@ -203,6 +208,17 @@ check('E5c window availability crosses every hop (bridge → host → shim)',
 check('E5d a profile with no window field is treated as clickable',
   /profile\.windowAvailable !== false/.test(shim)
     && !/profile\.windowAvailable === true/.test(shim));
+
+// E5d2 — a RELEASE owed to an accepted press must never be dropped, even once the window
+// has gone. The window can vanish mid-hold, and the refusal above would then swallow the
+// up: the host keeps WM_LBUTTONDOWN on a real window until its 10 s safety timer. The
+// host's own up path releases without needing a window, so forwarding it cannot fail.
+// Text-level, like E3 — the fixture's window state is fixed for a run, so a press that
+// is accepted and THEN loses its window cannot be staged through it.
+check('E5d2 a release is forwarded even after the deck window has gone',
+  /pressOutstanding/.test(shim)
+    && /if \(!pressed && sdState\.pressOutstanding\)/.test(shim)
+    && /if \(phase == "up"\)\s*\{\s*ReleasePendingPress\(\);/.test(bridge.replace(/\r/g, '')));
 
 // E5e — the user-visible decision, asserted where it is made. A network deck's profile
 // reads perfectly, so mirroring it yields a convincing deck with dead keys; the bridge

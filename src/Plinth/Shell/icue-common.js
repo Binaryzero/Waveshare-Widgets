@@ -429,10 +429,49 @@
     setTimeout(() => { sweepPending = false; sweepFonts(); }, 0);
   }
 
+  const SHEET_SELECTOR = 'style, link[rel~="stylesheet" i]';
+
   function isSheetNode(node) {
     if (!node || node.nodeType !== 1) return false;
     const tag = node.tagName;
     return tag === 'STYLE' || (tag === 'LINK' && /(^|\s)stylesheet(\s|$)/i.test(node.rel || ''));
+  }
+
+  // A <link>'s sheet is not parsed at insertion — .sheet is null until it loads, so the
+  // immediate sweep would find nothing in it. Sweeping again on its load event is what
+  // catches it; <style> needs no equivalent.
+  function armLink(node) {
+    if (node.tagName !== 'LINK') return;
+    try { node.addEventListener('load', scheduleSweep, { once: true }); }
+    catch (e) { /* older listener signature: the immediate sweep still runs */ }
+  }
+
+  // The node itself AND anything beneath it. A widget that builds a view or skin
+  // container off-DOM and then appends it delivers ONE mutation record naming the
+  // container — the <style> and <link> elements inside it are never in addedNodes at
+  // all, so a check on the added node alone sees nothing and the sheet keeps its qrc:
+  // faces. The children guard keeps this off the hot path: a widget re-rendering a grid
+  // of leaf nodes pays a tagName check per node, not a query.
+  //
+  // Bounded to childList on purpose. A sheet can only ENTER the document as one of these
+  // elements; mutating an existing one in place (rewriting a <style>'s text, swapping a
+  // <link>'s href) is not covered, and watching for it would mean characterData and
+  // attribute observation across the whole tree, on every widget, for a case iCUE
+  // packages do not exercise.
+  function armAddedNode(node) {
+    let found = false;
+    if (isSheetNode(node)) {
+      armLink(node);
+      found = true;
+    }
+    if (node && node.nodeType === 1 && node.firstElementChild) {
+      let nested = null;
+      try { nested = node.querySelectorAll(SHEET_SELECTOR); } catch (e) { nested = null; }
+      if (nested) {
+        for (const el of nested) { armLink(el); found = true; }
+      }
+    }
+    return found;
   }
 
   let watching = false;
@@ -453,15 +492,7 @@
       // discarding the nodes instead of the work.
       for (const record of records) {
         for (const node of record.addedNodes) {
-          if (!isSheetNode(node)) continue;
-          found = true;
-          // A <link>'s sheet is not parsed at insertion — .sheet is null until it
-          // loads, and sweeping now would find nothing. Sweep on both: the immediate
-          // one catches <style>, the load event catches <link>.
-          if (node.tagName === 'LINK') {
-            try { node.addEventListener('load', scheduleSweep, { once: true }); }
-            catch (e) { /* older listener signature: the sweep below still runs */ }
-          }
+          if (armAddedNode(node)) found = true;
         }
       }
       if (found) scheduleSweep();

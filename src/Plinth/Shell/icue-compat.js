@@ -414,6 +414,7 @@
     profile: null,             // last available ww-sd-profile payload
     hasWindow: true,           // a deck window exists right now: presses can land
     warnedNoWindow: false,     // "presses go nowhere" said once, not per tap
+    pressOutstanding: false,   // a down was accepted and its up is still owed
     tiles: [],                 // slot index -> last data URL emitted (dedup)
     captureHash: '',           // `have` receipt for the capture fast path
     answered: false,           // has the host answered a profile poll at all?
@@ -673,8 +674,20 @@
     sendKeyPress(widgetId, buttonIndex, pressed) {
       const profile = sdState.profile;
       if (!profile || !sdState.cols) return;
+      // A RELEASE owed to an accepted press always goes through, whatever the window
+      // says now. The window can disappear mid-hold — an overlay hidden or recreated
+      // between the pointerdown and the pointerup — and refusing the up there leaves the
+      // host holding WM_LBUTTONDOWN on a real window until its 10s safety timer fires.
+      // The host's own up path releases without needing a window, so this cannot fail
+      // the way a press would.
+      if (!pressed && sdState.pressOutstanding) {
+        sdState.pressOutstanding = false;
+        parent.postMessage({ type: 'ww-sd-click', rows: 1, cols: 1, row: 0, col: 0,
+          phase: 'up' }, '*');
+        return;
+      }
       if (!sdState.hasWindow) {
-        // Posting ww-sd-click here would look like it worked: the host finds no window,
+        // Posting a PRESS here would look like it worked: the host finds no window,
         // logs a warning, and the widget — which never learns the outcome — keeps
         // rendering a deck whose keys do nothing. Say it once, on the press half only.
         if (pressed && !sdState.warnedNoWindow) {
@@ -702,6 +715,9 @@
         // pointerup/leave/cancel, so holds reach the deck as holds.
         phase: pressed ? 'down' : 'up',
       }, '*');
+      // Tracked from here, after the grid bounds check, so only a press the host was
+      // actually asked to make owes a release.
+      sdState.pressOutstanding = pressed === true;
     },
   };
 

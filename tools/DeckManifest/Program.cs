@@ -246,6 +246,14 @@ else
     Check("M6h the no-process and no-window log states are tracked separately",
         code.Contains("_loggedNoProcess") && code.Contains("_loggedNoWindow")
         && code.Contains("_loggedNoProcess = false;"));
+    // Gated on finding no MIRRORABLE deck, not on recognizing nothing at all. Those
+    // differ exactly when a network deck sits beside an unrecognized model: the network
+    // deck makes the recognized set non-empty, so a count-based gate goes quiet and the
+    // user — who owns a real local deck of a model this build has not heard of — is told
+    // to create one instead of being shown the string to report.
+    Check("M6i the skipped-model log is gated on no mirrorable deck, not on no known deck",
+        code.Contains("!result.Any(p => DeckManifest.IsLocalWindowModel(p.Model)) && skipped.Count > 0"),
+        "a `result.Count == 0` gate hides the model string in the mixed-model case");
 }
 
 static string? FindUpwards(string relative)
