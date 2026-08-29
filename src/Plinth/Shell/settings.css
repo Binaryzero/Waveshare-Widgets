@@ -46,6 +46,10 @@ button.danger:hover { border-color: var(--danger); }
 /* Armed state of the two-tap delete confirm */
 button.danger[data-armed] { background: var(--danger); border-color: var(--danger); color: #fff; }
 button.icon { padding: 5px 9px; }
+/* There is no global disabled rule, so without this a dead icon button looks and hovers
+ * exactly like a live one — the user taps it and nothing happens, twice. */
+button.icon:disabled { opacity: 0.4; cursor: default; }
+button.icon:disabled:hover { border-color: var(--line); }
 
 input[type="text"], input[type="number"], select {
   font: inherit;

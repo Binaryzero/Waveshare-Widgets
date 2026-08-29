@@ -353,6 +353,20 @@ surface does not retire yet.) The attic is bounded (8 per
 widget id, oldest evicted; eviction also purges the instance's protected store) and is
 addressed only by `widgetId` + `instanceId`, never by grid position.
 
+**⧉ duplicates a tile** — same widget, same size, same settings, on the same page — from
+the on-panel edit overlay and from the settings window's slot chip. The copy is a NEW
+instance: it gets its own `instanceId`, so it has its own widget-local storage and its own
+(empty) protected store, and it starts with **no credentials**. Every property the manifest
+types `secret` is dropped, and so is any value that looks like something this host sealed,
+whether the manifest names it or not — a widget the library refused, or a property demoted
+from `secret` to `text`, can leave ciphertext under a name nothing calls a credential, and a
+new tile should not begin life holding one nobody gave it.
+
+The fresh `instanceId` is load-bearing rather than tidy. A legacy tile that has never been
+edited on-panel has no id, and its credential is addressed positionally — an address that
+only exists while exactly one such tile of that widget does. A clone without an id would be
+the second, and the duplicate would destroy the credential of the tile it was copying.
+
 Retired tiles are managed from the on-panel palette (edit mode → **Retired**, also reachable
 from any "+" add-zone) and from the settings window's widget shelf:
 

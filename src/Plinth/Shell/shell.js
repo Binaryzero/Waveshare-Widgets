@@ -1639,6 +1639,18 @@
       ov.appendChild(style);
     }
     if (widget && !PREVIEW) {
+      // Duplicate (#226). Device-only, like the ⚙ below: the settings window has its own
+      // ⧉ on the slot chip, and one gesture per surface beats a handoff. Gated on `widget`
+      // for a reason beyond the label — the clone is scrubbed against the manifest's
+      // property list, and a record whose widget never loaded (refused, uninstalled) has
+      // none, so there would be nothing to scrub against.
+      const dupe = document.createElement('button');
+      dupe.className = 'dupe';
+      dupe.textContent = '⧉';
+      dupe.title = 'Add another one like this (without its credentials)';
+      dupe.addEventListener('click', (ev) => { ev.stopPropagation(); duplicateSlot(record, widget); });
+      ov.appendChild(dupe);
+
       // On-device access to the widget's OWN settings (#48): the pencil could
       // move and restyle tiles but never configure them.
       if ((widget.properties || []).length) {
@@ -1653,6 +1665,72 @@
 
     bindDrag(ov, record);
     return ov;
+  }
+
+  // Shaped like something this host sealed. Mirrors SecretStore.LooksLikeEnvelope, whose
+  // rule is marker + a NON-EMPTY, well-formed base64 payload — not merely the marker and
+  // some characters. The distinction matters in the permissive direction: an ordinary text
+  // setting of "dpapi:v1:a" is not ciphertext, and treating it as such would drop a
+  // perfectly good setting out of the duplicate.
+  function looksLikeEnvelope(value) {
+    if (typeof value !== 'string' || !value.startsWith('dpapi:v1:')) return false;
+    const payload = value.slice('dpapi:v1:'.length);
+    // Non-empty, base64 alphabet, and a length base64 can actually produce — the three
+    // things Convert.TryFromBase64String checks before it will decode anything.
+    if (!payload || payload.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload)) return false;
+    try { atob(payload); return true; } catch (e) { return false; }
+  }
+
+  // Settings for a duplicate: everything the source has EXCEPT its credentials.
+  //
+  // Two passes, because the manifest is not the whole story. The declared `secret` names
+  // are the ordinary case. The second pass catches what the first cannot see: a credential
+  // the library REFUSED, or one whose property was demoted to `text` (#66), reaches the
+  // panel as ciphertext under a name the manifest does not call secret — and the reveal
+  // deliberately leaves this machine's own ciphertext alone. Copying that into a new tile
+  // would hand it a credential nobody chose to give it.
+  function settingsWithoutSecrets(source, widget) {
+    const out = JSON.parse(JSON.stringify(source || {}));
+    for (const prop of (widget.properties || []))
+      if (prop && prop.type === 'secret' && prop.name) delete out[prop.name];
+    for (const [name, value] of Object.entries(out))
+      if (looksLikeEnvelope(value)) delete out[name];
+    return out;
+  }
+
+  // Duplicate (#226): another tile of the same widget, same size, same settings — minus
+  // every credential, and with an identity of its own.
+  //
+  // The fresh instanceId is not cosmetic. A clone without one becomes a second id-less
+  // claimant for this widget, and the positional key a LEGACY source's credential is
+  // addressed by only survives while there is exactly one — so an id-less clone would
+  // destroy the credential of the very tile being duplicated. Probes E2-E3 pin it.
+  function duplicateSlot(record, widget) {
+    mutate(() => {
+      // Resolved INSIDE the mutation, as removeSlot does. `mutate` hands the callback to
+      // startViewTransition where that exists, so it runs a turn later — long enough for a
+      // host init to have replaced layoutData and rebuilt pageEls underneath a page
+      // captured outside, and buildSlot would then have no element to append to.
+      const page = layoutData.pages.find((p) => (p.slots || []).indexOf(record.def) >= 0);
+      if (!page) return;   // the source went away with an init since the overlay was built
+      const def = {
+        widgetId: record.def.widgetId,
+        size: record.def.size,
+        instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
+        settings: settingsWithoutSecrets(record.def.settings, widget),
+      };
+      if (record.def.style) def.style = JSON.parse(JSON.stringify(record.def.style));
+      // No `col`: the source's anchor is where the SOURCE sits. The clone flows into the
+      // first free spot instead of fighting it for the same column.
+      if (!pageFits(page, { size: def.size, col: null })) {
+        showPanelNotice('No room on this page — make something smaller, or add a page.');
+        return;
+      }
+      (page.slots = page.slots || []).push(def);
+      buildSlot(page, def);
+      relayoutPage(page);
+      armWatchdog(generation);
+    });
   }
 
   function removeSlot(record) {

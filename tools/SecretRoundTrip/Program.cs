@@ -2152,6 +2152,64 @@ LayoutStore.MergeRetainedFromDisk(mSibling, EmptyPages());
 Check("M10d a sibling instance of the same widget is not swept up",
     mSibling.Retained is { Count: 1 });
 
+// ---- E · duplicating a configured tile (#226) ---------------------------------------
+// A duplicate is a plain client-side add: same settings MINUS every credential, a FRESH
+// instanceId, no host operation at all. Nothing in the pipeline changes for it — which is
+// the claim worth pinning, because it rests entirely on the clone being id-BEARING. An
+// id-less clone would raise the id-less claimant count for that widget, and the positional
+// |w:0 key the SOURCE depends on vanishes at two claimants: the tile the user duplicated
+// would lose its credential to the act of duplicating it.
+
+var eSealed = SealOf("tok-source");
+
+// E1 · the ordinary case: an id-bearing source keeps its own stored value, and the clone
+// starts life with nothing.
+var eStored = LayoutWith(new JsonObject { ["apiToken"] = eSealed }, instanceId: "iSrc");
+var eIncoming = TwoInstances(
+    new JsonObject { ["apiToken"] = "" }, new JsonObject(), "iSrc", "iClone");
+SecretPolicy.Seal(eIncoming, eStored, Lookup);
+Check("E1 duplicating a tile leaves the source's stored credential alone",
+    ValueAt(eIncoming, 0, "apiToken") == eSealed, ValueAt(eIncoming, 0, "apiToken"));
+Check("E1b ...and the clone starts with no credential of its own",
+    ValueAt(eIncoming, 1, "apiToken") is null, ValueAt(eIncoming, 1, "apiToken"));
+
+// E2 · the case the design was afraid of: a LEGACY id-less source, whose credential is
+// addressed positionally. The clone carries an id, so it is not a claimant and the source's
+// |w:0 survives — no gate needed, and the tile the user duplicated keeps its token.
+var eLegacyStored = LayoutWith(new JsonObject { ["apiToken"] = eSealed }, instanceId: null);
+var eLegacy = TwoInstances(
+    new JsonObject { ["apiToken"] = "" }, new JsonObject(), null, "iClone");
+SecretPolicy.Seal(eLegacy, eLegacyStored, Lookup);
+Check("E2 duplicating a LEGACY id-less tile keeps its positional credential",
+    ValueAt(eLegacy, 0, "apiToken") == eSealed, ValueAt(eLegacy, 0, "apiToken"));
+Check("E2b ...and the clone inherits nothing through the alias (#68)",
+    ValueAt(eLegacy, 1, "apiToken") is null, ValueAt(eLegacy, 1, "apiToken"));
+
+// E3 · and this is WHY the clone must be minted. Drop the fresh id — the shape a future
+// "simplification" of the duplicate path would produce — and the source's credential is
+// destroyed by the duplicate, silently. This probe is the reason the mint is not optional.
+var eIdless = TwoInstances(
+    new JsonObject { ["apiToken"] = "" }, new JsonObject(), null, null);
+SecretPolicy.Seal(eIdless, eLegacyStored, Lookup);
+Check("E3 an ID-LESS clone would destroy the source's credential — the mint is load-bearing",
+    ValueAt(eIdless, 0, "apiToken") is null, ValueAt(eIdless, 0, "apiToken"));
+
+// E4 · two clones of one legacy source: still one id-less claimant, still restored.
+var eTwice = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = null, Size = "half",
+            Settings = new JsonObject { ["apiToken"] = "" } },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "iC1", Size = "half",
+            Settings = new JsonObject() },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "iC2", Size = "half",
+            Settings = new JsonObject() },
+    ] }],
+};
+SecretPolicy.Seal(eTwice, eLegacyStored, Lookup);
+Check("E4 a second clone changes nothing — id-bearing slots are not claimants",
+    ValueAt(eTwice, 0, "apiToken") == eSealed, ValueAt(eTwice, 0, "apiToken"));
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 
