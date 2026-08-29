@@ -291,6 +291,22 @@
         // attic in one save.
         toast('Restored on the panel. Reopen Settings first — saving now would undo it.', true);
       } else {
+        // Adopt means adopt, so drop any copy of this identity first. Panel retirement is
+        // NOT mirrored to this editor, so one opened before the retire still holds the
+        // slot live — and appending on top of that seats one instanceId twice. The shell's
+        // duplicate healing then re-mints one of them into a tile the user never asked
+        // for, with its widget-local storage detached from the widget that was using it.
+        // Both ids, because the host re-mints on a live collision and the stale copy here
+        // carries the one it was retired under. Spliced in place: `page.slots` is the same
+        // array the push below appends to.
+        const gone = [msg.instanceId, msg.def.instanceId].filter(Boolean);
+        for (const p of pages) {
+          if (!p || !Array.isArray(p.slots)) continue;
+          for (let i = p.slots.length - 1; i >= 0; i--) {
+            const s = p.slots[i];
+            if (s && s.widgetId === msg.widgetId && gone.includes(s.instanceId)) p.slots.splice(i, 1);
+          }
+        }
         page.slots = page.slots || [];
         page.slots.push(msg.def);
         dropRetained(msg.widgetId, msg.instanceId);
