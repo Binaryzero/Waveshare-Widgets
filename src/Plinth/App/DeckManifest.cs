@@ -144,6 +144,32 @@ public static class DeckManifest
         !string.IsNullOrWhiteSpace(model)
         && models.Contains(model.Trim(), StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Whether every deck this machine has is one we recognize AND cannot mirror — the
+    /// only state in which telling the user "your decks are network-attached" is true.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="skippedCount"/> is the load-bearing argument. Discovery drops
+    /// profiles whose model it does not recognize, so "everything I found is unmirrorable"
+    /// and "everything on the machine is unmirrorable" are different claims whenever
+    /// anything was dropped — and it is the second one the user is shown. A machine with a
+    /// network deck beside a local deck of an unrecognized model satisfies the first and
+    /// not the second: advising that user to create another deck is wrong, when what they
+    /// need is to report the model string they already have.
+    ///
+    /// The same distinction is already made for the log line one level up; this exists so
+    /// the user-facing message cannot drift from it again.
+    /// </remarks>
+    public static bool IsUnmirrorableOnly(IReadOnlyList<string> foundModels, int skippedCount)
+    {
+        if (skippedCount != 0 || foundModels is null || foundModels.Count == 0)
+            return false;
+        foreach (var model in foundModels)
+            if (!IsUnmirrorableModel(model))
+                return false;
+        return true;
+    }
+
     /// <summary>One profile on disk, reduced to what choosing between them needs.</summary>
     public readonly record struct ProfileCandidate(string Name, string Model, DateTime LastWriteUtc);
 

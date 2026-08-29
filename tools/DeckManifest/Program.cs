@@ -211,6 +211,30 @@ Check("C4 a timestamp tie is broken by name, so the pick does not flip between p
 Check("C5 an unmirrorable deck named in settings falls back to a deck that works",
     DeckManifest.ChooseMirrorable(new[] { net1, local }, "Claude AI Prompt Templates") == 1);
 
+Console.WriteLine("Is this machine unmirrorable-only?");
+
+// The claim shown to the USER is "every deck on this machine is network-attached", but
+// discovery only ever returns models it RECOGNIZES — so a machine can satisfy "everything
+// I found is unmirrorable" while owning a local deck of a model this build has not heard
+// of. Telling that user to create another deck is wrong; they need to report the string
+// they already have. The log line one level up already draws this distinction (M6i); this
+// is what stops the user-facing message drifting from it.
+
+static IReadOnlyList<string> M(params string[] m) => m;
+
+Check("U1 only network decks, nothing skipped, is unmirrorable-only",
+    DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi", "VSD/WiFi"), 0));
+Check("U2 a skipped model means the machine is NOT known to be unmirrorable-only",
+    !DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi"), 1),
+    "the skipped model may be the local deck the user expects to mirror");
+Check("U3 a local deck among them is not unmirrorable-only",
+    !DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi", "UI Stream Deck"), 0));
+Check("U4 no profiles at all is not unmirrorable-only — that needs the other advice",
+    !DeckManifest.IsUnmirrorableOnly(M(), 0) && !DeckManifest.IsUnmirrorableOnly(null, 0));
+Check("U5 both conditions are required, not either",
+    !DeckManifest.IsUnmirrorableOnly(M("UI Stream Deck"), 0)
+    && !DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi"), 2));
+
 Console.WriteLine("Wired up");
 
 // M6 · a TEXT check, and labelled as one, in the style of tools/StreamDeckPaths. The
@@ -258,6 +282,12 @@ else
         @"public DeckProfile\? ReadProfile\(.*?\n    \}", System.Text.RegularExpressions.RegexOptions.Singleline).Value;
     var resetAt = readBody.IndexOf("LastReadWasUnmirrorableOnly = false;", StringComparison.Ordinal);
     var earlyReturnAt = readBody.IndexOf("if (profiles.Count == 0)", StringComparison.Ordinal);
+    // The user-facing flag must go through the predicate above, not re-derive the rule.
+    // Re-deriving it is exactly how it came to disagree with the log line beside it.
+    Check("M6l the user-facing claim is decided by IsUnmirrorableOnly, not re-derived",
+        code.Contains("DeckManifest.IsUnmirrorableOnly(")
+        && !code.Contains("profiles.Any(p => DeckManifest.IsUnmirrorableModel(p.Model))"),
+        "an Any() over found models alone ignores the skipped ones");
     Check("M6k the stale-explanation flag is cleared before any early return",
         resetAt >= 0 && earlyReturnAt >= 0 && resetAt < earlyReturnAt,
         resetAt < 0 ? "no unconditional reset in ReadProfile"

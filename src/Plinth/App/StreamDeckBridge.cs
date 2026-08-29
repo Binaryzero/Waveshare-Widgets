@@ -33,7 +33,7 @@ public sealed class StreamDeckBridge
     /// Network decks are excluded: offering one would let the user pick a deck whose keys
     /// cannot be pressed, which is the outcome this whole path exists to avoid.</summary>
     public static IReadOnlyList<string> ListProfileNames() =>
-        ListVsdProfiles().Where(p => DeckManifest.IsLocalWindowModel(p.Model))
+        ListVsdProfiles(out _).Where(p => DeckManifest.IsLocalWindowModel(p.Model))
                          .Select(p => p.Name).ToList();
 
     /// <summary>Models already named in the log, so the 4s profile poll reports each
@@ -56,13 +56,20 @@ public sealed class StreamDeckBridge
     /// neither, and a caller that cannot tell them apart would publish a grid whose keys
     /// do nothing.
     /// </remarks>
-    private static List<(string Name, string Dir, string Model)> ListVsdProfiles()
+    /// <param name="skippedModels">Models found on disk that this build does not
+    /// recognize, and therefore dropped. Surfaced rather than kept private because "every
+    /// deck I found is unmirrorable" and "every deck on this machine is unmirrorable" are
+    /// different claims the moment anything was dropped — and it is the second one the
+    /// user is shown.</param>
+    private static List<(string Name, string Dir, string Model)> ListVsdProfiles(
+        out List<string> skippedModels)
     {
         var result = new List<(string Name, string Dir, string Model)>();
+        var skipped = new List<string>();
+        skippedModels = skipped;
         if (!Directory.Exists(ProfilesDir))
             return result;
 
-        var skipped = new List<string>();
         foreach (var profileDir in Directory.GetDirectories(ProfilesDir, "*.sdProfile"))
         {
             var manifestPath = Path.Combine(profileDir, "manifest.json");
@@ -130,7 +137,7 @@ public sealed class StreamDeckBridge
             // directory was briefly unavailable.
             LastReadWasUnmirrorableOnly = false;
 
-            var profiles = ListVsdProfiles();
+            var profiles = ListVsdProfiles(out var skippedModels);
             if (profiles.Count == 0)
                 return null;
 
@@ -141,8 +148,12 @@ public sealed class StreamDeckBridge
             var index = DeckManifest.ChooseMirrorable(candidates, preferredName);
             if (index < 0)
             {
-                LastReadWasUnmirrorableOnly =
-                    profiles.Any(p => DeckManifest.IsUnmirrorableModel(p.Model));
+                // Through the shared predicate, which weighs the SKIPPED models too. An
+                // Any() over what was found says "everything I recognized is unmirrorable"
+                // — a different and weaker claim than the one the user is shown, and false
+                // advice for someone whose local deck this build simply does not know.
+                LastReadWasUnmirrorableOnly = DeckManifest.IsUnmirrorableOnly(
+                    profiles.Select(p => p.Model).ToList(), skippedModels.Count);
                 // Every deck on the machine is one we cannot drive. Say so once, with the
                 // fix — this is the whole difference between "the widget is broken" and
                 // "there is no Virtual Stream Deck yet".
