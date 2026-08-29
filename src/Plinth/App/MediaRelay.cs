@@ -382,8 +382,6 @@ internal static class MediaRelay
                         + (_faulted ? " (faulted)" : _announced ? "" : " (never read)"));
                 try { _inner.Dispose(); }
                 catch { /* the connection is gone either way */ }
-                try { _owned?.Dispose(); }
-                catch { /* the deadline timer is spent by now */ }
             }
             base.Dispose(disposing);
         }
