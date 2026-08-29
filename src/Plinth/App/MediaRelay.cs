@@ -209,8 +209,11 @@ internal static class MediaRelay
         using var headerDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         // NOT disposed here: the response object owns the connection the content
         // stream reads from, and WebView2 pulls that stream long after this method
-        // returns. WebView2 closes the stream when the element is done (or gone),
-        // which releases the connection.
+        // returns. What releases the connection is GuardedStream's own idle timer
+        // below — NOT WebView2, which never disposes a managed content stream (see
+        // the note on `_idle`). This comment said the opposite for several rounds
+        // and cost a misdiagnosis: a missing "stream closed" line was read as proof
+        // WebView2 had not used the stream, when that line could never have fired.
         var response = await client.SendAsync(upstream, HttpCompletionOption.ResponseHeadersRead, headerDeadline.Token);
 
         var headers = new System.Text.StringBuilder(CorsHeader);
