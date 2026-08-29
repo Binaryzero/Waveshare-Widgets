@@ -444,9 +444,17 @@
     if (!root) return;
     watching = true;
     new MutationObserver((records) => {
+      let found = false;
+      // EVERY record, and every added node in it. A skin that appends several <link>s in
+      // one turn delivers them in a single callback, so bailing out after the first left
+      // the rest with no load handler — and the immediate sweep below runs before any of
+      // them have parsed, so nothing would ever have looked at them again. Coalescing
+      // belongs in scheduleSweep, which does it; it does not belong here, where it means
+      // discarding the nodes instead of the work.
       for (const record of records) {
         for (const node of record.addedNodes) {
           if (!isSheetNode(node)) continue;
+          found = true;
           // A <link>'s sheet is not parsed at insertion — .sheet is null until it
           // loads, and sweeping now would find nothing. Sweep on both: the immediate
           // one catches <style>, the load event catches <link>.
@@ -454,10 +462,9 @@
             try { node.addEventListener('load', scheduleSweep, { once: true }); }
             catch (e) { /* older listener signature: the sweep below still runs */ }
           }
-          scheduleSweep();
-          return;
         }
       }
+      if (found) scheduleSweep();
     }).observe(root, { childList: true, subtree: true });
   }
 

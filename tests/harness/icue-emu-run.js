@@ -81,11 +81,12 @@ const MARKERS = ['module-alive', 'mediaviewer-ok', 'hex:255, 0, 57',
 // icue-sd.json, not streamdeck-sd.json: same deck plus a capture frame, so the
 // slice-into-per-key-faces path runs (the capture poll fires at 500ms — the --wait
 // below leaves it room).
-const run = (fixture, markers, wait) => {
+const run = (fixture, markers, wait, json) => {
   try {
     return { ok: true, out: execFileSync('node', [RUNNER,
       path.join('tests', 'fixtures', 'widgets', 'icue-emu'),
       '--sd', path.join(FIX, fixture), '--slot', 'half', '--wait', String(wait || 2500),
+      ...(json ? ['--json'] : []),
       ...markers.flatMap((m) => ['--expect', m])],
     { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) };
   } catch (e) { return { ok: false, out: (e.stdout || '') + (e.stderr || '') }; }
@@ -164,19 +165,29 @@ check('E4c an open deck is captured, and a press reaches it as a real down then 
     && openPhases.indexOf('down') < openPhases.lastIndexOf('up'),
   `[${openPhases.join(',')}], ${count(out, 'captures')} capture poll(s)`);
 
-// E5 — the same probe against a deck whose window is shut.
+// E5 — the same probe against a deck whose window is shut. Driven through --json, which
+// buys a second check for free: the runner's machine-readable mode is a single JSON
+// document on stdout, and a status line printed ahead of it makes every consumer's parse
+// fail even on a passing run. That is exactly what the click/capture counters did when
+// they were added, so the format is asserted rather than assumed.
 const SHUT_MARKERS = ['device-created', 'icons:3'];
-const shut = run('icue-sd-nowindow.json', SHUT_MARKERS);
-const shutFail = shut.out.split('\n').filter((l) => l.includes('FAIL')).map((l) => l.trim()).join(' | ');
+const shut = run('icue-sd-nowindow.json', SHUT_MARKERS, 2500, true);
+let shutJson = null;
+try { shutJson = JSON.parse(shut.out); } catch (e) { shutJson = null; }
 
 check('E5 a deck with its window shut still announces itself and paints its faces',
   shut.ok, shut.ok ? SHUT_MARKERS.join(', ')
-    : (shutFail || shut.out.trim().split('\n').slice(-4).join(' | ').slice(0, 300)));
+    : (shut.out.trim().split('\n').slice(-4).join(' | ').slice(0, 300)));
+
+check('E5b --json output is a single parseable document, counters included',
+  shutJson !== null && Array.isArray(shutJson.sdClicks) && Array.isArray(shutJson.sdCaptures),
+  shutJson ? 'parsed' : 'stdout did not parse: ' + shut.out.trim().slice(0, 80));
 
 // The tooth. A press posted here reaches a host that finds no window, logs a warning the
 // widget never sees, and leaves a grid of keys that look live and swallow every tap.
-check('E5b no key press is posted while no deck window is open',
-  count(shut.out, 'clicks') === 0, count(shut.out, 'clicks') + ' click(s)');
+check('E5b2 no key press is posted while no deck window is open',
+  shutJson !== null && shutJson.sdClicks.length === 0,
+  shutJson ? `[${shutJson.sdClicks.join(',')}]` : 'no json');
 
 // E5c — the flag crosses every hop, text-level, in the style of E3. The behaviour above is
 // driven through a FIXTURE, so it proves the shim honours the flag; it cannot prove the

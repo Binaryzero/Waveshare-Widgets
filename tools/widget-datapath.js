@@ -732,13 +732,12 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // populated Stream Deck run (which makes no fetch) still counts as having touched data.
   const sdServed = await page.evaluate(() => window.__wwSdServed || []);
   const sdClicks = await page.evaluate(() => window.__wwSdClicks || []);
-  // Reported unconditionally rather than asserted: what the right number is depends on
-  // the deck the fixture describes (a window deck should click, a network deck must not),
-  // which is the caller's question, not this runner's.
+  // Reported rather than asserted: what the right number is depends on the deck the
+  // fixture describes — an open deck should click, one with no window must not — which is
+  // the caller's question, not this runner's. Printed at the END, in the text branch
+  // only: under --json this process's whole stdout is one JSON object, and a status line
+  // ahead of it makes that unparseable for every consumer, including on a passing run.
   const sdCaptures = await page.evaluate(() => window.__wwSdCaptures || []);
-  console.log('  stream-deck clicks: ' + sdClicks.length +
-    (sdClicks.length ? ' [' + sdClicks.join(',') + ']' : ''));
-  console.log('  stream-deck captures: ' + sdCaptures.length);
   if (!allowState) {
     check('a stubbed endpoint or Stream Deck profile was actually served',
       served.length + proxyServed.length + sdServed.length > 0,
@@ -780,9 +779,15 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
 
   const ok = checks.every((c) => c.ok);
   if (asJson) console.log(JSON.stringify({ folder, slot, theme: themeArg, ok, checks, served, proxyServed,
-    attempted, hostCalls, peerApis, consoleErrors }, null, 1));
+    attempted, hostCalls, peerApis, consoleErrors,
+    // Fields rather than printed lines, so --json consumers get the same information the
+    // text output carries instead of having to scrape it back out of a broken document.
+    sdClicks, sdCaptures }, null, 1));
   else {
     console.log(`${ok ? 'OK  ' : 'FAIL'} ${folder} @ ${slot} (${themeArg}) — data path`);
+    console.log('  stream-deck clicks: ' + sdClicks.length +
+      (sdClicks.length ? ' [' + sdClicks.join(',') + ']' : ''));
+    console.log('  stream-deck captures: ' + sdCaptures.length);
     for (const c of checks) console.log(`  ${c.ok ? 'PASS' : 'FAIL'} ${c.name}${c.detail ? ' - ' + c.detail : ''}`);
   }
   process.exit(ok ? 0 : 1);

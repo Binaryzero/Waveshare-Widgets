@@ -628,6 +628,12 @@
       sdState.tiles = [];
       sdState.connected = true;
       sdState.answered = false;
+      // Replies owed to the PREVIOUS connection are not answers to this one. Left in
+      // place, a late one would set `answered` on the connection that just reset it —
+      // suppressing this connection's no-reply diagnostic and announcing the old deck as
+      // the current one. Stamping the timer with a generation (below) does not cover
+      // this: the reply route is keyed on the request id, not on the timer.
+      sdState.pending.clear();
       sdLog('connect requested for a ' + sdState.cols + 'x' + sdState.rows + ' deck');
       // If the poll is never answered the widget sits on its parse-time card forever,
       // which is exactly what an available:false answer looks like. Say which it was.
