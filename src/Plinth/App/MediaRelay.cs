@@ -200,7 +200,11 @@ internal static class MediaRelay
         // can replace pv.src but cannot cancel a host call. The timer dies with the
         // `using` when headers arrive in time, so it never touches the body stream,
         // which must be free to take hours.
-        using var headerDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        // NOT a `using`: the token stays attached to the response for as long as the
+        // body streams, and disposing the source out from under a live response is
+        // undefined at best. GuardedStream owns it now and disposes it with the
+        // stream; the timer inside it is already spent by then.
+        var headerDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         // NOT disposed here: the response object owns the connection the content
         // stream reads from, and WebView2 pulls that stream long after this method
         // returns. WebView2 closes the stream when the element is done (or gone),
@@ -218,8 +222,9 @@ internal static class MediaRelay
         Copy("Content-Range", response.Content.Headers.ContentRange?.ToString());
         Copy("Accept-Ranges", response.Headers.AcceptRanges.Count > 0 ? string.Join(", ", response.Headers.AcceptRanges) : null);
 
+        if (request.Method == "HEAD") headerDeadline.Dispose();
         var body = request.Method == "HEAD" ? null
-            : new GuardedStream(await response.Content.ReadAsStreamAsync());
+            : new GuardedStream(await response.Content.ReadAsStreamAsync(), headerDeadline);
         if (WebViewEnvironment.DiagnosticsBudget())
             Log.Info($"media relay {SafeUrl.Describe(target)} -> {(int)response.StatusCode}"
                 + (range is null ? "" : " (ranged)"));
@@ -249,19 +254,56 @@ internal static class MediaRelay
     private sealed class GuardedStream : Stream
     {
         private readonly Stream _inner;
+        private readonly IDisposable? _owned;
         private bool _faulted;
+        private bool _announced;
         private long _served;
 
-        public GuardedStream(Stream inner) => _inner = inner;
+        public GuardedStream(Stream inner, IDisposable? owned)
+        {
+            _inner = inner;
+            _owned = owned;
+        }
 
-        public override bool CanRead => true;
-        public override bool CanSeek => false;
+        // EVERY capability mirrors the inner stream. This wrapper exists for exactly
+        // one purpose — stopping a mid-stream fault from throwing inside WebView2's
+        // COM read callback, which is process death — and it must be invisible in
+        // every other respect, because the caller is a closed-source shim whose
+        // probing (Length? CanSeek? Position? which Read overload?) we cannot see.
+        // The first cut hardcoded CanSeek=false and threw from Length/Position; the
+        // field answered with a <video> stuck at readyState 0 / networkState 2, no
+        // bytes ever pulled and Dispose never called, on the same build where the
+        // RAW stream had played fine. Whatever member that shim consults, it now
+        // gets the same answer it got before the wrapper existed — including a
+        // NotSupportedException where the raw stream threw one.
+        public override bool CanRead => _inner.CanRead;
+        public override bool CanSeek => _inner.CanSeek;
         public override bool CanWrite => false;
-        public override long Length => throw new NotSupportedException();
+        public override bool CanTimeout => _inner.CanTimeout;
+        public override long Length => _inner.Length;
         public override long Position
         {
-            get => throw new NotSupportedException();
-            set => throw new NotSupportedException();
+            get => _inner.Position;
+            set => _inner.Position = value;
+        }
+        public override int ReadTimeout
+        {
+            get => _inner.ReadTimeout;
+            set => _inner.ReadTimeout = value;
+        }
+        public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+        public override void SetLength(long value) => _inner.SetLength(value);
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Flush() => _inner.Flush();
+
+        /// <summary>One line the first time bytes actually move, and one on the first
+        /// fault: the field cannot otherwise tell "WebView2 never pulled" from
+        /// "WebView2 pulled and the upstream died", and those want opposite fixes.</summary>
+        private void Announce(string what)
+        {
+            if (_announced) return;
+            _announced = true;
+            if (WebViewEnvironment.DiagnosticsBudget()) Log.Info($"media relay stream {what}");
         }
 
         private int NoteFault(Exception ex)
@@ -269,10 +311,10 @@ internal static class MediaRelay
             if (!_faulted)
             {
                 _faulted = true;
-                // Once, type only (messages can echo the target URL): the log says WHY
-                // playback died where the old build simply exited.
+                // Type only: exception messages can echo the target URL, and the
+                // api_key rides that URL's query.
                 if (WebViewEnvironment.DiagnosticsBudget())
-                    Log.Warn($"media relay stream ended early: {ex.GetType().Name}");
+                    Log.Warn($"media relay stream ended early after {_served} bytes: {ex.GetType().Name}");
             }
             return 0;
         }
@@ -280,43 +322,61 @@ internal static class MediaRelay
         public override int Read(byte[] buffer, int offset, int count)
         {
             if (_faulted) return 0;
-            try { var n = _inner.Read(buffer, offset, count); _served += n; return n; }
+            try
+            {
+                var n = _inner.Read(buffer, offset, count);
+                _served += n;
+                Announce($"reading (sync, first {n} bytes)");
+                return n;
+            }
             catch (Exception ex) { return NoteFault(ex); }
         }
 
+        // ConfigureAwait(false) is load-bearing, not hygiene: this is a WinForms app,
+        // the WebResourceRequested handler awaits on the UI context, and an async
+        // continuation captured onto that context deadlocks the moment anything
+        // blocks on the returned task. The raw HttpClient stream never captured a
+        // context; neither may its wrapper.
         public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
             if (_faulted) return 0;
-            try { var n = await _inner.ReadAsync(buffer.AsMemory(offset, count), cancellationToken); _served += n; return n; }
+            try
+            {
+                var n = await _inner.ReadAsync(buffer.AsMemory(offset, count), cancellationToken).ConfigureAwait(false);
+                _served += n;
+                Announce($"reading (async, first {n} bytes)");
+                return n;
+            }
             catch (Exception ex) { return NoteFault(ex); }
         }
 
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
             if (_faulted) return 0;
-            try { var n = await _inner.ReadAsync(buffer, cancellationToken); _served += n; return n; }
+            try
+            {
+                var n = await _inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                _served += n;
+                Announce($"reading (async, first {n} bytes)");
+                return n;
+            }
             catch (Exception ex) { return NoteFault(ex); }
         }
-
-        public override void Flush() { }
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
-                // How far this stream actually got separates the field's failure
-                // modes: 0 bytes at close means WebView2 never read (or the element
-                // abandoned the response unopened), a few KB means the head arrived
-                // but never parsed, megabytes means playback and a normal seek or
-                // stop. One line per stream, budgeted like every disposition.
+                // How far this stream got separates the failure modes: never announced
+                // means WebView2 never pulled a byte; a few KB means the head arrived
+                // and never parsed; megabytes means playback and an ordinary stop.
                 if (WebViewEnvironment.DiagnosticsBudget())
                     Log.Info($"media relay stream closed after {_served} bytes"
-                        + (_faulted ? " (faulted)" : ""));
+                        + (_faulted ? " (faulted)" : _announced ? "" : " (never read)"));
                 try { _inner.Dispose(); }
                 catch { /* the connection is gone either way */ }
+                try { _owned?.Dispose(); }
+                catch { /* the deadline timer is spent by now */ }
             }
             base.Dispose(disposing);
         }
