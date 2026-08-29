@@ -1970,7 +1970,12 @@
     clearTimeout(stallTimer);
     timeBase = 0;
     pendingSeek = 0;
-    if (resumeAt > 5) {
+    // Any position at all, not just one past the resume threshold: every caller has
+    // already decided whether its position is worth honouring (startPlayback and the
+    // fallback both drop a saved point under five seconds), and a SEEK to 0:03 is an
+    // explicit instruction — dropping it here restarted the title, which is exactly
+    // the complaint this whole change answers.
+    if (resumeAt > 0) {
       if (isTranscode(url)) {
         // The server starts the transcode at the offset; the element's own clock
         // restarts at zero, so the displayed times carry the base.
@@ -1980,7 +1985,13 @@
         pendingSeek = resumeAt;   // direct play seeks natively once metadata is in
       }
     }
-    armStartDeadline();
+    // The startup deadline is answered by `playing`, so a load that will SIT paused
+    // must not carry one: nothing would ever call it off and 20 seconds later the
+    // watchdog would condemn a perfectly healthy stream. Same reasoning the `pause`
+    // handler already applies when it clears both watchdogs — and a source that is
+    // genuinely broken still fails through the `error` event either way.
+    const willPlay = !outOfSight() && !keepPaused;
+    if (willPlay) armStartDeadline(); else clearTimeout(attemptTimer);
     lastSrcUrl = url;
     pv.src = privateLiteralHost(cfg.base) ? relayUrl(url) : url;
     // play() descends from a tap, so autoplay policy is normally satisfied (Chromium's
@@ -1993,7 +2004,7 @@
     // keepPaused: a seek committed while the viewer had deliberately paused must
     // land at the new position still paused, not start playing 600 ms after a tap
     // that never asked for playback.
-    if (!outOfSight() && !keepPaused) {
+    if (willPlay) {
       pv.play().catch((e) => {
         if (e && e.name === 'NotAllowedError' && theaterOn) {
           clearTimeout(attemptTimer);
@@ -2136,6 +2147,14 @@
     // sources and its diagnosis.
     resumeAt = t;
     setSource(String(lastSrcUrl).replace(/&StartTimeTicks=\d+/g, ''), wasPaused);
+    // A server-side seek swaps the whole resource, so the element never fires the
+    // `seeked` that reports a native jump — and the periodic report stands down
+    // while paused. Without this the server keeps the PRE-seek position: close the
+    // panel in that window and Continue resumes at the wrong place on every client.
+    // The target, not positionTicks(): direct play has not applied pendingSeek yet.
+    if (!reportedDone) {
+      reportPlayState('progress', theaterSource, Math.max(0, Math.floor(t * 10000000)), wasPaused);
+    }
   }
 
   function cancelSeek() {
@@ -2156,11 +2175,16 @@
     const total = isFinite(pv.duration) && pv.duration > 0 ? timeBase + pv.duration : runtime;
     let t = Math.max(0, at + delta);
     if (total > 0) t = Math.min(t, Math.max(0, total - 5));
+    // The clamp bounds a seek; it must never REVERSE one. Inside the end margin —
+    // 1:39 of a 1:40 title — a forward tap would otherwise land on 1:35 and jump
+    // backwards, and on a transcode spawn a whole new stream to do it. A bound that
+    // is not ahead of where we are means there is simply no room left to move.
+    if (delta > 0 ? t <= at : t >= at) { showOverlay(); return; }
 
     if (isTranscode(lastSrcUrl)) {
-      // A seek that does not move is not worth a new transcode: at the end of a
-      // title — or on one shorter than the end margin — a forward tap would
-      // otherwise restart the stream, which is the very bug being fixed.
+      // Sub-second movement is not worth a new transcode either: the clamp can shave
+      // a jump down to a fraction of a second, and paying for a fresh ffmpeg process
+      // to travel that far is the restart this change exists to stop.
       if (Math.abs(t - at) < 1) { showOverlay(); return; }
       // Each of these re-asks the server for a NEW transcode, so five taps must not
       // become five ffmpeg processes: the taps accumulate against the pending target
