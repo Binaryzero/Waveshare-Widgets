@@ -2175,6 +2175,37 @@
         probe('vhost-fetch', 'https://media.plinth/', { mode: 'no-cors' });
         probe('direct-fetch', lastSrcUrl, { mode: 'no-cors' });
         probe('pna-fetch', lastSrcUrl, { mode: 'no-cors', targetAddressSpace: 'private' });
+        // Every probe above is a HEAD, and HEAD is the one relay path that never builds
+        // a body at all — so the quartet can come back clean while the thing that
+        // actually failed, the BYTES, was never exercised. This one asks the relay for
+        // a real 64 KiB window and counts what arrives: a full 65536 means ranged
+        // delivery works end to end and the fault is the element's (codec, container,
+        // an unparseable head); a short count or a throw names the transport.
+        WW.fetch(relayUrl(lastSrcUrl), { proxy: 'never', headers: { Range: 'bytes=0-65535' } })
+          .then(async (r) => {
+            // Bounded HERE, not by trusting the server to honour Range: the transcode
+            // endpoint answers 200 and streams for as long as ffmpeg runs, and reading
+            // that to the end would trip the fetch cap and report a WORKING relay as a
+            // failure — the exact false negative this probe exists to prevent. Cancelling
+            // at the window also spares the server a transcode nobody watches.
+            const reader = r.body && r.body.getReader ? r.body.getReader() : null;
+            if (!reader) {
+              WW.log('jellyfin: attempt ' + n + ' body-fetch: HTTP ' + r.status + ' (no readable body)');
+              return;
+            }
+            let got = 0;
+            try {
+              while (got < 65536) {
+                const step = await reader.read();
+                if (step.done) break;
+                got += (step.value && step.value.length) || 0;
+              }
+            } finally {
+              try { reader.cancel(); } catch (e) { /* already closed */ }
+            }
+            WW.log('jellyfin: attempt ' + n + ' body-fetch: HTTP ' + r.status + ' ' + got + ' bytes');
+          })
+          .catch((e) => WW.log('jellyfin: attempt ' + n + ' body-fetch failed: ' + ((e && e.name) || 'error')));
       }
     }
     // A failure on a screen nobody is looking at does not get to restart audio there —
