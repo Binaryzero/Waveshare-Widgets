@@ -29,13 +29,36 @@ public sealed class StreamDeckBridge
     public static IReadOnlyList<string> ListProfileNames() =>
         ListVsdProfiles().Select(p => p.Name).ToList();
 
-    /// <summary>All Virtual Stream Deck profiles: (display name, profile directory).</summary>
+    /// <summary>
+    /// Device models this bridge recognizes as a mirrorable on-screen Stream Deck.
+    /// </summary>
+    /// <remarks>
+    /// A LIST, not the single literal this used to compare against, because "the
+    /// on-screen deck" is not one thing. "UI Stream Deck" is Elgato's own Virtual Stream
+    /// Deck, created in the Stream Deck app. iCUE creates a DIFFERENT device type through
+    /// its own bridge — it carries its own icon in the app and its own model string here —
+    /// and a widget written against iCUE's Streamdeck plugin is talking to that one. A
+    /// hardcoded comparison found no profile for it, so discovery came back empty and the
+    /// widget showed "not running or cannot be found" while a perfectly good deck existed.
+    ///
+    /// Extending this is a one-line change; what made the last round slow was that an
+    /// unrecognized model was skipped in SILENCE, so nothing on the machine said which
+    /// string to add. <see cref="ReportedModels"/> closes that.
+    /// </remarks>
+    private static readonly string[] MirrorableModels = ["UI Stream Deck"];
+
+    /// <summary>Models already named in the log, so the 4s profile poll reports each
+    /// unrecognized one once rather than every tick.</summary>
+    private static readonly HashSet<string> ReportedModels = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>All mirrorable on-screen Stream Deck profiles: (display name, profile directory).</summary>
     private static List<(string Name, string Dir)> ListVsdProfiles()
     {
         var result = new List<(string, string)>();
         if (!Directory.Exists(ProfilesDir))
             return result;
 
+        var skipped = new List<string>();
         foreach (var profileDir in Directory.GetDirectories(ProfilesDir, "*.sdProfile"))
         {
             var manifestPath = Path.Combine(profileDir, "manifest.json");
@@ -45,17 +68,37 @@ public sealed class StreamDeckBridge
             {
                 using var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
                 var root = manifest.RootElement;
-                if (root.TryGetProperty("Device", out var device) &&
-                    device.TryGetProperty("Model", out var model) &&
-                    model.GetString() == "UI Stream Deck")
+                if (!root.TryGetProperty("Device", out var device) ||
+                    !device.TryGetProperty("Model", out var modelNode))
+                    continue;
+                var model = modelNode.GetString() ?? "";
+                if (!MirrorableModels.Contains(model, StringComparer.OrdinalIgnoreCase))
                 {
-                    var name = root.TryGetProperty("Name", out var n) ? n.GetString() ?? "" : "";
-                    if (string.IsNullOrWhiteSpace(name))
-                        name = Path.GetFileNameWithoutExtension(profileDir);
-                    result.Add((name, profileDir));
+                    skipped.Add(model);
+                    continue;
                 }
+
+                var name = root.TryGetProperty("Name", out var n) ? n.GetString() ?? "" : "";
+                if (string.IsNullOrWhiteSpace(name))
+                    name = Path.GetFileNameWithoutExtension(profileDir);
+                result.Add((name, profileDir));
             }
             catch { /* skip unreadable */ }
+        }
+
+        // Only when nothing matched: a machine with a working deck should say nothing,
+        // and a machine WITHOUT one should say which models it did find, because that
+        // string is the whole answer to "why does the widget report no deck".
+        if (result.Count == 0 && skipped.Count > 0)
+        {
+            var unreported = skipped.Distinct(StringComparer.OrdinalIgnoreCase)
+                                    .Where(m => ReportedModels.Add(m))
+                                    .ToList();
+            if (unreported.Count > 0)
+                Log.Info("Stream Deck: no mirrorable profile. Recognized models are [" +
+                         string.Join(", ", MirrorableModels) + "]; this machine also has [" +
+                         string.Join(", ", unreported) + "]. A deck created by iCUE is a " +
+                         "different device type — report its model to have it recognized.");
         }
         return result;
     }
