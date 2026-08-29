@@ -1963,7 +1963,7 @@
 
   // One door onto pv.src: every attempt gets the startup deadline, and a mid-title
   // fallback carries the position along instead of starting the movie over.
-  function setSource(url) {
+  function setSource(url, keepPaused) {
     // A source now exists, so pause and seek mean something again.
     setTransportDisabled(false);
     clearTimeout(attemptTimer);
@@ -1990,7 +1990,10 @@
     // explicit tap carries fresh activation. Decoder refusals surface as error events
     // and keep walking the fallback. Off-screen (callers already refuse; belt and
     // braces for future ones), the source loads but stays paused.
-    if (!outOfSight()) {
+    // keepPaused: a seek committed while the viewer had deliberately paused must
+    // land at the new position still paused, not start playing 600 ms after a tap
+    // that never asked for playback.
+    if (!outOfSight() && !keepPaused) {
       pv.play().catch((e) => {
         if (e && e.name === 'NotAllowedError' && theaterOn) {
           clearTimeout(attemptTimer);
@@ -2125,13 +2128,14 @@
   function commitSeek() {
     seekTimer = null;
     const t = seekTarget;
+    const wasPaused = pv.paused;
     seekTarget = null;
     if (!theaterOn || t == null || !lastSrcUrl) return;
     // A SEEK, not a failure: the fallback chain and the attempt history are left
     // exactly as they are, so a later genuine failure still has its remaining
     // sources and its diagnosis.
     resumeAt = t;
-    setSource(String(lastSrcUrl).replace(/&StartTimeTicks=\d+/g, ''));
+    setSource(String(lastSrcUrl).replace(/&StartTimeTicks=\d+/g, ''), wasPaused);
   }
 
   function cancelSeek() {
@@ -2151,9 +2155,13 @@
     const runtime = ticksToSec(theaterSource && theaterSource.RunTimeTicks);
     const total = isFinite(pv.duration) && pv.duration > 0 ? timeBase + pv.duration : runtime;
     let t = Math.max(0, at + delta);
-    if (total && total > 5) t = Math.min(t, total - 5);
+    if (total > 0) t = Math.min(t, Math.max(0, total - 5));
 
     if (isTranscode(lastSrcUrl)) {
+      // A seek that does not move is not worth a new transcode: at the end of a
+      // title — or on one shorter than the end margin — a forward tap would
+      // otherwise restart the stream, which is the very bug being fixed.
+      if (Math.abs(t - at) < 1) { showOverlay(); return; }
       // Each of these re-asks the server for a NEW transcode, so five taps must not
       // become five ffmpeg processes: the taps accumulate against the pending target
       // and only the settled one is sent. The clock shows where you are heading
@@ -2179,6 +2187,10 @@
     if (!theaterOn) return;
     clearTimeout(attemptTimer);
     clearTimeout(stallTimer);
+    // Whatever seek was waiting out its debounce belonged to the source that just
+    // died. Firing it now would reload a failed transcode — or the fallback that
+    // replaced it — behind the error card.
+    cancelSeek();
     // Record what THIS attempt died of before anything advances — the codes are the
     // whole diagnosis when both attempts fail in the field. The CARD carries the code
     // alone: short enough for a 200px band's error card, and a code cannot leak the
@@ -2397,6 +2409,9 @@
   // clock at zero while the title is minutes in.
   pv.addEventListener('timeupdate', () => {
     if (!theaterOn) return;
+    // A pending seek owns the clock: the element is still playing the old position
+    // and would otherwise erase the target the viewer is tapping towards.
+    if (seekTarget != null) return;
     el('ovElapsed').textContent = fmt(timeBase + pv.currentTime);
     if (isFinite(pv.duration) && pv.duration > 0) {
       const total = timeBase + pv.duration;
