@@ -513,20 +513,39 @@ the layout write LANDS, because a failed write leaves the entry on disk for the 
 retry and a tombstone would make the retry impossible.
 
 **What that set does NOT close, stated so nobody discovers it as a bug.** It filters the
-incoming ATTIC. A stale window can also carry the identity in its `pages` — panel retirement
-is not mirrored to the settings editor, so an editor opened before a retire still shows the
-tile live, and a save after a Delete puts it back as a live slot with its sealed settings
-(the derived bucket stays destroyed, so the widget re-authenticates). A panel save queued
-just before a settings-side Restore can likewise be processed after it and revert the
-restore. Both are the same shape as the race the set closes, one field or one direction over.
+incoming ATTIC. A stale window can also carry the identity in its `pages` — a save after a
+Delete puts the tile back as a live slot with its sealed settings (the derived bucket stays
+destroyed, so the widget re-authenticates). A panel save queued just before a settings-side
+Restore can likewise be processed after it and revert the restore. Both are the same shape as
+the race the set closes, one field or one direction over.
 
-They are not closed here on purpose. Two windows share one layout.json with no version on it,
-and last-writer-wins has been this design's documented posture since long before the attic —
-so the family of in-flight races is unbounded, and closing them one at a time is chasing a
-tail. The honest fix is a single layout **generation**: stamped into each window's init,
-echoed on every save, and refused by the host when it is behind. That is one primitive
-covering every case above, and it belongs in its own change because it touches both save
-handlers, both clients, and the meaning of every existing ack — not bolted onto the attic.
+**The pages half, from the panel, is now mirrored (#281).** `DashboardWindow.LayoutWritten`
+fires when an on-panel save LANDS, and `SettingsWindow` hands the editor the freshly masked
+file as `layout-written`. The editor decides, because only it knows whether there is work to
+lose: CLEAN, it adopts the layout silently — no re-init, so the catalog, the secret-name union
+and the typed-credential record all survive; DIRTY, it adopts nothing, raises a banner and
+HOLDS Save until the user reloads. Held, not merged: this window's copy is whole-file, so
+saving it would revert the panel's write entire, and merging two divergent whole-file copies
+is what the union, the liveness guard and the destroyed-set each attempt for one field.
+
+The mask for that notice MERGES the manifest baseline rather than replacing it, for the
+`widgets-changed` reason: a dirty editor keeps a layout masked with the manifests as they
+stood at ITS init, and a baseline describing a layout nobody holds is how `Seal` stops walking
+a widget's secret fields and writes the editor's masked blank over the stored ciphertext.
+
+**What is still open**, and why it is not closed by the above: a payload already IN FLIGHT
+when the write lands. The notice converges the two clients' future state; it cannot reach a
+`save-layout` the host has already been handed. Two windows share one layout.json with no
+version on it, and last-writer-wins has been this design's documented posture since long
+before the attic. The remaining fix is a single layout **generation**: stamped into each
+window's init, echoed on every save, and refused by the host when it is behind — with the
+writer recorded so a window is never judged stale against its own accepted save, and every
+HOST-performed write (both restores, both clears, the migrations) attributed to no window at
+all, so a payload composed before one is stale to its own window too. That is #281's second
+half. Note the destroyed-set survives it: `DropDestroyed` filters every incoming attic from
+either window at any generation, whereas the generation rule deliberately exempts a window's
+own save — which on a panel-side Delete is the destroying window itself.
+
 Until then: a resurrected live tile is visible on screen and re-deletable, a reverted restore
 is one tap to redo, and the derived credential stays destroyed in every branch.
 

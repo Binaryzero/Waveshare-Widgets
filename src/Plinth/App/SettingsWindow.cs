@@ -40,8 +40,8 @@ public sealed class SettingsWindow : Form
     /// <summary>The live dashboard window; routes the preview replica's widget data
     /// requests (fetch/ping/media-list/audio-get) through the real handlers.
     ///
-    /// <para>Assigning it also subscribes to the panel's two attic notices (#226) — the
-    /// panel→settings half of their convergence. This editor keeps its own copy of the
+    /// <para>Assigning it also subscribes to the panel's two attic notices (#226) and to
+    /// its whole-layout one (#281) — the panel→settings half of their convergence. This editor keeps its own copy of the
     /// attic and its own copy of the pages, and re-ships both on every save, so an attic
     /// change made ON THE PANEL is undone by this window's next ordinary Save unless it
     /// hears about it: a destroyed tile comes back with sealed bytes that still decrypt
@@ -60,12 +60,14 @@ public sealed class SettingsWindow : Form
             {
                 _dashboard.RetainedGone -= OnPanelRetainedGone;
                 _dashboard.RetainedRestored -= OnPanelRetainedRestored;
+                _dashboard.LayoutWritten -= OnPanelLayoutWritten;
             }
             _dashboard = value;
             if (_dashboard is not null)
             {
                 _dashboard.RetainedGone += OnPanelRetainedGone;
                 _dashboard.RetainedRestored += OnPanelRetainedRestored;
+                _dashboard.LayoutWritten += OnPanelLayoutWritten;
             }
         }
     }
@@ -204,6 +206,13 @@ public sealed class SettingsWindow : Form
             switch (message?["type"]?.GetValue<string>())
             {
                 case "settings-ready":
+                    PostInit();
+                    break;
+
+                // The stale banner's Reload (#281). Same payload as the first init — the
+                // editor asks for it only once the user has agreed to lose the working
+                // copy, so there is nothing here to be careful of that PostInit isn't.
+                case "reload-layout":
                     PostInit();
                     break;
 
@@ -648,17 +657,74 @@ public sealed class SettingsWindow : Form
         }
     }
 
+    /// <summary>layout.json as the editor is allowed to see it: read from disk, then
+    /// masked against the CURRENT baseline.
+    ///
+    /// <para>The editor never receives a credential — secret values are blanked and
+    /// replaced by a per-slot "secretsSet" hint, so the field can show a saved state while
+    /// the stored ciphertext stays in layout.json (restored on save if left untouched).
+    /// </para>
+    ///
+    /// <para>The baseline is the CALLER'S to set, and the two callers need different
+    /// answers, so this deliberately does not touch it. <see cref="SnapshotManifests"/>
+    /// replaces it and is only legitimate when the editor is about to adopt what comes
+    /// back; <see cref="MergeManifestSnapshot"/> only adds, which is what a masking the
+    /// editor MIGHT refuse requires. Either way it has to happen BEFORE the mask, because
+    /// <c>MaskedPlan</c> reads it.</para></summary>
+    private JsonNode? MaskedLayoutFromDisk()
+    {
+        var layoutNode = JsonSerializer.SerializeToNode(LayoutStore.Load());
+        SecretPolicy.Mask(layoutNode, MaskedPlan());
+        return layoutNode;
+    }
+
+    /// <summary>The panel wrote layout.json (#281). Hand this editor the file, and let IT
+    /// decide what to do with it — the host cannot: "dirty" is a module-local flag in
+    /// settings.js that never crosses the bridge, and re-initing over unsaved work is the
+    /// one thing this notice must not cause.
+    ///
+    /// <para>Sent whole rather than as a diff for the same reason <c>PostRestoredAck</c>
+    /// hands back a def instead of an instruction: the masking hinges on
+    /// <c>CanUnprotect</c>, a DPAPI predicate with no JavaScript mirror, so anything the
+    /// editor is to hold has to be masked HERE.</para></summary>
+    private void OnPanelLayoutWritten()
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+        try
+        {
+            BeginInvoke(() =>
+            {
+                try
+                {
+                    // MERGE, never replace. A dirty editor REFUSES this layout and keeps
+                    // the one it has, which was masked with the manifests as they stood at
+                    // its init. Replacing the baseline would describe a layout nobody is
+                    // holding: if a credentialed widget has since been removed or refused,
+                    // its manifest leaves the baseline, Seal stops walking that widget's
+                    // secret fields, and the editor's masked blank is written over the
+                    // stored ciphertext on its next save. Same hazard, same answer, as the
+                    // widgets-changed path.
+                    MergeManifestSnapshot();
+                    Post(new JsonObject
+                    {
+                        ["type"] = "layout-written",
+                        ["layout"] = MaskedLayoutFromDisk(),
+                    });
+                }
+                catch (Exception ex) { Log.Warn($"Could not mirror a panel save: {ex.Message}"); }
+            });
+        }
+        catch (ObjectDisposedException) { /* window closed between the check and the invoke */ }
+    }
+
     private void PostInit()
     {
         var widgets = WidgetCatalog();
         var rejected = RejectedCatalog();
 
-        // The editor never receives a credential: secret values are blanked and replaced
-        // by a per-slot "secretsSet" hint, so the field can show a saved state while the
-        // stored ciphertext stays in layout.json (restored on save if left untouched).
-        var layoutNode = JsonSerializer.SerializeToNode(LayoutStore.Load());
-        SnapshotManifests();
-        SecretPolicy.Mask(layoutNode, MaskedPlan());
+        SnapshotManifests();   // this layout IS what the editor will hold — see MaskedPlan
+        var layoutNode = MaskedLayoutFromDisk();
 
         Post(new JsonObject
         {

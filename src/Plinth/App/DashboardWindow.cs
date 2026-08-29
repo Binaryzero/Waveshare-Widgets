@@ -316,8 +316,13 @@ public sealed class DashboardWindow : Form
                                 Log.Warn($"Could not purge evicted retained credentials: {ex.GetType().Name}");
                             }
                         }
-                        LayoutStore.Save(edited);
+                        var landed = LayoutStore.Save(edited);
                         Log.Info("layout saved from on-panel editor");
+                        // Before the acks below, and outside them: those are all "about
+                        // the payload you sent" and go to THIS shell. This one is about
+                        // the file, and goes to the other window.
+                        if (landed)
+                            LayoutWritten?.Invoke();
                         if (evicted.Count > 0)
                         {
                             // Tell the shell which attic entries the cap dropped, or its
@@ -634,6 +639,23 @@ public sealed class DashboardWindow : Form
     /// window can drop it from its own copy before its next save re-ships it. The mirror of
     /// <see cref="PostRetainedGone"/>, which carries the settings→panel direction.</summary>
     public event Action<string?, string?>? RetainedGone;
+
+    /// <summary>Raised after an ordinary on-panel save LANDS on disk (#281). The settings
+    /// window keeps its own whole copy of layout.json and writes it back whole, so every
+    /// panel edit puts that copy one step further behind — and its next Save reverts the
+    /// lot. #280 added the two attic notices, but they only carry the attic; a tile RETIRED
+    /// on the panel is still on a page in the editor's copy, and saving from there puts it
+    /// back with its sealed settings (member 2 of #281).
+    ///
+    /// <para>Deliberately raised only when <see cref="LayoutStore.Save"/> returns true. A
+    /// swallowed write failure leaves disk exactly as the editor last saw it, and telling
+    /// the editor otherwise would make it discard a working copy to re-read a file that
+    /// never changed.</para>
+    ///
+    /// <para>Carries nothing. The subscriber re-reads and re-MASKS from disk, which is the
+    /// only way the editor may ever receive a layout — this window holds the decrypted
+    /// one.</para></summary>
+    public event Action? LayoutWritten;
 
     /// <summary>What the panel just restored, for an open settings window to adopt.</summary>
     /// <param name="WidgetId">Half of the attic identity the editor keys its own copy by.</param>
