@@ -1665,6 +1665,20 @@ Check("N5 a not-yet-adopted mint survives a sibling being added alongside it",
 Check("N5b ...and the sibling still inherits nothing",
     string.IsNullOrEmpty(ValueAt(nAliasIncoming, 1, "apiToken")));
 
+// N5c · the alias serves ONLY a client that has not adopted the mint. Once some incoming
+// slot carries that id, the stored value is claimed by identity, and an id-less newcomer
+// standing beside the adopted one must NOT be able to take it positionally — that is #68
+// itself, and it is what P23b catches if this gate is dropped.
+var nAdopted = TwoInstances(new JsonObject { ["apiToken"] = "" },
+                            new JsonObject { ["apiToken"] = "" },
+                            Slot(nAliasStored).InstanceId, null);
+SecretPolicy.Seal(nAdopted, nAliasStored, Lookup);
+Check("N5c an adopted id keeps its credential…",
+    ValueAt(nAdopted, 0, "apiToken") == nAliasSealed, ValueAt(nAdopted, 0, "apiToken") ?? "(removed)");
+Check("N5d …and an id-less NEWCOMER beside it inherits nothing through the alias",
+    string.IsNullOrEmpty(ValueAt(nAdopted, 1, "apiToken")),
+    ValueAt(nAdopted, 1, "apiToken") ?? "(removed)");
+
 // ---- R · the retained attic (#226) ---------------------------------------------------
 // A removed slot's def moves to layout.retained, addressed ONLY by widgetId|i:instanceId.
 // Seal must re-seal a freshly retired plaintext (the shell held it revealed), restore a

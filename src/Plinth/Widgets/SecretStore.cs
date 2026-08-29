@@ -842,9 +842,10 @@ public static class SecretPolicy
         IReadOnlyDictionary<string, IReadOnlyList<string>>? retainedCleared = null)
     {
         var incomingIdless = CountIdlessWidgets(layout);
+        var incomingIds = InstanceIds(layout);
         // The stored counts stay inside BuildStoredIndex, where the |w:0 alias still uses
         // them; Seal itself addresses only through the incoming id-less population.
-        var previous = BuildStoredIndex(stored, plan, incomingIdless, out _);
+        var previous = BuildStoredIndex(stored, plan, incomingIdless, incomingIds, out _);
         // The STORED layout's twins, as KEYS rather than slot references.
         //
         // Reveal and Mask ask this of the layout they were handed, so a reference set works
@@ -1151,6 +1152,20 @@ public static class SecretPolicy
     /// rather than on every slot of the widget, so tiles that have their own identity
     /// neither claim the positional key nor disqualify the tile that legitimately holds
     /// it.</summary>
+    /// <summary>Every instance id the incoming layout carries. The |w:0 alias uses it to
+    /// tell "the client has not adopted the host's mint yet" (the id is absent) from "it
+    /// has, and something else beside it is merely id-less" — the second case must not let
+    /// that newcomer claim the adopted slot's credential (#68).</summary>
+    private static HashSet<string> InstanceIds(DashboardLayout? layout)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var page in layout?.Pages ?? [])
+            foreach (var slot in page.Slots ?? [])
+                if (!string.IsNullOrEmpty(slot.InstanceId))
+                    ids.Add(slot.InstanceId);
+        return ids;
+    }
+
     private static Dictionary<string, int> CountIdlessWidgets(DashboardLayout? layout)
     {
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -1171,7 +1186,8 @@ public static class SecretPolicy
     /// other broke. Storing the node satisfies both.
     private static Dictionary<(string Slot, string Name), JsonNode?> BuildStoredIndex(
         DashboardLayout? stored, SecretPlan plan,
-        Dictionary<string, int> incomingIdless, out Dictionary<string, int> counts)
+        Dictionary<string, int> incomingIdless, HashSet<string> incomingIds,
+        out Dictionary<string, int> counts)
     {
         counts = CountWidgets(stored);
         var index = new Dictionary<(string, string), JsonNode?>();
@@ -1239,7 +1255,14 @@ public static class SecretPolicy
             // |w:0, but the total went 1 -> 2, so this published nothing, the lookup missed
             // and the untouched credential was removed — the identical outcome, reached
             // through the alias rather than through SlotKey.
-            if (!isRetained && !string.IsNullOrEmpty(slot.InstanceId))
+            // ...and ONLY while the client has not adopted that id. If some incoming slot
+            // already carries it, the stored value is claimed by identity and publishing it
+            // positionally as well would hand it to an id-less NEWCOMER standing beside the
+            // adopted one — a fresh tile inheriting another's credential, which is #68
+            // itself (P23b). Absent from the incoming layout is what "not adopted yet"
+            // means, and it is the only state this alias exists to serve.
+            if (!isRetained && !string.IsNullOrEmpty(slot.InstanceId)
+                && !incomingIds.Contains(slot.InstanceId))
             {
                 storedCounts.TryGetValue(slot.WidgetId, out var storedTotal);
                 incomingIdless.TryGetValue(slot.WidgetId, out var claimants);
