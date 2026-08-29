@@ -122,6 +122,14 @@ public sealed class StreamDeckBridge
     {
         try
         {
+            // Cleared FIRST, before anything that can return or throw. This flag is read on
+            // the next call, so every exit has to leave it describing THIS read: set only
+            // on the unmirrorable path, it outlived a later read that found zero profiles
+            // (which returns early) or one that threw — and the widget went on explaining
+            // network decks to a user who had just deleted them, or whose profile
+            // directory was briefly unavailable.
+            LastReadWasUnmirrorableOnly = false;
+
             var profiles = ListVsdProfiles();
             if (profiles.Count == 0)
                 return null;
@@ -131,10 +139,10 @@ public sealed class StreamDeckBridge
                     p.Name, p.Model, SafeLastWrite(Path.Combine(p.Dir, "manifest.json"))))
                 .ToList();
             var index = DeckManifest.ChooseMirrorable(candidates, preferredName);
-            LastReadWasUnmirrorableOnly =
-                index < 0 && profiles.Any(p => DeckManifest.IsUnmirrorableModel(p.Model));
             if (index < 0)
             {
+                LastReadWasUnmirrorableOnly =
+                    profiles.Any(p => DeckManifest.IsUnmirrorableModel(p.Model));
                 // Every deck on the machine is one we cannot drive. Say so once, with the
                 // fix — this is the whole difference between "the widget is broken" and
                 // "there is no Virtual Stream Deck yet".

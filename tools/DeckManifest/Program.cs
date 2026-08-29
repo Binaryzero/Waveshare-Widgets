@@ -249,6 +249,20 @@ else
     // card that gives correct advice and never says why their decks are not candidates.
     Check("M6j the refusal reaches the USER, not only app.log",
         code.Contains("LastReadWasUnmirrorableOnly"));
+    // POSITION, not presence. The flag is read on the NEXT call, so every path out of a
+    // read has to leave it describing that read: set only on success, it survives a later
+    // read that finds zero profiles (which returns early) or throws — and the widget goes
+    // on explaining network decks to someone who no longer has any. Clearing it before
+    // the first early return is what makes that impossible rather than merely unlikely.
+    var readBody = System.Text.RegularExpressions.Regex.Match(code,
+        @"public DeckProfile\? ReadProfile\(.*?\n    \}", System.Text.RegularExpressions.RegexOptions.Singleline).Value;
+    var resetAt = readBody.IndexOf("LastReadWasUnmirrorableOnly = false;", StringComparison.Ordinal);
+    var earlyReturnAt = readBody.IndexOf("if (profiles.Count == 0)", StringComparison.Ordinal);
+    Check("M6k the stale-explanation flag is cleared before any early return",
+        resetAt >= 0 && earlyReturnAt >= 0 && resetAt < earlyReturnAt,
+        resetAt < 0 ? "no unconditional reset in ReadProfile"
+            : earlyReturnAt < 0 ? "could not locate the early return"
+            : $"reset at {resetAt}, early return at {earlyReturnAt}");
     // A profile read off disk says nothing about whether the deck's window is open NOW,
     // and a press needs the window. Without this the widget shows live-looking keys that
     // swallow every tap whenever the deck has been closed.
