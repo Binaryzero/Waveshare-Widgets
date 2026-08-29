@@ -502,7 +502,7 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
           return reply({ type: 'ww-fetch-result', id: m.id, error: 'only absolute http(s) URLs are allowed' });
         }
         const method = String(m.method || 'GET').toUpperCase();
-        if (!['GET', 'POST', 'PUT', 'HEAD'].includes(method)) {
+        if (!['GET', 'POST', 'PUT', 'HEAD', 'DELETE'].includes(method)) {
           return reply({ type: 'ww-fetch-result', id: m.id, error: 'method ' + method + ' not allowed' });
         }
         // Match the CANONICAL form, and ONLY that — the same string the direct route

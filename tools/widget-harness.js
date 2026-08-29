@@ -397,7 +397,7 @@ function loadPlaywright() {
         // only when msg.id is truthy, so an id-less message never reaches the host at all
         // and cannot be a network call.
         if (m.id && abs && (abs.protocol === 'http:' || abs.protocol === 'https:')
-            && ['GET', 'POST', 'PUT', 'HEAD'].includes(method))
+            && ['GET', 'POST', 'PUT', 'HEAD', 'DELETE'].includes(method))
           window.__wwHostCalls.push('ww-fetch ' + method + ' ' + abs.href);
         reply({ type: 'ww-fetch-result', id: m.id, error: 'offline harness' });
       } else if (m.type === 'ww-ping') {

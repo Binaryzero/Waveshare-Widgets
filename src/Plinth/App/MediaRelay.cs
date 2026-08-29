@@ -259,13 +259,35 @@ internal static class MediaRelay
         private readonly long? _length;
         private bool _faulted;
         private bool _announced;
+        private bool _released;
         private long _served;
         private long _milestone = 64 * 1024;
+        private long _lastRead = Environment.TickCount64;
+        private readonly System.Threading.Timer _idle;
+
+        // Nothing else ever closes this. WebView2 does not dispose a managed content
+        // stream (a tracked defect of its own), so an abandoned response — a playback
+        // attempt the watchdog gave up on, a diagnostic probe that read its window and
+        // cancelled — would hold the upstream socket, and with it a live ffmpeg
+        // transcode, until the process exits. One per failed attempt adds up on the
+        // server long before it does here. So the stream releases ITSELF once nobody
+        // has read from it for a while; the relay is range-based, so a reader that
+        // comes back simply asks for a new window.
+        private const int IdleMs = 120_000;
 
         public GuardedStream(Stream inner, long? length)
         {
             _inner = inner;
             _length = length;
+            _idle = new System.Threading.Timer(_ => IdleCheck(), null, IdleMs, IdleMs);
+        }
+
+        private void IdleCheck()
+        {
+            if (_released || Environment.TickCount64 - Interlocked.Read(ref _lastRead) < IdleMs) return;
+            if (WebViewEnvironment.DiagnosticsBudget())
+                Log.Info($"media relay stream idle after {_served} bytes — releasing the upstream");
+            Dispose();
         }
 
         // These answers match what the RAW response stream returned in the build that
@@ -330,6 +352,7 @@ internal static class MediaRelay
             {
                 var n = _inner.Read(buffer, offset, count);
                 _served += n;
+                Interlocked.Exchange(ref _lastRead, Environment.TickCount64);
                 Progress();
                 Announce($"reading (sync, first {n} bytes)");
                 return n;
@@ -349,6 +372,7 @@ internal static class MediaRelay
             {
                 var n = await _inner.ReadAsync(buffer.AsMemory(offset, count), cancellationToken).ConfigureAwait(false);
                 _served += n;
+                Interlocked.Exchange(ref _lastRead, Environment.TickCount64);
                 Progress();
                 Announce($"reading (async, first {n} bytes)");
                 return n;
@@ -363,6 +387,7 @@ internal static class MediaRelay
             {
                 var n = await _inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
                 _served += n;
+                Interlocked.Exchange(ref _lastRead, Environment.TickCount64);
                 Progress();
                 Announce($"reading (async, first {n} bytes)");
                 return n;
@@ -372,8 +397,10 @@ internal static class MediaRelay
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing)
+            if (disposing && !_released)
             {
+                _released = true;
+                _idle.Dispose();
                 // How far this stream got separates the failure modes: never announced
                 // means WebView2 never pulled a byte; a few KB means the head arrived
                 // and never parsed; megabytes means playback and an ordinary stop.
