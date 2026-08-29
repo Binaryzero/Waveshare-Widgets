@@ -48,6 +48,8 @@
   let selectedSlot = null;     // slot index (within the selected page) the detail panel shows
   let editMode = true;         // replica is the interactive WYSIWYG surface (default on)
   let dirty = false;           // unsaved edits pending Save & apply
+  let stale = false;           // the panel wrote layout.json while this copy was dirty
+                               // (#281). Save is held: this copy would revert that write.
   let editSeq = 0;             // bumps on every edit; the save ack only clears dirty
                                // when nothing changed since the acked snapshot
   let saveSeq = 0;             // request id sent with each save, echoed in the ack
@@ -181,6 +183,11 @@
       initializing = true;
       renderAll();
       initializing = false;
+      // Cleared BEFORE clearDirty: the retired gallery's hints read both, and clearDirty
+      // is what repaints them. A full init is by definition a copy of disk, so whatever
+      // divergence raised the banner is gone with it.
+      stale = false;
+      renderStaleBanner();
       clearDirty(); // freshly loaded state IS the saved state
       renderRejectedWidgets(state.rejectedWidgets);
     } else if (msg.type === 'widgets-changed') {
@@ -343,6 +350,37 @@
         toast('Not deleted — the layout could not be written. Try again.', true);
       }
       refreshRetiredUi();   // the attic never reaches the replica — no re-init needed
+    } else if (msg.type === 'layout-written') {
+      // The PANEL wrote layout.json (#281). Both windows hold the whole file and write it
+      // back whole, so from this instant this copy is a revert waiting to happen: its
+      // pages still carry a tile the panel retired, and Save would put it back with its
+      // stored credentials. #280's two notices carry the attic only — this is the pages.
+      const written = msg.layout;
+      if (written && Array.isArray(written.pages)) {
+        if (!dirty) {
+          // Nothing to lose: this copy WAS disk, and now disk moved. Adopt it silently.
+          // Only the layout — the catalog did not change, so widgetsById, the secret-name
+          // union and the typed-credential record all stay as they are. (settings-init
+          // resets those, which is exactly why this is not a settings-init.)
+          state.layout = written;
+          selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
+          selectedSlot = null;          // the slot OBJECTS are new; an index into the old
+                                        // page means nothing against this list
+          lastWorkingLayout = replicaLayoutJson(); // a host fact, not an edit
+          initializing = true;
+          renderAll();
+          initializing = false;
+          clearDirty();                 // …and it repaints the retired gallery
+        } else {
+          // Unsaved work. Never re-seed over it — that is the one thing this notice must
+          // not cause. Hold Save instead and let the user pick a copy: the alternative is
+          // an editor that looks fine and silently reverts the panel on its next Save,
+          // which is the bug (#281 member 2), not the inconvenience.
+          stale = true;
+          renderStaleBanner();
+          refreshRetiredUi();           // Restore/Delete need the new reason for going dead
+        }
+      }
     } else if (msg.type === 'retained-gone') {
       // The PANEL destroyed this one. Drop it here too, or this window's next Save
       // re-ships it from memory and the tile returns with its still-decryptable bytes.
@@ -821,20 +859,31 @@
     openPanel('widget'); // a real adoption (tap / palette add) — open the inspector
   }
 
+  /** The Save button's whole appearance, from `dirty` and `stale` together.
+   *
+   * One place because the two states set it from opposite directions and the stale one
+   * has to win: the hold is what the user needs to know BEFORE the click, and a button
+   * still promising "You have unsaved changes" while it refuses to save them is the
+   * version that gets the window closed. */
+  function refreshSaveHint() {
+    const save = el('save');
+    save.classList.toggle('dirty', dirty);
+    save.title = stale ? 'Reload first — the panel changed the layout'
+      : dirty ? 'You have unsaved changes' : '';
+  }
+
   function markDirty() {
     if (initializing) return;
     editSeq++; // every edit bumps, even while already dirty — the save ack compares
     if (dirty) return;
     dirty = true;
-    el('save').classList.add('dirty');
-    el('save').title = 'You have unsaved changes';
+    refreshSaveHint();
     refreshRetiredUi();   // Restore/Clear act on DISK — they go dead while this copy differs
   }
 
   function clearDirty() {
     dirty = false;
-    el('save').classList.remove('dirty');
-    el('save').title = '';
+    refreshSaveHint();
     // ...and come back the moment the two copies agree again. Without this the hint
     // ("Save your changes to restore or clear these") tells the user to do the one thing
     // that visibly changes nothing.
@@ -972,6 +1021,15 @@
   // ---- top bar ----------------------------------------------------------------
 
   el('save').addEventListener('click', () => {
+    // Held, not merged (#281). This copy predates the panel's write, and saving it whole
+    // would revert that write — including a tile the panel retired, which comes back on
+    // its page with credentials that still decrypt. The banner says so and offers the
+    // only way out; clicking a held Save just points at it.
+    if (stale) {
+      toast('The panel changed the layout — reload before saving.', true);
+      el('staleLayout').scrollIntoView({ block: 'nearest' });
+      return;
+    }
     const seq = ++saveSeq;
     pendingSaves.set(seq, editSeq); // the ack clears dirty only if this is still current
     post({ type: 'save-layout', layout: state.layout, seq });
@@ -1060,6 +1118,42 @@
       ul.appendChild(li);
     }
     box.appendChild(ul);
+  }
+
+  /** The panel changed layout.json under unsaved work (#281).
+   *
+   * Two intact copies that disagree — not an error, and not something the editor may
+   * resolve on its own: merging them is what the host's union, its liveness guard and
+   * its destroyed-set each attempt for one field, and that composite is what #280's
+   * review kept breaking. So the user picks, and until they do Save is held.
+   *
+   * The banner carries the only control that resolves the state. A disabled primary
+   * button with nothing next to it explaining itself reads as a broken window, and the
+   * user's next move would be to close it — losing exactly the work this is protecting. */
+  function renderStaleBanner() {
+    const box = el('staleLayout');
+    if (!box) return;
+    box.textContent = '';
+    box.hidden = !stale;
+    refreshSaveHint();   // the hold belongs on the button too, not only in this banner
+    if (!stale) return;
+
+    const text = document.createElement('div');
+    text.className = 's-text';
+    const title = document.createElement('h2');
+    title.textContent = 'The panel changed the layout';
+    const body = document.createElement('p');
+    body.textContent = 'Your unsaved changes here would undo it, so Save is on hold. '
+      + 'Reload to take the panel\u2019s version \u2014 your changes in this window are lost.';
+    text.append(title, body);
+
+    const reload = document.createElement('button');
+    reload.type = 'button';
+    reload.className = 'ghost danger';   // it discards work; the ✕ next door does not
+    reload.textContent = 'Reload';
+    reload.onclick = () => post({ type: 'reload-layout' });
+
+    box.append(text, reload);
   }
 
   // ---- page panel ----------------------------------------------------------------
@@ -1531,10 +1625,17 @@
     // one whose page list can be reordered, added to and deleted from locally. Rather
     // than reconcile two divergent copies mid-operation, wait for the save that makes
     // them one — which also excludes an entry retired here and not yet written.
+    //
+    // While STALE (#281) that save is the one thing the window forbids, so the hint has to
+    // change with it — "Save your changes first" would name the action the banner just
+    // disabled, and a user who follows it finds a button that only points back at the
+    // banner. Both buttons stay dead either way: the copies are now doubly divergent.
     if (dirty) {
       const hint = document.createElement('p');
       hint.className = 'r-hint';
-      hint.textContent = 'Save your changes to restore or clear these.';
+      hint.textContent = stale
+        ? 'The panel changed the layout — reload to restore or delete these.'
+        : 'Save your changes to restore or clear these.';
       wrap.appendChild(hint);
     }
 
@@ -1573,7 +1674,8 @@
       restore.className = 'ghost';
       restore.textContent = 'Restore';
       restore.disabled = dirty || !fits;
-      restore.title = dirty ? 'Save your changes first'
+      restore.title = stale ? 'Reload first — the panel changed the layout'
+        : dirty ? 'Save your changes first'
         : fits ? 'Put it back on this page' : 'No room on this page';
       restore.onclick = () => post({
         type: 'restore-retained',
@@ -1596,7 +1698,8 @@
       clear.className = 'ghost danger';
       clear.textContent = 'Delete';
       clear.disabled = dirty;
-      clear.title = dirty ? 'Save your changes first'
+      clear.title = stale ? 'Reload first — the panel changed the layout'
+        : dirty ? 'Save your changes first'
         : 'Delete it and its saved credentials for good';
       clear.onclick = () => {
         if (!clear.dataset.armed) {

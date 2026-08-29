@@ -817,6 +817,31 @@ header h1 #appVersion {
 #rejectedWidgets li + li { margin-top: 6px; }
 #rejectedWidgets .muted { color: var(--muted); font-size: 11px; word-break: break-all; }
 
+/* The panel changed layout.json under an editor with unsaved work (#281). Same slot and
+ * the same warning weight as the refusal banner above, and for the same reason: it is
+ * about something the user cannot otherwise see. It is NOT an error — both copies are
+ * intact, and the only thing that has happened is that they disagree. Save is disabled
+ * while this is up, so the banner has to say why and offer the way out; a disabled
+ * primary button with no explanation reads as a broken window. */
+#staleLayout {
+  flex: none;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--warn, #ffae52);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warn, #ffae52) 8%, transparent);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+#staleLayout .s-text { flex: 1 1 auto; min-width: 0; }
+#staleLayout h2 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
+#staleLayout p { margin: 0; font-size: 12px; color: var(--muted); }
+/* flex:none so the label never wraps to two lines as the banner narrows — this is the
+ * only control that resolves the state, and it has to stay recognisably a button. */
+#staleLayout button { flex: none; }
+
 /* Installed-application picker (#210): a searchable list of what is actually on the PC,
    so a launcher target can be chosen instead of located. Sized to sit under its button
    without covering the field it is filling in. */
