@@ -321,4 +321,56 @@
   // This script runs at document creation, so <head> may not exist yet.
   if (document.head || document.documentElement) injectStyles();
   else document.addEventListener('DOMContentLoaded', injectStyles);
+
+  // --- qrc: fonts ------------------------------------------------------------------
+  //
+  // iCUE stylesheets load their faces from Qt's resource scheme
+  // (@font-face { src: url("qrc:/fonts/OpenSans-Regular.ttf") }). That scheme exists
+  // only inside Qt: Chromium refuses it as a cross-origin request, the face never
+  // arrives, and — the part that actually hurts — Chromium logs a "Slow network is
+  // detected … Fallback font will be used" intervention for EVERY element waiting on
+  // it. One widget produced hundreds of lines, which buries real errors in the console.
+  //
+  // The face was never going to load, so point it at local() instead: no request, no
+  // intervention, and the text lands on a real installed font rather than whatever the
+  // fallback chain reaches last. Rules are found by INSPECTING each sheet rather than
+  // guessing family names, which differ per widget (OpenSansRegular, Saira-Medium,
+  // Bebas Neue Pro, …) and would go stale the moment a package used a new one.
+  const FONT_SUBSTITUTE = 'local("Segoe UI"), local("Tahoma"), local("Arial"), local("Helvetica")';
+
+  function defuseQrcFonts() {
+    let patched = 0;
+    let sheets;
+    try { sheets = Array.from(document.styleSheets); } catch (e) { return 0; }
+    for (const sheet of sheets) {
+      let rules;
+      // A cross-origin sheet throws on .cssRules; widgets' own sheets are same-origin.
+      try { rules = sheet.cssRules; } catch (e) { continue; }
+      if (!rules) continue;
+      for (const rule of Array.from(rules)) {
+        if (!rule || rule.type !== 5 /* CSSRule.FONT_FACE_RULE */) continue;
+        let src;
+        try { src = rule.style.getPropertyValue('src'); } catch (e) { continue; }
+        if (!src || src.indexOf('qrc:') === -1) continue;
+        try { rule.style.setProperty('src', FONT_SUBSTITUTE); patched++; }
+        catch (e) { /* read-only sheet: leave it */ }
+      }
+    }
+    return patched;
+  }
+
+  // Sheets arrive over the document's lifetime, so sweep at both readiness points —
+  // and once more shortly after load for anything a script appended.
+  function sweepFonts() {
+    const n = defuseQrcFonts();
+    if (n > 0) {
+      try {
+        parent.postMessage({ type: 'ww-log',
+          message: 'icue-common: redirected ' + n + ' qrc: @font-face rule(s) to local fonts' }, '*');
+      } catch (e) { /* frame gone */ }
+    }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', sweepFonts);
+  else sweepFonts();
+  window.addEventListener('load', () => { sweepFonts(); setTimeout(sweepFonts, 1000); });
 })();

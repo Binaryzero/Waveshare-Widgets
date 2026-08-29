@@ -399,12 +399,22 @@
     profile: null,             // last available ww-sd-profile payload
     tiles: [],                 // slot index -> last data URL emitted (dedup)
     captureHash: '',           // `have` receipt for the capture fast path
+    answered: false,           // has the host answered a profile poll at all?
     profileTimer: null,
     captureTimer: null,
     pending: new Map(),        // request id -> 'profile' | 'capture'
     seq: 0,
     canvas: null,
   };
+
+  // The emulation reported nothing, so a widget stuck on its "unreachable" card looked
+  // identical whether the host said available:false or never answered at all. These lines
+  // go to app.log; they are bounded — connect, the first reply, availability TRANSITIONS,
+  // and a one-shot warning if the host never answers — never per-poll.
+  function sdLog(message) {
+    try { parent.postMessage({ type: 'ww-log', message: 'streamdeck-emu: ' + message }, '*'); }
+    catch (e) { /* frame gone */ }
+  }
 
   function sdTrack(kind) {
     const id = 'icue-sd-' + (++sdState.seq);
@@ -519,6 +529,17 @@
   }
 
   function sdOnProfile(profile) {
+    const first = !sdState.answered;
+    sdState.answered = true;
+    if (!profile || !profile.available) {
+      if (first || !sdState.unreachable)
+        sdLog('host reports NO Virtual Stream Deck — it looks for a *.sdProfile whose ' +
+              'Device.Model is "UI Stream Deck" under %APPDATA%/Elgato/StreamDeck/ProfilesV3');
+    } else if (first || sdState.unreachable) {
+      sdLog('deck available: "' + (profile.name || '') + '" ' +
+            (profile.rows || 0) + 'x' + (profile.cols || 0) + ', ' +
+            ((profile.buttons || []).length) + ' key(s)');
+    }
     if (!profile || !profile.available) {
       sdState.profile = null;
       sdState.announced = false;
@@ -569,6 +590,14 @@
       sdState.rows = Math.max(1, rows | 0);
       sdState.tiles = [];
       sdState.connected = true;
+      sdState.answered = false;
+      sdLog('connect requested for a ' + sdState.cols + 'x' + sdState.rows + ' deck');
+      // If the poll is never answered the widget sits on its parse-time card forever,
+      // which is exactly what an available:false answer looks like. Say which it was.
+      setTimeout(() => {
+        if (sdState.connected && !sdState.answered)
+          sdLog('NO REPLY from the host to the profile poll after 10s — the bridge did not answer');
+      }, 10000);
       sdStartTimers();
       sdPollProfile();
     },
