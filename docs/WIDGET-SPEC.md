@@ -342,7 +342,7 @@ provides a compatibility layer inside every widget iframe:
 - `window.plugins.Linkprovider.open(url)` opens the URL in the default desktop browser.
 - CORS relief: iCUE's embedded browser is CORS-relaxed, ours is not — so when a
   widget's `fetch()` fails at the network/CORS layer, the shim transparently retries it
-  through the host process (GET/POST/HEAD, 5 MB cap, 15 s timeout). Reddit readers and
+  through the host process (GET/POST/PUT/HEAD/DELETE, 5 MB cap, 15 s timeout). Reddit readers and
   similar API widgets work unmodified.
 
 Not emulated: `media-selector` properties (background media — the `MediaViewer`

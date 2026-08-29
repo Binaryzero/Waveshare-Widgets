@@ -740,7 +740,12 @@ public sealed class DashboardWindow : Form
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
                 (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
                 throw new InvalidOperationException("only absolute http(s) URLs are allowed");
-            if (method is not ("GET" or "POST" or "PUT" or "HEAD"))
+            // DELETE joins the list because REST APIs spell "this is finished" that way
+            // and the widgets had no way to say it: Jellyfin's playback-stopped endpoint
+            // is a DELETE, so every position report the panel tried to file on stopping
+            // died here with "method not allowed". No wider than PUT, which already
+            // mutates, and it rides the same private-host and origin gates.
+            if (method is not ("GET" or "POST" or "PUT" or "HEAD" or "DELETE"))
                 throw new InvalidOperationException($"method {method} not allowed");
 
             var insecureRequested = message["insecure"]?.GetValue<bool>() ?? false;

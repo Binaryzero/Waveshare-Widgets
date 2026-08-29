@@ -200,11 +200,13 @@ internal static class MediaRelay
         // can replace pv.src but cannot cancel a host call. The timer dies with the
         // `using` when headers arrive in time, so it never touches the body stream,
         // which must be free to take hours.
-        // NOT a `using`: the token stays attached to the response for as long as the
-        // body streams, and disposing the source out from under a live response is
-        // undefined at best. GuardedStream owns it now and disposes it with the
-        // stream; the timer inside it is already spent by then.
-        var headerDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        // The `using` is load-bearing in the opposite direction to what it looks like:
+        // disposing the source DISARMS its 20-second timer, and the .NET 8 handler has
+        // already dropped the token's registration by the time the content stream
+        // exists — so a two-hour body streams on safely underneath. Handing the source
+        // to the stream instead (as one round of this bug did) leaves the timer armed
+        // to cancel live playback at T+20s, which is worse than anything it prevents.
+        using var headerDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         // NOT disposed here: the response object owns the connection the content
         // stream reads from, and WebView2 pulls that stream long after this method
         // returns. WebView2 closes the stream when the element is done (or gone),
@@ -222,9 +224,9 @@ internal static class MediaRelay
         Copy("Content-Range", response.Content.Headers.ContentRange?.ToString());
         Copy("Accept-Ranges", response.Headers.AcceptRanges.Count > 0 ? string.Join(", ", response.Headers.AcceptRanges) : null);
 
-        if (request.Method == "HEAD") headerDeadline.Dispose();
         var body = request.Method == "HEAD" ? null
-            : new GuardedStream(await response.Content.ReadAsStreamAsync(), headerDeadline);
+            : new GuardedStream(await response.Content.ReadAsStreamAsync(),
+                response.Content.Headers.ContentLength);
         if (WebViewEnvironment.DiagnosticsBudget())
             Log.Info($"media relay {SafeUrl.Describe(target)} -> {(int)response.StatusCode}"
                 + (range is null ? "" : " (ranged)"));
@@ -254,56 +256,58 @@ internal static class MediaRelay
     private sealed class GuardedStream : Stream
     {
         private readonly Stream _inner;
-        private readonly IDisposable? _owned;
+        private readonly long? _length;
         private bool _faulted;
         private bool _announced;
         private long _served;
+        private long _milestone = 64 * 1024;
 
-        public GuardedStream(Stream inner, IDisposable? owned)
+        public GuardedStream(Stream inner, long? length)
         {
             _inner = inner;
-            _owned = owned;
+            _length = length;
         }
 
-        // EVERY capability mirrors the inner stream. This wrapper exists for exactly
-        // one purpose — stopping a mid-stream fault from throwing inside WebView2's
-        // COM read callback, which is process death — and it must be invisible in
-        // every other respect, because the caller is a closed-source shim whose
-        // probing (Length? CanSeek? Position? which Read overload?) we cannot see.
-        // The first cut hardcoded CanSeek=false and threw from Length/Position; the
-        // field answered with a <video> stuck at readyState 0 / networkState 2, no
-        // bytes ever pulled and Dispose never called, on the same build where the
-        // RAW stream had played fine. Whatever member that shim consults, it now
-        // gets the same answer it got before the wrapper existed — including a
-        // NotSupportedException where the raw stream threw one.
-        public override bool CanRead => _inner.CanRead;
-        public override bool CanSeek => _inner.CanSeek;
+        // These answers match what the RAW response stream returned in the build that
+        // played — deliberately, because that object graph is the only one the field
+        // has ever confirmed working. The one improvement: when the upstream declared
+        // a Content-Length we hand it over instead of throwing, so a caller that asks
+        // for the size gets a real answer rather than an exception crossing COM.
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
         public override bool CanWrite => false;
-        public override bool CanTimeout => _inner.CanTimeout;
-        public override long Length => _inner.Length;
+        public override long Length => _length ?? throw new NotSupportedException();
         public override long Position
         {
-            get => _inner.Position;
-            set => _inner.Position = value;
+            get => _served;
+            set => throw new NotSupportedException();
         }
-        public override int ReadTimeout
-        {
-            get => _inner.ReadTimeout;
-            set => _inner.ReadTimeout = value;
-        }
-        public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
-        public override void SetLength(long value) => _inner.SetLength(value);
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-        public override void Flush() => _inner.Flush();
+        // A no-op, NOT a delegation: HttpBaseStream.Flush() is sync-over-async, so
+        // forwarding it puts a blocking wait — and anything it throws — on whatever
+        // thread WebView2 calls from. A read stream has nothing to flush anyway.
+        public override void Flush() { }
 
-        /// <summary>One line the first time bytes actually move, and one on the first
-        /// fault: the field cannot otherwise tell "WebView2 never pulled" from
-        /// "WebView2 pulled and the upstream died", and those want opposite fixes.</summary>
         private void Announce(string what)
         {
             if (_announced) return;
             _announced = true;
             if (WebViewEnvironment.DiagnosticsBudget()) Log.Info($"media relay stream {what}");
+        }
+
+        /// <summary>The first read told us WebView2 pulls at all; these tell us whether it
+        /// keeps pulling. A stream that stops at a few KB and one that streams megabytes
+        /// look identical without them, and they are opposite bugs. Doubling thresholds
+        /// keep a two-hour movie to a couple of dozen lines.</summary>
+        private void Progress()
+        {
+            if (_served < _milestone) return;
+            while (_milestone <= _served) _milestone *= 8;
+            if (WebViewEnvironment.DiagnosticsBudget())
+                Log.Info($"media relay stream served {_served} bytes"
+                    + (_length is long total ? $" of {total}" : ""));
         }
 
         private int NoteFault(Exception ex)
@@ -326,6 +330,7 @@ internal static class MediaRelay
             {
                 var n = _inner.Read(buffer, offset, count);
                 _served += n;
+                Progress();
                 Announce($"reading (sync, first {n} bytes)");
                 return n;
             }
@@ -344,6 +349,7 @@ internal static class MediaRelay
             {
                 var n = await _inner.ReadAsync(buffer.AsMemory(offset, count), cancellationToken).ConfigureAwait(false);
                 _served += n;
+                Progress();
                 Announce($"reading (async, first {n} bytes)");
                 return n;
             }
@@ -357,6 +363,7 @@ internal static class MediaRelay
             {
                 var n = await _inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
                 _served += n;
+                Progress();
                 Announce($"reading (async, first {n} bytes)");
                 return n;
             }

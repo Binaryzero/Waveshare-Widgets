@@ -292,7 +292,7 @@ Widget → shell:
 | `ww-media-control` | `action` | transport command |
 | `ww-log` | `message` | write to app.log |
 | `ww-open-url` | `url` | open in system browser |
-| `ww-fetch` | `id, url, method, body, contentType, headers?, insecure?` | host-proxied fetch (CORS/bot-wall relief; GET/POST/PUT/HEAD; `insecure` honored only for private-IP hosts; a proxied private host also becomes a valid `stream.plinth` relay target) |
+| `ww-fetch` | `id, url, method, body, contentType, headers?, insecure?` | host-proxied fetch (CORS/bot-wall relief; GET/POST/PUT/HEAD/DELETE; `insecure` honored only for private-IP hosts; a proxied private host also becomes a valid `stream.plinth` relay target) |
 | `ww-ping` | `id, hosts` | real ICMP pings via the host (≤16 hosts) |
 | `ww-media-list` | `id` | list the user's media folder (images + videos) |
 | `ww-audio-get` | `id` | snapshot the Windows volume mixer (master + per-app sessions) |
