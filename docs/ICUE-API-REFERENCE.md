@@ -1,4 +1,4 @@
-# iCUE Widget API Reference (v1.5.0)
+# iCUE Widget API Reference (v1.6.0)
 
 A consolidated reference for the Corsair/Elgato iCUE HTML widget runtime, compiled from
 the official documentation (docs.elgato.com/icue/widgets) and extended with the contract
@@ -334,23 +334,50 @@ Signals: `virtualDeviceCreated(widgetId, deviceId)`,
 `streamdeckUnreachable`, `authenticationRequired`, `authenticationRejected`.
 Uses `iCUE.widgetId` and `iCUE.streamDeckDeviceId`.
 
-**Plinth compatibility:** emulated. Corsair's internal provider (an authenticated
-bridge into the Stream Deck app) is unreachable from outside iCUE, so the plugin is
-backed by the host's Elgato **Virtual Stream Deck mirror** instead — the same bridge
-the stock Stream Deck widget uses. Semantics under that backing:
+**Plinth compatibility:** emulated. Read the transport note first, because it decides
+what this can and cannot be backed by.
+
+**iCUE's plugin is a network client, not a window mirror.** iCUE registers a virtual
+device of model **`VSD2/WiFi`** with the Stream Deck app, pairs with it (that is what
+the widget's "Go to the Stream Deck app and approve the iCUE connection" card is for),
+then receives per-key faces pushed over that connection and sends presses back down it.
+Corsair's end of that channel is authenticated and internal, and Plinth cannot speak it.
+
+Plinth's **own** Stream Deck widget is a different mechanism entirely: it mirrors a
+local `UI Stream Deck` — Elgato's on-screen Virtual Stream Deck — by capturing its Qt
+window and clicking it. The two are not variants of one thing.
+
+So the emulation backs the plugin's contract with the **local** deck, which is the one
+whose keys actually work. A widget written against iCUE's Streamdeck plugin therefore
+mirrors your Virtual Stream Deck and its presses land for real.
+
+A `VSD2/WiFi` deck is **never** mirrored, even though its profile is perfectly readable
+from disk. Rendering it would produce a convincing deck whose every key is dead, which
+is worse than showing none: the dead deck looks like broken buttons, while "no deck"
+names the thing to fix. On a machine whose only decks are network decks the host
+answers "no deck" and writes one `app.log` line naming them and saying to create a
+Virtual Stream Deck.
 
 - `connectStreamDeck(widgetId, deviceId, cols, rows)` starts the mirror;
-  `virtualDeviceCreated(widgetId, deviceId)` fires when a VSD window is found (the
+  `virtualDeviceCreated(widgetId, deviceId)` fires when a mirrorable deck is found (the
   deviceId is the slot's stable pseudo-UUID). Requires the Elgato software with a
   Virtual Stream Deck open and "Hide unused keys" OFF.
-- `buttonIconUpdated(widgetId, index, iconDataUrl)` pushes per-key faces: slices of
-  the live window capture (dynamic faces included) at ~2 Hz, or the profile's key
-  icons when capture is unavailable; a titled key without an icon gets a generated
-  title tile; empty cells push `""`. The VSD grid maps position-for-position into the
-  requested `cols`×`rows` (extra VSD keys fall off the edge).
-- `sendKeyPress(widgetId, index, pressed)` lands as a REAL press/release on the VSD
+- A profile of an unrecognized model is skipped, and the host names the models it did
+  find in `app.log` (`Stream Deck: no readable profile…`) so an unlisted one can be added.
+- **A readable profile is not a pressable deck.** The profile comes off disk and is just
+  as complete when the deck's window is closed, so the host reports `windowAvailable`
+  with every poll and the shim refuses a press it cannot deliver, logging why, rather
+  than firing it at a window that is not there.
+- `buttonIconUpdated(widgetId, index, iconDataUrl)` pushes per-key faces: slices of the
+  live window capture (dynamic faces included) at ~2 Hz, falling back to the profile's
+  key icons. A titled key without an icon gets a generated title tile; empty cells push
+  `""`. The deck's grid maps position-for-position into the requested `cols`×`rows`
+  (extra keys fall off the edge).
+- `sendKeyPress(widgetId, index, pressed)` lands as a REAL press/release on the deck's
   window (press-and-hold works; a press with no release is safety-released after 10 s).
-- `updateVirtualDeviceSize` remaps; `streamdeckUnreachable` means "no VSD window";
+  With no window open it is refused and logged rather than posted into nothing.
+- `updateVirtualDeviceSize` remaps; `streamdeckUnreachable` means "no deck this host can
+  drive" — no profile of a recognized model, or only network decks (`app.log` says which);
   `authenticationRequired` / `authenticationRejected` **never fire** (there is no
   pairing handshake in this backend), so widgets never show their pairing states.
 
@@ -409,4 +436,11 @@ present, and a filter miss and a missing file are the same silent 404. Each help
 window property, so a vendored copy (served normally by the package's own folder
 mapping) shadows ours rather than colliding with it. That includes a `MediaViewer` stand-in, so widgets construct
 and degrade cleanly even though `media-selector` itself stays unsupported. Fonts
-referenced over Qt's `qrc:/` scheme silently fall back to the CSS fallback stack.
+referenced over Qt's `qrc:/` scheme cannot load in a browser engine at all, and each
+element waiting on one logs a "Fallback font will be used" intervention — hundreds of
+lines from a single widget. The shim rewrites those `src` descriptors: only the `qrc:`
+entries are dropped (the list is an ordered fallback, so a sibling `.woff2` survives),
+and a descriptor left with nothing falls back to `local()` faces. It sweeps every
+same-origin sheet — recursing `@import`s and grouping rules like `@media`/`@supports`/
+`@layer`, where a nested `@font-face` is not itself the outermost rule — and watches for
+stylesheets appended later, so a widget that loads a skin after startup is covered too.

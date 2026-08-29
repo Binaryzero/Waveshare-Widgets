@@ -24,12 +24,51 @@
 //                          mirrored grid.
 //        live-tiles      — the fixture's capture frame was sliced into per-key PNG
 //                          faces (the dynamic-key-face path replacing profile icons).
+//        datavideo:video — a `data:video/…` URI builds a <video>. It carries no filename,
+//                          so an extension test called it an image and built an <img>
+//                          that could never render it; the MIME is in the URI.
+//        wrapids:A,B     — two wrappers over ONE plugin get distinct request ids. Each
+//                          connects its own asyncResponse listener, so a per-instance
+//                          sequence handed both id 1 and the first reply settled BOTH
+//                          waiters: B resolved with A's value and its real answer was
+//                          dropped. Reads `wrapids:A,A` against that — silent wrong data.
+//        datefirst:rendered — a clock in another time zone renders its date instead of
+//                          waiting for the MACHINE's day to turn over. The rendered value
+//                          tracks the configured zone's day, which the caller's local
+//                          getDay cannot speak for; it read `skipped` before.
+//        qrc-left:none   — every Qt-resource (`qrc:`) @font-face was defused. Chromium
+//                          cannot load that scheme and logs a "Fallback font will be
+//                          used" intervention per waiting element — hundreds of lines
+//                          from one widget. The probe plants four, in the four places a
+//                          sweep can miss: top level; inside an @media group (not itself
+//                          a FONT_FACE_RULE, so a type test on the outermost rule never
+//                          sees it); in a <style> appended 1.4 s after load, past every
+//                          scheduled sweep; and in a <style> nested inside a container
+//                          appended 1.7 s after load, where the mutation record names
+//                          only the container. The last two are separated in time on
+//                          purpose — in one turn, the direct <style> schedules a sweep
+//                          that walks every sheet and defuses the nested one incidentally,
+//                          so the nested case would prove nothing. The marker names the
+//                          survivors, so a regression says WHICH placement broke.
 //   E2 · teeth for the Stream Deck path: the --sd fixture was actually served (the
 //        runner's own "profile was served" check is part of the green run).
 //   E3 · wiring, text-level (the pattern tools/StreamDeckPaths uses for what a Node
 //        harness cannot execute): the click phase field crosses every hop — the shim
 //        sends phase down/up, shell.js forwards it validated, DashboardWindow passes
 //        it through, and StreamDeckBridge holds/releases with a safety release.
+//   E5 · a readable profile is not a pressable deck. The profile is read from DISK, so it
+//        is just as complete when the user has closed their Virtual Stream Deck — and the
+//        press needs the window. Against a fixture reporting windowAvailable:false the
+//        shim must still paint the deck (the faces are real) and post ZERO clicks, rather
+//        than firing them at a window that is not there and leaving keys that look live
+//        and swallow every tap. The open-window run above asserts the opposite direction,
+//        or a shim that simply refused everything would pass both.
+//
+//        iCUE's own VSD2/WiFi network deck reaches that state permanently — it has no
+//        window, ever. The host does not offer such a deck to be mirrored at all, so
+//        there is nothing here to drive for it: tools/DeckManifest's C-probes assert it
+//        is refused upstream rather than rendered as a deck that does nothing, which is
+//        the whole point — a convincing deck with dead keys is worse than no deck.
 //   E4 · the helper bundle is DEFINED, not fetched, and is injected everywhere the
 //        other two shims are. Serving those files over their clamped URLs was tried
 //        first and failed in the field — the classes were still undefined on a build
@@ -54,22 +93,41 @@ const check = (name, ok, detail) => {
 
 const MARKERS = ['module-alive', 'mediaviewer-ok', 'hex:255, 0, 57',
   'tr-then:Compat says hello', 'notif:0', 'device-created', 'icons:3', 'click-sent',
-  'live-tiles'];
+  'live-tiles', 'qrc-left:none', 'datavideo:video', 'wrapids:A,B', 'datefirst:rendered'];
 
 // icue-sd.json, not streamdeck-sd.json: same deck plus a capture frame, so the
 // slice-into-per-key-faces path runs (the capture poll fires at 500ms — the --wait
 // below leaves it room).
-const run = () => {
+const run = (fixture, markers, wait, json) => {
   try {
     return { ok: true, out: execFileSync('node', [RUNNER,
       path.join('tests', 'fixtures', 'widgets', 'icue-emu'),
-      '--sd', path.join(FIX, 'icue-sd.json'), '--slot', 'half', '--wait', '2500',
-      ...MARKERS.flatMap((m) => ['--expect', m])],
+      '--sd', path.join(FIX, fixture), '--slot', 'half', '--wait', String(wait || 2500),
+      ...(json ? ['--json'] : []),
+      ...markers.flatMap((m) => ['--expect', m])],
     { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) };
   } catch (e) { return { ok: false, out: (e.stdout || '') + (e.stderr || '') }; }
 };
 
-const { ok, out } = run();
+// `stream-deck clicks: N` / `stream-deck captures: N` from the runner — what the widget
+// actually posted to the host, which is the only place the two deck kinds differ
+// observably. Absent counts read as -1 so a runner that stopped reporting fails loudly
+// rather than satisfying a zero-check by silence.
+const count = (out, label) => {
+  const m = new RegExp('stream-deck ' + label + ': (\\d+)').exec(out);
+  return m ? Number(m[1]) : -1;
+};
+
+// The click PHASES, not just how many. Counting alone let a press that never happened
+// pass: the probe called sendKeyPress with two arguments against a three-argument
+// signature, so `pressed` was undefined and both messages went out as 'up'. A count is
+// satisfied by that; "contains a down and an up" is not.
+const phases = (out) => {
+  const m = /stream-deck clicks: \d+ \[([^\]]*)\]/.exec(out);
+  return m ? m[1].split(',').map((p) => p.trim()).filter(Boolean) : [];
+};
+
+const { ok, out } = run('icue-sd.json', MARKERS, 4500);
 const failLines = out.split('\n').filter((l) => l.includes('FAIL')).map((l) => l.trim()).join(' | ');
 
 // E1 — the probe ran green, which includes every marker's --expect and the runner's
@@ -111,6 +169,77 @@ const notInjecting = injectors.filter((f) =>
   !fs.readFileSync(path.join(REPO, f), 'utf8').includes('icue-common.js'));
 check('E4b every surface that injects the shims injects the bundle',
   notInjecting.length === 0, notInjecting.join(', ') || injectors.length + ' surfaces');
+
+// The positive direction, from the open-window run above. Without it, a shim that
+// refused every click unconditionally would satisfy E5b completely. Asserted on the
+// PHASES: a real press is a down followed by an up, and press-and-hold is the whole
+// reason the phase split exists — a regression that stopped sending WM_LBUTTONDOWN
+// still satisfies a count.
+const openPhases = phases(out);
+check('E4c an open deck is captured, and a press reaches it as a real down then up',
+  count(out, 'captures') > 0 && openPhases.length >= 2
+    && openPhases.includes('down') && openPhases.includes('up')
+    && openPhases.indexOf('down') < openPhases.lastIndexOf('up'),
+  `[${openPhases.join(',')}], ${count(out, 'captures')} capture poll(s)`);
+
+// E5 — the same probe against a deck whose window is shut. Driven through --json, which
+// buys a second check for free: the runner's machine-readable mode is a single JSON
+// document on stdout, and a status line printed ahead of it makes every consumer's parse
+// fail even on a passing run. That is exactly what the click/capture counters did when
+// they were added, so the format is asserted rather than assumed.
+const SHUT_MARKERS = ['device-created', 'icons:3'];
+const shut = run('icue-sd-nowindow.json', SHUT_MARKERS, 2500, true);
+let shutJson = null;
+try { shutJson = JSON.parse(shut.out); } catch (e) { shutJson = null; }
+
+check('E5 a deck with its window shut still announces itself and paints its faces',
+  shut.ok, shut.ok ? SHUT_MARKERS.join(', ')
+    : (shut.out.trim().split('\n').slice(-4).join(' | ').slice(0, 300)));
+
+check('E5b --json output is a single parseable document, counters included',
+  shutJson !== null && Array.isArray(shutJson.sdClicks) && Array.isArray(shutJson.sdCaptures),
+  shutJson ? 'parsed' : 'stdout did not parse: ' + shut.out.trim().slice(0, 80));
+
+// The tooth. A press posted here reaches a host that finds no window, logs a warning the
+// widget never sees, and leaves a grid of keys that look live and swallow every tap.
+check('E5b2 no key press is posted while no deck window is open',
+  shutJson !== null && shutJson.sdClicks.length === 0,
+  shutJson ? `[${shutJson.sdClicks.join(',')}]` : 'no json');
+
+// E5c — the flag crosses every hop, text-level, in the style of E3. The behaviour above is
+// driven through a FIXTURE, so it proves the shim honours the flag; it cannot prove the
+// host ever sets it, and a host that never does leaves the shim permanently optimistic.
+check('E5c window availability crosses every hop (bridge → host → shim)',
+  /public bool HasDeckWindow\(\)/.test(bridge)
+    && /\["windowAvailable"\] = _streamDeck\.HasDeckWindow\(\)/.test(dash)
+    && /profile\.windowAvailable !== false/.test(shim)
+    && /if \(!sdState\.hasWindow\)/.test(shim));
+
+// A host older than this field only ever mirrored a deck it could click, so absent must
+// read as "open". Reading it as closed would drop the presses that host CAN deliver.
+check('E5d a profile with no window field is treated as clickable',
+  /profile\.windowAvailable !== false/.test(shim)
+    && !/profile\.windowAvailable === true/.test(shim));
+
+// E5d2 — a RELEASE owed to an accepted press must never be dropped, even once the window
+// has gone. The window can vanish mid-hold, and the refusal above would then swallow the
+// up: the host keeps WM_LBUTTONDOWN on a real window until its 10 s safety timer. The
+// host's own up path releases without needing a window, so forwarding it cannot fail.
+// Text-level, like E3 — the fixture's window state is fixed for a run, so a press that
+// is accepted and THEN loses its window cannot be staged through it.
+check('E5d2 a release is forwarded even after the deck window has gone',
+  /pressOutstanding/.test(shim)
+    && /if \(!pressed && sdState\.pressOutstanding\)/.test(shim)
+    && /if \(phase == "up"\)\s*\{\s*ReleasePendingPress\(\);/.test(bridge.replace(/\r/g, '')));
+
+// E5e — the user-visible decision, asserted where it is made. A network deck's profile
+// reads perfectly, so mirroring it yields a convincing deck with dead keys; the bridge
+// must route the choice through ChooseMirrorable (driven by the C-probes), keep such a
+// deck out of the settings picker, and explain the refusal instead of going quiet.
+check('E5e a deck that cannot be pressed is never offered, and the refusal is explained',
+  /DeckManifest\.ChooseMirrorable\(candidates, preferredName\)/.test(bridge)
+    && /_loggedNetworkOnly/.test(bridge)
+    && /Where\(p => DeckManifest\.IsLocalWindowModel\(p\.Model\)\)/.test(bridge));
 
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
 process.exit(failures ? 1 : 0);

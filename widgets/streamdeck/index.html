@@ -395,7 +395,13 @@
           // The deck can vanish between polls (VSD window closed); the grid is
           // then stale for up to 4 s. ww-sd-click is fire-and-forget, so refuse
           // the tap visibly here instead of posting into the void.
-          if (!lastProfile || lastProfile.available === false) {
+          //
+          // `windowAvailable` is the same refusal without live mode. The capture
+          // reply is what used to notice a closed window, and with live mode OFF
+          // there is no capture poll — so the keys stayed live-looking and every
+          // tap vanished. The profile poll carries it now, so both modes refuse.
+          if (!lastProfile || lastProfile.available === false
+              || lastProfile.windowAvailable === false) {
             flash(cell, 'fail-flash');
             return;
           }

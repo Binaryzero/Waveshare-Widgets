@@ -38,12 +38,21 @@
   // Universal promise wrapper over the documented plugin contract: async getters take a
   // caller-chosen integer requestId and answer through the plugin's Qt-style
   // asyncResponse(requestId, value) signal.
+
+  // ONE counter for every wrapper in the frame, not one per instance. Each instance
+  // connects its own asyncResponse listener to the shared plugin, so a per-instance
+  // sequence hands two wrappers the same id 1 — and the first reply then settles BOTH
+  // waiters, resolving the second wrapper's promise with the first one's value and
+  // discarding its real answer. Silent, and wrong in the direction that looks like data.
+  // The id only has to be unique among requests in flight to one plugin; being unique
+  // frame-wide is simpler and costs nothing.
+  let requestSeq = 0;
+
   window.IcueWidgetApiWrapper = class IcueWidgetApiWrapper {
     constructor(plugin, timeoutMs = 5000) {
       this.plugin = plugin || null;
       this.timeoutMs = timeoutMs;
       this._waiters = new Map();
-      this._seq = 1;
       if (this.plugin && this.plugin.asyncResponse &&
           typeof this.plugin.asyncResponse.connect === 'function') {
         this.plugin.asyncResponse.connect((requestId, value) => this._settle(requestId, value));
@@ -64,7 +73,7 @@
           reject(new Error('plugin unavailable'));
           return;
         }
-        const requestId = this._seq++;
+        const requestId = ++requestSeq;
         const timer = setTimeout(() => {
           if (this._waiters.delete(requestId)) reject(new Error('request timed out'));
         }, this.timeoutMs);
@@ -150,10 +159,32 @@
       return part ? part.value : '';
     }
 
+    // The weekday index in the CONFIGURED zone, which is the only day the rendered date
+    // depends on. Falls back to the machine's day if the zone is unresolvable, matching
+    // _parts' own degradation.
+    _zoneDay() {
+      const NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      try {
+        const name = new Intl.DateTimeFormat('en-US',
+          { timeZone: this.timeZone, weekday: 'short' }).format(new Date());
+        const i = NAMES.indexOf(name);
+        return i === -1 ? new Date().getDay() : i;
+      } catch (e) {
+        return new Date().getDay();
+      }
+    }
+
     getDateText(formatKey, lastDay, forceUpdate) {
-      // Callers track lastDay with the local Date#getDay, so the skip check matches
-      // their bookkeeping rather than second-guessing the time zone.
-      if (!forceUpdate && lastDay === new Date().getDay()) return Promise.resolve(undefined);
+      // Two conditions, because the caller's bookkeeping and the rendered value do not
+      // track the same clock. Callers pass lastDay from the local Date#getDay, so that
+      // alone kept a clock configured for another time zone showing yesterday's date for
+      // as long as the two zones disagreed — hours, every night. The rendered date turns
+      // over with the ZONE's day, tracked here; the caller's own signal is still honoured
+      // so an explicit mismatch still forces a refresh.
+      const zoneDay = this._zoneDay();
+      if (!forceUpdate && this._lastZoneDay === zoneDay && lastDay === new Date().getDay())
+        return Promise.resolve(undefined);
+      this._lastZoneDay = zoneDay;
 
       const key = String(formatKey == null ? 'None' : formatKey);
       if (key === 'None') return Promise.resolve('');
@@ -235,6 +266,19 @@
   // backgroundMedia is normally undefined and widgets call clear(). loadMedia still
   // renders URL-shaped sources faithfully, and reports anything else through
   // onMediaError instead of throwing.
+  // Extension alone is wrong for the two schemes that carry no filename. A
+  // `data:video/mp4;…` URI states its type outright, and an explicit descriptor hint
+  // beats guessing; only a path falls through to the extension. A `blob:` URL with no
+  // hint is genuinely undecidable from the string — the caller has the metadata and can
+  // pass `mediaType`.
+  function looksLikeVideo(src, desc) {
+    const hint = String((desc && (desc.mediaType || desc.type)) || '').toLowerCase();
+    if (hint) return hint.indexOf('video') !== -1;
+    const dataMime = /^data:([^;,]+)/i.exec(src);
+    if (dataMime) return /^video\//i.test(dataMime[1].trim());
+    return /\.(webm|mp4|mkv|mov|m4v)(\?|#|$)/i.test(src);
+  }
+
   window.MediaViewer = class MediaViewer {
     constructor(options) {
       const opts = options || {};
@@ -262,7 +306,7 @@
         return;
       }
 
-      const isVideo = /\.(webm|mp4|mkv)(\?|#|$)/i.test(src);
+      const isVideo = looksLikeVideo(src, desc);
       const el = document.createElement(isVideo ? 'video' : 'img');
       if (isVideo) {
         el.muted = true;
@@ -321,4 +365,207 @@
   // This script runs at document creation, so <head> may not exist yet.
   if (document.head || document.documentElement) injectStyles();
   else document.addEventListener('DOMContentLoaded', injectStyles);
+
+  // --- qrc: fonts ------------------------------------------------------------------
+  //
+  // iCUE stylesheets load their faces from Qt's resource scheme
+  // (@font-face { src: url("qrc:/fonts/OpenSans-Regular.ttf") }). That scheme exists
+  // only inside Qt: Chromium refuses it as a cross-origin request, the face never
+  // arrives, and — the part that actually hurts — Chromium logs a "Slow network is
+  // detected … Fallback font will be used" intervention for EVERY element waiting on
+  // it. One widget produced hundreds of lines, which buries real errors in the console.
+  //
+  // The face was never going to load, so point it at local() instead: no request, no
+  // intervention, and the text lands on a real installed font rather than whatever the
+  // fallback chain reaches last. Rules are found by INSPECTING each sheet rather than
+  // guessing family names, which differ per widget (OpenSansRegular, Saira-Medium,
+  // Bebas Neue Pro, …) and would go stale the moment a package used a new one.
+  const FONT_SUBSTITUTE = 'local("Segoe UI"), local("Tahoma"), local("Arial"), local("Helvetica")';
+
+  // `src` is an ORDERED fallback list, so dropping the whole descriptor because one
+  // entry is unusable would discard a perfectly good sibling — a package-relative
+  // .woff2, or an installed branded face the widget would otherwise have got. Split the
+  // list, remove only the qrc: entries, and fall back to local() ONLY when nothing else
+  // is left. Commas inside url(…)/format(…) are not separators, hence the paren guard.
+  function stripQrcSources(src) {
+    const parts = String(src).split(/,(?![^(]*\))/);
+    const kept = parts.map((s) => s.trim()).filter((s) => s && s.indexOf('qrc:') === -1);
+    return kept.length ? kept.join(', ') : FONT_SUBSTITUTE;
+  }
+
+  // Walks a rule LIST rather than a sheet, because @font-face does not only appear at
+  // the top level: `@media`, `@supports`, `@layer` and `@container` each carry their own
+  // cssRules, and a face nested in one is invisible to a scan that only tests the
+  // outermost rule's type. iCUE packages do this (a @media block for the panel's
+  // aspect), so the sweep reported success while those faces went on flooding.
+  function defuseRules(rules, seen) {
+    let patched = 0;
+    for (const rule of Array.from(rules)) {
+      if (!rule) continue;
+      // An @import's sheet is reached through the rule, never as its own
+      // document.styleSheets entry, so a widget that imports its font sheet kept
+      // flooding the console while this reported success.
+      if (rule.type === 3 /* CSSRule.IMPORT_RULE */) {
+        try { if (rule.styleSheet) patched += defuseSheet(rule.styleSheet, seen); }
+        catch (e) { /* cross-origin import */ }
+        continue;
+      }
+      if (rule.type === 5 /* CSSRule.FONT_FACE_RULE */) {
+        let value;
+        try { value = rule.style.getPropertyValue('src'); } catch (e) { continue; }
+        if (!value || value.indexOf('qrc:') === -1) continue;
+        try { rule.style.setProperty('src', stripQrcSources(value)); patched++; }
+        catch (e) { /* read-only sheet: leave it */ }
+        continue;
+      }
+      // Anything else that carries rules of its own. Tested by CAPABILITY, not by an
+      // enumerated list of group types — the list would go stale the next time CSS grows
+      // one, and this is exactly the failure being fixed. Keyframes and nested style
+      // rules also answer here; walking them finds nothing and costs nothing.
+      let nested;
+      try { nested = rule.cssRules; } catch (e) { nested = null; }
+      if (nested && nested.length) patched += defuseRules(nested, seen);
+    }
+    return patched;
+  }
+
+  function defuseSheet(sheet, seen) {
+    // A cross-origin sheet throws on .cssRules; widgets' own sheets are same-origin.
+    let rules;
+    try { rules = sheet.cssRules; } catch (e) { return 0; }
+    if (!rules || seen.has(sheet)) return 0;
+    seen.add(sheet);
+    return defuseRules(rules, seen);
+  }
+
+  function defuseQrcFonts() {
+    let sheets;
+    try { sheets = Array.from(document.styleSheets); } catch (e) { return 0; }
+    const seen = new Set();
+    let patched = 0;
+    for (const sheet of sheets) patched += defuseSheet(sheet, seen);
+    return patched;
+  }
+
+  // Sheets arrive over the document's lifetime, so sweep at both readiness points —
+  // and once more shortly after load for anything a script appended.
+  function sweepFonts() {
+    const n = defuseQrcFonts();
+    if (n > 0) {
+      try {
+        parent.postMessage({ type: 'ww-log',
+          message: 'icue-common: redirected ' + n + ' qrc: @font-face rule(s) to local fonts' }, '*');
+      } catch (e) { /* frame gone */ }
+    }
+  }
+
+  // A fixed set of sweeps only covers sheets that exist by the last one. A widget that
+  // appends a <link> or <style> later — switching views, loading a skin, lazy-loading a
+  // panel — brings its qrc: faces with it and resumes the flood this exists to stop.
+  // More timeouts would just move the deadline, so watch for the sheets instead.
+  // Two problems, not one, and conflating them is why this took several passes.
+  //
+  //   Late NODES — a sheet element appended after the startup sweeps. The observer sees
+  //     those, and a <link> is armed on its own load event.
+  //   Late CONTENT — a sheet element that is present but whose rules are not there yet.
+  //     An @import inside a dynamically added <style> resolves asynchronously and fires
+  //     nothing this shim can hook: at insertion `rule.styleSheet` is still null, so the
+  //     insertion sweep walks straight past it and nothing ever comes back.
+  //
+  // Hooking each late-content shape needs a detector per shape, and there is no event at
+  // all for that one. Two extra passes after the mutation settles cover the whole class
+  // instead — bounded, restarted by each new mutation, and silent unless they find
+  // something, since a patched rule no longer matches.
+  const FOLLOWUP_DELAYS = [300, 1200];
+  let sweepPending = false;
+  let followupTimers = [];
+  function scheduleSweep() {
+    if (!sweepPending) {
+      sweepPending = true;
+      // Coalesced: a widget that appends a dozen nodes in one turn gets ONE sweep, and a
+      // sweep is a walk of every sheet. Patched rules no longer match, so a re-sweep is
+      // idempotent and silent.
+      setTimeout(() => { sweepPending = false; sweepFonts(); }, 0);
+    }
+    for (const t of followupTimers) clearTimeout(t);
+    followupTimers = FOLLOWUP_DELAYS.map((d) => setTimeout(sweepFonts, d));
+  }
+
+  const SHEET_SELECTOR = 'style, link[rel~="stylesheet" i]';
+
+  function isSheetNode(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const tag = node.tagName;
+    return tag === 'STYLE' || (tag === 'LINK' && /(^|\s)stylesheet(\s|$)/i.test(node.rel || ''));
+  }
+
+  // A <link>'s sheet is not parsed at insertion — .sheet is null until it loads, so the
+  // immediate sweep would find nothing in it. Sweeping again on its load event is what
+  // catches it; <style> needs no equivalent.
+  function armLink(node) {
+    if (node.tagName !== 'LINK') return;
+    try { node.addEventListener('load', scheduleSweep, { once: true }); }
+    catch (e) { /* older listener signature: the immediate sweep still runs */ }
+  }
+
+  // The node itself AND anything beneath it. A widget that builds a view or skin
+  // container off-DOM and then appends it delivers ONE mutation record naming the
+  // container — the <style> and <link> elements inside it are never in addedNodes at
+  // all, so a check on the added node alone sees nothing and the sheet keeps its qrc:
+  // faces. The children guard keeps this off the hot path: a widget re-rendering a grid
+  // of leaf nodes pays a tagName check per node, not a query.
+  //
+  // Bounded to childList on purpose. A sheet can only ENTER the document as one of these
+  // elements; mutating an existing one in place (rewriting a <style>'s text, swapping a
+  // <link>'s href) is not covered, and watching for it would mean characterData and
+  // attribute observation across the whole tree, on every widget, for a case iCUE
+  // packages do not exercise.
+  function armAddedNode(node) {
+    let found = false;
+    if (isSheetNode(node)) {
+      armLink(node);
+      found = true;
+    }
+    if (node && node.nodeType === 1 && node.firstElementChild) {
+      let nested = null;
+      try { nested = node.querySelectorAll(SHEET_SELECTOR); } catch (e) { nested = null; }
+      if (nested) {
+        for (const el of nested) { armLink(el); found = true; }
+      }
+    }
+    return found;
+  }
+
+  let watching = false;
+  function watchForSheets() {
+    // The shim runs at document-created, before <html> exists; called again at each
+    // readiness point, so the first call that has a root wins and the rest no-op.
+    if (watching || typeof MutationObserver !== 'function') return;
+    const root = document.documentElement;
+    if (!root) return;
+    watching = true;
+    new MutationObserver((records) => {
+      let found = false;
+      // EVERY record, and every added node in it. A skin that appends several <link>s in
+      // one turn delivers them in a single callback, so bailing out after the first left
+      // the rest with no load handler — and the immediate sweep below runs before any of
+      // them have parsed, so nothing would ever have looked at them again. Coalescing
+      // belongs in scheduleSweep, which does it; it does not belong here, where it means
+      // discarding the nodes instead of the work.
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (armAddedNode(node)) found = true;
+        }
+      }
+      if (found) scheduleSweep();
+    }).observe(root, { childList: true, subtree: true });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => { watchForSheets(); sweepFonts(); });
+  } else {
+    watchForSheets();
+    sweepFonts();
+  }
+  window.addEventListener('load', () => { watchForSheets(); sweepFonts(); setTimeout(sweepFonts, 1000); });
 })();

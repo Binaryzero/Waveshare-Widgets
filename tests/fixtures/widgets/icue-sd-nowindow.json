@@ -1,0 +1,37 @@
+{
+  "_comment": "A readable profile whose deck window is NOT open. The profile comes off disk, so grid, titles and faces are all real; the press needs the window, which is not there. It carries a capture frame on purpose — a widget that polled for pixels anyway would slice it and look correct — and the host would answer no capture in reality. Named separately from a network deck because the host no longer offers one of those at all: a deck that cannot be pressed is refused upstream, not rendered.",
+  "profile": {
+    "available": true,
+    "profiles": [
+      "Default",
+      "Gaming"
+    ],
+    "rows": 2,
+    "cols": 3,
+    "buttons": [
+      {
+        "row": 0,
+        "col": 0,
+        "title": "Alpha"
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "title": "Bravo"
+      },
+      {
+        "row": 1,
+        "col": 2,
+        "title": "Charlie"
+      }
+    ],
+    "model": "UI Stream Deck",
+    "windowAvailable": false
+  },
+  "capture": {
+    "image": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHdpZHRoPSczMDAnIGhlaWdodD0nMjAwJz48cmVjdCB3aWR0aD0nMzAwJyBoZWlnaHQ9JzIwMCcgZmlsbD0nIzEwMTQxOCcvPjxyZWN0IHg9JzEwJyB5PScxMCcgd2lkdGg9JzgwJyBoZWlnaHQ9JzgwJyByeD0nMTInIGZpbGw9JyNjMDRhM2EnLz48cmVjdCB4PScxMTAnIHk9JzEwJyB3aWR0aD0nODAnIGhlaWdodD0nODAnIHJ4PScxMicgZmlsbD0nIzNhN2FjMCcvPjxyZWN0IHg9JzIxMCcgeT0nMTEwJyB3aWR0aD0nODAnIGhlaWdodD0nODAnIHJ4PScxMicgZmlsbD0nIzNhYzA3YScvPjwvc3ZnPg==",
+    "w": 300,
+    "h": 200,
+    "hash": "fixture-frame"
+  }
+}

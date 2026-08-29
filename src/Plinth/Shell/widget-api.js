@@ -885,10 +885,12 @@
       }));
     },
 
-    /** Request the Virtual Stream Deck profile; delivered via onStreamDeck(cb).
+    /** Request the Stream Deck profile; delivered via onStreamDeck(cb).
      * opts: { profileName, hideWindow, live }. With live:true the reply also carries
-     * `capture` — a screenshot of the VSD window ({image,w,h}) for real-time mirroring
-     * of dynamic key faces — when the host can capture it. */
+     * `capture` — a screenshot of the deck window ({image,w,h}) for real-time mirroring
+     * of dynamic key faces — when the host can capture it. The profile is read from
+     * disk, so it stays complete when the deck's window is closed; `windowAvailable`
+     * on the reply is what says whether a press can land. */
     requestStreamDeck(opts) {
       opts = opts || {};
       // The id is what lets the shell send the answer to THIS frame rather than to
@@ -896,7 +898,9 @@
       const id = trackSdRequest(reqId('sd'));
       parent.postMessage({ type: 'ww-sd-profile', id, profileName: opts.profileName || '', hideWindow: opts.hideWindow !== false, live: opts.live === true }, shellTarget());
     },
-    /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}], capture?}. */
+    /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}],
+     * model, windowAvailable, capture?}. `windowAvailable:false` = the deck's window is
+     * not open, so refuse the tap instead of sending a click that lands nowhere. */
     onStreamDeck(cb) { listeners.streamdeck.push(cb); },
     /** Capture-only fast path for live mirroring: cheaper than requestStreamDeck (no
      * profile re-parse; the host skips the frame entirely when pixels are unchanged). */

@@ -443,6 +443,15 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     // Virtual Stream Deck replies actually served (a profile handed back), so the data-path
     // check can treat a populated deck — which makes no http request — as data delivered.
     window.__wwSdServed = [];
+    // Key presses the widget actually POSTED. Whether a press was sent is not observable
+    // from inside the widget — it calls sendKeyPress and carries on either way — so a
+    // shim that correctly refuses to click a deck with no window, and one that silently
+    // posts into a void, look identical from the page. They differ here.
+    window.__wwSdClicks = [];
+    // Capture polls the widget actually made, for the same reason: a deck with no window
+    // must not be polled for pixels twice a second forever, and "did not poll" is
+    // invisible from inside the page.
+    window.__wwSdCaptures = [];
     window.__wwReady = false;
     window.__wwInitSent = false;
     let frame = null;
@@ -612,9 +621,12 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         const profile = (sd && sd.profile) || { available: false };
         if (profile.available) window.__wwSdServed.push('ww-sd-profile');
         reply({ type: 'ww-sd-profile', id: m.id, profile });
+      } else if (m.type === 'ww-sd-click') {
+        window.__wwSdClicks.push(String(m.phase || 'tap'));
       } else if (m.type === 'ww-sd-capture') {
         // The capture-only fast path. A fixture may carry pixels; otherwise report none, so
         // the widget falls back to the icon grid (which is where the key controls live).
+        window.__wwSdCaptures.push(String(m.have || ''));
         const data = (sd && sd.capture) ? sd.capture : { available: false };
         reply({ type: 'ww-sd-capture-result', id: m.id, data });
       } else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
@@ -719,6 +731,13 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // A Virtual Stream Deck reply is data delivered over the host bridge, not http — so a
   // populated Stream Deck run (which makes no fetch) still counts as having touched data.
   const sdServed = await page.evaluate(() => window.__wwSdServed || []);
+  const sdClicks = await page.evaluate(() => window.__wwSdClicks || []);
+  // Reported rather than asserted: what the right number is depends on the deck the
+  // fixture describes — an open deck should click, one with no window must not — which is
+  // the caller's question, not this runner's. Printed at the END, in the text branch
+  // only: under --json this process's whole stdout is one JSON object, and a status line
+  // ahead of it makes that unparseable for every consumer, including on a passing run.
+  const sdCaptures = await page.evaluate(() => window.__wwSdCaptures || []);
   if (!allowState) {
     check('a stubbed endpoint or Stream Deck profile was actually served',
       served.length + proxyServed.length + sdServed.length > 0,
@@ -760,9 +779,15 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
 
   const ok = checks.every((c) => c.ok);
   if (asJson) console.log(JSON.stringify({ folder, slot, theme: themeArg, ok, checks, served, proxyServed,
-    attempted, hostCalls, peerApis, consoleErrors }, null, 1));
+    attempted, hostCalls, peerApis, consoleErrors,
+    // Fields rather than printed lines, so --json consumers get the same information the
+    // text output carries instead of having to scrape it back out of a broken document.
+    sdClicks, sdCaptures }, null, 1));
   else {
     console.log(`${ok ? 'OK  ' : 'FAIL'} ${folder} @ ${slot} (${themeArg}) — data path`);
+    console.log('  stream-deck clicks: ' + sdClicks.length +
+      (sdClicks.length ? ' [' + sdClicks.join(',') + ']' : ''));
+    console.log('  stream-deck captures: ' + sdCaptures.length);
     for (const c of checks) console.log(`  ${c.ok ? 'PASS' : 'FAIL'} ${c.name}${c.detail ? ' - ' + c.detail : ''}`);
   }
   process.exit(ok ? 0 : 1);

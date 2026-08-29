@@ -1341,6 +1341,13 @@ public sealed class DashboardWindow : Form
             ["cols"] = profile.Cols,
             ["buttons"] = buttons,
             ["profiles"] = available,
+            ["model"] = profile.Model,
+            // A readable profile is not the same as a pressable deck: the profile comes
+            // off disk, the press needs the deck's WINDOW to be open right now. Without
+            // this the widget renders live-looking keys that swallow every tap whenever
+            // the user has closed their Virtual Stream Deck — the same "looks like it
+            // works" failure a network deck would cause, from a different cause.
+            ["windowAvailable"] = _streamDeck.HasDeckWindow(),
         };
     }
 

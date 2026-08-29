@@ -325,6 +325,14 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   for it), editing, deleting, and that junk is still refused so no permanent blank row
   appears. Against the pre-fix files it reports 16 failures showing the entry simply
   absent from the saved array.
+- `streamdeck-tap-run.js` — the Stream Deck widget's populated render, which the #221
+  tap audit could not otherwise see (its keys arrive over the host bridge, not http, so
+  a plain data-path run reached the "no deck" card and passed vacuously). Drives a
+  multi-profile deck through the `--sd` fixture and asserts the picker and key grid are
+  really on screen for the audit to walk. It also covers the closed-window case: a
+  profile is read from DISK, so the keys render just as well when the deck's window is
+  shut, and the tap must be refused — driven with live mode OFF, the mode that had no
+  signal at all before, since the capture reply was what used to notice.
 - `icue-emu-run.js` — the iCUE compatibility surface the Corsair stock-widget dump
   exposed as broken, driven end-to-end through the real shims via a probe widget in
   iCUE's own idioms (`tests/fixtures/widgets/icue-emu`): a strict-mode module assigning
@@ -332,10 +340,20 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   (MediaViewer, ColorTools, the promise wrappers) reached as injected globals —
   the probe's own `../common/…` script tags 404 here on purpose, because that is
   the device condition and the markers passing is what proves the globals carry it —
+  the Qt-resource font sweep (three `qrc:` `@font-face` rules planted in the three
+  places a sweep can miss — top level, inside an `@media` group, and in a `<style>`
+  appended 1.4 s after load — with the marker naming the survivors, so a regression
+  says which placement broke rather than just that one did),
   thenable `tr()` against the nested i18next `translation.json`, the
   Notificationsprovider requestId/asyncResponse round trip, and the Streamdeck plugin
   emulation against the `--sd` fixture (`virtualDeviceCreated`, per-key
   `buttonIconUpdated` title tiles, `sendKeyPress` down/up). Text-level: the click
   `phase` field crosses shim → shell → host → bridge, `Shell/icue-common.js` defines
   every helper as a window property (so a vendored copy shadows rather than
-  collides), and every surface that injects the shims injects it.
+  collides), and every surface that injects the shims injects it. It also separates a readable
+  profile from a pressable deck: against a `windowAvailable:false` fixture the probe must
+  still announce the deck and paint its faces (they are real, read from disk) while
+  posting ZERO clicks, rather than firing them at a window that is not there. The
+  open-window run asserts the opposite direction, or a shim that refused everything would
+  pass both. iCUE's own `VSD2/WiFi` deck is in that state permanently — it has no window,
+  ever — and is refused upstream rather than mirrored, which `tools/DeckManifest` drives.

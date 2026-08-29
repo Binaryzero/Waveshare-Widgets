@@ -1,0 +1,31 @@
+{
+  "_comment": "The same multi-profile deck with its window shut. Its keys still render from the profile on disk; a tap on one must be refused rather than posted into a window that is not there. Live mode is what used to notice this (the capture reply), so the profile now carries it and both modes refuse.",
+  "profile": {
+    "available": true,
+    "profiles": [
+      "Default",
+      "Gaming"
+    ],
+    "rows": 2,
+    "cols": 3,
+    "buttons": [
+      {
+        "row": 0,
+        "col": 0,
+        "title": "Alpha"
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "title": "Bravo"
+      },
+      {
+        "row": 1,
+        "col": 2,
+        "title": "Charlie"
+      }
+    ],
+    "model": "UI Stream Deck",
+    "windowAvailable": false
+  }
+}

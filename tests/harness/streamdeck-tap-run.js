@@ -15,6 +15,11 @@
 //        green — which includes the #221 audit passing on both.
 //   S2 · teeth: the audit is not vacuous — the picker/key surfaces are present in the DOM the
 //        audit walked (the run reports them guarded, not "nothing to check").
+//   S3 · a readable profile is not a pressable deck. The profile is read from DISK, so the
+//        keys render just as well when the user has closed their Virtual Stream Deck — and
+//        the press needs the window. The capture reply used to be what noticed this, which
+//        left live mode OFF with no signal at all: keys stayed live-looking and every tap
+//        vanished. The profile poll carries it now, so both modes refuse the tap.
 'use strict';
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -32,17 +37,18 @@ const check = (name, ok, detail) => {
 
 // liveMode off so render() takes the icon-grid path deterministically (the fixture carries no
 // capture, so it would fall through to the grid anyway, but this skips the capture poll too).
-const run = () => {
+const run = (fixture, settings, expects) => {
   try {
-    return { ok: true, out: execFileSync('node', [RUNNER, path.join('widgets', 'streamdeck'),
-      '--sd', path.join(FIX, 'streamdeck-sd.json'), '--slot', 'half',
-      '--settings', JSON.stringify({ liveMode: 'off' }),
-      '--expect', 'Gaming', '--expect', 'Alpha'],
+    const args = [RUNNER, path.join('widgets', 'streamdeck'),
+      '--sd', path.join(FIX, fixture), '--slot', 'half'];
+    if (settings) args.push('--settings', JSON.stringify(settings));
+    return { ok: true, out: execFileSync('node',
+      [...args, ...expects.flatMap((e) => ['--expect', e])],
     { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) };
   } catch (e) { return { ok: false, out: (e.stdout || '') + (e.stderr || '') }; }
 };
 
-const { ok, out } = run();
+const { ok, out } = run('streamdeck-sd.json', { liveMode: 'off' }, ['Gaming', 'Alpha']);
 const failLines = out.split('\n').filter((l) => l.includes('FAIL')).map((l) => l.trim()).join(' | ');
 const tapLine = (out.split('\n').find((l) => l.includes('#221')) || '').trim();
 
@@ -67,6 +73,31 @@ check('S0 fixture describes a multi-profile deck with keys',
   fixture.profile && fixture.profile.available && (fixture.profile.profiles || []).length > 1
     && (fixture.profile.buttons || []).length > 0,
   `${(fixture.profile && fixture.profile.profiles || []).length} profiles, ${(fixture.profile && fixture.profile.buttons || []).length} keys`);
+
+// S3 — the same deck with its window shut, live mode OFF: the mode that had no signal at
+// all before, so the keys rendered and the taps went nowhere. They must still render —
+// the faces are real — and the tap must be refused.
+const shut = run('streamdeck-sd-nowindow.json', { liveMode: 'off' }, ['Gaming', 'Alpha']);
+const shutFail = shut.out.split('\n').filter((l) => l.includes('FAIL')).map((l) => l.trim()).join(' | ');
+check('S3 a deck with its window shut still renders its picker and keys', shut.ok,
+  shut.ok ? 'picker + keys'
+    : (shutFail || shut.out.trim().split('\n').slice(-4).join(' | ').slice(0, 300)));
+
+// S3b — text-level: this runner does not tap, so the guard is asserted where it lives.
+// A click posted here is fire-and-forget — the host logs a warning nobody sees and the
+// key looks pressed.
+const widget = fs.readFileSync(path.join(REPO, 'widgets', 'streamdeck', 'index.html'), 'utf8');
+check('S3b a tap is refused when no deck window is open, in either live mode',
+  /lastProfile\.windowAvailable === false/.test(widget)
+    && /flash\(cell, 'fail-flash'\)/.test(widget));
+
+// S3c — and the fixture really does describe a shut window, or S3/S3b test nothing.
+const shutFixture = JSON.parse(fs.readFileSync(path.join(FIX, 'streamdeck-sd-nowindow.json'), 'utf8'));
+check('S3c the fixture is a readable profile whose window is NOT open',
+  shutFixture.profile && shutFixture.profile.available === true
+    && shutFixture.profile.windowAvailable === false
+    && (shutFixture.profile.buttons || []).length > 0,
+  shutFixture.profile ? `${(shutFixture.profile.buttons || []).length} keys` : 'no profile');
 
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
 process.exit(failures ? 1 : 0);

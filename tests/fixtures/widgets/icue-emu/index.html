@@ -20,6 +20,26 @@
 	<script src="../common/tools/ColorTools.js"></script>
 	<script src="../common/tools/media_viewer/MediaViewer.js"></script>
 	<link rel="stylesheet" href="../common/tools/media_viewer/MediaViewer.css">
+	<!-- Qt resource-scheme faces, the way iCUE packages ship them. Chromium cannot load
+	     `qrc:` at all, and every element waiting on one logs a "Fallback font will be
+	     used" intervention — hundreds of lines from one widget. Two placements, because
+	     the sweep once handled only the first:
+	       · top level, and
+	       · inside an @media group, which is not itself a FONT_FACE_RULE, so a scan that
+	         only tested the outermost rule's type never saw the face inside it.
+	     A third arrives from a script AFTER load, below. -->
+	<style>
+	@font-face {
+		font-family: 'ProbeTopLevel';
+		src: url("qrc:/fonts/OpenSans-Regular.ttf") format("truetype");
+	}
+	@media (min-width: 1px) {
+		@font-face {
+			font-family: 'ProbeGrouped';
+			src: url("qrc:/fonts/OpenSans-Bold.ttf") format("truetype");
+		}
+	}
+	</style>
 </head>
 <body>
 	<div id="bg"></div>
@@ -41,10 +61,104 @@
 	};
 	log('module-alive');
 
+	// Whether a face was defused is only visible in the CSSOM — the page cannot observe
+	// the interventions it no longer causes. Report the qrc: sources still present, per
+	// placement, so the marker names WHICH hole is open rather than just "some".
+	const qrcLeft = () => {
+		const left = [];
+		const walk = (rules) => {
+			for (const rule of Array.from(rules || [])) {
+				if (!rule) continue;
+				if (rule.type === 5) {
+					let src = '';
+					try { src = rule.style.getPropertyValue('src') || ''; } catch (e) { src = ''; }
+					if (src.indexOf('qrc:') !== -1) left.push(rule.style.getPropertyValue('font-family'));
+					continue;
+				}
+				let nested = null;
+				try { nested = rule.cssRules; } catch (e) { nested = null; }
+				if (nested) walk(nested);
+			}
+		};
+		for (const sheet of Array.from(document.styleSheets)) {
+			try { walk(sheet.cssRules); } catch (e) { /* cross-origin */ }
+		}
+		return left;
+	};
+
+	// Sheets that arrive well after load, when every scheduled sweep has run. Two
+	// placements, because the observer has to catch both:
+	//   ProbeLate    — a <style> appended directly, so it IS the added node.
+	//   ProbeNested  — a <style> inside a container built off-DOM and appended whole,
+	//                  the shape a view or skin switch produces. The mutation record
+	//                  names only the container, so an observer that checks the added
+	//                  node alone never sees the sheet at all.
+	// SEPARATED IN TIME, deliberately. Appended in the same turn, the direct <style>
+	// schedules a sweep that walks document.styleSheets — which by then contains the
+	// nested sheet too, so it gets defused incidentally and the nested case proves
+	// nothing. The container has to be the only mutation in its turn for the probe to
+	// distinguish an observer that inspects descendants from one that does not.
+	window.addEventListener('load', () => {
+		setTimeout(() => {
+			const late = document.createElement('style');
+			late.textContent = "@font-face { font-family: 'ProbeLate';" +
+				" src: url(\"qrc:/fonts/OpenSans-Italic.ttf\") format(\"truetype\"); }";
+			document.head.appendChild(late);
+		}, 1400);
+		setTimeout(() => {
+			const container = document.createElement('div');
+			const nested = document.createElement('style');
+			nested.textContent = "@font-face { font-family: 'ProbeNested';" +
+				" src: url(\"qrc:/fonts/OpenSans-Light.ttf\") format(\"truetype\"); }";
+			container.appendChild(nested);
+			document.body.appendChild(container);
+		}, 1700);
+		// After the observer's coalesced sweep has had a turn on both.
+		setTimeout(() => log('qrc-left:' + (qrcLeft().join(',') || 'none')), 2000);
+	});
+
 	const viewer = new MediaViewer({ container: document.getElementById('bg') });
 	viewer.clear();
 	log('mediaviewer-ok');
 	log('hex:' + hexToRGB('#FF0039'));
+
+	// A data: URI carries no filename, so an extension test calls this video an image and
+	// builds an <img> that can never render it. The MIME is right there in the URI.
+	const vprobe = document.createElement('div');
+	document.body.appendChild(vprobe);
+	new MediaViewer({ container: vprobe }).loadMedia({
+		path: 'data:video/mp4;base64,AAAAIGZ0eXBpc29t',
+	});
+	log('datavideo:' + (vprobe.querySelector('video') ? 'video' : 
+		(vprobe.querySelector('img') ? 'img' : 'none')));
+
+	// Two wrappers over ONE plugin. Each connects its own asyncResponse listener, so a
+	// per-instance id sequence gives both the same id 1 — and the first reply settles
+	// both waiters, resolving B with A's value. The fake plugin records the ids issued
+	// and replays each reply to every listener, exactly as a real Qt signal would.
+	const listeners = [];
+	const issued = [];
+	const fakePlugin = {
+		asyncResponse: { connect: (cb) => listeners.push(cb) },
+		ask(requestId) { issued.push(requestId); },
+	};
+	const wrapA = new IcueWidgetApiWrapper(fakePlugin);
+	const wrapB = new IcueWidgetApiWrapper(fakePlugin);
+	const answers = Promise.all([
+		wrapA.request(fakePlugin.ask),
+		wrapB.request(fakePlugin.ask),
+	]);
+	for (let i = 0; i < issued.length; i++) {
+		for (const cb of listeners) cb(issued[i], i === 0 ? 'A' : 'B');
+	}
+	answers.then((r) => log('wrapids:' + r.join(','))).catch(() => log('wrapids:threw'));
+
+	// A formatter that has never rendered must produce a date even when the caller's
+	// lastDay already equals today: the rendered value turns over with the CONFIGURED
+	// zone's day, which the caller's local getDay cannot speak for.
+	new DateFormatter('en-US', 'Asia/Tokyo', true)
+		.getDateText('05/04/2020', new Date().getDay(), false)
+		.then((t) => log('datefirst:' + (t ? 'rendered' : 'skipped')));
 
 	function onInit() {
 		// Thenable tr() + the i18next-nested translation.json shape iCUE ships.
@@ -73,8 +187,12 @@
 			// 3x2 grid requested below, as generated title tiles.
 			if (icons === 3) {
 				log('icons:3');
-				sd.sendKeyPress(0, true);
-				sd.sendKeyPress(0, false);
+				// All THREE arguments: the signature is (widgetId, buttonIndex, pressed).
+				// Calling it with two silently made `pressed` undefined, so both messages
+				// went out as phase 'up' — and the runner's "a deck is clicked" check
+				// counted them and passed without a press ever being exercised.
+				sd.sendKeyPress(uniqueId, 0, true);
+				sd.sendKeyPress(uniqueId, 0, false);
 				log('click-sent');
 			}
 			// Once the fixture's capture frame flows, the faces become PNG slices of

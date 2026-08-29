@@ -374,21 +374,36 @@
 
   // --- Streamdeck (widgetbuilder.streamdeck) ---
   //
-  // iCUE's plugin registers a VIRTUAL Stream Deck device over Corsair's internal
-  // bridge to the Stream Deck app — a channel Plinth cannot reach. This emulation
-  // keeps the plugin's contract (connect → virtualDeviceCreated, per-key
-  // buttonIconUpdated pushes, sendKeyPress with press/release) and backs it with
-  // the host's Elgato Virtual Stream Deck bridge instead, the same one the stock
-  // Stream Deck widget mirrors: the VSD profile supplies fallback key faces, the
-  // live window capture is sliced into per-key tiles for dynamic faces, and key
-  // presses land as down/up click phases on the VSD window.
+  // iCUE's plugin is a NETWORK client, not a window mirror, and the difference is the
+  // whole design of this shim. iCUE registers a virtual device of model VSD2/WiFi with
+  // the Stream Deck app, pairs with it (the widget's own card says "Go to the Stream
+  // Deck app and approve the iCUE connection"), then receives per-key faces pushed over
+  // that connection and sends presses back down it. Corsair's end of that channel is
+  // authenticated and internal; Plinth cannot speak it.
   //
-  // Consequences of that backing, documented rather than hidden: the deck shown is
-  // the user's open Virtual Stream Deck (its grid mapped position-for-position into
-  // the size the widget asked for, extra VSD keys falling off the edge), the
-  // authentication signals never fire (there is no pairing handshake to fail), and
-  // streamdeckUnreachable means "no VSD window", with the Stream Deck app's own
-  // guidance living in the stock widget's empty state.
+  // Plinth's OWN Stream Deck widget is the other thing entirely: it mirrors a LOCAL
+  // "UI Stream Deck" — Elgato's on-screen Virtual Stream Deck — by capturing its Qt
+  // window with PrintWindow and clicking it with PostMessage. Conflating the two is
+  // what made an earlier round of this shim wrong, so the split is stated here rather
+  // than left to be rediscovered.
+  //
+  // This emulation keeps the plugin's contract (connect → virtualDeviceCreated, per-key
+  // buttonIconUpdated pushes, sendKeyPress with press/release) and backs it with the
+  // local deck: profile icons as the fallback face, the live window capture sliced into
+  // per-key tiles for dynamic faces, and key presses landing as real down/up click
+  // phases on the window. So the widget mirrors a deck whose keys actually work.
+  //
+  // The host never offers a network deck for this, even though it can read one: a deck
+  // that renders perfectly and presses nothing is worse than none. `streamdeckUnreachable`
+  // therefore means "no deck this host can drive", with app.log naming which decks exist
+  // and why each was passed over.
+  //
+  // A press still needs the deck's window OPEN at the moment of the tap, which the
+  // profile — read from disk — cannot tell us. The host reports it per poll, and a tap
+  // with nowhere to land is refused out loud instead of posted into a closed window.
+  //
+  // The authentication signals never fire (this backend has no pairing handshake to
+  // fail), so widgets never show their pairing states.
 
   const sdState = {
     widgetId: null,
@@ -397,14 +412,28 @@
     announced: false,          // virtualDeviceCreated emitted for the current deck
     unreachable: false,        // last availability signalled, to emit transitions only
     profile: null,             // last available ww-sd-profile payload
+    hasWindow: true,           // a deck window exists right now: presses can land
+    warnedNoWindow: false,     // "presses go nowhere" said once, not per tap
+    pressOutstanding: false,   // a down was accepted and its up is still owed
     tiles: [],                 // slot index -> last data URL emitted (dedup)
     captureHash: '',           // `have` receipt for the capture fast path
+    answered: false,           // has the host answered a profile poll at all?
+    connectGen: 0,             // which connect a pending no-reply timer belongs to
     profileTimer: null,
     captureTimer: null,
     pending: new Map(),        // request id -> 'profile' | 'capture'
     seq: 0,
     canvas: null,
   };
+
+  // The emulation reported nothing, so a widget stuck on its "unreachable" card looked
+  // identical whether the host said available:false or never answered at all. These lines
+  // go to app.log; they are bounded — connect, the first reply, availability TRANSITIONS,
+  // and a one-shot warning if the host never answers — never per-poll.
+  function sdLog(message) {
+    try { parent.postMessage({ type: 'ww-log', message: 'streamdeck-emu: ' + message }, '*'); }
+    catch (e) { /* frame gone */ }
+  }
 
   function sdTrack(kind) {
     const id = 'icue-sd-' + (++sdState.seq);
@@ -519,6 +548,24 @@
   }
 
   function sdOnProfile(profile) {
+    const first = !sdState.answered;
+    sdState.answered = true;
+    if (!profile || !profile.available) {
+      // Deliberately NOT "there is no deck": available:false is also what an
+      // unreadable or unparseable profile produces, and — since the recognized device
+      // models are a list the iCUE-created type may not be on yet — what a deck this
+      // bridge does not recognize produces. Naming the host log is what separates them;
+      // asserting the categorical answer sent the last round chasing the wrong repair.
+      if (first || !sdState.unreachable)
+        sdLog('host found no compatible Stream Deck profile it could read — see the ' +
+              'app.log "Stream Deck:" lines for which profiles exist and why each was ' +
+              'skipped (unrecognized device model, unreadable manifest, or none present)');
+    } else if (first || sdState.unreachable) {
+      sdLog('deck available: "' + (profile.name || '') + '" ' +
+            (profile.rows || 0) + 'x' + (profile.cols || 0) + ', ' +
+            ((profile.buttons || []).length) + ' key(s), model ' +
+            (profile.model || 'unknown'));
+    }
     if (!profile || !profile.available) {
       sdState.profile = null;
       sdState.announced = false;
@@ -531,6 +578,18 @@
     }
     sdState.unreachable = false;
     sdState.profile = profile;
+    // Absent means yes: a host that predates this field only ever mirrors a deck it can
+    // click, so reading absence as "no window" would drop presses it CAN deliver.
+    const hasWindow = profile.windowAvailable !== false;
+    if (hasWindow !== sdState.hasWindow) {
+      sdState.hasWindow = hasWindow;
+      // A window that came back re-arms the warning, so the next closure is reported
+      // rather than swallowed by the first one.
+      if (hasWindow) sdState.warnedNoWindow = false;
+      else sdLog('the deck window is not open — its keys render from the profile, but a ' +
+                 'press has nowhere to land until the Virtual Stream Deck is open in the ' +
+                 'Stream Deck app');
+    }
     if (!sdState.announced) {
       sdState.announced = true;
       sd.virtualDeviceCreated.__emit(sdState.widgetId, window.device.deviceId);
@@ -569,6 +628,27 @@
       sdState.rows = Math.max(1, rows | 0);
       sdState.tiles = [];
       sdState.connected = true;
+      sdState.answered = false;
+      // Replies owed to the PREVIOUS connection are not answers to this one. Left in
+      // place, a late one would set `answered` on the connection that just reset it —
+      // suppressing this connection's no-reply diagnostic and announcing the old deck as
+      // the current one. Stamping the timer with a generation (below) does not cover
+      // this: the reply route is keyed on the request id, not on the timer.
+      sdState.pending.clear();
+      sdLog('connect requested for a ' + sdState.cols + 'x' + sdState.rows + ' deck');
+      // If the poll is never answered the widget sits on its parse-time card forever,
+      // which is exactly what an available:false answer looks like. Say which it was.
+      //
+      // Stamped with the connect it belongs to: connectStreamDeck can run again (the
+      // widget's own reconnect path is right below), and `connected`/`answered` are
+      // shared, so an earlier timer would otherwise observe the NEW connection and
+      // report "after 10s" moments after it — breaking both the timing claim and the
+      // one-shot bound this comment promises.
+      const gen = ++sdState.connectGen;
+      setTimeout(() => {
+        if (sdState.connectGen === gen && sdState.connected && !sdState.answered)
+          sdLog('NO REPLY from the host to the profile poll after 10s — the bridge did not answer');
+      }, 10000);
       sdStartTimers();
       sdPollProfile();
     },
@@ -594,6 +674,29 @@
     sendKeyPress(widgetId, buttonIndex, pressed) {
       const profile = sdState.profile;
       if (!profile || !sdState.cols) return;
+      // A RELEASE owed to an accepted press always goes through, whatever the window
+      // says now. The window can disappear mid-hold — an overlay hidden or recreated
+      // between the pointerdown and the pointerup — and refusing the up there leaves the
+      // host holding WM_LBUTTONDOWN on a real window until its 10s safety timer fires.
+      // The host's own up path releases without needing a window, so this cannot fail
+      // the way a press would.
+      if (!pressed && sdState.pressOutstanding) {
+        sdState.pressOutstanding = false;
+        parent.postMessage({ type: 'ww-sd-click', rows: 1, cols: 1, row: 0, col: 0,
+          phase: 'up' }, '*');
+        return;
+      }
+      if (!sdState.hasWindow) {
+        // Posting a PRESS here would look like it worked: the host finds no window,
+        // logs a warning, and the widget — which never learns the outcome — keeps
+        // rendering a deck whose keys do nothing. Say it once, on the press half only.
+        if (pressed && !sdState.warnedNoWindow) {
+          sdState.warnedNoWindow = true;
+          sdLog('key press ignored: no deck window is open, so there is nothing to click. ' +
+                'Open the Virtual Stream Deck in the Stream Deck app.');
+        }
+        return;
+      }
       const index = buttonIndex | 0;
       const row = Math.floor(index / sdState.cols);
       const col = index % sdState.cols;
@@ -612,6 +715,9 @@
         // pointerup/leave/cancel, so holds reach the deck as holds.
         phase: pressed ? 'down' : 'up',
       }, '*');
+      // Tracked from here, after the grid bounds check, so only a press the host was
+      // actually asked to make owes a release.
+      sdState.pressOutstanding = pressed === true;
     },
   };
 

@@ -17,25 +17,51 @@ namespace Plinth.App;
 public sealed class StreamDeckBridge
 {
     public sealed record DeckButton(int Row, int Col, string Title, string Image);
+    /// <param name="Model">The profile's Device.Model. Always a local-window model — a
+    /// network deck never gets this far (<see cref="DeckManifest.ChooseMirrorable"/>) —
+    /// but carried anyway, because "which deck is this" is the first question every log
+    /// line about a deck has to answer.</param>
     public sealed record DeckProfile(string Name, int Rows, int Cols, IReadOnlyList<DeckButton> Buttons,
-        IReadOnlyList<string> AvailableProfiles);
+        IReadOnlyList<string> AvailableProfiles, string Model);
 
     private static string ProfilesDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), // Roaming
         "Elgato", "StreamDeck", "ProfilesV3");
 
-    /// <summary>Display names of every Virtual Stream Deck profile on this machine —
-    /// feeds the settings window's profile dropdown so nobody types a name by hand.</summary>
+    /// <summary>Display names of every MIRRORABLE Stream Deck profile on this machine —
+    /// feeds the settings window's profile dropdown so nobody types a name by hand.
+    /// Network decks are excluded: offering one would let the user pick a deck whose keys
+    /// cannot be pressed, which is the outcome this whole path exists to avoid.</summary>
     public static IReadOnlyList<string> ListProfileNames() =>
-        ListVsdProfiles().Select(p => p.Name).ToList();
+        ListVsdProfiles().Where(p => DeckManifest.IsLocalWindowModel(p.Model))
+                         .Select(p => p.Name).ToList();
 
-    /// <summary>All Virtual Stream Deck profiles: (display name, profile directory).</summary>
-    private static List<(string Name, string Dir)> ListVsdProfiles()
+    /// <summary>Models already named in the log, so the 4s profile poll reports each
+    /// unrecognized one once rather than every tick.</summary>
+    private static readonly HashSet<string> ReportedModels = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Set once a network-only machine has been named in the log, so the
+    /// explanation is printed once rather than on every 4s poll. Cleared as soon as a
+    /// mirrorable deck appears, so creating one and removing it says so again.</summary>
+    private static bool _loggedNetworkOnly;
+
+    /// <summary>
+    /// Every readable on-screen Stream Deck profile: display name, directory, and the
+    /// device model, which decides what can be done with it.
+    /// </summary>
+    /// <remarks>
+    /// The model is carried out of here rather than discarded because the two recognized
+    /// kinds are not interchangeable — see <see cref="DeckManifest.NetworkModels"/>. A
+    /// local-window deck supports capture and clicks; a network deck supports neither, and
+    /// a caller that cannot tell them apart would publish a grid whose keys do nothing.
+    /// </remarks>
+    private static List<(string Name, string Dir, string Model)> ListVsdProfiles()
     {
-        var result = new List<(string, string)>();
+        var result = new List<(string Name, string Dir, string Model)>();
         if (!Directory.Exists(ProfilesDir))
             return result;
 
+        var skipped = new List<string>();
         foreach (var profileDir in Directory.GetDirectories(ProfilesDir, "*.sdProfile"))
         {
             var manifestPath = Path.Combine(profileDir, "manifest.json");
@@ -45,27 +71,52 @@ public sealed class StreamDeckBridge
             {
                 using var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
                 var root = manifest.RootElement;
-                if (root.TryGetProperty("Device", out var device) &&
-                    device.TryGetProperty("Model", out var model) &&
-                    model.GetString() == "UI Stream Deck")
+                var model = DeckManifest.ReadDeviceModel(root);
+                if (model is null)
+                    continue;
+                if (!DeckManifest.IsKnownModel(model))
                 {
-                    var name = root.TryGetProperty("Name", out var n) ? n.GetString() ?? "" : "";
-                    if (string.IsNullOrWhiteSpace(name))
-                        name = Path.GetFileNameWithoutExtension(profileDir);
-                    result.Add((name, profileDir));
+                    skipped.Add(model);
+                    continue;
                 }
+
+                var name = root.TryGetProperty("Name", out var n) ? n.GetString() ?? "" : "";
+                if (string.IsNullOrWhiteSpace(name))
+                    name = Path.GetFileNameWithoutExtension(profileDir);
+                result.Add((name, profileDir, model));
             }
             catch { /* skip unreadable */ }
+        }
+
+        // Gated on finding no deck this app can MIRROR, not on recognizing nothing at all.
+        // Those differ exactly when a network deck sits beside an unrecognized model: the
+        // network deck made the recognized set non-empty, so the one log that would have
+        // named the unrecognized model went quiet, and the user — who has a real local
+        // deck of a model this build has never heard of — was told to go and create one.
+        // A machine with a working deck still says nothing.
+        if (!result.Any(p => DeckManifest.IsLocalWindowModel(p.Model)) && skipped.Count > 0)
+        {
+            var unreported = skipped.Distinct(StringComparer.OrdinalIgnoreCase)
+                                    .Where(m => ReportedModels.Add(m))
+                                    .ToList();
+            if (unreported.Count > 0)
+                Log.Info("Stream Deck: no deck this app can mirror. Recognized models are [" +
+                         string.Join(", ", DeckManifest.KnownModels) + "]; this machine also " +
+                         "has [" + string.Join(", ", unreported) + "]. If one of those is the " +
+                         "deck you expect to mirror, report that model string to have it added.");
         }
         return result;
     }
 
     /// <summary>
-    /// Reads a Virtual Stream Deck profile. When <paramref name="preferredName"/> is set,
-    /// picks the profile with that name; otherwise the most recently edited one (the deck
-    /// the user is actually using — directory enumeration order is not stable, and "first
-    /// found" made the mirrored deck flip between runs). Returns null if none exist.
+    /// Reads the profile to mirror, or null when this machine has none that can be.
     /// </summary>
+    /// <remarks>
+    /// "Has none that can be" includes a machine whose only decks are NETWORK decks — see
+    /// <see cref="DeckManifest.ChooseMirrorable"/> for why a readable-but-unpressable deck
+    /// is refused rather than shown. The log line below is the compensation: refusing in
+    /// silence would be the original bug again.
+    /// </remarks>
     public DeckProfile? ReadProfile(string? preferredName = null)
     {
         try
@@ -74,16 +125,38 @@ public sealed class StreamDeckBridge
             if (profiles.Count == 0)
                 return null;
 
-            var chosen = profiles.FirstOrDefault(p =>
-                string.Equals(p.Name, preferredName, StringComparison.OrdinalIgnoreCase));
-            if (chosen.Dir is null)
-                chosen = profiles
-                    .OrderByDescending(p => SafeLastWrite(Path.Combine(p.Dir, "manifest.json")))
-                    .First();
+            var candidates = profiles
+                .Select(p => new DeckManifest.ProfileCandidate(
+                    p.Name, p.Model, SafeLastWrite(Path.Combine(p.Dir, "manifest.json"))))
+                .ToList();
+            var index = DeckManifest.ChooseMirrorable(candidates, preferredName);
+            if (index < 0)
+            {
+                // Every deck on the machine is one we cannot drive. Say so once, with the
+                // fix — this is the whole difference between "the widget is broken" and
+                // "there is no Virtual Stream Deck yet".
+                if (!_loggedNetworkOnly)
+                {
+                    _loggedNetworkOnly = true;
+                    Log.Info("Stream Deck: every profile this app can read is a network deck (" +
+                             string.Join(", ", profiles.Select(p => $"\"{p.Name}\" [{p.Model}]")) +
+                             "). A network deck — the kind iCUE creates — has no window on this " +
+                             "desktop, so its keys cannot be captured live or pressed, and it is " +
+                             "not mirrored rather than shown as a deck that does nothing. Create " +
+                             "a Virtual Stream Deck in the Stream Deck app to use this widget.");
+                }
+                return null;
+            }
+            _loggedNetworkOnly = false;
 
+            var chosen = profiles[index];
             using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(chosen.Dir, "manifest.json")));
-            var available = profiles.Select(p => p.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
-            return ParseProfile(chosen.Dir, manifest.RootElement, available);
+            // Only the decks that can actually be mirrored reach the settings picker: an
+            // option that cannot work is not an option.
+            var available = profiles
+                .Where(p => DeckManifest.IsLocalWindowModel(p.Model))
+                .Select(p => p.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+            return ParseProfile(chosen.Dir, manifest.RootElement, available, chosen.Model);
         }
         catch (Exception ex)
         {
@@ -96,6 +169,11 @@ public sealed class StreamDeckBridge
         return null;
     }
 
+    /// <summary>Whether a deck window exists right now — the precondition for a key press
+    /// landing anywhere. Reported to the widget so it can refuse a tap it cannot deliver
+    /// instead of posting one into a closed window.</summary>
+    public bool HasDeckWindow() => FindVsdWindow() != IntPtr.Zero;
+
     private static DateTime SafeLastWrite(string path)
     {
         try { return File.GetLastWriteTimeUtc(path); }
@@ -106,7 +184,8 @@ public sealed class StreamDeckBridge
     private static string PageKey(string idOrPath) =>
         Path.GetFileNameWithoutExtension(idOrPath.TrimEnd(Path.DirectorySeparatorChar)).Trim().ToLowerInvariant();
 
-    private static DeckProfile ParseProfile(string profileDir, JsonElement manifest, IReadOnlyList<string> available)
+    private static DeckProfile ParseProfile(string profileDir, JsonElement manifest,
+        IReadOnlyList<string> available, string model)
     {
         var name = manifest.TryGetProperty("Name", out var n) ? n.GetString() ?? "Stream Deck" : "Stream Deck";
         var buttons = new List<DeckButton>();
@@ -219,7 +298,7 @@ public sealed class StreamDeckBridge
             Log.Info(summary);
         }
 
-        return new DeckProfile(name, rows, cols, buttons, available);
+        return new DeckProfile(name, rows, cols, buttons, available, model);
     }
 
     private static bool _loggedMissingSize;
@@ -569,7 +648,11 @@ public sealed class StreamDeckBridge
         var vsd = FindVsdWindow();
         if (vsd == IntPtr.Zero)
         {
-            Log.Warn("Stream Deck: VSD overlay window not found (is the Virtual Stream Deck open?)");
+            // FindVsdWindow has already said what it did or did not find, once. This adds
+            // the caller's half: a click was attempted and went nowhere.
+            Log.Warn("Stream Deck: no deck window to click. A local Virtual Stream Deck must " +
+                     "be open; a network deck (VSD2/WiFi) has no window and cannot be clicked " +
+                     "this way at all.");
             return false;
         }
 
@@ -866,6 +949,34 @@ public sealed class StreamDeckBridge
         }
     }
 
+    /// <summary>Set once the Stream Deck app has been reported absent, so that is said
+    /// once rather than on every capture poll. Cleared the moment the process appears.</summary>
+    private static bool _loggedNoProcess;
+
+    /// <summary>Set once the class-name search has come back empty, so the window census
+    /// below is logged once per disappearance rather than on every capture poll. Cleared
+    /// the moment a window is found again.</summary>
+    /// <remarks>
+    /// SEPARATE from <see cref="_loggedNoProcess"/>, and that separation is the whole
+    /// point of two flags. One shared flag was set by the app being closed and cleared
+    /// only by a window being found — so the ordinary startup sequence (app not running,
+    /// then running with no deck open) suppressed the census permanently, in exactly the
+    /// case it exists to explain.
+    /// </remarks>
+    private static bool _loggedNoWindow;
+
+    /// <summary>
+    /// The on-screen deck's window, or <see cref="IntPtr.Zero"/> when there isn't one.
+    /// </summary>
+    /// <remarks>
+    /// Reading a profile gets the grid and the key faces; a WINDOW is what clicks and live
+    /// capture need, and the two are independent — a recognized profile whose deck is
+    /// closed (or drawn by something other than the Stream Deck app) still finds nothing
+    /// here. That mismatch is exactly the shape of bug that cost the last few rounds, so
+    /// an empty search says which windows the process actually has instead of returning
+    /// zero in silence: if a deck type renders under some other class, its class name is
+    /// then sitting in app.log ready to be matched.
+    /// </remarks>
     private static IntPtr FindVsdWindow()
     {
         var streamDeckPids = new HashSet<uint>();
@@ -875,9 +986,22 @@ public sealed class StreamDeckBridge
             proc.Dispose();
         }
         if (streamDeckPids.Count == 0)
+        {
+            if (!_loggedNoProcess)
+            {
+                _loggedNoProcess = true;
+                Log.Info("Stream Deck: no StreamDeck.exe process is running, so there is no " +
+                         "deck window to capture or click.");
+            }
+            // Not a window search at all, so it must not stand in for one: leaving the
+            // census armed is what lets the next state — app running, no deck open —
+            // report the classes it does have.
             return IntPtr.Zero;
+        }
+        _loggedNoProcess = false;
 
         var found = IntPtr.Zero;
+        var census = new List<string>();
         EnumWindows((hWnd, _) =>
         {
             GetWindowThreadProcessId(hWnd, out var pid);
@@ -893,8 +1017,29 @@ public sealed class StreamDeckBridge
                 found = hWnd;
                 return false; // stop enumerating
             }
+            if (census.Count < 12)
+            {
+                var title = new StringBuilder(256);
+                GetWindowText(hWnd, title, title.Capacity);
+                var t = title.ToString();
+                census.Add(t.Length > 0 ? $"{cn} (\"{t}\")" : cn);
+            }
             return true;
         }, IntPtr.Zero);
+
+        if (found != IntPtr.Zero)
+        {
+            _loggedNoWindow = false;
+        }
+        else if (!_loggedNoWindow)
+        {
+            _loggedNoWindow = true;
+            Log.Info("Stream Deck: the app is running but no deck overlay window matched " +
+                     "class Qt*QWindowToolSaveBits. Visible windows it does have: [" +
+                     (census.Count > 0 ? string.Join(", ", census) : "none") + "]. Open the " +
+                     "on-screen deck; if it IS open, report the class name above so this " +
+                     "deck type can be targeted.");
+        }
         return found;
     }
 
@@ -927,6 +1072,9 @@ public sealed class StreamDeckBridge
 
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     private static extern int GetClassName(IntPtr hWnd, StringBuilder buf, int nMaxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern int GetWindowText(IntPtr hWnd, StringBuilder buf, int nMaxCount);
 
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hWnd);
