@@ -171,6 +171,10 @@ public static class LayoutStore
     /// destroy-on-evict path.</summary>
     public static void MergeRetainedFromDisk(DashboardLayout edited, DashboardLayout? disk)
     {
+        // Before anything else, and before the early return below: a Delete that emptied
+        // the attic leaves disk.Retained empty, and this method would then never look at
+        // the incoming list at all.
+        DropDestroyed(edited);
         if (disk?.Retained is null || disk.Retained.Count == 0) return;
         var live = new HashSet<string>(StringComparer.Ordinal);
         foreach (var p in edited.Pages ?? [])
@@ -389,6 +393,47 @@ public static class LayoutStore
         layout.Retained!.RemoveAll(r => Key(r?.Def) == key);
         toForget = InstancesToForget([entry], layout);
         return true;
+    }
+
+    /// <summary>Identities an explicit Delete destroyed during THIS process run (#226).
+    ///
+    /// <para>The cross-window notice converges the two editors' copies, but it cannot
+    /// reach a save that is already in flight: the panel serializes its whole model —
+    /// attic included — on every drag and resize, and a payload built before the Delete
+    /// can be PROCESSED after it. The union cannot tell that copy from a legitimate one
+    /// (it only ever adds from disk, and never questions what came in), so the deleted def
+    /// would land back on disk with its sealed bytes, which still decrypt because DPAPI is
+    /// user-scoped rather than instance-scoped. Delete's whole promise is false for exactly
+    /// that window.</para>
+    ///
+    /// <para>This is the tombstone the design rejected, in the one form the objection does
+    /// not apply to. That objection was the absence of an expiry story: in memory, for this
+    /// process, keyed on instanceIds that are minted unique and never reissued, an identity
+    /// recorded here can never legitimately come back — and a restart needs nothing, because
+    /// the disk is already correct by then. Nothing is persisted and nothing accumulates
+    /// across runs.</para>
+    ///
+    /// <para>Recorded only after the layout write LANDS. A failed write leaves the entry on
+    /// disk for the user to retry, and tombstoning it would make the retry impossible.</para>
+    /// </summary>
+    private static readonly HashSet<string> DestroyedThisRun = new(StringComparer.Ordinal);
+
+    /// <inheritdoc cref="DestroyedThisRun"/>
+    public static void MarkDestroyed(string? widgetId, string? instanceId)
+    {
+        if (string.IsNullOrEmpty(widgetId) || string.IsNullOrEmpty(instanceId)) return;
+        lock (DestroyedThisRun)
+            DestroyedThisRun.Add(widgetId + "|i:" + instanceId);
+    }
+
+    private static void DropDestroyed(DashboardLayout edited)
+    {
+        if (edited.Retained is null || edited.Retained.Count == 0) return;
+        lock (DestroyedThisRun)
+        {
+            if (DestroyedThisRun.Count == 0) return;
+            edited.Retained.RemoveAll(r => Key(r?.Def) is { } k && DestroyedThisRun.Contains(k));
+        }
     }
 
     /// <summary>A fresh instance identity, in the shell's own shape — the collision

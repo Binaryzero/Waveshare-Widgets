@@ -735,6 +735,10 @@ public sealed class DashboardWindow : Form
             }
             SecureStoreHost.ForgetInstances(forget);   // throws → nothing is saved
             var saved = LayoutStore.Save(layout);
+            // Only once the write landed: a failed one leaves the entry on disk to retry,
+            // and tombstoning it would make the retry impossible.
+            if (saved)
+                LayoutStore.MarkDestroyed(widgetId, instanceId);
             PostToShell("retained-cleared", new JsonObject
             {
                 ["widgetId"] = widgetId,

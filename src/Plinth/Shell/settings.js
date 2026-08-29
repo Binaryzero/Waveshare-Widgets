@@ -289,7 +289,7 @@
         // tile goes back to the attic with its sealed bytes intact — whereas dropping the
         // entry without adopting the slot would take the tile off disk and out of the
         // attic in one save.
-        toast('Restored on the panel — reopen Settings to see it here.', true);
+        toast('Restored on the panel. Reopen Settings first — saving now would undo it.', true);
       } else {
         page.slots = page.slots || [];
         page.slots.push(msg.def);

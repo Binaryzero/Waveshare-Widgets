@@ -482,10 +482,20 @@ Both clients drop **every** entry under the identity, not the first match, exact
 host does: a leftover twin is re-shipped on the next save, seating that identity in pages
 and retained at once — the poison state again.
 
-No tombstones. The mirror is best-effort by construction (a window opened after the destroy
-re-reads disk and is correct by definition), and a persistent tombstone list with no expiry
-story, for a same-machine race whose residue would be visible rather than silent, buys less
-than it costs.
+**One tombstone after all, and why the original objection does not apply to it.** The mirror
+converges the two editors, but it cannot reach a save that is already in flight: the panel
+serializes its whole model on every drag, so a payload built before a Delete can be
+*processed* after it, and the union cannot tell that copy from a legitimate one. The deleted
+def would land back on disk with bytes that still decrypt. So `LayoutStore` keeps the
+identities destroyed in this process run and drops them from any incoming attic.
+
+The design rejected tombstones over the absence of an expiry story, and that objection is
+real for a persistent list. It does not apply here: the set is in memory, for one process,
+keyed on instanceIds that are minted unique and never reissued — so an identity in it can
+never legitimately come back, and a restart needs nothing because the disk is already
+correct. Nothing is written and nothing accumulates across runs. It is recorded only after
+the layout write LANDS, because a failed write leaves the entry on disk for the user to
+retry and a tombstone would make the retry impossible.
 
 **The ack claims something about disk, so it waits for disk.** `LayoutStore.Save` swallows
 its write failures — a save is triggered by ordinary editing on both surfaces, and throwing

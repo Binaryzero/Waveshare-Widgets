@@ -786,6 +786,10 @@ public sealed class SettingsWindow : Form
             }
             SecureStoreHost.ForgetInstances(forget);   // throws → nothing is saved
             var saved = LayoutStore.Save(layout);
+            // Only once the write landed: a failed one leaves the entry on disk to retry,
+            // and tombstoning it would make the retry impossible.
+            if (saved)
+                LayoutStore.MarkDestroyed(widgetId, instanceId);
             // The panel is ALWAYS running and re-ships its whole model — attic included —
             // on every drag, resize and style edit. Without this it would put the entry
             // straight back, sealed bytes and all, and a later Restore would hand back a

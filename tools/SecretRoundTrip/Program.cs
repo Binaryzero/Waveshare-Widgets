@@ -2110,6 +2110,29 @@ Check("M9b ...and its bucket survives, because the disk it is overwriting has th
 Check("M9c ...which is load-bearing: judged on the payload alone it WOULD have been destroyed",
     LayoutStore.InstancesToForget(mRaceEvicted, mRaceStale).Count == 1);
 
+// M10 · the in-flight save an explicit Delete cannot notify. The panel serializes its
+// whole model — attic included — on every drag, so a payload built BEFORE the Delete can
+// be processed after it; the cross-window notice reaches a client that has already sent.
+// The union cannot tell that copy from a legitimate one, and the def's sealed bytes still
+// decrypt, so without the destroyed-set Delete is undone by an unrelated drag.
+var mDeleted = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = mSealed }, "iMd"));
+LayoutStore.MergeRetainedFromDisk(mDeleted, EmptyPages());
+Check("M10 setup: an ordinary stale attic entry survives the union untouched",
+    mDeleted.Retained is { Count: 1 });
+LayoutStore.MarkDestroyed("test.widget", "iMd");
+var mStale = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = mSealed }, "iMd"));
+LayoutStore.MergeRetainedFromDisk(mStale, EmptyPages());
+Check("M10b ...but one an explicit Delete destroyed is dropped from the payload",
+    mStale.Retained is { Count: 0 },
+    string.Join(", ", (mStale.Retained ?? []).Select(r => r.Def?.InstanceId)));
+Check("M10c ...and its sealed bytes leave with it, rather than riding the save back to disk",
+    !JsonSerializer.Serialize(mStale).Contains(mSealed));
+// Scoped to the identity, not the widget: another tile of the same widget is untouched.
+var mSibling = WithRetained(EmptyPages(), Retire(new JsonObject(), "iMe"));
+LayoutStore.MergeRetainedFromDisk(mSibling, EmptyPages());
+Check("M10d a sibling instance of the same widget is not swept up",
+    mSibling.Retained is { Count: 1 });
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 
