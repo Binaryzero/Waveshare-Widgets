@@ -307,13 +307,7 @@ public sealed class DashboardWindow : Form
                         {
                             try
                             {
-                                SecureStoreHost.Mutate(doc =>
-                                {
-                                    var changed = false;
-                                    foreach (var (w, inst) in forget)
-                                        changed |= WidgetSecrets.ForgetInstance(doc, w, inst);
-                                    return changed;
-                                });
+                                SecureStoreHost.ForgetInstances(forget);
                                 Log.Info($"Purged derived credentials for {forget.Count} evicted retained tile(s)");
                             }
                             catch (Exception ex)
@@ -379,6 +373,14 @@ public sealed class DashboardWindow : Form
                     {
                         Log.Warn($"On-panel layout save failed: {ex.Message}");
                     }
+                    break;
+
+                case "restore-retained":
+                    HandleRestoreRetained(message);
+                    break;
+
+                case "clear-retained":
+                    HandleClearRetained(message);
                     break;
 
                 case "log":
@@ -627,6 +629,173 @@ public sealed class DashboardWindow : Form
             catch (ObjectDisposedException) { }
         });
     }
+
+    /// <summary>Raised when the panel destroys an attic entry (#226), so an open settings
+    /// window can drop it from its own copy before its next save re-ships it. The mirror of
+    /// <see cref="PostRetainedGone"/>, which carries the settings→panel direction.</summary>
+    public event Action<string?, string?>? RetainedGone;
+
+    /// <summary>What the panel just restored, for an open settings window to adopt.</summary>
+    /// <param name="WidgetId">Half of the attic identity the editor keys its own copy by.</param>
+    /// <param name="RetiredInstanceId">The other half — the id it was RETIRED under, which
+    /// <paramref name="Def"/> may no longer carry (a live collision re-mints it).</param>
+    /// <param name="Def">The slot as the host wrote it. The subscriber masks it; nothing
+    /// here may reach the editor unmasked.</param>
+    /// <param name="Page">Index into the layout ON DISK.</param>
+    /// <param name="PageName">…and the name at that index, because the index alone is not
+    /// an identity: the editor's page list can diverge from disk without renaming anything,
+    /// and an index that still resolves there resolves to the WRONG page.</param>
+    internal readonly record struct RestoredTile(
+        string? WidgetId, string? RetiredInstanceId, LayoutSlot Def, int Page, string? PageName);
+
+    /// <summary>Raised when the panel RESTORES an attic entry, for the same reason as
+    /// <see cref="RetainedGone"/> and with the same urgency. An open settings window holds
+    /// the pre-restore pages and still lists the entry as retired; its next ordinary save
+    /// writes that model back, and the union cannot rescue the live slot — it only ever
+    /// adds disk attic entries — so the tile drops off the page and reappears in the
+    /// removed list.</summary>
+    internal event Action<RestoredTile>? RetainedRestored;
+
+    /// <summary>Where a just-performed restore put the tile, for the ONE init payload the
+    /// reload below produces. The shell's page is pure DOM scroll state and its edit mode
+    /// is document-local, so a plain reload would drop the user on page 0 with the chrome
+    /// idle — the restored tile off-screen, the operation reading as "nothing happened".
+    /// One-shot and host-held: no persistent client state, and a reload for any OTHER
+    /// reason (rescan, hot reload) still starts where it always did.</summary>
+    private int? _restoredToPage;
+
+    /// <summary>Panel-side restore (#226). Host-performed and answered with a full
+    /// re-init, because <c>Reveal</c> never walks the attic: this shell is holding the
+    /// retained def's dpapi:v1 CIPHERTEXT, so a client-side move would hand the widget
+    /// that text as its credential (the #104/#105 exposure class). The reload is the ack.
+    /// </summary>
+    private void HandleRestoreRetained(JsonNode? message)
+    {
+        var widgetId = message?["widgetId"]?.GetValue<string>();
+        var instanceId = message?["instanceId"]?.GetValue<string>();
+        var page = message?["page"]?.GetValue<int>() ?? -1;
+        try
+        {
+            var layout = LayoutStore.Load();
+            // The page name travels with the index from both surfaces. The panel's index
+            // is normally fresh (its own edits save immediately), but "normally" is not a
+            // guard, and restoring onto a page the user was not looking at is the failure
+            // this refuses rather than guesses at.
+            var outcome = LayoutStore.RestoreRetained(
+                layout, widgetId, instanceId, page, out var restored,
+                message?["pageName"]?.GetValue<string>());
+            if (outcome is not LayoutStore.RestoreOutcome.Ok)
+            {
+                PostRetainedError(
+                    outcome is LayoutStore.RestoreOutcome.NotFound ? "not-found" : "bad-page",
+                    widgetId, instanceId);
+                return;
+            }
+            if (!LayoutStore.Save(layout))
+            {
+                // Nothing happened on disk, so reloading would repaint the unchanged
+                // layout and read as a restore that silently did nothing.
+                PostRetainedError("failed", widgetId, instanceId);
+                return;
+            }
+            _restoredToPage = page;
+            ReloadDashboard();
+            if (restored is not null)
+                RetainedRestored?.Invoke(new RestoredTile(
+                    widgetId, instanceId, restored, page, layout.Pages[page].Name));
+            Log.Info("Restored a retained tile from the on-panel palette");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not restore a retained tile: {ex.Message}");
+            PostRetainedError("failed", widgetId, instanceId);
+        }
+    }
+
+    /// <summary>Panel-side Clear (#226): the attic bytes and the instance's derived
+    /// credential bucket, for real.
+    ///
+    /// <para>Fails CLOSED, unlike the eviction path in the save handler. Eviction tolerates
+    /// catch-and-continue because blocking an ordinary save on secure-store trouble would
+    /// be the worse failure; Clear is a dedicated destroy with its own ack, and saving a
+    /// layout that no longer names the instance while its bucket survives would strand a
+    /// WORKING credential nothing references — collectable only by uninstalling the widget.
+    /// Aborting costs nothing: only the in-memory copy was mutated.</para></summary>
+    private void HandleClearRetained(JsonNode? message)
+    {
+        var widgetId = message?["widgetId"]?.GetValue<string>();
+        var instanceId = message?["instanceId"]?.GetValue<string>();
+        try
+        {
+            var layout = LayoutStore.Load();
+            if (!LayoutStore.ClearRetained(layout, widgetId, instanceId, out var forget))
+            {
+                PostRetainedError("not-found", widgetId, instanceId);
+                return;
+            }
+            SecureStoreHost.ForgetInstances(forget);   // throws → nothing is saved
+            var saved = LayoutStore.Save(layout);
+            // Only once the write landed AND the destroy actually happened. A failed write
+            // leaves the entry on disk to retry, and tombstoning it would make the retry
+            // impossible. An empty forget set means the liveness guard declined — a live
+            // tile or another attic twin still owns this identity — so nothing was
+            // destroyed, and recording it would strip that survivor's own retained entry
+            // if it is ever retired, losing the tile outright.
+            if (saved && forget.Count > 0)
+                LayoutStore.MarkDestroyed(widgetId, instanceId);
+            PostToShell("retained-cleared", new JsonObject
+            {
+                ["widgetId"] = widgetId,
+                ["instanceId"] = instanceId,
+                // Whether anything was actually forgotten. An empty forget set means a live
+                // tile still owns this identity, so only the retired ROW went — telling the
+                // user their credentials were destroyed would be false in the direction
+                // that matters, leaving them believing a live credential is gone.
+                ["credentials"] = forget.Count > 0,
+                // The bucket is gone either way (destroy-before-Save, so a failed write
+                // leaves a retained tile that re-authenticates — never a destroyed tile
+                // with a live credential). But the entry is still on disk, and telling the
+                // panel "done" would have it drop a row that comes back at the next init.
+                ["saved"] = saved,
+            });
+            // Only on a landed write, matching the settings-side handler: the entry is
+            // still on disk otherwise, and an open editor told it is gone would drop the
+            // row — hiding the retry, and re-merging the entry on its next save.
+            if (saved)
+                RetainedGone?.Invoke(widgetId, instanceId);
+            Log.Info("Cleared a retained tile from the on-panel palette");
+        }
+        catch (Exception ex)
+        {
+            // Never the ids: they scope credentials.
+            Log.Warn($"Could not clear a retained tile: {ex.GetType().Name}");
+            PostRetainedError("failed", widgetId, instanceId);
+        }
+    }
+
+    private static JsonArray RetainedGoneNode(string? widgetId, string? instanceId) =>
+        new(new JsonObject { ["widgetId"] = widgetId, ["instanceId"] = instanceId });
+
+    /// <summary>Tells the RUNNING panel that an attic identity is gone from disk, so its
+    /// in-memory copy stops re-shipping it on every save (#226).
+    ///
+    /// <para>This is the settings→panel half of Clear's convergence, and it matters more
+    /// than the reverse: the panel re-ships its whole model — attic included — on every
+    /// drag, resize and style edit, so without this a settings-side Clear is undone almost
+    /// at once, and the resurrected entry's DPAPI ciphertext still decrypts (that cipher is
+    /// user-scoped, not instance-scoped) — a later Restore would hand back a WORKING
+    /// credential the user explicitly destroyed. Cheaper than a full panel reload, which
+    /// Clear does not otherwise need: it changes no page.</para></summary>
+    internal void PostRetainedGone(string? widgetId, string? instanceId) =>
+        PostToShellThreadSafe("evicted-ids", RetainedGoneNode(widgetId, instanceId));
+
+    private void PostRetainedError(string reason, string? widgetId, string? instanceId) =>
+        PostToShell("retained-error", new JsonObject
+        {
+            ["reason"] = reason,
+            ["widgetId"] = widgetId,
+            ["instanceId"] = instanceId,
+        });
 
     /// <summary>
     /// Routes a settings-window replica's widget data request (fetch / ping /
@@ -1231,7 +1400,7 @@ public sealed class DashboardWindow : Form
         foreach (var (name, value) in PaletteEngine.Derive(layout.Theme))
             tokens[name] = value;
 
-        return new JsonObject
+        var payload = new JsonObject
         {
             ["layout"] = RevealedLayoutNode(layout, blanked),
             ["widgets"] = JsonSerializer.SerializeToNode(widgets, BridgeJson),
@@ -1250,6 +1419,16 @@ public sealed class DashboardWindow : Form
             // one can equal what the new one will produce.
             ["genBase"] = _documentSeq,
         };
+        // The restore hint (#226), consumed here so it applies to exactly one document:
+        // the reload a restore triggers lands the user back on the page they were looking
+        // at, still editing, with the tile they just brought back in front of them.
+        if (_restoredToPage is { } restoredPage)
+        {
+            _restoredToPage = null;
+            payload["page"] = restoredPage;
+            payload["editing"] = true;
+        }
+        return payload;
     }
 
     private long _lastCaptureTicks;

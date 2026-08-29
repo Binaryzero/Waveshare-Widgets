@@ -266,6 +266,101 @@
     } else if (msg.type === 'save-failed') {
       if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
       toast('Save failed: ' + msg.message, true);
+    } else if (msg.type === 'retained-restored') {
+      // The host performed the move and is handing back the def already MASKED — this
+      // editor must never hold the sealed one (its secret control would load ciphertext
+      // into a revealable password field, and a demoted envelope would ride the replica
+      // into a real widget iframe, #120). Appended, matching where the host put it.
+      //
+      // Adopting the def is load-bearing beyond the UI: without it this editor's next
+      // save would drop the slot from disk while re-shipping the attic entry, undoing
+      // the restore.
+      // The index addresses the layout ON DISK. This editor's copy can have diverged
+      // without renaming anything — a local reorder or page delete — so an index that
+      // still resolves here can resolve to a DIFFERENT page, and adopting there would
+      // move the tile somewhere nobody chose. The name has to agree, and agree uniquely:
+      // a name two pages share proves nothing, exactly as the host's own guard has it.
+      const pages = ((state.layout || {}).pages) || [];
+      const page = pages[msg.page];
+      const named = pages.filter((p) => p && p.name === msg.pageName).length;
+      const sure = msg.pageName == null || (page && page.name === msg.pageName && named === 1);
+      if (!page || !msg.def || !sure) {
+        // Leave BOTH copies alone: the next save then simply reverts the restore — the
+        // tile goes back to the attic with its sealed bytes intact — whereas dropping the
+        // entry without adopting the slot would take the tile off disk and out of the
+        // attic in one save.
+        toast('Restored on the panel. Reopen Settings first — saving now would undo it.', true);
+      } else {
+        // Adopt means adopt, so drop any copy of this identity first. Panel retirement is
+        // NOT mirrored to this editor, so one opened before the retire still holds the
+        // slot live — and appending on top of that seats one instanceId twice. The shell's
+        // duplicate healing then re-mints one of them into a tile the user never asked
+        // for, with its widget-local storage detached from the widget that was using it.
+        // Only the identity actually being seated. When the host RE-MINTED — the retired
+        // id collided with a live tile — that live tile is the legitimate holder of the
+        // old id and stays on disk, keeping the protected-store bucket that deliberately
+        // remained with it; dropping it here would have the next save delete it. When
+        // there was no re-mint the two ids are the same one anyway. Spliced in place:
+        // `page.slots` is the same array the push below appends to.
+        const seated = msg.def.instanceId || msg.instanceId;
+        for (const p of pages) {
+          if (!p || !Array.isArray(p.slots)) continue;
+          for (let i = p.slots.length - 1; i >= 0; i--) {
+            const s = p.slots[i];
+            if (s && s.widgetId === msg.widgetId && s.instanceId === seated) p.slots.splice(i, 1);
+          }
+        }
+        page.slots = page.slots || [];
+        page.slots.push(msg.def);
+        dropRetained(msg.widgetId, msg.instanceId);
+        // A host FACT, not an edit: it is already on disk. Advancing the baseline first
+        // keeps refreshReplica from marking the editor dirty for it — which would both
+        // invite a save that only rewrites what is there and bump editSeq under an
+        // in-flight save's ack, which then refuses to clear the marker. Same posture as
+        // the minted-ids and evicted-ids adoptions above.
+        lastWorkingLayout = replicaLayoutJson();
+        renderPageList();   // the strip's widget count changed
+        renderEditor();
+        toast('Restored to "' + (page.name || 'this page') + '"');
+      }
+    } else if (msg.type === 'retained-cleared') {
+      // On a failed write the host says so: the credentials are gone (destroy-before-Save)
+      // but the entry is still on disk, so dropping the row would hide something that
+      // comes back the next time this window opens.
+      if (msg.saved !== false) {
+        dropRetained(msg.widgetId, msg.instanceId);
+        // `credentials` is false when a live tile still owns this identity: the liveness
+        // guard declined the destroy, so only the retired ROW went. Saying otherwise
+        // leaves the user believing a credential that is still live has been destroyed.
+        toast(msg.credentials === false
+          ? 'Removed from the list — its saved credentials stay with the copy still on a page'
+          : 'Deleted for good, with its saved credentials');
+      } else {
+        // NOT "its credentials are gone": destroy-before-Save took the derived bucket,
+        // but the def's own sealed secrets are still in layout.json, and a Restore would
+        // reconnect them. Saying they were destroyed is both false and the version that
+        // makes the user stop retrying — which is the one thing they must do.
+        toast('Not deleted — the layout could not be written. Try again.', true);
+      }
+      refreshRetiredUi();   // the attic never reaches the replica — no re-init needed
+    } else if (msg.type === 'retained-gone') {
+      // The PANEL destroyed this one. Drop it here too, or this window's next Save
+      // re-ships it from memory and the tile returns with its still-decryptable bytes.
+      dropRetained(msg.widgetId, msg.instanceId);
+      refreshRetiredUi();
+    } else if (msg.type === 'retained-error') {
+      // The row is NOT dropped on 'not-found'. That result only says the attic no longer
+      // holds the identity, which is equally true when the other window has already
+      // RESTORED it — and dropping the entry then, while this copy's pages still lack the
+      // slot, has the next save take the tile off disk without putting it back in the
+      // attic. A stale row that refuses twice is a nuisance; a lost tile is not. It
+      // clears itself the next time this window opens.
+      refreshRetiredUi();
+      toast(msg.reason === 'not-found'
+        ? 'That widget is no longer in the removed list.'
+        : msg.reason === 'bad-page'
+          ? 'That page has changed — save your layout and try again.'
+          : 'Could not do that. Try again.', true);
     } else if (msg.type === 'widget-installed') {
       // `pending` means it IS installed but has no origin yet (the host map could not be
       // read; the library is already retrying). Saying only "Installed" would have the
@@ -733,12 +828,17 @@
     dirty = true;
     el('save').classList.add('dirty');
     el('save').title = 'You have unsaved changes';
+    refreshRetiredUi();   // Restore/Clear act on DISK — they go dead while this copy differs
   }
 
   function clearDirty() {
     dirty = false;
     el('save').classList.remove('dirty');
     el('save').title = '';
+    // ...and come back the moment the two copies agree again. Without this the hint
+    // ("Save your changes to restore or clear these") tells the user to do the one thing
+    // that visibly changes nothing.
+    refreshRetiredUi();
   }
 
   function sampleNotifications() {
@@ -1314,6 +1414,10 @@
     wrap.hidden = !open;
     el('slotDetail').style.display = '';
     wrap.textContent = '';
+    // Before the early return: with no page selected the retired list has no page to
+    // restore ONTO, and leaving the previous page's rows on screen would offer buttons
+    // that cannot be answered.
+    renderRetiredGallery(page);
     if (!open) return;
     // When a replica "+" named a hole, the shelf answers for THAT hole: a widget the
     // region cannot take is offered as unavailable rather than enabled-and-inert.
@@ -1359,6 +1463,179 @@
         : 'This page is full — remove a widget or add a page.';
       wrap.prepend(note);
     }
+  }
+
+  // ---- The retired attic (#226) -----------------------------------------------------
+  // Removed tiles the host keeps, with their settings. This editor only ever sees those
+  // settings MASKED, and the attic copy it holds is not even that — it is the sealed def
+  // as it sits on disk. So Restore and Clear are host operations: this list asks, and
+  // adopts whatever comes back.
+
+  // Does this def, at its own fixed size, fit the page? The shell's mirror of this is
+  // pageFits, and it answers about IDENTITY, not counts: "nobody who places today loses
+  // their spot". Counts are not enough, because the restored def carries a column anchor
+  // and anchors are seated before any unanchored slot — on an over-full page it can take
+  // a visible tile's column while an already-hidden one flows into the gap, leaving the
+  // dropped count unchanged and a tile the user was looking at gone.
+  function fitsFixed(page, size, col) {
+    const slots = (page.slots = page.slots || []);
+    const base = occupancyOf(slots);
+    // Probe with every placed occupant PINNED where it currently renders — the same
+    // predicate shell.js's pageFits applies, so the two surfaces enable the same button
+    // for the same tile.
+    const probe = slots.map((s, i) => base.placed[i]
+      ? { size: s.size, col: base.at[i] + 1 }
+      : { size: s.size, col: s.col });
+    probe.push({ size, col });
+    const after = occupancyOf(probe).placed;
+    return after[after.length - 1] && base.placed.every((was, i) => !was || after[i]);
+  }
+
+  function retainedEntries() {
+    const list = ((state.layout || {}).retained) || [];
+    // No identity, no address — a row whose two buttons could only ever fail.
+    return Array.isArray(list)
+      ? list.filter((r) => r && r.def && r.def.widgetId && r.def.instanceId)
+      : [];
+  }
+
+  // retiredAt is deliberately unvalidated on load (a malformed one must not cost the whole
+  // layout file) and the model's own note admits a backward clock set, so an unparseable
+  // or negative age says nothing rather than "NaNd ago".
+  function retiredAgo(iso) {
+    const t = Date.parse(iso || '');
+    if (!Number.isFinite(t)) return '';
+    const mins = Math.floor((Date.now() - t) / 60000);
+    if (mins < 0) return '';
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    if (mins < 1440) return Math.floor(mins / 60) + 'h ago';
+    return Math.floor(mins / 1440) + 'd ago';
+  }
+
+  function renderRetiredGallery(page) {
+    const wrap = el('retiredGallery');
+    wrap.textContent = '';
+    const entries = retainedEntries()
+      .slice()
+      .sort((a, b) => String(b.retiredAt || '').localeCompare(String(a.retiredAt || '')));
+    wrap.hidden = !page || entries.length === 0;
+    if (wrap.hidden) return;
+
+    const head = document.createElement('div');
+    head.className = 'r-head';
+    head.textContent = 'Removed widgets';
+    wrap.appendChild(head);
+
+    // Both actions run against the layout ON DISK, while this editor is an explicit-save
+    // one whose page list can be reordered, added to and deleted from locally. Rather
+    // than reconcile two divergent copies mid-operation, wait for the save that makes
+    // them one — which also excludes an entry retired here and not yet written.
+    if (dirty) {
+      const hint = document.createElement('p');
+      hint.className = 'r-hint';
+      hint.textContent = 'Save your changes to restore or clear these.';
+      wrap.appendChild(hint);
+    }
+
+    for (const entry of entries) {
+      const row = document.createElement('div');
+      row.className = 'r-row';
+      const info = document.createElement('div');
+      info.className = 'r-info';
+      const name = document.createElement('div');
+      name.className = 'r-name';
+      const widget = widgetsById.get(entry.def.widgetId);
+      // Falls back to the raw id, as every other name site does: a tile of a widget that
+      // has since been uninstalled is still restorable, and says so where its name goes.
+      name.textContent = widget ? (widget.displayName || widget.name) : entry.def.widgetId;
+      // The column anchor is origin-page-local, matching what the host does on restore:
+      // off its origin page a stale `col` pins the tile at an arbitrary column. The two
+      // must agree, or this button answers about a placement the host will not perform.
+      const col = entry.originPage === page.name ? entry.def.col : null;
+      const fits = fitsFixed(page, entry.def.size, col);
+      const meta = document.createElement('div');
+      meta.className = 'r-meta';
+      // The size is here so eight entries of one widget are told apart by something other
+      // than their timestamps, and "no room" is text rather than a tooltip so the reason
+      // for a dead button is visible without hunting for it.
+      meta.textContent = [
+        widget ? '' : 'not installed',
+        CHIP_WIDTH[parseSize(entry.def.size).width] || '',
+        entry.originPage ? 'from ' + entry.originPage : '',
+        retiredAgo(entry.retiredAt),
+        fits ? '' : 'no room on ' + (page.name || 'this page'),
+      ].filter(Boolean).join(' · ');
+      info.append(name, meta);
+
+      const restore = document.createElement('button');
+      restore.type = 'button';
+      restore.className = 'ghost';
+      restore.textContent = 'Restore';
+      restore.disabled = dirty || !fits;
+      restore.title = dirty ? 'Save your changes first'
+        : fits ? 'Put it back on this page' : 'No room on this page';
+      restore.onclick = () => post({
+        type: 'restore-retained',
+        widgetId: entry.def.widgetId,
+        instanceId: entry.def.instanceId,
+        // The page these buttons were sized against, by identity rather than by reading
+        // selectedPage at click time — the two can only differ if this render is stale.
+        page: (((state.layout || {}).pages) || []).indexOf(page),
+        // And an index alone is not an identity either: a local reorder makes an in-range
+        // index name a different page on disk, so the host is told what to expect there.
+        pageName: page.name,
+      });
+
+      // Two-tap arm, the Delete-page pattern — this one really destroys, credentials
+      // included, and the chip ✕ next door is a single tap because retiring is not that.
+      // "Delete" rather than "Clear" for the same reason: the label has to carry the
+      // difference from the ✕ that only moved the tile here.
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'ghost danger';
+      clear.textContent = 'Delete';
+      clear.disabled = dirty;
+      clear.title = dirty ? 'Save your changes first'
+        : 'Delete it and its saved credentials for good';
+      clear.onclick = () => {
+        if (!clear.dataset.armed) {
+          clear.dataset.armed = '1';
+          clear.textContent = 'Click again';
+          setTimeout(() => {
+            if (clear.dataset.armed) { delete clear.dataset.armed; clear.textContent = 'Delete'; }
+          }, 3500);
+          return;
+        }
+        delete clear.dataset.armed;
+        clear.textContent = 'Delete';
+        post({
+          type: 'clear-retained',
+          widgetId: entry.def.widgetId,
+          instanceId: entry.def.instanceId,
+        });
+      };
+
+      row.append(info, restore, clear);
+      wrap.appendChild(row);
+    }
+  }
+
+  // EVERY entry under the identity, matching the host's own RemoveAll. Dropping only the
+  // first would leave a twin behind, and this copy is re-shipped on the next save — which
+  // seats that identity in pages AND retained, the state whose stored-index poison blanks
+  // the credential on the save after that.
+  function dropRetained(widgetId, instanceId) {
+    const list = (state.layout || {}).retained;
+    if (!Array.isArray(list) || !widgetId || !instanceId) return;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const d = list[i] && list[i].def;
+      if (d && d.widgetId === widgetId && d.instanceId === instanceId) list.splice(i, 1);
+    }
+  }
+
+  function refreshRetiredUi() {
+    renderRetiredGallery(((state.layout || {}).pages || [])[selectedPage] || null);
   }
 
   function addWidgetToPage(page, widget) {
@@ -1418,11 +1695,12 @@
     const take = (rows, col, w) => {
       for (const r of rows) for (let i = 0; i < w; i++) occupied[r][col + i] = true;
     };
+    const at = new Array(slots.length).fill(-1);
     slots.forEach((s, i) => {
       const anchor = (s.col >= 1 && s.col <= 4) ? s.col - 1 : null;
       if (anchor === null) return;
       const { w, rows } = geo(s);
-      if (free(rows, anchor, w)) { take(rows, anchor, w); placed[i] = true; }
+      if (free(rows, anchor, w)) { take(rows, anchor, w); placed[i] = true; at[i] = anchor; }
     });
     let dropped = 0;
     slots.forEach((s, i) => {
@@ -1430,9 +1708,12 @@
       const { w, rows } = geo(s);
       let col = -1;
       for (let c = 0; c + w <= 4; c++) if (free(rows, c, w)) { col = c; break; }
-      if (col >= 0) take(rows, col, w); else dropped++;
+      if (col >= 0) { take(rows, col, w); placed[i] = true; at[i] = col; } else dropped++;
     });
-    return { occupied, dropped };
+    // `placed` and `at` ride along for callers that need IDENTITY rather than a count: on
+    // an already-over-full page an arrival can displace a visible tile while a hidden one
+    // takes its place, leaving the count unchanged. See fitsFixed.
+    return { occupied, dropped, placed, at };
   }
 
   function countUnplaced(slots) {

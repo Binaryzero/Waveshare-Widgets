@@ -34,6 +34,28 @@ internal static class SecureStoreHost
         }
     }
 
+    /// <summary>Forgets whole instance buckets — one gated write for the batch, so an
+    /// eviction of several tiles cannot interleave with anything else on the file.
+    ///
+    /// <para>Lets the exception OUT. Its two kinds of caller want opposite things and both
+    /// are right: a save handler's eviction catches it and carries on, because blocking an
+    /// ordinary save on secure-store trouble is the worse failure; a Clear lets it abort
+    /// the whole operation before the layout is saved, because saving a layout that no
+    /// longer names the instance while its bucket survives strands a working credential
+    /// nothing references.</para></summary>
+    public static void ForgetInstances(IReadOnlyList<(string WidgetId, string InstanceId)> instances)
+    {
+        if (instances.Count == 0)
+            return;
+        Mutate(doc =>
+        {
+            var changed = false;
+            foreach (var (widgetId, instanceId) in instances)
+                changed |= WidgetSecrets.ForgetInstance(doc, widgetId, instanceId);
+            return changed;
+        });
+    }
+
     /// <summary>A read under the same gate, so it can never observe a torn document
     /// mid-mutation.</summary>
     public static T Read<T>(Func<JsonObject, T> read)

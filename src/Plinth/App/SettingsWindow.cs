@@ -35,9 +35,80 @@ public sealed class SettingsWindow : Form
     /// <summary>Raised after a layout is saved so the dashboard can reload.</summary>
     public event Action? LayoutSaved;
 
+    private DashboardWindow? _dashboard;
+
     /// <summary>The live dashboard window; routes the preview replica's widget data
-    /// requests (fetch/ping/media-list/audio-get) through the real handlers.</summary>
-    public DashboardWindow? Dashboard { get; set; }
+    /// requests (fetch/ping/media-list/audio-get) through the real handlers.
+    ///
+    /// <para>Assigning it also subscribes to the panel's two attic notices (#226) — the
+    /// panel→settings half of their convergence. This editor keeps its own copy of the
+    /// attic and its own copy of the pages, and re-ships both on every save, so an attic
+    /// change made ON THE PANEL is undone by this window's next ordinary Save unless it
+    /// hears about it: a destroyed tile comes back with sealed bytes that still decrypt
+    /// (DPAPI is user-scoped, not instance-scoped), and a restored tile drops off its page
+    /// and back into the removed list. Wired through the property rather than at the tray,
+    /// because the panel window is recreated on a display change and the tray re-assigns
+    /// this in exactly that case.</para></summary>
+    public DashboardWindow? Dashboard
+    {
+        get => _dashboard;
+        set
+        {
+            if (ReferenceEquals(_dashboard, value))
+                return;
+            if (_dashboard is not null)
+            {
+                _dashboard.RetainedGone -= OnPanelRetainedGone;
+                _dashboard.RetainedRestored -= OnPanelRetainedRestored;
+            }
+            _dashboard = value;
+            if (_dashboard is not null)
+            {
+                _dashboard.RetainedGone += OnPanelRetainedGone;
+                _dashboard.RetainedRestored += OnPanelRetainedRestored;
+            }
+        }
+    }
+
+    private void OnPanelRetainedGone(string? widgetId, string? instanceId)
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+        try
+        {
+            BeginInvoke(() => Post(new JsonObject
+            {
+                ["type"] = "retained-gone",
+                ["widgetId"] = widgetId,
+                ["instanceId"] = instanceId,
+            }));
+        }
+        catch (ObjectDisposedException) { /* window closed between the check and the invoke */ }
+    }
+
+    /// <summary>The panel restored a tile; hand this editor the same masked def its own
+    /// Restore would have produced, so its next save carries the slot instead of writing
+    /// the pre-restore model back over it.</summary>
+    private void OnPanelRetainedRestored(DashboardWindow.RestoredTile tile)
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+        try
+        {
+            BeginInvoke(() =>
+            {
+                // The editor's own handler checks the page name before adopting, so a
+                // diverged page list costs the mirror, not the restore.
+                try
+                {
+                    PostRestoredAck(tile.Page, tile.PageName,
+                        tile.WidgetId, tile.RetiredInstanceId, tile.Def);
+                }
+                catch (Exception ex) { Log.Warn($"Could not mirror a panel restore: {ex.Message}"); }
+            });
+        }
+        catch (ObjectDisposedException) { /* window closed between the check and the invoke */ }
+    }
 
     public SettingsWindow(SensorHub hub, WidgetLibrary library)
     {
@@ -96,6 +167,7 @@ public sealed class SettingsWindow : Form
                 _hub.SensorsUpdated -= OnSensorsUpdated;
                 _hub.MediaUpdated -= OnMediaUpdated;
                 _library.Changed -= OnLibraryChanged;
+                Dashboard = null;   // drops the panel-relay subscriptions with it
             };
             core.Navigate($"https://{ShellHost}/settings.html");
         }
@@ -137,6 +209,14 @@ public sealed class SettingsWindow : Form
 
                 case "save-layout":
                     HandleSave(message["layout"], message["seq"]?.GetValue<long>());
+                    break;
+
+                case "restore-retained":
+                    HandleRestoreRetained(message);
+                    break;
+
+                case "clear-retained":
+                    HandleClearRetained(message);
                     break;
 
                 case "install-widget":
@@ -598,6 +678,162 @@ public sealed class SettingsWindow : Form
         });
     }
 
+    /// <summary>Desktop-side restore (#226): the host performs the move and hands the
+    /// editor back a MASKED def.
+    ///
+    /// <para>The editor cannot do this itself, and not only for tidiness. Its secret
+    /// control loads whatever string it is given into a revealable password input, so a
+    /// ciphertext-bearing def would show as a credential the user can un-hide and
+    /// accidentally type over — and a DEMOTED envelope (#66) in the def would ride the
+    /// replica into a real widget iframe, reopening #120, because the client scrub only
+    /// knows names the CURRENT manifest calls secret. The mask that answers both hinges on
+    /// <c>CanUnprotect</c>, a DPAPI predicate with no JavaScript mirror.</para>
+    ///
+    /// <para>The ack is nonetheless load-bearing beyond the UI: without the editor
+    /// adopting the restored slot into its own copy, its next save would drop the slot
+    /// from disk while re-shipping the attic entry — un-restoring it.</para></summary>
+    private void HandleRestoreRetained(JsonNode? message)
+    {
+        var widgetId = message?["widgetId"]?.GetValue<string>();
+        var instanceId = message?["instanceId"]?.GetValue<string>();
+        var page = message?["page"]?.GetValue<int>() ?? -1;
+        try
+        {
+            var layout = LayoutStore.Load();
+            var outcome = LayoutStore.RestoreRetained(
+                layout, widgetId, instanceId, page, out var restored,
+                message?["pageName"]?.GetValue<string>());
+            if (outcome is not LayoutStore.RestoreOutcome.Ok || restored is null)
+            {
+                PostRetainedError(
+                    outcome is LayoutStore.RestoreOutcome.NotFound ? "not-found" : "bad-page",
+                    widgetId, instanceId);
+                return;
+            }
+            if (!LayoutStore.Save(layout))
+            {
+                // Nothing landed on disk. Acking anyway would have this editor adopt a
+                // slot that is still in the attic, and its next save would then write a
+                // layout the user never asked for.
+                PostRetainedError("failed", widgetId, instanceId);
+                return;
+            }
+            LayoutSaved?.Invoke();
+
+            PostRestoredAck(page, layout.Pages[page].Name, widgetId, instanceId, restored);
+            Log.Info("Restored a retained tile from the settings gallery");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not restore a retained tile: {ex.Message}");
+            PostRetainedError("failed", widgetId, instanceId);
+        }
+    }
+
+    /// <summary>Hands the editor a restored slot it can hold: the def MASKED, addressed by
+    /// the identity it was retired under (the def itself may carry a re-minted one).
+    ///
+    /// <para>The wrapper is literally pages-shaped because <c>Mask</c> returns having done
+    /// NOTHING unless it finds <c>layoutNode["pages"]</c>, and a silent no-op here would
+    /// post the ciphertext into the editor's model — the exact state the host-performed
+    /// restore exists to prevent. <c>MaskedPlan</c> rather than the manifests alone,
+    /// because a retained def of a REFUSED widget carries plaintext whose only
+    /// classification lives in the redaction snapshot.</para>
+    ///
+    /// <para>One slot, so it can never look ambiguous to the mask — sound only because
+    /// <c>RestoreRetained</c> has already re-minted any id that collided with a live
+    /// tile.</para>
+    ///
+    /// <para>The page NAME rides along with the index for the same reason the request
+    /// carries it: the index addresses the layout on DISK, and this editor's page list can
+    /// diverge from that without renaming anything, so an index that still resolves there
+    /// can resolve to a different page. The client checks the name before adopting.</para>
+    /// </summary>
+    private void PostRestoredAck(
+        int page, string? pageName, string? widgetId, string? instanceId, LayoutSlot restored)
+    {
+        var wrapper = JsonSerializer.SerializeToNode(new DashboardLayout
+        {
+            Pages = [new LayoutPage { Name = "ack", Slots = [restored] }],
+        });
+        MergeManifestSnapshot();
+        SecretPolicy.Mask(wrapper, MaskedPlan());
+        Post(new JsonObject
+        {
+            ["type"] = "retained-restored",
+            ["page"] = page,
+            ["pageName"] = pageName,
+            ["widgetId"] = widgetId,
+            ["instanceId"] = instanceId,
+            ["def"] = wrapper?["pages"]?[0]?["slots"]?[0]?.DeepClone(),
+        });
+    }
+
+    /// <summary>Desktop-side Clear (#226). Fails CLOSED on a secure-store failure — see
+    /// the matching handler on <see cref="DashboardWindow"/> for why this destroy does not
+    /// inherit eviction's catch-and-continue.</summary>
+    private void HandleClearRetained(JsonNode? message)
+    {
+        var widgetId = message?["widgetId"]?.GetValue<string>();
+        var instanceId = message?["instanceId"]?.GetValue<string>();
+        try
+        {
+            var layout = LayoutStore.Load();
+            if (!LayoutStore.ClearRetained(layout, widgetId, instanceId, out var forget))
+            {
+                PostRetainedError("not-found", widgetId, instanceId);
+                return;
+            }
+            SecureStoreHost.ForgetInstances(forget);   // throws → nothing is saved
+            var saved = LayoutStore.Save(layout);
+            // Only once the write landed AND the destroy actually happened. A failed write
+            // leaves the entry on disk to retry, and tombstoning it would make the retry
+            // impossible. An empty forget set means the liveness guard declined — a live
+            // tile or another attic twin still owns this identity — so nothing was
+            // destroyed, and recording it would strip that survivor's own retained entry
+            // if it is ever retired, losing the tile outright.
+            if (saved && forget.Count > 0)
+                LayoutStore.MarkDestroyed(widgetId, instanceId);
+            // The panel is ALWAYS running and re-ships its whole model — attic included —
+            // on every drag, resize and style edit. Without this it would put the entry
+            // straight back, sealed bytes and all, and a later Restore would hand back a
+            // credential the user explicitly destroyed. Not LayoutSaved: Clear changes no
+            // page, so a full panel reload would be flicker for nothing.
+            if (saved)
+                Dashboard?.PostRetainedGone(widgetId, instanceId);
+            Post(new JsonObject
+            {
+                ["type"] = "retained-cleared",
+                ["widgetId"] = widgetId,
+                ["instanceId"] = instanceId,
+                // Whether anything was actually forgotten. An empty forget set means a live
+                // tile still owns this identity, so only the retired ROW went — telling the
+                // user their credentials were destroyed would be false in the direction
+                // that matters, leaving them believing a live credential is gone.
+                ["credentials"] = forget.Count > 0,
+                // See the panel's handler: the bucket is gone either way, but the entry is
+                // still on disk if the write failed, so the row must not vanish.
+                ["saved"] = saved,
+            });
+            Log.Info("Cleared a retained tile from the settings gallery");
+        }
+        catch (Exception ex)
+        {
+            // Never the ids: they scope credentials.
+            Log.Warn($"Could not clear a retained tile: {ex.GetType().Name}");
+            PostRetainedError("failed", widgetId, instanceId);
+        }
+    }
+
+    private void PostRetainedError(string reason, string? widgetId, string? instanceId) =>
+        Post(new JsonObject
+        {
+            ["type"] = "retained-error",
+            ["reason"] = reason,
+            ["widgetId"] = widgetId,
+            ["instanceId"] = instanceId,
+        });
+
     /// <summary>Saves the posted layout. The optional <paramref name="seq"/> is a
     /// client request id echoed verbatim in the reply, so the editor can match each
     /// acknowledgement to the exact snapshot it saved — two saves racing one ack
@@ -638,13 +874,7 @@ public sealed class SettingsWindow : Form
             {
                 try
                 {
-                    SecureStoreHost.Mutate(doc =>
-                    {
-                        var changed = false;
-                        foreach (var (w, inst) in forget)
-                            changed |= WidgetSecrets.ForgetInstance(doc, w, inst);
-                        return changed;
-                    });
+                    SecureStoreHost.ForgetInstances(forget);
                     Log.Info($"Purged derived credentials for {forget.Count} evicted retained tile(s)");
                 }
                 catch (Exception ex)
@@ -838,7 +1068,15 @@ public sealed class SettingsWindow : Form
     protected override void Dispose(bool disposing)
     {
         if (disposing)
+        {
+            // Belt and braces over the FormClosed handler, which is installed part-way
+            // through InitializeAsync: a window closed during that await, or an init that
+            // threw before reaching it, would otherwise leave the panel holding this
+            // window — and its WebView — alive through the relay delegates for the rest of
+            // the process, once per early close.
+            Dashboard = null;
             _webView.Dispose();
+        }
         base.Dispose(disposing);
     }
 }

@@ -353,6 +353,36 @@ surface does not retire yet.) The attic is bounded (8 per
 widget id, oldest evicted; eviction also purges the instance's protected store) and is
 addressed only by `widgetId` + `instanceId`, never by grid position.
 
+Retired tiles are managed from the on-panel palette (edit mode → **Retired**, also reachable
+from any "+" add-zone) and from the settings window's widget shelf:
+
+- **Restore** puts the tile back on the page you are looking at, keeping its `instanceId`,
+  so both its manifest secrets and its protected store reconnect. It is refused rather than
+  guessed at when the page named no longer exists — or when its name is shared by another
+  page, since a duplicate name cannot say which one you meant — and the button is disabled when the
+  tile's own size will not fit that page without displacing something already on it. The
+  column anchor comes back only on the page the tile was retired from; anywhere else it
+  flows. A restore is performed by the host and answered with a fresh layout (the panel
+  reloads onto the page you were on, still editing), because the shell's copy of a retired
+  def holds ciphertext, not settings.
+- **Delete** removes the entry and the instance's protected store for good — two taps, on
+  both surfaces. It never purges a store some surviving tile still references, and it
+  aborts without touching the layout if the protected store cannot be written.
+
+Both surfaces hold their own copy of the list, so each destroy is mirrored to the other
+window: without that, the window that was not looking re-ships the entry on its next save
+and the tile comes back with credentials that still work.
+
+| Message | Direction | Payload |
+|---|---|---|
+| `restore-retained` | shell/settings → host | `widgetId`, `instanceId`, `page`, `pageName` |
+| `clear-retained` | shell/settings → host | `widgetId`, `instanceId` (backs the **Delete** button) |
+| `retained-restored` | host → settings | `page`, `pageName`, `widgetId`, `instanceId`, `def` (masked) |
+| `retained-cleared` | host → the window that asked | `widgetId`, `instanceId`, `saved` |
+| `retained-gone` | host → settings | `widgetId`, `instanceId` — the PANEL deleted it |
+| `evicted-ids` | host → shell | array of `{widgetId, instanceId}` gone in the background (the attic cap, or a settings-side delete) |
+| `retained-error` | host → shell/settings | `reason` (`not-found` \| `bad-page` \| `failed`), `widgetId`, `instanceId` |
+
 ---
 
 ## Backgrounds (wallpaper)

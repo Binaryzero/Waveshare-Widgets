@@ -204,6 +204,25 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #widgetGallery .g-why { color: var(--muted); font-size: 9px; letter-spacing: 0.04em; }
 #widgetGallery .g-full { grid-column: 1 / -1; margin: 0 0 4px; }
 
+/* Removed widgets (#226): rows, not tiles — each carries two actions, and a tile that
+ * holds buttons stops reading as one. */
+#retiredGallery[hidden] { display: none; }
+#retiredGallery { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
+#retiredGallery .r-head { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+#retiredGallery .r-hint { color: var(--muted); font-size: 10px; margin: 0 0 6px; }
+#retiredGallery .r-row { display: flex; align-items: center; gap: 6px; padding: 5px 0; }
+/* Sibling combinator, not :first-of-type — the section heading is a div too, so
+ * :first-of-type would never match a row and every list kept a stray top rule. */
+#retiredGallery .r-row + .r-row { border-top: 1px solid var(--line); }
+#retiredGallery .r-info { flex: 1 1 auto; min-width: 0; }
+#retiredGallery .r-name { font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#retiredGallery .r-meta { font-size: 9px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#retiredGallery .r-row button { flex: 0 0 auto; font-size: 10px; padding: 4px 8px; }
+/* There is no global disabled rule, so without this a dead Restore looks and hovers
+ * exactly like a live one — the user taps it and nothing happens, twice. */
+#retiredGallery .r-row button:disabled { opacity: 0.4; cursor: default; }
+#retiredGallery .r-row button:disabled:hover { border-color: var(--line); }
+
 /* Compact slot chips: click to configure, ✕ to remove. */
 #slotList { display: flex; flex-wrap: wrap; gap: 8px; }
 .slot-chip {
