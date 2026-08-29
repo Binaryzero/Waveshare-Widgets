@@ -1327,8 +1327,8 @@ public sealed class DashboardWindow : Form
             // create a Virtual Stream Deck with no hint that the decks already on screen
             // in their Stream Deck app are not candidates — the explanation exists, but
             // only in app.log, which nothing in this app displays.
-            if (_streamDeck.LastReadWasUnmirrorableOnly)
-                unavailable["reason"] = "The decks on this machine are network-attached "
+            if (_streamDeck.LastReadFoundNothingMirrorable)
+                unavailable["reason"] = "The decks Plinth could read here are network-attached "
                     + "(Stream Deck Mobile, or a bridge such as iCUE's). They have no window "
                     + "on this desktop, so their keys cannot be mirrored or pressed from here.";
             return unavailable;

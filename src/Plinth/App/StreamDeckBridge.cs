@@ -33,7 +33,7 @@ public sealed class StreamDeckBridge
     /// Network decks are excluded: offering one would let the user pick a deck whose keys
     /// cannot be pressed, which is the outcome this whole path exists to avoid.</summary>
     public static IReadOnlyList<string> ListProfileNames() =>
-        ListVsdProfiles(out _, out _).Where(p => DeckManifest.IsLocalWindowModel(p.Model))
+        ListVsdProfiles(out _).Where(p => DeckManifest.IsLocalWindowModel(p.Model))
                          .Select(p => p.Name).ToList();
 
     /// <summary>Models already named in the log, so the 4s profile poll reports each
@@ -58,31 +58,17 @@ public sealed class StreamDeckBridge
     /// </remarks>
     /// <param name="skippedModels">Models found on disk that this build does not
     /// recognize. For the LOG, which needs the strings to tell the user what to report.</param>
-    /// <param name="droppedAny">Whether any profile directory was passed over for ANY
-    /// reason. For the user-facing claim, which needs the weaker question answered
-    /// honestly: "every deck I found is unmirrorable" and "every deck on this machine is
-    /// unmirrorable" differ the moment anything was dropped, and it is the second one the
-    /// user is shown.
-    ///
-    /// Derived by counting, not maintained by hand. A flag set at each skip point has to
-    /// be remembered at four of them today and at every one added later; one was already
-    /// missed that way — an unreadable manifest counted as nothing, so a machine with an
-    /// unreadable LOCAL profile beside a network deck still claimed to be network-only.
-    /// Comparing what came in against what came out cannot be forgotten.</param>
     private static List<(string Name, string Dir, string Model)> ListVsdProfiles(
-        out List<string> skippedModels, out bool droppedAny)
+        out List<string> skippedModels)
     {
         var result = new List<(string Name, string Dir, string Model)>();
         var skipped = new List<string>();
         skippedModels = skipped;
-        droppedAny = false;
         if (!Directory.Exists(ProfilesDir))
             return result;
 
-        var seen = 0;
         foreach (var profileDir in Directory.GetDirectories(ProfilesDir, "*.sdProfile"))
         {
-            seen++;
             var manifestPath = Path.Combine(profileDir, "manifest.json");
             if (!File.Exists(manifestPath))
                 continue;
@@ -106,10 +92,6 @@ public sealed class StreamDeckBridge
             }
             catch { /* skip unreadable */ }
         }
-        // Every profile directory that did not become a result was dropped, whatever the
-        // reason: no manifest, unparseable JSON, no Device.Model, or a model this build
-        // does not know. Only the last of those has a string worth logging.
-        droppedAny = seen > result.Count;
 
         // Gated on finding no deck this app can MIRROR, not on recognizing nothing at all.
         // Those differ exactly when a network deck sits beside an unrecognized model: the
@@ -150,9 +132,9 @@ public sealed class StreamDeckBridge
             // (which returns early) or one that threw — and the widget went on explaining
             // network decks to a user who had just deleted them, or whose profile
             // directory was briefly unavailable.
-            LastReadWasUnmirrorableOnly = false;
+            LastReadFoundNothingMirrorable = false;
 
-            var profiles = ListVsdProfiles(out _, out var droppedAny);
+            var profiles = ListVsdProfiles(out _);
             if (profiles.Count == 0)
                 return null;
 
@@ -163,31 +145,28 @@ public sealed class StreamDeckBridge
             var index = DeckManifest.ChooseMirrorable(candidates, preferredName);
             if (index < 0)
             {
-                // Through the shared predicate, which weighs the SKIPPED models too. An
-                // Any() over what was found says "everything I recognized is unmirrorable"
-                // — a different and weaker claim than the one the user is shown, and false
-                // advice for someone whose local deck this build simply does not know.
-                LastReadWasUnmirrorableOnly = DeckManifest.IsUnmirrorableOnly(
-                    profiles.Select(p => p.Model).ToList(), droppedAny);
-                // Every deck on the machine is one we cannot drive. Say so once, with the
-                // fix — this is the whole difference between "the widget is broken" and
-                // "there is no Virtual Stream Deck yet".
+                // No bookkeeping, because the claim no longer needs any. index < 0 with
+                // a non-empty result means nothing FOUND was mirrorable, which is exactly
+                // what is now said — see the property's remarks for why the stronger
+                // claim was dropped.
+                LastReadFoundNothingMirrorable = true;
                 if (!_loggedUnmirrorableOnly)
                 {
                     _loggedUnmirrorableOnly = true;
-                    // Derived from the predicate rather than asserted by invariant: the
-                    // claim in this sentence is then true by construction, and the
-                    // predicate gets the production caller that keeps it from going dead.
+                    // Says what was READ, not what the machine has. Anything dropped is
+                    // named by the skipped-model line above, which advises reporting it —
+                    // the two are complementary once this one stops claiming to be
+                    // exhaustive.
                     var unmirrorable = profiles.Where(p => DeckManifest.IsUnmirrorableModel(p.Model))
                                                .Select(p => $"\"{p.Name}\" [{p.Model}]").ToList();
-                    Log.Info("Stream Deck: nothing here can be mirrored. The profiles this app " +
-                             "can read are network-attached decks (" +
+                    Log.Info("Stream Deck: none of the profiles this app could read can be " +
+                             "mirrored. They are network-attached decks (" +
                              string.Join(", ", unmirrorable) + ") — a Stream Deck Mobile-class " +
                              "device: a paired phone, or a bridge that registers as one, which " +
-                             "is what iCUE does. It has no window on this desktop, so its keys " +
+                             "is what iCUE does. One has no window on this desktop, so its keys " +
                              "cannot be captured or pressed by any local API, and it is refused " +
-                             "rather than shown as a deck that does nothing. Create a Virtual " +
-                             "Stream Deck in the Stream Deck app to use this widget.");
+                             "rather than shown as a deck that does nothing. Open or create a " +
+                             "Virtual Stream Deck in the Stream Deck app to use this widget.");
                 }
                 return null;
             }
@@ -213,16 +192,24 @@ public sealed class StreamDeckBridge
         return null;
     }
 
-    /// <summary>Set when the last read found profiles but every one of them was
-    /// unmirrorable, so the caller can tell the user WHY rather than only that there is
-    /// nothing. Distinct from "no profiles at all", which needs the opposite advice.</summary>
+    /// <summary>Set when the last read found profiles but could mirror none of them, so
+    /// the caller can tell the user WHY rather than only that there is nothing. Distinct
+    /// from "no profiles at all", which needs the opposite advice.</summary>
     /// <remarks>
     /// The log line alone does not discharge this: nothing in the app shows app.log, so a
-    /// user whose only decks are network-attached would see a card telling them to create
-    /// a Virtual Stream Deck without ever learning that the decks they can already see
-    /// will never work.
+    /// user whose readable decks are all network-attached would see a card telling them to
+    /// create a Virtual Stream Deck without ever learning that the decks they can already
+    /// see will never work.
+    ///
+    /// It reports what was READ, deliberately — not what the machine has. The stronger
+    /// claim ("every deck here is unmirrorable") needs to account for every profile
+    /// discovery drops, and produced four separate defects trying to: a flag that outlived
+    /// its read, an Any() that ignored skipped models, a count that missed unreadable
+    /// ones, and a log branch that ran ungated. All four were the same over-claim wearing
+    /// different clothes. The weaker statement is true in every case, including the mixed
+    /// ones, and needs no bookkeeping at all — so there is nothing left to get wrong.
     /// </remarks>
-    public bool LastReadWasUnmirrorableOnly { get; private set; }
+    public bool LastReadFoundNothingMirrorable { get; private set; }
 
     /// <summary>Whether a deck window exists right now — the precondition for a key press
     /// landing anywhere. Reported to the widget so it can refuse a tap it cannot deliver

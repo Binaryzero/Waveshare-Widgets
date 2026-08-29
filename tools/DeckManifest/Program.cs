@@ -211,30 +211,6 @@ Check("C4 a timestamp tie is broken by name, so the pick does not flip between p
 Check("C5 an unmirrorable deck named in settings falls back to a deck that works",
     DeckManifest.ChooseMirrorable(new[] { net1, local }, "Claude AI Prompt Templates") == 1);
 
-Console.WriteLine("Is this machine unmirrorable-only?");
-
-// The claim shown to the USER is "every deck on this machine is network-attached", but
-// discovery only ever returns models it RECOGNIZES — so a machine can satisfy "everything
-// I found is unmirrorable" while owning a local deck of a model this build has not heard
-// of. Telling that user to create another deck is wrong; they need to report the string
-// they already have. The log line one level up already draws this distinction (M6i); this
-// is what stops the user-facing message drifting from it.
-
-static IReadOnlyList<string> M(params string[] m) => m;
-
-Check("U1 only network decks, nothing dropped, is unmirrorable-only",
-    DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi", "VSD/WiFi"), false));
-Check("U2 anything dropped means the machine is NOT known to be unmirrorable-only",
-    !DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi"), true),
-    "the dropped profile may be the local deck the user expects to mirror");
-Check("U3 a local deck among them is not unmirrorable-only",
-    !DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi", "UI Stream Deck"), false));
-Check("U4 no profiles at all is not unmirrorable-only — that needs the other advice",
-    !DeckManifest.IsUnmirrorableOnly(M(), false) && !DeckManifest.IsUnmirrorableOnly(null, false));
-Check("U5 both conditions are required, not either",
-    !DeckManifest.IsUnmirrorableOnly(M("UI Stream Deck"), false)
-    && !DeckManifest.IsUnmirrorableOnly(M("VSD2/WiFi"), true));
-
 Console.WriteLine("Wired up");
 
 // M6 · a TEXT check, and labelled as one, in the style of tools/StreamDeckPaths. The
@@ -272,7 +248,7 @@ else
     // app.log has no viewer in this app, so the log alone leaves the affected user with a
     // card that gives correct advice and never says why their decks are not candidates.
     Check("M6j the refusal reaches the USER, not only app.log",
-        code.Contains("LastReadWasUnmirrorableOnly"));
+        code.Contains("LastReadFoundNothingMirrorable"));
     // POSITION, not presence. The flag is read on the NEXT call, so every path out of a
     // read has to leave it describing that read: set only on success, it survives a later
     // read that finds zero profiles (which returns early) or throws — and the widget goes
@@ -280,22 +256,18 @@ else
     // the first early return is what makes that impossible rather than merely unlikely.
     var readBody = System.Text.RegularExpressions.Regex.Match(code,
         @"public DeckProfile\? ReadProfile\(.*?\n    \}", System.Text.RegularExpressions.RegexOptions.Singleline).Value;
-    var resetAt = readBody.IndexOf("LastReadWasUnmirrorableOnly = false;", StringComparison.Ordinal);
+    var resetAt = readBody.IndexOf("LastReadFoundNothingMirrorable = false;", StringComparison.Ordinal);
     var earlyReturnAt = readBody.IndexOf("if (profiles.Count == 0)", StringComparison.Ordinal);
-    // The user-facing flag must go through the predicate above, not re-derive the rule.
-    // Re-deriving it is exactly how it came to disagree with the log line beside it.
-    // DERIVED, not maintained. A flag set by hand at each skip point has to be
-    // remembered at four today and at every one added later, and one was already missed
-    // that way — an unreadable manifest counted as nothing, so a machine with an
-    // unreadable LOCAL profile beside a network deck still claimed to be network-only.
-    // Counting what came in against what came out cannot be forgotten.
-    Check("M6m 'was anything dropped' is counted, not tracked by hand",
-        code.Contains("droppedAny = seen > result.Count;"),
-        "a hand-maintained flag misses whichever skip path its author forgets");
-    Check("M6l the user-facing claim is decided by IsUnmirrorableOnly, not re-derived",
-        code.Contains("DeckManifest.IsUnmirrorableOnly(")
-        && !code.Contains("profiles.Any(p => DeckManifest.IsUnmirrorableModel(p.Model))"),
-        "an Any() over found models alone ignores the skipped ones");
+    // The claim reports what was READ, and nothing stronger. Four separate defects came
+    // from trying to say "every deck on this machine is unmirrorable": a flag that
+    // outlived its read, an Any() that ignored skipped models, a count that missed
+    // unreadable ones, and a log branch that ran ungated. All four were the same
+    // over-claim wearing different clothes. The weaker statement is true in every case,
+    // including the mixed ones, and needs no bookkeeping to be sure of — so reintroducing
+    // that bookkeeping is the regression this guards against.
+    Check("M6l the user-facing claim says what was read, with nothing to get wrong",
+        !code.Contains("droppedAny") && !code.Contains("IsUnmirrorableOnly"),
+        "accounting for every dropped profile is what produced four defects in a row");
     Check("M6k the stale-explanation flag is cleared before any early return",
         resetAt >= 0 && earlyReturnAt >= 0 && resetAt < earlyReturnAt,
         resetAt < 0 ? "no unconditional reset in ReadProfile"
