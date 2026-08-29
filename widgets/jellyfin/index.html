@@ -2175,6 +2175,16 @@
         probe('vhost-fetch', 'https://media.plinth/', { mode: 'no-cors' });
         probe('direct-fetch', lastSrcUrl, { mode: 'no-cors' });
         probe('pna-fetch', lastSrcUrl, { mode: 'no-cors', targetAddressSpace: 'private' });
+        // Every probe above is a HEAD, and HEAD is the one relay path that never builds
+        // a body at all — so the quartet can come back clean while the thing that
+        // actually failed, the BYTES, was never exercised. This one asks the relay for
+        // a real 64 KiB window and counts what arrives: a full 65536 means ranged
+        // delivery works end to end and the fault is the element's (codec, container,
+        // an unparseable head); a short count or a throw names the transport.
+        WW.fetch(relayUrl(lastSrcUrl), { proxy: 'never', headers: { Range: 'bytes=0-65535' } })
+          .then((r) => r.arrayBuffer().then((b) => WW.log('jellyfin: attempt ' + n
+            + ' body-fetch: HTTP ' + r.status + ' ' + b.byteLength + ' bytes')))
+          .catch((e) => WW.log('jellyfin: attempt ' + n + ' body-fetch failed: ' + ((e && e.name) || 'error')));
       }
     }
     // A failure on a screen nobody is looking at does not get to restart audio there —
