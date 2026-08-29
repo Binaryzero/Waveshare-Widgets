@@ -1957,17 +1957,29 @@
     return WW.mediaUrl(url, { insecure: /^https:/i.test(cfg.base) && cfg.selfSigned });
   }
 
+  // A transcode is a stream the server produces as you watch: no byte ranges, so
+  // every position change has to be asked for at the server rather than taken here.
+  // Both flavours transcodeUrl() builds — stream.mp4 for video, stream.mp3 for audio.
+  // Direct play is /stream?static=true, which carries no extension and so cannot
+  // collide; mediaUrl always appends its api_key, so the '?' is always there.
+  const isTranscode = (url) => /\/stream\.(mp4|mp3)\?/.test(String(url || ''));
+
   // One door onto pv.src: every attempt gets the startup deadline, and a mid-title
   // fallback carries the position along instead of starting the movie over.
-  function setSource(url) {
+  function setSource(url, keepPaused) {
     // A source now exists, so pause and seek mean something again.
     setTransportDisabled(false);
     clearTimeout(attemptTimer);
     clearTimeout(stallTimer);
     timeBase = 0;
     pendingSeek = 0;
-    if (resumeAt > 5) {
-      if (url.includes('/stream.mp4?')) {
+    // Any position at all, not just one past the resume threshold: every caller has
+    // already decided whether its position is worth honouring (startPlayback and the
+    // fallback both drop a saved point under five seconds), and a SEEK to 0:03 is an
+    // explicit instruction — dropping it here restarted the title, which is exactly
+    // the complaint this whole change answers.
+    if (resumeAt > 0) {
+      if (isTranscode(url)) {
         // The server starts the transcode at the offset; the element's own clock
         // restarts at zero, so the displayed times carry the base.
         timeBase = resumeAt;
@@ -1976,7 +1988,13 @@
         pendingSeek = resumeAt;   // direct play seeks natively once metadata is in
       }
     }
-    armStartDeadline();
+    // The startup deadline is answered by `playing`, so a load that will SIT paused
+    // must not carry one: nothing would ever call it off and 20 seconds later the
+    // watchdog would condemn a perfectly healthy stream. Same reasoning the `pause`
+    // handler already applies when it clears both watchdogs — and a source that is
+    // genuinely broken still fails through the `error` event either way.
+    const willPlay = !outOfSight() && !keepPaused;
+    if (willPlay) armStartDeadline(); else clearTimeout(attemptTimer);
     lastSrcUrl = url;
     pv.src = privateLiteralHost(cfg.base) ? relayUrl(url) : url;
     // play() descends from a tap, so autoplay policy is normally satisfied (Chromium's
@@ -1986,7 +2004,10 @@
     // explicit tap carries fresh activation. Decoder refusals surface as error events
     // and keep walking the fallback. Off-screen (callers already refuse; belt and
     // braces for future ones), the source loads but stays paused.
-    if (!outOfSight()) {
+    // keepPaused: a seek committed while the viewer had deliberately paused must
+    // land at the new position still paused, not start playing 600 ms after a tap
+    // that never asked for playback.
+    if (willPlay) {
       pv.play().catch((e) => {
         if (e && e.name === 'NotAllowedError' && theaterOn) {
           clearTimeout(attemptTimer);
@@ -2009,6 +2030,7 @@
     theaterSource = item;
     reportedDone = false;
     everPlayed = false;
+    cancelSeek();
     // A part-watched title starts where it stopped. The position rides the item
     // itself (UserData, which the Continue query asks for), and setSource already
     // knows how to honour it — StartTimeTicks for a transcode, a native seek for
@@ -2061,6 +2083,7 @@
     // itself as played — a stop on top of it would re-create a resume point at
     // the credits.
     stopProgressReports();
+    cancelSeek();
     // Only a title that actually played reports where it stopped. A failed
     // attempt sits at position zero, and posting THAT would delete the server's
     // real resume point for a title the panel never managed to show.
@@ -2107,15 +2130,84 @@
     }, 3500);
   }
 
+  // A transcode is a stream the server is producing as you watch: it carries no byte
+  // ranges to seek within, so asking the ELEMENT to jump makes Chromium refetch the
+  // resource, and the server obligingly starts the same transcode over from the same
+  // offset — the title restarts instead of seeking. The jump has to happen at the
+  // server, by asking for a transcode that BEGINS at the target.
+  // Where a debounced transcode seek is heading, and the timer that will ask for it.
+  let seekTarget = null;
+  let seekTimer = null;
+
+  function commitSeek() {
+    seekTimer = null;
+    const t = seekTarget;
+    const wasPaused = pv.paused;
+    seekTarget = null;
+    // Off-screen is a hard refusal, not merely a reason to stay paused: setSource
+    // would still assign pv.src and start a fresh server transcode for a page the
+    // viewer has swiped away from, and then report a position they never reached.
+    if (!theaterOn || t == null || !lastSrcUrl || outOfSight()) return;
+    // A SEEK, not a failure: the fallback chain and the attempt history are left
+    // exactly as they are, so a later genuine failure still has its remaining
+    // sources and its diagnosis.
+    resumeAt = t;
+    setSource(String(lastSrcUrl).replace(/&StartTimeTicks=\d+/g, ''), wasPaused);
+    // A server-side seek swaps the whole resource, so the element never fires the
+    // `seeked` that reports a native jump — and the periodic report stands down
+    // while paused. Without this the server keeps the PRE-seek position: close the
+    // panel in that window and Continue resumes at the wrong place on every client.
+    // The target, not positionTicks(): direct play has not applied pendingSeek yet.
+    if (!reportedDone) {
+      reportPlayState('progress', theaterSource, Math.max(0, Math.floor(t * 10000000)), wasPaused);
+    }
+  }
+
+  function cancelSeek() {
+    clearTimeout(seekTimer);
+    seekTimer = null;
+    seekTarget = null;
+  }
+
   function seekBy(delta) {
-    if (!isFinite(pv.duration)) return;
-    let t = pv.currentTime + delta;
-    // Clamp into what is actually seekable — a mid-flight transcode cannot jump
-    // past what the server has produced.
+    if (!theaterOn) return;
+    // The absolute position, which for a transcode is the element's clock plus the
+    // offset its stream started at — pv.currentTime alone is a lie there.
+    const at = seekTarget != null ? seekTarget : timeBase + (pv.currentTime || 0);
+    // A live transcode reports no duration of its own; the item's runtime is the
+    // bound that still holds. Leave a few seconds so a forward jump near the end
+    // does not land past the last frame.
+    const runtime = ticksToSec(theaterSource && theaterSource.RunTimeTicks);
+    const total = isFinite(pv.duration) && pv.duration > 0 ? timeBase + pv.duration : runtime;
+    let t = Math.max(0, at + delta);
+    if (total > 0) t = Math.min(t, Math.max(0, total - 5));
+    // The clamp bounds a seek; it must never REVERSE one. Inside the end margin —
+    // 1:39 of a 1:40 title — a forward tap would otherwise land on 1:35 and jump
+    // backwards, and on a transcode spawn a whole new stream to do it. A bound that
+    // is not ahead of where we are means there is simply no room left to move.
+    if (delta > 0 ? t <= at : t >= at) { showOverlay(); return; }
+
+    if (isTranscode(lastSrcUrl)) {
+      // Sub-second movement is not worth a new transcode either: the clamp can shave
+      // a jump down to a fraction of a second, and paying for a fresh ffmpeg process
+      // to travel that far is the restart this change exists to stop.
+      if (Math.abs(t - at) < 1) { showOverlay(); return; }
+      // Each of these re-asks the server for a NEW transcode, so five taps must not
+      // become five ffmpeg processes: the taps accumulate against the pending target
+      // and only the settled one is sent. The clock shows where you are heading
+      // meanwhile, because nothing else moves until the new stream arrives.
+      seekTarget = t;
+      el('ovElapsed').textContent = fmt(t);
+      clearTimeout(seekTimer);
+      seekTimer = setTimeout(commitSeek, 600);
+      showOverlay();
+      return;
+    }
+    // Direct play seeks natively, inside whatever the element actually holds.
     if (pv.seekable && pv.seekable.length) {
       t = Math.max(pv.seekable.start(0), Math.min(t, pv.seekable.end(pv.seekable.length - 1)));
-    } else {
-      t = Math.max(0, Math.min(t, pv.duration));
+    } else if (isFinite(pv.duration)) {
+      t = Math.min(t, pv.duration);
     }
     pv.currentTime = t;
     showOverlay();
@@ -2125,6 +2217,10 @@
     if (!theaterOn) return;
     clearTimeout(attemptTimer);
     clearTimeout(stallTimer);
+    // Whatever seek was waiting out its debounce belonged to the source that just
+    // died. Firing it now would reload a failed transcode — or the fallback that
+    // replaced it — behind the error card.
+    cancelSeek();
     // Record what THIS attempt died of before anything advances — the codes are the
     // whole diagnosis when both attempts fail in the field. The CARD carries the code
     // alone: short enough for a 200px band's error card, and a code cannot leak the
@@ -2343,6 +2439,9 @@
   // clock at zero while the title is minutes in.
   pv.addEventListener('timeupdate', () => {
     if (!theaterOn) return;
+    // A pending seek owns the clock: the element is still playing the old position
+    // and would otherwise erase the target the viewer is tapping towards.
+    if (seekTarget != null) return;
     el('ovElapsed').textContent = fmt(timeBase + pv.currentTime);
     if (isFinite(pv.duration) && pv.duration > 0) {
       const total = timeBase + pv.duration;
@@ -2363,7 +2462,9 @@
       const last = entries[entries.length - 1];
       if (!last) return;
       pageOff = last.intersectionRatio === 0;
-      if (pageOff && theaterOn && !pv.paused) pv.pause();
+      // A seek still waiting out its debounce dies with the view: committing it
+      // would start a transcode for a page that is no longer on screen.
+      if (pageOff && theaterOn) { cancelSeek(); if (!pv.paused) pv.pause(); }
     }).observe(document.documentElement);
   }
 
@@ -2479,7 +2580,10 @@
 
   document.addEventListener('visibilitychange', () => {
     // A hidden panel must not keep decoding video into the void.
-    if (document.hidden) { if (theaterOn && !pv.paused) pv.pause(); return; }
+    if (document.hidden) {
+      if (theaterOn) { cancelSeek(); if (!pv.paused) pv.pause(); }
+      return;
+    }
     if (!started || theaterOn) return;
     if (Date.now() - lastOk >= pollDelay()) { clearTimeout(timer); tick(generation); }
   });
