@@ -275,13 +275,20 @@
       // Adopting the def is load-bearing beyond the UI: without it this editor's next
       // save would drop the slot from disk while re-shipping the attic entry, undoing
       // the restore.
-      const page = ((state.layout || {}).pages || [])[msg.page];
-      if (!page || !msg.def) {
-        // The editor's page list has diverged from disk since the request (only reachable
-        // if the dirty gate was bypassed). Leave BOTH copies alone: the next save then
-        // simply reverts the restore — the tile goes back to the attic with its sealed
-        // bytes intact — whereas dropping the entry without adopting the slot would take
-        // the tile off disk and out of the attic in one save.
+      // The index addresses the layout ON DISK. This editor's copy can have diverged
+      // without renaming anything — a local reorder or page delete — so an index that
+      // still resolves here can resolve to a DIFFERENT page, and adopting there would
+      // move the tile somewhere nobody chose. The name has to agree, and agree uniquely:
+      // a name two pages share proves nothing, exactly as the host's own guard has it.
+      const pages = ((state.layout || {}).pages) || [];
+      const page = pages[msg.page];
+      const named = pages.filter((p) => p && p.name === msg.pageName).length;
+      const sure = msg.pageName == null || (page && page.name === msg.pageName && named === 1);
+      if (!page || !msg.def || !sure) {
+        // Leave BOTH copies alone: the next save then simply reverts the restore — the
+        // tile goes back to the attic with its sealed bytes intact — whereas dropping the
+        // entry without adopting the slot would take the tile off disk and out of the
+        // attic in one save.
         toast('Restored on the panel — reopen Settings to see it here.', true);
       } else {
         page.slots = page.slots || [];

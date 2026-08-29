@@ -89,7 +89,7 @@ public sealed class SettingsWindow : Form
     /// <summary>The panel restored a tile; hand this editor the same masked def its own
     /// Restore would have produced, so its next save carries the slot instead of writing
     /// the pre-restore model back over it.</summary>
-    private void OnPanelRetainedRestored(string? widgetId, string? instanceId, LayoutSlot def, int page)
+    private void OnPanelRetainedRestored(DashboardWindow.RestoredTile tile)
     {
         if (IsDisposed || !IsHandleCreated)
             return;
@@ -97,9 +97,13 @@ public sealed class SettingsWindow : Form
         {
             BeginInvoke(() =>
             {
-                // The editor's own handler declines when its page list has diverged, so a
-                // miss here costs the mirror, not the restore.
-                try { PostRestoredAck(page, widgetId, instanceId, def); }
+                // The editor's own handler checks the page name before adopting, so a
+                // diverged page list costs the mirror, not the restore.
+                try
+                {
+                    PostRestoredAck(tile.Page, tile.PageName,
+                        tile.WidgetId, tile.RetiredInstanceId, tile.Def);
+                }
                 catch (Exception ex) { Log.Warn($"Could not mirror a panel restore: {ex.Message}"); }
             });
         }
@@ -716,7 +720,7 @@ public sealed class SettingsWindow : Form
             }
             LayoutSaved?.Invoke();
 
-            PostRestoredAck(page, widgetId, instanceId, restored);
+            PostRestoredAck(page, layout.Pages[page].Name, widgetId, instanceId, restored);
             Log.Info("Restored a retained tile from the settings gallery");
         }
         catch (Exception ex)
@@ -738,8 +742,15 @@ public sealed class SettingsWindow : Form
     ///
     /// <para>One slot, so it can never look ambiguous to the mask — sound only because
     /// <c>RestoreRetained</c> has already re-minted any id that collided with a live
-    /// tile.</para></summary>
-    private void PostRestoredAck(int page, string? widgetId, string? instanceId, LayoutSlot restored)
+    /// tile.</para>
+    ///
+    /// <para>The page NAME rides along with the index for the same reason the request
+    /// carries it: the index addresses the layout on DISK, and this editor's page list can
+    /// diverge from that without renaming anything, so an index that still resolves there
+    /// can resolve to a different page. The client checks the name before adopting.</para>
+    /// </summary>
+    private void PostRestoredAck(
+        int page, string? pageName, string? widgetId, string? instanceId, LayoutSlot restored)
     {
         var wrapper = JsonSerializer.SerializeToNode(new DashboardLayout
         {
@@ -751,6 +762,7 @@ public sealed class SettingsWindow : Form
         {
             ["type"] = "retained-restored",
             ["page"] = page,
+            ["pageName"] = pageName,
             ["widgetId"] = widgetId,
             ["instanceId"] = instanceId,
             ["def"] = wrapper?["pages"]?[0]?["slots"]?[0]?.DeepClone(),

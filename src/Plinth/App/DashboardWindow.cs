@@ -635,14 +635,26 @@ public sealed class DashboardWindow : Form
     /// <see cref="PostRetainedGone"/>, which carries the settings→panel direction.</summary>
     public event Action<string?, string?>? RetainedGone;
 
-    /// <summary>Raised when the panel RESTORES one, for the same reason and with the same
-    /// urgency. An open settings window holds the pre-restore pages and still lists the
-    /// entry as retired; its next ordinary save writes that model back, and the union
-    /// cannot rescue the live slot — it only ever adds disk attic entries — so the tile
-    /// drops off the page and reappears in the removed list. The subscriber gets the def as
-    /// the host wrote it (id possibly re-minted) plus the identity it was retired under,
-    /// which is what the editor's attic is keyed by.</summary>
-    internal event Action<string?, string?, LayoutSlot, int>? RetainedRestored;
+    /// <summary>What the panel just restored, for an open settings window to adopt.</summary>
+    /// <param name="WidgetId">Half of the attic identity the editor keys its own copy by.</param>
+    /// <param name="RetiredInstanceId">The other half — the id it was RETIRED under, which
+    /// <paramref name="Def"/> may no longer carry (a live collision re-mints it).</param>
+    /// <param name="Def">The slot as the host wrote it. The subscriber masks it; nothing
+    /// here may reach the editor unmasked.</param>
+    /// <param name="Page">Index into the layout ON DISK.</param>
+    /// <param name="PageName">…and the name at that index, because the index alone is not
+    /// an identity: the editor's page list can diverge from disk without renaming anything,
+    /// and an index that still resolves there resolves to the WRONG page.</param>
+    internal readonly record struct RestoredTile(
+        string? WidgetId, string? RetiredInstanceId, LayoutSlot Def, int Page, string? PageName);
+
+    /// <summary>Raised when the panel RESTORES an attic entry, for the same reason as
+    /// <see cref="RetainedGone"/> and with the same urgency. An open settings window holds
+    /// the pre-restore pages and still lists the entry as retired; its next ordinary save
+    /// writes that model back, and the union cannot rescue the live slot — it only ever
+    /// adds disk attic entries — so the tile drops off the page and reappears in the
+    /// removed list.</summary>
+    internal event Action<RestoredTile>? RetainedRestored;
 
     /// <summary>Where a just-performed restore put the tile, for the ONE init payload the
     /// reload below produces. The shell's page is pure DOM scroll state and its edit mode
@@ -689,7 +701,8 @@ public sealed class DashboardWindow : Form
             _restoredToPage = page;
             ReloadDashboard();
             if (restored is not null)
-                RetainedRestored?.Invoke(widgetId, instanceId, restored, page);
+                RetainedRestored?.Invoke(new RestoredTile(
+                    widgetId, instanceId, restored, page, layout.Pages[page].Name));
             Log.Info("Restored a retained tile from the on-panel palette");
         }
         catch (Exception ex)

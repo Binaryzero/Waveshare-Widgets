@@ -377,7 +377,7 @@ and the tile comes back with credentials that still work.
 |---|---|---|
 | `restore-retained` | shell/settings → host | `widgetId`, `instanceId`, `page`, `pageName` |
 | `clear-retained` | shell/settings → host | `widgetId`, `instanceId` (backs the **Delete** button) |
-| `retained-restored` | host → settings | `page`, `widgetId`, `instanceId`, `def` (masked) |
+| `retained-restored` | host → settings | `page`, `pageName`, `widgetId`, `instanceId`, `def` (masked) |
 | `retained-cleared` | host → the window that asked | `widgetId`, `instanceId`, `saved` |
 | `retained-gone` | host → settings | `widgetId`, `instanceId` — the PANEL deleted it |
 | `evicted-ids` | host → shell | array of `{widgetId, instanceId}` gone in the background (the attic cap, or a settings-side delete) |
