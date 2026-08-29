@@ -318,7 +318,12 @@
       postToHost({ type: 'action', kind: msg.kind, target: String(msg.target || '') });
     } else if (msg.type === 'ww-sd-profile') {
       const id = armSdRoute(msg, ev);
-      postToHost({ type: 'sd-profile', id, profileName: msg.profileName || '', hideWindow: msg.hideWindow !== false, live: msg.live === true });
+      // hideWindow is forwarded only when the widget actually stated one. `!== false`
+      // turned "did not ask" into "hide it", so a widget with no opinion overrode the
+      // preference of one that had — every poll, at 4s, in both directions.
+      const sdReq = { type: 'sd-profile', id, profileName: msg.profileName || '', live: msg.live === true };
+      if (typeof msg.hideWindow === 'boolean') sdReq.hideWindow = msg.hideWindow;
+      postToHost(sdReq);
     } else if (msg.type === 'ww-sd-capture') {
       // `have` is the hash of the last frame the ASKING DOCUMENT actually received, and
       // it is the whole dedup. Passed through rather than tracked here: a widget can only

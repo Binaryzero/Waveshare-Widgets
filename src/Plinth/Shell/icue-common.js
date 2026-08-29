@@ -298,7 +298,13 @@
     loadMedia(descriptor) {
       const desc = descriptor || {};
       this.clear();
-      const src = String(desc.path == null ? '' : desc.path);
+      // `pathToAsset` is the key iCUE's media-selector settings value uses; `path` is
+      // what this class's own callers pass. Accepting both is defensive rather than a
+      // fix — media-selector is unsupported, so neither editor can write such a value,
+      // and a real iCUE machine path would fail the URL test below and route to
+      // onMediaError anyway.
+      const raw = desc.path == null ? desc.pathToAsset : desc.path;
+      const src = String(raw == null ? '' : raw);
       if (!this.container || !src) return;
       if (!/^(https?:|data:|blob:)/i.test(src)) {
         // An iCUE-machine file path: unreachable from this renderer, by design.

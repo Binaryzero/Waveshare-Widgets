@@ -17,8 +17,8 @@ namespace Plinth.App;
 public sealed class StreamDeckBridge
 {
     public sealed record DeckButton(int Row, int Col, string Title, string Image);
-    /// <param name="Model">The profile's Device.Model. Always a local-window model — a
-    /// network deck never gets this far (<see cref="DeckManifest.ChooseMirrorable"/>) —
+    /// <param name="Model">The profile's Device.Model. Always a local-window model — an
+    /// unmirrorable deck never gets this far (<see cref="DeckManifest.ChooseMirrorable"/>) —
     /// but carried anyway, because "which deck is this" is the first question every log
     /// line about a deck has to answer.</param>
     public sealed record DeckProfile(string Name, int Rows, int Cols, IReadOnlyList<DeckButton> Buttons,
@@ -40,10 +40,10 @@ public sealed class StreamDeckBridge
     /// unrecognized one once rather than every tick.</summary>
     private static readonly HashSet<string> ReportedModels = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Set once a network-only machine has been named in the log, so the
-    /// explanation is printed once rather than on every 4s poll. Cleared as soon as a
+    /// <summary>Set once a machine with nothing mirrorable has been named in the log, so
+    /// the explanation is printed once rather than on every 4s poll. Cleared as soon as a
     /// mirrorable deck appears, so creating one and removing it says so again.</summary>
-    private static bool _loggedNetworkOnly;
+    private static bool _loggedUnmirrorableOnly;
 
     /// <summary>
     /// Every readable on-screen Stream Deck profile: display name, directory, and the
@@ -51,9 +51,10 @@ public sealed class StreamDeckBridge
     /// </summary>
     /// <remarks>
     /// The model is carried out of here rather than discarded because the two recognized
-    /// kinds are not interchangeable — see <see cref="DeckManifest.NetworkModels"/>. A
-    /// local-window deck supports capture and clicks; a network deck supports neither, and
-    /// a caller that cannot tell them apart would publish a grid whose keys do nothing.
+    /// kinds are not interchangeable — see <see cref="DeckManifest.UnmirrorableModels"/>.
+    /// A local-window deck supports capture and clicks; an unmirrorable one supports
+    /// neither, and a caller that cannot tell them apart would publish a grid whose keys
+    /// do nothing.
     /// </remarks>
     private static List<(string Name, string Dir, string Model)> ListVsdProfiles()
     {
@@ -130,24 +131,33 @@ public sealed class StreamDeckBridge
                     p.Name, p.Model, SafeLastWrite(Path.Combine(p.Dir, "manifest.json"))))
                 .ToList();
             var index = DeckManifest.ChooseMirrorable(candidates, preferredName);
+            LastReadWasUnmirrorableOnly =
+                index < 0 && profiles.Any(p => DeckManifest.IsUnmirrorableModel(p.Model));
             if (index < 0)
             {
                 // Every deck on the machine is one we cannot drive. Say so once, with the
                 // fix — this is the whole difference between "the widget is broken" and
                 // "there is no Virtual Stream Deck yet".
-                if (!_loggedNetworkOnly)
+                if (!_loggedUnmirrorableOnly)
                 {
-                    _loggedNetworkOnly = true;
-                    Log.Info("Stream Deck: every profile this app can read is a network deck (" +
-                             string.Join(", ", profiles.Select(p => $"\"{p.Name}\" [{p.Model}]")) +
-                             "). A network deck — the kind iCUE creates — has no window on this " +
-                             "desktop, so its keys cannot be captured live or pressed, and it is " +
-                             "not mirrored rather than shown as a deck that does nothing. Create " +
-                             "a Virtual Stream Deck in the Stream Deck app to use this widget.");
+                    _loggedUnmirrorableOnly = true;
+                    // Derived from the predicate rather than asserted by invariant: the
+                    // claim in this sentence is then true by construction, and the
+                    // predicate gets the production caller that keeps it from going dead.
+                    var unmirrorable = profiles.Where(p => DeckManifest.IsUnmirrorableModel(p.Model))
+                                               .Select(p => $"\"{p.Name}\" [{p.Model}]").ToList();
+                    Log.Info("Stream Deck: nothing here can be mirrored. The profiles this app " +
+                             "can read are network-attached decks (" +
+                             string.Join(", ", unmirrorable) + ") — a Stream Deck Mobile-class " +
+                             "device: a paired phone, or a bridge that registers as one, which " +
+                             "is what iCUE does. It has no window on this desktop, so its keys " +
+                             "cannot be captured or pressed by any local API, and it is refused " +
+                             "rather than shown as a deck that does nothing. Create a Virtual " +
+                             "Stream Deck in the Stream Deck app to use this widget.");
                 }
                 return null;
             }
-            _loggedNetworkOnly = false;
+            _loggedUnmirrorableOnly = false;
 
             var chosen = profiles[index];
             using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(chosen.Dir, "manifest.json")));
@@ -168,6 +178,17 @@ public sealed class StreamDeckBridge
         }
         return null;
     }
+
+    /// <summary>Set when the last read found profiles but every one of them was
+    /// unmirrorable, so the caller can tell the user WHY rather than only that there is
+    /// nothing. Distinct from "no profiles at all", which needs the opposite advice.</summary>
+    /// <remarks>
+    /// The log line alone does not discharge this: nothing in the app shows app.log, so a
+    /// user whose only decks are network-attached would see a card telling them to create
+    /// a Virtual Stream Deck without ever learning that the decks they can already see
+    /// will never work.
+    /// </remarks>
+    public bool LastReadWasUnmirrorableOnly { get; private set; }
 
     /// <summary>Whether a deck window exists right now — the precondition for a key press
     /// landing anywhere. Reported to the widget so it can refuse a tap it cannot deliver
@@ -651,8 +672,8 @@ public sealed class StreamDeckBridge
             // FindVsdWindow has already said what it did or did not find, once. This adds
             // the caller's half: a click was attempted and went nowhere.
             Log.Warn("Stream Deck: no deck window to click. A local Virtual Stream Deck must " +
-                     "be open; a network deck (VSD2/WiFi) has no window and cannot be clicked " +
-                     "this way at all.");
+                     "be open; a deck with no window on this desktop cannot be clicked this " +
+                     "way at all.");
             return false;
         }
 

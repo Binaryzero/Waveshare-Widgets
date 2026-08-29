@@ -375,11 +375,18 @@
   // --- Streamdeck (widgetbuilder.streamdeck) ---
   //
   // iCUE's plugin is a NETWORK client, not a window mirror, and the difference is the
-  // whole design of this shim. iCUE registers a virtual device of model VSD2/WiFi with
-  // the Stream Deck app, pairs with it (the widget's own card says "Go to the Stream
-  // Deck app and approve the iCUE connection"), then receives per-key faces pushed over
-  // that connection and sends presses back down it. Corsair's end of that channel is
-  // authenticated and internal; Plinth cannot speak it.
+  // whole design of this shim. It talks to a device the Stream Deck app reports as model
+  // VSD2/WiFi — Elgato's string for a Stream Deck Mobile-class device, which iCUE's
+  // bridge registers AS rather than a type iCUE invents. It pairs with the app (the
+  // widget's own card says "Go to the Stream Deck app and approve the iCUE connection"),
+  // then receives per-key faces over that connection and sends presses back down it.
+  //
+  // No local API can drive such a device, and that is settled, not pending: the Stream
+  // Deck plugin WebSocket has no actuation command at all (keyDown/keyUp are inbound
+  // only) and the SDK states the isolation as a design property — "it is not possible to
+  // access or control actions that are not owned by your plugin" — while the network
+  // transport is pairing-authenticated with no published spec and no client. The obstacle
+  // is not specifically Corsair's, so there is no other side to try.
   //
   // Plinth's OWN Stream Deck widget is the other thing entirely: it mirrors a LOCAL
   // "UI Stream Deck" — Elgato's on-screen Virtual Stream Deck — by capturing its Qt
@@ -445,9 +452,18 @@
   }
 
   function sdPollProfile() {
+    // hideWindow is deliberately ABSENT, not false. It is a user setting the stock Stream
+    // Deck widget exposes and posts on its own 4s poll; asserting it here on ours meant
+    // two loops fighting over the same window, and with both widgets on the dashboard and
+    // the native one set to "off" the deck window ping-ponged between -32000,-32000 and
+    // 60,60 every few seconds. Omitting it leaves whatever the user last chose.
+    //
+    // Restoring the window on disconnect is NOT the missing half: HideVsdWindow(false)
+    // hardcodes SetWindowPos(60, 60), so it would move the window somewhere new rather
+    // than back where it was.
     parent.postMessage({
       type: 'ww-sd-profile', id: sdTrack('profile'),
-      profileName: '', hideWindow: true, live: false,
+      profileName: '', live: false,
     }, '*');
   }
 
@@ -653,9 +669,17 @@
       sdPollProfile();
     },
     reconnectStreamDeck(widgetId) {
-      if (!sdState.connected) return;
-      sdStartTimers();
-      sdPollProfile();
+      // Delegate rather than hand-roll. The old body guarded on `connected` and so was a
+      // permanent no-op after disconnectStreamDeck — which is the one state a reconnect
+      // exists for. A widget that suspends on hide and resumes on show called a
+      // documented API that did nothing, forever, and never learned it.
+      //
+      // connectStreamDeck is the whole resume sequence and gets it right: it clears
+      // sdState.pending (so a reply owed to the previous connection cannot settle this
+      // one), resets announced/tiles, bumps connectGen for the no-reply timer, and starts
+      // the polls. Reproducing any of that here would drift.
+      if (sdState.widgetId == null) return;
+      sd.connectStreamDeck(sdState.widgetId, null, sdState.cols, sdState.rows);
     },
     disconnectStreamDeck(widgetId) {
       sdState.connected = false;
@@ -672,20 +696,23 @@
       if (sdState.connected) sdPollCapture();
     },
     sendKeyPress(widgetId, buttonIndex, pressed) {
-      const profile = sdState.profile;
-      if (!profile || !sdState.cols) return;
-      // A RELEASE owed to an accepted press always goes through, whatever the window
-      // says now. The window can disappear mid-hold — an overlay hidden or recreated
-      // between the pointerdown and the pointerup — and refusing the up there leaves the
-      // host holding WM_LBUTTONDOWN on a real window until its 10s safety timer fires.
-      // The host's own up path releases without needing a window, so this cannot fail
-      // the way a press would.
+      // A RELEASE owed to an accepted press always goes through — FIRST, before any
+      // other guard. The host's up path releases without needing a window or a profile,
+      // so nothing below can make this fail; anything below it can make it not happen.
+      //
+      // It sat under the profile guard until now, which made it a no-op in the very case
+      // it was written for: sdState.profile is nulled by ANY poll that answers
+      // unavailable, the poll runs every 4s, so a press held across one returned at
+      // `!profile` and the release never posted. The host then held WM_LBUTTONDOWN on a
+      // real window until the 10s safety timer — the exact outcome this prevents.
       if (!pressed && sdState.pressOutstanding) {
         sdState.pressOutstanding = false;
         parent.postMessage({ type: 'ww-sd-click', rows: 1, cols: 1, row: 0, col: 0,
           phase: 'up' }, '*');
         return;
       }
+      const profile = sdState.profile;
+      if (!profile || !sdState.cols) return;
       if (!sdState.hasWindow) {
         // Posting a PRESS here would look like it worked: the host finds no window,
         // logs a warning, and the widget — which never learns the outcome — keeps

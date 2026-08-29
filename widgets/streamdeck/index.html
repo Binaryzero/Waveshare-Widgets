@@ -319,8 +319,12 @@
     if (!profile || !profile.available) {
       renderPicker(null);
       setLiveVisible(false);
+      // `reason` is present only when the host found decks it cannot mirror. Prepending it
+      // answers the question the generic advice leaves open — why the decks already
+      // visible in the Stream Deck app are not the ones being asked for.
+      const why = (profile && profile.reason) ? profile.reason + ' ' : '';
       showMessage('No Virtual Stream Deck found',
-        'Open Elgato Stream Deck and create a Virtual Stream Deck (turn OFF "Hide unused keys"). Its buttons — and their real plugin actions — appear here.');
+        why + 'Open Elgato Stream Deck and create a Virtual Stream Deck (turn OFF "Hide unused keys"). Its buttons — and their real plugin actions — appear here.');
       return;
     }
     renderPicker(profile.profiles);
