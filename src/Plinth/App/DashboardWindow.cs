@@ -400,7 +400,11 @@ public sealed class DashboardWindow : Form
 
                 case "sd-profile":
                     _streamDeck ??= new StreamDeckBridge();
-                    _streamDeck.HideVsdWindow(message["hideWindow"]?.GetValue<bool>() ?? true);
+                    // Only when the caller stated a preference. Defaulting absence to
+                    // "hide" made every poll from a widget with no opinion fight the
+                    // setting of one that had.
+                    if (message["hideWindow"] is { } hideNode)
+                        _streamDeck.HideVsdWindow(hideNode.GetValue<bool>());
                     var sdResult = BuildStreamDeckProfile(message["profileName"]?.GetValue<string>());
                     // Live mode: also ship the VSD window's current pixels so dynamic key
                     // faces (weather, statuses) mirror in real time; null capture (window
@@ -1495,7 +1499,19 @@ public sealed class DashboardWindow : Form
         _streamDeck ??= new StreamDeckBridge();
         var profile = _streamDeck.ReadProfile(preferredName);
         if (profile is null)
-            return new JsonObject { ["available"] = false };
+        {
+            var unavailable = new JsonObject { ["available"] = false };
+            // "No deck" and "decks you cannot use" need different advice, and only the
+            // host can tell them apart. Without this the network-only user is told to
+            // create a Virtual Stream Deck with no hint that the decks already on screen
+            // in their Stream Deck app are not candidates — the explanation exists, but
+            // only in app.log, which nothing in this app displays.
+            if (_streamDeck.LastReadFoundNothingMirrorable)
+                unavailable["reason"] = "The decks Plinth could read here are network-attached "
+                    + "(Stream Deck Mobile, or a bridge such as iCUE's). They have no window "
+                    + "on this desktop, so their keys cannot be mirrored or pressed from here.";
+            return unavailable;
+        }
 
         var buttons = new JsonArray();
         foreach (var b in profile.Buttons)

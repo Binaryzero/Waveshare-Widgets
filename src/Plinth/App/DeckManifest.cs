@@ -81,30 +81,47 @@ public static class DeckManifest
     public static readonly IReadOnlyList<string> LocalWindowModels = ["UI Stream Deck"];
 
     /// <summary>
-    /// Device models that are NETWORK-attached virtual decks, with no window on this
-    /// desktop at all.
+    /// Device models this app recognizes but can never mirror: network-attached decks,
+    /// with no window on this desktop at all.
     /// </summary>
     /// <remarks>
-    /// "VSD2/WiFi" is the device iCUE creates through its own bridge — a different icon in
-    /// the Stream Deck app, a different model string here, and, decisively, a different
-    /// TRANSPORT. iCUE's Streamdeck widget is a network client of it: it pairs (hence the
-    /// widget's "Go to the Stream Deck app and approve the iCUE connection" card),
-    /// receives per-key faces pushed over the wire as data URLs, and sends presses back
-    /// the same way. Nothing about it is on this desktop to capture or click.
+    /// "VSD2/WiFi" and "VSD/WiFi" are Elgato's model strings for a network-attached,
+    /// Stream Deck Mobile-class device — a paired phone, or a bridge that registers as
+    /// one, which is what Corsair's iCUE does. (Elgato's own marketplace-connect-for-obs
+    /// maps both strings to "Stream Deck Mobile"; this file used to call VSD2/WiFi "the
+    /// device iCUE creates", which is over-specific and wrong for the more likely owner.)
     ///
-    /// So this is NOT simply another entry alongside <see cref="LocalWindowModels"/>. The
-    /// two are different mechanisms, and conflating them is what made the last round
-    /// wrong: a "just add the model string" fix would have found the profile, published a
-    /// grid, and then silently dropped every press, because the window the click path
-    /// targets does not exist for this device. What IS readable is the profile on disk —
-    /// grid, titles and static key images — which is real, and is all that is real
-    /// without speaking Elgato's network protocol.
+    /// They are recognized here, and never mirrored, for one reason each:
+    ///
+    /// RECOGNIZED, because dropping the strings is worse than keeping them. An unlisted
+    /// model falls into the skipped-model branch, whose advice is "report that model
+    /// string to have it added" — soliciting exactly the bug this list exists to prevent,
+    /// for a model that provably can never be added.
+    ///
+    /// NEVER MIRRORED, because there is no way to press a key on one. This is settled, not
+    /// pending, and the evidence is worth keeping so nobody re-opens it:
+    ///   · Elgato's plugin WebSocket has no actuation command at all — keyDown/keyUp are
+    ///     inbound only — and the SDK states the isolation as a design property: "it is
+    ///     not possible to access or control actions that are not owned by your plugin".
+    ///   · StreamDeckEmbeded, the project this bridge's technique comes from, IS a
+    ///     registered plugin with the whole SDK available, and still falls back to
+    ///     PostMessage on the deck window. A windowless device has no such fallback.
+    ///   · The network transport is pairing-authenticated with no published spec and no
+    ///     open-source client; every public reverse engineering is USB HID, which a
+    ///     device with no USB endpoint cannot use.
+    ///   · Corsair's own SDK exposes no Stream Deck surface, so there is no way in from
+    ///     that side either.
+    ///
+    /// The profile on disk is still perfectly readable — grid, titles, static key images —
+    /// and that is precisely the trap: mirroring it yields a convincing deck whose every
+    /// key is dead, which reads as broken buttons rather than as a deck that was never
+    /// going to work. Refusing it is the feature.
     /// </remarks>
-    public static readonly IReadOnlyList<string> NetworkModels = ["VSD2/WiFi"];
+    public static readonly IReadOnlyList<string> UnmirrorableModels = ["VSD2/WiFi", "VSD/WiFi"];
 
-    /// <summary>Every model the bridge recognizes, of either kind.</summary>
+    /// <summary>Every model this app recognizes, mirrorable or not.</summary>
     public static IReadOnlyList<string> KnownModels { get; } =
-        [.. LocalWindowModels, .. NetworkModels];
+        [.. LocalWindowModels, .. UnmirrorableModels];
 
     /// <summary>Whether this model names a deck the bridge can read a profile for.</summary>
     public static bool IsKnownModel(string? model) => Matches(KnownModels, model);
@@ -113,9 +130,9 @@ public static class DeckManifest
     /// live capture and for clicks landing anywhere.</summary>
     public static bool IsLocalWindowModel(string? model) => Matches(LocalWindowModels, model);
 
-    /// <summary>Whether this model is a network device, so faces come from the profile on
-    /// disk and presses have nowhere local to go.</summary>
-    public static bool IsNetworkModel(string? model) => Matches(NetworkModels, model);
+    /// <summary>Whether this model is recognized but can never be mirrored — no window
+    /// here, and no local API that can press one of its keys.</summary>
+    public static bool IsUnmirrorableModel(string? model) => Matches(UnmirrorableModels, model);
 
     /// <remarks>
     /// Case- and whitespace-insensitive: these strings are written by other software and
@@ -134,13 +151,13 @@ public static class DeckManifest
     /// Index of the profile to mirror, or -1 when none can be.
     /// </summary>
     /// <remarks>
-    /// A NETWORK deck is never chosen, and that is the point of this function rather than
-    /// an oversight in it. Its profile is perfectly readable — grid, titles, static key
-    /// images — so mirroring it produces a convincing deck whose every key is dead. A
+    /// An UNMIRRORABLE deck is never chosen, and that is the point of this function rather
+    /// than an oversight in it. Its profile is perfectly readable — grid, titles, static
+    /// key images — so mirroring it produces a convincing deck whose every key is dead. A
     /// widget that does not do what it says is worse than one that says it cannot: the
     /// dead deck looks like a bug in the buttons, while "no deck" names the thing to fix
-    /// (create a Virtual Stream Deck in the Stream Deck app). Discovery still FINDS
-    /// network decks, because saying which ones exist is how the caller explains itself.
+    /// (create a Virtual Stream Deck in the Stream Deck app). Discovery still FINDS such
+    /// decks, because saying which ones exist is how the caller explains itself.
     ///
     /// Among the eligible: an exact name wins (the user's setting), else the most recently
     /// edited — the deck they are actually using; directory order is not stable and "first

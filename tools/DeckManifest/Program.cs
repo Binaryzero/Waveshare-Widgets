@@ -101,7 +101,7 @@ static string? Model(string json)
 // M1 · the two real models, read out of the shape a real manifest has.
 Check("M1 Elgato's own on-screen deck reads",
     Model("""{"Device":{"Model":"UI Stream Deck"}}""") == "UI Stream Deck");
-Check("M1b the deck iCUE creates reads",
+Check("M1b a network-attached deck reads",
     Model("""{"Device":{"Model":"VSD2/WiFi"}}""") == "VSD2/WiFi");
 
 // M2 · same shape hazards as Size, one level down. A model that throws is a profile
@@ -113,28 +113,35 @@ Check("M2d an empty Model is not a model", Model("""{"Device":{"Model":"   "}}""
 Check("M2e a non-object manifest is not a model", Model("[]") is null);
 
 // M3 · both recognized, and — the part that matters — recognized as DIFFERENT KINDS.
-// A single "is this mirrorable" predicate is what let the network deck be treated as a
-// window deck; that these two answers disagree for VSD2/WiFi is the fix.
-Check("M3 both models are known", DeckManifest.IsKnownModel("UI Stream Deck")
-    && DeckManifest.IsKnownModel("VSD2/WiFi"));
-Check("M3b Elgato's deck is a local window: capture and clicks are possible",
+// A single "is this mirrorable" predicate is what let an unmirrorable deck be treated as
+// a window deck; that these two answers disagree for VSD2/WiFi is the fix.
+Check("M3 all models are known", DeckManifest.IsKnownModel("UI Stream Deck")
+    && DeckManifest.IsKnownModel("VSD2/WiFi") && DeckManifest.IsKnownModel("VSD/WiFi"));
+Check("M3b Elgato's on-screen deck is a local window: capture and clicks are possible",
     DeckManifest.IsLocalWindowModel("UI Stream Deck")
-    && !DeckManifest.IsNetworkModel("UI Stream Deck"));
-Check("M3c iCUE's deck is a NETWORK device: neither capture nor clicks are possible",
-    DeckManifest.IsNetworkModel("VSD2/WiFi")
+    && !DeckManifest.IsUnmirrorableModel("UI Stream Deck"));
+Check("M3c a network-attached deck is unmirrorable: neither capture nor clicks are possible",
+    DeckManifest.IsUnmirrorableModel("VSD2/WiFi")
     && !DeckManifest.IsLocalWindowModel("VSD2/WiFi"));
+// Gen-1 Stream Deck Mobile. Recognized for the same reason as gen 2: an UNLISTED model
+// falls into the skipped-model branch, whose advice is "report that model string to have
+// it added" — soliciting the very bug this list prevents, for a model that can never be
+// added.
+Check("M3c2 the gen-1 network model is recognized and unmirrorable too",
+    DeckManifest.IsKnownModel("VSD/WiFi") && DeckManifest.IsUnmirrorableModel("VSD/WiFi")
+    && !DeckManifest.IsLocalWindowModel("VSD/WiFi"));
 Check("M3d the two sets do not overlap",
-    !DeckManifest.LocalWindowModels.Intersect(DeckManifest.NetworkModels, StringComparer.OrdinalIgnoreCase).Any());
+    !DeckManifest.LocalWindowModels.Intersect(DeckManifest.UnmirrorableModels, StringComparer.OrdinalIgnoreCase).Any());
 Check("M3e KnownModels is exactly the union",
     DeckManifest.KnownModels.OrderBy(m => m, StringComparer.Ordinal).SequenceEqual(
-        DeckManifest.LocalWindowModels.Concat(DeckManifest.NetworkModels)
+        DeckManifest.LocalWindowModels.Concat(DeckManifest.UnmirrorableModels)
                     .OrderBy(m => m, StringComparer.Ordinal), StringComparer.Ordinal));
 
 // M4 · written by other software and carried through JSON, so case and stray whitespace
 // must not be the reason a real deck is refused — that refusal is the original bug.
 Check("M4 case does not matter", DeckManifest.IsKnownModel("vsd2/wifi")
     && DeckManifest.IsLocalWindowModel("ui stream deck"));
-Check("M4b surrounding whitespace does not matter", DeckManifest.IsNetworkModel("  VSD2/WiFi "));
+Check("M4b surrounding whitespace does not matter", DeckManifest.IsUnmirrorableModel("  VSD2/WiFi "));
 Check("M4c ...and it is trimmed off what the reader returns",
     Model("""{"Device":{"Model":"  VSD2/WiFi  "}}""") == "VSD2/WiFi");
 
@@ -148,7 +155,7 @@ Check("M5d a superstring is not a match", !DeckManifest.IsKnownModel("VSD2/WiFi/
 Check("M5e a substring host is not a match", !DeckManifest.IsKnownModel("My UI Stream Deck v2"));
 Check("M5f empty and null are not known",
     !DeckManifest.IsKnownModel("") && !DeckManifest.IsKnownModel(null)
-    && !DeckManifest.IsLocalWindowModel(null) && !DeckManifest.IsNetworkModel(null));
+    && !DeckManifest.IsLocalWindowModel(null) && !DeckManifest.IsUnmirrorableModel(null));
 
 Console.WriteLine("Choosing which deck to mirror");
 
@@ -171,8 +178,8 @@ var reported = new[] { net1, local, net2, P("Default Profile copy", "VSD2/WiFi",
 Check("C1 a newer network deck never outranks the one that can be pressed",
     DeckManifest.ChooseMirrorable(reported, null) == 1, "expected the UI Stream Deck at index 1");
 
-// C2 · network decks ONLY. Refusing is the answer; picking one anyway is the bug.
-Check("C2 a machine with only network decks mirrors nothing",
+// C2 · unmirrorable decks ONLY. Refusing is the answer; picking one anyway is the bug.
+Check("C2 a machine with only unmirrorable decks mirrors nothing",
     DeckManifest.ChooseMirrorable(new[] { net1, net2 }, null) == -1);
 Check("C2b ...and naming one explicitly does not force it",
     DeckManifest.ChooseMirrorable(new[] { net1, net2 }, "Echo Profiles 12.1") == -1);
@@ -201,7 +208,7 @@ Check("C4 a timestamp tie is broken by name, so the pick does not flip between p
 
 // C5 · a network deck named explicitly while a usable one exists. The setting cannot be
 // honoured, and blanking the deck to prove a point helps nobody.
-Check("C5 a network deck named in settings falls back to a deck that works",
+Check("C5 an unmirrorable deck named in settings falls back to a deck that works",
     DeckManifest.ChooseMirrorable(new[] { net1, local }, "Claude AI Prompt Templates") == 1);
 
 Console.WriteLine("Wired up");
@@ -233,7 +240,39 @@ else
         code.Contains("Where(p => DeckManifest.IsLocalWindowModel(p.Model))"));
     // A refusal nobody can explain is the original bug wearing a different hat.
     Check("M6f refusing to mirror is explained in the log, not silent",
-        code.Contains("_loggedNetworkOnly"));
+        code.Contains("_loggedUnmirrorableOnly"));
+    // The log claim is derived from the predicate, so the sentence is true by
+    // construction rather than by an invariant a later edit could break.
+    Check("M6f2 ...and the explanation is derived from the predicate, not asserted",
+        code.Contains("DeckManifest.IsUnmirrorableModel(p.Model)"));
+    // app.log has no viewer in this app, so the log alone leaves the affected user with a
+    // card that gives correct advice and never says why their decks are not candidates.
+    Check("M6j the refusal reaches the USER, not only app.log",
+        code.Contains("LastReadFoundNothingMirrorable"));
+    // POSITION, not presence. The flag is read on the NEXT call, so every path out of a
+    // read has to leave it describing that read: set only on success, it survives a later
+    // read that finds zero profiles (which returns early) or throws — and the widget goes
+    // on explaining network decks to someone who no longer has any. Clearing it before
+    // the first early return is what makes that impossible rather than merely unlikely.
+    var readBody = System.Text.RegularExpressions.Regex.Match(code,
+        @"public DeckProfile\? ReadProfile\(.*?\n    \}", System.Text.RegularExpressions.RegexOptions.Singleline).Value;
+    var resetAt = readBody.IndexOf("LastReadFoundNothingMirrorable = false;", StringComparison.Ordinal);
+    var earlyReturnAt = readBody.IndexOf("if (profiles.Count == 0)", StringComparison.Ordinal);
+    // The claim reports what was READ, and nothing stronger. Four separate defects came
+    // from trying to say "every deck on this machine is unmirrorable": a flag that
+    // outlived its read, an Any() that ignored skipped models, a count that missed
+    // unreadable ones, and a log branch that ran ungated. All four were the same
+    // over-claim wearing different clothes. The weaker statement is true in every case,
+    // including the mixed ones, and needs no bookkeeping to be sure of — so reintroducing
+    // that bookkeeping is the regression this guards against.
+    Check("M6l the user-facing claim says what was read, with nothing to get wrong",
+        !code.Contains("droppedAny") && !code.Contains("IsUnmirrorableOnly"),
+        "accounting for every dropped profile is what produced four defects in a row");
+    Check("M6k the stale-explanation flag is cleared before any early return",
+        resetAt >= 0 && earlyReturnAt >= 0 && resetAt < earlyReturnAt,
+        resetAt < 0 ? "no unconditional reset in ReadProfile"
+            : earlyReturnAt < 0 ? "could not locate the early return"
+            : $"reset at {resetAt}, early return at {earlyReturnAt}");
     // A profile read off disk says nothing about whether the deck's window is open NOW,
     // and a press needs the window. Without this the widget shows live-looking keys that
     // swallow every tap whenever the deck has been closed.

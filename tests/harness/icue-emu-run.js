@@ -64,7 +64,8 @@
 //        and swallow every tap. The open-window run above asserts the opposite direction,
 //        or a shim that simply refused everything would pass both.
 //
-//        iCUE's own VSD2/WiFi network deck reaches that state permanently — it has no
+//        A network-attached deck (VSD2/WiFi — Stream Deck Mobile, or a bridge such as
+//        iCUE's) is in that state permanently — it has no
 //        window, ever. The host does not offer such a deck to be mirrored at all, so
 //        there is nothing here to drive for it: tools/DeckManifest's C-probes assert it
 //        is refused upstream rather than rendered as a deck that does nothing, which is
@@ -232,13 +233,88 @@ check('E5d2 a release is forwarded even after the deck window has gone',
     && /if \(!pressed && sdState\.pressOutstanding\)/.test(shim)
     && /if \(phase == "up"\)\s*\{\s*ReleasePendingPress\(\);/.test(bridge.replace(/\r/g, '')));
 
+// E5d3 — POSITION, not just presence. E5d2 above passed while the bug was live: the
+// release path existed but sat under `if (!profile || !sdState.cols) return;`, and
+// sdState.profile is nulled by any poll answering unavailable — which runs every 4s. So a
+// press held across one returned at the profile guard and the release never posted,
+// leaving the host holding WM_LBUTTONDOWN until its 10s safety timer. The guard the fix
+// must clear is the one it used to sit behind, so the check is which comes first.
+const sendKeyPressBody = (/sendKeyPress\(widgetId, buttonIndex, pressed\) \{[\s\S]*?\n    \},/.exec(shim) || [''])[0];
+const releaseAt = sendKeyPressBody.indexOf('sdState.pressOutstanding');
+const profileGuardAt = sendKeyPressBody.indexOf('!profile || !sdState.cols');
+check('E5d3 the release path runs BEFORE the profile guard that used to swallow it',
+  releaseAt > 0 && profileGuardAt > 0 && releaseAt < profileGuardAt,
+  releaseAt < 0 || profileGuardAt < 0
+    ? 'could not locate both in sendKeyPress'
+    : `release at ${releaseAt}, profile guard at ${profileGuardAt}`);
+
+// E5f — a documented API that accepts the call and does nothing is the same defect class
+// as a deck that renders and cannot be pressed. reconnectStreamDeck guarded on `connected`
+// and so was a permanent no-op after disconnect: the one state it exists for.
+// E5f2 — reconnect has to hand back a USABLE deck, not just re-enter connect. `announced`
+// and `captureHash` are per-connection: left standing they suppress virtualDeviceCreated
+// for the new connection and make sdPaintFromProfile bail (a set hash reads as "live
+// capture is driving the faces"), so the deck comes back blank and stays blank. Asserted
+// on connectStreamDeck, which is where a FRESH connect needs them reset too.
+const connectBody = (/connectStreamDeck\(widgetId, deviceId, columns, rows\) \{[\s\S]*?\n    \},/.exec(shim) || [''])[0];
+const freshBody = (/function sdFreshConnection\(\) \{[\s\S]*?\n  \}/.exec(shim) || [''])[0];
+// Reset from ONE definition rather than field by field. Enumerating them in connect meant
+// remembering each: announced, captureHash and unreachable were each missed and found
+// separately, and every one of them silently withheld a signal the widget was waiting for.
+const PER_CONNECTION = ['announced', 'unreachable', 'profile', 'tiles',
+  'captureHash', 'answered', 'warnedNoWindow', 'hasWindow'];
+const missing = PER_CONNECTION.filter((f) => !new RegExp('\\b' + f + ':').test(freshBody));
+check('E5f2 connect resets every per-connection field, from a single definition',
+  /Object\.assign\(sdState, sdFreshConnection\(\)\)/.test(connectBody) && missing.length === 0,
+  missing.length ? 'not reset: ' + missing.join(', ')
+    : `${PER_CONNECTION.length} fields, applied via sdFreshConnection()`);
+
+// pressOutstanding must NOT be reset: a press the host already accepted still owes its
+// release, and clearing the flag strands WM_LBUTTONDOWN until the 10s safety timer.
+check('E5f3 ...but not the outstanding press, whose release must still be delivered',
+  !/\bpressOutstanding:/.test(freshBody));
+
+// E5f4 — resetting state is not enough on its own: work already IN FLIGHT when the
+// connection ends can land afterwards and undo it. Replies are scoped by `pending`, which
+// connect clears; the two paths that are not are a timer and an image decode, and both
+// must ask the same question. A capture decode landing after a reconnect overwrites the
+// new faces and sticks, because captureHash already holds the new frame so every later
+// poll answers "unchanged". Only reachable at all since reconnect stopped being a no-op.
+const asyncGuarded = ['sdSliceCapture', 'no-reply timer'];
+check('E5f4 async work from an ended connection is discarded, not applied',
+  /function sdStillCurrent\(gen\)/.test(shim)
+    && /const gen = sdState\.connectGen;[\s\S]{0,400}?img\.onload = \(\) => \{\s*\n\s*if \(!sdStillCurrent\(gen\)\) return;/.test(shim)
+    && /if \(sdStillCurrent\(gen\) && !sdState\.answered\)/.test(shim),
+  asyncGuarded.length + ' async paths share one generation check');
+
+check('E5f reconnect actually reconnects after a disconnect',
+  !/reconnectStreamDeck\(widgetId\) \{\s*\n\s*if \(!sdState\.connected\) return;/.test(shim)
+    && /reconnectStreamDeck\(widgetId\) \{[\s\S]*?sd\.connectStreamDeck\(/.test(shim));
+
+// E5g — the shim asserted hideWindow on every 4s poll, fighting the stock widget's own
+// user setting on the same cadence: the deck window ping-ponged between offscreen and
+// 60,60. Absence must survive all the way to the host, so the `!== false` coercion in the
+// shell had to go too.
+check('E5g an unstated hideWindow stays unstated across every hop',
+  !/hideWindow: true/.test(shim)
+    && /typeof msg\.hideWindow === 'boolean'/.test(shell)
+    && /message\["hideWindow"\] is \{ \} hideNode/.test(dash.replace(/\{\s*\}/g, '{ }')));
+
+// E5g2 — the PUBLIC api is upstream of the shell, so fixing only the shell left the
+// coercion in place for every native widget: WW.requestStreamDeck() with no stated
+// preference still asserted "hide it" on every poll and still fought a widget that had one.
+const api = fs.readFileSync(path.join(REPO, 'src', 'Plinth', 'Shell', 'widget-api.js'), 'utf8');
+check('E5g2 ...including through the public widget API, not only the shell',
+  !/hideWindow: opts\.hideWindow !== false/.test(api)
+    && /typeof opts\.hideWindow === 'boolean'/.test(api));
+
 // E5e — the user-visible decision, asserted where it is made. A network deck's profile
 // reads perfectly, so mirroring it yields a convincing deck with dead keys; the bridge
 // must route the choice through ChooseMirrorable (driven by the C-probes), keep such a
 // deck out of the settings picker, and explain the refusal instead of going quiet.
 check('E5e a deck that cannot be pressed is never offered, and the refusal is explained',
   /DeckManifest\.ChooseMirrorable\(candidates, preferredName\)/.test(bridge)
-    && /_loggedNetworkOnly/.test(bridge)
+    && /_loggedUnmirrorableOnly/.test(bridge)
     && /Where\(p => DeckManifest\.IsLocalWindowModel\(p\.Model\)\)/.test(bridge));
 
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');

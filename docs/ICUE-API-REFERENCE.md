@@ -153,7 +153,10 @@ Example:
 ```
 
 **Plinth compatibility:** parsed into our Settings UI. `slider`/`switch`/`textfield`/
-`color`/`combobox`/`tab-buttons`/`sensors-factory` are fully supported; `sensors-combobox`
+`color`/`sensors-factory` are fully supported. `combobox`/`tab-buttons` are supported *when
+they carry options*: the manifest reader upgrades them to `select` only if `data-values`
+yields any, and an option-less one falls through to a text field, since the settings window
+has no case of its own for either type. `sensors-combobox`
 maps to our native sensor picker. `search-combobox` degrades to a text field (its options
 come from widget ES-modules we don't execute), and `media-selector` shows a
 "not supported yet" note. Expression values are literal-parsed, with three evaluated for
@@ -163,8 +166,9 @@ real (see [the `iCUE` global](#the-icue-and-device-globals)): `iCUE.allTimeZones
 *Observed meta names beyond the documented one:* `x-icue-info` (a settings-pane status
 row, e.g. `data-type="app-status" application="stream-deck"` on the StreamDeck widget),
 `x-icue-widget-group` (marketplace grouping, e.g. `tr('Clock Face')`), and
-`x-icue-widget-preview` (a preview image path). Plinth ignores all three — they carry
-no runtime behavior. Group entries may also carry an `info` (or `description`) field of
+`x-icue-widget-preview` (a preview image path). Plinth ignores all three. Note that
+`x-icue-info` is not purely cosmetic in iCUE — the `app-status` example above drives a
+live status row there — so ignoring it drops behavior rather than only decoration. Group entries may also carry an `info` (or `description`) field of
 help text; Plinth drops it.
 
 ---
@@ -332,16 +336,42 @@ Methods: `connectStreamDeck(widgetId, deviceId, columns, rows)`,
 Signals: `virtualDeviceCreated(widgetId, deviceId)`,
 `buttonIconUpdated(widgetId, buttonIndex, iconDataUrl)` (icon as a `data:` URL),
 `streamdeckUnreachable`, `authenticationRequired`, `authenticationRejected`.
-Uses `iCUE.widgetId` and `iCUE.streamDeckDeviceId`.
+Uses `iCUE.widgetId` and `iCUE.streamDeckDeviceId`. *(Plinth does not provide
+`iCUE.streamDeckDeviceId`; the emulated `connectStreamDeck` ignores the deviceId argument
+anyway. It is deliberately not aliased to `window.device.deviceId` — in iCUE that id names
+the paired Stream Deck device, while Plinth's is a per-slot display pseudo-UUID, so the
+value would be a lie rather than a stand-in.)*
 
 **Plinth compatibility:** emulated. Read the transport note first, because it decides
 what this can and cannot be backed by.
 
-**iCUE's plugin is a network client, not a window mirror.** iCUE registers a virtual
-device of model **`VSD2/WiFi`** with the Stream Deck app, pairs with it (that is what
-the widget's "Go to the Stream Deck app and approve the iCUE connection" card is for),
-then receives per-key faces pushed over that connection and sends presses back down it.
-Corsair's end of that channel is authenticated and internal, and Plinth cannot speak it.
+**iCUE's plugin is a network client, not a window mirror.** It talks to a
+network-attached device the Stream Deck app reports as model **`VSD2/WiFi`** — Elgato's
+string for a Stream Deck Mobile-class device, which is what iCUE's bridge registers as
+rather than a type iCUE invents (Elgato's own `marketplace-connect-for-obs` maps both
+`VSD2/WiFi` and `VSD/WiFi` to "Stream Deck Mobile"). It pairs with the app — that is what
+the widget's "Go to the Stream Deck app and approve the iCUE connection" card is for —
+then receives per-key faces over that connection and sends presses back down it.
+
+**No local API can drive such a device, and this is settled rather than pending:**
+
+- The Stream Deck plugin WebSocket has 19 outbound commands and not one of them presses,
+  triggers, or invokes an action; `keyDown`/`keyUp` are inbound only.
+- The SDK states the isolation as a design property, not a gap: *"it is not possible to
+  access or control actions that are not owned by your plugin"*, and *"Plugins do not have
+  access to user-defined profiles, and therefore cannot switch to them."*
+- StreamDeckEmbeded — the project Plinth's own technique comes from — **is** a registered
+  plugin with the whole SDK available, and still falls back to `PostMessage` on the deck
+  window for every non-system action. A windowless device has no such fallback.
+- The network transport is pairing-authenticated with no published spec and no
+  open-source client. Every public reverse engineering is USB HID, which is structurally
+  useless for a device with no USB endpoint; the one third-party network implementation
+  (`@elgato-stream-deck/tcp`) is host-to-device, the opposite direction.
+- Corsair's own SDK exposes no Stream Deck surface at all.
+
+So Plinth **never mirrors** one. Its profile is perfectly readable from disk, and that is
+exactly the trap: rendering it produces a convincing deck whose every key is dead, which
+reads as broken buttons rather than as a deck that was never going to work.
 
 Plinth's **own** Stream Deck widget is a different mechanism entirely: it mirrors a
 local `UI Stream Deck` — Elgato's on-screen Virtual Stream Deck — by capturing its Qt
@@ -363,7 +393,10 @@ Virtual Stream Deck.
   deviceId is the slot's stable pseudo-UUID). Requires the Elgato software with a
   Virtual Stream Deck open and "Hide unused keys" OFF.
 - A profile of an unrecognized model is skipped, and the host names the models it did
-  find in `app.log` (`Stream Deck: no readable profile…`) so an unlisted one can be added.
+  find in `app.log` (`Stream Deck: no deck this app can mirror. Recognized models are …`)
+  so an unlisted one can be added. A machine whose only decks are network-attached gets a
+  different line — `Stream Deck: nothing here can be mirrored…` — and the widget's own
+  empty-state card carries that reason too, since nothing in the app displays `app.log`.
 - **A readable profile is not a pressable deck.** The profile comes off disk and is just
   as complete when the deck's window is closed, so the host reports `windowAvailable`
   with every poll and the shim refuses a press it cannot deliver, logging why, rather

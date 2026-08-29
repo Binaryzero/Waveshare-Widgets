@@ -308,8 +308,9 @@ provides a compatibility layer inside every widget iframe:
   `sensorValueChanged` / `sensorUnitsChanged` / `sensorAdded` / `sensorRemoved` signals.
 - `window.plugins.Streamdeck` — iCUE's virtual Stream Deck plugin, backed by the host's
   mirror of the LOCAL `UI Stream Deck` (live capture slices as `buttonIconUpdated`
-  pushes, `sendKeyPress` landing as a real press/release on its window). iCUE's own
-  `VSD2/WiFi` deck is a *network* device with no window here, so it is never mirrored:
+  pushes, `sendKeyPress` landing as a real press/release on its window). A
+  network-attached deck (`VSD2/WiFi` or `VSD/WiFi` — Elgato's Stream Deck Mobile class,
+  which is what iCUE's bridge registers as) has no window here, so it is never mirrored:
   its profile reads fine, but a deck whose keys cannot be pressed is refused rather than
   shown. A press is also refused whenever the deck's window is closed. The pairing
   signals (`authenticationRequired` / `authenticationRejected`) never fire.

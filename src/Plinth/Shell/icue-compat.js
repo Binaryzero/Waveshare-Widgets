@@ -375,11 +375,18 @@
   // --- Streamdeck (widgetbuilder.streamdeck) ---
   //
   // iCUE's plugin is a NETWORK client, not a window mirror, and the difference is the
-  // whole design of this shim. iCUE registers a virtual device of model VSD2/WiFi with
-  // the Stream Deck app, pairs with it (the widget's own card says "Go to the Stream
-  // Deck app and approve the iCUE connection"), then receives per-key faces pushed over
-  // that connection and sends presses back down it. Corsair's end of that channel is
-  // authenticated and internal; Plinth cannot speak it.
+  // whole design of this shim. It talks to a device the Stream Deck app reports as model
+  // VSD2/WiFi — Elgato's string for a Stream Deck Mobile-class device, which iCUE's
+  // bridge registers AS rather than a type iCUE invents. It pairs with the app (the
+  // widget's own card says "Go to the Stream Deck app and approve the iCUE connection"),
+  // then receives per-key faces over that connection and sends presses back down it.
+  //
+  // No local API can drive such a device, and that is settled, not pending: the Stream
+  // Deck plugin WebSocket has no actuation command at all (keyDown/keyUp are inbound
+  // only) and the SDK states the isolation as a design property — "it is not possible to
+  // access or control actions that are not owned by your plugin" — while the network
+  // transport is pairing-authenticated with no published spec and no client. The obstacle
+  // is not specifically Corsair's, so there is no other side to try.
   //
   // Plinth's OWN Stream Deck widget is the other thing entirely: it mirrors a LOCAL
   // "UI Stream Deck" — Elgato's on-screen Virtual Stream Deck — by capturing its Qt
@@ -435,6 +442,31 @@
     catch (e) { /* frame gone */ }
   }
 
+  // What "a new connection" means, in one place. sendKeyPress's `pressOutstanding` is
+  // deliberately NOT here: a press the host already accepted still owes its release, and
+  // that release is the one message that must survive anything — clearing the flag would
+  // strand WM_LBUTTONDOWN on a real window until the host's 10s safety timer.
+  function sdFreshConnection() {
+    return {
+      announced: false,      // virtualDeviceCreated must fire again for this connection
+      unreachable: false,    // …and so must streamdeckUnreachable, if it still applies
+      profile: null,         // the previous deck is not this connection's deck
+      tiles: [],             // no face has been pushed yet
+      captureHash: '',       // nothing received, so nothing to dedup against
+      answered: false,       // the no-reply diagnostic is armed for this connection
+      warnedNoWindow: false, // a new connection may say it once more
+      hasWindow: true,       // optimistic until a reply says otherwise
+    };
+  }
+
+  // Anything asynchronous that can outlive the connection which started it asks this
+  // before touching shared state. Replies are already scoped by `pending`, which connect
+  // clears; timers and image decodes are not, and they are the paths that can land after
+  // a reconnect has already painted.
+  function sdStillCurrent(gen) {
+    return sdState.connectGen === gen && sdState.connected;
+  }
+
   function sdTrack(kind) {
     const id = 'icue-sd-' + (++sdState.seq);
     sdState.pending.set(id, kind);
@@ -445,9 +477,18 @@
   }
 
   function sdPollProfile() {
+    // hideWindow is deliberately ABSENT, not false. It is a user setting the stock Stream
+    // Deck widget exposes and posts on its own 4s poll; asserting it here on ours meant
+    // two loops fighting over the same window, and with both widgets on the dashboard and
+    // the native one set to "off" the deck window ping-ponged between -32000,-32000 and
+    // 60,60 every few seconds. Omitting it leaves whatever the user last chose.
+    //
+    // Restoring the window on disconnect is NOT the missing half: HideVsdWindow(false)
+    // hardcodes SetWindowPos(60, 60), so it would move the window somewhere new rather
+    // than back where it was.
     parent.postMessage({
       type: 'ww-sd-profile', id: sdTrack('profile'),
-      profileName: '', hideWindow: true, live: false,
+      profileName: '', live: false,
     }, '*');
   }
 
@@ -519,8 +560,15 @@
   function sdSliceCapture(imageDataUri) {
     const profile = sdState.profile;
     if (!profile) return;
+    // Stamped with the connection that asked for it. A decode is asynchronous, so one
+    // started before a disconnect can complete after the RECONNECT has already painted —
+    // overwriting the new faces with the old frame's, and sticking there, because
+    // captureHash already holds the new frame and every later poll answers "unchanged".
+    // Only reachable since reconnectStreamDeck stopped being a no-op earlier in this PR.
+    const gen = sdState.connectGen;
     const img = new Image();
     img.onload = () => {
+      if (!sdStillCurrent(gen)) return;
       const vRows = profile.rows || 3;
       const vCols = profile.cols || 5;
       const cellW = img.naturalWidth / vCols;
@@ -623,12 +671,19 @@
     authenticationRequired: makeSignal(),  // never emitted: no pairing in this backend
     authenticationRejected: makeSignal(),  // never emitted
     connectStreamDeck(widgetId, deviceId, columns, rows) {
+      Object.assign(sdState, sdFreshConnection());
       sdState.widgetId = widgetId;
       sdState.cols = Math.max(1, columns | 0);
       sdState.rows = Math.max(1, rows | 0);
-      sdState.tiles = [];
       sdState.connected = true;
-      sdState.answered = false;
+      // Every field that describes ONE connection, reset from a single definition. Doing
+      // it by hand here meant remembering each one: `announced` suppressed
+      // virtualDeviceCreated for the new connection, a stale `captureHash` made
+      // sdPaintFromProfile bail (a set hash reads as "live capture is driving the faces")
+      // while the capture poll quoted it so an unchanged host frame returned no pixels,
+      // and `unreachable` swallowed streamdeckUnreachable so a widget that cleared its
+      // state on disconnect got no terminal answer at all. Three of those were found one
+      // at a time. Adding state to sdFreshConnection is now what resets it.
       // Replies owed to the PREVIOUS connection are not answers to this one. Left in
       // place, a late one would set `answered` on the connection that just reset it —
       // suppressing this connection's no-reply diagnostic and announcing the old deck as
@@ -646,16 +701,24 @@
       // one-shot bound this comment promises.
       const gen = ++sdState.connectGen;
       setTimeout(() => {
-        if (sdState.connectGen === gen && sdState.connected && !sdState.answered)
+        if (sdStillCurrent(gen) && !sdState.answered)
           sdLog('NO REPLY from the host to the profile poll after 10s — the bridge did not answer');
       }, 10000);
       sdStartTimers();
       sdPollProfile();
     },
     reconnectStreamDeck(widgetId) {
-      if (!sdState.connected) return;
-      sdStartTimers();
-      sdPollProfile();
+      // Delegate rather than hand-roll. The old body guarded on `connected` and so was a
+      // permanent no-op after disconnectStreamDeck — which is the one state a reconnect
+      // exists for. A widget that suspends on hide and resumes on show called a
+      // documented API that did nothing, forever, and never learned it.
+      //
+      // connectStreamDeck is the whole resume sequence and gets it right: it clears
+      // sdState.pending (so a reply owed to the previous connection cannot settle this
+      // one), resets announced/tiles, bumps connectGen for the no-reply timer, and starts
+      // the polls. Reproducing any of that here would drift.
+      if (sdState.widgetId == null) return;
+      sd.connectStreamDeck(sdState.widgetId, null, sdState.cols, sdState.rows);
     },
     disconnectStreamDeck(widgetId) {
       sdState.connected = false;
@@ -672,20 +735,23 @@
       if (sdState.connected) sdPollCapture();
     },
     sendKeyPress(widgetId, buttonIndex, pressed) {
-      const profile = sdState.profile;
-      if (!profile || !sdState.cols) return;
-      // A RELEASE owed to an accepted press always goes through, whatever the window
-      // says now. The window can disappear mid-hold — an overlay hidden or recreated
-      // between the pointerdown and the pointerup — and refusing the up there leaves the
-      // host holding WM_LBUTTONDOWN on a real window until its 10s safety timer fires.
-      // The host's own up path releases without needing a window, so this cannot fail
-      // the way a press would.
+      // A RELEASE owed to an accepted press always goes through — FIRST, before any
+      // other guard. The host's up path releases without needing a window or a profile,
+      // so nothing below can make this fail; anything below it can make it not happen.
+      //
+      // It sat under the profile guard until now, which made it a no-op in the very case
+      // it was written for: sdState.profile is nulled by ANY poll that answers
+      // unavailable, the poll runs every 4s, so a press held across one returned at
+      // `!profile` and the release never posted. The host then held WM_LBUTTONDOWN on a
+      // real window until the 10s safety timer — the exact outcome this prevents.
       if (!pressed && sdState.pressOutstanding) {
         sdState.pressOutstanding = false;
         parent.postMessage({ type: 'ww-sd-click', rows: 1, cols: 1, row: 0, col: 0,
           phase: 'up' }, '*');
         return;
       }
+      const profile = sdState.profile;
+      if (!profile || !sdState.cols) return;
       if (!sdState.hasWindow) {
         // Posting a PRESS here would look like it worked: the host finds no window,
         // logs a warning, and the widget — which never learns the outcome — keeps

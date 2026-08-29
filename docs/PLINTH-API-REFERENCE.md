@@ -314,7 +314,7 @@ Shell → widget:
 | `ww-media-list-result` | `id, files: [{name, url, kind}]` | media folder listing; `url` is on `https://media.plinth/` |
 | `ww-audio-result` | `id, available, master, sessions` | volume mixer snapshot reply |
 | `ww-secure-result` | `id, ok, value, error` | protected-store reply; `error` is `unavailable`, `too-large`, `too-many-keys`, `bad-key` or `bad-scope` |
-| `ww-sd-profile` | `profile: {available, name, rows, cols, buttons, profiles, model, windowAvailable, capture?}` | deck mirror; `capture` = `{image, w, h}` live window screenshot (only when requested with `live`). `windowAvailable: false` = no window to click, see above. Network decks (iCUE's `VSD2/WiFi`) are never offered here: unpressable, so refused rather than mirrored |
+| `ww-sd-profile` | `profile: {available, name, rows, cols, buttons, profiles, model, windowAvailable, capture?}` | deck mirror; `capture` = `{image, w, h}` live window screenshot (only when requested with `live`). `windowAvailable: false` = no window to click, see above. Network-attached decks (`VSD2/WiFi`, `VSD/WiFi` — a paired phone, or a bridge such as iCUE's) are never offered here: unpressable, so refused rather than mirrored. When they are all a machine has, the reply carries a `reason` string the widget shows |
 | `ww-sd-capture-result` | `data: {image,w,h} \| {unchanged:true} \| {available:false}` | fast-path capture reply (JPEG data URI) |
 
 **Fetch fallback:** `window.fetch` is wrapped so that a cross-origin request blocked by

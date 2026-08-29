@@ -355,5 +355,6 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   still announce the deck and paint its faces (they are real, read from disk) while
   posting ZERO clicks, rather than firing them at a window that is not there. The
   open-window run asserts the opposite direction, or a shim that refused everything would
-  pass both. iCUE's own `VSD2/WiFi` deck is in that state permanently — it has no window,
+  pass both. A network-attached deck (`VSD2/WiFi` — Stream Deck Mobile, or a
+  bridge such as iCUE's) is in that state permanently — it has no window,
   ever — and is refused upstream rather than mirrored, which `tools/DeckManifest` drives.
