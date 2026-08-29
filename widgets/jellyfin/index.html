@@ -1069,7 +1069,15 @@
   // leaves browse.tabs null so renderPlayer retries, gated by tabsFailedAt.
   async function loadTabs() {
     try {
-      const body = await jfJson('/Library/MediaFolders', 12000, 256 * 1024);
+      // With a user named, ask for THAT user's views. Scoping the item lists to a
+      // user while discovering tabs server-wide would leave a restricted user with
+      // tabs that open onto nothing — the navigation has to agree with the contents.
+      // A user that will not resolve falls back to the server-wide list rather than
+      // painting an empty library row.
+      const uid = cfg.user ? await resolveUser() : '';
+      const body = await jfJson(uid
+        ? '/Users/' + encodeURIComponent(uid) + '/Views'
+        : '/Library/MediaFolders', 12000, 256 * 1024);
       // A 200 without Items is a FAULT, not a server with no libraries: returned
       // as [] it would cache an empty tab row and silently blank the filtered
       // shelf, both with their retry paths disarmed.
@@ -1168,6 +1176,14 @@
   // state would be handed the same episode back and replay it from zero.
   const markPlayed = (item) => setUserFlag(item, 'played', true);
 
+  // The latest tap against each item-and-flag. Two writes to the same flag can be in
+  // flight at once on a slow server — hold, unfavourite, hold, favourite — and each
+  // captured the OTHER's optimistic value as the one to undo to. Rolling both back in
+  // completion order would restore the second's snapshot last and leave the poster in
+  // a state neither write achieved. Only the newest tap owns the undo.
+  const flagOps = new Map();
+  let flagSeq = 0;
+
   // A flag the user just tapped, applied to the item in hand BEFORE the write goes
   // out so the poster answers the tap immediately, and put back if the server
   // refuses — a panel that claims a favourite the server never accepted is worse
@@ -1175,11 +1191,25 @@
   async function toggleUserFlag(item, kind, on) {
     const ud = item.UserData || (item.UserData = {});
     const key = kind === 'fav' ? 'IsFavorite' : 'Played';
-    const was = !!ud[key];
+    const opKey = String(item.Id) + '|' + kind;
+    const token = ++flagSeq;
+    flagOps.set(opKey, token);
+    const was = { flag: !!ud[key], pos: ud.PlaybackPositionTicks };
     ud[key] = on;
+    // Setting or clearing watched resets the resume point at the server, both ways.
+    // Leaving the local one behind would keep the progress bar on the poster and —
+    // because a library tab is not reloaded by the write, only a queue is — hand that
+    // stale position to the next tap, resuming a title just declared finished.
+    if (kind === 'played') ud.PlaybackPositionTicks = 0;
     renderPlayer();
-    if (await setUserFlag(item, kind, on)) return;
-    ud[key] = was;
+    const ok = await setUserFlag(item, kind, on);
+    // A newer tap has already claimed this flag: its optimistic value is what the user
+    // last asked for, and its own completion decides what becomes of it.
+    if (flagOps.get(opKey) !== token) return;
+    flagOps.delete(opKey);
+    if (ok) return;
+    ud[key] = was.flag;
+    if (kind === 'played') ud.PlaybackPositionTicks = was.pos;
     renderPlayer();
   }
 
@@ -1321,7 +1351,12 @@
         return;
       }
       const lv = level();
-      if (isQueue(browse.tab)) {
+      // The QUEUE branch is the top level of a queue tab only. Favorites lists
+      // series, and tapping one pushes a path exactly as a library tab does — with
+      // the tab still 'fav' the queue branch would answer that drill-down by
+      // fetching the favourites list again, so a favourited show could not be
+      // opened at all. Below the top level every tab is a library tab.
+      if (isQueue(browse.tab) && lv === 'top') {
         // The server's own answers to "what do I watch now" for the configured
         // user: Next up is the next unwatched episode of every series in progress,
         // Continue is everything left part-watched, movies included. Both are
@@ -1393,6 +1428,14 @@
         if (gen !== browseGen) return;
         const asUser = stateUid
           ? '&userId=' + encodeURIComponent(stateUid) + '&Fields=UserData' : '';
+        // Every read below re-resolves the user on a 404, exactly as the queue reads
+        // and the flag writes do: a user deleted and recreated under the same name
+        // leaves a cached ghost id behind, and without this the library branch would
+        // replay it on every retry and stay broken until the settings changed.
+        const listJson = (path, bytes) => jfJson(path, 12000, bytes).catch((e) => {
+          invalidateUserOn404(e);
+          throw e;
+        });
         if (lv === 'series' || lv === 'season') {
           // Seasons and episodes arrive as ONE list in broadcast order and page
           // locally: the whole list is also the auto-advance queue. 'Whole' means
@@ -1411,8 +1454,8 @@
             + '&SortBy=IndexNumber&SortOrder=Ascending&IsMissing=false&Limit=200' + asUser;
           const all = [];
           for (;;) {
-            const page = await jfJson(whole + (all.length ? '&StartIndex=' + all.length : ''),
-              12000, LIST_MAX_BYTES);
+            const page = await listJson(whole + (all.length ? '&StartIndex=' + all.length : ''),
+              LIST_MAX_BYTES);
             if (gen !== browseGen) return;
             // A malformed page mid-follow faults the whole level rather than passing
             // off a truncated season as complete.
@@ -1438,7 +1481,7 @@
             + '&StartIndex=' + (browse.page * browse.pageSize)
             + '&Limit=' + browse.pageSize
             + (browse.genre ? '&Genres=' + encodeURIComponent(browse.genre) : '') + asUser;
-          const body = await jfJson(path, 12000, LIST_MAX_BYTES);
+          const body = await listJson(path, LIST_MAX_BYTES);
           if (gen !== browseGen) return;
           if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
           const items = body.Items;
@@ -1501,7 +1544,13 @@
     // played and asks /Shows/NextUp for this series' successor.
     // From EITHER queue an episode that finishes rolls into its series' next one:
     // resuming episode 3 and letting it end means episode 4, same as Next up.
-    nextUpRun = (isQueue(browse.tab) && item.Type === 'Episode' && item.SeriesId)
+    // Continue and Next up ONLY. Both are the server's answer to "what now", so
+    // finishing one and asking for the series' successor continues the same thought.
+    // Favorites is a shelf the user built by hand: episode 10 is favourited BECAUSE
+    // it is episode 10, and rolling from it into whatever /Shows/NextUp thinks comes
+    // next — episode 3, if that is where the series was left — is not what was asked.
+    nextUpRun = ((browse.tab === 'cont' || browse.tab === 'next')
+      && item.Type === 'Episode' && item.SeriesId)
       ? String(item.SeriesId) : null;
     startPlayback(item, describe(item));
   }
@@ -1869,7 +1918,7 @@
     // '342 seasons' while a series opens. Say nothing until the answer is this level's.
     el('meta').textContent = !settled ? '' : browse.total
       ? browse.total + (contTab ? ' to finish' : nextTab ? ' up next'
-        : favTab ? ' favorited'
+        : favTab && lv === 'top' ? ' favorited'
         : lv === 'season' ? ' episodes' : lv === 'series' ? ' seasons'
         : activeTab() && activeTab().tv ? ' series' : ' movies')
       : '';
@@ -1879,7 +1928,7 @@
     if (!items.length) {
       stripNote(contTab ? 'Nothing part-watched — stop a title midway and it waits here.'
         : nextTab ? 'Nothing up next — start a series and its next episode queues here.'
-        : favTab ? 'Nothing favorited yet — press and hold any title to add one.'
+        : favTab && lv === 'top' ? 'Nothing favorited yet — press and hold any title to add one.'
         : browse.genre ? 'Nothing here under ' + browse.genre + '.' : 'Nothing here yet.');
       return;
     }

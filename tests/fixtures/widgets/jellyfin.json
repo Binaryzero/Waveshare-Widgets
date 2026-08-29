@@ -184,6 +184,10 @@
           "ProductionYear": 2024,
           "ImageTags": {
             "Primary": "tc1"
+          },
+          "RunTimeTicks": 72000000000,
+          "UserData": {
+            "PlaybackPositionTicks": 36000000000
           }
         },
         {
@@ -314,6 +318,24 @@
     "tier": null,
     "json": {
       "IsFavorite": true
+    }
+  },
+  {
+    "match": "/Views",
+    "tier": null,
+    "json": {
+      "Items": [
+        {
+          "Id": "lib-movies",
+          "Name": "Movies",
+          "CollectionType": "movies"
+        },
+        {
+          "Id": "lib-tv",
+          "Name": "TV Shows",
+          "CollectionType": "tvshows"
+        }
+      ]
     }
   },
   {
