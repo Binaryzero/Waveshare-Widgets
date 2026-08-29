@@ -463,14 +463,32 @@
   // appends a <link> or <style> later — switching views, loading a skin, lazy-loading a
   // panel — brings its qrc: faces with it and resumes the flood this exists to stop.
   // More timeouts would just move the deadline, so watch for the sheets instead.
+  // Two problems, not one, and conflating them is why this took several passes.
+  //
+  //   Late NODES — a sheet element appended after the startup sweeps. The observer sees
+  //     those, and a <link> is armed on its own load event.
+  //   Late CONTENT — a sheet element that is present but whose rules are not there yet.
+  //     An @import inside a dynamically added <style> resolves asynchronously and fires
+  //     nothing this shim can hook: at insertion `rule.styleSheet` is still null, so the
+  //     insertion sweep walks straight past it and nothing ever comes back.
+  //
+  // Hooking each late-content shape needs a detector per shape, and there is no event at
+  // all for that one. Two extra passes after the mutation settles cover the whole class
+  // instead — bounded, restarted by each new mutation, and silent unless they find
+  // something, since a patched rule no longer matches.
+  const FOLLOWUP_DELAYS = [300, 1200];
   let sweepPending = false;
+  let followupTimers = [];
   function scheduleSweep() {
-    if (sweepPending) return;
-    sweepPending = true;
-    // Coalesced: a widget that appends a dozen nodes in one turn gets ONE sweep, and a
-    // sweep is a walk of every sheet. Patched rules no longer match, so a re-sweep is
-    // idempotent and silent.
-    setTimeout(() => { sweepPending = false; sweepFonts(); }, 0);
+    if (!sweepPending) {
+      sweepPending = true;
+      // Coalesced: a widget that appends a dozen nodes in one turn gets ONE sweep, and a
+      // sweep is a walk of every sheet. Patched rules no longer match, so a re-sweep is
+      // idempotent and silent.
+      setTimeout(() => { sweepPending = false; sweepFonts(); }, 0);
+    }
+    for (const t of followupTimers) clearTimeout(t);
+    followupTimers = FOLLOWUP_DELAYS.map((d) => setTimeout(sweepFonts, d));
   }
 
   const SHEET_SELECTOR = 'style, link[rel~="stylesheet" i]';
