@@ -50,6 +50,9 @@
   let dirty = false;           // unsaved edits pending Save & apply
   let stale = false;           // the panel wrote layout.json while this copy was dirty
                                // (#281). Save is held: this copy would revert that write.
+  let layoutGeneration = null; // which version of layout.json state.layout came from,
+                               // echoed on every save so the host can refuse a payload
+                               // built before a write this editor never saw (#281)
   let editSeq = 0;             // bumps on every edit; the save ack only clears dirty
                                // when nothing changed since the acked snapshot
   let saveSeq = 0;             // request id sent with each save, echoed in the ack
@@ -160,6 +163,8 @@
     if (msg.type === 'settings-init') {
       state = msg.data || state;
       if (!state.layout || !Array.isArray(state.layout.pages)) state.layout = { pages: [] };
+      // The version this masked copy came from (#281), adopted with the copy itself.
+      if (typeof state.generation === 'number') layoutGeneration = state.generation;
       backgroundHost = state.backgroundHost || backgroundHost;
       // Normalised HERE, at the one door the catalog comes through, so nothing downstream
       // has to know the shell owns some properties: the editors, the defaults seeding and
@@ -222,6 +227,10 @@
       const acked = msg.seq != null ? pendingSaves.get(msg.seq)
         : (pendingSaves.size ? [...pendingSaves.values()].pop() : undefined);
       if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
+      // What this editor's next save must echo (#281). The host reads it AFTER its write,
+      // so a swallowed write failure hands back the generation still on disk rather than
+      // one that never happened.
+      if (typeof msg.generation === 'number') layoutGeneration = msg.generation;
       // Dirty is cleared only for a FULLY successful save. A credential the host could
       // not protect exists solely in this working copy; marking the editor clean would
       // let the user close the window and lose it, with no visible sign anything failed.
@@ -270,6 +279,32 @@
       } else {
         toast('Saved — dashboard updated');
       }
+    } else if (msg.type === 'save-refused') {
+      // The host declined this save: it was built from a version of layout.json the panel
+      // has since written over (#281). Nothing was written, so the panel's work is intact
+      // — the failure this replaces is the opposite one, where this payload reverted it
+      // silently.
+      //
+      // The seq must be resolved or pendingSaves strands an entry that a later ack picks
+      // up through its no-seq fallback and clears the dirty marker for work still unsaved.
+      if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
+      // Deliberately NOT adopting msg.generation. The whole point is that this copy is
+      // still the old one; taking the new number would make the next Save acceptable and
+      // it would revert the panel — which is the bug, not the recovery. The generation
+      // arrives with a layout, or not at all.
+      //
+      // Recovery is the layout-written banner, unchanged: two intact copies that disagree,
+      // and the user picks. A save that raced the notice lands here instead of there, and
+      // it is the same situation, so it gets the same UI rather than a second one.
+      stale = true;
+      renderStaleBanner();
+      refreshRetiredUi();
+      // The one thing the user must be told rather than shown. A cleared credential exists
+      // only in this working copy and travels only on the save that was just refused, so
+      // it did not happen — and after the reload the field will read as set, because it is.
+      toast(msg.clearedCredentials
+        ? 'Not saved — the panel changed the layout. The credential you removed is still stored; reload and remove it again.'
+        : 'Not saved — the panel changed the layout. Reload to continue.', true);
     } else if (msg.type === 'save-failed') {
       if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
       toast('Save failed: ' + msg.message, true);
@@ -326,6 +361,10 @@
         // in-flight save's ack, which then refuses to clear the marker. Same posture as
         // the minted-ids and evicted-ids adoptions above.
         lastWorkingLayout = replicaLayoutJson();
+        // The restore was a HOST write, so it did not make this editor the last writer.
+        // Adopting its generation with the def is what keeps the next save acceptable —
+        // otherwise the splice converges the model and the rule refuses it anyway (#281).
+        if (typeof msg.generation === 'number') layoutGeneration = msg.generation;
         renderPageList();   // the strip's widget count changed
         renderEditor();
         toast('Restored to "' + (page.name || 'this page') + '"');
@@ -349,6 +388,9 @@
         // makes the user stop retrying — which is the one thing they must do.
         toast('Not deleted — the layout could not be written. Try again.', true);
       }
+      // See retained-restored: a host write converged by ack hands over its generation.
+      // Unchanged when the write failed, so this is a no-op rather than a wrong number.
+      if (typeof msg.generation === 'number') layoutGeneration = msg.generation;
       refreshRetiredUi();   // the attic never reaches the replica — no re-init needed
     } else if (msg.type === 'layout-written') {
       // The PANEL wrote layout.json (#281). Both windows hold the whole file and write it
@@ -363,6 +405,10 @@
           // union and the typed-credential record all stay as they are. (settings-init
           // resets those, which is exactly why this is not a settings-init.)
           state.layout = written;
+          // With the layout, in the same step (#281). The dirty branch below deliberately
+          // does NOT adopt: that editor keeps its own copy, so it must keep the generation
+          // that copy was built from, or its Save would be accepted and revert the panel.
+          if (typeof msg.generation === 'number') layoutGeneration = msg.generation;
           selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
           selectedSlot = null;          // the slot OBJECTS are new; an index into the old
                                         // page means nothing against this list
@@ -385,6 +431,8 @@
       // The PANEL destroyed this one. Drop it here too, or this window's next Save
       // re-ships it from memory and the tile returns with its still-decryptable bytes.
       dropRetained(msg.widgetId, msg.instanceId);
+      // After the drop, so the generation and the model it describes move together (#281).
+      if (typeof msg.generation === 'number') layoutGeneration = msg.generation;
       refreshRetiredUi();
     } else if (msg.type === 'retained-error') {
       // The row is NOT dropped on 'not-found'. That result only says the attic no longer
@@ -1032,7 +1080,7 @@
     }
     const seq = ++saveSeq;
     pendingSaves.set(seq, editSeq); // the ack clears dirty only if this is still current
-    post({ type: 'save-layout', layout: state.layout, seq });
+    post({ type: 'save-layout', layout: state.layout, seq, generation: layoutGeneration });
   });
   el('installWidget').addEventListener('click', () => post({ type: 'install-widget' }));
   el('openFolder').addEventListener('click', () => post({ type: 'open-widgets-folder' }));
@@ -1630,7 +1678,12 @@
     // change with it — "Save your changes first" would name the action the banner just
     // disabled, and a user who follows it finds a button that only points back at the
     // banner. Both buttons stay dead either way: the copies are now doubly divergent.
-    if (dirty) {
+    //
+    // `stale` is tested SEPARATELY from `dirty`, not folded into it, because the two come
+    // apart: a save already in flight when the banner went up can be ACCEPTED and clear
+    // the dirty marker, leaving a clean editor whose copy is still a version behind disk.
+    // Gating on dirty alone would hand those buttons back at exactly that moment.
+    if (dirty || stale) {
       const hint = document.createElement('p');
       hint.className = 'r-hint';
       hint.textContent = stale
@@ -1673,7 +1726,7 @@
       restore.type = 'button';
       restore.className = 'ghost';
       restore.textContent = 'Restore';
-      restore.disabled = dirty || !fits;
+      restore.disabled = dirty || stale || !fits;
       restore.title = stale ? 'Reload first — the panel changed the layout'
         : dirty ? 'Save your changes first'
         : fits ? 'Put it back on this page' : 'No room on this page';
@@ -1697,7 +1750,7 @@
       clear.type = 'button';
       clear.className = 'ghost danger';
       clear.textContent = 'Delete';
-      clear.disabled = dirty;
+      clear.disabled = dirty || stale;
       clear.title = stale ? 'Reload first — the panel changed the layout'
         : dirty ? 'Save your changes first'
         : 'Delete it and its saved credentials for good';

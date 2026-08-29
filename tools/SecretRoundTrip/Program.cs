@@ -2210,6 +2210,79 @@ SecretPolicy.Seal(eTwice, eLegacyStored, Lookup);
 Check("E4 a second clone changes nothing — id-bearing slots are not claimants",
     ValueAt(eTwice, 0, "apiToken") == eSealed, ValueAt(eTwice, 0, "apiToken"));
 
+// ---- G · the layout generation (#281) ---------------------------------------------
+// Two windows hold the whole of layout.json and each writes it back whole, so the host
+// needs to tell a fresh payload from one built before a write it has since committed.
+// The rule is "BEHIND *and* moved by somebody ELSE", and both halves are asserted here
+// because dropping either breaks something the other cannot catch: without behind-ness
+// nothing is ever refused, and without the writer ordinary panel editing is refused.
+//
+// Absolute generation values are deliberately never asserted — earlier cases in this file
+// write layout.json too, and a probe that depended on the counter starting at a particular
+// number would be asserting the order of the file rather than the rule.
+Console.WriteLine("\n-- G: layout generation (#281)");
+
+var gLayout = new DashboardLayout { Pages = [new LayoutPage { Name = "P", Slots = [] }] };
+var gStart = LayoutStore.Generation;
+
+// G1 · a payload built from the CURRENT version is fresh, whoever sent it. This is also
+// the startup case: generation 0 against generation 0, so the first save always lands.
+Check("G1 a current payload is fresh (panel)",
+    !LayoutStore.IsStale(gStart, LayoutStore.PanelWriter));
+Check("G1b a current payload is fresh (settings)",
+    !LayoutStore.IsStale(gStart, LayoutStore.SettingsWriter));
+
+// G2 · the panel is routinely behind ITSELF — it posts its whole model on every drag and
+// resize, and the next payload is out long before the previous ack lands. That is not
+// staleness: its own in-memory state already holds what it just saved. Refusing here would
+// make the panel uneditable, which is why the writer clause exists at all.
+Check("G2 a panel save lands", LayoutStore.Save(gLayout, LayoutStore.PanelWriter));
+Check("G2b ...and bumps the generation by exactly one",
+    LayoutStore.Generation == gStart + 1, LayoutStore.Generation.ToString());
+Check("G2c the panel's own behind payload is NOT stale",
+    !LayoutStore.IsStale(gStart, LayoutStore.PanelWriter));
+
+// G3 · the OTHER window's write is what makes it stale. This is the cross-window half of
+// every member of the family in #281.
+Check("G3 a settings save lands", LayoutStore.Save(gLayout, LayoutStore.SettingsWriter));
+Check("G3b the panel's behind payload is now stale",
+    LayoutStore.IsStale(gStart, LayoutStore.PanelWriter));
+Check("G3c ...while the settings window's own is not",
+    !LayoutStore.IsStale(gStart, LayoutStore.SettingsWriter));
+
+// G4 · the case the first draft of this design got wrong, and the reason the writer is
+// the PAYLOAD SOURCE rather than the requesting window. A Restore or a Clear is performed
+// by the HOST on a window's request. Attributing it to that window would exempt the
+// window's own in-flight payload — which still carries the attic entry the Clear just
+// destroyed, because the client drops the row only on the ack — and the entry would come
+// back with DPAPI bytes that still decrypt. Every host write is therefore attributed to
+// no window, so the requester is stale against its own request.
+var gBeforeHost = LayoutStore.Generation;
+Check("G4 a host-performed write lands", LayoutStore.Save(gLayout));
+Check("G4b the requesting panel is stale against the host write it asked for",
+    LayoutStore.IsStale(gBeforeHost, LayoutStore.PanelWriter));
+Check("G4c ...and so is the settings window",
+    LayoutStore.IsStale(gBeforeHost, LayoutStore.SettingsWriter));
+
+// G5 · a payload carrying NO generation is accepted. Host and clients ship in one binary
+// so it should not arise; if it does, the answer is the behaviour that predates this rule
+// (last writer wins), never a window that can no longer save at all.
+Check("G5 a payload with no generation is accepted",
+    !LayoutStore.IsStale(null, LayoutStore.PanelWriter));
+
+// G6 · a FAILED write must not bump. LayoutStore.Save swallows its exception — ordinary
+// editing triggers it on both surfaces and throwing there would take something visible
+// down — so the bump lives inside the success branch. Bumping anyway would lock the other
+// window out of a file whose content it still matches byte for byte.
+var gBeforeFail = LayoutStore.Generation;
+Plinth.DurableStore.FailNextWrite = true;
+Check("G6 a failed write reports failure",
+    !LayoutStore.Save(gLayout, LayoutStore.SettingsWriter));
+Check("G6b ...and does not bump the generation",
+    LayoutStore.Generation == gBeforeFail, LayoutStore.Generation.ToString());
+Check("G6c ...so the other window's payload is still fresh",
+    !LayoutStore.IsStale(gBeforeFail, LayoutStore.PanelWriter));
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 
@@ -2233,6 +2306,21 @@ namespace Plinth
 
     internal static class DurableStore
     {
-        public static void Write(string path, string contents) => File.WriteAllText(path, contents);
+        /// <summary>Makes the NEXT write throw, so a probe can assert what a failed write
+        /// leaves behind. The real one fails for reasons a probe cannot arrange (a locked
+        /// file, a full disk) and swallows the exception inside LayoutStore.Save, so
+        /// without a seam here the failure branch is unreachable and the "a failed write
+        /// must not bump the generation" rule could only be asserted by reading it.</summary>
+        public static bool FailNextWrite;
+
+        public static void Write(string path, string contents)
+        {
+            if (FailNextWrite)
+            {
+                FailNextWrite = false;
+                throw new IOException("probe: forced write failure");
+            }
+            File.WriteAllText(path, contents);
+        }
     }
 }
