@@ -15,6 +15,11 @@
 //        green — which includes the #221 audit passing on both.
 //   S2 · teeth: the audit is not vacuous — the picker/key surfaces are present in the DOM the
 //        audit walked (the run reports them guarded, not "nothing to check").
+//   S3 · the deck iCUE creates is a NETWORK device (model VSD2/WiFi): its profile is on disk,
+//        so the same picker and the same keys render, but it has no window on this desktop to
+//        capture or to click. Rendering it identically and saying nothing would be the worst
+//        outcome — a deck that looks live and whose buttons do nothing — so the widget must
+//        say it is read-only, must not run the capture loop, and must refuse the tap.
 'use strict';
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -32,17 +37,26 @@ const check = (name, ok, detail) => {
 
 // liveMode off so render() takes the icon-grid path deterministically (the fixture carries no
 // capture, so it would fall through to the grid anyway, but this skips the capture poll too).
-const run = () => {
+const run = (fixture, settings, expects) => {
   try {
-    return { ok: true, out: execFileSync('node', [RUNNER, path.join('widgets', 'streamdeck'),
-      '--sd', path.join(FIX, 'streamdeck-sd.json'), '--slot', 'half',
-      '--settings', JSON.stringify({ liveMode: 'off' }),
-      '--expect', 'Gaming', '--expect', 'Alpha'],
+    const args = [RUNNER, path.join('widgets', 'streamdeck'),
+      '--sd', path.join(FIX, fixture), '--slot', 'half'];
+    if (settings) args.push('--settings', JSON.stringify(settings));
+    return { ok: true, out: execFileSync('node',
+      [...args, ...expects.flatMap((e) => ['--expect', e])],
     { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) };
   } catch (e) { return { ok: false, out: (e.stdout || '') + (e.stderr || '') }; }
 };
 
-const { ok, out } = run();
+// What the widget actually posted to the host — the only place "did not poll" is visible.
+// Absent reads as -1 so a runner that stops reporting fails loudly instead of passing a
+// zero-check by silence.
+const count = (out, label) => {
+  const m = new RegExp('stream-deck ' + label + ': (\\d+)').exec(out);
+  return m ? Number(m[1]) : -1;
+};
+
+const { ok, out } = run('streamdeck-sd.json', { liveMode: 'off' }, ['Gaming', 'Alpha']);
 const failLines = out.split('\n').filter((l) => l.includes('FAIL')).map((l) => l.trim()).join(' | ');
 const tapLine = (out.split('\n').find((l) => l.includes('#221')) || '').trim();
 
@@ -67,6 +81,41 @@ check('S0 fixture describes a multi-profile deck with keys',
   fixture.profile && fixture.profile.available && (fixture.profile.profiles || []).length > 1
     && (fixture.profile.buttons || []).length > 0,
   `${(fixture.profile && fixture.profile.profiles || []).length} profiles, ${(fixture.profile && fixture.profile.buttons || []).length} keys`);
+
+// S3 — the network deck. No --settings, so live mode is on by default: that is what makes
+// S3b mean something, since an off switch would suppress the capture poll for the wrong
+// reason. Same picker, same keys, plus the banner that says the buttons are not live.
+const net = run('streamdeck-sd-network.json', null, ['Gaming', 'Alpha', 'Read-only']);
+const netFail = net.out.split('\n').filter((l) => l.includes('FAIL')).map((l) => l.trim()).join(' | ');
+check('S3 a network deck renders picker and keys, and says it is read-only', net.ok,
+  net.ok ? 'picker + keys + banner'
+    : (netFail || net.out.trim().split('\n').slice(-4).join(' | ').slice(0, 300)));
+
+// S3b — with live mode ON, a deck with no window must still make no capture poll. Otherwise
+// the widget asks for a screenshot of nothing several times a second for as long as it runs.
+check('S3b live mode makes no capture poll for a deck with no window',
+  count(net.out, 'captures') === 0, count(net.out, 'captures') + ' capture poll(s)');
+
+// The positive direction, or S3b would pass on a widget that never captures anything.
+const live = run('streamdeck-sd.json', null, ['Gaming', 'Alpha']);
+check('S3c live mode DOES poll for capture on an ordinary window-backed deck',
+  live.ok && count(live.out, 'captures') > 0,
+  count(live.out, 'captures') + ' capture poll(s)');
+
+// S3d — text-level, in the style of E3 in icue-emu-run: a tap is not driven by this runner,
+// so the guard is asserted where it lives. A click posted for a network deck is
+// fire-and-forget — the host logs a warning the user never sees and the key looks pressed.
+const widget = fs.readFileSync(path.join(REPO, 'widgets', 'streamdeck', 'index.html'), 'utf8');
+check('S3d a key tap is refused for a read-only deck, the same way a vanished deck is',
+  /lastProfile\.interactive === false/.test(widget) && /flash\(cell, 'fail-flash'\)/.test(widget));
+
+// S0b — and the fixture really is the network variant, or S3/S3b test nothing.
+const netFixture = JSON.parse(fs.readFileSync(path.join(FIX, 'streamdeck-sd-network.json'), 'utf8'));
+check('S0b the network fixture is a readable profile that is NOT interactive',
+  netFixture.profile && netFixture.profile.available === true
+    && netFixture.profile.interactive === false
+    && (netFixture.profile.buttons || []).length > 0,
+  netFixture.profile ? `model ${netFixture.profile.model}` : 'no profile');
 
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
 process.exit(failures ? 1 : 0);

@@ -443,6 +443,15 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
     // Virtual Stream Deck replies actually served (a profile handed back), so the data-path
     // check can treat a populated deck — which makes no http request — as data delivered.
     window.__wwSdServed = [];
+    // Key presses the widget actually POSTED. Whether a press was sent is not observable
+    // from inside the widget — it calls sendKeyPress and carries on either way — so a
+    // shim that correctly refuses to click a deck with no window, and one that silently
+    // posts into a void, look identical from the page. They differ here.
+    window.__wwSdClicks = [];
+    // Capture polls the widget actually made, for the same reason: a deck with no window
+    // must not be polled for pixels twice a second forever, and "did not poll" is
+    // invisible from inside the page.
+    window.__wwSdCaptures = [];
     window.__wwReady = false;
     window.__wwInitSent = false;
     let frame = null;
@@ -612,9 +621,12 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
         const profile = (sd && sd.profile) || { available: false };
         if (profile.available) window.__wwSdServed.push('ww-sd-profile');
         reply({ type: 'ww-sd-profile', id: m.id, profile });
+      } else if (m.type === 'ww-sd-click') {
+        window.__wwSdClicks.push(String(m.phase || 'tap'));
       } else if (m.type === 'ww-sd-capture') {
         // The capture-only fast path. A fixture may carry pixels; otherwise report none, so
         // the widget falls back to the icon grid (which is where the key controls live).
+        window.__wwSdCaptures.push(String(m.have || ''));
         const data = (sd && sd.capture) ? sd.capture : { available: false };
         reply({ type: 'ww-sd-capture-result', id: m.id, data });
       } else if (m.type === 'ww-media-list') reply({ type: 'ww-media-list-result', id: m.id, files: [] });
@@ -719,6 +731,14 @@ const bodyOf = (stub) => (stub.json !== undefined ? JSON.stringify(stub.json) : 
   // A Virtual Stream Deck reply is data delivered over the host bridge, not http — so a
   // populated Stream Deck run (which makes no fetch) still counts as having touched data.
   const sdServed = await page.evaluate(() => window.__wwSdServed || []);
+  const sdClicks = await page.evaluate(() => window.__wwSdClicks || []);
+  // Reported unconditionally rather than asserted: what the right number is depends on
+  // the deck the fixture describes (a window deck should click, a network deck must not),
+  // which is the caller's question, not this runner's.
+  const sdCaptures = await page.evaluate(() => window.__wwSdCaptures || []);
+  console.log('  stream-deck clicks: ' + sdClicks.length +
+    (sdClicks.length ? ' [' + sdClicks.join(',') + ']' : ''));
+  console.log('  stream-deck captures: ' + sdCaptures.length);
   if (!allowState) {
     check('a stubbed endpoint or Stream Deck profile was actually served',
       served.length + proxyServed.length + sdServed.length > 0,

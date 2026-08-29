@@ -325,6 +325,15 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   for it), editing, deleting, and that junk is still refused so no permanent blank row
   appears. Against the pre-fix files it reports 16 failures showing the entry simply
   absent from the saved array.
+- `streamdeck-tap-run.js` — the Stream Deck widget's populated render, which the #221
+  tap audit could not otherwise see (its keys arrive over the host bridge, not http, so
+  a plain data-path run reached the "no deck" card and passed vacuously). Drives a
+  multi-profile deck through the `--sd` fixture and asserts the picker and key grid are
+  really on screen for the audit to walk. It also covers the read-only case: the same
+  deck as iCUE's network device (`interactive:false`) must render the same picker and
+  keys, show the read-only banner, and make no capture poll even with live mode on —
+  with the ordinary deck asserted to still poll, so the check cannot pass by the widget
+  simply never capturing.
 - `icue-emu-run.js` — the iCUE compatibility surface the Corsair stock-widget dump
   exposed as broken, driven end-to-end through the real shims via a probe widget in
   iCUE's own idioms (`tests/fixtures/widgets/icue-emu`): a strict-mode module assigning
@@ -338,4 +347,11 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   `buttonIconUpdated` title tiles, `sendKeyPress` down/up). Text-level: the click
   `phase` field crosses shim → shell → host → bridge, `Shell/icue-common.js` defines
   every helper as a window property (so a vendored copy shadows rather than
-  collides), and every surface that injects the shims injects it.
+  collides), and every surface that injects the shims injects it. It also drives the
+  two DECK KINDS apart, which is the distinction the emulation was first built without:
+  iCUE's plugin is a network client of a `VSD2/WiFi` device, not a mirror of Elgato's
+  local on-screen deck, so against an `interactive:false` fixture the same probe must
+  still announce the deck and paint its faces from the profile while making zero
+  capture polls and zero clicks — the fixture carries a capture frame on purpose, so a
+  shim that polled anyway would slice it and look correct. The window-deck run asserts
+  the opposite direction, or a shim that refused everything would pass both.

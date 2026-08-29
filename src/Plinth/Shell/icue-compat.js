@@ -374,21 +374,38 @@
 
   // --- Streamdeck (widgetbuilder.streamdeck) ---
   //
-  // iCUE's plugin registers a VIRTUAL Stream Deck device over Corsair's internal
-  // bridge to the Stream Deck app — a channel Plinth cannot reach. This emulation
-  // keeps the plugin's contract (connect → virtualDeviceCreated, per-key
-  // buttonIconUpdated pushes, sendKeyPress with press/release) and backs it with
-  // the host's Elgato Virtual Stream Deck bridge instead, the same one the stock
-  // Stream Deck widget mirrors: the VSD profile supplies fallback key faces, the
-  // live window capture is sliced into per-key tiles for dynamic faces, and key
-  // presses land as down/up click phases on the VSD window.
+  // iCUE's plugin is a NETWORK client, not a window mirror, and the difference is the
+  // whole design of this shim. iCUE registers a virtual device of model VSD2/WiFi with
+  // the Stream Deck app, pairs with it (the widget's own card says "Go to the Stream
+  // Deck app and approve the iCUE connection"), then receives per-key faces pushed over
+  // that connection and sends presses back down it. Corsair's end of that channel is
+  // authenticated and internal; Plinth cannot speak it.
   //
-  // Consequences of that backing, documented rather than hidden: the deck shown is
-  // the user's open Virtual Stream Deck (its grid mapped position-for-position into
-  // the size the widget asked for, extra VSD keys falling off the edge), the
-  // authentication signals never fire (there is no pairing handshake to fail), and
-  // streamdeckUnreachable means "no VSD window", with the Stream Deck app's own
-  // guidance living in the stock widget's empty state.
+  // Plinth's OWN Stream Deck widget is the other thing entirely: it mirrors a LOCAL
+  // "UI Stream Deck" — Elgato's on-screen Virtual Stream Deck — by capturing its Qt
+  // window with PrintWindow and clicking it with PostMessage. Conflating the two is
+  // what made an earlier round of this shim wrong, so the split is stated here rather
+  // than left to be rediscovered.
+  //
+  // This emulation keeps the plugin's contract (connect → virtualDeviceCreated, per-key
+  // buttonIconUpdated pushes, sendKeyPress with press/release) and backs it with
+  // whichever deck the host can actually read. What that yields depends on the kind:
+  //
+  //   local window (UI Stream Deck) — full mirror. Profile icons as the fallback face,
+  //     the live window capture sliced into per-key tiles for dynamic faces, and key
+  //     presses landing as real down/up click phases on the window.
+  //
+  //   network device (VSD2/WiFi, the one iCUE creates) — READ-ONLY. Its profile is on
+  //     disk, so the grid, titles and static key images are real and are mirrored. Its
+  //     live faces and its key presses are not: both travel over the paired network
+  //     protocol, and there is no window here to capture or click. The shim therefore
+  //     stops polling for capture and refuses presses OUT LOUD instead of posting
+  //     clicks into a void, which is what a "just recognize the model" fix would have
+  //     done — a grid of live-looking keys silently swallowing every tap.
+  //
+  // Either way the authentication signals never fire (this backend has no pairing
+  // handshake to fail), and streamdeckUnreachable means "the host could not read a
+  // deck profile at all".
 
   const sdState = {
     widgetId: null,
@@ -397,6 +414,8 @@
     announced: false,          // virtualDeviceCreated emitted for the current deck
     unreachable: false,        // last availability signalled, to emit transitions only
     profile: null,             // last available ww-sd-profile payload
+    interactive: true,         // deck is window-backed: capture and presses work
+    warnedReadOnly: false,     // "presses go nowhere" said once, not per tap
     tiles: [],                 // slot index -> last data URL emitted (dedup)
     captureHash: '',           // `have` receipt for the capture fast path
     answered: false,           // has the host answered a profile poll at all?
@@ -451,12 +470,18 @@
     // widget default is 400ms), and the host answers {unchanged:true} for identical
     // frames, so an idle deck costs a hash compare, not pixels.
     sdState.profileTimer = setInterval(sdPollProfile, 4000);
-    sdState.captureTimer = setInterval(sdPollCapture, 500);
+    // A network deck has no window, so every capture poll would answer
+    // available:false forever. Twice a second, for nothing.
+    if (sdState.interactive) sdState.captureTimer = setInterval(sdPollCapture, 500);
   }
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { sdStopTimers(); return; }
-    if (sdState.connected) { sdStartTimers(); sdPollProfile(); sdPollCapture(); }
+    if (sdState.connected) {
+      sdStartTimers();
+      sdPollProfile();
+      if (sdState.interactive) sdPollCapture();
+    }
   });
 
   function sdEmitTile(index, dataUrl) {
@@ -545,7 +570,12 @@
     } else if (first || sdState.unreachable) {
       sdLog('deck available: "' + (profile.name || '') + '" ' +
             (profile.rows || 0) + 'x' + (profile.cols || 0) + ', ' +
-            ((profile.buttons || []).length) + ' key(s)');
+            ((profile.buttons || []).length) + ' key(s), model ' +
+            (profile.model || 'unknown') +
+            (profile.interactive === false
+              ? ' — NETWORK deck: faces come from the profile on disk; live faces and ' +
+                'key presses need Elgato\'s paired network protocol and are not available'
+              : ' — local window deck: live capture and key presses available'));
     }
     if (!profile || !profile.available) {
       sdState.profile = null;
@@ -559,6 +589,15 @@
     }
     sdState.unreachable = false;
     sdState.profile = profile;
+    // An older host predates the field and only ever mirrors window decks, so absent
+    // means interactive — never read as "read-only", which would silently drop the
+    // presses that host CAN deliver.
+    const interactive = profile.interactive !== false;
+    if (interactive !== sdState.interactive) {
+      sdState.interactive = interactive;
+      sdState.captureHash = '';
+      if (sdState.connected) sdStartTimers();
+    }
     if (!sdState.announced) {
       sdState.announced = true;
       sd.virtualDeviceCreated.__emit(sdState.widgetId, window.device.deviceId);
@@ -632,11 +671,24 @@
       sdState.rows = rows2;
       sdState.tiles = [];
       sdPaintFromProfile();
-      if (sdState.connected) sdPollCapture();
+      if (sdState.connected && sdState.interactive) sdPollCapture();
     },
     sendKeyPress(widgetId, buttonIndex, pressed) {
       const profile = sdState.profile;
       if (!profile || !sdState.cols) return;
+      if (!sdState.interactive) {
+        // Posting ww-sd-click here would look like it worked: the host finds no window,
+        // logs a warning, and the widget — which never learns the outcome — keeps
+        // rendering a deck whose keys do nothing. Say it once, on the press half only.
+        if (pressed && !sdState.warnedReadOnly) {
+          sdState.warnedReadOnly = true;
+          sdLog('key press ignored: this is a network deck (model ' +
+                (profile.model || 'unknown') + ') with no window to click. Presses would ' +
+                'have to travel over Elgato\'s paired network protocol, which this host ' +
+                'does not speak — the mirror is read-only');
+        }
+        return;
+      }
       const index = buttonIndex | 0;
       const row = Math.floor(index / sdState.cols);
       const col = index % sdState.cols;

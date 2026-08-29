@@ -298,7 +298,7 @@ Widget → shell:
 | `ww-audio-get` | `id` | snapshot the Windows volume mixer (master + per-app sessions) |
 | `ww-audio-set` | `target, level?, muted?` | set master or per-session volume/mute |
 | `ww-secure-get` / `ww-secure-set` / `ww-secure-delete` | `id, key, value?` | the widget's protected store, scoped per instance; the shell stamps `widgetId` and `instanceId` from the sending slot |
-| `ww-sd-profile` | `profileName, hideWindow, live` | request the Virtual Stream Deck mirror; `live` adds a window screenshot |
+| `ww-sd-profile` | `profileName, hideWindow, live` | request the Stream Deck mirror; `live` adds a window screenshot. The reply carries `model` and `interactive` — `interactive: false` is a NETWORK deck (iCUE's `VSD2/WiFi`), whose faces are read from its profile but which has no window to capture or click, so a caller must not poll `ww-sd-capture` or post `ww-sd-click` for it |
 | `ww-sd-capture` | – | capture-only fast path (no profile re-parse; host dedups unchanged frames) |
 | `ww-sd-click` | `row, col, rows, cols, fx?, fy?, phase?` | trigger the VSD key at that grid cell; `fx`/`fy` land the click on that exact fraction of the capture; `phase` `'down'`/`'up'` splits it into a real press/release (held presses get a 10 s safety release), absent = atomic tap |
 
@@ -314,7 +314,7 @@ Shell → widget:
 | `ww-media-list-result` | `id, files: [{name, url, kind}]` | media folder listing; `url` is on `https://media.plinth/` |
 | `ww-audio-result` | `id, available, master, sessions` | volume mixer snapshot reply |
 | `ww-secure-result` | `id, ok, value, error` | protected-store reply; `error` is `unavailable`, `too-large`, `too-many-keys`, `bad-key` or `bad-scope` |
-| `ww-sd-profile` | `profile: {available, name, rows, cols, buttons, profiles, capture?}` | VSD mirror; `capture` = `{image, w, h}` live window screenshot (only when requested with `live` and capturable) |
+| `ww-sd-profile` | `profile: {available, name, rows, cols, buttons, profiles, model, interactive, capture?}` | deck mirror; `capture` = `{image, w, h}` live window screenshot (only when requested with `live`, and only a local-window deck has one). `interactive: false` marks a network deck — read-only, see above |
 | `ww-sd-capture-result` | `data: {image,w,h} \| {unchanged:true} \| {available:false}` | fast-path capture reply (JPEG data URI) |
 
 **Fetch fallback:** `window.fetch` is wrapped so that a cross-origin request blocked by

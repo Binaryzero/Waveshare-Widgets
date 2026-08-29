@@ -306,11 +306,13 @@ provides a compatibility layer inside every widget iframe:
 - `window.plugins.Sensorsdataprovider` with the Qt-style async contract
   (`method(requestId, …)` answered via the `asyncResponse` signal), plus
   `sensorValueChanged` / `sensorUnitsChanged` / `sensorAdded` / `sensorRemoved` signals.
-- `window.plugins.Streamdeck` — iCUE's virtual Stream Deck plugin, backed by the same
-  Elgato Virtual Stream Deck bridge the stock Stream Deck widget mirrors: per-key
-  faces arrive as `buttonIconUpdated` pushes (live capture slices, or profile icons as
-  the fallback) and `sendKeyPress` lands as a real press/release on the VSD window.
-  Requires the Elgato software with a VSD open; the pairing signals
+- `window.plugins.Streamdeck` — iCUE's virtual Stream Deck plugin, backed by the host's
+  Stream Deck bridge. What it yields depends on the deck's device model, because iCUE's
+  own deck is a *network* device rather than a window on this desktop: a local
+  `UI Stream Deck` gives the full mirror (live capture slices as `buttonIconUpdated`
+  pushes, `sendKeyPress` landing as a real press/release on its window), while iCUE's
+  `VSD2/WiFi` is **read-only** — profile faces mirror, but live faces and presses need
+  Elgato's paired network protocol and are refused. The pairing signals
   (`authenticationRequired` / `authenticationRejected`) never fire.
 - `window.plugins.Notificationsprovider` — `getNotificationCount` and the
   `notificationCountChanged` signal, backed by the host's Windows notification mirror

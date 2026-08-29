@@ -1,0 +1,31 @@
+{
+  "_comment": "The same multi-profile deck, as the device iCUE creates: model VSD2/WiFi, a NETWORK deck. Its profile is on disk, so the picker and every key still render — which is the point. What must NOT happen is a click, because there is no window on this desktop to receive one.",
+  "profile": {
+    "available": true,
+    "profiles": [
+      "Default",
+      "Gaming"
+    ],
+    "rows": 2,
+    "cols": 3,
+    "buttons": [
+      {
+        "row": 0,
+        "col": 0,
+        "title": "Alpha"
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "title": "Bravo"
+      },
+      {
+        "row": 1,
+        "col": 2,
+        "title": "Charlie"
+      }
+    ],
+    "model": "VSD2/WiFi",
+    "interactive": false
+  }
+}

@@ -131,6 +131,16 @@
     font-size: calc(clamp(12px, 4.5vh, 18px) * var(--message-scale, 1));
   }
   #message small { color: var(--text-dim); font-size: 80%; max-width: 90%; }
+  /* Top edge, not bottom: #picker already owns the bottom, and a banner that covered the
+     profile buttons would hide the control that switches away from this deck. Non-
+     interactive by construction — it must never eat a tap meant for the key underneath. */
+  #readonly {
+    position: fixed; left: 0; right: 0; top: 0;
+    display: none; pointer-events: none;
+    padding: 3px 8px; text-align: center;
+    font-size: clamp(9px, 2.8vh, 12px);
+    color: var(--text-dim); background: rgba(var(--surface-rgb), 0.85);
+  }
 </style>
 </head>
 <body>
@@ -138,6 +148,7 @@
   <div id="live"><img id="liveImg" alt="" draggable="false" /></div>
   <div id="liveFlash"></div>
   <div id="picker" hidden></div>
+  <div id="readonly">Read-only: this deck is on the network, so its buttons can’t be pressed from here</div>
   <div id="message"></div>
 
 <script src="https://app.plinth/widget-api.js"></script>
@@ -205,7 +216,10 @@
     clearInterval(pollTimer);
     pollTimer = setInterval(poll, 4000);
     clearInterval(captureTimer);
-    if (cfg.live) captureTimer = setInterval(() => WW.requestStreamDeckCapture(), cfg.liveRefresh);
+    // Live mode needs a window to photograph. A network deck has none, so the poll
+    // would answer "unavailable" at the configured rate for as long as the widget runs.
+    if (cfg.live && !(lastProfile && lastProfile.interactive === false))
+      captureTimer = setInterval(() => WW.requestStreamDeckCapture(), cfg.liveRefresh);
   }
 
   // Restartable state-theater flash (fail-flash from widget-base): remove, force
@@ -214,6 +228,13 @@
     elm.classList.remove(cls);
     void elm.offsetWidth;
     elm.classList.add(cls);
+  }
+
+  // A banner, not a message: the deck still renders underneath it. Saying nothing was
+  // the alternative, and it reads as a working deck whose buttons are broken.
+  function setReadOnlyNote(readOnly) {
+    const note = document.getElementById('readonly');
+    note.style.display = readOnly ? 'block' : 'none';
   }
 
   function showMessage(title, detail) {
@@ -319,11 +340,16 @@
     if (!profile || !profile.available) {
       renderPicker(null);
       setLiveVisible(false);
+      setReadOnlyNote(false);
       showMessage('No Virtual Stream Deck found',
         'Open Elgato Stream Deck and create a Virtual Stream Deck (turn OFF "Hide unused keys"). Its buttons — and their real plugin actions — appear here.');
       return;
     }
     renderPicker(profile.profiles);
+    setReadOnlyNote(profile.interactive === false);
+    // The capture loop is pitched from the deck kind, which is only known once a profile
+    // has arrived — so a kind change (the user picks a different profile) re-pitches it.
+    if (profile.interactive === false && captureTimer) schedulePolling();
 
     // Live mirror: render the VSD window's actual pixels (dynamic key faces included);
     // the icon grid below remains the fallback when no capture is available.
@@ -395,7 +421,13 @@
           // The deck can vanish between polls (VSD window closed); the grid is
           // then stale for up to 4 s. ww-sd-click is fire-and-forget, so refuse
           // the tap visibly here instead of posting into the void.
-          if (!lastProfile || lastProfile.available === false) {
+          //
+          // A network deck (iCUE's VSD2/WiFi) is the permanent version of the same
+          // thing: its profile is readable, so these keys render correctly, but it
+          // has no window and a click reaches nothing. Refusing here is what keeps
+          // "the faces are real" from implying "the buttons work".
+          if (!lastProfile || lastProfile.available === false
+              || lastProfile.interactive === false) {
             flash(cell, 'fail-flash');
             return;
           }

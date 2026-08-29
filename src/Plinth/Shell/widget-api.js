@@ -885,10 +885,12 @@
       }));
     },
 
-    /** Request the Virtual Stream Deck profile; delivered via onStreamDeck(cb).
+    /** Request the Stream Deck profile; delivered via onStreamDeck(cb).
      * opts: { profileName, hideWindow, live }. With live:true the reply also carries
-     * `capture` — a screenshot of the VSD window ({image,w,h}) for real-time mirroring
-     * of dynamic key faces — when the host can capture it. */
+     * `capture` — a screenshot of the deck window ({image,w,h}) for real-time mirroring
+     * of dynamic key faces — when the host can capture it. Only a LOCAL deck has a
+     * window: a reply with `interactive:false` is a network deck (iCUE's VSD2/WiFi),
+     * whose faces are read from its profile and which never captures or clicks. */
     requestStreamDeck(opts) {
       opts = opts || {};
       // The id is what lets the shell send the answer to THIS frame rather than to
@@ -896,7 +898,9 @@
       const id = trackSdRequest(reqId('sd'));
       parent.postMessage({ type: 'ww-sd-profile', id, profileName: opts.profileName || '', hideWindow: opts.hideWindow !== false, live: opts.live === true }, shellTarget());
     },
-    /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}], capture?}. */
+    /** cb(profile) — {available, name, rows, cols, buttons:[{row,col,title,image}],
+     * model, interactive, capture?}. `interactive:false` = read-only network deck:
+     * do not poll requestStreamDeckCapture or send clicks for it. */
     onStreamDeck(cb) { listeners.streamdeck.push(cb); },
     /** Capture-only fast path for live mirroring: cheaper than requestStreamDeck (no
      * profile re-parse; the host skips the frame entirely when pixels are unchanged). */

@@ -1333,6 +1333,13 @@ public sealed class DashboardWindow : Form
             ["cols"] = profile.Cols,
             ["buttons"] = buttons,
             ["profiles"] = available,
+            // A readable profile is not the same as a usable deck. A network device
+            // (iCUE's VSD2/WiFi) hands back a real grid and real key faces from disk while
+            // having no window to capture or click, so a mirror that assumed otherwise
+            // would render live-looking keys that silently swallow every tap. The widget
+            // is told which it has rather than left to find out.
+            ["model"] = profile.Model,
+            ["interactive"] = profile.Interactive,
         };
     }
 

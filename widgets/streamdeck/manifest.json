@@ -2,8 +2,8 @@
   "id": "ws.stock.streamdeck",
   "name": "Stream Deck",
   "author": "Plinth",
-  "version": "2.0.2",
-  "description": "Mirrors your Elgato Virtual Stream Deck onto the panel — real buttons, real plugin actions (Discord, OBS, Hue), live dynamic key faces (weather, statuses). Requires Elgato Stream Deck software with a Virtual Stream Deck open, with 'Hide unused keys' turned OFF.",
+  "version": "2.1.0",
+  "description": "Mirrors your Elgato Virtual Stream Deck onto the panel — real buttons, real plugin actions (Discord, OBS, Hue), live dynamic key faces (weather, statuses). Requires Elgato Stream Deck software with a Virtual Stream Deck open, with 'Hide unused keys' turned OFF. A network deck (the VSD2/WiFi device iCUE creates) also appears in the profile list, but is read-only: its keys are shown, not pressable.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
   "properties": [

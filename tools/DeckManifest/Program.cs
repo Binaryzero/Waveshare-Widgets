@@ -83,5 +83,113 @@ Check("D6d one axis present, one absent",
 Check("D7 out-of-range values are refused, not clamped",
     Size("""{"Device":{"Size":{"Columns":0,"Rows":99}}}""") == (null, null));
 
+Console.WriteLine("Device model");
+
+// The model decides everything downstream, and getting it wrong is not a cosmetic
+// failure: a deck the bridge does not recognize is skipped, discovery comes back empty
+// and the widget shows "Stream Deck app is not running or cannot be found" while a
+// working deck sits on the machine. That happened. So did the correction after it —
+// recognizing the model but assuming it was window-backed, which would have published a
+// grid whose keys silently do nothing. Both are decided here, so both are driven here.
+
+static string? Model(string json)
+{
+    try { return DeckManifest.ReadDeviceModel(Parse(json)); }
+    catch (Exception) { return null; }
+}
+
+// M1 · the two real models, read out of the shape a real manifest has.
+Check("M1 Elgato's own on-screen deck reads",
+    Model("""{"Device":{"Model":"UI Stream Deck"}}""") == "UI Stream Deck");
+Check("M1b the deck iCUE creates reads",
+    Model("""{"Device":{"Model":"VSD2/WiFi"}}""") == "VSD2/WiFi");
+
+// M2 · same shape hazards as Size, one level down. A model that throws is a profile
+// skipped in silence, which is the failure mode this whole area is built against.
+Check("M2 a non-object Device is not a model", Model("""{"Device":"x"}""") is null);
+Check("M2b a non-string Model is not a model", Model("""{"Device":{"Model":42}}""") is null);
+Check("M2c an absent Model is not a model", Model("""{"Device":{"Size":{"Columns":5}}}""") is null);
+Check("M2d an empty Model is not a model", Model("""{"Device":{"Model":"   "}}""") is null);
+Check("M2e a non-object manifest is not a model", Model("[]") is null);
+
+// M3 · both recognized, and — the part that matters — recognized as DIFFERENT KINDS.
+// A single "is this mirrorable" predicate is what let the network deck be treated as a
+// window deck; that these two answers disagree for VSD2/WiFi is the fix.
+Check("M3 both models are known", DeckManifest.IsKnownModel("UI Stream Deck")
+    && DeckManifest.IsKnownModel("VSD2/WiFi"));
+Check("M3b Elgato's deck is a local window: capture and clicks are possible",
+    DeckManifest.IsLocalWindowModel("UI Stream Deck")
+    && !DeckManifest.IsNetworkModel("UI Stream Deck"));
+Check("M3c iCUE's deck is a NETWORK device: neither capture nor clicks are possible",
+    DeckManifest.IsNetworkModel("VSD2/WiFi")
+    && !DeckManifest.IsLocalWindowModel("VSD2/WiFi"));
+Check("M3d the two sets do not overlap",
+    !DeckManifest.LocalWindowModels.Intersect(DeckManifest.NetworkModels, StringComparer.OrdinalIgnoreCase).Any());
+Check("M3e KnownModels is exactly the union",
+    DeckManifest.KnownModels.OrderBy(m => m, StringComparer.Ordinal).SequenceEqual(
+        DeckManifest.LocalWindowModels.Concat(DeckManifest.NetworkModels)
+                    .OrderBy(m => m, StringComparer.Ordinal), StringComparer.Ordinal));
+
+// M4 · written by other software and carried through JSON, so case and stray whitespace
+// must not be the reason a real deck is refused — that refusal is the original bug.
+Check("M4 case does not matter", DeckManifest.IsKnownModel("vsd2/wifi")
+    && DeckManifest.IsLocalWindowModel("ui stream deck"));
+Check("M4b surrounding whitespace does not matter", DeckManifest.IsNetworkModel("  VSD2/WiFi "));
+Check("M4c ...and it is trimmed off what the reader returns",
+    Model("""{"Device":{"Model":"  VSD2/WiFi  "}}""") == "VSD2/WiFi");
+
+// M5 · the other direction. Matching loosely would mirror some unrelated device, and for
+// a physical deck that means capturing and CLICKING a window that is not a deck at all.
+Check("M5 an unrelated model is not known", !DeckManifest.IsKnownModel("20GAA9901")
+    && !DeckManifest.IsKnownModel("GRETSCH"));
+Check("M5b a near-miss is not known", !DeckManifest.IsKnownModel("AI Stream Deck"));
+Check("M5c a prefix is not a match", !DeckManifest.IsKnownModel("VSD2"));
+Check("M5d a superstring is not a match", !DeckManifest.IsKnownModel("VSD2/WiFi/Extra"));
+Check("M5e a substring host is not a match", !DeckManifest.IsKnownModel("My UI Stream Deck v2"));
+Check("M5f empty and null are not known",
+    !DeckManifest.IsKnownModel("") && !DeckManifest.IsKnownModel(null)
+    && !DeckManifest.IsLocalWindowModel(null) && !DeckManifest.IsNetworkModel(null));
+
+Console.WriteLine("Wired up");
+
+// M6 · a TEXT check, and labelled as one, in the style of tools/StreamDeckPaths. The
+// predicates above answer correctly; none of it proves the bridge ASKS them, and the
+// bridge needs Windows, an Elgato installation and a live profile to drive. The specific
+// regression being guarded is a return to a hardcoded model comparison.
+var bridge = FindUpwards("src/Plinth/App/StreamDeckBridge.cs");
+if (bridge is null)
+{
+    Check("M6 setup: StreamDeckBridge.cs was found", false);
+}
+else
+{
+    var code = File.ReadAllText(bridge);
+    Check("M6 discovery asks the reader for the model, not TryGetProperty by hand",
+        code.Contains("DeckManifest.ReadDeviceModel(root)"));
+    Check("M6b discovery filters on the shared list",
+        code.Contains("DeckManifest.IsKnownModel(model)"));
+    Check("M6c no model literal is compared against in the bridge",
+        !code.Contains("\"UI Stream Deck\"") && !code.Contains("\"VSD2/WiFi\""),
+        "model strings belong in DeckManifest, where the probes above can reach them");
+    Check("M6d the profile carries whether it can be captured and clicked",
+        code.Contains("DeckManifest.IsLocalWindowModel(model)"));
+    // The regression this ordering exists to prevent is invisible in the UI: a working
+    // mirror quietly becomes a static one because some other profile was edited later.
+    Check("M6e an unnamed pick prefers a window-backed deck over a merely newer one",
+        code.Contains("OrderByDescending(p => DeckManifest.IsLocalWindowModel(p.Model))"));
+}
+
+static string? FindUpwards(string relative)
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null)
+    {
+        var candidate = Path.Combine(dir.FullName, relative.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(candidate)) return candidate;
+        dir = dir.Parent;
+    }
+    return null;
+}
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
