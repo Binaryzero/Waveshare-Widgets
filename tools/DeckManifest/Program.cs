@@ -150,6 +150,60 @@ Check("M5f empty and null are not known",
     !DeckManifest.IsKnownModel("") && !DeckManifest.IsKnownModel(null)
     && !DeckManifest.IsLocalWindowModel(null) && !DeckManifest.IsNetworkModel(null));
 
+Console.WriteLine("Choosing which deck to mirror");
+
+// The decision the whole area exists for. A network deck's profile reads perfectly —
+// grid, titles, static faces — so mirroring it yields a convincing deck whose every key
+// is dead, which is worse than no deck at all: the dead deck looks like broken buttons,
+// while "no deck" names the thing to fix. So it is never chosen, and that is asserted
+// here rather than left to a comment.
+
+static DeckManifest.ProfileCandidate P(string name, string model, int day) =>
+    new(name, model, new DateTime(2026, 1, day, 0, 0, 0, DateTimeKind.Utc));
+
+var local = P("Default Profile", "UI Stream Deck", 1);
+var net1 = P("Claude AI Prompt Templates", "VSD2/WiFi", 20);
+var net2 = P("Echo Profiles 12.1", "VSD2/WiFi", 25);
+
+// C1 · the reported machine: one local deck, four network decks, the network ones edited
+// far more recently. Recency alone would pick a deck that cannot be pressed.
+var reported = new[] { net1, local, net2, P("Default Profile copy", "VSD2/WiFi", 24) };
+Check("C1 a newer network deck never outranks the one that can be pressed",
+    DeckManifest.ChooseMirrorable(reported, null) == 1, "expected the UI Stream Deck at index 1");
+
+// C2 · network decks ONLY. Refusing is the answer; picking one anyway is the bug.
+Check("C2 a machine with only network decks mirrors nothing",
+    DeckManifest.ChooseMirrorable(new[] { net1, net2 }, null) == -1);
+Check("C2b ...and naming one explicitly does not force it",
+    DeckManifest.ChooseMirrorable(new[] { net1, net2 }, "Echo Profiles 12.1") == -1);
+Check("C2c an empty machine mirrors nothing",
+    DeckManifest.ChooseMirrorable(Array.Empty<DeckManifest.ProfileCandidate>(), null) == -1);
+
+// C3 · among decks that CAN be pressed, the user's setting wins and recency is the
+// default — the behaviour that existed before network decks were recognized at all.
+var many = new[] { P("Old", "UI Stream Deck", 1), P("Newest", "UI Stream Deck", 9),
+                   P("Middle", "UI Stream Deck", 5) };
+Check("C3 an exact name wins", DeckManifest.ChooseMirrorable(many, "Middle") == 2);
+Check("C3b case-insensitively", DeckManifest.ChooseMirrorable(many, "mIdDlE") == 2);
+Check("C3c otherwise the most recently edited", DeckManifest.ChooseMirrorable(many, null) == 1);
+// A stale setting (renamed or deleted profile) must not blank the deck.
+Check("C3d a name matching nothing falls back to the default pick",
+    DeckManifest.ChooseMirrorable(many, "Deleted Profile") == 1);
+Check("C3e an empty name is not a name", DeckManifest.ChooseMirrorable(many, "") == 1
+    && DeckManifest.ChooseMirrorable(many, "   ") == 1);
+
+// C4 · ties. Profiles restored from a backup share a timestamp; alternating between them
+// on every 4s poll would flip the mirrored deck under the user's hands.
+var tied = new[] { P("Beta", "UI Stream Deck", 3), P("Alpha", "UI Stream Deck", 3) };
+Check("C4 a timestamp tie is broken by name, so the pick does not flip between polls",
+    DeckManifest.ChooseMirrorable(tied, null) == 1
+    && DeckManifest.ChooseMirrorable(tied.Reverse().ToArray(), null) == 0);
+
+// C5 · a network deck named explicitly while a usable one exists. The setting cannot be
+// honoured, and blanking the deck to prove a point helps nobody.
+Check("C5 a network deck named in settings falls back to a deck that works",
+    DeckManifest.ChooseMirrorable(new[] { net1, local }, "Claude AI Prompt Templates") == 1);
+
 Console.WriteLine("Wired up");
 
 // M6 · a TEXT check, and labelled as one, in the style of tools/StreamDeckPaths. The
@@ -171,12 +225,20 @@ else
     Check("M6c no model literal is compared against in the bridge",
         !code.Contains("\"UI Stream Deck\"") && !code.Contains("\"VSD2/WiFi\""),
         "model strings belong in DeckManifest, where the probes above can reach them");
-    Check("M6d the profile carries whether it can be captured and clicked",
-        code.Contains("DeckManifest.IsLocalWindowModel(model)"));
-    // The regression this ordering exists to prevent is invisible in the UI: a working
-    // mirror quietly becomes a static one because some other profile was edited later.
-    Check("M6e an unnamed pick prefers a window-backed deck over a merely newer one",
-        code.Contains("OrderByDescending(p => DeckManifest.IsLocalWindowModel(p.Model))"));
+    Check("M6d the bridge delegates the choice rather than re-deciding it",
+        code.Contains("DeckManifest.ChooseMirrorable(candidates, preferredName)"));
+    // Everything above is worthless if a deck that cannot be pressed still reaches the
+    // settings dropdown: picking it is then the user's one click to a dead deck.
+    Check("M6e the settings picker offers only decks that can be pressed",
+        code.Contains("Where(p => DeckManifest.IsLocalWindowModel(p.Model))"));
+    // A refusal nobody can explain is the original bug wearing a different hat.
+    Check("M6f refusing to mirror is explained in the log, not silent",
+        code.Contains("_loggedNetworkOnly"));
+    // A profile read off disk says nothing about whether the deck's window is open NOW,
+    // and a press needs the window. Without this the widget shows live-looking keys that
+    // swallow every tap whenever the deck has been closed.
+    Check("M6g the bridge can report whether a deck window exists right now",
+        code.Contains("public bool HasDeckWindow()"));
 }
 
 static string? FindUpwards(string relative)

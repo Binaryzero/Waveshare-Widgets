@@ -329,11 +329,10 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   tap audit could not otherwise see (its keys arrive over the host bridge, not http, so
   a plain data-path run reached the "no deck" card and passed vacuously). Drives a
   multi-profile deck through the `--sd` fixture and asserts the picker and key grid are
-  really on screen for the audit to walk. It also covers the read-only case: the same
-  deck as iCUE's network device (`interactive:false`) must render the same picker and
-  keys, show the read-only banner, and make no capture poll even with live mode on —
-  with the ordinary deck asserted to still poll, so the check cannot pass by the widget
-  simply never capturing.
+  really on screen for the audit to walk. It also covers the closed-window case: a
+  profile is read from DISK, so the keys render just as well when the deck's window is
+  shut, and the tap must be refused — driven with live mode OFF, the mode that had no
+  signal at all before, since the capture reply was what used to notice.
 - `icue-emu-run.js` — the iCUE compatibility surface the Corsair stock-widget dump
   exposed as broken, driven end-to-end through the real shims via a probe widget in
   iCUE's own idioms (`tests/fixtures/widgets/icue-emu`): a strict-mode module assigning
@@ -351,11 +350,10 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   `buttonIconUpdated` title tiles, `sendKeyPress` down/up). Text-level: the click
   `phase` field crosses shim → shell → host → bridge, `Shell/icue-common.js` defines
   every helper as a window property (so a vendored copy shadows rather than
-  collides), and every surface that injects the shims injects it. It also drives the
-  two DECK KINDS apart, which is the distinction the emulation was first built without:
-  iCUE's plugin is a network client of a `VSD2/WiFi` device, not a mirror of Elgato's
-  local on-screen deck, so against an `interactive:false` fixture the same probe must
-  still announce the deck and paint its faces from the profile while making zero
-  capture polls and zero clicks — the fixture carries a capture frame on purpose, so a
-  shim that polled anyway would slice it and look correct. The window-deck run asserts
-  the opposite direction, or a shim that refused everything would pass both.
+  collides), and every surface that injects the shims injects it. It also separates a readable
+  profile from a pressable deck: against a `windowAvailable:false` fixture the probe must
+  still announce the deck and paint its faces (they are real, read from disk) while
+  posting ZERO clicks, rather than firing them at a window that is not there. The
+  open-window run asserts the opposite direction, or a shim that refused everything would
+  pass both. iCUE's own `VSD2/WiFi` deck is in that state permanently — it has no window,
+  ever — and is refused upstream rather than mirrored, which `tools/DeckManifest` drives.

@@ -307,13 +307,12 @@ provides a compatibility layer inside every widget iframe:
   (`method(requestId, …)` answered via the `asyncResponse` signal), plus
   `sensorValueChanged` / `sensorUnitsChanged` / `sensorAdded` / `sensorRemoved` signals.
 - `window.plugins.Streamdeck` — iCUE's virtual Stream Deck plugin, backed by the host's
-  Stream Deck bridge. What it yields depends on the deck's device model, because iCUE's
-  own deck is a *network* device rather than a window on this desktop: a local
-  `UI Stream Deck` gives the full mirror (live capture slices as `buttonIconUpdated`
-  pushes, `sendKeyPress` landing as a real press/release on its window), while iCUE's
-  `VSD2/WiFi` is **read-only** — profile faces mirror, but live faces and presses need
-  Elgato's paired network protocol and are refused. The pairing signals
-  (`authenticationRequired` / `authenticationRejected`) never fire.
+  mirror of the LOCAL `UI Stream Deck` (live capture slices as `buttonIconUpdated`
+  pushes, `sendKeyPress` landing as a real press/release on its window). iCUE's own
+  `VSD2/WiFi` deck is a *network* device with no window here, so it is never mirrored:
+  its profile reads fine, but a deck whose keys cannot be pressed is refused rather than
+  shown. A press is also refused whenever the deck's window is closed. The pairing
+  signals (`authenticationRequired` / `authenticationRejected`) never fire.
 - `window.plugins.Notificationsprovider` — `getNotificationCount` and the
   `notificationCountChanged` signal, backed by the host's Windows notification mirror
   (demand-gated: polling starts only when a widget touches the plugin).

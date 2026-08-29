@@ -126,4 +126,53 @@ public static class DeckManifest
     private static bool Matches(IReadOnlyList<string> models, string? model) =>
         !string.IsNullOrWhiteSpace(model)
         && models.Contains(model.Trim(), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>One profile on disk, reduced to what choosing between them needs.</summary>
+    public readonly record struct ProfileCandidate(string Name, string Model, DateTime LastWriteUtc);
+
+    /// <summary>
+    /// Index of the profile to mirror, or -1 when none can be.
+    /// </summary>
+    /// <remarks>
+    /// A NETWORK deck is never chosen, and that is the point of this function rather than
+    /// an oversight in it. Its profile is perfectly readable — grid, titles, static key
+    /// images — so mirroring it produces a convincing deck whose every key is dead. A
+    /// widget that does not do what it says is worse than one that says it cannot: the
+    /// dead deck looks like a bug in the buttons, while "no deck" names the thing to fix
+    /// (create a Virtual Stream Deck in the Stream Deck app). Discovery still FINDS
+    /// network decks, because saying which ones exist is how the caller explains itself.
+    ///
+    /// Among the eligible: an exact name wins (the user's setting), else the most recently
+    /// edited — the deck they are actually using; directory order is not stable and "first
+    /// found" made the mirrored deck flip between runs. A preferred name that matches
+    /// nothing eligible falls through to that default rather than failing, which is what
+    /// a stale setting or a renamed profile needs.
+    /// </remarks>
+    public static int ChooseMirrorable(IReadOnlyList<ProfileCandidate> candidates, string? preferredName)
+    {
+        if (candidates is null || candidates.Count == 0)
+            return -1;
+
+        var best = -1;
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            if (!IsLocalWindowModel(candidates[i].Model))
+                continue;
+            if (!string.IsNullOrWhiteSpace(preferredName)
+                && string.Equals(candidates[i].Name, preferredName, StringComparison.OrdinalIgnoreCase))
+                return i;
+            if (best < 0)
+            {
+                best = i;
+                continue;
+            }
+            // Ties broken by name, ordinal, so a machine whose profiles share a timestamp
+            // (a fresh install, a restored backup) mirrors the same deck on every poll
+            // instead of alternating between them.
+            var c = candidates[i].LastWriteUtc.CompareTo(candidates[best].LastWriteUtc);
+            if (c > 0 || (c == 0 && string.CompareOrdinal(candidates[i].Name, candidates[best].Name) < 0))
+                best = i;
+        }
+        return best;
+    }
 }

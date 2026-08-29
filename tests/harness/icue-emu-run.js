@@ -39,15 +39,19 @@
 //        harness cannot execute): the click phase field crosses every hop — the shim
 //        sends phase down/up, shell.js forwards it validated, DashboardWindow passes
 //        it through, and StreamDeckBridge holds/releases with a safety release.
-//   E5 · the two deck kinds are not the same deck. iCUE's Streamdeck plugin is a NETWORK
-//        client of a VSD2/WiFi device: its profile is on disk (so grid, titles and static
-//        faces mirror) but its live faces and key presses travel over Elgato's paired
-//        network protocol, and there is no window here to capture or click. So the same
-//        probe, against a fixture marked interactive:false, must still announce the deck
-//        and paint its faces while making ZERO capture polls and ZERO clicks — the
-//        fixture carries a capture frame precisely so that a shim which polls anyway
-//        would slice it and look right. The window-deck run above asserts the opposite
-//        direction, or a shim that simply refused everything would pass both.
+//   E5 · a readable profile is not a pressable deck. The profile is read from DISK, so it
+//        is just as complete when the user has closed their Virtual Stream Deck — and the
+//        press needs the window. Against a fixture reporting windowAvailable:false the
+//        shim must still paint the deck (the faces are real) and post ZERO clicks, rather
+//        than firing them at a window that is not there and leaving keys that look live
+//        and swallow every tap. The open-window run above asserts the opposite direction,
+//        or a shim that simply refused everything would pass both.
+//
+//        iCUE's own VSD2/WiFi network deck reaches that state permanently — it has no
+//        window, ever. The host does not offer such a deck to be mirrored at all, so
+//        there is nothing here to drive for it: tools/DeckManifest's C-probes assert it
+//        is refused upstream rather than rendered as a deck that does nothing, which is
+//        the whole point — a convincing deck with dead keys is worse than no deck.
 //   E4 · the helper bundle is DEFINED, not fetched, and is injected everywhere the
 //        other two shims are. Serving those files over their clamped URLs was tried
 //        first and failed in the field — the classes were still undefined on a build
@@ -139,44 +143,49 @@ const notInjecting = injectors.filter((f) =>
 check('E4b every surface that injects the shims injects the bundle',
   notInjecting.length === 0, notInjecting.join(', ') || injectors.length + ' surfaces');
 
-// The positive direction, from the window-deck run above. Without it, a shim that
-// refused to click and refused to capture unconditionally would satisfy E5 completely.
-check('E4c a window-backed deck is captured and clicked',
+// The positive direction, from the open-window run above. Without it, a shim that
+// refused every click unconditionally would satisfy E5b completely.
+check('E4c an open deck is captured and clicked',
   count(out, 'clicks') > 0 && count(out, 'captures') > 0,
   `${count(out, 'clicks')} click(s), ${count(out, 'captures')} capture poll(s)`);
 
-// E5 — the same probe against the deck iCUE creates.
-const NET_MARKERS = ['device-created', 'icons:3'];
-const net = run('icue-sd-network.json', NET_MARKERS);
-const netFailLines = net.out.split('\n').filter((l) => l.includes('FAIL')).map((l) => l.trim()).join(' | ');
+// E5 — the same probe against a deck whose window is shut.
+const SHUT_MARKERS = ['device-created', 'icons:3'];
+const shut = run('icue-sd-nowindow.json', SHUT_MARKERS);
+const shutFail = shut.out.split('\n').filter((l) => l.includes('FAIL')).map((l) => l.trim()).join(' | ');
 
-check('E5 a network deck still announces itself and paints its faces from the profile',
-  net.ok, net.ok ? NET_MARKERS.join(', ')
-    : (netFailLines || net.out.trim().split('\n').slice(-4).join(' | ').slice(0, 300)));
+check('E5 a deck with its window shut still announces itself and paints its faces',
+  shut.ok, shut.ok ? SHUT_MARKERS.join(', ')
+    : (shutFail || shut.out.trim().split('\n').slice(-4).join(' | ').slice(0, 300)));
 
-// The two teeth. A press posted here reaches a host that finds no window, logs a warning
-// the widget never sees, and leaves a grid of keys that look live and do nothing.
-check('E5b no key press is posted for a deck with no window to click',
-  count(net.out, 'clicks') === 0, count(net.out, 'clicks') + ' click(s)');
-// And the capture poll runs twice a second, forever, for a frame that cannot exist.
-check('E5c no capture poll is made for a deck with no window to capture',
-  count(net.out, 'captures') === 0, count(net.out, 'captures') + ' capture poll(s)');
+// The tooth. A press posted here reaches a host that finds no window, logs a warning the
+// widget never sees, and leaves a grid of keys that look live and swallow every tap.
+check('E5b no key press is posted while no deck window is open',
+  count(shut.out, 'clicks') === 0, count(shut.out, 'clicks') + ' click(s)');
 
-// E5e — the kind crosses every hop, text-level, in the style of E3. The behaviour above
-// is driven through a FIXTURE, so it proves the shim honours the flag; it cannot prove the
-// host ever sets it, and a host that never does would leave the shim permanently in the
-// interactive default.
-check('E5d the deck kind crosses every hop (bridge → host → shim)',
-  /IsLocalWindowModel\(model\)/.test(bridge)          // the bridge decides it from the model
-    && /\["interactive"\] = profile\.Interactive/.test(dash)   // the host ships it
-    && /profile\.interactive !== false/.test(shim)      // the shim adopts it, defaulting safe
-    && /sdState\.interactive\) sdState\.captureTimer/.test(shim)  // …and gates the capture poll
-    && /if \(!sdState\.interactive\)/.test(shim));      // …and the presses
+// E5c — the flag crosses every hop, text-level, in the style of E3. The behaviour above is
+// driven through a FIXTURE, so it proves the shim honours the flag; it cannot prove the
+// host ever sets it, and a host that never does leaves the shim permanently optimistic.
+check('E5c window availability crosses every hop (bridge → host → shim)',
+  /public bool HasDeckWindow\(\)/.test(bridge)
+    && /\["windowAvailable"\] = _streamDeck\.HasDeckWindow\(\)/.test(dash)
+    && /profile\.windowAvailable !== false/.test(shim)
+    && /if \(!sdState\.hasWindow\)/.test(shim));
 
-// A host older than this field only ever mirrored window decks, so absent must read as
-// interactive. Reading it as read-only would drop the presses that host CAN deliver.
-check('E5e a profile with no kind field is treated as clickable, not as read-only',
-  /profile\.interactive !== false/.test(shim) && !/profile\.interactive === true/.test(shim));
+// A host older than this field only ever mirrored a deck it could click, so absent must
+// read as "open". Reading it as closed would drop the presses that host CAN deliver.
+check('E5d a profile with no window field is treated as clickable',
+  /profile\.windowAvailable !== false/.test(shim)
+    && !/profile\.windowAvailable === true/.test(shim));
+
+// E5e — the user-visible decision, asserted where it is made. A network deck's profile
+// reads perfectly, so mirroring it yields a convincing deck with dead keys; the bridge
+// must route the choice through ChooseMirrorable (driven by the C-probes), keep such a
+// deck out of the settings picker, and explain the refusal instead of going quiet.
+check('E5e a deck that cannot be pressed is never offered, and the refusal is explained',
+  /DeckManifest\.ChooseMirrorable\(candidates, preferredName\)/.test(bridge)
+    && /_loggedNetworkOnly/.test(bridge)
+    && /Where\(p => DeckManifest\.IsLocalWindowModel\(p\.Model\)\)/.test(bridge));
 
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
 process.exit(failures ? 1 : 0);

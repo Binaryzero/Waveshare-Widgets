@@ -109,8 +109,8 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   [Elgato Marketplace](https://marketplace.elgato.com/icue/widgets) — and iCUE's own
   stock widgets — install and run as-is. The runtime emulates the iCUE plugin APIs
   (sensors, media with change signals, notifications count, link opening, and the
-  Stream Deck plugin backed by our Stream Deck mirror — read-only for iCUE's own
-  network deck, which has no window here to capture or click), serves stand-ins for
+  Stream Deck plugin backed by our Virtual Stream Deck mirror, so its keys really
+  press), serves stand-ins for
   the shared `common/` helpers stock widgets reference from outside their package,
   and reads `x-icue-property` settings (including sensor lists) into the Settings UI.
   Widgets wired to our sensor engine expose whatever your machine provides; iCUE-only

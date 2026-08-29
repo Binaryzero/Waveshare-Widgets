@@ -1,5 +1,5 @@
 {
-  "_comment": "The same multi-profile deck, as the device iCUE creates: model VSD2/WiFi, a NETWORK deck. Its profile is on disk, so the picker and every key still render — which is the point. What must NOT happen is a click, because there is no window on this desktop to receive one.",
+  "_comment": "The same multi-profile deck with its window shut. Its keys still render from the profile on disk; a tap on one must be refused rather than posted into a window that is not there. Live mode is what used to notice this (the capture reply), so the profile now carries it and both modes refuse.",
   "profile": {
     "available": true,
     "profiles": [
@@ -25,7 +25,7 @@
         "title": "Charlie"
       }
     ],
-    "model": "VSD2/WiFi",
-    "interactive": false
+    "model": "UI Stream Deck",
+    "windowAvailable": false
   }
 }

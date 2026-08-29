@@ -334,8 +334,8 @@ Signals: `virtualDeviceCreated(widgetId, deviceId)`,
 `streamdeckUnreachable`, `authenticationRequired`, `authenticationRejected`.
 Uses `iCUE.widgetId` and `iCUE.streamDeckDeviceId`.
 
-**Plinth compatibility:** emulated, and **partially** — read the transport note first,
-because it decides what works.
+**Plinth compatibility:** emulated. Read the transport note first, because it decides
+what this can and cannot be backed by.
 
 **iCUE's plugin is a network client, not a window mirror.** iCUE registers a virtual
 device of model **`VSD2/WiFi`** with the Stream Deck app, pairs with it (that is what
@@ -345,39 +345,39 @@ Corsair's end of that channel is authenticated and internal, and Plinth cannot s
 
 Plinth's **own** Stream Deck widget is a different mechanism entirely: it mirrors a
 local `UI Stream Deck` — Elgato's on-screen Virtual Stream Deck — by capturing its Qt
-window and clicking it. The two are not variants of one thing, and treating them as one
-is the mistake this section exists to prevent.
+window and clicking it. The two are not variants of one thing.
 
-So the emulation keeps the plugin's contract and backs it with whichever deck the host
-can read, which yields different amounts depending on the kind:
+So the emulation backs the plugin's contract with the **local** deck, which is the one
+whose keys actually work. A widget written against iCUE's Streamdeck plugin therefore
+mirrors your Virtual Stream Deck and its presses land for real.
 
-| Device model | What Plinth can do |
-|---|---|
-| `UI Stream Deck` (Elgato's, local window) | Full mirror: profile faces, live capture sliced into per-key tiles, real key presses. |
-| `VSD2/WiFi` (iCUE's, network) | **Read-only.** The profile is on disk, so grid, titles and static key images mirror. Live faces and key presses do **not** work — both need the paired network protocol. |
+A `VSD2/WiFi` deck is **never** mirrored, even though its profile is perfectly readable
+from disk. Rendering it would produce a convincing deck whose every key is dead, which
+is worse than showing none: the dead deck looks like broken buttons, while "no deck"
+names the thing to fix. On a machine whose only decks are network decks the host
+answers "no deck" and writes one `app.log` line naming them and saying to create a
+Virtual Stream Deck.
 
 - `connectStreamDeck(widgetId, deviceId, cols, rows)` starts the mirror;
-  `virtualDeviceCreated(widgetId, deviceId)` fires when a readable deck is found (the
-  deviceId is the slot's stable pseudo-UUID). Requires the Elgato software, with a
-  Virtual Stream Deck open and "Hide unused keys" OFF for the local case.
-- A profile of any other model is skipped, and the host names the models it did find in
-  `app.log` (`Stream Deck: no readable profile…`) so an unlisted one can be added.
-- When the host answers with a network deck, the shim stops polling for capture and
-  **refuses presses out loud** in `app.log` rather than posting clicks that go nowhere.
-  A widget rendering that deck therefore shows accurate faces whose keys do nothing —
-  stated here because the widget itself has no way to display the difference.
-- `buttonIconUpdated(widgetId, index, iconDataUrl)` pushes per-key faces: for a local
-  deck, slices of the live window capture (dynamic faces included) at ~2 Hz, falling
-  back to the profile's key icons; for a network deck, the profile's key icons only. A
-  titled key without an icon gets a generated title tile; empty cells push `""`. The
-  deck's grid maps position-for-position into the requested `cols`×`rows` (extra keys
-  fall off the edge).
-- `sendKeyPress(widgetId, index, pressed)` lands as a REAL press/release on a local
-  deck's window (press-and-hold works; a press with no release is safety-released after
-  10 s). On a network deck it is refused and logged — there is no window to press.
-- `updateVirtualDeviceSize` remaps; `streamdeckUnreachable` means "no mirrorable deck"
-  — either no profile of a recognized model, or no deck window to capture and click
-  (the two are independent, and `app.log` says which);
+  `virtualDeviceCreated(widgetId, deviceId)` fires when a mirrorable deck is found (the
+  deviceId is the slot's stable pseudo-UUID). Requires the Elgato software with a
+  Virtual Stream Deck open and "Hide unused keys" OFF.
+- A profile of an unrecognized model is skipped, and the host names the models it did
+  find in `app.log` (`Stream Deck: no readable profile…`) so an unlisted one can be added.
+- **A readable profile is not a pressable deck.** The profile comes off disk and is just
+  as complete when the deck's window is closed, so the host reports `windowAvailable`
+  with every poll and the shim refuses a press it cannot deliver, logging why, rather
+  than firing it at a window that is not there.
+- `buttonIconUpdated(widgetId, index, iconDataUrl)` pushes per-key faces: slices of the
+  live window capture (dynamic faces included) at ~2 Hz, falling back to the profile's
+  key icons. A titled key without an icon gets a generated title tile; empty cells push
+  `""`. The deck's grid maps position-for-position into the requested `cols`×`rows`
+  (extra keys fall off the edge).
+- `sendKeyPress(widgetId, index, pressed)` lands as a REAL press/release on the deck's
+  window (press-and-hold works; a press with no release is safety-released after 10 s).
+  With no window open it is refused and logged rather than posted into nothing.
+- `updateVirtualDeviceSize` remaps; `streamdeckUnreachable` means "no deck this host can
+  drive" — no profile of a recognized model, or only network decks (`app.log` says which);
   `authenticationRequired` / `authenticationRejected` **never fire** (there is no
   pairing handshake in this backend), so widgets never show their pairing states.
 

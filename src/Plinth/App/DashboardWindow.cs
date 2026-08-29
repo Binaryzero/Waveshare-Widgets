@@ -1333,13 +1333,13 @@ public sealed class DashboardWindow : Form
             ["cols"] = profile.Cols,
             ["buttons"] = buttons,
             ["profiles"] = available,
-            // A readable profile is not the same as a usable deck. A network device
-            // (iCUE's VSD2/WiFi) hands back a real grid and real key faces from disk while
-            // having no window to capture or click, so a mirror that assumed otherwise
-            // would render live-looking keys that silently swallow every tap. The widget
-            // is told which it has rather than left to find out.
             ["model"] = profile.Model,
-            ["interactive"] = profile.Interactive,
+            // A readable profile is not the same as a pressable deck: the profile comes
+            // off disk, the press needs the deck's WINDOW to be open right now. Without
+            // this the widget renders live-looking keys that swallow every tap whenever
+            // the user has closed their Virtual Stream Deck — the same "looks like it
+            // works" failure a network deck would cause, from a different cause.
+            ["windowAvailable"] = _streamDeck.HasDeckWindow(),
         };
     }
 
