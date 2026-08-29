@@ -1183,6 +1183,19 @@
   // a state neither write achieved. Only the newest tap owns the undo.
   const flagOps = new Map();
   let flagSeq = 0;
+  // Ordering the COMPLETIONS is not enough on its own: fired concurrently, an
+  // unfavourite DELETE can overtake the favourite POST it followed, and the server
+  // settles on the older answer while the panel shows the newer one — a disagreement
+  // nothing on screen reveals until the next reload. So each item-and-flag has a
+  // chain and every tap joins the end of it, which puts the writes on the wire in the
+  // order they were asked for.
+  const flagChains = new Map();
+  // What the SERVER is known to hold for a flag, which is where a refused write has to
+  // put the poster back. It cannot be read off the item when the tap lands: mid-burst
+  // the item carries the PREVIOUS tap's optimistic value, and undoing to that strands
+  // the poster on a state no write ever achieved. Seeded by the first tap of a burst
+  // and moved only by a write that actually landed.
+  const flagBase = new Map();
 
   // A flag the user just tapped, applied to the item in hand BEFORE the write goes
   // out so the poster answers the tap immediately, and put back if the server
@@ -1194,7 +1207,7 @@
     const opKey = String(item.Id) + '|' + kind;
     const token = ++flagSeq;
     flagOps.set(opKey, token);
-    const was = { flag: !!ud[key], pos: ud.PlaybackPositionTicks };
+    if (!flagBase.has(opKey)) flagBase.set(opKey, { flag: !!ud[key], pos: ud.PlaybackPositionTicks });
     ud[key] = on;
     // Setting or clearing watched resets the resume point at the server, both ways.
     // Leaving the local one behind would keep the progress bar on the poster and —
@@ -1202,14 +1215,32 @@
     // stale position to the next tap, resuming a title just declared finished.
     if (kind === 'played') ud.PlaybackPositionTicks = 0;
     renderPlayer();
-    const ok = await setUserFlag(item, kind, on);
+    const run = () => setUserFlag(item, kind, on);
+    const prev = flagChains.get(opKey);
+    // A predecessor that FAILED must still not cancel its successor: the chain exists
+    // for order, not for outcome, so both settlements continue it.
+    const mine = prev ? prev.then(run, run) : run();
+    flagChains.set(opKey, mine.then(() => {}, () => {}));
+    const ok = await mine;
+    const base = flagBase.get(opKey);
+    // A write that landed IS the server's state now, whether or not this tap still
+    // owns the screen: a later refusal has to undo to here, not to where the burst
+    // started.
+    if (ok && base) {
+      base.flag = on;
+      if (kind === 'played') base.pos = 0;
+    }
     // A newer tap has already claimed this flag: its optimistic value is what the user
-    // last asked for, and its own completion decides what becomes of it.
+    // last asked for, and its own completion decides what becomes of it — including
+    // retiring the bookkeeping, which is why reaching past here means this tap was the
+    // last one standing.
     if (flagOps.get(opKey) !== token) return;
     flagOps.delete(opKey);
-    if (ok) return;
-    ud[key] = was.flag;
-    if (kind === 'played') ud.PlaybackPositionTicks = was.pos;
+    flagChains.delete(opKey);
+    flagBase.delete(opKey);
+    if (ok || !base) return;
+    ud[key] = base.flag;
+    if (kind === 'played') ud.PlaybackPositionTicks = base.pos;
     renderPlayer();
   }
 
@@ -1933,14 +1964,22 @@
       return;
     }
 
-    const play = (item, i) => openItem(item, browse.all ? browse.page * browse.pageSize + i : null);
+    // A tile's position in the page, turned into its position in the whole local list
+    // — which is what the auto-advance queue is indexed by.
+    const absolute = (i) => (browse.all ? browse.page * browse.pageSize + i : null);
     const built = buildStrip(items, {
       wide,
       mixed: nextTab,
-      onTap: play,
-      // Play from the sheet is the SAME call as the tap, index and all: holding a
-      // title and choosing Play must still hand an episode its season as a queue.
-      onHold: (item, i) => openItemSheet(item, () => play(item, i)),
+      onTap: (item, i) => openItem(item, absolute(i)),
+      // Play from the sheet is the same call as the tap — but the index is worked out
+      // HERE, when the tile was held, not when Play is finally tapped. The sheet
+      // outlives a reflow (the on-panel editor resizes the frame in place), and a
+      // reflow re-slices the season under a new page size: the slot the finger landed
+      // on would then name a different episode, and the run would advance from it.
+      onHold: (item, i) => {
+        const at = absolute(i);
+        openItemSheet(item, () => openItem(item, at));
+      },
     });
     ensureImages(built.wanted);
   }
