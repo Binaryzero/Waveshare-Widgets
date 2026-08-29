@@ -63,6 +63,26 @@
    * artwork, so it reads on any poster; the fill takes the repaired accent. */
   .art .prog { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(0, 0, 0, 0.55); }
   .art .prog i { display: block; height: 100%; background: var(--accent-fg); }
+  /* Watch state and favourites, drawn ON the poster. The caption is already carrying
+   * the identity of the title and a second line would cost a whole row of tiles, so
+   * these go where the progress bar goes — over the artwork, each on its own scrim so
+   * it stays legible against a bright poster. */
+  .art .marks { position: absolute; top: 3px; right: 3px; display: flex; gap: 3px; }
+  .art .marks span {
+    display: flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 50%;
+    background: rgba(0, 0, 0, 0.62); font-size: 9px; line-height: 1;
+  }
+  .art .marks .fav { color: var(--accent-fg); }
+  .art .marks .seen { color: var(--text); }
+  /* The hold being counted, so a press is watched rather than guessed at. At the TOP
+   * of the poster because the bottom belongs to the progress bar, and the two would
+   * otherwise fight on exactly the part-watched tiles most likely to be held. */
+  .art .hold {
+    position: absolute; inset: 0 0 auto 0; height: 2px; width: 0;
+    background: var(--accent-fg); transition: width 700ms linear;
+  }
+  .tile.holding .art .hold { width: 100%; }
   .art .ph {
     position: absolute; inset: 0;
     display: flex; align-items: center; justify-content: center;
@@ -317,6 +337,10 @@
   let nextUser = { id: '' };
   let sessions = [];          // active streams (NowPlayingItem present), sorted
   let latest = [];            // recently added items
+  // Set when the shelf declined to fetch because the configured username does not
+  // resolve. 'Retrying' is true but useless for a typo — the note should name the
+  // field to fix, the way every other user-scoped surface already does.
+  let latestNoUser = false;
   let latestAt = 0;           // when the shelf's data last actually refreshed
   let counts = null;          // {movies, series, episodes}
   let server = null;          // {name, version}
@@ -573,51 +597,89 @@
       // guards the server identity, not the filter.
       const typesAsked = cfg.types;
       const hideAsked = Array.from(cfg.hide).sort().join('\n');
-      const tail = '&SortOrder=Descending&Recursive=true&IncludeItemTypes='
-        + encodeURIComponent(typesAsked) + '&Limit=' + LATEST_FETCH + '&ImageTypeLimit=1&EnableImageTypes=Primary';
+      // The PLAYER's shelf follows the Player's tabs, which are the named user's
+      // libraries now: a New tab offering titles from libraries that user cannot see —
+      // libraries that have no tab — is the row disagreeing with itself. The Server
+      // OVERVIEW's shelf stays server-wide, because that is what an overview is for,
+      // and the two views are always separate widget instances with separate settings.
+      // Scoping also brings UserData back with the shelf, which is what lets New carry
+      // the same marks and the same press as every other tab.
+      const wantUser = cfg.view === 'player' && !!cfg.user;
+      const userAsked = cfg.user;
+      const viewAsked = cfg.view;
+      // NOT caught here. resolveUser returns null for a name the server does not have
+      // and REJECTS when it could not be asked — flattening those together made a
+      // timeout report itself as "no Jellyfin user named X", sending someone to fix a
+      // setting that was never wrong. A rejection travels on to the shelf's own catch,
+      // which logs it and leaves the note saying it is still trying; only a real null
+      // becomes the fault that names the field.
+      const scoped = wantUser ? resolveUser() : Promise.resolve('');
       // With no hide list, one server-wide query. With one, the shelf is assembled
       // from the libraries that survive it: per-library top-N queries merged by
       // DateCreated (the top N of a union of per-library top Ns is exact). Items
       // carry no library id, so a hidden library cannot be filtered after the fact.
-      const fetchLatest = !cfg.hide.size
-        ? jfJson('/Items?SortBy=DateCreated' + tail, SLOW_DEADLINE, LIST_MAX_BYTES)
-          .then((body) => {
-            if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
-            return body.Items;
-          })
-        : jfJson('/Library/MediaFolders', SLOW_DEADLINE, 256 * 1024).then((body) => {
-            if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
-            // EVERY un-hidden library participates, whatever its CollectionType —
-            // a mixed movies-and-shows library carries none, and borrowing the tab
-            // row's movies/tvshows filter here would silently drop its new titles
-            // from a shelf the no-hide query covers. IncludeItemTypes in each
-            // per-library query is what keeps the content right; the 24-library
-            // bound and the 256 KiB per-answer cap (each holds at most
-            // LATEST_FETCH items) keep a hostile server's thousands to a few MiB.
-            const libs = body.Items
-              .filter((f) => f && f.Id && !cfg.hide.has(String(f.Name || '').trim().toLowerCase()))
-              .slice(0, 24);
-            return Promise.all(libs.map((f) =>
-              jfJson('/Items?ParentId=' + encodeURIComponent(String(f.Id)) + '&SortBy=DateCreated' + tail
-                + '&Fields=DateCreated', SLOW_DEADLINE, 256 * 1024)
-                .then((page) => {
-                  // Same contract as the no-hide path: a malformed 200 is a FAULT,
-                  // not an empty library — treating it as [] would silently drop a
-                  // library's titles from the shelf until the next slow window.
-                  if (!page || !Array.isArray(page.Items)) throw fault('format', 'reply had no Items');
-                  return page.Items;
-                })));
-          }).then((lists) => {
-            const seen = new Set();
-            return lists.flat()
-              .filter((it) => it && it.Id && !seen.has(it.Id) && seen.add(it.Id))
-              .sort((a, b) => String(b.DateCreated || '').localeCompare(String(a.DateCreated || '')))
-              .slice(0, LATEST_FETCH);
-          });
+      const fetchLatest = scoped.then((uid) => {
+        // Fail CLOSED. A username that will not resolve — a typo, or /Users merely
+        // unreachable this minute — must not quietly widen the Player's shelf back to
+        // the whole server: showing MORE than was asked for is the wrong direction to
+        // degrade in, and it would do it exactly when the scoping cannot be checked.
+        // The shelf keeps what it already has, which the staleness pill states, and
+        // the catch below marks the lane due again so the next poll retries.
+        if (wantUser && !uid) throw fault('user', 'the player shelf has no resolved user');
+        const tail = '&SortOrder=Descending&Recursive=true&IncludeItemTypes='
+          + encodeURIComponent(typesAsked) + '&Limit=' + LATEST_FETCH + '&ImageTypeLimit=1&EnableImageTypes=Primary'
+          + (uid ? '&userId=' + encodeURIComponent(uid) : '');
+        // Fields is ONE parameter: the per-library path already asks for DateCreated to
+        // merge by, so UserData joins that list rather than arriving as a second copy.
+        return !cfg.hide.size
+          ? jfJson('/Items?SortBy=DateCreated' + tail + (uid ? '&Fields=UserData' : ''),
+            SLOW_DEADLINE, LIST_MAX_BYTES)
+            .then((body) => {
+              if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
+              return body.Items;
+            })
+          : jfJson('/Library/MediaFolders', SLOW_DEADLINE, 256 * 1024).then((body) => {
+              if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
+              // EVERY un-hidden library participates, whatever its CollectionType —
+              // a mixed movies-and-shows library carries none, and borrowing the tab
+              // row's movies/tvshows filter here would silently drop its new titles
+              // from a shelf the no-hide query covers. IncludeItemTypes in each
+              // per-library query is what keeps the content right; the 24-library
+              // bound and the 256 KiB per-answer cap (each holds at most
+              // LATEST_FETCH items) keep a hostile server's thousands to a few MiB.
+              const libs = body.Items
+                .filter((f) => f && f.Id && !cfg.hide.has(String(f.Name || '').trim().toLowerCase()))
+                .slice(0, 24);
+              return Promise.all(libs.map((f) =>
+                jfJson('/Items?ParentId=' + encodeURIComponent(String(f.Id)) + '&SortBy=DateCreated' + tail
+                  + '&Fields=DateCreated' + (uid ? ',UserData' : ''), SLOW_DEADLINE, 256 * 1024)
+                  .then((page) => {
+                    // Same contract as the no-hide path: a malformed 200 is a FAULT,
+                    // not an empty library — treating it as [] would silently drop a
+                    // library's titles from the shelf until the next slow window.
+                    if (!page || !Array.isArray(page.Items)) throw fault('format', 'reply had no Items');
+                    return page.Items;
+                  })));
+            }).then((lists) => {
+              const seen = new Set();
+              return lists.flat()
+                .filter((it) => it && it.Id && !seen.has(it.Id) && seen.add(it.Id))
+                .sort((a, b) => String(b.DateCreated || '').localeCompare(String(a.DateCreated || '')))
+                .slice(0, LATEST_FETCH);
+            });
+      });
       fetchLatest
         .then((items) => {
-          if (gen !== generation || typesAsked !== cfg.types
+          // The user joins the other three: this query is scoped to them now, so an
+          // answer for the PREVIOUS user is as wrong as one for the previous filter.
+          // The view joins them, because it decides the SCOPE: a server-wide overview
+          // answer landing after a switch to the Player would repopulate the shelf with
+          // titles the named user cannot see, and a scoped answer landing in the
+          // overview would under-report it.
+          if (gen !== generation || typesAsked !== cfg.types || userAsked !== cfg.user
+              || viewAsked !== cfg.view
               || hideAsked !== Array.from(cfg.hide).sort().join('\n')) return;
+          latestNoUser = false;
           latest = items.filter((it) => it && it.Id);
           latestAt = Date.now();
           // Repaint only once the fast lane has succeeded: /System/Info/Public needs no
@@ -626,6 +688,16 @@
           if (lastOk) render();
         })
         .catch((e) => {
+          if (gen === generation && userAsked === cfg.user) latestNoUser = e && e.kind === 'user';
+          // The shelf is user-scoped now, so it can be the read that meets a deleted
+          // and recreated user. Heal the cache here too — and come back for it at the
+          // next poll rather than the next slow window, because an ALREADY loaded
+          // shelf does not take the retry below and would sit on the ghost for five
+          // minutes. A name that simply does not exist faults as 'user', not 404, so
+          // this cannot become a tight loop.
+          const ghost = e && e.status === 404;
+          invalidateUserOn404(e);
+          if (ghost && gen === generation) slowAt = 0;
           WW.log('jellyfin: latest: ' + e.message);
           // A shelf that has NEVER loaded is the player's whole browse surface —
           // waiting out the full slow window after one transient failure leaves the
@@ -893,12 +965,116 @@
   // The two server-computed queues. They are synthetic tabs — no library id behind
   // them — and both need only a resolved user, so they survive a library discovery
   // that failed and they never take a sort or a genre.
-  const isQueue = (t) => t === 'next' || t === 'cont';
+  const isQueue = (t) => t === 'next' || t === 'cont' || t === 'fav';
+
+  // The two flags Jellyfin keeps per user per item. Both ride Fields=UserData, which
+  // only comes back when a request names a user — without one these read false and
+  // the tiles stay plain, which is exactly right: there is no one to have an opinion.
+  const isFav = (item) => !!(item && item.UserData && item.UserData.IsFavorite);
+  const isWatched = (item) => !!(item && item.UserData && item.UserData.Played);
   let chooserSession = 0; // orphans a /Genres answer still in flight for a closed or repurposed sheet
 
   function closeChooser() {
     chooserSession++;
     el('chooser').hidden = true;
+  }
+
+  // A tap plays; a HOLD opens the title's own sheet. There is no hover on this panel
+  // and no room for buttons on a poster this size, so the second gesture is the
+  // press — the same one the Home Assistant tiles use, and the same 700ms.
+  const HOLD_MS = 700;
+  // A hold that has fired must not ALSO be read as a tap: the click arrives after the
+  // timer and would start playback behind the sheet that just opened. The timer is the
+  // backstop for the hold that is never followed by a tap at all, so the flag cannot
+  // sit armed and eat someone's next legitimate press.
+  let swallowTap = false;
+  let swallowTimer = null;
+  const holds = new Set();
+
+  // Every armed press, cancellable from outside: a strip that repaints mid-hold
+  // destroys the tile, and its timer would otherwise fire against nothing.
+  function cancelHolds() {
+    for (const cancel of Array.from(holds)) cancel();
+  }
+
+  function armHold(tile, box, fire) {
+    let held = null;
+    let owner = null;
+    const bar = document.createElement('div');
+    bar.className = 'hold';
+    box.appendChild(bar);
+    const cancel = () => {
+      tile.classList.remove('holding');
+      if (held) { clearTimeout(held); held = null; }
+      owner = null;
+      holds.delete(cancel);
+    };
+    tile.addEventListener('pointerdown', (ev) => {
+      if (ev.button !== undefined && ev.button !== 0) return;
+      // ONE pointer owns the hold. A second finger landing on the same tile would
+      // otherwise overwrite the handle without clearing the first, and lifting both
+      // early would cancel only the second — leaving an orphan to fire after a
+      // gesture the user had abandoned.
+      if (held) return;
+      owner = ev.pointerId;
+      tile.classList.add('holding');
+      held = setTimeout(() => {
+        held = null; owner = null;
+        holds.delete(cancel);
+        tile.classList.remove('holding');
+        swallowTap = true;
+        clearTimeout(swallowTimer);
+        swallowTimer = setTimeout(() => { swallowTap = false; }, 1200);
+        fire();
+      }, HOLD_MS);
+      holds.add(cancel);
+    });
+    const end = (ev) => {
+      // Only the finger that started the hold can end it; a second one lifting off
+      // must not cancel a press the first is still making.
+      if (ev && owner !== null && ev.pointerId !== undefined && ev.pointerId !== owner) return;
+      cancel();
+    };
+    tile.addEventListener('pointerup', end);
+    tile.addEventListener('pointercancel', end);
+    tile.addEventListener('pointerleave', end);
+  }
+
+  // What a held title offers: the two flags Jellyfin keeps for the configured user,
+  // and Play, so the hold is never a dead end for someone who meant to tap. Built on
+  // the genre chooser's surface — same sheet, same pills, different question.
+  function openItemSheet(item, play) {
+    if (!cfg.user) return;
+    chooserSession++;   // a genre answer still in flight must not repaint this list
+    const grid = el('chGrid');
+    grid.textContent = '';
+    const d = describe(item);
+    el('chTitle').textContent = [d.title].concat(d.sub.slice(0, 1)).filter(Boolean).join(' · ');
+    el('chooser').hidden = false;
+    const mk = (label, on, run) => {
+      const b = document.createElement('button');
+      b.className = 'btn no-pan' + (on ? ' on' : '');
+      b.textContent = label;
+      b.addEventListener('click', run);
+      grid.appendChild(b);
+    };
+    const fav = isFav(item);
+    const seen = isWatched(item);
+    // The label says what the tap will DO, and the lit pill says what is true now —
+    // a button reading 'Favorite' that is already lit is unambiguous in a way
+    // 'Unfavorite' beside a lit pill is not.
+    //
+    // Not offered on a season. The server would accept it, but the Favorites tab lists
+    // movies, series and episodes — a favourited season would be written and then be
+    // unreachable, which is a worse answer than not offering the button. What the sheet
+    // can set is what the tab can show: a film, a show, or an episode.
+    if (item.Type !== 'Season') {
+      mk((fav ? '♥' : '♡') + ' Favorite', fav, () => { closeChooser(); toggleUserFlag(item, 'fav', !fav); });
+    }
+    mk((seen ? '✓' : '○') + ' Watched', seen, () => { closeChooser(); toggleUserFlag(item, 'played', !seen); });
+    // A container does not play, it opens — the same tap the tile itself takes.
+    const container = item.Type === 'Series' || item.Type === 'Season';
+    if (play) mk(container ? '▸ Open' : '▶ Play', false, () => { closeChooser(); play(); });
   }
 
   // Consumes queuesDirty when a queue shelf is what's on screen. Called from BOTH
@@ -922,8 +1098,15 @@
     playQueue = null;
     nextUpRun = null;
     queuesDirty = false;
-    // The sheet (and anything it was still fetching) belongs to the old server too.
+    // The sheet (and anything it was still fetching) belongs to the old server too,
+    // as does any press still being counted against a tile from it.
+    cancelHolds();
     closeChooser();
+    // Flag bookkeeping is per user and per item: a reset means the next tap starts a
+    // fresh burst rather than inheriting the last one's chain, token or undo value.
+    flagOps.clear();
+    flagChains.clear();
+    flagBase.clear();
   }
 
   const activeTab = () => (browse.tabs || []).find((t) => t.id === browse.tab) || null;
@@ -952,7 +1135,15 @@
   // leaves browse.tabs null so renderPlayer retries, gated by tabsFailedAt.
   async function loadTabs() {
     try {
-      const body = await jfJson('/Library/MediaFolders', 12000, 256 * 1024);
+      // With a user named, ask for THAT user's views. Scoping the item lists to a
+      // user while discovering tabs server-wide would leave a restricted user with
+      // tabs that open onto nothing — the navigation has to agree with the contents.
+      // A user that will not resolve falls back to the server-wide list rather than
+      // painting an empty library row.
+      const uid = cfg.user ? await resolveUser() : '';
+      const body = await jfJson(uid
+        ? '/Users/' + encodeURIComponent(uid) + '/Views'
+        : '/Library/MediaFolders', 12000, 256 * 1024);
       // A 200 without Items is a FAULT, not a server with no libraries: returned
       // as [] it would cache an empty tab row and silently blank the filtered
       // shelf, both with their retry paths disarmed.
@@ -969,6 +1160,10 @@
         .slice(0, 24)
         .map((f) => ({ id: String(f.Id), name: String(f.Name || '?'), tv: f.CollectionType === 'tvshows' }));
     } catch (e) {
+      // Discovery is user-scoped now, so it can be the request that meets the ghost
+      // first — a user deleted and recreated under the same name. Without this the
+      // 30-second retry would replay the dead id and the tab row would never come back.
+      invalidateUserOn404(e);
       WW.log('jellyfin: libraries: ' + (e && e.message));
       return null;
     }
@@ -1008,8 +1203,14 @@
   // halfway marks nothing. Failures log and stay quiet — playback already happened
   // — but the RETURN says whether the write landed: advancing on unchanged watch
   // state would be handed the same episode back and replay it from zero.
-  async function markPlayed(item) {
+  // Watched and favourite are the same write in two spellings: POST the item under
+  // PlayedItems or FavoriteItems to set the flag, DELETE the same path to clear it.
+  // One function so both carry the same user-swap guard, the same 404 healing and
+  // the same staleness bookkeeping — three things this widget has already been
+  // bitten by once each.
+  async function setUserFlag(item, kind, on) {
     if (!cfg.user || !item || !item.Id) return false;
+    const noun = kind === 'fav' ? 'favorite' : 'played';
     // The run's user, captured before any await: a settings switch while /Users is
     // in flight must not record A's finished episode on B's watch history.
     const asUser = cfg.user;
@@ -1018,12 +1219,14 @@
       if (!uid) {
         // The miss is logged, not silent: a finish that SHOULD have been tracked
         // and wasn't is exactly what someone debugging a stuck Next up looks for.
-        WW.log('jellyfin: mark played skipped: no Jellyfin user named "' + asUser + '"');
+        WW.log('jellyfin: mark ' + noun + ' skipped: no Jellyfin user named "' + asUser + '"');
         return false;
       }
       if (cfg.user !== asUser) return false;
-      await jf('/Users/' + encodeURIComponent(uid) + '/PlayedItems/' + encodeURIComponent(String(item.Id)),
-        { method: 'POST', maxBytes: 64 * 1024 }, 12000);
+      await jf('/Users/' + encodeURIComponent(uid)
+        + (kind === 'fav' ? '/FavoriteItems/' : '/PlayedItems/')
+        + encodeURIComponent(String(item.Id)),
+        { method: on ? 'POST' : 'DELETE', maxBytes: 64 * 1024 }, 12000);
       queuesDirty = true;   // the shelves on screen no longer tell the truth
       // The write can land AFTER stopPlayback already ran its check (Back pressed
       // mid-POST) — consume the flag here too, whichever ordering happened.
@@ -1031,9 +1234,138 @@
       return true;
     } catch (e) {
       invalidateUserOn404(e);
-      WW.log('jellyfin: mark played: ' + (e && e.message));
+      WW.log('jellyfin: mark ' + noun + ': ' + (e && e.message));
       return false;
     }
+  }
+
+  // A finished title is marked played for the configured user — that is what lets
+  // Next up advance past it. Only a NATURAL finish calls this ('ended'); stopping
+  // halfway marks nothing. Failures log and stay quiet — playback already happened
+  // — but the RETURN says whether the write landed: advancing on unchanged watch
+  // state would be handed the same episode back and replay it from zero.
+  const markPlayed = async (item) => {
+    const ok = await setUserFlag(item, 'played', true);
+    // The written state, applied to the item in hand. Only a QUEUE reloads after a
+    // watch-state write, so on a library tab this is the only thing that moves: without
+    // it the poster of a title that just played to its end keeps its progress bar and
+    // its unwatched face, and the next tap resumes it from the old midpoint.
+    if (ok && item) {
+      const ud = item.UserData || (item.UserData = {});
+      ud.Played = true;
+      ud.PlaybackPositionTicks = 0;
+      // ...and to whatever object the shelf holds for it now, which a reload during
+      // playback may have replaced.
+      applyFlagById(String(item.Id), 'played', true);
+      // And PAINT it. stopPlayback renders while this write is still in the air, so
+      // without a render of its own the corrected item sits behind a poster still
+      // showing its progress bar — for up to a full refresh interval, which the user
+      // may have set to five minutes.
+      renderPlayer();
+    }
+    return ok;
+  };
+
+  // The latest tap against each item-and-flag. Two writes to the same flag can be in
+  // flight at once on a slow server — hold, unfavourite, hold, favourite — and each
+  // captured the OTHER's optimistic value as the one to undo to. Rolling both back in
+  // completion order would restore the second's snapshot last and leave the poster in
+  // a state neither write achieved. Only the newest tap owns the undo.
+  const flagOps = new Map();
+  let flagSeq = 0;
+  // Ordering the COMPLETIONS is not enough on its own: fired concurrently, an
+  // unfavourite DELETE can overtake the favourite POST it followed, and the server
+  // settles on the older answer while the panel shows the newer one — a disagreement
+  // nothing on screen reveals until the next reload. So each item-and-flag has a
+  // chain and every tap joins the end of it, which puts the writes on the wire in the
+  // order they were asked for.
+  const flagChains = new Map();
+  // What the SERVER is known to hold for a flag, which is where a refused write has to
+  // put the poster back. It cannot be read off the item when the tap lands: mid-burst
+  // the item carries the PREVIOUS tap's optimistic value, and undoing to that strands
+  // the poster on a state no write ever achieved. Seeded by the first tap of a burst
+  // and moved only by a write that actually landed.
+  const flagBase = new Map();
+
+  // The item the gesture held may not be the one on screen by the time the reply
+  // lands: a list that reloaded in between hands back a NEW object carrying the
+  // server's pre-write state, and the detached original is all toggleUserFlag has.
+  // So a landed write is applied by ID to whatever is showing — the poster should
+  // agree with the server, not with the moment the tap was made.
+  function applyFlagById(id, kind, on) {
+    const key = kind === 'fav' ? 'IsFavorite' : 'Played';
+    for (const list of [browse.items, browse.all, latest]) {
+      if (!Array.isArray(list)) continue;
+      for (const it of list) {
+        if (!it || String(it.Id) !== id) continue;
+        const ud = it.UserData || (it.UserData = {});
+        ud[key] = on;
+        if (kind === 'played') ud.PlaybackPositionTicks = 0;
+      }
+    }
+  }
+
+  // A flag the user just tapped, applied to the item in hand BEFORE the write goes
+  // out so the poster answers the tap immediately, and put back if the server
+  // refuses — a panel that claims a favourite the server never accepted is worse
+  // than one that takes a moment.
+  async function toggleUserFlag(item, kind, on) {
+    const ud = item.UserData || (item.UserData = {});
+    const key = kind === 'fav' ? 'IsFavorite' : 'Played';
+    const opKey = String(item.Id) + '|' + kind;
+    const token = ++flagSeq;
+    flagOps.set(opKey, token);
+    if (!flagBase.has(opKey)) flagBase.set(opKey, { flag: !!ud[key], pos: ud.PlaybackPositionTicks });
+    ud[key] = on;
+    // Setting or clearing watched resets the resume point at the server, both ways.
+    // Leaving the local one behind would keep the progress bar on the poster and —
+    // because a library tab is not reloaded by the write, only a queue is — hand that
+    // stale position to the next tap, resuming a title just declared finished.
+    if (kind === 'played') ud.PlaybackPositionTicks = 0;
+    renderPlayer();
+    // The user AND the server this gesture was made under, captured HERE rather than
+    // inside the write. A tap queued behind a slow one starts later, and setUserFlag
+    // reads the settings when it runs: without this, an action taken while looking at
+    // A's library could land on B's history, or — the settings having moved to another
+    // server entirely, with the username unchanged — on whatever that server happens
+    // to keep under the same item id. `generation` is bumped by exactly that change.
+    const owner = cfg.user;
+    const era = generation;
+    const mine_ = () => cfg.user === owner && generation === era;
+    const run = () => (mine_() ? setUserFlag(item, kind, on) : false);
+    const prev = flagChains.get(opKey);
+    // A predecessor that FAILED must still not cancel its successor: the chain exists
+    // for order, not for outcome, so both settlements continue it.
+    const mine = prev ? prev.then(run, run) : run();
+    flagChains.set(opKey, mine.then(() => {}, () => {}));
+    const ok = await mine;
+    // Nothing was written, and nothing on this screen belongs to that question any
+    // more; the reload those changes trigger is what puts the tiles right.
+    if (!mine_()) return;
+    if (ok) {
+      applyFlagById(String(item.Id), kind, on);
+      renderPlayer();
+    }
+    const base = flagBase.get(opKey);
+    // A write that landed IS the server's state now, whether or not this tap still
+    // owns the screen: a later refusal has to undo to here, not to where the burst
+    // started.
+    if (ok && base) {
+      base.flag = on;
+      if (kind === 'played') base.pos = 0;
+    }
+    // A newer tap has already claimed this flag: its optimistic value is what the user
+    // last asked for, and its own completion decides what becomes of it — including
+    // retiring the bookkeeping, which is why reaching past here means this tap was the
+    // last one standing.
+    if (flagOps.get(opKey) !== token) return;
+    flagOps.delete(opKey);
+    flagChains.delete(opKey);
+    flagBase.delete(opKey);
+    if (ok || !base) return;
+    ud[key] = base.flag;
+    if (kind === 'played') ud.PlaybackPositionTicks = base.pos;
+    renderPlayer();
   }
 
   // ---- playback reporting ---------------------------------------------------
@@ -1174,7 +1506,12 @@
         return;
       }
       const lv = level();
-      if (isQueue(browse.tab)) {
+      // The QUEUE branch is the top level of a queue tab only. Favorites lists
+      // series, and tapping one pushes a path exactly as a library tab does — with
+      // the tab still 'fav' the queue branch would answer that drill-down by
+      // fetching the favourites list again, so a favourited show could not be
+      // opened at all. Below the top level every tab is a library tab.
+      if (isQueue(browse.tab) && lv === 'top') {
         // The server's own answers to "what do I watch now" for the configured
         // user: Next up is the next unwatched episode of every series in progress,
         // Continue is everything left part-watched, movies included. Both are
@@ -1182,8 +1519,13 @@
         // ordering IS the point of these endpoints. Continue's tiles are posters
         // (it mixes movies with episodes, like the New shelf); Next up's are
         // stills (all episodes).
+        const fav = browse.tab === 'fav';
         const cont = browse.tab === 'cont';
-        browse.pageSize = playerBudget(!cont).count;
+        // Stills for Next up alone. Continue and Favorites both mix movies with
+        // episodes, and a poster cropped into a 16/9 box is the wrong picture of a
+        // movie — renderPlayer decides the same way, and the two must agree or the
+        // page size fetched here is refetched on sight.
+        browse.pageSize = playerBudget(browse.tab === 'next').count;
         const uid = await resolveUser();
         if (gen !== browseGen) return;
         if (!uid) {
@@ -1191,7 +1533,16 @@
         } else {
           // Fields=UserData carries each item's saved position — what the tile's
           // progress bar draws and what playback resumes from.
-          const head = cont
+          // Favorites is an ordinary /Items query filtered to the flag, so unlike the
+          // other two it needs its own sort — the endpoint has no opinion of its own to
+          // preserve. Series are included, not just their episodes: favouriting a show
+          // is the common case, and tapping one drills into its seasons exactly as the
+          // library tab does.
+          const head = fav
+            ? '/Items?userId=' + encodeURIComponent(uid)
+              + '&Filters=IsFavorite&Recursive=true&Fields=UserData'
+              + '&IncludeItemTypes=Movie,Series,Episode&SortBy=SortName&SortOrder=Ascending'
+            : cont
             ? '/Users/' + encodeURIComponent(uid) + '/Items/Resume?MediaTypes=Video&Recursive=true&Fields=UserData'
             : '/Shows/NextUp?UserId=' + encodeURIComponent(uid);
           let body;
@@ -1221,66 +1572,96 @@
             return;
           }
         }
-      } else if (lv === 'series' || lv === 'season') {
-        // Seasons and episodes arrive as ONE list in broadcast order and page
-        // locally: the whole list is also the auto-advance queue. 'Whole' means
-        // following the server's pages to the end — a daily-show season outruns
-        // one 200-item response, and truncating there would strand every later
-        // episode and stop auto-advance at an invisible wall. The 1000 cap
-        // bounds a pathological library; the footer counts what actually loaded.
-        // IsMissing=false: Jellyfin keeps virtual placeholders for unaired and
-        // missing episodes (and all-missing seasons). With a server key there is
-        // no user preference filtering them, so without this a weekly show lists
-        // next month's episodes as un-playable cards — and auto-advance would roll
-        // a finished binge straight into one. (Not IsVirtualItem=false: folderless
-        // but present seasons are virtual-location and must stay.)
-        const whole = '/Items?ParentId=' + encodeURIComponent(browse.path[browse.path.length - 1].id)
-          + '&IncludeItemTypes=' + (lv === 'series' ? 'Season' : 'Episode')
-          + '&SortBy=IndexNumber&SortOrder=Ascending&IsMissing=false&Limit=200';
-        const all = [];
-        for (;;) {
-          const page = await jfJson(whole + (all.length ? '&StartIndex=' + all.length : ''),
-            12000, LIST_MAX_BYTES);
-          if (gen !== browseGen) return;
-          // A malformed page mid-follow faults the whole level rather than passing
-          // off a truncated season as complete.
-          if (!page || !Array.isArray(page.Items)) throw fault('format', 'reply had no Items');
-          const got = page.Items;
-          all.push(...got);
-          const reported = page && page.TotalRecordCount != null
-            ? Number(page.TotalRecordCount) : all.length;
-          if (!got.length || all.length >= reported || all.length >= 1000) break;
-        }
-        browse.all = all;
-        browse.total = all.length;
       } else {
-        browse.pageSize = playerBudget(false).count;
-        const s = SORTS[browse.sort];
-        // Random re-shuffles per request, so an offset is an offset into a DIFFERENT
-        // shuffle — page numbers would repeat and skip titles. One hand at a time,
-        // always from 0; renderPlayer turns › into "deal another".
-        if (s.by === 'Random') browse.page = 0;
-        const path = '/Items?ParentId=' + encodeURIComponent(tab.id)
-          + '&IncludeItemTypes=' + (tab.tv ? 'Series' : 'Movie')
-          + '&Recursive=true&SortBy=' + s.by + '&SortOrder=' + s.order
-          + '&StartIndex=' + (browse.page * browse.pageSize)
-          + '&Limit=' + browse.pageSize
-          + (browse.genre ? '&Genres=' + encodeURIComponent(browse.genre) : '');
-        const body = await jfJson(path, 12000, LIST_MAX_BYTES);
+        // Every list below this point is a LIBRARY list, and with a user named each one
+        // asks in that user's name: Fields=UserData is what carries whether a title is
+        // watched, favourited, or part-way through, and the server only fills it in for
+        // somebody. It also scopes the answer to what that user may see, which is the
+        // correct reading of "this user's library" and matches every other Jellyfin
+        // client. Without a name the lists stay server-wide and the tiles stay plain.
+        const stateUid = cfg.user ? await resolveUser() : '';
         if (gen !== browseGen) return;
-        if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
-        const items = body.Items;
-        browse.all = null;
-        browse.items = items;
-        browse.total = body && body.TotalRecordCount != null ? Number(body.TotalRecordCount) : items.length;
-        // A page fetched past a shrunken result set comes back empty while the count
-        // says pages exist — land on the last real page instead of stranding the
-        // footer on 'Page 6 of 3'. Bounded: the refetch's page is always in range.
-        const last = Math.max(0, Math.ceil(browse.total / Math.max(1, browse.pageSize)) - 1);
-        if (!items.length && browse.total > 0 && browse.page > last) {
-          browse.page = last;
-          loadBrowse();
+        // Named but not found: say so, exactly as the queue tabs do, rather than
+        // listing the whole server. A username is a narrowing, and answering a
+        // narrowing nobody could apply with MORE titles is the wrong answer — the
+        // message names the one field that fixes it.
+        if (cfg.user && !stateUid) {
+          browse.error = 'No Jellyfin user named “' + cfg.user + '” — check the widget settings.';
+          browse.loading = false;
+          renderPlayer();
           return;
+        }
+        const asUser = stateUid
+          ? '&userId=' + encodeURIComponent(stateUid) + '&Fields=UserData' : '';
+        // Every read below re-resolves the user on a 404, exactly as the queue reads
+        // and the flag writes do: a user deleted and recreated under the same name
+        // leaves a cached ghost id behind, and without this the library branch would
+        // replay it on every retry and stay broken until the settings changed.
+        const listJson = (path, bytes) => jfJson(path, 12000, bytes).catch((e) => {
+          invalidateUserOn404(e);
+          throw e;
+        });
+        if (lv === 'series' || lv === 'season') {
+          // Seasons and episodes arrive as ONE list in broadcast order and page
+          // locally: the whole list is also the auto-advance queue. 'Whole' means
+          // following the server's pages to the end — a daily-show season outruns
+          // one 200-item response, and truncating there would strand every later
+          // episode and stop auto-advance at an invisible wall. The 1000 cap
+          // bounds a pathological library; the footer counts what actually loaded.
+          // IsMissing=false: Jellyfin keeps virtual placeholders for unaired and
+          // missing episodes (and all-missing seasons). With a server key there is
+          // no user preference filtering them, so without this a weekly show lists
+          // next month's episodes as un-playable cards — and auto-advance would roll
+          // a finished binge straight into one. (Not IsVirtualItem=false: folderless
+          // but present seasons are virtual-location and must stay.)
+          const whole = '/Items?ParentId=' + encodeURIComponent(browse.path[browse.path.length - 1].id)
+            + '&IncludeItemTypes=' + (lv === 'series' ? 'Season' : 'Episode')
+            + '&SortBy=IndexNumber&SortOrder=Ascending&IsMissing=false&Limit=200' + asUser;
+          const all = [];
+          for (;;) {
+            const page = await listJson(whole + (all.length ? '&StartIndex=' + all.length : ''),
+              LIST_MAX_BYTES);
+            if (gen !== browseGen) return;
+            // A malformed page mid-follow faults the whole level rather than passing
+            // off a truncated season as complete.
+            if (!page || !Array.isArray(page.Items)) throw fault('format', 'reply had no Items');
+            const got = page.Items;
+            all.push(...got);
+            const reported = page && page.TotalRecordCount != null
+              ? Number(page.TotalRecordCount) : all.length;
+            if (!got.length || all.length >= reported || all.length >= 1000) break;
+          }
+          browse.all = all;
+          browse.total = all.length;
+        } else {
+          browse.pageSize = playerBudget(false).count;
+          const s = SORTS[browse.sort];
+          // Random re-shuffles per request, so an offset is an offset into a DIFFERENT
+          // shuffle — page numbers would repeat and skip titles. One hand at a time,
+          // always from 0; renderPlayer turns › into "deal another".
+          if (s.by === 'Random') browse.page = 0;
+          const path = '/Items?ParentId=' + encodeURIComponent(tab.id)
+            + '&IncludeItemTypes=' + (tab.tv ? 'Series' : 'Movie')
+            + '&Recursive=true&SortBy=' + s.by + '&SortOrder=' + s.order
+            + '&StartIndex=' + (browse.page * browse.pageSize)
+            + '&Limit=' + browse.pageSize
+            + (browse.genre ? '&Genres=' + encodeURIComponent(browse.genre) : '') + asUser;
+          const body = await listJson(path, LIST_MAX_BYTES);
+          if (gen !== browseGen) return;
+          if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
+          const items = body.Items;
+          browse.all = null;
+          browse.items = items;
+          browse.total = body && body.TotalRecordCount != null ? Number(body.TotalRecordCount) : items.length;
+          // A page fetched past a shrunken result set comes back empty while the count
+          // says pages exist — land on the last real page instead of stranding the
+          // footer on 'Page 6 of 3'. Bounded: the refetch's page is always in range.
+          const last = Math.max(0, Math.ceil(browse.total / Math.max(1, browse.pageSize)) - 1);
+          if (!items.length && browse.total > 0 && browse.page > last) {
+            browse.page = last;
+            loadBrowse();
+            return;
+          }
         }
       }
     } catch (e) {
@@ -1328,7 +1709,13 @@
     // played and asks /Shows/NextUp for this series' successor.
     // From EITHER queue an episode that finishes rolls into its series' next one:
     // resuming episode 3 and letting it end means episode 4, same as Next up.
-    nextUpRun = (isQueue(browse.tab) && item.Type === 'Episode' && item.SeriesId)
+    // Continue and Next up ONLY. Both are the server's answer to "what now", so
+    // finishing one and asking for the series' successor continues the same thought.
+    // Favorites is a shelf the user built by hand: episode 10 is favourited BECAUSE
+    // it is episode 10, and rolling from it into whatever /Shows/NextUp thinks comes
+    // next — episode 3, if that is where the series was left — is not what was asked.
+    nextUpRun = ((browse.tab === 'cont' || browse.tab === 'next')
+      && item.Type === 'Episode' && item.SeriesId)
       ? String(item.SeriesId) : null;
     startPlayback(item, describe(item));
   }
@@ -1384,8 +1771,14 @@
         // Follow the server's pages like the episode list does — a music library
         // can report hundreds of genres, and caching page one as the whole list
         // would hide the rest for the widget's lifetime. 300 bounds the sheet.
+        // In the user's name, like the list it filters. Genres are computed from the
+        // titles in scope, so an unscoped answer offers filters that exist only on
+        // titles this user cannot see — every one of them opening an empty shelf.
+        const guid = cfg.user ? await resolveUser() : '';
+        if (session !== chooserSession) return;
         const base = '/Genres?ParentId=' + encodeURIComponent(tab.id)
-          + '&SortBy=SortName&SortOrder=Ascending&Limit=100';
+          + '&SortBy=SortName&SortOrder=Ascending&Limit=100'
+          + (guid ? '&userId=' + encodeURIComponent(guid) : '');
         const got = [];
         let fetched = 0;
         for (;;) {
@@ -1458,7 +1851,7 @@
       grid.appendChild(b);
     };
     if (cfg.types) mk('new', 'New');
-    if (cfg.user) { mk('cont', 'Continue'); mk('next', 'Next up'); }
+    if (cfg.user) { mk('cont', 'Continue'); mk('next', 'Next up'); mk('fav', 'Favorites'); }
     for (const t of browse.tabs || []) mk(t.id, t.name);
   }
 
@@ -1490,7 +1883,7 @@
         tabsEl.appendChild(b);
       };
       if (cfg.types) mk('new', 'New');
-      if (cfg.user) { mk('cont', 'Continue'); mk('next', 'Next up'); }
+      if (cfg.user) { mk('cont', 'Continue'); mk('next', 'Next up'); mk('fav', 'Favorites'); }
       for (const t of browse.tabs || []) mk(t.id, t.name);
       // Enough libraries (or long names, or a half tile) overflow the row, and the
       // row cannot pan — no-pan means touch-action:none here — so the tail collapses
@@ -1523,6 +1916,8 @@
     const wide = !!(opts && opts.wide);
     const budget = playerBudget(wide);
     const strip = el('pstrip');
+    // The tiles about to be destroyed may have presses armed against them.
+    cancelHolds();
     strip.textContent = '';
     strip.style.setProperty('--ph', budget.cardH + 'px');
     const wanted = new Set();
@@ -1547,6 +1942,19 @@
         bar.appendChild(fill);
         box.appendChild(bar);
       }
+      // Watched first, favourite second, so a title that is both reads left to right
+      // in the order the sheet lists them.
+      const marks = document.createElement('div');
+      marks.className = 'marks';
+      const mark = (cls, glyph) => {
+        const m = document.createElement('span');
+        m.className = cls;
+        m.textContent = glyph;
+        marks.appendChild(m);
+      };
+      if (isWatched(item)) mark('seen', '✓');
+      if (isFav(item)) mark('fav', '♥');
+      if (marks.children.length) box.appendChild(marks);
       tile.appendChild(box);
       const cap = document.createElement('div');
       cap.className = 'cap';
@@ -1557,7 +1965,14 @@
         ? [d.sub[0], String(item.Name || d.title)].filter(Boolean).join(' · ')
         : capFor(item, d);
       tile.append(cap);
-      tile.addEventListener('click', () => (opts && opts.onTap ? opts.onTap(item, i) : null));
+      tile.addEventListener('click', () => {
+        // The click that follows a fired hold belongs to the sheet, not to playback.
+        if (swallowTap) { swallowTap = false; clearTimeout(swallowTimer); return; }
+        if (opts && opts.onTap) opts.onTap(item, i);
+      });
+      // Only with a user named: the sheet has nothing to offer otherwise, and a
+      // gesture that opens an empty sheet is worse than no gesture.
+      if (opts && opts.onHold && cfg.user) armHold(tile, box, () => opts.onHold(item, i));
       strip.appendChild(tile);
     });
     return { wanted, count: budget.count };
@@ -1565,6 +1980,11 @@
 
   function stripNote(text, onTap) {
     const strip = el('pstrip');
+    // The other writer of this strip, and holds die here too: a second finger reaching
+    // a tab while a first is still pressing a poster takes the loading path, not
+    // buildStrip, and the detached tile's timer would open a sheet for the old item
+    // over the new tab — where its buttons would flag the wrong title.
+    cancelHolds();
     strip.textContent = '';
     const note = document.createElement('div');
     note.className = 'note' + (onTap ? ' pressable no-pan' : '');
@@ -1630,7 +2050,8 @@
     const lv = level();
     const nextTab = browse.tab === 'next';
     const contTab = browse.tab === 'cont';
-    const queueTab = nextTab || contTab;
+    const favTab = browse.tab === 'fav';
+    const queueTab = isQueue(browse.tab);
     // Stills where every tile is an episode; posters where movies and episodes
     // mix (Continue, like the New shelf) — a poster cropped into a 16/9 box is
     // the wrong picture of a movie.
@@ -1673,6 +2094,7 @@
     // '342 seasons' while a series opens. Say nothing until the answer is this level's.
     el('meta').textContent = !settled ? '' : browse.total
       ? browse.total + (contTab ? ' to finish' : nextTab ? ' up next'
+        : favTab && lv === 'top' ? ' favorited'
         : lv === 'season' ? ' episodes' : lv === 'series' ? ' seasons'
         : activeTab() && activeTab().tv ? ' series' : ' movies')
       : '';
@@ -1682,14 +2104,27 @@
     if (!items.length) {
       stripNote(contTab ? 'Nothing part-watched — stop a title midway and it waits here.'
         : nextTab ? 'Nothing up next — start a series and its next episode queues here.'
+        : favTab && lv === 'top' ? 'Nothing favorited yet — press and hold any title to add one.'
         : browse.genre ? 'Nothing here under ' + browse.genre + '.' : 'Nothing here yet.');
       return;
     }
 
+    // A tile's position in the page, turned into its position in the whole local list
+    // — which is what the auto-advance queue is indexed by.
+    const absolute = (i) => (browse.all ? browse.page * browse.pageSize + i : null);
     const built = buildStrip(items, {
       wide,
       mixed: nextTab,
-      onTap: (item, i) => openItem(item, browse.all ? browse.page * browse.pageSize + i : null),
+      onTap: (item, i) => openItem(item, absolute(i)),
+      // Play from the sheet is the same call as the tap — but the index is worked out
+      // HERE, when the tile was held, not when Play is finally tapped. The sheet
+      // outlives a reflow (the on-panel editor resizes the frame in place), and a
+      // reflow re-slices the season under a new page size: the slot the finger landed
+      // on would then name a different episode, and the run would advance from it.
+      onHold: (item, i) => {
+        const at = absolute(i);
+        openItemSheet(item, () => openItem(item, at));
+      },
     });
     ensureImages(built.wanted);
   }
@@ -1701,7 +2136,9 @@
       // answered gets to claim there is nothing in it. Either way the note lives IN
       // THE STRIP — a state card would hide the whole Player, tabs included, and an
       // empty New shelf must never wall off a full Movies library one tap away.
-      stripNote(!latestAt
+      stripNote(latestNoUser
+        ? 'No Jellyfin user named “' + cfg.user + '” — check the widget settings.'
+        : !latestAt
         ? "The recently-added list hasn't answered yet — retrying."
         : 'Nothing new lately — this shelf fills in as titles land in '
           + ((server && server.name) || 'Jellyfin') + "'s library.");
@@ -1714,8 +2151,12 @@
     }
 
     const budget = playerBudget(false, false);
+    // The shelf is asked for in the named user's scope now, so it knows what is
+    // favourited and what is watched — and New holds like every other tab. With no
+    // user named there is nothing to know and buildStrip arms no press at all.
     const built = buildStrip(latest.slice(0, budget.count), {
       onTap: (item) => openItem(item, null),
+      onHold: (item) => openItemSheet(item, () => openItem(item, null)),
     });
 
     const shelfStale = latestAt > 0 && Date.now() - latestAt > SLOW_MS * 2 + 60000;
@@ -2626,6 +3067,12 @@
       // from under an open chooser sheet, which would otherwise sit fixed over
       // the overview with the Player's pills still live inside it.
       if (prevView !== cfg.view) { stopPlayback(); closeChooser(); }
+      // With a username set the two views ask DIFFERENT shelf questions — the
+      // Player's in that user's scope, the overview's server-wide — so the cached
+      // answer belongs to the view being left. Coming INTO the Player it would paint
+      // the overview's server-wide titles, playable, until the scoped request lands,
+      // and keep them if it never does (the failure path preserves what it has).
+      if (prevView !== cfg.view && cfg.user) { latest = []; latestAt = 0; }
     }
     // A different hide list is a different shelf and a different tab row; a
     // different username is a different Next up. Both restart their surfaces —
@@ -2638,6 +3085,13 @@
     }
     if (prevUser !== cfg.user) {
       nextUser = { id: '' };
+      // The Player's shelf is scoped to the user too, so it is the previous user's
+      // shelf now — drop it and refetch rather than showing their titles for up to a
+      // whole slow window. (Same three lines the hide list already needs, and for the
+      // same reason: a different question, not a staler answer to the same one.)
+      latest = [];
+      latestAt = 0;
+      slowAt = 0;
       browseReset();
       // The tracked user is part of the playing run's identity: a title started
       // under user A must not be marked watched for user B when it ends, and an
