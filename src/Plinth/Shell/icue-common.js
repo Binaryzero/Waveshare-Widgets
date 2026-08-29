@@ -349,13 +349,13 @@
     return kept.length ? kept.join(', ') : FONT_SUBSTITUTE;
   }
 
-  function defuseSheet(sheet, seen) {
+  // Walks a rule LIST rather than a sheet, because @font-face does not only appear at
+  // the top level: `@media`, `@supports`, `@layer` and `@container` each carry their own
+  // cssRules, and a face nested in one is invisible to a scan that only tests the
+  // outermost rule's type. iCUE packages do this (a @media block for the panel's
+  // aspect), so the sweep reported success while those faces went on flooding.
+  function defuseRules(rules, seen) {
     let patched = 0;
-    // A cross-origin sheet throws on .cssRules; widgets' own sheets are same-origin.
-    let rules;
-    try { rules = sheet.cssRules; } catch (e) { return 0; }
-    if (!rules || seen.has(sheet)) return 0;
-    seen.add(sheet);
     for (const rule of Array.from(rules)) {
       if (!rule) continue;
       // An @import's sheet is reached through the rule, never as its own
@@ -366,14 +366,32 @@
         catch (e) { /* cross-origin import */ }
         continue;
       }
-      if (rule.type !== 5 /* CSSRule.FONT_FACE_RULE */) continue;
-      let value;
-      try { value = rule.style.getPropertyValue('src'); } catch (e) { continue; }
-      if (!value || value.indexOf('qrc:') === -1) continue;
-      try { rule.style.setProperty('src', stripQrcSources(value)); patched++; }
-      catch (e) { /* read-only sheet: leave it */ }
+      if (rule.type === 5 /* CSSRule.FONT_FACE_RULE */) {
+        let value;
+        try { value = rule.style.getPropertyValue('src'); } catch (e) { continue; }
+        if (!value || value.indexOf('qrc:') === -1) continue;
+        try { rule.style.setProperty('src', stripQrcSources(value)); patched++; }
+        catch (e) { /* read-only sheet: leave it */ }
+        continue;
+      }
+      // Anything else that carries rules of its own. Tested by CAPABILITY, not by an
+      // enumerated list of group types — the list would go stale the next time CSS grows
+      // one, and this is exactly the failure being fixed. Keyframes and nested style
+      // rules also answer here; walking them finds nothing and costs nothing.
+      let nested;
+      try { nested = rule.cssRules; } catch (e) { nested = null; }
+      if (nested && nested.length) patched += defuseRules(nested, seen);
     }
     return patched;
+  }
+
+  function defuseSheet(sheet, seen) {
+    // A cross-origin sheet throws on .cssRules; widgets' own sheets are same-origin.
+    let rules;
+    try { rules = sheet.cssRules; } catch (e) { return 0; }
+    if (!rules || seen.has(sheet)) return 0;
+    seen.add(sheet);
+    return defuseRules(rules, seen);
   }
 
   function defuseQrcFonts() {
@@ -396,7 +414,58 @@
       } catch (e) { /* frame gone */ }
     }
   }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', sweepFonts);
-  else sweepFonts();
-  window.addEventListener('load', () => { sweepFonts(); setTimeout(sweepFonts, 1000); });
+
+  // A fixed set of sweeps only covers sheets that exist by the last one. A widget that
+  // appends a <link> or <style> later — switching views, loading a skin, lazy-loading a
+  // panel — brings its qrc: faces with it and resumes the flood this exists to stop.
+  // More timeouts would just move the deadline, so watch for the sheets instead.
+  let sweepPending = false;
+  function scheduleSweep() {
+    if (sweepPending) return;
+    sweepPending = true;
+    // Coalesced: a widget that appends a dozen nodes in one turn gets ONE sweep, and a
+    // sweep is a walk of every sheet. Patched rules no longer match, so a re-sweep is
+    // idempotent and silent.
+    setTimeout(() => { sweepPending = false; sweepFonts(); }, 0);
+  }
+
+  function isSheetNode(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const tag = node.tagName;
+    return tag === 'STYLE' || (tag === 'LINK' && /(^|\s)stylesheet(\s|$)/i.test(node.rel || ''));
+  }
+
+  let watching = false;
+  function watchForSheets() {
+    // The shim runs at document-created, before <html> exists; called again at each
+    // readiness point, so the first call that has a root wins and the rest no-op.
+    if (watching || typeof MutationObserver !== 'function') return;
+    const root = document.documentElement;
+    if (!root) return;
+    watching = true;
+    new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!isSheetNode(node)) continue;
+          // A <link>'s sheet is not parsed at insertion — .sheet is null until it
+          // loads, and sweeping now would find nothing. Sweep on both: the immediate
+          // one catches <style>, the load event catches <link>.
+          if (node.tagName === 'LINK') {
+            try { node.addEventListener('load', scheduleSweep, { once: true }); }
+            catch (e) { /* older listener signature: the sweep below still runs */ }
+          }
+          scheduleSweep();
+          return;
+        }
+      }
+    }).observe(root, { childList: true, subtree: true });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => { watchForSheets(); sweepFonts(); });
+  } else {
+    watchForSheets();
+    sweepFonts();
+  }
+  window.addEventListener('load', () => { watchForSheets(); sweepFonts(); setTimeout(sweepFonts, 1000); });
 })();

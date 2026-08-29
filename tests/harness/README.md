@@ -341,6 +341,10 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   (MediaViewer, ColorTools, the promise wrappers) reached as injected globals —
   the probe's own `../common/…` script tags 404 here on purpose, because that is
   the device condition and the markers passing is what proves the globals carry it —
+  the Qt-resource font sweep (three `qrc:` `@font-face` rules planted in the three
+  places a sweep can miss — top level, inside an `@media` group, and in a `<style>`
+  appended 1.4 s after load — with the marker naming the survivors, so a regression
+  says which placement broke rather than just that one did),
   thenable `tr()` against the nested i18next `translation.json`, the
   Notificationsprovider requestId/asyncResponse round trip, and the Streamdeck plugin
   emulation against the `--sd` fixture (`virtualDeviceCreated`, per-key

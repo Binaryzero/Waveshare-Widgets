@@ -20,6 +20,26 @@
 	<script src="../common/tools/ColorTools.js"></script>
 	<script src="../common/tools/media_viewer/MediaViewer.js"></script>
 	<link rel="stylesheet" href="../common/tools/media_viewer/MediaViewer.css">
+	<!-- Qt resource-scheme faces, the way iCUE packages ship them. Chromium cannot load
+	     `qrc:` at all, and every element waiting on one logs a "Fallback font will be
+	     used" intervention — hundreds of lines from one widget. Two placements, because
+	     the sweep once handled only the first:
+	       · top level, and
+	       · inside an @media group, which is not itself a FONT_FACE_RULE, so a scan that
+	         only tested the outermost rule's type never saw the face inside it.
+	     A third arrives from a script AFTER load, below. -->
+	<style>
+	@font-face {
+		font-family: 'ProbeTopLevel';
+		src: url("qrc:/fonts/OpenSans-Regular.ttf") format("truetype");
+	}
+	@media (min-width: 1px) {
+		@font-face {
+			font-family: 'ProbeGrouped';
+			src: url("qrc:/fonts/OpenSans-Bold.ttf") format("truetype");
+		}
+	}
+	</style>
 </head>
 <body>
 	<div id="bg"></div>
@@ -40,6 +60,44 @@
 		document.getElementById('log').append(line + '\n');
 	};
 	log('module-alive');
+
+	// Whether a face was defused is only visible in the CSSOM — the page cannot observe
+	// the interventions it no longer causes. Report the qrc: sources still present, per
+	// placement, so the marker names WHICH hole is open rather than just "some".
+	const qrcLeft = () => {
+		const left = [];
+		const walk = (rules) => {
+			for (const rule of Array.from(rules || [])) {
+				if (!rule) continue;
+				if (rule.type === 5) {
+					let src = '';
+					try { src = rule.style.getPropertyValue('src') || ''; } catch (e) { src = ''; }
+					if (src.indexOf('qrc:') !== -1) left.push(rule.style.getPropertyValue('font-family'));
+					continue;
+				}
+				let nested = null;
+				try { nested = rule.cssRules; } catch (e) { nested = null; }
+				if (nested) walk(nested);
+			}
+		};
+		for (const sheet of Array.from(document.styleSheets)) {
+			try { walk(sheet.cssRules); } catch (e) { /* cross-origin */ }
+		}
+		return left;
+	};
+
+	// The late sheet: appended well after load, when every scheduled sweep has run.
+	// Without an observer its face keeps its qrc: source and the flood resumes.
+	window.addEventListener('load', () => {
+		setTimeout(() => {
+			const late = document.createElement('style');
+			late.textContent = "@font-face { font-family: 'ProbeLate';" +
+				" src: url(\"qrc:/fonts/OpenSans-Italic.ttf\") format(\"truetype\"); }";
+			document.head.appendChild(late);
+			// After the observer's coalesced sweep has had a turn.
+			setTimeout(() => log('qrc-left:' + (qrcLeft().join(',') || 'none')), 250);
+		}, 1400);
+	});
 
 	const viewer = new MediaViewer({ container: document.getElementById('bg') });
 	viewer.clear();

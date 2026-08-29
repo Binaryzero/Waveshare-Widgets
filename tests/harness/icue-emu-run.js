@@ -24,6 +24,15 @@
 //                          mirrored grid.
 //        live-tiles      — the fixture's capture frame was sliced into per-key PNG
 //                          faces (the dynamic-key-face path replacing profile icons).
+//        qrc-left:none   — every Qt-resource (`qrc:`) @font-face was defused. Chromium
+//                          cannot load that scheme and logs a "Fallback font will be
+//                          used" intervention per waiting element — hundreds of lines
+//                          from one widget. The probe plants three, in the three places
+//                          a sweep can miss: top level, inside an @media group (not
+//                          itself a FONT_FACE_RULE, so a type test on the outermost
+//                          rule never sees it), and in a <style> appended 1.4 s after
+//                          load, past every scheduled sweep. The marker names the
+//                          survivors, so a regression says WHICH placement broke.
 //   E2 · teeth for the Stream Deck path: the --sd fixture was actually served (the
 //        runner's own "profile was served" check is part of the green run).
 //   E3 · wiring, text-level (the pattern tools/StreamDeckPaths uses for what a Node
@@ -63,16 +72,16 @@ const check = (name, ok, detail) => {
 
 const MARKERS = ['module-alive', 'mediaviewer-ok', 'hex:255, 0, 57',
   'tr-then:Compat says hello', 'notif:0', 'device-created', 'icons:3', 'click-sent',
-  'live-tiles'];
+  'live-tiles', 'qrc-left:none'];
 
 // icue-sd.json, not streamdeck-sd.json: same deck plus a capture frame, so the
 // slice-into-per-key-faces path runs (the capture poll fires at 500ms — the --wait
 // below leaves it room).
-const run = (fixture, markers) => {
+const run = (fixture, markers, wait) => {
   try {
     return { ok: true, out: execFileSync('node', [RUNNER,
       path.join('tests', 'fixtures', 'widgets', 'icue-emu'),
-      '--sd', path.join(FIX, fixture), '--slot', 'half', '--wait', '2500',
+      '--sd', path.join(FIX, fixture), '--slot', 'half', '--wait', String(wait || 2500),
       ...markers.flatMap((m) => ['--expect', m])],
     { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) };
   } catch (e) { return { ok: false, out: (e.stdout || '') + (e.stderr || '') }; }
@@ -87,7 +96,7 @@ const count = (out, label) => {
   return m ? Number(m[1]) : -1;
 };
 
-const { ok, out } = run('icue-sd.json', MARKERS);
+const { ok, out } = run('icue-sd.json', MARKERS, 3500);
 const failLines = out.split('\n').filter((l) => l.includes('FAIL')).map((l) => l.trim()).join(' | ');
 
 // E1 — the probe ran green, which includes every marker's --expect and the runner's

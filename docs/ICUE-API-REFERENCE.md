@@ -436,4 +436,11 @@ present, and a filter miss and a missing file are the same silent 404. Each help
 window property, so a vendored copy (served normally by the package's own folder
 mapping) shadows ours rather than colliding with it. That includes a `MediaViewer` stand-in, so widgets construct
 and degrade cleanly even though `media-selector` itself stays unsupported. Fonts
-referenced over Qt's `qrc:/` scheme silently fall back to the CSS fallback stack.
+referenced over Qt's `qrc:/` scheme cannot load in a browser engine at all, and each
+element waiting on one logs a "Fallback font will be used" intervention — hundreds of
+lines from a single widget. The shim rewrites those `src` descriptors: only the `qrc:`
+entries are dropped (the list is an ordered fallback, so a sibling `.woff2` survives),
+and a descriptor left with nothing falls back to `local()` faces. It sweeps every
+same-origin sheet — recursing `@import`s and grouping rules like `@media`/`@supports`/
+`@layer`, where a nested `@font-face` is not itself the outermost rule — and watches for
+stylesheets appended later, so a widget that loads a skin after startup is covered too.
