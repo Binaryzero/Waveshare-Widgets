@@ -2236,7 +2236,13 @@ Check("I0 a shell-side mint against an id-less STORED slot destroys the credenti
 var iStoredMinted = LayoutWith(new JsonObject { ["apiToken"] = iSealed }, instanceId: null);
 Check("I1 the pass stamps an id-less slot", LayoutStore.MintMissingIds(iStoredMinted));
 var iFrozenId = Slot(iStoredMinted).InstanceId;
-Check("I1b ...a non-empty one", !string.IsNullOrEmpty(iFrozenId), iFrozenId);
+// The tag its widget is ALREADY running under, not a fresh one. shell.js stamps an
+// id-less slot's iframe `#ww-slot=p{page}s{slot}`, and that tag backs the widget's
+// `uniqueId` global and therefore its storage namespace — so a random id would freeze
+// the identity and orphan the widget's stored state in the same stroke. The shell's own
+// edit-time mint adopts rec.tag for exactly this reason.
+Check("I1b ...the POSITIONAL tag its widget already runs under, not a fresh one",
+    iFrozenId == "p0s0", iFrozenId);
 Check("I1c ...and the SEALED envelope beside it is untouched — no Reveal/blank round-trip",
     ValueAt(iStoredMinted, 0, "apiToken") == iSealed, ValueAt(iStoredMinted, 0, "apiToken"));
 
@@ -2285,19 +2291,35 @@ var iBoth = WithRetained(
 Check("I6 the pass mints across a layout holding both", LayoutStore.MintMissingIds(iBoth));
 var iFresh = iBoth.Pages[0].Slots[0].InstanceId;
 Check("I6b the new id collides with neither the live nor the retired one",
-    iFresh != "iLive" && iFresh != "iRetired", iFresh);
+    iFresh is { Length: > 0 } && iFresh != "iLive" && iFresh != "iRetired", iFresh);
 Check("I6c ...and the ids that already existed are unchanged",
     iBoth.Pages[0].Slots[1].InstanceId == "iLive"
     && iBoth.Retained![0].Def!.InstanceId == "iRetired");
+
+// I6d · ...and when the positional tag is already spoken for by an explicit id — legal,
+// and the collision SecretStore.AmbiguousSlots calls out by name — the mint falls back to
+// a fresh one rather than handing two slots a single identity.
+var iSquatted = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        // Explicitly named "p0s1" — which is the tag the id-less slot BELOW it, at position
+        // (0,1), would otherwise adopt.
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "p0s1", Size = "half", Settings = new JsonObject() },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = null, Size = "half", Settings = new JsonObject() },
+    ] }],
+};
+Check("I6d the pass mints past a squatted positional tag", LayoutStore.MintMissingIds(iSquatted));
+Check("I6e ...with something OTHER than the taken tag",
+    iSquatted.Pages[0].Slots[1].InstanceId is { Length: > 0 } squatted && squatted != "p0s1",
+    iSquatted.Pages[0].Slots[1].InstanceId);
 
 // I7 · two id-less slots of ONE widget — the case the positional key has always refused
 // (SlotKey returns null at two claimants). After the pass they are distinct identities, so
 // the ambiguity that made both unaddressable is gone rather than merely refused.
 var iPair = TwoInstances(new JsonObject(), new JsonObject(), null, null);
 Check("I7 both id-less siblings are minted", LayoutStore.MintMissingIds(iPair));
-Check("I7b ...and they are told apart",
-    !string.IsNullOrEmpty(iPair.Pages[0].Slots[0].InstanceId)
-    && iPair.Pages[0].Slots[0].InstanceId != iPair.Pages[0].Slots[1].InstanceId,
+Check("I7b ...as their own positions, so they are told apart",
+    iPair.Pages[0].Slots[0].InstanceId == "p0s0" && iPair.Pages[0].Slots[1].InstanceId == "p0s1",
     iPair.Pages[0].Slots[0].InstanceId + " / " + iPair.Pages[0].Slots[1].InstanceId);
 
 // I8 · a null layout is not a crash. This runs at startup, before anything else has had a

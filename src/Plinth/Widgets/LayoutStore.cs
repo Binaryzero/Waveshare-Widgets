@@ -473,8 +473,10 @@ public static class LayoutStore
     /// Its sealed bytes ride along in the def for the same reason as above.</para>
     ///
     /// <para>Every id already present — live or retired — is reserved first, so a mint can
-    /// never land on one. Not because <see cref="NewInstanceId"/> is likely to collide, but
-    /// because "the new id is unique" is the whole value being bought here.</para></summary>
+    /// never land on one. That matters more here than a GUID's collision odds suggest,
+    /// because a live slot does NOT get a random id: it adopts the positional tag its
+    /// widget is already running under, and those are strings a user's layout can already
+    /// contain.</para></summary>
     public static bool MintMissingIds(DashboardLayout? layout)
     {
         if (layout is null) return false;
@@ -493,22 +495,52 @@ public static class LayoutStore
         {
             string id;
             do { id = NewInstanceId(); } while (!taken.Add(id));
-            minted++;
             return id;
         }
 
-        foreach (var page in layout.Pages ?? [])
-            foreach (var slot in page.Slots ?? [])
+        // A LIVE slot adopts the positional tag its widget is ALREADY running under, and
+        // this is the whole difference between freezing an identity and changing one.
+        // shell.js renders an id-less slot into an iframe fragment stamped
+        // `#ww-slot=p{page}s{slot}` — the tag that backs the widget's `uniqueId` global and
+        // therefore its storage namespace. Its own edit-time mint adopts `rec.tag` for
+        // exactly this reason ("stored widget state carries over seamlessly"). A random id
+        // here would freeze the identity and orphan the widget's state in the same stroke:
+        // every never-edited legacy tile would come back blank.
+        //
+        // This does NOT address a credential by position (#68). The position is only where
+        // the STRING comes from; once persisted it is an opaque identity that no longer
+        // tracks position, and SlotKey resolves it through `|i:` like any other. What #68
+        // forbids is the `|w:0` fallback, which this pass exists to make unreachable.
+        for (var pi = 0; pi < (layout.Pages?.Count ?? 0); pi++)
+        {
+            var slots = layout.Pages![pi].Slots;
+            for (var si = 0; si < (slots?.Count ?? 0); si++)
+            {
+                var slot = slots![si];
                 // A slot with no widget id is not a tile — both save handlers drop it — and
                 // giving it an identity would only make the debris addressable.
-                if (slot is not null && !string.IsNullOrWhiteSpace(slot.WidgetId)
-                    && string.IsNullOrEmpty(slot.InstanceId))
-                    slot.InstanceId = Fresh();
+                if (slot is null || string.IsNullOrWhiteSpace(slot.WidgetId)
+                    || !string.IsNullOrEmpty(slot.InstanceId))
+                    continue;
+                // ...unless something already answers to that string. An explicit id of
+                // literally "p0s0" is legal and does collide — SecretStore.AmbiguousSlots
+                // calls out the same case — and two slots sharing an identity is the one
+                // outcome worse than a widget losing its stored state.
+                var positional = "p" + pi + "s" + si;
+                slot.InstanceId = taken.Add(positional) ? positional : Fresh();
+                minted++;
+            }
+        }
 
+        // The attic gets fresh ids instead: a retired def has no position to adopt, and
+        // nothing of it is running to keep state for.
         foreach (var entry in layout.Retained ?? [])
             if (entry?.Def is { } def && !string.IsNullOrWhiteSpace(def.WidgetId)
                 && string.IsNullOrEmpty(def.InstanceId))
+            {
                 def.InstanceId = Fresh();
+                minted++;
+            }
 
         return minted > 0;
     }
