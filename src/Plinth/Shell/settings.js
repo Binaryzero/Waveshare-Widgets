@@ -1781,9 +1781,19 @@
     replicaPost({ type: 'select-slot', page: selectedPage, index: selectedSlot == null ? -1 : selectedSlot });
   }
 
-  // A value the host sealed. Mirrors SecretStore.LooksLikeEnvelope closely enough for the
-  // one thing it is used for here: never letting a clone start life holding ciphertext.
-  const ENVELOPE = /^dpapi:v1:[A-Za-z0-9+/]*={0,2}$/;
+  // Shaped like something this host sealed. Mirrors SecretStore.LooksLikeEnvelope, whose
+  // rule is marker + a NON-EMPTY, well-formed base64 payload — not merely the marker and
+  // some characters. The distinction matters in the permissive direction: an ordinary text
+  // setting of "dpapi:v1:a" is not ciphertext, and treating it as such would drop a
+  // perfectly good setting out of the duplicate.
+  function looksLikeEnvelope(value) {
+    if (typeof value !== 'string' || !value.startsWith('dpapi:v1:')) return false;
+    const payload = value.slice('dpapi:v1:'.length);
+    // Non-empty, base64 alphabet, and a length base64 can actually produce — the three
+    // things Convert.TryFromBase64String checks before it will decode anything.
+    if (!payload || payload.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload)) return false;
+    try { atob(payload); return true; } catch (e) { return false; }
+  }
 
   // Duplicate (#226): another tile of the same widget, same size and settings — minus
   // every credential, and with an identity of its own.
@@ -1809,7 +1819,7 @@
     const settings = JSON.parse(JSON.stringify(source.settings || {}));
     for (const n of knownSecretNames(source.widgetId)) delete settings[n];
     for (const [name, value] of Object.entries(settings))
-      if (typeof value === 'string' && ENVELOPE.test(value)) delete settings[name];
+      if (looksLikeEnvelope(value)) delete settings[name];
     const def = {
       widgetId: source.widgetId,
       size: source.size,
