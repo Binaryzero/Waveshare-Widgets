@@ -459,6 +459,14 @@
     };
   }
 
+  // Anything asynchronous that can outlive the connection which started it asks this
+  // before touching shared state. Replies are already scoped by `pending`, which connect
+  // clears; timers and image decodes are not, and they are the paths that can land after
+  // a reconnect has already painted.
+  function sdStillCurrent(gen) {
+    return sdState.connectGen === gen && sdState.connected;
+  }
+
   function sdTrack(kind) {
     const id = 'icue-sd-' + (++sdState.seq);
     sdState.pending.set(id, kind);
@@ -552,8 +560,15 @@
   function sdSliceCapture(imageDataUri) {
     const profile = sdState.profile;
     if (!profile) return;
+    // Stamped with the connection that asked for it. A decode is asynchronous, so one
+    // started before a disconnect can complete after the RECONNECT has already painted —
+    // overwriting the new faces with the old frame's, and sticking there, because
+    // captureHash already holds the new frame and every later poll answers "unchanged".
+    // Only reachable since reconnectStreamDeck stopped being a no-op earlier in this PR.
+    const gen = sdState.connectGen;
     const img = new Image();
     img.onload = () => {
+      if (!sdStillCurrent(gen)) return;
       const vRows = profile.rows || 3;
       const vCols = profile.cols || 5;
       const cellW = img.naturalWidth / vCols;
@@ -686,7 +701,7 @@
       // one-shot bound this comment promises.
       const gen = ++sdState.connectGen;
       setTimeout(() => {
-        if (sdState.connectGen === gen && sdState.connected && !sdState.answered)
+        if (sdStillCurrent(gen) && !sdState.answered)
           sdLog('NO REPLY from the host to the profile poll after 10s — the bridge did not answer');
       }, 10000);
       sdStartTimers();

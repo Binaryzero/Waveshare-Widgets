@@ -274,6 +274,19 @@ check('E5f2 connect resets every per-connection field, from a single definition'
 check('E5f3 ...but not the outstanding press, whose release must still be delivered',
   !/\bpressOutstanding:/.test(freshBody));
 
+// E5f4 — resetting state is not enough on its own: work already IN FLIGHT when the
+// connection ends can land afterwards and undo it. Replies are scoped by `pending`, which
+// connect clears; the two paths that are not are a timer and an image decode, and both
+// must ask the same question. A capture decode landing after a reconnect overwrites the
+// new faces and sticks, because captureHash already holds the new frame so every later
+// poll answers "unchanged". Only reachable at all since reconnect stopped being a no-op.
+const asyncGuarded = ['sdSliceCapture', 'no-reply timer'];
+check('E5f4 async work from an ended connection is discarded, not applied',
+  /function sdStillCurrent\(gen\)/.test(shim)
+    && /const gen = sdState\.connectGen;[\s\S]{0,400}?img\.onload = \(\) => \{\s*\n\s*if \(!sdStillCurrent\(gen\)\) return;/.test(shim)
+    && /if \(sdStillCurrent\(gen\) && !sdState\.answered\)/.test(shim),
+  asyncGuarded.length + ' async paths share one generation check');
+
 check('E5f reconnect actually reconnects after a disconnect',
   !/reconnectStreamDeck\(widgetId\) \{\s*\n\s*if \(!sdState\.connected\) return;/.test(shim)
     && /reconnectStreamDeck\(widgetId\) \{[\s\S]*?sd\.connectStreamDeck\(/.test(shim));
