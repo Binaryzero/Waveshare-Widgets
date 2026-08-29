@@ -98,8 +98,9 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
   on every client), Next up queues each series' next unwatched episode,
   Favorites is a tab of its own, and finished titles are marked watched so the
   queues advance, with a press and hold on any title to favourite it or set it
-  watched by hand and a ♥ or ✓ on the poster wherever it stands — while a hide
-  list keeps chosen libraries off the tabs and the shelf;
+  watched by hand and a ♥ or ✓ on the poster wherever it stands; the Player's
+  tabs and shelf are then that user's libraries, while the Server overview stays
+  server-wide — and a hide list keeps chosen libraries off the tabs and the shelf;
   read from Jellyfin's own API either way, because its web app
   refuses to render inside a frame), and WoW
   Panel (your character on the panel: portrait, level, spec and guild, your

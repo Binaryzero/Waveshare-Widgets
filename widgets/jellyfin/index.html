@@ -593,47 +593,62 @@
       // guards the server identity, not the filter.
       const typesAsked = cfg.types;
       const hideAsked = Array.from(cfg.hide).sort().join('\n');
-      const tail = '&SortOrder=Descending&Recursive=true&IncludeItemTypes='
-        + encodeURIComponent(typesAsked) + '&Limit=' + LATEST_FETCH + '&ImageTypeLimit=1&EnableImageTypes=Primary';
+      // The PLAYER's shelf follows the Player's tabs, which are the named user's
+      // libraries now: a New tab offering titles from libraries that user cannot see —
+      // libraries that have no tab — is the row disagreeing with itself. The Server
+      // OVERVIEW's shelf stays server-wide, because that is what an overview is for,
+      // and the two views are always separate widget instances with separate settings.
+      // Scoping also brings UserData back with the shelf, which is what lets New carry
+      // the same marks and the same press as every other tab.
+      const scoped = cfg.view === 'player' && cfg.user
+        ? resolveUser().catch(() => '') : Promise.resolve('');
       // With no hide list, one server-wide query. With one, the shelf is assembled
       // from the libraries that survive it: per-library top-N queries merged by
       // DateCreated (the top N of a union of per-library top Ns is exact). Items
       // carry no library id, so a hidden library cannot be filtered after the fact.
-      const fetchLatest = !cfg.hide.size
-        ? jfJson('/Items?SortBy=DateCreated' + tail, SLOW_DEADLINE, LIST_MAX_BYTES)
-          .then((body) => {
-            if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
-            return body.Items;
-          })
-        : jfJson('/Library/MediaFolders', SLOW_DEADLINE, 256 * 1024).then((body) => {
-            if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
-            // EVERY un-hidden library participates, whatever its CollectionType —
-            // a mixed movies-and-shows library carries none, and borrowing the tab
-            // row's movies/tvshows filter here would silently drop its new titles
-            // from a shelf the no-hide query covers. IncludeItemTypes in each
-            // per-library query is what keeps the content right; the 24-library
-            // bound and the 256 KiB per-answer cap (each holds at most
-            // LATEST_FETCH items) keep a hostile server's thousands to a few MiB.
-            const libs = body.Items
-              .filter((f) => f && f.Id && !cfg.hide.has(String(f.Name || '').trim().toLowerCase()))
-              .slice(0, 24);
-            return Promise.all(libs.map((f) =>
-              jfJson('/Items?ParentId=' + encodeURIComponent(String(f.Id)) + '&SortBy=DateCreated' + tail
-                + '&Fields=DateCreated', SLOW_DEADLINE, 256 * 1024)
-                .then((page) => {
-                  // Same contract as the no-hide path: a malformed 200 is a FAULT,
-                  // not an empty library — treating it as [] would silently drop a
-                  // library's titles from the shelf until the next slow window.
-                  if (!page || !Array.isArray(page.Items)) throw fault('format', 'reply had no Items');
-                  return page.Items;
-                })));
-          }).then((lists) => {
-            const seen = new Set();
-            return lists.flat()
-              .filter((it) => it && it.Id && !seen.has(it.Id) && seen.add(it.Id))
-              .sort((a, b) => String(b.DateCreated || '').localeCompare(String(a.DateCreated || '')))
-              .slice(0, LATEST_FETCH);
-          });
+      const fetchLatest = scoped.then((uid) => {
+        const tail = '&SortOrder=Descending&Recursive=true&IncludeItemTypes='
+          + encodeURIComponent(typesAsked) + '&Limit=' + LATEST_FETCH + '&ImageTypeLimit=1&EnableImageTypes=Primary'
+          + (uid ? '&userId=' + encodeURIComponent(uid) : '');
+        // Fields is ONE parameter: the per-library path already asks for DateCreated to
+        // merge by, so UserData joins that list rather than arriving as a second copy.
+        return !cfg.hide.size
+          ? jfJson('/Items?SortBy=DateCreated' + tail + (uid ? '&Fields=UserData' : ''),
+            SLOW_DEADLINE, LIST_MAX_BYTES)
+            .then((body) => {
+              if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
+              return body.Items;
+            })
+          : jfJson('/Library/MediaFolders', SLOW_DEADLINE, 256 * 1024).then((body) => {
+              if (!body || !Array.isArray(body.Items)) throw fault('format', 'reply had no Items');
+              // EVERY un-hidden library participates, whatever its CollectionType —
+              // a mixed movies-and-shows library carries none, and borrowing the tab
+              // row's movies/tvshows filter here would silently drop its new titles
+              // from a shelf the no-hide query covers. IncludeItemTypes in each
+              // per-library query is what keeps the content right; the 24-library
+              // bound and the 256 KiB per-answer cap (each holds at most
+              // LATEST_FETCH items) keep a hostile server's thousands to a few MiB.
+              const libs = body.Items
+                .filter((f) => f && f.Id && !cfg.hide.has(String(f.Name || '').trim().toLowerCase()))
+                .slice(0, 24);
+              return Promise.all(libs.map((f) =>
+                jfJson('/Items?ParentId=' + encodeURIComponent(String(f.Id)) + '&SortBy=DateCreated' + tail
+                  + '&Fields=DateCreated' + (uid ? ',UserData' : ''), SLOW_DEADLINE, 256 * 1024)
+                  .then((page) => {
+                    // Same contract as the no-hide path: a malformed 200 is a FAULT,
+                    // not an empty library — treating it as [] would silently drop a
+                    // library's titles from the shelf until the next slow window.
+                    if (!page || !Array.isArray(page.Items)) throw fault('format', 'reply had no Items');
+                    return page.Items;
+                  })));
+            }).then((lists) => {
+              const seen = new Set();
+              return lists.flat()
+                .filter((it) => it && it.Id && !seen.has(it.Id) && seen.add(it.Id))
+                .sort((a, b) => String(b.DateCreated || '').localeCompare(String(a.DateCreated || '')))
+                .slice(0, LATEST_FETCH);
+            });
+      });
       fetchLatest
         .then((items) => {
           if (gen !== generation || typesAsked !== cfg.types
@@ -1202,6 +1217,11 @@
       const ud = item.UserData || (item.UserData = {});
       ud.Played = true;
       ud.PlaybackPositionTicks = 0;
+      // And PAINT it. stopPlayback renders while this write is still in the air, so
+      // without a render of its own the corrected item sits behind a poster still
+      // showing its progress bar — for up to a full refresh interval, which the user
+      // may have set to five minutes.
+      renderPlayer();
     }
     return ok;
   };
@@ -1245,21 +1265,25 @@
     // stale position to the next tap, resuming a title just declared finished.
     if (kind === 'played') ud.PlaybackPositionTicks = 0;
     renderPlayer();
-    // The user this gesture was made under, captured HERE rather than inside the write.
-    // A tap queued behind a slow one can start after the settings name someone else,
-    // and setUserFlag reads cfg.user when it runs — so without this an action taken
-    // while looking at A's library would land on B's history.
+    // The user AND the server this gesture was made under, captured HERE rather than
+    // inside the write. A tap queued behind a slow one starts later, and setUserFlag
+    // reads the settings when it runs: without this, an action taken while looking at
+    // A's library could land on B's history, or — the settings having moved to another
+    // server entirely, with the username unchanged — on whatever that server happens
+    // to keep under the same item id. `generation` is bumped by exactly that change.
     const owner = cfg.user;
-    const run = () => (cfg.user === owner ? setUserFlag(item, kind, on) : false);
+    const era = generation;
+    const mine_ = () => cfg.user === owner && generation === era;
+    const run = () => (mine_() ? setUserFlag(item, kind, on) : false);
     const prev = flagChains.get(opKey);
     // A predecessor that FAILED must still not cancel its successor: the chain exists
     // for order, not for outcome, so both settlements continue it.
     const mine = prev ? prev.then(run, run) : run();
     flagChains.set(opKey, mine.then(() => {}, () => {}));
     const ok = await mine;
-    // Nothing was written and nothing on this screen is this user's any more; the
-    // reload that a username change triggers is what puts the tiles right.
-    if (cfg.user !== owner) return;
+    // Nothing was written, and nothing on this screen belongs to that question any
+    // more; the reload those changes trigger is what puts the tiles right.
+    if (!mine_()) return;
     const base = flagBase.get(opKey);
     // A write that landed IS the server's state now, whether or not this tap still
     // owns the screen: a later refusal has to undo to here, not to where the burst
@@ -2047,13 +2071,12 @@
     }
 
     const budget = playerBudget(false, false);
-    // No onHold here, deliberately. This shelf is the POLL's, shared with the Server
-    // overview, and its query names no user — so its items carry no UserData and the
-    // sheet would open claiming nothing is favourited or watched whatever the truth
-    // is. Offering a gesture that lies is worse than not offering it; every tab that
-    // does know the answer has the hold.
+    // The shelf is asked for in the named user's scope now, so it knows what is
+    // favourited and what is watched — and New holds like every other tab. With no
+    // user named there is nothing to know and buildStrip arms no press at all.
     const built = buildStrip(latest.slice(0, budget.count), {
       onTap: (item) => openItem(item, null),
+      onHold: (item) => openItemSheet(item, () => openItem(item, null)),
     });
 
     const shelfStale = latestAt > 0 && Date.now() - latestAt > SLOW_MS * 2 + 60000;
