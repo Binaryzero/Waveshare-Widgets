@@ -497,6 +497,24 @@ correct. Nothing is written and nothing accumulates across runs. It is recorded 
 the layout write LANDS, because a failed write leaves the entry on disk for the user to
 retry and a tombstone would make the retry impossible.
 
+**What that set does NOT close, stated so nobody discovers it as a bug.** It filters the
+incoming ATTIC. A stale window can also carry the identity in its `pages` — panel retirement
+is not mirrored to the settings editor, so an editor opened before a retire still shows the
+tile live, and a save after a Delete puts it back as a live slot with its sealed settings
+(the derived bucket stays destroyed, so the widget re-authenticates). A panel save queued
+just before a settings-side Restore can likewise be processed after it and revert the
+restore. Both are the same shape as the race the set closes, one field or one direction over.
+
+They are not closed here on purpose. Two windows share one layout.json with no version on it,
+and last-writer-wins has been this design's documented posture since long before the attic —
+so the family of in-flight races is unbounded, and closing them one at a time is chasing a
+tail. The honest fix is a single layout **generation**: stamped into each window's init,
+echoed on every save, and refused by the host when it is behind. That is one primitive
+covering every case above, and it belongs in its own change because it touches both save
+handlers, both clients, and the meaning of every existing ack — not bolted onto the attic.
+Until then: a resurrected live tile is visible on screen and re-deletable, a reverted restore
+is one tap to redo, and the derived credential stays destroyed in every branch.
+
 **The ack claims something about disk, so it waits for disk.** `LayoutStore.Save` swallows
 its write failures — a save is triggered by ordinary editing on both surfaces, and throwing
 out of those paths would take something visible down with it — but it now REPORTS whether

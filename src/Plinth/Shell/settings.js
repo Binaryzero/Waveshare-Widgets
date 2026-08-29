@@ -312,7 +312,11 @@
         dropRetained(msg.widgetId, msg.instanceId);
         toast('Deleted for good, with its saved credentials');
       } else {
-        toast('Its saved credentials are gone, but the layout could not be written. Try again.', true);
+        // NOT "its credentials are gone": destroy-before-Save took the derived bucket,
+        // but the def's own sealed secrets are still in layout.json, and a Restore would
+        // reconnect them. Saying they were destroyed is both false and the version that
+        // makes the user stop retrying — which is the one thing they must do.
+        toast('Not deleted — the layout could not be written. Try again.', true);
       }
       refreshRetiredUi();   // the attic never reaches the replica — no re-init needed
     } else if (msg.type === 'retained-gone') {

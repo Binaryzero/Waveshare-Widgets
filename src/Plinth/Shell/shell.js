@@ -173,7 +173,11 @@
         dropRetained(e.widgetId, e.instanceId);
         showPanelNotice('Deleted, with its saved credentials.');
       } else {
-        showPanelNotice('Its saved credentials are gone, but the layout could not be written. Try again.');
+        // NOT "its credentials are gone": destroy-before-Save took the derived bucket,
+        // but the def's own sealed secrets are still in layout.json, and a Restore would
+        // reconnect them. Saying they were destroyed is both false and the version that
+        // makes the user stop retrying — which is the one thing they must do.
+        showPanelNotice('Not deleted — the layout could not be written. Try again.');
       }
       refreshRetiredUi();
     }
