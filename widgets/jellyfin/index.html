@@ -1957,6 +1957,10 @@
     return WW.mediaUrl(url, { insecure: /^https:/i.test(cfg.base) && cfg.selfSigned });
   }
 
+  // A transcode is a stream the server produces as you watch: no byte ranges, so
+  // every position change has to be asked for at the server rather than taken here.
+  const isTranscode = (url) => String(url || '').includes('/stream.mp4?');
+
   // One door onto pv.src: every attempt gets the startup deadline, and a mid-title
   // fallback carries the position along instead of starting the movie over.
   function setSource(url) {
@@ -1967,7 +1971,7 @@
     timeBase = 0;
     pendingSeek = 0;
     if (resumeAt > 5) {
-      if (url.includes('/stream.mp4?')) {
+      if (isTranscode(url)) {
         // The server starts the transcode at the offset; the element's own clock
         // restarts at zero, so the displayed times carry the base.
         timeBase = resumeAt;
@@ -2009,6 +2013,7 @@
     theaterSource = item;
     reportedDone = false;
     everPlayed = false;
+    cancelSeek();
     // A part-watched title starts where it stopped. The position rides the item
     // itself (UserData, which the Continue query asks for), and setSource already
     // knows how to honour it — StartTimeTicks for a transcode, a native seek for
@@ -2061,6 +2066,7 @@
     // itself as played — a stop on top of it would re-create a resume point at
     // the credits.
     stopProgressReports();
+    cancelSeek();
     // Only a title that actually played reports where it stopped. A failed
     // attempt sits at position zero, and posting THAT would delete the server's
     // real resume point for a title the panel never managed to show.
@@ -2107,15 +2113,63 @@
     }, 3500);
   }
 
+  // A transcode is a stream the server is producing as you watch: it carries no byte
+  // ranges to seek within, so asking the ELEMENT to jump makes Chromium refetch the
+  // resource, and the server obligingly starts the same transcode over from the same
+  // offset — the title restarts instead of seeking. The jump has to happen at the
+  // server, by asking for a transcode that BEGINS at the target.
+  // Where a debounced transcode seek is heading, and the timer that will ask for it.
+  let seekTarget = null;
+  let seekTimer = null;
+
+  function commitSeek() {
+    seekTimer = null;
+    const t = seekTarget;
+    seekTarget = null;
+    if (!theaterOn || t == null || !lastSrcUrl) return;
+    // A SEEK, not a failure: the fallback chain and the attempt history are left
+    // exactly as they are, so a later genuine failure still has its remaining
+    // sources and its diagnosis.
+    resumeAt = t;
+    setSource(String(lastSrcUrl).replace(/&StartTimeTicks=\d+/g, ''));
+  }
+
+  function cancelSeek() {
+    clearTimeout(seekTimer);
+    seekTimer = null;
+    seekTarget = null;
+  }
+
   function seekBy(delta) {
-    if (!isFinite(pv.duration)) return;
-    let t = pv.currentTime + delta;
-    // Clamp into what is actually seekable — a mid-flight transcode cannot jump
-    // past what the server has produced.
+    if (!theaterOn) return;
+    // The absolute position, which for a transcode is the element's clock plus the
+    // offset its stream started at — pv.currentTime alone is a lie there.
+    const at = seekTarget != null ? seekTarget : timeBase + (pv.currentTime || 0);
+    // A live transcode reports no duration of its own; the item's runtime is the
+    // bound that still holds. Leave a few seconds so a forward jump near the end
+    // does not land past the last frame.
+    const runtime = ticksToSec(theaterSource && theaterSource.RunTimeTicks);
+    const total = isFinite(pv.duration) && pv.duration > 0 ? timeBase + pv.duration : runtime;
+    let t = Math.max(0, at + delta);
+    if (total && total > 5) t = Math.min(t, total - 5);
+
+    if (isTranscode(lastSrcUrl)) {
+      // Each of these re-asks the server for a NEW transcode, so five taps must not
+      // become five ffmpeg processes: the taps accumulate against the pending target
+      // and only the settled one is sent. The clock shows where you are heading
+      // meanwhile, because nothing else moves until the new stream arrives.
+      seekTarget = t;
+      el('ovElapsed').textContent = fmt(t);
+      clearTimeout(seekTimer);
+      seekTimer = setTimeout(commitSeek, 600);
+      showOverlay();
+      return;
+    }
+    // Direct play seeks natively, inside whatever the element actually holds.
     if (pv.seekable && pv.seekable.length) {
       t = Math.max(pv.seekable.start(0), Math.min(t, pv.seekable.end(pv.seekable.length - 1)));
-    } else {
-      t = Math.max(0, Math.min(t, pv.duration));
+    } else if (isFinite(pv.duration)) {
+      t = Math.min(t, pv.duration);
     }
     pv.currentTime = t;
     showOverlay();
