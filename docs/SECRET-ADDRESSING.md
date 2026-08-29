@@ -468,6 +468,16 @@ The settings→panel direction is the one that would fail constantly without it 
 re-ships its whole model on every drag and resize — but neither race is worth leaving open
 once the wiring exists.
 
+**A restore needs the same mirror, for the opposite reason.** The settings editor holds the
+pre-restore pages *and* still lists the entry as retired, and its next ordinary save writes
+that model back; the union cannot rescue the live slot, because it only ever adds disk attic
+entries. The tile would drop off its page and reappear in the removed list. So the panel
+also raises `RetainedRestored`, and the settings window answers it with exactly the masked
+def its own Restore would have produced — the editor adopts the slot rather than
+re-litigating it. Nothing is lost when it misses (a divergent page list declines the mirror
+and the restore simply reverts), but a restore that silently undoes itself is not a
+behaviour to ship.
+
 Both clients drop **every** entry under the identity, not the first match, exactly as the
 host does: a leftover twin is re-shipped on the next save, seating that identity in pages
 and retained at once — the poison state again.

@@ -40,14 +40,15 @@ public sealed class SettingsWindow : Form
     /// <summary>The live dashboard window; routes the preview replica's widget data
     /// requests (fetch/ping/media-list/audio-get) through the real handlers.
     ///
-    /// <para>Assigning it also subscribes to the panel's attic-destroy notice (#226).
-    /// That is the panel→settings half of Clear's convergence: this editor keeps its own
-    /// copy of the attic and re-ships it on every save, so without the notice a tile the
-    /// user destroyed ON THE PANEL comes back here on the next Save — with its sealed
-    /// bytes, which still decrypt (DPAPI is user-scoped, not instance-scoped), so a later
-    /// Restore would hand back a WORKING credential they explicitly destroyed. Wired
-    /// through the property rather than at the tray, because the panel window is recreated
-    /// on a display change and the tray re-assigns this in exactly that case.</para></summary>
+    /// <para>Assigning it also subscribes to the panel's two attic notices (#226) — the
+    /// panel→settings half of their convergence. This editor keeps its own copy of the
+    /// attic and its own copy of the pages, and re-ships both on every save, so an attic
+    /// change made ON THE PANEL is undone by this window's next ordinary Save unless it
+    /// hears about it: a destroyed tile comes back with sealed bytes that still decrypt
+    /// (DPAPI is user-scoped, not instance-scoped), and a restored tile drops off its page
+    /// and back into the removed list. Wired through the property rather than at the tray,
+    /// because the panel window is recreated on a display change and the tray re-assigns
+    /// this in exactly that case.</para></summary>
     public DashboardWindow? Dashboard
     {
         get => _dashboard;
@@ -56,10 +57,16 @@ public sealed class SettingsWindow : Form
             if (ReferenceEquals(_dashboard, value))
                 return;
             if (_dashboard is not null)
+            {
                 _dashboard.RetainedGone -= OnPanelRetainedGone;
+                _dashboard.RetainedRestored -= OnPanelRetainedRestored;
+            }
             _dashboard = value;
             if (_dashboard is not null)
+            {
                 _dashboard.RetainedGone += OnPanelRetainedGone;
+                _dashboard.RetainedRestored += OnPanelRetainedRestored;
+            }
         }
     }
 
@@ -75,6 +82,26 @@ public sealed class SettingsWindow : Form
                 ["widgetId"] = widgetId,
                 ["instanceId"] = instanceId,
             }));
+        }
+        catch (ObjectDisposedException) { /* window closed between the check and the invoke */ }
+    }
+
+    /// <summary>The panel restored a tile; hand this editor the same masked def its own
+    /// Restore would have produced, so its next save carries the slot instead of writing
+    /// the pre-restore model back over it.</summary>
+    private void OnPanelRetainedRestored(string? widgetId, string? instanceId, LayoutSlot def, int page)
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+        try
+        {
+            BeginInvoke(() =>
+            {
+                // The editor's own handler declines when its page list has diverged, so a
+                // miss here costs the mirror, not the restore.
+                try { PostRestoredAck(page, widgetId, instanceId, def); }
+                catch (Exception ex) { Log.Warn($"Could not mirror a panel restore: {ex.Message}"); }
+            });
         }
         catch (ObjectDisposedException) { /* window closed between the check and the invoke */ }
     }
@@ -136,7 +163,7 @@ public sealed class SettingsWindow : Form
                 _hub.SensorsUpdated -= OnSensorsUpdated;
                 _hub.MediaUpdated -= OnMediaUpdated;
                 _library.Changed -= OnLibraryChanged;
-                Dashboard = null;   // drops the RetainedGone subscription with it
+                Dashboard = null;   // drops the panel-relay subscriptions with it
             };
             core.Navigate($"https://{ShellHost}/settings.html");
         }
@@ -689,30 +716,7 @@ public sealed class SettingsWindow : Form
             }
             LayoutSaved?.Invoke();
 
-            // Mask over a wrapper that is literally pages-shaped: Mask returns having done
-            // NOTHING unless it finds layoutNode["pages"], and a silent no-op here would
-            // post the ciphertext into the editor's model — the exact state this handler
-            // exists to prevent. MaskedPlan rather than the manifests alone, because a
-            // retained def of a REFUSED widget carries plaintext whose only classification
-            // lives in the redaction snapshot.
-            //
-            // One slot, so it can never look ambiguous to the mask — which is sound only
-            // because RestoreRetained has already re-minted any id that collided with a
-            // live tile, in this same call.
-            var wrapper = JsonSerializer.SerializeToNode(new DashboardLayout
-            {
-                Pages = [new LayoutPage { Name = layout.Pages[page].Name, Slots = [restored] }],
-            });
-            MergeManifestSnapshot();
-            SecretPolicy.Mask(wrapper, MaskedPlan());
-            Post(new JsonObject
-            {
-                ["type"] = "retained-restored",
-                ["page"] = page,
-                ["widgetId"] = widgetId,
-                ["instanceId"] = instanceId,
-                ["def"] = wrapper?["pages"]?[0]?["slots"]?[0]?.DeepClone(),
-            });
+            PostRestoredAck(page, widgetId, instanceId, restored);
             Log.Info("Restored a retained tile from the settings gallery");
         }
         catch (Exception ex)
@@ -720,6 +724,37 @@ public sealed class SettingsWindow : Form
             Log.Warn($"Could not restore a retained tile: {ex.Message}");
             PostRetainedError("failed", widgetId, instanceId);
         }
+    }
+
+    /// <summary>Hands the editor a restored slot it can hold: the def MASKED, addressed by
+    /// the identity it was retired under (the def itself may carry a re-minted one).
+    ///
+    /// <para>The wrapper is literally pages-shaped because <c>Mask</c> returns having done
+    /// NOTHING unless it finds <c>layoutNode["pages"]</c>, and a silent no-op here would
+    /// post the ciphertext into the editor's model — the exact state the host-performed
+    /// restore exists to prevent. <c>MaskedPlan</c> rather than the manifests alone,
+    /// because a retained def of a REFUSED widget carries plaintext whose only
+    /// classification lives in the redaction snapshot.</para>
+    ///
+    /// <para>One slot, so it can never look ambiguous to the mask — sound only because
+    /// <c>RestoreRetained</c> has already re-minted any id that collided with a live
+    /// tile.</para></summary>
+    private void PostRestoredAck(int page, string? widgetId, string? instanceId, LayoutSlot restored)
+    {
+        var wrapper = JsonSerializer.SerializeToNode(new DashboardLayout
+        {
+            Pages = [new LayoutPage { Name = "ack", Slots = [restored] }],
+        });
+        MergeManifestSnapshot();
+        SecretPolicy.Mask(wrapper, MaskedPlan());
+        Post(new JsonObject
+        {
+            ["type"] = "retained-restored",
+            ["page"] = page,
+            ["widgetId"] = widgetId,
+            ["instanceId"] = instanceId,
+            ["def"] = wrapper?["pages"]?[0]?["slots"]?[0]?.DeepClone(),
+        });
     }
 
     /// <summary>Desktop-side Clear (#226). Fails CLOSED on a secure-store failure — see

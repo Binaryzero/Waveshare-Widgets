@@ -358,7 +358,8 @@ from any "+" add-zone) and from the settings window's widget shelf:
 
 - **Restore** puts the tile back on the page you are looking at, keeping its `instanceId`,
   so both its manifest secrets and its protected store reconnect. It is refused rather than
-  guessed at when the page named no longer exists — and the button is disabled when the
+  guessed at when the page named no longer exists — or when its name is shared by another
+  page, since a duplicate name cannot say which one you meant — and the button is disabled when the
   tile's own size will not fit that page without displacing something already on it. The
   column anchor comes back only on the page the tile was retired from; anywhere else it
   flows. A restore is performed by the host and answered with a fresh layout (the panel

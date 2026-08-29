@@ -322,9 +322,21 @@ public static class LayoutStore
         if (entry is null) return RestoreOutcome.NotFound;
         if (page < 0 || layout.Pages is null || page >= layout.Pages.Count)
             return RestoreOutcome.BadPage;
-        if (expectPageName is not null
-            && !string.Equals(layout.Pages[page].Name, expectPageName, StringComparison.Ordinal))
-            return RestoreOutcome.BadPage;
+        if (expectPageName is not null)
+        {
+            // The name must match AND be the only one of its kind. Page names are free
+            // text with no uniqueness rule, so a name two pages share proves nothing about
+            // which of them the client meant — and the case this guard exists for (another
+            // window reordered the pages) is exactly the case where the duplicate lands on
+            // the wrong one. Ambiguity is a refusal, like the range check beside it.
+            var named = 0;
+            foreach (var p in layout.Pages)
+                if (string.Equals(p.Name, expectPageName, StringComparison.Ordinal))
+                    named++;
+            if (named != 1
+                || !string.Equals(layout.Pages[page].Name, expectPageName, StringComparison.Ordinal))
+                return RestoreOutcome.BadPage;
+        }
 
         var target = layout.Pages[page];
         target.Slots ??= [];

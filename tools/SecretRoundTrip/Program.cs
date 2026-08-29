@@ -1937,6 +1937,17 @@ Check("M2c an in-range index whose page is not the one the client named is refus
 Check("M2d ...and the matching name goes through",
     LayoutStore.RestoreRetained(mBad, "test.widget", "iM2", 0, out _, "P")
         == LayoutStore.RestoreOutcome.Ok && mBad.Pages[0].Slots.Count == 1);
+// Page names are free text with no uniqueness rule, so a name two pages share proves
+// nothing about which one the client meant — and a reorder is exactly the case this guard
+// is for. Ambiguity is refused rather than resolved by the index it was meant to check.
+var mDupName = WithRetained(PagesNamed("Home", "Home"), Retire(new JsonObject(), "iM2e"));
+Check("M2e a page name two pages share is not an identity, so it is refused",
+    LayoutStore.RestoreRetained(mDupName, "test.widget", "iM2e", 0, out _, "Home")
+        == LayoutStore.RestoreOutcome.BadPage
+    && mDupName.Retained is { Count: 1 } && mDupName.Pages[0].Slots.Count == 0);
+Check("M2f ...while the same layout restores fine when the client names no page",
+    LayoutStore.RestoreRetained(mDupName, "test.widget", "iM2e", 1, out _)
+        == LayoutStore.RestoreOutcome.Ok && mDupName.Pages[1].Slots.Count == 1);
 var mMiss = WithRetained(PagesNamed("P"), Retire(new JsonObject(), "iM3"));
 Check("M3 an identity the attic no longer holds is NotFound, and nothing moves",
     LayoutStore.RestoreRetained(mMiss, "test.widget", "iGone", 0, out _) == LayoutStore.RestoreOutcome.NotFound

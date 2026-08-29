@@ -635,6 +635,15 @@ public sealed class DashboardWindow : Form
     /// <see cref="PostRetainedGone"/>, which carries the settings→panel direction.</summary>
     public event Action<string?, string?>? RetainedGone;
 
+    /// <summary>Raised when the panel RESTORES one, for the same reason and with the same
+    /// urgency. An open settings window holds the pre-restore pages and still lists the
+    /// entry as retired; its next ordinary save writes that model back, and the union
+    /// cannot rescue the live slot — it only ever adds disk attic entries — so the tile
+    /// drops off the page and reappears in the removed list. The subscriber gets the def as
+    /// the host wrote it (id possibly re-minted) plus the identity it was retired under,
+    /// which is what the editor's attic is keyed by.</summary>
+    internal event Action<string?, string?, LayoutSlot, int>? RetainedRestored;
+
     /// <summary>Where a just-performed restore put the tile, for the ONE init payload the
     /// reload below produces. The shell's page is pure DOM scroll state and its edit mode
     /// is document-local, so a plain reload would drop the user on page 0 with the chrome
@@ -661,7 +670,7 @@ public sealed class DashboardWindow : Form
             // guard, and restoring onto a page the user was not looking at is the failure
             // this refuses rather than guesses at.
             var outcome = LayoutStore.RestoreRetained(
-                layout, widgetId, instanceId, page, out _,
+                layout, widgetId, instanceId, page, out var restored,
                 message?["pageName"]?.GetValue<string>());
             if (outcome is not LayoutStore.RestoreOutcome.Ok)
             {
@@ -679,6 +688,8 @@ public sealed class DashboardWindow : Form
             }
             _restoredToPage = page;
             ReloadDashboard();
+            if (restored is not null)
+                RetainedRestored?.Invoke(widgetId, instanceId, restored, page);
             Log.Info("Restored a retained tile from the on-panel palette");
         }
         catch (Exception ex)
@@ -721,7 +732,11 @@ public sealed class DashboardWindow : Form
                 // panel "done" would have it drop a row that comes back at the next init.
                 ["saved"] = saved,
             });
-            RetainedGone?.Invoke(widgetId, instanceId);
+            // Only on a landed write, matching the settings-side handler: the entry is
+            // still on disk otherwise, and an open editor told it is gone would drop the
+            // row — hiding the retry, and re-merging the entry on its next save.
+            if (saved)
+                RetainedGone?.Invoke(widgetId, instanceId);
             Log.Info("Cleared a retained tile from the on-panel palette");
         }
         catch (Exception ex)
