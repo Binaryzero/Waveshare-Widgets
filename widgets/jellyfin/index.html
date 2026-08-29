@@ -1959,7 +1959,10 @@
 
   // A transcode is a stream the server produces as you watch: no byte ranges, so
   // every position change has to be asked for at the server rather than taken here.
-  const isTranscode = (url) => String(url || '').includes('/stream.mp4?');
+  // Both flavours transcodeUrl() builds — stream.mp4 for video, stream.mp3 for audio.
+  // Direct play is /stream?static=true, which carries no extension and so cannot
+  // collide; mediaUrl always appends its api_key, so the '?' is always there.
+  const isTranscode = (url) => /\/stream\.(mp4|mp3)\?/.test(String(url || ''));
 
   // One door onto pv.src: every attempt gets the startup deadline, and a mid-title
   // fallback carries the position along instead of starting the movie over.
