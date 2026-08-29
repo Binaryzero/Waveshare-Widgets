@@ -182,11 +182,13 @@
       refreshRetiredUi();
     }
     else if (msg.type === 'retained-error') {
-      // Restore/Clear refused. 'not-found' means the disk no longer holds that entry
-      // (the other window got there first), so drop it: leaving the row would offer
-      // the same two dead buttons for as long as the document lives.
+      // Restore/Clear refused. The row is NOT dropped on 'not-found': that result only
+      // says the attic no longer holds the identity, which is equally true when the other
+      // window has already RESTORED it — and dropping the entry then, while this copy's
+      // pages still lack the slot, has the next save take the tile off disk without
+      // putting it back in the attic. A stale row that refuses twice is a nuisance; a
+      // lost tile is not. It clears itself on the next init.
       const e = msg.data || {};
-      if (e.reason === 'not-found') dropRetained(e.widgetId, e.instanceId);
       refreshRetiredUi();
       showPanelNotice(e.reason === 'not-found'
         ? 'That widget is no longer in the removed list.'

@@ -296,15 +296,18 @@
         // slot live — and appending on top of that seats one instanceId twice. The shell's
         // duplicate healing then re-mints one of them into a tile the user never asked
         // for, with its widget-local storage detached from the widget that was using it.
-        // Both ids, because the host re-mints on a live collision and the stale copy here
-        // carries the one it was retired under. Spliced in place: `page.slots` is the same
-        // array the push below appends to.
-        const gone = [msg.instanceId, msg.def.instanceId].filter(Boolean);
+        // Only the identity actually being seated. When the host RE-MINTED — the retired
+        // id collided with a live tile — that live tile is the legitimate holder of the
+        // old id and stays on disk, keeping the protected-store bucket that deliberately
+        // remained with it; dropping it here would have the next save delete it. When
+        // there was no re-mint the two ids are the same one anyway. Spliced in place:
+        // `page.slots` is the same array the push below appends to.
+        const seated = msg.def.instanceId || msg.instanceId;
         for (const p of pages) {
           if (!p || !Array.isArray(p.slots)) continue;
           for (let i = p.slots.length - 1; i >= 0; i--) {
             const s = p.slots[i];
-            if (s && s.widgetId === msg.widgetId && gone.includes(s.instanceId)) p.slots.splice(i, 1);
+            if (s && s.widgetId === msg.widgetId && s.instanceId === seated) p.slots.splice(i, 1);
           }
         }
         page.slots = page.slots || [];
@@ -341,9 +344,12 @@
       dropRetained(msg.widgetId, msg.instanceId);
       refreshRetiredUi();
     } else if (msg.type === 'retained-error') {
-      // 'not-found' means the disk no longer holds that entry (the panel got there
-      // first). Drop it, or the row keeps offering two buttons that can only fail.
-      if (msg.reason === 'not-found') dropRetained(msg.widgetId, msg.instanceId);
+      // The row is NOT dropped on 'not-found'. That result only says the attic no longer
+      // holds the identity, which is equally true when the other window has already
+      // RESTORED it — and dropping the entry then, while this copy's pages still lack the
+      // slot, has the next save take the tile off disk without putting it back in the
+      // attic. A stale row that refuses twice is a nuisance; a lost tile is not. It
+      // clears itself the next time this window opens.
       refreshRetiredUi();
       toast(msg.reason === 'not-found'
         ? 'That widget is no longer in the removed list.'

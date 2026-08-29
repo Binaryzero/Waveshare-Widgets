@@ -735,9 +735,13 @@ public sealed class DashboardWindow : Form
             }
             SecureStoreHost.ForgetInstances(forget);   // throws → nothing is saved
             var saved = LayoutStore.Save(layout);
-            // Only once the write landed: a failed one leaves the entry on disk to retry,
-            // and tombstoning it would make the retry impossible.
-            if (saved)
+            // Only once the write landed AND the destroy actually happened. A failed write
+            // leaves the entry on disk to retry, and tombstoning it would make the retry
+            // impossible. An empty forget set means the liveness guard declined — a live
+            // tile or another attic twin still owns this identity — so nothing was
+            // destroyed, and recording it would strip that survivor's own retained entry
+            // if it is ever retired, losing the tile outright.
+            if (saved && forget.Count > 0)
                 LayoutStore.MarkDestroyed(widgetId, instanceId);
             PostToShell("retained-cleared", new JsonObject
             {
