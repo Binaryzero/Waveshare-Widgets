@@ -239,6 +239,13 @@ else
     // swallow every tap whenever the deck has been closed.
     Check("M6g the bridge can report whether a deck window exists right now",
         code.Contains("public bool HasDeckWindow()"));
+    // Two flags, not one. A single flag was set by "the app is not running" and cleared
+    // only by "a window was found", so the ordinary startup order — app closed, then app
+    // open with no deck — suppressed the window census permanently, in precisely the case
+    // it exists to explain.
+    Check("M6h the no-process and no-window log states are tracked separately",
+        code.Contains("_loggedNoProcess") && code.Contains("_loggedNoWindow")
+        && code.Contains("_loggedNoProcess = false;"));
 }
 
 static string? FindUpwards(string relative)

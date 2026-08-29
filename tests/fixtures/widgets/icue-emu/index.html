@@ -131,8 +131,12 @@
 			// 3x2 grid requested below, as generated title tiles.
 			if (icons === 3) {
 				log('icons:3');
-				sd.sendKeyPress(0, true);
-				sd.sendKeyPress(0, false);
+				// All THREE arguments: the signature is (widgetId, buttonIndex, pressed).
+				// Calling it with two silently made `pressed` undefined, so both messages
+				// went out as phase 'up' — and the runner's "a deck is clicked" check
+				// counted them and passed without a press ever being exercised.
+				sd.sendKeyPress(uniqueId, 0, true);
+				sd.sendKeyPress(uniqueId, 0, false);
 				log('click-sent');
 			}
 			// Once the fixture's capture frame flows, the faces become PNG slices of

@@ -100,6 +100,15 @@ const count = (out, label) => {
   return m ? Number(m[1]) : -1;
 };
 
+// The click PHASES, not just how many. Counting alone let a press that never happened
+// pass: the probe called sendKeyPress with two arguments against a three-argument
+// signature, so `pressed` was undefined and both messages went out as 'up'. A count is
+// satisfied by that; "contains a down and an up" is not.
+const phases = (out) => {
+  const m = /stream-deck clicks: \d+ \[([^\]]*)\]/.exec(out);
+  return m ? m[1].split(',').map((p) => p.trim()).filter(Boolean) : [];
+};
+
 const { ok, out } = run('icue-sd.json', MARKERS, 3500);
 const failLines = out.split('\n').filter((l) => l.includes('FAIL')).map((l) => l.trim()).join(' | ');
 
@@ -144,10 +153,16 @@ check('E4b every surface that injects the shims injects the bundle',
   notInjecting.length === 0, notInjecting.join(', ') || injectors.length + ' surfaces');
 
 // The positive direction, from the open-window run above. Without it, a shim that
-// refused every click unconditionally would satisfy E5b completely.
-check('E4c an open deck is captured and clicked',
-  count(out, 'clicks') > 0 && count(out, 'captures') > 0,
-  `${count(out, 'clicks')} click(s), ${count(out, 'captures')} capture poll(s)`);
+// refused every click unconditionally would satisfy E5b completely. Asserted on the
+// PHASES: a real press is a down followed by an up, and press-and-hold is the whole
+// reason the phase split exists — a regression that stopped sending WM_LBUTTONDOWN
+// still satisfies a count.
+const openPhases = phases(out);
+check('E4c an open deck is captured, and a press reaches it as a real down then up',
+  count(out, 'captures') > 0 && openPhases.length >= 2
+    && openPhases.includes('down') && openPhases.includes('up')
+    && openPhases.indexOf('down') < openPhases.lastIndexOf('up'),
+  `[${openPhases.join(',')}], ${count(out, 'captures')} capture poll(s)`);
 
 // E5 — the same probe against a deck whose window is shut.
 const SHUT_MARKERS = ['device-created', 'icons:3'];

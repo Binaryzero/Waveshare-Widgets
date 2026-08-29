@@ -946,9 +946,20 @@ public sealed class StreamDeckBridge
         }
     }
 
-    /// <summary>Set once the class-name search comes back empty, so the window census
+    /// <summary>Set once the Stream Deck app has been reported absent, so that is said
+    /// once rather than on every capture poll. Cleared the moment the process appears.</summary>
+    private static bool _loggedNoProcess;
+
+    /// <summary>Set once the class-name search has come back empty, so the window census
     /// below is logged once per disappearance rather than on every capture poll. Cleared
     /// the moment a window is found again.</summary>
+    /// <remarks>
+    /// SEPARATE from <see cref="_loggedNoProcess"/>, and that separation is the whole
+    /// point of two flags. One shared flag was set by the app being closed and cleared
+    /// only by a window being found — so the ordinary startup sequence (app not running,
+    /// then running with no deck open) suppressed the census permanently, in exactly the
+    /// case it exists to explain.
+    /// </remarks>
     private static bool _loggedNoWindow;
 
     /// <summary>
@@ -973,14 +984,18 @@ public sealed class StreamDeckBridge
         }
         if (streamDeckPids.Count == 0)
         {
-            if (!_loggedNoWindow)
+            if (!_loggedNoProcess)
             {
-                _loggedNoWindow = true;
+                _loggedNoProcess = true;
                 Log.Info("Stream Deck: no StreamDeck.exe process is running, so there is no " +
                          "deck window to capture or click.");
             }
+            // Not a window search at all, so it must not stand in for one: leaving the
+            // census armed is what lets the next state — app running, no deck open —
+            // report the classes it does have.
             return IntPtr.Zero;
         }
+        _loggedNoProcess = false;
 
         var found = IntPtr.Zero;
         var census = new List<string>();
