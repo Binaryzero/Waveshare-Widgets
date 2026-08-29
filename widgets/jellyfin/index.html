@@ -677,6 +677,15 @@
         })
         .catch((e) => {
           if (gen === generation && userAsked === cfg.user) latestNoUser = e && e.kind === 'user';
+          // The shelf is user-scoped now, so it can be the read that meets a deleted
+          // and recreated user. Heal the cache here too — and come back for it at the
+          // next poll rather than the next slow window, because an ALREADY loaded
+          // shelf does not take the retry below and would sit on the ghost for five
+          // minutes. A name that simply does not exist faults as 'user', not 404, so
+          // this cannot become a tight loop.
+          const ghost = e && e.status === 404;
+          invalidateUserOn404(e);
+          if (ghost && gen === generation) slowAt = 0;
           WW.log('jellyfin: latest: ' + e.message);
           // A shelf that has NEVER loaded is the player's whole browse surface —
           // waiting out the full slow window after one transient failure leaves the
@@ -3015,6 +3024,12 @@
       // from under an open chooser sheet, which would otherwise sit fixed over
       // the overview with the Player's pills still live inside it.
       if (prevView !== cfg.view) { stopPlayback(); closeChooser(); }
+      // With a username set the two views ask DIFFERENT shelf questions — the
+      // Player's in that user's scope, the overview's server-wide — so the cached
+      // answer belongs to the view being left. Coming INTO the Player it would paint
+      // the overview's server-wide titles, playable, until the scoped request lands,
+      // and keep them if it never does (the failure path preserves what it has).
+      if (prevView !== cfg.view && cfg.user) { latest = []; latestAt = 0; }
     }
     // A different hide list is a different shelf and a different tab row; a
     // different username is a different Next up. Both restart their surfaces —
