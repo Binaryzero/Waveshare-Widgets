@@ -1011,9 +1011,18 @@
     // The label says what the tap will DO, and the lit pill says what is true now —
     // a button reading 'Favorite' that is already lit is unambiguous in a way
     // 'Unfavorite' beside a lit pill is not.
-    mk((fav ? '♥' : '♡') + ' Favorite', fav, () => { closeChooser(); toggleUserFlag(item, 'fav', !fav); });
+    //
+    // Not offered on a season. The server would accept it, but the Favorites tab lists
+    // movies, series and episodes — a favourited season would be written and then be
+    // unreachable, which is a worse answer than not offering the button. What the sheet
+    // can set is what the tab can show: a film, a show, or an episode.
+    if (item.Type !== 'Season') {
+      mk((fav ? '♥' : '♡') + ' Favorite', fav, () => { closeChooser(); toggleUserFlag(item, 'fav', !fav); });
+    }
     mk((seen ? '✓' : '○') + ' Watched', seen, () => { closeChooser(); toggleUserFlag(item, 'played', !seen); });
-    if (play) mk('▶ Play', false, () => { closeChooser(); play(); });
+    // A container does not play, it opens — the same tap the tile itself takes.
+    const container = item.Type === 'Series' || item.Type === 'Season';
+    if (play) mk(container ? '▸ Open' : '▶ Play', false, () => { closeChooser(); play(); });
   }
 
   // Consumes queuesDirty when a queue shelf is what's on screen. Called from BOTH
@@ -1041,6 +1050,11 @@
     // as does any press still being counted against a tile from it.
     cancelHolds();
     closeChooser();
+    // Flag bookkeeping is per user and per item: a reset means the next tap starts a
+    // fresh burst rather than inheriting the last one's chain, token or undo value.
+    flagOps.clear();
+    flagChains.clear();
+    flagBase.clear();
   }
 
   const activeTab = () => (browse.tabs || []).find((t) => t.id === browse.tab) || null;
@@ -1094,6 +1108,10 @@
         .slice(0, 24)
         .map((f) => ({ id: String(f.Id), name: String(f.Name || '?'), tv: f.CollectionType === 'tvshows' }));
     } catch (e) {
+      // Discovery is user-scoped now, so it can be the request that meets the ghost
+      // first — a user deleted and recreated under the same name. Without this the
+      // 30-second retry would replay the dead id and the tab row would never come back.
+      invalidateUserOn404(e);
       WW.log('jellyfin: libraries: ' + (e && e.message));
       return null;
     }
@@ -1174,7 +1192,19 @@
   // halfway marks nothing. Failures log and stay quiet — playback already happened
   // — but the RETURN says whether the write landed: advancing on unchanged watch
   // state would be handed the same episode back and replay it from zero.
-  const markPlayed = (item) => setUserFlag(item, 'played', true);
+  const markPlayed = async (item) => {
+    const ok = await setUserFlag(item, 'played', true);
+    // The written state, applied to the item in hand. Only a QUEUE reloads after a
+    // watch-state write, so on a library tab this is the only thing that moves: without
+    // it the poster of a title that just played to its end keeps its progress bar and
+    // its unwatched face, and the next tap resumes it from the old midpoint.
+    if (ok && item) {
+      const ud = item.UserData || (item.UserData = {});
+      ud.Played = true;
+      ud.PlaybackPositionTicks = 0;
+    }
+    return ok;
+  };
 
   // The latest tap against each item-and-flag. Two writes to the same flag can be in
   // flight at once on a slow server — hold, unfavourite, hold, favourite — and each
@@ -1215,13 +1245,21 @@
     // stale position to the next tap, resuming a title just declared finished.
     if (kind === 'played') ud.PlaybackPositionTicks = 0;
     renderPlayer();
-    const run = () => setUserFlag(item, kind, on);
+    // The user this gesture was made under, captured HERE rather than inside the write.
+    // A tap queued behind a slow one can start after the settings name someone else,
+    // and setUserFlag reads cfg.user when it runs — so without this an action taken
+    // while looking at A's library would land on B's history.
+    const owner = cfg.user;
+    const run = () => (cfg.user === owner ? setUserFlag(item, kind, on) : false);
     const prev = flagChains.get(opKey);
     // A predecessor that FAILED must still not cancel its successor: the chain exists
     // for order, not for outcome, so both settlements continue it.
     const mine = prev ? prev.then(run, run) : run();
     flagChains.set(opKey, mine.then(() => {}, () => {}));
     const ok = await mine;
+    // Nothing was written and nothing on this screen is this user's any more; the
+    // reload that a username change triggers is what puts the tiles right.
+    if (cfg.user !== owner) return;
     const base = flagBase.get(opKey);
     // A write that landed IS the server's state now, whether or not this tap still
     // owns the screen: a later refusal has to undo to here, not to where the burst
@@ -1840,6 +1878,11 @@
 
   function stripNote(text, onTap) {
     const strip = el('pstrip');
+    // The other writer of this strip, and holds die here too: a second finger reaching
+    // a tab while a first is still pressing a poster takes the loading path, not
+    // buildStrip, and the detached tile's timer would open a sheet for the old item
+    // over the new tab — where its buttons would flag the wrong title.
+    cancelHolds();
     strip.textContent = '';
     const note = document.createElement('div');
     note.className = 'note' + (onTap ? ' pressable no-pan' : '');

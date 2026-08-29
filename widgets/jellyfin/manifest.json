@@ -2,7 +2,7 @@
   "id": "ws.stock.jellyfin",
   "name": "Jellyfin",
   "author": "Plinth",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "Who's streaming what from your Jellyfin server and the titles that just landed in the library — or a player that browses your movie and TV libraries (genres, sorting, series → seasons → episodes), picks up what you left part-watched, queues what's next up, keeps your favourites a tab away, and streams straight to the panel. Read from Jellyfin's own API, because the web app refuses to render inside a frame.",
   "min_api_version": 1,
   "supported_slots": [
