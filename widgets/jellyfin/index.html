@@ -606,7 +606,14 @@
       // the same marks and the same press as every other tab.
       const wantUser = cfg.view === 'player' && !!cfg.user;
       const userAsked = cfg.user;
-      const scoped = wantUser ? resolveUser().catch(() => null) : Promise.resolve('');
+      const viewAsked = cfg.view;
+      // NOT caught here. resolveUser returns null for a name the server does not have
+      // and REJECTS when it could not be asked — flattening those together made a
+      // timeout report itself as "no Jellyfin user named X", sending someone to fix a
+      // setting that was never wrong. A rejection travels on to the shelf's own catch,
+      // which logs it and leaves the note saying it is still trying; only a real null
+      // becomes the fault that names the field.
+      const scoped = wantUser ? resolveUser() : Promise.resolve('');
       // With no hide list, one server-wide query. With one, the shelf is assembled
       // from the libraries that survive it: per-library top-N queries merged by
       // DateCreated (the top N of a union of per-library top Ns is exact). Items
@@ -665,7 +672,12 @@
         .then((items) => {
           // The user joins the other three: this query is scoped to them now, so an
           // answer for the PREVIOUS user is as wrong as one for the previous filter.
+          // The view joins them, because it decides the SCOPE: a server-wide overview
+          // answer landing after a switch to the Player would repopulate the shelf with
+          // titles the named user cannot see, and a scoped answer landing in the
+          // overview would under-report it.
           if (gen !== generation || typesAsked !== cfg.types || userAsked !== cfg.user
+              || viewAsked !== cfg.view
               || hideAsked !== Array.from(cfg.hide).sort().join('\n')) return;
           latestNoUser = false;
           latest = items.filter((it) => it && it.Id);
@@ -1242,6 +1254,9 @@
       const ud = item.UserData || (item.UserData = {});
       ud.Played = true;
       ud.PlaybackPositionTicks = 0;
+      // ...and to whatever object the shelf holds for it now, which a reload during
+      // playback may have replaced.
+      applyFlagById(String(item.Id), 'played', true);
       // And PAINT it. stopPlayback renders while this write is still in the air, so
       // without a render of its own the corrected item sits behind a poster still
       // showing its progress bar — for up to a full refresh interval, which the user
@@ -1271,6 +1286,24 @@
   // the poster on a state no write ever achieved. Seeded by the first tap of a burst
   // and moved only by a write that actually landed.
   const flagBase = new Map();
+
+  // The item the gesture held may not be the one on screen by the time the reply
+  // lands: a list that reloaded in between hands back a NEW object carrying the
+  // server's pre-write state, and the detached original is all toggleUserFlag has.
+  // So a landed write is applied by ID to whatever is showing — the poster should
+  // agree with the server, not with the moment the tap was made.
+  function applyFlagById(id, kind, on) {
+    const key = kind === 'fav' ? 'IsFavorite' : 'Played';
+    for (const list of [browse.items, browse.all, latest]) {
+      if (!Array.isArray(list)) continue;
+      for (const it of list) {
+        if (!it || String(it.Id) !== id) continue;
+        const ud = it.UserData || (it.UserData = {});
+        ud[key] = on;
+        if (kind === 'played') ud.PlaybackPositionTicks = 0;
+      }
+    }
+  }
 
   // A flag the user just tapped, applied to the item in hand BEFORE the write goes
   // out so the poster answers the tap immediately, and put back if the server
@@ -1309,6 +1342,10 @@
     // Nothing was written, and nothing on this screen belongs to that question any
     // more; the reload those changes trigger is what puts the tiles right.
     if (!mine_()) return;
+    if (ok) {
+      applyFlagById(String(item.Id), kind, on);
+      renderPlayer();
+    }
     const base = flagBase.get(opKey);
     // A write that landed IS the server's state now, whether or not this tap still
     // owns the screen: a later refusal has to undo to here, not to where the burst
@@ -1734,8 +1771,14 @@
         // Follow the server's pages like the episode list does — a music library
         // can report hundreds of genres, and caching page one as the whole list
         // would hide the rest for the widget's lifetime. 300 bounds the sheet.
+        // In the user's name, like the list it filters. Genres are computed from the
+        // titles in scope, so an unscoped answer offers filters that exist only on
+        // titles this user cannot see — every one of them opening an empty shelf.
+        const guid = cfg.user ? await resolveUser() : '';
+        if (session !== chooserSession) return;
         const base = '/Genres?ParentId=' + encodeURIComponent(tab.id)
-          + '&SortBy=SortName&SortOrder=Ascending&Limit=100';
+          + '&SortBy=SortName&SortOrder=Ascending&Limit=100'
+          + (guid ? '&userId=' + encodeURIComponent(guid) : '');
         const got = [];
         let fetched = 0;
         for (;;) {
