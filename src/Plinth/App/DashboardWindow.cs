@@ -765,7 +765,10 @@ public sealed class DashboardWindow : Form
                 VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
             };
             var body = message["body"]?.GetValue<string>();
-            if (body is not null && method is "POST" or "PUT")
+            // DELETE carries a body here too: both fetch shims forward one, and letting
+            // the method through while silently dropping its payload would hand the
+            // server a different request than the widget wrote — worse than refusing.
+            if (body is not null && method is "POST" or "PUT" or "DELETE")
             {
                 // The StringContent media-type overload rejects parameterized values
                 // ("application/json; charset=utf-8" throws FormatException) — parse
