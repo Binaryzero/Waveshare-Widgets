@@ -88,6 +88,10 @@
   let previewGen = 0;     // init generation this document state was built under;
                           // echoed on every persist so the settings window can drop
                           // captures that raced a newer init (posting is async)
+  let layoutGeneration = null;  // which version of layout.json layoutData came from (#281),
+                                // echoed on every save so the host can refuse a payload
+                                // built before a write this document never saw
+  let layoutRefused = false;    // a refusal is terminal for this document — see onSaveRefused
 
   if (!PREVIEW && window.chrome && window.chrome.webview) {
     window.chrome.webview.addEventListener('message', (ev) => handleHostMessage(ev.data || {}));
@@ -161,7 +165,13 @@
       // cap would undo itself, and a Clear would come straight back, sealed bytes and
       // all, on the panel's very next drag or resize. Matched by identity, never index —
       // this copy and the host's can be ordered differently.
-      for (const e of (Array.isArray(msg.data) ? msg.data : [])) dropRetained(e.widgetId, e.instanceId);
+      const ev = msg.data || {};
+      for (const e of (Array.isArray(ev.ids) ? ev.ids : [])) dropRetained(e.widgetId, e.instanceId);
+      // Adopted only here, AFTER the drops, so the generation and the model it describes
+      // move together (#281). The settings-side Clear that produces this is a host write:
+      // it converges this panel by splice instead of a reload, so without adopting, the
+      // very next drag would be refused for a divergence that no longer exists.
+      if (typeof ev.generation === 'number') layoutGeneration = ev.generation;
       refreshRetiredUi();
     }
     else if (msg.type === 'retained-cleared') {
@@ -184,8 +194,20 @@
         // makes the user stop retrying — which is the one thing they must do.
         showPanelNotice('Not deleted — the layout could not be written. Try again.');
       }
+      // See evicted-ids: a host write converged by ack hands over its generation, and this
+      // copy adopts it once it has applied the drop. On a failed write it is unchanged, so
+      // this is a no-op rather than a wrong number.
+      if (typeof e.generation === 'number') layoutGeneration = e.generation;
       refreshRetiredUi();
     }
+    else if (msg.type === 'layout-saved') {
+      // The panel's only success ack (#281), and it carries exactly one thing: the version
+      // the next payload should echo. Deliberately NOT a reload — this shell already
+      // re-rendered itself, which is why it had no success ack until now.
+      const d = msg.data || {};
+      if (typeof d.generation === 'number') layoutGeneration = d.generation;
+    }
+    else if (msg.type === 'save-refused') onSaveRefused(msg.data || {});
     else if (msg.type === 'retained-error') {
       // Restore/Clear refused. The row is NOT dropped on 'not-found': that result only
       // says the attic no longer holds the identity, which is equally true when the other
@@ -608,6 +630,33 @@
   /** Transient banner for host-side failures the panel can't otherwise show. The strip
    * has no dialogs and no room for one, so this rides above everything and clears
    * itself; it is deliberately the only such surface. */
+  /** The host refused this document's save: it was built from a version of layout.json
+   * that the settings window has since written over (#281).
+   *
+   * Nothing was written, so disk still holds the other window's work — the failure mode
+   * this replaces is the opposite one, where this payload silently reverted it.
+   *
+   * Recovery is a reload, because there is nothing here worth keeping: this document's
+   * edits are expressed as a whole-layout snapshot built on a file that no longer exists,
+   * not as operations that could be replayed onto the new one. The reload is DELAYED so
+   * the notice is readable first — a panel that simply blinked and rearranged itself would
+   * read as a fault.
+   *
+   * `clearedCredentials` is the one thing the user has to be told rather than shown.
+   * def.secretsCleared lives only in this document's layoutData and travels only on the
+   * save that was just refused, so the clear did not happen and the widget is still
+   * running on the credential they removed. The reload will show it as set, because it is.
+   */
+  function onSaveRefused(info) {
+    if (layoutRefused) return;   // one notice, one reload, however many payloads were in flight
+    layoutRefused = true;
+    if (typeof info.generation === 'number') layoutGeneration = info.generation;
+    showPanelNotice(info.clearedCredentials
+      ? 'The settings window changed the layout, so this change was not saved \u2014 including the credential you removed. Reloading; remove it again.'
+      : 'The settings window changed the layout, so this change was not saved. Reloading.');
+    setTimeout(() => location.reload(), 4000);
+  }
+
   function showPanelNotice(text) {
     let node = document.getElementById('panelNotice');
     if (!node) {
@@ -720,6 +769,12 @@
     // Adopted before anything can declare demand, so the first watch already carries this
     // document's base.
     if (data.genBase !== undefined && data.genBase !== null) genBase = String(data.genBase);
+    // The LAYOUT generation (#281) — a different subject from genBase above, which is this
+    // DOCUMENT's sequence for the notification-demand gate (#132). Never conflated: one
+    // says which layout.json this model came from, the other which document is asking.
+    // A fresh document is never refused, so the refusal latch lifts with the init.
+    if (typeof data.generation === 'number') layoutGeneration = data.generation;
+    layoutRefused = false;
     if (PREVIEW) previewGen = data.gen | 0;
     if (PREVIEW && typeof data.page === 'number') previewPage = data.page;
     // A restore reloads the whole document (the attic def is ciphertext here, so only the
@@ -1423,6 +1478,12 @@
   }
 
   function persistLayout() {
+    // Refused once means refused until this document is replaced: layoutData is built on a
+    // version of the file that no longer exists, so every further payload from it would be
+    // refused too. Posting them anyway would spam the host with saves that cannot land and
+    // notices the user is already reading. The reload onSaveRefused schedules is what ends
+    // this state.
+    if (layoutRefused) return;
     // Editing makes positional identity unstable, so the first persist freezes every
     // instance's identity: each def adopts the tag its iframe is ALREADY running under
     // (stored widget state carries over seamlessly); defs without a live record (e.g.
@@ -1437,6 +1498,11 @@
     }
     const save = { type: 'save-layout', layout: layoutData };
     if (PREVIEW) save.gen = previewGen; // stale-capture detection in the settings window
+    // Which version this model was built from (#281). Only on a REAL panel: the replica's
+    // saves are captured by the settings window and never reach the host, so a layout
+    // generation on them would name a number nothing compares against — and `gen` above is
+    // already a different quantity on this same message.
+    else if (layoutGeneration !== null) save.generation = layoutGeneration;
     postToHost(save);
     // Mutations shift indices; keep the settings window's detail panel pointed at
     // the same slot it was showing (it captures the layout above, then this).
@@ -3019,6 +3085,18 @@
       clear.className = 'danger';
       clear.textContent = 'Delete';
       clear.addEventListener('click', () => confirmThen(clear, 'Delete', true, () => {
+        // FLUSH first, exactly as Restore above does — and here the reason is sharper than
+        // "don't lose an edit". Delete does NOT reload this document; it converges it by
+        // the retained-cleared ack, and until that ack lands layoutData.retained still
+        // holds the entry. An armed style/prop debounce firing inside that gap ships the
+        // destroyed entry straight back, and it is THIS document's own save, so the
+        // generation's same-writer exemption would let it through (#281). Flushing puts
+        // that save ahead of the clear in the host's queue, where it is harmless.
+        //
+        // It does not close the gap on its own — a gesture made after the flush still
+        // lands inside it, which is why the destroyed-set stays.
+        closeStyleEditor();
+        closePropSheet();
         postToHost({
           type: 'clear-retained',
           widgetId: entry.def.widgetId,

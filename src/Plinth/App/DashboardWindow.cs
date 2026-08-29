@@ -267,6 +267,32 @@ public sealed class DashboardWindow : Form
                     // itself, so save quietly — no dashboard reload.
                     try
                     {
+                        // Refuse a payload built before a write this shell has not seen
+                        // (#281). BEFORE anything is deserialized, sealed or written —
+                        // refusal means the file is untouched, not rolled back.
+                        //
+                        // The cleared markers are read here rather than left to Seal
+                        // below, because they exist ONLY in this payload: def.secretsCleared
+                        // lives in the shell's in-memory layoutData and rides no other
+                        // message. A refusal drops them, and the re-init that follows hands
+                        // the widget its plaintext back — the user cleared a credential and
+                        // the widget kept using it. The shell must not have to infer that,
+                        // so the refusal says it.
+                        if (LayoutStore.IsStale(
+                                message["generation"]?.GetValue<long>(), LayoutStore.PanelWriter))
+                        {
+                            var lostClears =
+                                SecretPolicy.ReadClearedMarkers(message["layout"]).Count > 0
+                                || SecretPolicy.ReadRetainedClearedMarkers(message["layout"]).Count > 0;
+                            PostToShell("save-refused", new JsonObject
+                            {
+                                ["reason"] = "stale",
+                                ["generation"] = LayoutStore.Generation,
+                                ["clearedCredentials"] = lostClears,
+                            });
+                            Log.Info("On-panel save refused: built from a superseded layout");
+                            break;
+                        }
                         var edited = message["layout"].Deserialize<DashboardLayout>();
                         if (edited?.Pages is null)
                             throw new InvalidDataException("Layout has no pages.");
@@ -316,13 +342,21 @@ public sealed class DashboardWindow : Form
                                 Log.Warn($"Could not purge evicted retained credentials: {ex.GetType().Name}");
                             }
                         }
-                        var landed = LayoutStore.Save(edited);
+                        var landed = LayoutStore.Save(edited, LayoutStore.PanelWriter);
                         Log.Info("layout saved from on-panel editor");
                         // Before the acks below, and outside them: those are all "about
                         // the payload you sent" and go to THIS shell. This one is about
                         // the file, and goes to the other window.
                         if (landed)
                             LayoutWritten?.Invoke();
+                        // The panel had no success ack at all — it re-renders itself, so
+                        // there was nothing to tell it. Now there is exactly one thing:
+                        // the generation its NEXT payload should echo. Not a reload.
+                        if (landed)
+                            PostToShell("layout-saved", new JsonObject
+                            {
+                                ["generation"] = LayoutStore.Generation,
+                            });
                         if (evicted.Count > 0)
                         {
                             // Tell the shell which attic entries the cap dropped, or its
@@ -337,7 +371,7 @@ public sealed class DashboardWindow : Form
                                     ["widgetId"] = ev.Def?.WidgetId,
                                     ["instanceId"] = ev.Def?.InstanceId,
                                 });
-                            PostToShell("evicted-ids", gone);
+                            PostToShell("evicted-ids", EvictedNode(gone));
                         }
                         if (secrets.Minted.Count > 0)
                         {
@@ -783,6 +817,13 @@ public sealed class DashboardWindow : Form
                 // with a live credential). But the entry is still on disk, and telling the
                 // panel "done" would have it drop a row that comes back at the next init.
                 ["saved"] = saved,
+                // Clear is a HOST write, so it did not make this panel the last writer —
+                // deliberately, because the panel's own debounced save composed before
+                // this ack still carries the destroyed entry and must be refused (#281).
+                // Adopting here is what makes the save AFTER that one fresh again. Correct
+                // when the write failed too: nothing was bumped, so this is the number the
+                // panel already holds.
+                ["generation"] = LayoutStore.Generation,
             });
             // Only on a landed write, matching the settings-side handler: the entry is
             // still on disk otherwise, and an open editor told it is gone would drop the
@@ -799,6 +840,16 @@ public sealed class DashboardWindow : Form
         }
     }
 
+    /// <summary>The `evicted-ids` body: the identities that left disk, plus the generation
+    /// of the write that removed them (#281).
+    ///
+    /// <para>An object rather than the bare array it used to be, so the generation has
+    /// somewhere to ride. Both producers use it — the cap inside this window's own save,
+    /// and the settings-side Clear below — because one shape with one meaning ("the
+    /// version this drop produced") beats two that differ by who sent them.</para></summary>
+    private static JsonObject EvictedNode(JsonArray ids) =>
+        new() { ["ids"] = ids, ["generation"] = LayoutStore.Generation };
+
     private static JsonArray RetainedGoneNode(string? widgetId, string? instanceId) =>
         new(new JsonObject { ["widgetId"] = widgetId, ["instanceId"] = instanceId });
 
@@ -813,7 +864,7 @@ public sealed class DashboardWindow : Form
     /// credential the user explicitly destroyed. Cheaper than a full panel reload, which
     /// Clear does not otherwise need: it changes no page.</para></summary>
     internal void PostRetainedGone(string? widgetId, string? instanceId) =>
-        PostToShellThreadSafe("evicted-ids", RetainedGoneNode(widgetId, instanceId));
+        PostToShellThreadSafe("evicted-ids", EvictedNode(RetainedGoneNode(widgetId, instanceId)));
 
     private void PostRetainedError(string reason, string? widgetId, string? instanceId) =>
         PostToShell("retained-error", new JsonObject
@@ -1429,6 +1480,11 @@ public sealed class DashboardWindow : Form
         var payload = new JsonObject
         {
             ["layout"] = RevealedLayoutNode(layout, blanked),
+            // The version of layout.json the line above came from (#281), echoed on every
+            // save. Distinct from `genBase` below, which is the DOCUMENT sequence for the
+            // notification-demand gate (#132) — same word, different subject, so the two
+            // are deliberately never spelled the same way on this wire.
+            ["generation"] = LayoutStore.Generation,
             ["widgets"] = JsonSerializer.SerializeToNode(widgets, BridgeJson),
             ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
             ["media"] = JsonSerializer.SerializeToNode(_hub.LatestMedia, BridgeJson),

@@ -83,6 +83,12 @@ public sealed class SettingsWindow : Form
                 ["type"] = "retained-gone",
                 ["widgetId"] = widgetId,
                 ["instanceId"] = instanceId,
+                // A splice, not a re-init: this editor's model is converged by applying
+                // the drop, so it must adopt the generation of the write that caused it
+                // (#281) — otherwise its very next save is judged stale DETERMINISTICALLY,
+                // not as a race, and the flicker the splice exists to avoid arrives anyway
+                // as a refusal.
+                ["generation"] = LayoutStore.Generation,
             }));
         }
         catch (ObjectDisposedException) { /* window closed between the check and the invoke */ }
@@ -217,7 +223,8 @@ public sealed class SettingsWindow : Form
                     break;
 
                 case "save-layout":
-                    HandleSave(message["layout"], message["seq"]?.GetValue<long>());
+                    HandleSave(message["layout"], message["seq"]?.GetValue<long>(),
+                        message["generation"]?.GetValue<long>());
                     break;
 
                 case "restore-retained":
@@ -717,6 +724,11 @@ public sealed class SettingsWindow : Form
                     {
                         ["type"] = "layout-written",
                         ["layout"] = MaskedLayoutFromDisk(),
+                        // Adopted with the layout, in the same message, and only by an
+                        // editor that actually took it (#281). A dirty editor keeps its
+                        // own copy AND its own generation, so its Save stays refusable —
+                        // which is what the banner is for.
+                        ["generation"] = LayoutStore.Generation,
                     });
                 }
                 catch (Exception ex) { Log.Warn($"Could not mirror a panel save: {ex.Message}"); }
@@ -746,6 +758,10 @@ public sealed class SettingsWindow : Form
                 // change, so without this an already-playing track never appears.
                 ["media"] = JsonSerializer.SerializeToNode(_hub.LatestMedia, BridgeJson),
                 ["backgroundHost"] = BackgroundHost,
+                // The version of layout.json this masked copy came from (#281). Echoed on
+                // every save so the host can tell a fresh payload from one built before a
+                // write it has since committed.
+                ["generation"] = LayoutStore.Generation,
                 ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated, ["version"] = AppVersion.Describe },
             },
         });
@@ -839,6 +855,11 @@ public sealed class SettingsWindow : Form
             ["widgetId"] = widgetId,
             ["instanceId"] = instanceId,
             ["def"] = wrapper?["pages"]?[0]?["slots"]?[0]?.DeepClone(),
+            // Adopted with the def (#281). The restore was a HOST write, so it did not
+            // make this editor the last writer; without the generation riding the splice
+            // that converges it, the editor's next save is refused for a divergence it no
+            // longer has.
+            ["generation"] = LayoutStore.Generation,
         });
     }
 
@@ -879,6 +900,11 @@ public sealed class SettingsWindow : Form
                 ["type"] = "retained-cleared",
                 ["widgetId"] = widgetId,
                 ["instanceId"] = instanceId,
+                // See PostRestoredAck: a host write converged by splice hands over its
+                // generation, or the splice's own window is refused next (#281). Safe when
+                // the write FAILED too — nothing was bumped, so this is the generation the
+                // editor already holds.
+                ["generation"] = LayoutStore.Generation,
                 // Whether anything was actually forgotten. An empty forget set means a live
                 // tile still owns this identity, so only the retired ROW went — telling the
                 // user their credentials were destroyed would be false in the direction
@@ -910,11 +936,39 @@ public sealed class SettingsWindow : Form
     /// <summary>Saves the posted layout. The optional <paramref name="seq"/> is a
     /// client request id echoed verbatim in the reply, so the editor can match each
     /// acknowledgement to the exact snapshot it saved — two saves racing one ack
-    /// must not clear the dirty marker for work the second save still holds.</summary>
-    private void HandleSave(JsonNode? layoutNode, long? seq)
+    /// must not clear the dirty marker for work the second save still holds.
+    ///
+    /// <para><paramref name="generation"/> is the version of layout.json this payload was
+    /// built from (#281). Behind, and moved by somebody else, means the payload would
+    /// revert a write it never saw.</para></summary>
+    private void HandleSave(JsonNode? layoutNode, long? seq, long? generation)
     {
         try
         {
+            // First, before anything is deserialized, sealed or written: a refusal leaves
+            // the file untouched rather than rolling it back.
+            //
+            // `seq` rides the refusal because the editor's pendingSaves is keyed by it —
+            // an unanswered seq strands an entry that later mis-clears the dirty marker.
+            // `clearedCredentials` rides it because def.secretsCleared exists ONLY in this
+            // payload and travels on no other message: a refused save silently un-clears
+            // a credential the user removed, and the editor cannot know that unless told.
+            if (LayoutStore.IsStale(generation, LayoutStore.SettingsWriter))
+            {
+                var refused = new JsonObject
+                {
+                    ["type"] = "save-refused",
+                    ["reason"] = "stale",
+                    ["generation"] = LayoutStore.Generation,
+                    ["clearedCredentials"] =
+                        SecretPolicy.ReadClearedMarkers(layoutNode).Count > 0
+                        || SecretPolicy.ReadRetainedClearedMarkers(layoutNode).Count > 0,
+                };
+                if (seq is not null) refused["seq"] = seq.Value;
+                Post(refused);
+                Log.Info("Settings save refused: built from a superseded layout");
+                return;
+            }
             var layout = layoutNode.Deserialize<DashboardLayout>();
             if (layout?.Pages is null)
                 throw new InvalidDataException("Layout has no pages.");
@@ -956,10 +1010,15 @@ public sealed class SettingsWindow : Form
                     Log.Warn($"Could not purge evicted retained credentials: {ex.GetType().Name}");
                 }
             }
-            LayoutStore.Save(layout);
+            LayoutStore.Save(layout, LayoutStore.SettingsWriter);
             LayoutSaved?.Invoke();
             var ok = new JsonObject { ["type"] = "saved" };
             if (seq is not null) ok["seq"] = seq.Value;
+            // What this editor's next payload must echo. Read AFTER the write, so a
+            // swallowed write failure hands back the generation that is still on disk and
+            // the next save is judged against the truth rather than against a bump that
+            // never happened.
+            ok["generation"] = LayoutStore.Generation;
             if (evicted.Count > 0)
             {
                 // Which attic entries the cap dropped — the editor splices them from its

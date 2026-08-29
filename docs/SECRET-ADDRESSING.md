@@ -533,21 +533,64 @@ The mask for that notice MERGES the manifest baseline rather than replacing it, 
 stood at ITS init, and a baseline describing a layout nobody holds is how `Seal` stops walking
 a widget's secret fields and writes the editor's masked blank over the stored ciphertext.
 
-**What is still open**, and why it is not closed by the above: a payload already IN FLIGHT
-when the write lands. The notice converges the two clients' future state; it cannot reach a
-`save-layout` the host has already been handed. Two windows share one layout.json with no
-version on it, and last-writer-wins has been this design's documented posture since long
-before the attic. The remaining fix is a single layout **generation**: stamped into each
-window's init, echoed on every save, and refused by the host when it is behind — with the
-writer recorded so a window is never judged stale against its own accepted save, and every
-HOST-performed write (both restores, both clears, the migrations) attributed to no window at
-all, so a payload composed before one is stale to its own window too. That is #281's second
-half. Note the destroyed-set survives it: `DropDestroyed` filters every incoming attic from
-either window at any generation, whereas the generation rule deliberately exempts a window's
-own save — which on a panel-side Delete is the destroying window itself.
+**The payload already IN FLIGHT is closed by the generation (#281).** The notice above
+converges the two clients' *future* state; it cannot reach a `save-layout` the host has
+already been handed. `LayoutStore` therefore keeps a monotonic `Generation` and the
+`LastWriter` that produced it — in memory, not persisted, for the same reason the
+destroyed-set is: a client only ever compares against a number this process handed it, and
+every window re-inits after a restart. Both inits carry it, both clients echo it on every
+save, and both adopt it back from the ack.
 
-Until then: a resurrected live tile is visible on screen and re-deletable, a reverted restore
-is one tap to redo, and the derived credential stays destroyed in every branch.
+**The rule is BEHIND *and* moved by somebody ELSE**, and both halves are load-bearing.
+Behind-ness alone would make the panel uneditable: it posts its whole model on every drag,
+so its next payload is out long before the previous ack lands and it is routinely behind
+itself — while not being stale about anything, because its own memory already holds what it
+just saved. `IsStale` is the single place that decides this, and the G-series in
+`tools/SecretRoundTrip` asserts both halves, because dropping either one breaks something
+the other cannot catch.
+
+**The writer is the payload SOURCE, never the requesting window.** An accepted client
+`save-layout` sets it to that window. Every write the host performs on a window's behalf —
+both restores, both clears, `RemoveWidgets`, the first-run materialize — is attributed to
+`LayoutStore.HostWriter`, so the requester is stale against its own request. Getting this
+wrong is subtle and expensive: on a panel-side Delete the panel would be the last writer,
+and the panel's own debounced save composed before the `retained-cleared` ack still carries
+the entry the Delete destroyed, so the exemption would wave it straight back in with bytes
+that still decrypt. The Delete path now also FLUSHES the armed style/prop debounces the way
+Restore already did, which puts most of that payload ahead of the clear instead of behind
+it.
+
+**The bump lives inside `Save`, past the write.** No caller can bump without writing, and a
+swallowed write failure leaves the generation where it was — the file still holds what the
+other window last saw, and bumping would lock that window out of content it matches exactly.
+Every other writer in the codebase inherits the right behaviour by default.
+
+**A host write converged by SPLICE hands over its generation on the splice.** `evicted-ids`,
+`retained-gone`, `retained-restored` and both `retained-cleared` acks carry it, and the
+client adopts it only once it has applied the change. Restore and Clear deliberately avoid a
+full reload — they change no page — so without this the window they just converged would be
+refused on its very next gesture: deterministically, not as a race, producing exactly the
+flicker the splice exists to avoid.
+
+**The destroyed-set survives all of it.** `DropDestroyed` filters every incoming attic from
+either window at any generation, whereas the rule deliberately exempts a window's own save —
+which on a panel-side Delete is the destroying window itself. The generation subsumes only
+the CROSS-window half of that race.
+
+**A refusal must not silently un-clear a credential.** `def.secretsCleared` lives only in a
+shell's in-memory `layoutData` and travels only on the save that was refused, so a refusal
+drops it and the re-init hands the widget its plaintext back. The host reads the cleared
+markers off the raw node *before* it decides, and puts the answer on the refusal as
+`clearedCredentials`; both clients say so in words, because it is the one part of a refusal
+the user cannot see. The settings refusal also carries `seq`, or `pendingSaves` strands an
+entry that later clears the dirty marker for work still unsaved.
+
+**Recovery differs by window, because what they stand to lose does.** The panel re-inits:
+its edits are a whole-layout snapshot built on a file that no longer exists, not operations
+that could be replayed, and "re-init" there is a full navigation, so there is nothing to
+preserve. The settings editor never re-inits over unsaved work — it raises the same banner
+the panel-write notice does and holds Save until the user reloads. A save that raced the
+notice lands in the same state, so it gets the same UI rather than a second one.
 
 **The ack claims something about disk, so it waits for disk.** `LayoutStore.Save` swallows
 its write failures — a save is triggered by ordinary editing on both surfaces, and throwing

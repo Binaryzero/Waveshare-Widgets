@@ -511,6 +511,62 @@ public static class LayoutStore
         return fallback;
     }
 
+    /// <summary>The writer id for a write this HOST performed — a restore, a clear, a
+    /// stock migration, the first-run materialize. Not a window, and not a value any
+    /// client can produce: the writer is chosen by whichever HANDLER accepted the message,
+    /// never read off the payload. See <see cref="IsStale"/>.</summary>
+    public const string HostWriter = "host";
+
+    /// <summary>The two window writers, so the handlers and the rule cannot disagree by
+    /// typo. They name the SURFACE, not the document — see <see cref="IsStale"/> for why
+    /// per-document granularity buys nothing here.</summary>
+    public const string PanelWriter = "panel";
+
+    /// <inheritdoc cref="PanelWriter"/>
+    public const string SettingsWriter = "settings";
+
+    private static readonly object GenerationGate = new();
+    private static long _generation;
+    private static string _lastWriter = HostWriter;
+
+    /// <summary>Which version of layout.json a payload was built from (#281).
+    ///
+    /// <para>In memory, not persisted, for the same reason the destroyed-set is: a client
+    /// only ever compares against a number THIS process handed it, and every window
+    /// re-inits after a restart. Nothing to expire, nothing to migrate, no layout.json
+    /// format change.</para>
+    ///
+    /// <para>Starts at 0 with the host as writer, so the first save from either window is
+    /// accepted: 0 is not behind 0.</para></summary>
+    public static long Generation { get { lock (GenerationGate) return _generation; } }
+
+    /// <summary>Is this payload built from a version the file has since moved past, by
+    /// somebody other than the sender?
+    ///
+    /// <para>Both halves are load-bearing. Behind-ness alone would break ordinary panel
+    /// editing: the panel posts its whole model on every drag and its next payload is out
+    /// long before the previous ack lands, so it is routinely behind ITSELF — and it is
+    /// not stale about anything, because its own in-memory state already contains what it
+    /// just saved.</para>
+    ///
+    /// <para>The writer is therefore set ONLY by an accepted client save. Every write the
+    /// host performs on a client's behalf — Restore, Clear, a stock migration — is
+    /// <see cref="HostWriter"/>, which no client can be. Without that, a Delete requested
+    /// by the panel would make the PANEL the last writer, and the panel's own debounced
+    /// save composed before the ack — carrying the attic entry the Delete just destroyed —
+    /// would be exempted and resurrect it. (The destroyed-set covers that one from the
+    /// other side; this is why it is still needed and why it is not enough alone.)</para>
+    ///
+    /// <para>A payload with no generation at all is ACCEPTED. Host and clients ship in one
+    /// binary so it should not happen; if it does, the answer is the behaviour that
+    /// predates this — last writer wins — not a window that can never save.</para></summary>
+    public static bool IsStale(long? echoed, string writer)
+    {
+        if (echoed is null) return false;
+        lock (GenerationGate)
+            return echoed.Value < _generation && !string.Equals(_lastWriter, writer, StringComparison.Ordinal);
+    }
+
     /// <summary>Writes layout.json, swallowing the failure — a save is triggered by
     /// ordinary editing on both surfaces, and throwing out of those paths would take
     /// something visible down with it.
@@ -519,12 +575,25 @@ public static class LayoutStore
     /// know: a destructive op (#226's Clear) acks the client, and a client told "done"
     /// after a silently failed write drops a row that reappears at the next init. Every
     /// other caller ignores it, deliberately — reporting a failed layout save into an
-    /// ordinary edit is a notification with nothing behind it.</para></summary>
-    public static bool Save(DashboardLayout layout)
+    /// ordinary edit is a notification with nothing behind it.</para>
+    ///
+    /// <para>The generation bump lives HERE, past the write and inside the success branch,
+    /// so no caller can bump without writing (#281). A failed write leaves the file at the
+    /// content the other window last saw; bumping anyway would lock that window out of a
+    /// file that never changed. It also means every writer in the codebase — the
+    /// migrations, the materialize, both restores, both clears — inherits the right
+    /// behaviour by default, since <paramref name="writer"/> is the host unless a save
+    /// handler names the window whose payload it just accepted.</para></summary>
+    public static bool Save(DashboardLayout layout, string? writer = null)
     {
         try
         {
             DurableStore.Write(AppPaths.LayoutFile, JsonSerializer.Serialize(layout, JsonOptions));
+            lock (GenerationGate)
+            {
+                _generation++;
+                _lastWriter = writer ?? HostWriter;
+            }
             return true;
         }
         catch (Exception ex)
