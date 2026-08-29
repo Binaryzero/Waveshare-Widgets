@@ -697,6 +697,13 @@ public sealed class SettingsWindow : Form
             {
                 try
                 {
+                    // Nothing to mirror to before the first init: a null baseline means
+                    // this editor is not holding a masked layout yet, and PostInit will
+                    // deliver the file itself in a moment. Checked BEFORE the merge, not
+                    // left to Post's no-op, so the baseline is never moved for a message
+                    // that never goes out.
+                    if (_maskedManifests is null)
+                        return;
                     // MERGE, never replace. A dirty editor REFUSES this layout and keeps
                     // the one it has, which was masked with the manifests as they stood at
                     // its init. Replacing the baseline would describe a layout nobody is
