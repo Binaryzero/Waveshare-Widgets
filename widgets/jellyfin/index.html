@@ -2144,7 +2144,10 @@
     const t = seekTarget;
     const wasPaused = pv.paused;
     seekTarget = null;
-    if (!theaterOn || t == null || !lastSrcUrl) return;
+    // Off-screen is a hard refusal, not merely a reason to stay paused: setSource
+    // would still assign pv.src and start a fresh server transcode for a page the
+    // viewer has swiped away from, and then report a position they never reached.
+    if (!theaterOn || t == null || !lastSrcUrl || outOfSight()) return;
     // A SEEK, not a failure: the fallback chain and the attempt history are left
     // exactly as they are, so a later genuine failure still has its remaining
     // sources and its diagnosis.
@@ -2459,7 +2462,9 @@
       const last = entries[entries.length - 1];
       if (!last) return;
       pageOff = last.intersectionRatio === 0;
-      if (pageOff && theaterOn && !pv.paused) pv.pause();
+      // A seek still waiting out its debounce dies with the view: committing it
+      // would start a transcode for a page that is no longer on screen.
+      if (pageOff && theaterOn) { cancelSeek(); if (!pv.paused) pv.pause(); }
     }).observe(document.documentElement);
   }
 
@@ -2575,7 +2580,10 @@
 
   document.addEventListener('visibilitychange', () => {
     // A hidden panel must not keep decoding video into the void.
-    if (document.hidden) { if (theaterOn && !pv.paused) pv.pause(); return; }
+    if (document.hidden) {
+      if (theaterOn) { cancelSeek(); if (!pv.paused) pv.pause(); }
+      return;
+    }
     if (!started || theaterOn) return;
     if (Date.now() - lastOk >= pollDelay()) { clearTimeout(timer); tick(generation); }
   });
