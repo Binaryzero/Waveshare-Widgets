@@ -2210,6 +2210,100 @@ SecretPolicy.Seal(eTwice, eLegacyStored, Lookup);
 Check("E4 a second clone changes nothing — id-bearing slots are not claimants",
     ValueAt(eTwice, 0, "apiToken") == eSealed, ValueAt(eTwice, 0, "apiToken"));
 
+// ---- I · the eager instance-id mint (#226, #68) ------------------------------------
+// A legacy slot predates instance ids. Left alone it acquires one from shell.js on its
+// first UNRELATED on-panel edit, from a layout whose credentials are blanked — and the
+// save carrying that new id cannot find what the old identity stored. The host stamps the
+// identity first, on the SEALED model, so the two copies never disagree about who a slot
+// is.
+Console.WriteLine("\n-- I: eager instance-id mint (#226, #68)");
+
+var iSealed = SealOf("tok-legacy");
+
+// I0 · the defect, reproduced. This is what happens TODAY when the shell mints first: the
+// stored copy is still id-less, the incoming copy carries the shell's fresh id, SlotKey
+// refuses the mismatch it is right to refuse (#68), and the masked blank the shell
+// round-trips lands on disk as if the user had cleared the field. If this check ever
+// starts failing, the mint below has stopped being the thing that prevents it.
+var iStoredLegacy = LayoutWith(new JsonObject { ["apiToken"] = iSealed }, instanceId: null);
+var iShellMinted = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "iShellMint");
+SecretPolicy.Seal(iShellMinted, iStoredLegacy, Lookup);
+Check("I0 a shell-side mint against an id-less STORED slot destroys the credential",
+    ValueAt(iShellMinted, 0, "apiToken") is null, ValueAt(iShellMinted, 0, "apiToken"));
+
+// I1 · the fix. Freeze the identity on the stored copy FIRST — sealed, in place — and the
+// same edit now matches by |i: on both sides.
+var iStoredMinted = LayoutWith(new JsonObject { ["apiToken"] = iSealed }, instanceId: null);
+Check("I1 the pass stamps an id-less slot", LayoutStore.MintMissingIds(iStoredMinted));
+var iFrozenId = Slot(iStoredMinted).InstanceId;
+Check("I1b ...a non-empty one", !string.IsNullOrEmpty(iFrozenId), iFrozenId);
+Check("I1c ...and the SEALED envelope beside it is untouched — no Reveal/blank round-trip",
+    ValueAt(iStoredMinted, 0, "apiToken") == iSealed, ValueAt(iStoredMinted, 0, "apiToken"));
+
+var iAdopted = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: iFrozenId);
+SecretPolicy.Seal(iAdopted, iStoredMinted, Lookup);
+Check("I1d ...so the edit that used to destroy the credential now carries it over",
+    ValueAt(iAdopted, 0, "apiToken") == iSealed, ValueAt(iAdopted, 0, "apiToken"));
+
+// I2 · idempotent. The pass runs on every start; the second one must be a no-op, or a
+// restart would re-key every slot and orphan every ww-secure bucket in the process.
+Check("I2 a second pass mints nothing", !LayoutStore.MintMissingIds(iStoredMinted));
+Check("I2b ...and leaves the id it already stamped alone",
+    Slot(iStoredMinted).InstanceId == iFrozenId, Slot(iStoredMinted).InstanceId);
+
+// I3 · an id-BEARING slot is never re-keyed. Same reason: its bucket is under that id.
+var iKeep = LayoutWith(new JsonObject { ["apiToken"] = iSealed }, instanceId: "iKeepMe");
+Check("I3 an id-bearing slot is not touched", !LayoutStore.MintMissingIds(iKeep));
+Check("I3b ...and keeps its id verbatim", Slot(iKeep).InstanceId == "iKeepMe");
+
+// I4 · a slot with no widget id is debris — both save handlers drop it — so giving it an
+// identity would only make the debris addressable.
+var iDebris = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "", InstanceId = null, Size = "half", Settings = new JsonObject() },
+    ] }],
+};
+Check("I4 a slot with no widget id is not minted", !LayoutStore.MintMissingIds(iDebris));
+Check("I4b ...and stays id-less", string.IsNullOrEmpty(Slot(iDebris).InstanceId));
+
+// I5 · the attic too. A retired def is addressed by identity ALONE, so an id-less entry is
+// one the gallery lists but neither Restore nor Delete can name.
+var iAttic = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = iSealed }, null));
+Check("I5 an id-less retained def is minted", LayoutStore.MintMissingIds(iAttic));
+Check("I5b ...so it becomes addressable at all",
+    !string.IsNullOrEmpty(iAttic.Retained![0].Def!.InstanceId), iAttic.Retained![0].Def!.InstanceId);
+Check("I5c ...with its sealed bytes still in the def",
+    RetainedValue(iAttic, 0, "apiToken") == iSealed, RetainedValue(iAttic, 0, "apiToken"));
+
+// I6 · live and retired share ONE id namespace — RestoreRetained re-mints against exactly
+// this collision — so a pass that reserved only the pages could hand a live tile a retired
+// tile's key, and the restore would then find the live slot sitting on its identity.
+var iBoth = WithRetained(
+    TwoInstances(new JsonObject(), new JsonObject(), null, "iLive"),
+    Retire(new JsonObject(), "iRetired"));
+Check("I6 the pass mints across a layout holding both", LayoutStore.MintMissingIds(iBoth));
+var iFresh = iBoth.Pages[0].Slots[0].InstanceId;
+Check("I6b the new id collides with neither the live nor the retired one",
+    iFresh != "iLive" && iFresh != "iRetired", iFresh);
+Check("I6c ...and the ids that already existed are unchanged",
+    iBoth.Pages[0].Slots[1].InstanceId == "iLive"
+    && iBoth.Retained![0].Def!.InstanceId == "iRetired");
+
+// I7 · two id-less slots of ONE widget — the case the positional key has always refused
+// (SlotKey returns null at two claimants). After the pass they are distinct identities, so
+// the ambiguity that made both unaddressable is gone rather than merely refused.
+var iPair = TwoInstances(new JsonObject(), new JsonObject(), null, null);
+Check("I7 both id-less siblings are minted", LayoutStore.MintMissingIds(iPair));
+Check("I7b ...and they are told apart",
+    !string.IsNullOrEmpty(iPair.Pages[0].Slots[0].InstanceId)
+    && iPair.Pages[0].Slots[0].InstanceId != iPair.Pages[0].Slots[1].InstanceId,
+    iPair.Pages[0].Slots[0].InstanceId + " / " + iPair.Pages[0].Slots[1].InstanceId);
+
+// I8 · a null layout is not a crash. This runs at startup, before anything else has had a
+// chance to establish that the file was readable.
+Check("I8 a null layout is handled", !LayoutStore.MintMissingIds(null));
+
 // ---- G · the layout generation (#281) ---------------------------------------------
 // Two windows hold the whole of layout.json and each writes it back whole, so the host
 // needs to tell a fresh payload from one built before a write it has since committed.
