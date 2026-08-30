@@ -153,17 +153,24 @@ SecretPolicy.Seal(clearedOther, typed, SecretPlan.FromManifests(Lookup), Cleared
 Check("P5e naming another property leaves this one restored, not removed",
     SecretStore.CanUnprotect(Value(clearedOther, "apiToken")), Value(clearedOther, "apiToken") ?? "(removed)");
 
-// ---- P6 · slots without an instanceId still find their own stored secret -------------
+// ---- P6 · a legacy slot finds its own stored secret once its identity is frozen ------
+// Written when the SAVE was what minted the id, so the carry-over below had to fall back
+// to widgetId+position for the one save in between. LayoutStore.Load freezes the identity
+// before the layout reaches any client, so there is no such gap left to bridge: the slot
+// is frozen here exactly as it would be in the field, and the carry-over is by id.
 var positional = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
+LayoutStore.MintMissingIds(positional);
+var positionalId = Slot(positional).InstanceId;
+Check("P6 loading a legacy slot freezes a stable instanceId so position stops mattering",
+    !string.IsNullOrEmpty(positionalId), positionalId ?? "(none)");
 SecretPolicy.Seal(positional, null, Lookup);
 var positionalSealed = Value(positional, "apiToken");
-Check("P6 sealing a legacy slot mints a stable instanceId so position stops mattering",
-    !string.IsNullOrEmpty(Slot(positional).InstanceId), Slot(positional).InstanceId);
-var positionalStored = LayoutWith(new JsonObject { ["apiToken"] = positionalSealed! }, instanceId: null);
-var positionalMasked = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
+var positionalStored = LayoutWith(new JsonObject { ["apiToken"] = positionalSealed! }, instanceId: positionalId);
+var positionalMasked = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: positionalId);
 SecretPolicy.Seal(positionalMasked, positionalStored, Lookup);
-Check("P6b a single un-edited instance still carries over by widgetId+position",
-    Value(positionalMasked, "apiToken") == positionalSealed);
+Check("P6b an un-edited instance still carries its own stored secret over",
+    Value(positionalMasked, "apiToken") == positionalSealed,
+    Value(positionalMasked, "apiToken") ?? "(removed)");
 
 // ---- P7 · no DPAPI: fail SAFE, never plaintext ---------------------------------------
 SecretStore.EncryptOverride = _ => throw new PlatformNotSupportedException("no DPAPI here");
@@ -829,7 +836,6 @@ DashboardLayout StoredIdless(JsonNode? value) =>
     LayoutWith(new JsonObject { ["apiToken"] = value }, instanceId: null);
 var p31Stored = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
 SecretPolicy.Seal(p31Stored, null, Lookup);
-Slot(p31Stored).InstanceId = null;
 var p31Sealed = Value(p31Stored, "apiToken");
 var p31Incoming = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "s-minted-by-shell");
 SecretPolicy.Seal(p31Incoming, p31Stored, Lookup);
@@ -959,8 +965,8 @@ Check("P32c2 and no envelope survives for Reveal to hand the replacement widget"
     JsonSerializer.Serialize(p32LegacyReplacement));
 // The "|w:0" alias used to cover a still-open editor holding the id-less slot it
 // submitted, whose id the HOST had since minted. That alias is gone with the rest of the
-// positional key, and so is what created the case: Seal only stamps a slot that arrives
-// without an id, and LayoutStore.Load leaves none (see the L series). An id-less slot now
+// positional key, and so is what created the case: nothing mints an id mid-save any more,
+// and LayoutStore.Load leaves no slot without one (see the L series). An id-less slot now
 // gets the same answer as any other unidentifiable one.
 var p32Idless = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
 SecretPolicy.Seal(p32Idless, p32Stored, Lookup);
@@ -1262,9 +1268,9 @@ Check("P36b2 a list property is not planned at all",
 // is still id-less, and SlotKey deliberately refuses that mismatch (#68). Blanking such a
 // slot would turn a documented identity change into a destructive one: the restore misses
 // and the blank reaches disk. Before this intent existed the envelope simply survived.
-// Built from an already-sealed value rather than by sealing here: Seal STAMPS an id onto
-// any slot it leaves holding a credential, precisely so the next save matches by id. The
-// slot under test is the legacy one that predates that stamping.
+// Built from an already-sealed value rather than by sealing here: sealing would need a
+// stored side to key against, and the slot under test is precisely the legacy one that
+// reached disk before LayoutStore.Load began freezing identities.
 var idlessCipher = demotedCipher;
 var idless = LayoutWith(new JsonObject { ["apiToken"] = idlessCipher }, instanceId: null);
 Check("P36c setup: an id-less slot holds one of our envelopes",
@@ -1690,14 +1696,15 @@ Check("N4 a legacy tile and an id-bearing sibling both keep their own credential
 // mintedIds ack is in flight) the user adds a second tile and saves again. The alias
 // published the stored value under |w:0 so the not-yet-adopted client could still find it.
 //
-// Both the alias and the trigger are gone. Seal only stamps a slot that arrives WITHOUT an
-// id, and after Load's freeze none does — so there is no unadopted mint to serve. The
-// assertion flips accordingly: an id-less incoming slot inherits nothing, from anywhere.
-// N5c/N5d below are the halves that never depended on the alias and are unchanged.
+// Both the alias and the trigger are gone. Nothing mints an id mid-save any more — Load
+// froze it before the client ever saw the layout — so there is no unadopted mint to serve.
+// The assertion flips accordingly: an id-less incoming slot inherits nothing, from
+// anywhere. N5c/N5d below are the halves that never depended on the alias, unchanged.
 var nAliasStored = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
-SecretPolicy.Seal(nAliasStored, null, Lookup);   // Seal stamps: stored is now id-BEARING
-Check("N5 setup: the host stamped the stored tile",
-    !string.IsNullOrEmpty(Slot(nAliasStored).InstanceId));
+LayoutStore.MintMissingIds(nAliasStored);        // Load's freeze: stored is id-BEARING
+SecretPolicy.Seal(nAliasStored, null, Lookup);
+Check("N5 setup: the stored tile was frozen on load",
+    !string.IsNullOrEmpty(Slot(nAliasStored).InstanceId), Slot(nAliasStored).InstanceId ?? "(none)");
 var nAliasSealed = Value(nAliasStored, "apiToken");
 // The client has not adopted the mint, so it still sends the tile id-LESS — beside a
 // freshly added, id-bearing sibling.
