@@ -458,10 +458,10 @@ public static class LayoutStore
     /// <para><b>Why the host does this and the shell must not.</b> A legacy slot predates
     /// instance ids. Today it acquires one from `shell.js` on its first unrelated on-panel
     /// edit — a drag, a resize — while the copy on disk is still id-less. `SlotKey` then
-    /// sees `|i:<new>` coming in against a stored slot that only publishes `|w:0`, refuses
-    /// the mismatch it is right to refuse (#68), the carry-over misses, and the masked
-    /// blank the shell round-trips reaches layout.json as the user's own edit. Moving a
-    /// tile destroyed its credential. The shell cannot fix this itself: the layout it holds
+    /// sees `|i:<new>` coming in against a stored slot that publishes no key at all, the
+    /// carry-over misses as it is right to (#68), and the masked blank the shell
+    /// round-trips reaches layout.json as the user's own edit. Moving a tile destroyed
+    /// its credential. The shell cannot fix this itself: the layout it holds
     /// is blanked, so a mint there is a mint against a copy with nothing to preserve.</para>
     ///
     /// <para><b>Why it is safe, on both credential axes.</b> A manifest secret is sealed
