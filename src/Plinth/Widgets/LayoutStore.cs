@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -496,11 +498,18 @@ public static class LayoutStore
             if (entry?.Def?.InstanceId is { Length: > 0 } retiredId) taken.Add(retiredId);
 
         var minted = 0;
-        string Fresh()
+        // Every id this pass invents is DERIVED from the layout, never drawn at random.
+        // Load returns the healed model whether or not the Save below it lands, so a mint
+        // that varied between runs would hand a client id A, persist nothing, and then
+        // persist id B on the next read — and the client's next save, keyed A against a
+        // stored B, would match nothing and read as a blank the user typed. Identical
+        // bytes on disk must always freeze to identical identities; the counter suffix
+        // resolves a collision the same way every time rather than by rolling again.
+        string Free(string seed)
         {
-            string id;
-            do { id = NewInstanceId(); } while (!taken.Add(id));
-            return id;
+            if (taken.Add(seed)) return seed;
+            for (var n = 2; ; n++)
+                if (taken.Add(seed + "-" + n)) return seed + "-" + n;
         }
 
         // A LIVE slot adopts the positional tag its widget is ALREADY running under, and
@@ -531,23 +540,36 @@ public static class LayoutStore
                 // literally "p0s0" is legal and does collide — SecretStore.AmbiguousSlots
                 // calls out the same case — and two slots sharing an identity is the one
                 // outcome worse than a widget losing its stored state.
-                var positional = "p" + pi + "s" + si;
-                slot.InstanceId = taken.Add(positional) ? positional : Fresh();
+                slot.InstanceId = Free("p" + pi + "s" + si);
                 minted++;
             }
         }
 
-        // The attic gets fresh ids instead: a retired def has no position to adopt, and
-        // nothing of it is running to keep state for.
+        // A retired def has no position to adopt and nothing running to keep state for, so
+        // its seed comes from what identifies the ENTRY instead: the widget, when it was
+        // retired, and where from. Index would also be reproducible within one retry, but
+        // the attic cap drops entries and shifts every index behind them; this survives
+        // that. Deliberately not string.GetHashCode, which is randomised per process and
+        // would reintroduce exactly the instability this is here to avoid.
         foreach (var entry in layout.Retained ?? [])
             if (entry?.Def is { } def && !string.IsNullOrWhiteSpace(def.WidgetId)
                 && string.IsNullOrEmpty(def.InstanceId))
             {
-                def.InstanceId = Fresh();
+                def.InstanceId = Free(RetiredSeed(def.WidgetId!, entry.RetiredAt, entry.OriginPage));
                 minted++;
             }
 
         return minted > 0;
+    }
+
+    /// <summary>A reproducible seed for a retired def that reached the attic without an
+    /// identity. Shaped `r&lt;hex&gt;` so it cannot collide with the `p{page}s{slot}` space a
+    /// live slot adopts, and derived only from values already on the entry.</summary>
+    private static string RetiredSeed(string widgetId, string? retiredAt, string? originPage)
+    {
+        var material = widgetId + "\n" + (retiredAt ?? "") + "\n" + (originPage ?? "");
+        return "r" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material)))[..12]
+            .ToLowerInvariant();
     }
 
     /// <summary>The attic's identity key — widgetId + "|i:" + instanceId, the same id
@@ -608,8 +630,11 @@ public static class LayoutStore
     ///
     /// <para>Writing inside a read is not new here — the fallback below has always
     /// persisted the default it regenerates — and it is bounded: healing is a no-op scan
-    /// once done, and a failed write simply leaves the identities unfrozen for the next
-    /// read to retry.</para></summary>
+    /// once done. A failed write does NOT withhold the healed model: consumers still need
+    /// addressable slots, and handing them id-less ones puts back the very hole this
+    /// closes. It costs nothing because the mint is reproducible — see
+    /// <see cref="MintMissingIds"/> — so the next read that does persist freezes the same
+    /// identities the client is already holding.</para></summary>
     public static DashboardLayout Load()
     {
         try

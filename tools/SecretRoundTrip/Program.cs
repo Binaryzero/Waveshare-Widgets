@@ -2333,6 +2333,53 @@ SecretPolicy.Seal(lEdit, lReread, Lookup);
 Check("L3 an ordinary edit of a once-legacy tile keeps its credential, by IDENTITY",
     ValueAt(lEdit, 0, "apiToken") == lSealed, ValueAt(lEdit, 0, "apiToken"));
 
+// L4 · the mint is REPRODUCIBLE, which is what makes returning an unpersisted heal safe.
+// Load hands back the healed model whether or not its Save lands; if the ids varied
+// between runs, a failed write would give the client id A, persist nothing, then persist
+// id B on the next read — and the client's next save, keyed A against a stored B, would
+// match nothing and reach disk as a blank the user typed. Same bytes in, same identities
+// out, every time. Asserted on the two branches that used to draw at random: a live slot
+// whose positional tag is already somebody's explicit id, and any id-less attic entry.
+Func<DashboardLayout> lCollide = () => WithRetained(
+    new DashboardLayout { Pages = [new LayoutPage { Name = "P", Slots = [
+        // Id-less, and sitting at p0s0 — whose tag the SIBLING below already answers to.
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = null, Size = "half",
+            Settings = new JsonObject { ["apiToken"] = lSealed } },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "p0s0", Size = "half" },
+    ] }] },
+    Retire(new JsonObject(), null));
+var lRun1 = lCollide();
+var lRun2 = lCollide();
+LayoutStore.MintMissingIds(lRun1);
+LayoutStore.MintMissingIds(lRun2);
+Check("L4 a colliding positional tag resolves to the SAME id on a second pass",
+    lRun1.Pages[0].Slots[0].InstanceId == lRun2.Pages[0].Slots[0].InstanceId
+    && !string.IsNullOrEmpty(lRun1.Pages[0].Slots[0].InstanceId),
+    lRun1.Pages[0].Slots[0].InstanceId + " vs " + lRun2.Pages[0].Slots[0].InstanceId);
+Check("L4b ...without stealing the id its sibling already holds",
+    lRun1.Pages[0].Slots[0].InstanceId != "p0s0" && lRun1.Pages[0].Slots[1].InstanceId == "p0s0",
+    lRun1.Pages[0].Slots[0].InstanceId);
+Check("L4c an id-less attic entry is reproducible too",
+    lRun1.Retained?[0].Def?.InstanceId == lRun2.Retained?[0].Def?.InstanceId
+    && !string.IsNullOrEmpty(lRun1.Retained?[0].Def?.InstanceId),
+    lRun1.Retained?[0].Def?.InstanceId + " vs " + lRun2.Retained?[0].Def?.InstanceId);
+// And the two spaces stay apart: an attic seed must never land on a tag a live slot
+// would adopt, or freezing one would silently rename the other.
+Check("L4d ...in a shape that cannot collide with the positional space",
+    lRun1.Retained?[0].Def?.InstanceId?.StartsWith("r") == true,
+    lRun1.Retained?[0].Def?.InstanceId);
+// L5 · the failure L4 exists to prevent, played out: the client holds the id from a heal
+// that did NOT reach disk, the next read persists, and the credential still carries over.
+var lUnpersisted = lCollide();
+LayoutStore.MintMissingIds(lUnpersisted);           // the client's copy — write failed
+var lPersisted = lCollide();
+LayoutStore.MintMissingIds(lPersisted);             // the next read — write succeeded
+var lLateEdit = LayoutWith(new JsonObject { ["apiToken"] = "" },
+    instanceId: lUnpersisted.Pages[0].Slots[0].InstanceId);
+SecretPolicy.Seal(lLateEdit, lPersisted, Lookup);
+Check("L5 a save keyed by an unpersisted mint still finds its credential",
+    ValueAt(lLateEdit, 0, "apiToken") == lSealed, ValueAt(lLateEdit, 0, "apiToken") ?? "(removed)");
+
 // ---- I · the eager instance-id mint (#226, #68) ------------------------------------
 // A legacy slot predates instance ids. Left alone it acquires one from shell.js on its
 // first UNRELATED on-panel edit, from a layout whose credentials are blanked — and the
