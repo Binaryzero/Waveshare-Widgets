@@ -325,18 +325,20 @@ Check("P30f a non-string with nothing stored is removed, not guessed at",
     Slot(orphanArray).Settings?["apiToken"] is null,
     Slot(orphanArray).Settings?["apiToken"]?.ToJsonString());
 
-// An ID-LESS legacy slot must come out of the restore STAMPED, exactly as the string
-// paths do — a slot carrying a value only this pipeline can restore has to be addressable.
-// LayoutStore.Load now stamps before anything reaches here, so this is the backstop rather
-// than the mechanism; it stays because the branch would silently lose the value if the
-// invariant ever lapsed.
+// A once-legacy slot carrying a value only this pipeline can restore has to be
+// ADDRESSABLE, or the restore writes something the next save cannot find again. Seal used
+// to supply that identity itself, stamping mid-walk; LayoutStore.Load supplies it now,
+// before the layout reaches any client — so the slot is frozen here first, exactly as it
+// would be in the field, and the rest of the case is unchanged.
 var p30gList = LayoutWith(new JsonObject { ["apiToken"] = new JsonArray { "x" } }, instanceId: null);
+LayoutStore.MintMissingIds(p30gList);
 var p30gMasked = JsonSerializer.SerializeToNode(p30gList);
 SecretPolicy.Mask(p30gMasked, Lookup);
 var p30gResaved = JsonSerializer.Deserialize<DashboardLayout>(p30gMasked!.ToJsonString())!;
 SecretPolicy.Seal(p30gResaved, p30gList, Lookup);
-Check("P30g restoring a non-string into an id-less slot mints a stable identity",
-    !string.IsNullOrEmpty(Slot(p30gResaved).InstanceId), Slot(p30gResaved).InstanceId ?? "(none)");
+Check("P30g the frozen identity survives the mask/save round trip",
+    Slot(p30gResaved).InstanceId == Slot(p30gList).InstanceId,
+    Slot(p30gResaved).InstanceId ?? "(none)");
 Check("P30g2 and the value itself survived that save",
     Slot(p30gResaved).Settings?["apiToken"] is JsonArray g2 && g2.Count == 1,
     Slot(p30gResaved).Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
@@ -382,14 +384,17 @@ Check("P16b nothing was re-wrapped: no envelope survives for Reveal to hand the 
     !JsonSerializer.Serialize(foreignEdit).Contains("dpapi:v1:"),
     JsonSerializer.Serialize(foreignEdit));
 
-// ---- P17 · Codex r2: a legacy carry-over mints an id too, or it stays positional -----
-// Without this the migrated slot keeps matching by position; adding a second instance of
-// the same widget later makes the count ambiguous and its credential is dropped.
+// ---- P17 · a `text` → `secret` migration keeps working on a frozen identity ----------
+// Written when the migrating save was ALSO what minted the slot's id, so that the slot
+// stopped matching by position. Load freezes the identity first now, so the migration is
+// an ordinary id-keyed carry-over — and the sibling case below, which is what the id was
+// for, is unchanged.
 var p30gStored2 = LayoutWith(new JsonObject { ["apiToken"] = "legacy-plaintext" }, instanceId: null);
-var legacyEdit2 = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
+LayoutStore.MintMissingIds(p30gStored2);
+var mintedId = Slot(p30gStored2).InstanceId;
+var legacyEdit2 = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: mintedId);
 SecretPolicy.Seal(legacyEdit2, p30gStored2, Lookup);
-var mintedId = Slot(legacyEdit2).InstanceId;
-Check("P17 migrating a legacy secret through the masked field also mints a stable id",
+Check("P17 migrating a legacy secret through the masked field encrypts it",
     !string.IsNullOrEmpty(mintedId) && SecretStore.CanUnprotect(Value(legacyEdit2, "apiToken")), mintedId);
 // The whole point of the id: a SECOND instance of the same widget must not disturb it.
 var withSibling = new DashboardLayout
@@ -404,7 +409,7 @@ Check("P17b adding a second instance no longer strips the migrated slot's creden
     SecretStore.Unprotect(withSibling.Pages[0].Slots[0].Settings?["apiToken"]?.GetValue<string>() ?? "") == "legacy-plaintext" &&
     withSibling.Pages[0].Slots[1].Settings?["apiToken"] is null);
 
-// ---- P17c · two secrets on ONE slot both survive the id being minted mid-walk --------
+// ---- P17c · two secrets on ONE slot both survive one carry-over ----------------------
 var r2TwoManifest = new WidgetManifest
 {
     Id = "test.two", Name = "Two",
@@ -420,10 +425,15 @@ DashboardLayout R2TwoLayout(JsonObject settings) => new()
     { WidgetId = "test.two", InstanceId = null, Size = "half", Settings = settings }] }],
 };
 var r2TwoStored = R2TwoLayout(new JsonObject { ["apiToken"] = "aaa", ["clientSecret"] = "bbb" });
+LayoutStore.MintMissingIds(r2TwoStored);
 var r2TwoEdit = R2TwoLayout(new JsonObject { ["apiToken"] = "", ["clientSecret"] = "" });
+r2TwoEdit.Pages[0].Slots[0].InstanceId = r2TwoStored.Pages[0].Slots[0].InstanceId;
 SecretPolicy.Seal(r2TwoEdit, r2TwoStored, LookupTwo);
 var r2TwoSlot = r2TwoEdit.Pages[0].Slots[0];
-Check("P17c minting an id mid-walk does not orphan the slot's SECOND secret",
+// Once the id could change MID-WALK, the slot's second secret was looked up under the
+// brand-new key and found nothing. Nothing mints mid-walk any more, and `keyOf` resolves
+// each key up front regardless — this pins that both secrets still survive one save.
+Check("P17c a slot's SECOND secret is not orphaned by the first's carry-over",
     SecretStore.Unprotect(r2TwoSlot.Settings?["apiToken"]?.GetValue<string>() ?? "") == "aaa" &&
     SecretStore.Unprotect(r2TwoSlot.Settings?["clientSecret"]?.GetValue<string>() ?? "") == "bbb",
     r2TwoSlot.Settings?.ToJsonString());
@@ -450,24 +460,29 @@ SecretStore.EncryptOverride = Flip;
 var cleanRun = LayoutWith(new JsonObject { ["apiToken"] = Token });
 Check("P18d a clean save reports nothing", SecretPolicy.Seal(cleanRun, null, Lookup).Failures.Count == 0);
 
-// ---- P19 · Codex r3: the mint lands on the HOST's copy, not the client's -------------
-// Seal stamps an instanceId on its own deserialized layout, so the still-open editor
-// keeps sending the slot WITHOUT one. On its second save the stored index is keyed by
-// the minted id while the incoming slot keys positionally: the masked empty value finds
-// nothing and deletes the credential the first save just encrypted.
+// ---- P19 · Codex r3: a second save from an open editor keeps the credential ----------
+// Written against a hazard that no longer has a trigger. Seal used to stamp an instanceId
+// on its OWN deserialized copy, so a still-open editor kept sending the slot without one;
+// on its second save the stored index was keyed by the minted id while the incoming slot
+// keyed positionally, the masked empty found nothing, and the credential the first save
+// had just encrypted was deleted. Nothing mints during a save any more, because
+// LayoutStore.Load freezes identities before a client ever sees the layout — so both
+// copies agree from the start, which is what the case checks now.
 var r3Client = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
-SecretPolicy.Seal(r3Client, null, Lookup);              // host mints on ITS copy...
+LayoutStore.MintMissingIds(r3Client);                   // as Load leaves it
+SecretPolicy.Seal(r3Client, null, Lookup);
 var r3OnDisk = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(r3Client))!;
-Check("P19 the first save encrypts and mints an id on disk",
+Check("P19 the first save encrypts, on a slot that already had its identity",
     SecretStore.CanUnprotect(Value(r3OnDisk, "apiToken")) && !string.IsNullOrEmpty(Slot(r3OnDisk).InstanceId),
     Slot(r3OnDisk).InstanceId);
-// ...while the editor still holds an id-less slot with a masked (empty) secret.
-var r3SecondSave = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
+// The editor holds the same identity, because it was frozen before the layout reached it.
+var r3SecondSave = LayoutWith(new JsonObject { ["apiToken"] = "" },
+    instanceId: Slot(r3OnDisk).InstanceId);
 SecretPolicy.Seal(r3SecondSave, r3OnDisk, Lookup);
-Check("P19b a second save from that stale editor KEEPS the credential",
+Check("P19b a second save from that editor KEEPS the credential",
     SecretStore.Unprotect(Value(r3SecondSave, "apiToken") ?? "") == Token,
     Value(r3SecondSave, "apiToken"));
-// The alias must not resurrect the positional guess when the position is ambiguous.
+// And two id-less instances are still refused rather than guessed at.
 var r3Ambiguous = new DashboardLayout
 {
     Pages = [new LayoutPage { Name = "P", Slots = [
@@ -535,28 +550,25 @@ SecretPolicy.Seal(r4DupEdit, r4DupStored, Lookup);
 Check("P22 duplicate instanceIds carry nothing over instead of cloning one credential",
     r4DupEdit.Pages[0].Slots.All(sl => sl.Settings?["apiToken"] is null));
 
-// ---- P23 · Codex r4: minted ids come back so the client can adopt them ---------------
+// ---- P23 · Codex r4: an identity survives a sibling being added beside it ------------
+// P23 and P23c asserted that Seal REPORTED the ids it minted, so the client could adopt
+// them from the save ack. Both the mint and the ack are gone: LayoutStore.Load freezes
+// identities before any client sees the layout, so a save has nothing left to mint and
+// SecretSealResult carries only failures. What the adoption was FOR is below, unchanged.
 var r4Mint = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
-var r4Result = SecretPolicy.Seal(r4Mint, null, Lookup);
-Check("P23 a minted id is reported with the position the CLIENT used",
-    r4Result.Minted.Count == 1 && r4Result.Minted[0].Page == 0 && r4Result.Minted[0].Slot == 0 &&
-    r4Result.Minted[0].WidgetId == "test.widget" && r4Result.Minted[0].InstanceId == Slot(r4Mint).InstanceId,
-    string.Join(",", r4Result.Minted.Select(m => $"{m.Page}/{m.Slot}={m.InstanceId}")));
-// Adopting it is what makes the count-change case survive: the editor now sends the id,
-// so adding a second instance can no longer strand the first (the r3 alias could not).
+LayoutStore.MintMissingIds(r4Mint);                     // as Load leaves it
+SecretPolicy.Seal(r4Mint, null, Lookup);
 var r4Adopted = new DashboardLayout
 {
     Pages = [new LayoutPage { Name = "P", Slots = [
-        new LayoutSlot { WidgetId = "test.widget", InstanceId = r4Result.Minted[0].InstanceId, Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
-        new LayoutSlot { WidgetId = "test.widget", Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = Slot(r4Mint).InstanceId, Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "other", Size = "half", Settings = new JsonObject { ["apiToken"] = "" } },
     ] }],
 };
 SecretPolicy.Seal(r4Adopted, r4Mint, Lookup);
-Check("P23b after adopting the id, adding a second instance keeps the first credential",
+Check("P23b adding a second instance keeps the first's credential",
     SecretStore.Unprotect(r4Adopted.Pages[0].Slots[0].Settings?["apiToken"]?.GetValue<string>() ?? "") == Token &&
     r4Adopted.Pages[0].Slots[1].Settings?["apiToken"] is null);
-Check("P23c a save that mints nothing reports nothing",
-    SecretPolicy.Seal(LayoutWith(new JsonObject { ["apiToken"] = Token }), null, Lookup).Minted.Count == 0);
 
 // ---- P24 · Codex r5: an EMPTY colliding slot still poisons the shared identity ------
 // P22 used two populated duplicates. If only one has a value, the empty twin used to
@@ -866,31 +878,36 @@ Check("P31e swapping the widget in the slot inherits nothing across the transiti
     p31Other.Pages[0].Slots[0].Settings?["apiToken"] is null,
     p31Other.Pages[0].Slots[0].Settings?["apiToken"]?.ToJsonString() ?? "(removed)");
 
-// ---- P31f · the protection-failure fallback owes an id like every other restore ------
+// ---- P31f · the protection-failure fallback restores by identity like the rest -------
 // It restores a stored value exactly as the untouched paths do, leaving the slot holding
-// something only this pipeline can put back. Without the stamp the slot stays positional,
-// and the transition above then deletes it on the next save.
+// something only this pipeline can put back — so it has to be looked up by an identity
+// both sides agree on. That identity used to come from a stamp on this very save; it now
+// comes from LayoutStore.Load, before the layout reached the client at all. P31g and P31h
+// asserted the stamp and the ack that carried it, and both are gone with the mint.
+// Its own stored copy: p31Stored above is deliberately id-LESS, because the cases before
+// this one are #68 refusals that need it that way. This one is the frozen world.
+var p31fStored = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p31Stored))!;
+LayoutStore.MintMissingIds(p31fStored);
 var p31fEdit = LayoutWith(
-    new JsonObject { ["apiToken"] = "a-replacement-we-cannot-encrypt" }, instanceId: null);
+    new JsonObject { ["apiToken"] = "a-replacement-we-cannot-encrypt" },
+    instanceId: Slot(p31fStored).InstanceId);
 var savedEncrypt31 = SecretStore.EncryptOverride;
 SecretStore.EncryptOverride = _ => throw new PlatformNotSupportedException("no DPAPI here");
-var p31fResult = SecretPolicy.Seal(p31fEdit, p31Stored, Lookup);
+var p31fResult = SecretPolicy.Seal(p31fEdit, p31fStored, Lookup);
 SecretStore.EncryptOverride = savedEncrypt31;
 Check("P31f a failed encryption keeps the stored value (P7) …",
     Value(p31fEdit, "apiToken") == p31Sealed, Value(p31fEdit, "apiToken") ?? "(removed)");
-Check("P31g … and stamps the slot, so what it restored is addressable by id",
-    !string.IsNullOrEmpty(Slot(p31fEdit).InstanceId), Slot(p31fEdit).InstanceId ?? "(none)");
-Check("P31h the minted id is reported back to the client that submitted the layout",
-    p31fResult.Minted.Count == 1 && p31fResult.Minted[0].InstanceId == Slot(p31fEdit).InstanceId
-        && p31fResult.Minted[0].Page == 0 && p31fResult.Minted[0].Slot == 0);
+Check("P31g … addressed by the identity Load froze, not one this save invented",
+    Slot(p31fEdit).InstanceId == Slot(p31fStored).InstanceId, Slot(p31fEdit).InstanceId ?? "(none)");
 Check("P31h2 and the save is still reported as not clean",
     p31fResult.Failures.Count == 1);
 var p31iStored = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p31fEdit))!;
 var p31iAgain = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p31fEdit))!;
 Slot(p31iAgain).Settings!["apiToken"] = "";
-// Captured BEFORE the save: the id has to be one the fallback carried in, not one this
-// save mints on its way past. Asserting it afterwards proves nothing — the untouched
-// branch stamps the slot itself, so the probe passed with the fallback's stamp removed.
+// Captured BEFORE the save. When Seal could mint, asserting the id afterwards proved
+// nothing — the untouched branch stamped the slot itself, so this probe once passed with
+// the fallback's own stamp removed. Nothing mints now, so the id can only be the one that
+// came in; capturing it first is kept because it is what makes the claim honest.
 var p31iCarried = Slot(p31iAgain).InstanceId;
 SecretPolicy.Seal(p31iAgain, p31iStored, Lookup);
 Check("P31i so a later ID-KEYED save restores it rather than dropping it",
@@ -951,22 +968,34 @@ Check("P32d an id-less client slot matches nothing — no positional fallback re
     string.IsNullOrEmpty(Value(p32Idless, "apiToken")),
     Value(p32Idless, "apiToken") ?? "(removed)");
 
-// ---- P31j · census: every branch that writes a value stamps the slot -----------------
-// The omission fixed in #68 was the second time a branch was written beside Stamp without
-// calling it, so this names each one. A sixth branch added without a stamp fails here,
-// rather than in the field two saves later when the value it wrote is deleted.
+// ---- P31j · census: every branch that writes a value keeps one ----------------------
+// This used to assert that every value-writing branch also STAMPED the slot, because the
+// omission fixed in #68 was the second time a branch had been written beside Stamp without
+// calling it. Seal no longer stamps anything — LayoutStore.Load freezes identities before a
+// client ever sees the layout — so that half of the claim has moved, and the L series is
+// where it is asserted now.
+//
+// The census is kept for the half that did not move: a branch that writes a value must
+// still leave one behind. Dropping a credential on a save is the failure this file exists
+// for, and a sixth branch added without writing still fails here rather than in the field.
 void Census(string branch, DashboardLayout? storedFor, JsonNode? incoming, bool breakCrypto = false)
 {
-    var layout = LayoutWith(new JsonObject { ["apiToken"] = incoming }, instanceId: null);
+    // Both sides as they are in the field: the stored layout frozen by Load, and the
+    // incoming slot carrying that same identity. Cloned, because the stored fixtures are
+    // shared with the #68 refusal cases above, which need them id-LESS.
+    var stored = storedFor is null ? null
+        : JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(storedFor))!;
+    if (stored is not null) LayoutStore.MintMissingIds(stored);
+    var layout = LayoutWith(new JsonObject { ["apiToken"] = incoming },
+        instanceId: stored is null ? "sCensus" : Slot(stored).InstanceId);
     var restore = SecretStore.EncryptOverride;
     if (breakCrypto)
         SecretStore.EncryptOverride = _ => throw new PlatformNotSupportedException("no DPAPI here");
-    SecretPolicy.Seal(layout, storedFor, Lookup);
+    SecretPolicy.Seal(layout, stored, Lookup);
     SecretStore.EncryptOverride = restore;
     var held = Slot(layout).Settings?["apiToken"];
-    Check($"P31j {branch} leaves a value AND a stable id",
-        held is not null && !string.IsNullOrEmpty(Slot(layout).InstanceId),
-        $"id={Slot(layout).InstanceId ?? "(none)"} value={held?.ToJsonString() ?? "(removed)"}");
+    Check($"P31j {branch} still leaves a value behind",
+        held is not null, $"value={held?.ToJsonString() ?? "(removed)"}");
 }
 Census("encrypting a freshly typed secret", null, Token);
 Census("restoring a stored envelope", p31Stored, "");

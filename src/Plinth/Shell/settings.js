@@ -236,27 +236,6 @@
       // let the user close the window and lose it, with no visible sign anything failed.
       const secretsLost = Array.isArray(msg.secretsFailed) && msg.secretsFailed.length > 0;
       if (acked !== undefined && editSeq === acked && !secretsLost) clearDirty();
-      // The host stamps a stable instanceId on any credentialed slot that lacked one —
-      // but on ITS copy, so this editor still holds the id-less slot it sent. Adopt the
-      // identities or the next save can't find its own ciphertext and deletes it. The
-      // address is the position in the layout WE submitted; the widgetId guard keeps a
-      // stale ack from branding a slot the user has since replaced.
-      for (const m of (Array.isArray(msg.mintedIds) ? msg.mintedIds : [])) {
-        const target = (((state.layout || {}).pages || [])[m.page] || {}).slots || [];
-        const slot = target[m.slot];
-        if (!slot || slot.instanceId || slot.widgetId !== m.widgetId) continue;
-        // secretsTypedHere is keyed by slot identity, and adopting the id CHANGES that
-        // key. Migrate the entries first or the session record is orphaned: the rebuilt
-        // control reads "not set", and deleting the value sends "" — which the host
-        // honours by restoring the ciphertext this very save just wrote.
-        for (const key of [...secretsTypedHere]) {
-          const bar = key.lastIndexOf('|');
-          if (bar < 0 || !key.startsWith('p:' + m.widgetId + '@' + m.page + ':' + m.slot + '|')) continue;
-          secretsTypedHere.delete(key);
-          secretsTypedHere.add('i:' + m.instanceId + key.slice(bar));
-        }
-        slot.instanceId = m.instanceId;
-      }
       // The host's attic cap dropped these retained entries (#226) and destroyed their
       // derived credentials. Drop them from this copy too, or every subsequent save
       // re-ships them and the attic never converges on the disk's bounded list.
@@ -359,7 +338,7 @@
         // keeps refreshReplica from marking the editor dirty for it — which would both
         // invite a save that only rewrites what is there and bump editSeq under an
         // in-flight save's ack, which then refuses to clear the marker. Same posture as
-        // the minted-ids and evicted-ids adoptions above.
+        // the evicted-ids adoption above.
         lastWorkingLayout = replicaLayoutJson();
         // The restore was a HOST write, so it did not make this editor the last writer.
         // Adopting its generation with the def is what keeps the next save acceptable —

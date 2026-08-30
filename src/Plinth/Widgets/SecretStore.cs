@@ -119,20 +119,17 @@ public static class SecretStore
 /// <param name="Property">The secret property's name.</param>
 public sealed record SecretSealFailure(string WidgetId, string Property);
 
-/// <summary>An instanceId minted during a save, addressed by the position the CLIENT
-/// used. The mint happens on the host's copy, so a still-open editor keeps an id-less
-/// slot; handing the id back lets it adopt the identity before its next save.</summary>
-/// <param name="Page">Page index in the layout the client submitted.</param>
-/// <param name="Slot">Slot index within that page.</param>
-/// <param name="WidgetId">Widget at that position, so the client can refuse a stale match.</param>
-/// <param name="InstanceId">The freshly minted identity.</param>
-public sealed record SecretSlotIdentity(int Page, int Slot, string WidgetId, string InstanceId);
-
-/// <summary>What a save did beyond writing the file.</summary>
+/// <summary>What a save did beyond writing the file.
+///
+/// <para>This used to carry minted instance ids as well. Seal stamped an identity onto any
+/// id-less slot that ended up holding a credential, and the client adopted it from the ack
+/// — that first save was how a legacy layout moved onto identity addressing. It cannot
+/// happen any more: <see cref="LayoutStore.Load"/> stamps every slot before any consumer
+/// sees it, so a slot arriving here without an id is not a thing, and the mint, the record
+/// that carried it and the acks on both wires went with the positional key they served
+/// (#68).</para></summary>
 /// <param name="Failures">Secrets that could not be protected — the save is not clean.</param>
-/// <param name="Minted">Instance ids stamped onto id-less slots during this save.</param>
-public sealed record SecretSealResult(
-    IReadOnlyList<SecretSealFailure> Failures, IReadOnlyList<SecretSlotIdentity> Minted);
+public sealed record SecretSealResult(IReadOnlyList<SecretSealFailure> Failures);
 
 /// <summary>
 /// Applies <see cref="SecretStore"/> across a whole layout, using each widget's manifest
@@ -409,7 +406,7 @@ public static class SecretPolicy
     }
 
     /// <summary>Pulls the cleared-property lists out of a submitted layout, addressed by
-    /// (page, slot) — the same coordinates <see cref="SecretSealResult.Minted"/> uses.
+    /// (page, slot) in the FILTERED model — see the note at the counter below.
     ///
     /// It must run on the RAW JSON, before deserialization: the model deliberately carries
     /// no extension data, which is what keeps every projection out of layout.json, so by
@@ -428,8 +425,8 @@ public static class SecretPolicy
                 continue;
             // Indexed over the slots that SURVIVE, because both save handlers drop
             // placeholder slots from the model right after deserializing and these
-            // coordinates have to point into that filtered model — the same space
-            // SecretSealResult.Minted already uses. Counting raw positions here would
+            // coordinates have to point into that filtered model. Counting raw positions
+            // here would
             // silently shift every marker past the first blank slot onto its neighbour,
             // which is a clear applied to the wrong property.
             var kept = 0;
@@ -826,16 +823,14 @@ public static class SecretPolicy
     /// <item>Anything else is plaintext and gets encrypted — including a token that
     ///   merely LOOKS like an envelope.</item>
     /// </list>
-    /// Carry-over identity is keyed by widget id + instance id, so replacing a widget in
-    /// a slot can never hand it the previous widget's credential; layouts predating
-    /// instance ids fall back to position, but only when that is unambiguous, and any
-    /// slot that ends up holding a sealed secret gets a stable id minted here so the
-    /// fallback is one-shot.
+    /// Carry-over identity is keyed by widget id + instance id and nothing else, so
+    /// replacing a widget in a slot can never hand it the previous widget's credential.
+    /// Layouts predating instance ids used to fall back to position; they no longer exist,
+    /// because <see cref="LayoutStore.Load"/> stamps every slot it reads (#68).
     /// </summary>
-    /// <returns>The secrets whose protection FAILED (nothing plaintext was written for
-    /// them, but the save is not what the user asked for — callers must say so instead of
-    /// acknowledging a clean save), plus any instance ids minted here, which the caller
-    /// must hand back to the client that submitted the layout.</returns>
+    /// <returns>The secrets whose protection FAILED — nothing plaintext was written for
+    /// them, but the save is not what the user asked for, so callers must say so instead
+    /// of acknowledging a clean save.</returns>
     public static SecretSealResult Seal(
         DashboardLayout layout, DashboardLayout? stored, SecretPlan plan,
         IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>>? cleared = null,
@@ -860,7 +855,6 @@ public static class SecretPolicy
                         storedAmbiguousKeys.Add(k);
         }
         var failures = new List<SecretSealFailure>();
-        var minted = new List<SecretSlotIdentity>();
         // Position in the layout AS SUBMITTED, so the client can find the same slot.
         var address = new Dictionary<LayoutSlot, (int Page, int Slot)>(ReferenceEqualityComparer.Instance);
         for (var p = 0; p < (layout.Pages?.Count ?? 0); p++)
@@ -899,18 +893,20 @@ public static class SecretPolicy
             || (retainedClearedByRef.TryGetValue(slot, out var retainedNames)
                 && retainedNames.Contains(name, StringComparer.Ordinal));
 
-        // Minting an instance id below CHANGES a slot's key, so a widget with two secrets
-        // would look up its second one under the brand-new id and find nothing. Resolve
-        // each slot's key once, before anything can mint.
+        // A per-slot memo. It was load-bearing when Seal could mint mid-walk — that CHANGED
+        // a slot's key, so a widget with two secrets looked the second one up under the
+        // brand-new id and found nothing. Nothing mints here any more, so the key is stable
+        // and this is now only saving repeated string concatenation; it stays because
+        // "resolve the key once, up front" is the property that made the bug impossible.
         var keyOf = new Dictionary<LayoutSlot, string?>(ReferenceEqualityComparer.Instance);
 
         // One visitor, run over the live pages AND the retained attic (#226) below. The
         // attic needs no special-casing precisely because its defs are id-bearing and
         // absent from `address`: SlotKey resolves them by |i: identity (never
-        // positionally), Cleared() answers through the identity map resolved above,
-        // Stamp() no-ops, and the value branches do the right thing — a freshly-retired
-        // plaintext re-seals, a masked blank restores by identity from the stored index,
-        // sealed ciphertext keeps idempotently.
+        // positionally), Cleared() answers through the identity map resolved above, and the
+        // value branches do the right thing — a freshly-retired plaintext re-seals, a
+        // masked blank restores by identity from the stored index, sealed ciphertext keeps
+        // idempotently.
         Action<LayoutSlot, string, SecretIntent> visitor = (slot, name, intent) =>
         {
             if (!keyOf.TryGetValue(slot, out var key))
@@ -954,18 +950,11 @@ public static class SecretPolicy
                 if (keptNode is not JsonValue keptValue || !keptValue.TryGetValue<string>(out var kept))
                 {
                     slot.Settings![name] = keptNode?.DeepClone();
-                    // Stamp for the same reason the string paths do: a slot that carries
-                    // a value only this pipeline can restore must be addressable by id.
-                    // LayoutStore.Load now stamps every slot it reads, so this should never
-                    // find one to do — it stays because the invariant is Load's to keep and
-                    // this is the code that would silently lose a value if it ever lapsed.
-                    Stamp(slot);
                     return;
                 }
                 if (SecretStore.CanUnprotect(kept))
                 {
                     slot.Settings![name] = kept;
-                    Stamp(slot);
                     return;
                 }
                 if (SecretStore.LooksLikeEnvelope(kept))
@@ -988,7 +977,6 @@ public static class SecretPolicy
                 if (SecretStore.TryProtect(kept, out var sealedLegacy))
                 {
                     slot.Settings![name] = sealedLegacy;
-                    Stamp(slot);
                 }
                 else
                 {
@@ -1005,7 +993,6 @@ public static class SecretPolicy
             if (SecretStore.TryProtect(value!, out var sealedValue))
             {
                 slot.Settings![name] = sealedValue;
-                Stamp(slot);
                 return;
             }
             // Protection unavailable. Never write the plaintext: keep a readable previous
@@ -1024,12 +1011,6 @@ public static class SecretPolicy
             if (TryPrevious(key, slot, name, out var priorNode) && priorNode is not null)
             {
                 slot.Settings![name] = priorNode.DeepClone();
-                // Stamp here too. This branch restores a value exactly as the untouched
-                // paths do, so it leaves the slot in the same state and owes the same
-                // identity — an id-less slot restored without one is deleted by the very
-                // transition below on the next save. Missed once here and once on the
-                // non-string restore, which is why every restore now stamps.
-                Stamp(slot);
             }
             else
                 slot.Settings!.Remove(name);
@@ -1042,7 +1023,7 @@ public static class SecretPolicy
         // skipping it here would write that plaintext to disk verbatim.
         WalkRetained(layout, plan, visitor);
 
-        return new SecretSealResult(failures, minted);
+        return new SecretSealResult(failures);
 
         // Looks up what is stored for this slot. Identity only — there is deliberately NO
         // positional retry when the id-keyed lookup misses, and that is the whole content
@@ -1121,16 +1102,6 @@ public static class SecretPolicy
             slot.Settings![name] = kept.DeepClone();
         }
 
-        // A slot that stores a credential gets a stable identity, so the next save
-        // matches it by id instead of by its position on the page.
-        void Stamp(LayoutSlot slot)
-        {
-            if (!string.IsNullOrEmpty(slot.InstanceId))
-                return;
-            slot.InstanceId = "s" + Guid.NewGuid().ToString("n")[..12];
-            if (address.TryGetValue(slot, out var at))
-                minted.Add(new SecretSlotIdentity(at.Page, at.Slot, slot.WidgetId, slot.InstanceId));
-        }
     }
 
     /// <summary>Indexes stored secret values — protected AND legacy plaintext, since a

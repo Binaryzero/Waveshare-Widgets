@@ -373,27 +373,6 @@ public sealed class DashboardWindow : Form
                                 });
                             PostToShell("evicted-ids", EvictedNode(gone));
                         }
-                        if (secrets.Minted.Count > 0)
-                        {
-                            // Ids were stamped onto the host's copy; the shell still holds
-                            // the id-less slots it sent. SettingsWindow has handed these
-                            // back since #15 and this handler did not, so host and shell
-                            // disagreed about identity for every on-panel save (#70). It
-                            // has not bitten because the shell round-trips DECRYPTED
-                            // values, so a missed carry-over merely re-encrypts what it
-                            // already had — but that is the shell holding the credential,
-                            // not the identity being right.
-                            var ids = new JsonArray();
-                            foreach (var m in secrets.Minted)
-                                ids.Add(new JsonObject
-                                {
-                                    ["page"] = m.Page,
-                                    ["slot"] = m.Slot,
-                                    ["widgetId"] = m.WidgetId,
-                                    ["instanceId"] = m.InstanceId,
-                                });
-                            PostToShell("minted-ids", ids);
-                        }
                         if (secretFailures.Count > 0)
                         {
                             // The panel re-rendered itself as if the save were clean. Tell
