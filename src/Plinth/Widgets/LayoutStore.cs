@@ -447,6 +447,133 @@ public static class LayoutStore
     /// deliberately no-ops on the id-bearing slots an attic def always is.</summary>
     private static string NewInstanceId() => "s" + Guid.NewGuid().ToString("n")[..12];
 
+    /// <summary>Stamps a stable identity onto every slot that has not got one, live and
+    /// retired alike, and reports whether anything changed (#226, #68).
+    ///
+    /// <para><b>Why the host does this and the shell must not.</b> A legacy slot predates
+    /// instance ids. Today it acquires one from `shell.js` on its first unrelated on-panel
+    /// edit — a drag, a resize — while the copy on disk is still id-less. `SlotKey` then
+    /// sees `|i:<new>` coming in against a stored slot that only publishes `|w:0`, refuses
+    /// the mismatch it is right to refuse (#68), the carry-over misses, and the masked
+    /// blank the shell round-trips reaches layout.json as the user's own edit. Moving a
+    /// tile destroyed its credential. The shell cannot fix this itself: the layout it holds
+    /// is blanked, so a mint there is a mint against a copy with nothing to preserve.</para>
+    ///
+    /// <para><b>Why it is safe, on both credential axes.</b> A manifest secret is sealed
+    /// INLINE in the slot's own settings, so stamping an id on the same object leaves the
+    /// envelope exactly where it was — this operates on the model <see cref="Load"/>
+    /// returns, sealed, and never goes near Reveal/Mask/Seal. And a `ww-secure.json` bucket
+    /// cannot be orphaned because an id-less slot has never had one: the shell forwards its
+    /// empty id verbatim rather than falling back to a positional scope, and the host
+    /// refuses that as a bad scope (DashboardWindow.HandleSecureStore). There is nothing to
+    /// migrate; there is only an identity to freeze.</para>
+    ///
+    /// <para>The attic is included. A retired def is addressed by identity alone, so an
+    /// id-less entry is one the gallery can show but neither Restore nor Delete can name.
+    /// Its sealed bytes ride along in the def for the same reason as above.</para>
+    ///
+    /// <para>Every id already present — live or retired — is reserved first, so a mint can
+    /// never land on one. That matters more here than a GUID's collision odds suggest,
+    /// because a live slot does NOT get a random id: it adopts the positional tag its
+    /// widget is already running under, and those are strings a user's layout can already
+    /// contain.</para></summary>
+    public static bool MintMissingIds(DashboardLayout? layout)
+    {
+        if (layout is null) return false;
+        // Reserve BEFORE minting, across both address spaces. A live id and a retired id
+        // share one namespace — RestoreRetained re-mints against exactly this collision —
+        // so a pass that only looked at pages could hand a new tile a retired tile's key.
+        var taken = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var page in layout.Pages ?? [])
+            foreach (var slot in page.Slots ?? [])
+                if (!string.IsNullOrEmpty(slot?.InstanceId)) taken.Add(slot.InstanceId!);
+        foreach (var entry in layout.Retained ?? [])
+            if (entry?.Def?.InstanceId is { Length: > 0 } retiredId) taken.Add(retiredId);
+
+        var minted = 0;
+        string Fresh()
+        {
+            string id;
+            do { id = NewInstanceId(); } while (!taken.Add(id));
+            return id;
+        }
+
+        // A LIVE slot adopts the positional tag its widget is ALREADY running under, and
+        // this is the whole difference between freezing an identity and changing one.
+        // shell.js renders an id-less slot into an iframe fragment stamped
+        // `#ww-slot=p{page}s{slot}` — the tag that backs the widget's `uniqueId` global and
+        // therefore its storage namespace. Its own edit-time mint adopts `rec.tag` for
+        // exactly this reason ("stored widget state carries over seamlessly"). A random id
+        // here would freeze the identity and orphan the widget's state in the same stroke:
+        // every never-edited legacy tile would come back blank.
+        //
+        // This does NOT address a credential by position (#68). The position is only where
+        // the STRING comes from; once persisted it is an opaque identity that no longer
+        // tracks position, and SlotKey resolves it through `|i:` like any other. What #68
+        // forbids is the `|w:0` fallback, which this pass exists to make unreachable.
+        for (var pi = 0; pi < (layout.Pages?.Count ?? 0); pi++)
+        {
+            var slots = layout.Pages![pi].Slots;
+            for (var si = 0; si < (slots?.Count ?? 0); si++)
+            {
+                var slot = slots![si];
+                // A slot with no widget id is not a tile — both save handlers drop it — and
+                // giving it an identity would only make the debris addressable.
+                if (slot is null || string.IsNullOrWhiteSpace(slot.WidgetId)
+                    || !string.IsNullOrEmpty(slot.InstanceId))
+                    continue;
+                // ...unless something already answers to that string. An explicit id of
+                // literally "p0s0" is legal and does collide — SecretStore.AmbiguousSlots
+                // calls out the same case — and two slots sharing an identity is the one
+                // outcome worse than a widget losing its stored state.
+                var positional = "p" + pi + "s" + si;
+                slot.InstanceId = taken.Add(positional) ? positional : Fresh();
+                minted++;
+            }
+        }
+
+        // The attic gets fresh ids instead: a retired def has no position to adopt, and
+        // nothing of it is running to keep state for.
+        foreach (var entry in layout.Retained ?? [])
+            if (entry?.Def is { } def && !string.IsNullOrWhiteSpace(def.WidgetId)
+                && string.IsNullOrEmpty(def.InstanceId))
+            {
+                def.InstanceId = Fresh();
+                minted++;
+            }
+
+        return minted > 0;
+    }
+
+    /// <summary>Loads, mints (<see cref="MintMissingIds"/>) and persists in one step, for
+    /// the one caller that has to run before anything else reads the file.
+    ///
+    /// <para>Writes ONLY when something was actually stamped, so it is a no-op scan on
+    /// every start after the first — and a failed write leaves the identities unfrozen for
+    /// the next attempt rather than half-applied, because nothing else has been told about
+    /// them yet.</para>
+    ///
+    /// <para>Attributed to the host like every other write this process performs on its own
+    /// initiative (#281), and ordered before either window exists, so no client can be
+    /// holding a pre-mint copy to be judged stale against it.</para></summary>
+    public static void FreezeInstanceIds()
+    {
+        try
+        {
+            var layout = Load();
+            if (!MintMissingIds(layout)) return;
+            if (Save(layout))
+                Log.Info("Stamped stable instance ids onto slots that predated them");
+            else
+                Log.Warn("Could not persist instance ids for legacy slots; will retry next start");
+        }
+        catch (Exception ex)
+        {
+            // Never fatal: the app runs fine without this, on the pre-existing behaviour.
+            Log.Warn($"Instance-id pass skipped: {ex.Message}");
+        }
+    }
+
     /// <summary>The attic's identity key — widgetId + "|i:" + instanceId, the same id
     /// form SlotKey derives. Null for an id-less def: an id-less entry has no identity
     /// to reconcile or destroy by, and is never matched positionally (#68).</summary>
@@ -603,6 +730,10 @@ public static class LayoutStore
         }
     }
 
+    /// <summary>The stock first-run layout. Every slot is minted here rather than left for
+    /// <see cref="MintMissingIds"/> to stamp on the next start: the pass exists to repair
+    /// layouts written before identities existed, and a fresh install writing id-less slots
+    /// would make it a permanent fixture instead of a migration.</summary>
     private static DashboardLayout CreateDefault() => new()
     {
         Pages =
@@ -612,22 +743,22 @@ public static class LayoutStore
                 Name = "System",
                 Slots =
                 [
-                    new LayoutSlot { WidgetId = "ws.stock.cpu", Size = "half" },
-                    new LayoutSlot { WidgetId = "ws.stock.gpu", Size = "half" },
+                    new LayoutSlot { WidgetId = "ws.stock.cpu", Size = "half", InstanceId = NewInstanceId() },
+                    new LayoutSlot { WidgetId = "ws.stock.gpu", Size = "half", InstanceId = NewInstanceId() },
                 ],
             },
             new LayoutPage
             {
                 Name = "Now Playing",
-                Slots = [new LayoutSlot { WidgetId = "ws.stock.media", Size = "full" }],
+                Slots = [new LayoutSlot { WidgetId = "ws.stock.media", Size = "full", InstanceId = NewInstanceId() }],
             },
             new LayoutPage
             {
                 Name = "Day",
                 Slots =
                 [
-                    new LayoutSlot { WidgetId = "ws.stock.clock", Size = "half" },
-                    new LayoutSlot { WidgetId = "ws.stock.weather", Size = "half" },
+                    new LayoutSlot { WidgetId = "ws.stock.clock", Size = "half", InstanceId = NewInstanceId() },
+                    new LayoutSlot { WidgetId = "ws.stock.weather", Size = "half", InstanceId = NewInstanceId() },
                 ],
             },
         ],
