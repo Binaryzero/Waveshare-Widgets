@@ -326,9 +326,10 @@ Check("P30f a non-string with nothing stored is removed, not guessed at",
     Slot(orphanArray).Settings?["apiToken"]?.ToJsonString());
 
 // An ID-LESS legacy slot must come out of the restore STAMPED, exactly as the string
-// paths do. Otherwise it stays addressable only by position: the dashboard shell mints an
-// instanceId on its first on-panel edit, and the next Seal looks the value up under
-// "|i:..." while it was indexed under "|w:0" — removing what Settings just preserved.
+// paths do — a slot carrying a value only this pipeline can restore has to be addressable.
+// LayoutStore.Load now stamps before anything reaches here, so this is the backstop rather
+// than the mechanism; it stays because the branch would silently lose the value if the
+// invariant ever lapsed.
 var p30gList = LayoutWith(new JsonObject { ["apiToken"] = new JsonArray { "x" } }, instanceId: null);
 var p30gMasked = JsonSerializer.SerializeToNode(p30gList);
 SecretPolicy.Mask(p30gMasked, Lookup);
@@ -939,14 +940,15 @@ Check("P32c replacing a LEGACY id-less instance inherits nothing either",
 Check("P32c2 and no envelope survives for Reveal to hand the replacement widget",
     !JsonSerializer.Serialize(p32LegacyReplacement).Contains("dpapi:v1:"),
     JsonSerializer.Serialize(p32LegacyReplacement));
-// The "|w:0" alias itself still does its job, and this is the reason it is not collateral
-// damage: a still-open editor holding the id-less slot it submitted, whose id the HOST
-// minted, matches positionally and keeps its value. Nothing in it depends on guessing an
-// identity — the host already assigned one and the client simply has not seen it yet.
+// The "|w:0" alias used to cover a still-open editor holding the id-less slot it
+// submitted, whose id the HOST had since minted. That alias is gone with the rest of the
+// positional key, and so is what created the case: Seal only stamps a slot that arrives
+// without an id, and LayoutStore.Load leaves none (see the L series). An id-less slot now
+// gets the same answer as any other unidentifiable one.
 var p32Idless = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
 SecretPolicy.Seal(p32Idless, p32Stored, Lookup);
-Check("P32d a client that has not adopted the host's mint still matches positionally",
-    Value(p32Idless, "apiToken") == Value(p32Stored, "apiToken"),
+Check("P32d an id-less client slot matches nothing — no positional fallback remains",
+    string.IsNullOrEmpty(Value(p32Idless, "apiToken")),
     Value(p32Idless, "apiToken") ?? "(removed)");
 
 // ---- P31j · census: every branch that writes a value stamps the slot -----------------
@@ -1590,22 +1592,29 @@ Check("P37k6 the projection is indexed over slots that SURVIVE the placeholder f
     blankRead.ContainsKey((0, 0)) && !blankRead.ContainsKey((0, 1)),
     string.Join(", ", blankRead.Keys.Select(k => $"({k.Page},{k.Slot})")));
 
-// ---- N · an unrelated tile must not cost a legacy tile its credential -----------------
-// The positional |w:0 key is counted over the ID-LESS population, not every slot of the
-// widget. Counting all of them made adding a SECOND tile of the same widget flip the count
-// 1 -> 2, strand the untouched legacy tile's stored value behind a null key, and take its
-// masked blank for a deliberate empty — removing a credential the user never touched, on a
-// clean save. N1 is that sequence; N2 and N3 are the #68 danger twin and the ambiguous
-// case, both of which must still refuse.
+// ---- N · an unrelated tile must not cost a tile its credential -----------------------
+// This series was written against the positional |w:0 key, whose claimant count decided
+// whether an id-less tile could reach its stored value. #272 and #275 were both mis-tuned
+// counts: adding a SECOND tile of the widget flipped the count 1 -> 2, stranded the
+// untouched tile's value behind a null key, and took its masked blank for a deliberate
+// empty — removing a credential the user never touched, on a clean save.
+//
+// The key is gone (see SlotKey), so there is no count left to mis-tune. The SEQUENCES stay,
+// because they are the ones that actually shipped broken and they must keep working — but
+// they now run on FROZEN tiles, which is what LayoutStore.Load guarantees every real
+// payload carries (see the L series). That is the honest form of this regression test: the
+// user-visible behaviour it protects is unchanged, and it no longer depends on a count.
 
 // N1 · stored: ONE id-less credentialed tile. Incoming: that same untouched tile (masked
 // blank) plus a freshly added, id-BEARING second tile of the same widget.
 var nStored = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
 SecretPolicy.Seal(nStored, null, Lookup);
-Slot(nStored).InstanceId = null;   // Seal stamps on the way through; the case is id-LESS at rest
+Slot(nStored).InstanceId = null;   // as the tile sat on disk before identities existed
+LayoutStore.MintMissingIds(nStored);   // ...and as Load leaves it now
 var nSealed = Value(nStored, "apiToken");
 var nIncoming = TwoInstances(new JsonObject { ["apiToken"] = "" },
-                             new JsonObject { ["apiToken"] = "" }, null, "iNew");
+                             new JsonObject { ["apiToken"] = "" },
+                             Slot(nStored).InstanceId, "iNew");
 SecretPolicy.Seal(nIncoming, nStored, Lookup);
 Check("N1 adding a second tile of a widget does not destroy the first's stored credential",
     ValueAt(nIncoming, 0, "apiToken") == nSealed, ValueAt(nIncoming, 0, "apiToken"));
@@ -1613,14 +1622,15 @@ Check("N1b ...and the newly added tile inherits nothing",
     string.IsNullOrEmpty(ValueAt(nIncoming, 1, "apiToken")), ValueAt(nIncoming, 1, "apiToken"));
 
 // N2 · the #68 danger twin, which must still be REFUSED: the sole credentialed tile is
-// deleted and a fresh one added. The fresh tile is id-bearing (both editors mint), so the
-// incoming id-less count is 0 — no positional key, no inheritance.
+// deleted and a fresh one added. It inherits nothing because it is a different identity —
+// which is now the only answer available, rather than one a claimant count had to reach.
 var nTwin = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "iFresh");
 SecretPolicy.Seal(nTwin, nStored, Lookup);
 Check("N2 a fresh tile replacing a deleted credentialed one still inherits NOTHING (#68)",
     string.IsNullOrEmpty(Value(nTwin, "apiToken")), Value(nTwin, "apiToken"));
 
-// N3 · two id-less tiles of one widget stay ambiguous: neither may claim the key.
+// N3 · two id-less tiles of one widget. Once ambiguous-and-refused; now simply
+// unaddressable, and refused for that reason. Same outcome, one fewer rule to get wrong.
 var nAmbiguous = TwoInstances(new JsonObject { ["apiToken"] = "" },
                               new JsonObject { ["apiToken"] = "" }, null, null);
 SecretPolicy.Seal(nAmbiguous, nStored, Lookup);
@@ -1628,14 +1638,17 @@ Check("N3 two id-less tiles of one widget are ambiguous — neither inherits",
     string.IsNullOrEmpty(ValueAt(nAmbiguous, 0, "apiToken"))
     && string.IsNullOrEmpty(ValueAt(nAmbiguous, 1, "apiToken")));
 
-// N4 · and an id-bearing sibling is untouched by any of this: it carries its own identity
-// and restores through it, beside the legacy tile restoring positionally.
+// N4 · a once-legacy tile beside an id-bearing sibling: both keep their own credential,
+// both through their own identity. The legacy half used to restore positionally and now
+// restores by the id Load froze onto it — the same user-visible outcome, one address space.
 var nMixedStored = TwoInstances(new JsonObject { ["apiToken"] = Token },
                                 new JsonObject { ["apiToken"] = Token }, null, "iKeep");
 SecretPolicy.Seal(nMixedStored, null, Lookup);
-nMixedStored.Pages[0].Slots[0].InstanceId = null;   // the legacy half stays id-less at rest
+nMixedStored.Pages[0].Slots[0].InstanceId = null;   // as it sat on disk...
+LayoutStore.MintMissingIds(nMixedStored);           // ...and as Load leaves it
 var nMixedIncoming = TwoInstances(new JsonObject { ["apiToken"] = "" },
-                                  new JsonObject { ["apiToken"] = "" }, null, "iKeep");
+                                  new JsonObject { ["apiToken"] = "" },
+                                  nMixedStored.Pages[0].Slots[0].InstanceId, "iKeep");
 SecretPolicy.Seal(nMixedIncoming, nMixedStored, Lookup);
 Check("N4 a legacy tile and an id-bearing sibling both keep their own credential",
     ValueAt(nMixedIncoming, 0, "apiToken") == ValueAt(nMixedStored, 0, "apiToken")
@@ -1643,12 +1656,15 @@ Check("N4 a legacy tile and an id-bearing sibling both keep their own credential
     (ValueAt(nMixedIncoming, 0, "apiToken") ?? "(removed)") + " | " +
     (ValueAt(nMixedIncoming, 1, "apiToken") ?? "(removed)"));
 
-// N5 · the same loss through the ALIAS half of the path. The host stamps the sole tile on
-// a masked save; before the client adopts that id (the mintedIds ack is in flight), the
-// user adds a second tile and saves again. The legacy tile still claims |w:0, so the alias
-// that publishes it must be gated on the same id-less claimant count — gated on the
-// incoming TOTAL, the new sibling made it 2, nothing was published, and the untouched
-// credential was removed exactly as in N1.
+// N5 · #275's scenario, through what used to be the ALIAS half of the path: the host
+// stamps the sole tile on a masked save, and before the client adopts that id (the
+// mintedIds ack is in flight) the user adds a second tile and saves again. The alias
+// published the stored value under |w:0 so the not-yet-adopted client could still find it.
+//
+// Both the alias and the trigger are gone. Seal only stamps a slot that arrives WITHOUT an
+// id, and after Load's freeze none does — so there is no unadopted mint to serve. The
+// assertion flips accordingly: an id-less incoming slot inherits nothing, from anywhere.
+// N5c/N5d below are the halves that never depended on the alias and are unchanged.
 var nAliasStored = LayoutWith(new JsonObject { ["apiToken"] = Token }, instanceId: null);
 SecretPolicy.Seal(nAliasStored, null, Lookup);   // Seal stamps: stored is now id-BEARING
 Check("N5 setup: the host stamped the stored tile",
@@ -1659,23 +1675,32 @@ var nAliasSealed = Value(nAliasStored, "apiToken");
 var nAliasIncoming = TwoInstances(new JsonObject { ["apiToken"] = "" },
                                   new JsonObject { ["apiToken"] = "" }, null, "iNewSibling");
 SecretPolicy.Seal(nAliasIncoming, nAliasStored, Lookup);
-Check("N5 a not-yet-adopted mint survives a sibling being added alongside it",
-    ValueAt(nAliasIncoming, 0, "apiToken") == nAliasSealed,
+Check("N5 an id-less incoming slot inherits nothing — there is no alias left to serve it",
+    string.IsNullOrEmpty(ValueAt(nAliasIncoming, 0, "apiToken")),
     ValueAt(nAliasIncoming, 0, "apiToken") ?? "(removed)");
-Check("N5b ...and the sibling still inherits nothing",
+Check("N5b ...and neither does the sibling",
     string.IsNullOrEmpty(ValueAt(nAliasIncoming, 1, "apiToken")));
+// N5e · and the sequence #275 actually protects, on the tiles Load guarantees: the client
+// HAS the id, adds a sibling, saves — and the credential is still there. Same user-visible
+// outcome as the old N5, reached by identity instead of by a counted alias.
+var nAdoptedPair = TwoInstances(new JsonObject { ["apiToken"] = "" },
+                                new JsonObject { ["apiToken"] = "" },
+                                Slot(nAliasStored).InstanceId, "iNewSibling2");
+SecretPolicy.Seal(nAdoptedPair, nAliasStored, Lookup);
+Check("N5e adding a sibling beside an ADOPTED id costs it nothing (#275's outcome)",
+    ValueAt(nAdoptedPair, 0, "apiToken") == nAliasSealed,
+    ValueAt(nAdoptedPair, 0, "apiToken") ?? "(removed)");
 
-// N5c · the alias serves ONLY a client that has not adopted the mint. Once some incoming
-// slot carries that id, the stored value is claimed by identity, and an id-less newcomer
-// standing beside the adopted one must NOT be able to take it positionally — that is #68
-// itself, and it is what P23b catches if this gate is dropped.
+// N5c · an id-less newcomer standing beside an adopted id must NOT be able to take its
+// credential — #68 itself, and what P23b catches. This used to be a gate ON the alias; it
+// is now simply what having no identity means.
 var nAdopted = TwoInstances(new JsonObject { ["apiToken"] = "" },
                             new JsonObject { ["apiToken"] = "" },
                             Slot(nAliasStored).InstanceId, null);
 SecretPolicy.Seal(nAdopted, nAliasStored, Lookup);
 Check("N5c an adopted id keeps its credential…",
     ValueAt(nAdopted, 0, "apiToken") == nAliasSealed, ValueAt(nAdopted, 0, "apiToken") ?? "(removed)");
-Check("N5d …and an id-less NEWCOMER beside it inherits nothing through the alias",
+Check("N5d …and an id-less NEWCOMER beside it inherits nothing (#68)",
     string.IsNullOrEmpty(ValueAt(nAdopted, 1, "apiToken")),
     ValueAt(nAdopted, 1, "apiToken") ?? "(removed)");
 
@@ -1766,26 +1791,28 @@ SecretPolicy.Seal(rTwinIncoming, rTwinStored, Lookup);
 Check("R6 a pages-and-retained twin poisons the key — a refusal, not a leak",
     string.IsNullOrEmpty(Value(rTwinIncoming, "apiToken")), Value(rTwinIncoming, "apiToken"));
 
-// R7 · the positional w:0 alias must never serve a RETAINED value. Stored: a live
-// legacy tile with NO stored secret plus an attic twin holding one; incoming: the live
-// legacy tile saving a blank. If the alias block ran for retained entries, the retired
-// ciphertext would come back on the LIVE tile here — a retired credential inherited by
-// grid position.
+// R7 · a retired value must never reach a LIVE tile. The positional alias this once
+// guarded is gone, so the case now holds for the stronger reason — the live tile has no
+// identity to look anything up by — but the shape is kept: it is the one that would come
+// back first if any positional retry were ever reintroduced.
 var sealedLiveA = SealOf("tok-live-A");
 var sealedRetiredB = SealOf("tok-retired-B");
 var rgStored = LayoutWith(new JsonObject(), instanceId: null);
 rgStored.Retained = [Retire(new JsonObject { ["apiToken"] = sealedRetiredB }, "iG")];
 var rgIncoming = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
 SecretPolicy.Seal(rgIncoming, rgStored, Lookup);
-Check("R7 a retired value is NEVER published under the positional w:0 alias",
+Check("R7 a retired value NEVER reaches a live tile of the same widget (#68)",
     string.IsNullOrEmpty(Value(rgIncoming, "apiToken")), Value(rgIncoming, "apiToken"));
-// ...while a live legacy tile that HAS its own stored value keeps exactly that one
-// beside an attic twin of the same widget.
+// ...while a live tile that HAS its own stored value keeps exactly that one beside an
+// attic twin of the same widget — on the frozen identities Load guarantees, since that is
+// what the live tile is in any real layout.
 var rg2Stored = LayoutWith(new JsonObject { ["apiToken"] = sealedLiveA }, instanceId: null);
+LayoutStore.MintMissingIds(rg2Stored);
 rg2Stored.Retained = [Retire(new JsonObject { ["apiToken"] = sealedRetiredB }, "iG")];
-var rg2Incoming = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: null);
+var rg2Incoming = LayoutWith(new JsonObject { ["apiToken"] = "" },
+    instanceId: Slot(rg2Stored).InstanceId);
 SecretPolicy.Seal(rg2Incoming, rg2Stored, Lookup);
-Check("R7b a live legacy tile restores its OWN stored value beside an attic twin",
+Check("R7b a live tile restores its OWN stored value beside an attic twin",
     Value(rg2Incoming, "apiToken") == sealedLiveA, Value(rg2Incoming, "apiToken"));
 
 // R8 · Clear THEN Remove. The destroy intent travels inside the retired def, where the
@@ -2156,9 +2183,9 @@ Check("M10d a sibling instance of the same widget is not swept up",
 // A duplicate is a plain client-side add: same settings MINUS every credential, a FRESH
 // instanceId, no host operation at all. Nothing in the pipeline changes for it — which is
 // the claim worth pinning, because it rests entirely on the clone being id-BEARING. An
-// id-less clone would raise the id-less claimant count for that widget, and the positional
-// |w:0 key the SOURCE depends on vanishes at two claimants: the tile the user duplicated
-// would lose its credential to the act of duplicating it.
+// id-less clone would carry no identity at all, and with the positional |w:0 key retired
+// there is nothing for it to fall back to: E3 below is that loss, kept as the reason the
+// mint in duplicateSlot is not optional.
 
 var eSealed = SealOf("tok-source");
 
@@ -2173,17 +2200,30 @@ Check("E1 duplicating a tile leaves the source's stored credential alone",
 Check("E1b ...and the clone starts with no credential of its own",
     ValueAt(eIncoming, 1, "apiToken") is null, ValueAt(eIncoming, 1, "apiToken"));
 
-// E2 · the case the design was afraid of: a LEGACY id-less source, whose credential is
-// addressed positionally. The clone carries an id, so it is not a claimant and the source's
-// |w:0 survives — no gate needed, and the tile the user duplicated keeps its token.
+// E2 · a LEGACY id-less source. This case USED to be carried by the positional |w:0 key,
+// and now it is not: identity is the only address. The credential is not lost in practice
+// because the premise cannot occur — Load froze that slot before any client saw it (see L1
+// and L3). What is asserted here is the pipeline's own rule, with the premise forced.
 var eLegacyStored = LayoutWith(new JsonObject { ["apiToken"] = eSealed }, instanceId: null);
 var eLegacy = TwoInstances(
     new JsonObject { ["apiToken"] = "" }, new JsonObject(), null, "iClone");
 SecretPolicy.Seal(eLegacy, eLegacyStored, Lookup);
-Check("E2 duplicating a LEGACY id-less tile keeps its positional credential",
-    ValueAt(eLegacy, 0, "apiToken") == eSealed, ValueAt(eLegacy, 0, "apiToken"));
-Check("E2b ...and the clone inherits nothing through the alias (#68)",
+Check("E2 an id-less source has no identity, so it carries nothing over",
+    ValueAt(eLegacy, 0, "apiToken") is null, ValueAt(eLegacy, 0, "apiToken"));
+Check("E2b ...and the clone inherits nothing either (#68)",
     ValueAt(eLegacy, 1, "apiToken") is null, ValueAt(eLegacy, 1, "apiToken"));
+// E2c · the same duplicate, with the source frozen as Load would have left it: the tile
+// the user duplicated keeps its token, by identity. This is the case E2 used to be.
+var eFrozenStored = LayoutWith(new JsonObject { ["apiToken"] = eSealed }, instanceId: null);
+LayoutStore.MintMissingIds(eFrozenStored);
+var eFrozen = TwoInstances(
+    new JsonObject { ["apiToken"] = "" }, new JsonObject(),
+    Slot(eFrozenStored).InstanceId, "iClone");
+SecretPolicy.Seal(eFrozen, eFrozenStored, Lookup);
+Check("E2c a FROZEN source keeps its credential across the duplicate",
+    ValueAt(eFrozen, 0, "apiToken") == eSealed, ValueAt(eFrozen, 0, "apiToken"));
+Check("E2d ...and the clone still inherits nothing (#68)",
+    ValueAt(eFrozen, 1, "apiToken") is null, ValueAt(eFrozen, 1, "apiToken"));
 
 // E3 · and this is WHY the clone must be minted. Drop the fresh id — the shape a future
 // "simplification" of the duplicate path would produce — and the source's credential is
@@ -2194,7 +2234,9 @@ SecretPolicy.Seal(eIdless, eLegacyStored, Lookup);
 Check("E3 an ID-LESS clone would destroy the source's credential — the mint is load-bearing",
     ValueAt(eIdless, 0, "apiToken") is null, ValueAt(eIdless, 0, "apiToken"));
 
-// E4 · two clones of one legacy source: still one id-less claimant, still restored.
+// E4 · two clones beside an id-less source. The claimant COUNT no longer decides anything
+// — there is no positional key left to claim — so this now asserts the same refusal as E2,
+// and the count-gating that #272 and #275 tuned is gone with the key it gated.
 var eTwice = new DashboardLayout
 {
     Pages = [new LayoutPage { Name = "P", Slots = [
@@ -2207,8 +2249,53 @@ var eTwice = new DashboardLayout
     ] }],
 };
 SecretPolicy.Seal(eTwice, eLegacyStored, Lookup);
-Check("E4 a second clone changes nothing — id-bearing slots are not claimants",
-    ValueAt(eTwice, 0, "apiToken") == eSealed, ValueAt(eTwice, 0, "apiToken"));
+Check("E4 a second clone changes nothing — an id-less source carries nothing either way",
+    ValueAt(eTwice, 0, "apiToken") is null, ValueAt(eTwice, 0, "apiToken"));
+
+// ---- L · Load freezes identities, which is what retired the positional key (#68) ----
+// SlotKey no longer has a `|w:0` fallback. That deletion is only safe because an id-less
+// slot cannot reach it, and THIS is where that is proven — against the real Load, through
+// the real file, rather than argued from call sites.
+Console.WriteLine("\n-- L: Load freezes identities (#68)");
+
+var lPath = AppPaths.LayoutFile;
+var lSealed = SealOf("tok-onload");
+File.WriteAllText(lPath, System.Text.Json.JsonSerializer.Serialize(
+    WithRetained(
+        new DashboardLayout { Pages = [new LayoutPage { Name = "P", Slots = [
+            new LayoutSlot { WidgetId = "test.widget", InstanceId = null, Size = "half",
+                Settings = new JsonObject { ["apiToken"] = lSealed } },
+        ] }] },
+        Retire(new JsonObject(), null))));
+
+var lLoaded = LayoutStore.Load();
+Check("L1 a hand-written id-less slot is frozen by Load itself",
+    !string.IsNullOrEmpty(lLoaded.Pages[0].Slots[0].InstanceId),
+    lLoaded.Pages[0].Slots[0].InstanceId);
+Check("L1b ...adopting the positional tag its widget runs under",
+    lLoaded.Pages[0].Slots[0].InstanceId == "p0s0", lLoaded.Pages[0].Slots[0].InstanceId);
+Check("L1c ...with its sealed credential untouched",
+    ValueAt(lLoaded, 0, "apiToken") == lSealed, ValueAt(lLoaded, 0, "apiToken"));
+Check("L1d ...and the attic frozen too",
+    !string.IsNullOrEmpty(lLoaded.Retained?[0].Def?.InstanceId),
+    lLoaded.Retained?[0].Def?.InstanceId);
+
+// L2 · and it PERSISTED. A heal that only fixed the in-memory copy would leave the next
+// reader — the other window, the next save handler — looking at id-less slots again.
+var lReread = LayoutStore.Load();
+Check("L2 the freeze reached disk, so every later reader sees it too",
+    lReread.Pages[0].Slots[0].InstanceId == lLoaded.Pages[0].Slots[0].InstanceId
+    && !string.IsNullOrEmpty(lReread.Pages[0].Slots[0].InstanceId),
+    lReread.Pages[0].Slots[0].InstanceId);
+
+// L3 · the whole point, end to end: the layout Load hands out carries identities, so the
+// payload a client builds from it does too, so SlotKey never meets an id-less slot and
+// the credential survives an ordinary edit — the carry-over the `|w:0` key used to do.
+var lEdit = LayoutWith(new JsonObject { ["apiToken"] = "" },
+    instanceId: lReread.Pages[0].Slots[0].InstanceId);
+SecretPolicy.Seal(lEdit, lReread, Lookup);
+Check("L3 an ordinary edit of a once-legacy tile keeps its credential, by IDENTITY",
+    ValueAt(lEdit, 0, "apiToken") == lSealed, ValueAt(lEdit, 0, "apiToken"));
 
 // ---- I · the eager instance-id mint (#226, #68) ------------------------------------
 // A legacy slot predates instance ids. Left alone it acquires one from shell.js on its

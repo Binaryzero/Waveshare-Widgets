@@ -95,13 +95,18 @@ public sealed class LayoutSlot
     [JsonPropertyName("widgetId")] public string WidgetId { get; set; } = "";
 
     /// <summary>Immutable per-instance identity backing widget-local storage keys and the
-    /// per-instance credential scope (the iCUE `uniqueId`). Assigned by the shell on add and
-    /// frozen on first on-panel edit — adopting the positional tag the instance is already
-    /// running under, so stored widget state survives rearranging. Null on layouts that were
-    /// never edited on-panel (identity stays positional, exactly as before); the per-instance
-    /// credential store (#226) keys on it and refuses to store under an absent id rather than
-    /// address a credential by grid position (#68), so an unedited legacy tile simply keeps
-    /// its derived token in memory until it acquires an id the ordinary way.</summary>
+    /// per-instance credential scope (the iCUE `uniqueId`).
+    ///
+    /// <para>ALWAYS present on a layout this process has read: <see cref="Load"/> stamps
+    /// any slot that lacks one, adopting the positional tag the instance is already running
+    /// under so stored widget state survives the freeze (#289). It was previously null on
+    /// layouts never edited on-panel, and identity then fell back to grid position — the
+    /// last way a credential could be addressed positionally, which #68 forbids and which
+    /// this field's guarantee is what removed.</para>
+    ///
+    /// <para>Nullable in the model only because the JSON on disk may predate that pass, and
+    /// because a client is free to post a slot without one. Neither survives contact with
+    /// Load; nothing downstream should reintroduce a positional fallback for the case.</para></summary>
     [JsonPropertyName("instanceId")] public string? InstanceId { get; set; }
 
     /// <summary>Hide this widget while a fullscreen game is in the foreground —
@@ -545,35 +550,6 @@ public static class LayoutStore
         return minted > 0;
     }
 
-    /// <summary>Loads, mints (<see cref="MintMissingIds"/>) and persists in one step, for
-    /// the one caller that has to run before anything else reads the file.
-    ///
-    /// <para>Writes ONLY when something was actually stamped, so it is a no-op scan on
-    /// every start after the first — and a failed write leaves the identities unfrozen for
-    /// the next attempt rather than half-applied, because nothing else has been told about
-    /// them yet.</para>
-    ///
-    /// <para>Attributed to the host like every other write this process performs on its own
-    /// initiative (#281), and ordered before either window exists, so no client can be
-    /// holding a pre-mint copy to be judged stale against it.</para></summary>
-    public static void FreezeInstanceIds()
-    {
-        try
-        {
-            var layout = Load();
-            if (!MintMissingIds(layout)) return;
-            if (Save(layout))
-                Log.Info("Stamped stable instance ids onto slots that predated them");
-            else
-                Log.Warn("Could not persist instance ids for legacy slots; will retry next start");
-        }
-        catch (Exception ex)
-        {
-            // Never fatal: the app runs fine without this, on the pre-existing behaviour.
-            Log.Warn($"Instance-id pass skipped: {ex.Message}");
-        }
-    }
-
     /// <summary>The attic's identity key — widgetId + "|i:" + instanceId, the same id
     /// form SlotKey derives. Null for an id-less def: an id-less entry has no identity
     /// to reconcile or destroy by, and is never matched positionally (#68).</summary>
@@ -617,6 +593,23 @@ public static class LayoutStore
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
+    /// <summary>The layout as every consumer sees it — and the ONE place identities are
+    /// frozen (#68, #226).
+    ///
+    /// <para>#289 stamped ids on id-less slots once at startup, which made the positional
+    /// `|w:0` carry-over key rare. Rare is not enough to delete a safety net: a layout
+    /// hand-edited through the tray's "Edit layout (JSON)" reintroduces an id-less slot
+    /// mid-session, and that slot reaches `SlotKey` with no identity, no carry-over, and a
+    /// masked blank that reads as "the user emptied it". Healing HERE instead makes the
+    /// invariant hold by construction rather than by timing: every init payload, every save
+    /// handler's `disk`, every restore, clear and migration reads through this method, so
+    /// no id-less slot can reach the credential pipeline from either side. That is what
+    /// lets the positional key go.</para>
+    ///
+    /// <para>Writing inside a read is not new here — the fallback below has always
+    /// persisted the default it regenerates — and it is bounded: healing is a no-op scan
+    /// once done, and a failed write simply leaves the identities unfrozen for the next
+    /// read to retry.</para></summary>
     public static DashboardLayout Load()
     {
         try
@@ -625,7 +618,15 @@ public static class LayoutStore
             {
                 var layout = JsonSerializer.Deserialize<DashboardLayout>(File.ReadAllText(AppPaths.LayoutFile), JsonOptions);
                 if (layout is { Pages.Count: > 0 })
+                {
+                    // Attributed to the host like every write this process performs on its
+                    // own initiative (#281). The caller gets the healed model either way —
+                    // a failed write must not hand back id-less slots it has just promised
+                    // are addressable.
+                    if (MintMissingIds(layout) && Save(layout))
+                        Log.Info("Stamped stable instance ids onto slots that predated them");
                     return layout;
+                }
             }
         }
         catch (Exception ex)
@@ -633,6 +634,7 @@ public static class LayoutStore
             Log.Warn($"Failed to load layout.json, regenerating default: {ex.Message}");
         }
 
+        // CreateDefault mints its own slots, so this needs no healing pass.
         var fallback = CreateDefault();
         Save(fallback);
         return fallback;

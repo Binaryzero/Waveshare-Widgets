@@ -380,10 +380,9 @@ deliberately do **not** — a retained tile never renders, so its secret travels
 editors and rests on disk as `dpapi:v1:` ciphertext only. Two consequences follow from
 identity-only addressing: the stored index's duplicate-key poison treats one instanceId
 seated in both pages and retained as ambiguity and blanks BOTH (the retire paths resolve
-the live tree before pushing, precisely so this state never arises in normal flow), and
-the positional `|w:0` alias is never published for a retained entry — a widget with one
-live and one retired copy must not hand the retired credential to the live tile by
-position.
+the live tree before pushing, precisely so this state never arises in normal flow), and a
+retired entry is reachable by identity alone — a widget with one live and one retired copy
+must not hand the retired credential to the live tile by position.
 
 The attic is bounded (`LayoutStore.MaxRetainedPerWidget` per widget id) and reconciled
 host-side on every save: the incoming attic is UNIONED with the disk's (a stale save from
@@ -393,17 +392,29 @@ ww-secure bucket (`WidgetSecrets.ForgetInstance`) — guarded by liveness, so an
 surviving tile still references is never purged, per #188's rule that the app purges only
 what it knowingly removed.
 
-**Legacy loss (accepted, by the same #68 proof).** A tile never edited on-panel has no
-`instanceId` in the *stored* layout. When it is retired, the retire path mints
-`widgetId|i:<new>`, but the stored value is reachable only under `widgetId|w:0` — the
-carry-over misses, and on the masked retire path the manifest secret is dropped. This is
-byte-identical to the loss already shipped on a legacy tile's first on-panel edit:
+**The legacy loss is closed, and the positional key is gone with it.** A tile never edited
+on-panel used to have no `instanceId` in the *stored* layout, so retiring it minted
+`widgetId|i:<new>` while the stored value sat under the positional `widgetId|w:0` — the
+carry-over missed and the manifest secret was dropped. The same shape cost a legacy tile
+its credential on its first on-panel edit, and no positional retry could recover it:
 stored-id-less + incoming-id-bearing is indistinguishable from "deleted the sole
-credentialed tile, added a fresh instance of the same widget", and a positional retry
-that recovered the first would hand the second a deleted instance's credential — which
-then transmits to whatever endpoint the new tile points at. Lost is retypable;
-misdelivered is not. Tiles that are id-bearing in the stored layout (everything added by
-`addWidget` or the settings gallery) preserve their secret through retire.
+credentialed tile, added a fresh instance of the same widget", and recovering the first
+would hand the second a deleted instance's credential, which then transmits to whatever
+endpoint the new tile points at. Lost is retypable; misdelivered is not.
+
+`LayoutStore.Load` now stamps every id-less slot — live and retired — and persists it,
+adopting the positional tag the widget is already running under so its stored state
+survives (#289). Every init payload, every save handler's `disk`, every restore, clear and
+migration reads through that one method, so an id-less slot cannot reach `SlotKey` from
+either side. That is what let the `|w:0` key and its publisher alias be **deleted**:
+`SlotKey` is identity or nothing.
+
+Deleting it while the population was merely small would have reopened #272 and #275, both
+of which were mis-tuned claimant counts on that key. Deleting it once the population is
+empty is what #68 had been asking for since the beginning. The probe series that caught
+those two bugs are kept and rebased onto frozen identities — same sequences, same
+user-visible outcomes, no count left to mis-tune — and the L series asserts the invariant
+directly, through the real `Load` and the real file.
 
 **A Clear that is followed by a Remove is honored, by identity.** The cleared-property
 channel is positional (`(page, slot)`), and a retired slot has no position — so when a
@@ -425,12 +436,11 @@ by a `secretsCopiedFrom` marker naming the source instance — a second inbound 
 and a second-chance lookup inside `Seal`, for one gesture. It was cut, and what remains is a
 gesture with no credential semantics to get wrong.
 
-One thing it does depend on: the clone must be **id-bearing**. `SlotKey` gives an id-less
-slot the positional `|w:0` key only while its widget has exactly one id-less claimant, so an
-id-less clone would be the second claimant and the source's credential would vanish on the
-next save — destroyed by the act of duplicating it. Probes E2/E3 pin both directions, E3
-deliberately asserting the loss that an unminted clone would cause, so a later simplification
-of the duplicate path fails there rather than in the field.
+One thing it does depend on: the clone must be **id-bearing**. With the positional key
+retired, an id-less clone has no address at all and carries nothing — and, worse, the same
+save would strand anything the source could only have reached that way. Probes E2/E3 pin
+both directions, E3 deliberately asserting the loss that an unminted clone would cause, so
+a later simplification of the duplicate path fails there rather than in the field.
 
 **Restore inherits three constraints from this model, and honors all three.** Restore
 keeps the retained `instanceId` (the derived ww-secure bucket reconnects through it) and

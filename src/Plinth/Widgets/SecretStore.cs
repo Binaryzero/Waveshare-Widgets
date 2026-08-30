@@ -841,11 +841,7 @@ public static class SecretPolicy
         IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>>? cleared = null,
         IReadOnlyDictionary<string, IReadOnlyList<string>>? retainedCleared = null)
     {
-        var incomingIdless = CountIdlessWidgets(layout);
-        var incomingIds = InstanceIds(layout);
-        // The stored counts stay inside BuildStoredIndex, where the |w:0 alias still uses
-        // them; Seal itself addresses only through the incoming id-less population.
-        var previous = BuildStoredIndex(stored, plan, incomingIdless, incomingIds, out _);
+        var previous = BuildStoredIndex(stored, plan);
         // The STORED layout's twins, as KEYS rather than slot references.
         //
         // Reveal and Mask ask this of the layout they were handed, so a reference set works
@@ -860,7 +856,7 @@ public static class SecretPolicy
             foreach (var page in stored?.Pages ?? [])
                 foreach (var s in page.Slots ?? [])
                     if (ambiguousStored.Contains(s)
-                        && SlotKey(s, incomingIdless) is { } k)
+                        && SlotKey(s) is { } k)
                         storedAmbiguousKeys.Add(k);
         }
         var failures = new List<SecretSealFailure>();
@@ -918,7 +914,7 @@ public static class SecretPolicy
         Action<LayoutSlot, string, SecretIntent> visitor = (slot, name, intent) =>
         {
             if (!keyOf.TryGetValue(slot, out var key))
-                keyOf[slot] = key = SlotKey(slot, incomingIdless);
+                keyOf[slot] = key = SlotKey(slot);
             var node = slot.Settings?[name];
             var value = AsString(node);
 
@@ -958,12 +954,11 @@ public static class SecretPolicy
                 if (keptNode is not JsonValue keptValue || !keptValue.TryGetValue<string>(out var kept))
                 {
                     slot.Settings![name] = keptNode?.DeepClone();
-                    // Stamp for the same reason the string paths do: a slot that carries a
-                    // value only this pipeline can restore must be addressable by id, not
-                    // by position. Without it an id-less legacy slot stays id-less, the
-                    // shell mints an id on its first on-panel edit, and the next Seal looks
-                    // the value up under "|i:…" while it was indexed under "|w:0" — so the
-                    // value Settings just preserved is removed one save later.
+                    // Stamp for the same reason the string paths do: a slot that carries
+                    // a value only this pipeline can restore must be addressable by id.
+                    // LayoutStore.Load now stamps every slot it reads, so this should never
+                    // find one to do — it stays because the invariant is Load's to keep and
+                    // this is the code that would silently lose a value if it ever lapsed.
                     Stamp(slot);
                     return;
                 }
@@ -1052,6 +1047,7 @@ public static class SecretPolicy
         // Looks up what is stored for this slot. Identity only — there is deliberately NO
         // positional retry when the id-keyed lookup misses, and that is the whole content
         // of this comment, because two review rounds argued otherwise and both were right.
+        // (The one positional key that DID exist, `|w:0`, is gone: see SlotKey.)
         //
         // The tempting case is real (#68). shell.js's persistLayout mints an instanceId for
         // any id-less slot on its first on-panel edit, so a legacy slot's next save arrives
@@ -1137,45 +1133,6 @@ public static class SecretPolicy
         }
     }
 
-    private static Dictionary<string, int> CountWidgets(DashboardLayout? layout)
-    {
-        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var page in layout?.Pages ?? [])
-            foreach (var slot in page.Slots ?? [])
-                if (!string.IsNullOrEmpty(slot.WidgetId))
-                    counts[slot.WidgetId] = counts.TryGetValue(slot.WidgetId, out var n) ? n + 1 : 1;
-        return counts;
-    }
-
-    /// <summary>Per widget, how many slots carry NO instance id — the population that
-    /// competes for the positional <c>|w:0</c> key. <see cref="SlotKey"/> gates on this
-    /// rather than on every slot of the widget, so tiles that have their own identity
-    /// neither claim the positional key nor disqualify the tile that legitimately holds
-    /// it.</summary>
-    /// <summary>Every instance id the incoming layout carries. The |w:0 alias uses it to
-    /// tell "the client has not adopted the host's mint yet" (the id is absent) from "it
-    /// has, and something else beside it is merely id-less" — the second case must not let
-    /// that newcomer claim the adopted slot's credential (#68).</summary>
-    private static HashSet<string> InstanceIds(DashboardLayout? layout)
-    {
-        var ids = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var page in layout?.Pages ?? [])
-            foreach (var slot in page.Slots ?? [])
-                if (!string.IsNullOrEmpty(slot.InstanceId))
-                    ids.Add(slot.InstanceId);
-        return ids;
-    }
-
-    private static Dictionary<string, int> CountIdlessWidgets(DashboardLayout? layout)
-    {
-        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var page in layout?.Pages ?? [])
-            foreach (var slot in page.Slots ?? [])
-                if (!string.IsNullOrEmpty(slot.WidgetId) && string.IsNullOrEmpty(slot.InstanceId))
-                    counts[slot.WidgetId] = counts.TryGetValue(slot.WidgetId, out var n) ? n + 1 : 1;
-        return counts;
-    }
-
     /// <summary>Indexes stored secret values — protected AND legacy plaintext, since a
     /// `text` → `secret` upgrade must be encrypted on the next save, not discarded.</summary>
     /// The index carries the raw NODE, not a string. A layout can hold a list, object or
@@ -1185,15 +1142,11 @@ public static class SecretPolicy
     /// strings made those two requirements incompatible: whichever one was honoured, the
     /// other broke. Storing the node satisfies both.
     private static Dictionary<(string Slot, string Name), JsonNode?> BuildStoredIndex(
-        DashboardLayout? stored, SecretPlan plan,
-        Dictionary<string, int> incomingIdless, HashSet<string> incomingIds,
-        out Dictionary<string, int> counts)
+        DashboardLayout? stored, SecretPlan plan)
     {
-        counts = CountWidgets(stored);
         var index = new Dictionary<(string, string), JsonNode?>();
         if (stored is null)
             return index;
-        var storedCounts = counts;
         // Two stored slots resolving the same key means the layout has duplicate
         // instanceIds (shell.js detects and heals those, but the editor can save before
         // the repair lands). Silently keeping the last would hand BOTH colliding
@@ -1201,7 +1154,7 @@ public static class SecretPolicy
         // inherits, and the user re-enters — the same refusal ambiguous positions get.
         var poisoned = new HashSet<(string, string)>();
         var seen = new HashSet<(string, string)>();
-        void Visit(LayoutSlot slot, string name, SecretIntent intent, bool isRetained)
+        void Visit(LayoutSlot slot, string name, SecretIntent intent)
         {
             // Withholds, not Protects: RestoreIfUntouched is not encrypted, but its whole
             // safety argument is that Seal can put the blanked value back, and this index
@@ -1209,7 +1162,7 @@ public static class SecretPolicy
             // out and find nothing on the way in.
             if (!SecretIntents.Withholds(intent))
                 return;
-            var key = SlotKey(slot, incomingIdless);
+            var key = SlotKey(slot);
             // Register the identity BEFORE the value check: a colliding slot whose secret
             // is unset still proves the key is ambiguous. Returning early would leave the
             // twin's credential in the index for BOTH slots to inherit.
@@ -1232,87 +1185,37 @@ public static class SecretPolicy
                 if (!index.TryAdd((key, name), storedNode.DeepClone()))
                     poisoned.Add((key, name));
             }
-            // A slot whose id was minted by a PREVIOUS Seal is also reachable
-            // positionally, because the client that triggered that save still holds the
-            // slot WITHOUT an id — the mint happened on the host's own copy. Its next
-            // save would otherwise look like a slot with no stored secret, and the
-            // masked empty value would delete the credential. Same unambiguity gate as
-            // any positional match, so at most one incoming slot can claim it.
-            //
-            // NEVER for a retained slot (#226): a widget with one live and one retired
-            // copy can have both counts at 1, and publishing the RETAINED value under
-            // the positional |w:0 alias would hand it to the LIVE legacy slot — a
-            // retired tile's credential inherited by position, exactly what #68 forbids.
-            // The attic is reachable by |i: identity only.
-            // The consumer side of this alias is an incoming ID-LESS slot, so the gate
-            // counts those — matching SlotKey — while the stored side stays a total,
-            // because it is asking a different question: is there exactly ONE stored slot
-            // of this widget, so that "the value at |w:0" is unambiguous?
-            //
-            // Counting incoming TOTALS here left the other half of the same credential
-            // loss open. The host stamps the sole tile on a masked save; before the client
-            // adopts that id, the user adds a second tile. The legacy tile still claims
-            // |w:0, but the total went 1 -> 2, so this published nothing, the lookup missed
-            // and the untouched credential was removed — the identical outcome, reached
-            // through the alias rather than through SlotKey.
-            // ...and ONLY while the client has not adopted that id. If some incoming slot
-            // already carries it, the stored value is claimed by identity and publishing it
-            // positionally as well would hand it to an id-less NEWCOMER standing beside the
-            // adopted one — a fresh tile inheriting another's credential, which is #68
-            // itself (P23b). Absent from the incoming layout is what "not adopted yet"
-            // means, and it is the only state this alias exists to serve.
-            if (!isRetained && !string.IsNullOrEmpty(slot.InstanceId)
-                && !incomingIds.Contains(slot.InstanceId))
-            {
-                storedCounts.TryGetValue(slot.WidgetId, out var storedTotal);
-                incomingIdless.TryGetValue(slot.WidgetId, out var claimants);
-                if (storedTotal == 1 && claimants == 1)
-                    index.TryAdd((slot.WidgetId + "|w:0", name), storedNode.DeepClone());
-            }
         }
-        Walk(stored, plan, (s, n, i) => Visit(s, n, i, false));
+        Walk(stored, plan, Visit);
         // The stored attic too (#226): an already-retired tile's secret must be findable
         // across saves — the incoming attic round-trips it masked-blank from the settings
         // window, and without this index entry that blank would delete it.
-        WalkRetained(stored, plan, (s, n, i) => Visit(s, n, i, true));
+        WalkRetained(stored, plan, Visit);
         foreach (var key in poisoned)
             index.Remove(key);
         return index;
     }
 
-    /// <summary>Carry-over identity: widget id + instance id, else widget id + position
-    /// when that is unambiguous on both sides. Returns null when position can't be
-    /// trusted (several instances of one widget, counts changed by a move/delete) —
-    /// carrying over then risks handing one instance another's credential, so the user
-    /// re-enters it instead.</summary>
-    private static string? SlotKey(LayoutSlot slot, Dictionary<string, int> incomingIdless)
+    /// <summary>Carry-over identity: widget id + instance id. Nothing else.
+    ///
+    /// <para>There used to be a positional fallback — <c>widgetId|w:0</c> — for a slot with
+    /// no instanceId, gated on there being exactly one id-less claimant of that widget. It
+    /// existed because a legacy layout genuinely had slots with no identity, and refusing
+    /// them outright destroyed their credentials: the masked blank that comes back reads as
+    /// "the user emptied this field".</para>
+    ///
+    /// <para>It is gone because that population is gone. <see cref="LayoutStore.Load"/>
+    /// stamps every id-less slot and persists it, so no layout this process hands out — and
+    /// therefore no payload a client can build from one — reaches here without an identity.
+    /// Deleting the fallback while that was merely RARE would have reopened #272 and #275;
+    /// deleting it once it is impossible is what #68 has been asking for.</para>
+    ///
+    /// <para>Null for an id-less slot, and null now means what it always should have: this
+    /// slot has no claim on any stored credential.</para></summary>
+    private static string? SlotKey(LayoutSlot slot)
     {
         if (!string.IsNullOrEmpty(slot.InstanceId))
             return slot.WidgetId + "|i:" + slot.InstanceId;
-        // Gated on how many INCOMING slots of this widget are id-less — the population that
-        // can actually claim this key. An id-BEARING slot resolves to "|i:" and never looks
-        // at "|w:0", so counting it answers a question nobody asked; and the stored side is
-        // deliberately not counted here, because the publisher may legitimately be an
-        // id-BEARING stored slot reached through the alias below (a client that has not yet
-        // adopted a host mint). Two stored slots publishing this key collide in the index
-        // and are POISONED there, which is the publisher-side guarantee.
-        //
-        // Counting every slot instead let an UNRELATED action destroy a credential: add a
-        // second tile of the same widget from the gallery, the total goes 1 -> 2, this
-        // returned null for the untouched legacy tile, its stored value became unreachable,
-        // and the masked blank it round-trips read as "the user emptied it" — removed, on a
-        // clean save, reporting nothing. One tile added, a different tile's credential gone.
-        //
-        // This does NOT reopen #68. That danger is a FRESH tile inheriting a DELETED one's
-        // credential, and a fresh tile is always minted id-bearing by both editors, so it
-        // contributes nothing to this count and can never claim the key: delete the sole
-        // credentialed tile, add a new one, and the incoming id-less count is 0 — no key, no
-        // carry-over, exactly as before (P32/P32c). What changes is only that a tile which
-        // stayed id-less on BOTH sides keeps being recognised while its neighbours come and
-        // go. Two id-less incoming tiles are still ambiguous and still refused.
-        incomingIdless.TryGetValue(slot.WidgetId, out var claimants);
-        if (claimants == 1)
-            return slot.WidgetId + "|w:0";
         return null;
     }
 
@@ -1352,11 +1255,11 @@ public static class SecretPolicy
             var slot = entry?.Def;
             if (slot is null || string.IsNullOrEmpty(slot.WidgetId))
                 continue;
-            // An id-LESS retained def would fall to SlotKey's positional |w:0 branch and
-            // could alias a live legacy slot of the same widget — a retired credential
-            // leaking to a live tile by position (#68). Skip it entirely. The retire
-            // paths always mint before retiring, so this is belt-and-suspenders; for a
-            // def that somehow arrives id-less, the skip IS the accepted legacy loss.
+            // An id-less retained def has no identity to be indexed under, and there is
+            // no longer any positional key for it to fall back to. Skip it: the retire
+            // paths mint before retiring and LayoutStore.Load stamps the attic too, so
+            // this is belt-and-suspenders — and for a def that somehow arrives id-less,
+            // the skip IS the refusal, rather than an alias onto a live tile (#68).
             if (string.IsNullOrEmpty(slot.InstanceId))
                 continue;
             var planned = plan.For(slot);
