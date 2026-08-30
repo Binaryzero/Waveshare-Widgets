@@ -2258,7 +2258,7 @@ Check("E4 a second clone changes nothing — an id-less source carries nothing e
 // the real file, rather than argued from call sites.
 Console.WriteLine("\n-- L: Load freezes identities (#68)");
 
-var lPath = AppPaths.LayoutFile;
+var lPath = Plinth.AppPaths.LayoutFile;
 var lSealed = SealOf("tok-onload");
 File.WriteAllText(lPath, System.Text.Json.JsonSerializer.Serialize(
     WithRetained(
