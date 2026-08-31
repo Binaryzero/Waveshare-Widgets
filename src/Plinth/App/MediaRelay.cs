@@ -101,6 +101,12 @@ internal static class MediaRelay
         // The field taught this the hard way: a relay that refuses silently is
         // indistinguishable from a relay that never ran. Announce arming, and log
         // every disposition below.
+        //
+        // Arming happens on the UI thread, so this IS the UI thread's id — kept so a
+        // read can say whether it arrived on it. See the note on ConfigureAwait below:
+        // a stream built on this thread is what the standing theory blames, and this is
+        // how the next field log proves or kills it.
+        UiThreadId = Environment.CurrentManagedThreadId;
         Log.Info("media relay armed (all frames)");
         core.WebResourceRequested += async (_, e) =>
         {
@@ -171,6 +177,17 @@ internal static class MediaRelay
         if (dash <= 0 || dash != spec.Length - 1) return range;
         if (!long.TryParse(spec[..dash], out var start) || start < 0) return range;
         return $"bytes={start}-{start + RangeWindow - 1}";
+    }
+
+    /// <summary>The thread the relay was armed on, which is the UI thread. A read that
+    /// arrives on it is the head-of-line stall this file is chasing; one that does not
+    /// rules it out. Zero when arming has not run.</summary>
+    private static int UiThreadId;
+
+    private static string ReadThread()
+    {
+        var id = Environment.CurrentManagedThreadId;
+        return id == UiThreadId ? $"thread {id} = UI" : $"thread {id}";
     }
 
     /// <summary>Query values from the relay URL, parsed by hand: the target URL is a
@@ -258,8 +275,12 @@ internal static class MediaRelay
         // else about the renderer's request is noise the upstream doesn't need. It is
         // BOUNDED on the way out — see RangeWindow.
         var range = TryGetHeader(request, "Range");
-        if (range is not null)
-            upstream.Headers.TryAddWithoutValidation("Range", BoundRange(range));
+        // Held rather than inlined: the disposition line reports the range that went
+        // OUT, and a window the relay narrowed silently is exactly what the last field
+        // log could not distinguish from one the element asked for.
+        var sentRange = range is null ? null : BoundRange(range);
+        if (sentRange is not null)
+            upstream.Headers.TryAddWithoutValidation("Range", sentRange);
 
         var client = QueryValue(outer, "insecure") == "1" ? ClientInsecure : Client;
         // The HEADER phase gets a finite deadline: an upstream that accepts the
@@ -282,7 +303,34 @@ internal static class MediaRelay
         // the note on `_idle`). This comment said the opposite for several rounds
         // and cost a misdiagnosis: a missing "stream closed" line was read as proof
         // WebView2 had not used the stream, when that line could never have fired.
-        var response = await client.SendAsync(upstream, HttpCompletionOption.ResponseHeadersRead, headerDeadline.Token);
+        // ConfigureAwait(false), and it is load-bearing rather than hygiene.
+        //
+        // This handler is raised on the UI thread, and without this the WinForms context
+        // is captured: the upstream round trip, the header copy, the stream construction
+        // and Supersede all resume THERE, so every concurrent relay request queues behind
+        // every other one — and behind whatever else the UI thread is doing. The field
+        // shows what that costs: a relay-fetch HEAD probe, which builds no stream at all
+        // (body is null for HEAD, so no GuardedStream, no window, no supersede, nothing
+        // that can block), answered host-side at once and yet not seen by the renderer
+        // for 189 seconds; five of eight attempts never saw it at all. A request issued
+        // and never answered is exactly readyState 0 with networkState 2 — the
+        // `rs=0 ns=2` in every one of these logs.
+        //
+        // The suspected mechanism goes further than queueing: a managed stream handed to
+        // COM from an STA thread is called back ON that apartment, so a GuardedStream
+        // built here would have WebView2's synchronous Read() marshalled onto the UI
+        // thread, where a slow LAN read blocks the pump outright. That would explain the
+        // bursts — nothing for a hundred seconds, then eight announces and five probe
+        // resolutions inside three. Built off the UI thread, the reads have no reason to
+        // land on it. This is INFERENCE, not measurement, which is why Announce now
+        // reports the thread: the next log settles it either way.
+        //
+        // The deferral still completes where WebView2 expects it. The handler's own
+        // await of this method captures the UI context, so `e.Response = ...` and
+        // `deferral.Complete()` continue to run on the UI thread; only the upstream work
+        // moves off it.
+        var response = await client.SendAsync(upstream, HttpCompletionOption.ResponseHeadersRead,
+            headerDeadline.Token).ConfigureAwait(false);
 
         var headers = new System.Text.StringBuilder(CorsHeader);
         void Copy(string name, string? value)
@@ -296,15 +344,34 @@ internal static class MediaRelay
         Copy("Accept-Ranges", response.Headers.AcceptRanges.Count > 0 ? string.Join(", ", response.Headers.AcceptRanges) : null);
 
         var body = request.Method == "HEAD" ? null
-            : new GuardedStream(await response.Content.ReadAsStreamAsync(),
+            : new GuardedStream(await response.Content.ReadAsStreamAsync().ConfigureAwait(false),
                 response.Content.Headers.ContentLength);
         // A HEAD carries no stream and so supersedes nothing — the pre-flight probes
         // this widget fires must never retire the stream that is actually playing.
-        if (body is not null)
+        //
+        // Neither must the widget's OTHER probe. Its body fetch asks the relay for a
+        // 64 KiB window of the media the element is ALREADY playing, and the registry
+        // is keyed on the path — so the probe reads as a fresh stream of the same title
+        // and retires the element's live one, truncating the playback it was sent to
+        // diagnose. In the field that was nine of every ten retirements. So the widget
+        // marks that request probe=1 and it registers nothing: it is a short bounded
+        // read that cancels itself, so staying out of the registry leaks nothing, and
+        // its own idle clock still collects it if the reader walks away.
+        var isProbe = QueryValue(outer, "probe") == "1";
+        if (body is not null && !isProbe)
             Supersede(target, body);
+        // What this line has to answer, which the field logs could not: WHICH request
+        // (method, and whether it is a probe or the element), what window went out
+        // after BoundRange narrowed it, and what came back — a 200 where a 206 was
+        // asked for is the transcode ignoring the range, and the byte counts say
+        // whether the window was honoured. None of it carries the api_key: Describe
+        // yields host:port, and the ranges and lengths are the relay's own numbers.
         if (WebViewEnvironment.DiagnosticsBudget())
-            Log.Info($"media relay {SafeUrl.Describe(target)} -> {(int)response.StatusCode}"
-                + (range is null ? "" : " (ranged)"));
+            Log.Info($"media relay {request.Method}{(isProbe ? " probe" : "")} "
+                + $"{SafeUrl.Describe(target)} -> {(int)response.StatusCode}"
+                + (range is null ? "" : $" asked {range} sent {sentRange}")
+                + (response.Content.Headers.ContentRange is null ? "" : $" got {response.Content.Headers.ContentRange}")
+                + (response.Content.Headers.ContentLength is null ? "" : $" len {response.Content.Headers.ContentLength}"));
         return env.CreateWebResourceResponse(body, (int)response.StatusCode, response.ReasonPhrase ?? "", headers.ToString());
     }
 
@@ -338,6 +405,7 @@ internal static class MediaRelay
         private long _served;
         private long _milestone = 64 * 1024;
         private long _lastRead = Environment.TickCount64;
+        private readonly long _born = Environment.TickCount64;
         private readonly System.Threading.Timer _idle;
 
         // The key this stream is registered under in <see cref="Live"/>, so releasing
@@ -410,7 +478,8 @@ internal static class MediaRelay
         {
             if (_announced) return;
             _announced = true;
-            if (WebViewEnvironment.DiagnosticsBudget()) Log.Info($"media relay stream {what}");
+            if (WebViewEnvironment.DiagnosticsBudget())
+                Log.Info($"media relay stream {what} [{ReadThread()}]");
         }
 
         /// <summary>The first read told us WebView2 pulls at all; these tell us whether it
@@ -500,8 +569,15 @@ internal static class MediaRelay
                 // How far this stream got separates the failure modes: never announced
                 // means WebView2 never pulled a byte; a few KB means the head arrived
                 // and never parsed; megabytes means playback and an ordinary stop.
+                //
+                // The AGE separates them further, and the field logs could not: a
+                // never-read stream gone in a second was taken by a supersede, while one
+                // that lasted two minutes aged out on DeadMs — the first means something
+                // retired it, the second that WebView2 genuinely never came for it. Both
+                // printed the same line before.
                 if (WebViewEnvironment.DiagnosticsBudget())
                     Log.Info($"media relay stream closed after {_served} bytes"
+                        + $" in {(Environment.TickCount64 - _born) / 1000}s"
                         + (_faulted ? " (faulted)" : _announced ? "" : " (never read)"));
                 try { _inner.Dispose(); }
                 catch { /* the connection is gone either way */ }

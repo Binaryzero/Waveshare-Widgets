@@ -2486,6 +2486,15 @@
     return WW.mediaUrl(url, { insecure: /^https:/i.test(cfg.base) && cfg.selfSigned });
   }
 
+  // The same URL, marked as a diagnostic. The host keys its live-stream registry on
+  // the target PATH, so a probe for the title that is playing is indistinguishable
+  // from the element opening a fresh stream of it — and the host retires the older
+  // one, which is the element's. That truncated the very playback the probe was sent
+  // to explain. The marker tells the host to answer the request but register nothing;
+  // it also names probe traffic in the host log, so a relay disposition can finally be
+  // read as ours or the element's.
+  const probeUrl = (url) => relayUrl(url) + '&probe=1';
+
   // A transcode is a stream the server produces as you watch: no byte ranges, so
   // every position change has to be asked for at the server rather than taken here.
   // Both flavours transcodeUrl() builds — stream.mp4 for video, stream.mp3 for audio.
@@ -2796,7 +2805,7 @@
         const probe = (tag, url, init) => WW.fetch(url, Object.assign({ method: 'HEAD', proxy: 'never' }, init || {}))
           .then((r) => WW.log('jellyfin: attempt ' + n + ' ' + tag + ': HTTP ' + r.status))
           .catch((e) => WW.log('jellyfin: attempt ' + n + ' ' + tag + ' failed: ' + ((e && e.name) || 'error')));
-        probe('relay-fetch', relayUrl(lastSrcUrl));
+        probe('relay-fetch', probeUrl(lastSrcUrl));
         probe('vhost-fetch', 'https://media.plinth/', { mode: 'no-cors' });
         probe('direct-fetch', lastSrcUrl, { mode: 'no-cors' });
         probe('pna-fetch', lastSrcUrl, { mode: 'no-cors', targetAddressSpace: 'private' });
@@ -2806,7 +2815,7 @@
         // a real 64 KiB window and counts what arrives: a full 65536 means ranged
         // delivery works end to end and the fault is the element's (codec, container,
         // an unparseable head); a short count or a throw names the transport.
-        WW.fetch(relayUrl(lastSrcUrl), { proxy: 'never', headers: { Range: 'bytes=0-65535' } })
+        WW.fetch(probeUrl(lastSrcUrl), { proxy: 'never', headers: { Range: 'bytes=0-65535' } })
           .then(async (r) => {
             // A 200 means the endpoint ignored the Range — the transcode does, because a
             // stream ffmpeg is still producing has no positions to serve. There is no
