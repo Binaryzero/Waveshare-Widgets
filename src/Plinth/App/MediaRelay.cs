@@ -223,22 +223,62 @@ internal static class MediaRelay
     /// its position — much the cheaper mistake than leaking a transcode per tap.</summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, GuardedStream> Live = new();
 
-    private static void Supersede(Uri target, GuardedStream fresh)
+    /// <summary>The same thing for the widget's diagnostic probes, deliberately a
+    /// SEPARATE registry rather than an exemption from the one above.
+    ///
+    /// A probe must not retire the element's stream — that is the bug this pair exists
+    /// to fix, and sharing a registry is what caused it. But letting probes register
+    /// nowhere, as the first attempt did, hands the marker a capability: probe=1 is a
+    /// field any widget can append (WW.mediaUrl is public and the relay token reaches
+    /// every slot), so an unbounded number of streams for one title could be held open
+    /// at once by simply setting it. Their own registry gives them the same
+    /// one-per-title ceiling playback has, and the marker now only chooses WHICH
+    /// registry a request lands in — never whether it is bounded at all.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, GuardedStream> LiveProbes = new();
+
+    /// <summary>Publish <paramref name="fresh"/> as the live stream for its media,
+    /// retiring whatever it displaces.
+    ///
+    /// The swap is a compare-and-set loop and has to be. Until this file moved its
+    /// continuations off the UI thread, two of these could not overlap and a
+    /// read-then-write was atomic by accident; now they run on pool threads, and a
+    /// plain TryGetValue followed by an assignment lets two arrivals both see the same
+    /// prior, both dispose it, and then one silently overwrite the other's entry —
+    /// stranding a LIVE stream that nothing holds a reference to and nothing will ever
+    /// supersede, until its idle clock finds it minutes later. TryUpdate against the
+    /// exact value observed makes the displacement and the write one step, so every
+    /// stream is either in the registry or is the one being retired.</summary>
+    private static void Supersede(
+        System.Collections.Concurrent.ConcurrentDictionary<string, GuardedStream> registry,
+        Uri target, GuardedStream fresh)
     {
         var key = target.GetLeftPart(UriPartial.Path);
-        if (Live.TryGetValue(key, out var prior) && !ReferenceEquals(prior, fresh))
-        {
-            if (WebViewEnvironment.DiagnosticsBudget())
-                Log.Info("media relay retiring an earlier stream of the same media");
-            // OFF the UI thread: this runs inside the WebResourceRequested continuation,
-            // and tearing a socket down there is the shape of mistake that has already
-            // cost this file one field crash. Racing the registration below is harmless
-            // — the entry is removed by (key, value), so a doomed stream can never take
-            // its successor out with it.
-            System.Threading.Tasks.Task.Run(() => { try { prior.Dispose(); } catch { } });
-        }
         fresh.Key = key;
-        Live[key] = fresh;
+        fresh.Registry = registry;
+        while (true)
+        {
+            if (registry.TryGetValue(key, out var prior))
+            {
+                if (ReferenceEquals(prior, fresh)) return;
+                // Lost the race to another arrival: re-read and try again rather than
+                // clobbering whatever it just published.
+                if (!registry.TryUpdate(key, fresh, prior)) continue;
+                Retire(prior);
+                return;
+            }
+            if (registry.TryAdd(key, fresh)) return;
+        }
+    }
+
+    private static void Retire(GuardedStream prior)
+    {
+        if (WebViewEnvironment.DiagnosticsBudget())
+            Log.Info("media relay retiring an earlier stream of the same media");
+        // OFF this thread: tearing a socket down inside the WebResourceRequested
+        // continuation is the shape of mistake that has already cost this file one
+        // field crash. The registry entry is removed by (key, value), so a doomed
+        // stream can never take its successor out with it.
+        System.Threading.Tasks.Task.Run(() => { try { prior.Dispose(); } catch { } });
     }
 
     // Every relay response — refusals included — carries this header. The video
@@ -377,15 +417,13 @@ internal static class MediaRelay
         // is keyed on the path — so the probe reads as a fresh stream of the same title
         // and retires the element's live one, truncating the playback it was sent to
         // diagnose. In the field that was nine of every ten retirements. So the widget
-        // marks that request probe=1 and it registers nothing.
-        //
-        // Staying out of the registry costs it the one collector it had — a later
-        // attempt at the same title can no longer retire it — so it is given its own,
-        // much shorter clock instead (ProbeMs). Without that a probe against a
-        // transcode, which answers 200 and ignores the window, would hold an ffmpeg
-        // and a socket for a quarter of an hour after the widget cancelled the read.
-        if (body is not null && !isProbe)
-            Supersede(target, body);
+        // marks that request probe=1 and it goes in a registry of its own: bounded the
+        // same way, one live stream per title, but unable to reach the element's.
+        // It also gets a much shorter clock (ProbeMs), because a probe against a
+        // transcode — which answers 200, ignores the window, and has its body cancelled
+        // unread — would otherwise hold an ffmpeg and a socket for the full read window.
+        if (body is not null)
+            Supersede(isProbe ? LiveProbes : Live, target, body);
         // What this line has to answer, which the field logs could not: WHICH request
         // (method, and whether it is a probe or the element), what window went out
         // after BoundRange narrowed it, and what came back — a 200 where a 206 was
@@ -434,10 +472,12 @@ internal static class MediaRelay
         private readonly long _born = Environment.TickCount64;
         private readonly System.Threading.Timer _idle;
 
-        // The key this stream is registered under in <see cref="Live"/>, so releasing
-        // it — by supersession, by the idle timer, however — takes it back out and the
-        // registry never names a dead stream.
+        // The registry this stream is published in and the key it is published under,
+        // so releasing it — by supersession, by the idle timer, however — takes it back
+        // out and no registry ever names a dead stream. Two registries exist (playback
+        // and probes), so the stream has to carry which one is its own.
         internal string? Key;
+        internal System.Collections.Concurrent.ConcurrentDictionary<string, GuardedStream>? Registry;
 
         // Nothing else ever closes this. WebView2 does not dispose a managed content
         // stream (a tracked defect of its own), so an abandoned response — a playback
@@ -604,8 +644,8 @@ internal static class MediaRelay
             {
                 _released = true;
                 _idle.Dispose();
-                if (Key is not null)
-                    Live.TryRemove(new KeyValuePair<string, GuardedStream>(Key, this));
+                if (Key is not null && Registry is not null)
+                    Registry.TryRemove(new KeyValuePair<string, GuardedStream>(Key, this));
                 // How far this stream got separates the failure modes: never announced
                 // means WebView2 never pulled a byte; a few KB means the head arrived
                 // and never parsed; megabytes means playback and an ordinary stop.
