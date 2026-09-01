@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -95,13 +97,18 @@ public sealed class LayoutSlot
     [JsonPropertyName("widgetId")] public string WidgetId { get; set; } = "";
 
     /// <summary>Immutable per-instance identity backing widget-local storage keys and the
-    /// per-instance credential scope (the iCUE `uniqueId`). Assigned by the shell on add and
-    /// frozen on first on-panel edit — adopting the positional tag the instance is already
-    /// running under, so stored widget state survives rearranging. Null on layouts that were
-    /// never edited on-panel (identity stays positional, exactly as before); the per-instance
-    /// credential store (#226) keys on it and refuses to store under an absent id rather than
-    /// address a credential by grid position (#68), so an unedited legacy tile simply keeps
-    /// its derived token in memory until it acquires an id the ordinary way.</summary>
+    /// per-instance credential scope (the iCUE `uniqueId`).
+    ///
+    /// <para>ALWAYS present on a layout this process has read: <see cref="Load"/> stamps
+    /// any slot that lacks one, adopting the positional tag the instance is already running
+    /// under so stored widget state survives the freeze (#289). It was previously null on
+    /// layouts never edited on-panel, and identity then fell back to grid position — the
+    /// last way a credential could be addressed positionally, which #68 forbids and which
+    /// this field's guarantee is what removed.</para>
+    ///
+    /// <para>Nullable in the model only because the JSON on disk may predate that pass, and
+    /// because a client is free to post a slot without one. Neither survives contact with
+    /// Load; nothing downstream should reintroduce a positional fallback for the case.</para></summary>
     [JsonPropertyName("instanceId")] public string? InstanceId { get; set; }
 
     /// <summary>Hide this widget while a fullscreen game is in the foreground —
@@ -453,10 +460,10 @@ public static class LayoutStore
     /// <para><b>Why the host does this and the shell must not.</b> A legacy slot predates
     /// instance ids. Today it acquires one from `shell.js` on its first unrelated on-panel
     /// edit — a drag, a resize — while the copy on disk is still id-less. `SlotKey` then
-    /// sees `|i:<new>` coming in against a stored slot that only publishes `|w:0`, refuses
-    /// the mismatch it is right to refuse (#68), the carry-over misses, and the masked
-    /// blank the shell round-trips reaches layout.json as the user's own edit. Moving a
-    /// tile destroyed its credential. The shell cannot fix this itself: the layout it holds
+    /// sees `|i:<new>` coming in against a stored slot that publishes no key at all, the
+    /// carry-over misses as it is right to (#68), and the masked blank the shell
+    /// round-trips reaches layout.json as the user's own edit. Moving a tile destroyed
+    /// its credential. The shell cannot fix this itself: the layout it holds
     /// is blanked, so a mint there is a mint against a copy with nothing to preserve.</para>
     ///
     /// <para><b>Why it is safe, on both credential axes.</b> A manifest secret is sealed
@@ -491,11 +498,18 @@ public static class LayoutStore
             if (entry?.Def?.InstanceId is { Length: > 0 } retiredId) taken.Add(retiredId);
 
         var minted = 0;
-        string Fresh()
+        // Every id this pass invents is DERIVED from the layout, never drawn at random.
+        // Load returns the healed model whether or not the Save below it lands, so a mint
+        // that varied between runs would hand a client id A, persist nothing, and then
+        // persist id B on the next read — and the client's next save, keyed A against a
+        // stored B, would match nothing and read as a blank the user typed. Identical
+        // bytes on disk must always freeze to identical identities; the counter suffix
+        // resolves a collision the same way every time rather than by rolling again.
+        string Free(string seed)
         {
-            string id;
-            do { id = NewInstanceId(); } while (!taken.Add(id));
-            return id;
+            if (taken.Add(seed)) return seed;
+            for (var n = 2; ; n++)
+                if (taken.Add(seed + "-" + n)) return seed + "-" + n;
         }
 
         // A LIVE slot adopts the positional tag its widget is ALREADY running under, and
@@ -526,52 +540,36 @@ public static class LayoutStore
                 // literally "p0s0" is legal and does collide — SecretStore.AmbiguousSlots
                 // calls out the same case — and two slots sharing an identity is the one
                 // outcome worse than a widget losing its stored state.
-                var positional = "p" + pi + "s" + si;
-                slot.InstanceId = taken.Add(positional) ? positional : Fresh();
+                slot.InstanceId = Free("p" + pi + "s" + si);
                 minted++;
             }
         }
 
-        // The attic gets fresh ids instead: a retired def has no position to adopt, and
-        // nothing of it is running to keep state for.
+        // A retired def has no position to adopt and nothing running to keep state for, so
+        // its seed comes from what identifies the ENTRY instead: the widget, when it was
+        // retired, and where from. Index would also be reproducible within one retry, but
+        // the attic cap drops entries and shifts every index behind them; this survives
+        // that. Deliberately not string.GetHashCode, which is randomised per process and
+        // would reintroduce exactly the instability this is here to avoid.
         foreach (var entry in layout.Retained ?? [])
             if (entry?.Def is { } def && !string.IsNullOrWhiteSpace(def.WidgetId)
                 && string.IsNullOrEmpty(def.InstanceId))
             {
-                def.InstanceId = Fresh();
+                def.InstanceId = Free(RetiredSeed(def.WidgetId!, entry.RetiredAt, entry.OriginPage));
                 minted++;
             }
 
         return minted > 0;
     }
 
-    /// <summary>Loads, mints (<see cref="MintMissingIds"/>) and persists in one step, for
-    /// the one caller that has to run before anything else reads the file.
-    ///
-    /// <para>Writes ONLY when something was actually stamped, so it is a no-op scan on
-    /// every start after the first — and a failed write leaves the identities unfrozen for
-    /// the next attempt rather than half-applied, because nothing else has been told about
-    /// them yet.</para>
-    ///
-    /// <para>Attributed to the host like every other write this process performs on its own
-    /// initiative (#281), and ordered before either window exists, so no client can be
-    /// holding a pre-mint copy to be judged stale against it.</para></summary>
-    public static void FreezeInstanceIds()
+    /// <summary>A reproducible seed for a retired def that reached the attic without an
+    /// identity. Shaped `r&lt;hex&gt;` so it cannot collide with the `p{page}s{slot}` space a
+    /// live slot adopts, and derived only from values already on the entry.</summary>
+    private static string RetiredSeed(string widgetId, string? retiredAt, string? originPage)
     {
-        try
-        {
-            var layout = Load();
-            if (!MintMissingIds(layout)) return;
-            if (Save(layout))
-                Log.Info("Stamped stable instance ids onto slots that predated them");
-            else
-                Log.Warn("Could not persist instance ids for legacy slots; will retry next start");
-        }
-        catch (Exception ex)
-        {
-            // Never fatal: the app runs fine without this, on the pre-existing behaviour.
-            Log.Warn($"Instance-id pass skipped: {ex.Message}");
-        }
+        var material = widgetId + "\n" + (retiredAt ?? "") + "\n" + (originPage ?? "");
+        return "r" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material)))[..12]
+            .ToLowerInvariant();
     }
 
     /// <summary>The attic's identity key — widgetId + "|i:" + instanceId, the same id
@@ -617,6 +615,26 @@ public static class LayoutStore
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
+    /// <summary>The layout as every consumer sees it — and the ONE place identities are
+    /// frozen (#68, #226).
+    ///
+    /// <para>#289 stamped ids on id-less slots once at startup, which made the positional
+    /// `|w:0` carry-over key rare. Rare is not enough to delete a safety net: a layout
+    /// hand-edited through the tray's "Edit layout (JSON)" reintroduces an id-less slot
+    /// mid-session, and that slot reaches `SlotKey` with no identity, no carry-over, and a
+    /// masked blank that reads as "the user emptied it". Healing HERE instead makes the
+    /// invariant hold by construction rather than by timing: every init payload, every save
+    /// handler's `disk`, every restore, clear and migration reads through this method, so
+    /// no id-less slot can reach the credential pipeline from either side. That is what
+    /// lets the positional key go.</para>
+    ///
+    /// <para>Writing inside a read is not new here — the fallback below has always
+    /// persisted the default it regenerates — and it is bounded: healing is a no-op scan
+    /// once done. A failed write does NOT withhold the healed model: consumers still need
+    /// addressable slots, and handing them id-less ones puts back the very hole this
+    /// closes. It costs nothing because the mint is reproducible — see
+    /// <see cref="MintMissingIds"/> — so the next read that does persist freezes the same
+    /// identities the client is already holding.</para></summary>
     public static DashboardLayout Load()
     {
         try
@@ -625,7 +643,15 @@ public static class LayoutStore
             {
                 var layout = JsonSerializer.Deserialize<DashboardLayout>(File.ReadAllText(AppPaths.LayoutFile), JsonOptions);
                 if (layout is { Pages.Count: > 0 })
+                {
+                    // Attributed to the host like every write this process performs on its
+                    // own initiative (#281). The caller gets the healed model either way —
+                    // a failed write must not hand back id-less slots it has just promised
+                    // are addressable.
+                    if (MintMissingIds(layout) && Save(layout))
+                        Log.Info("Stamped stable instance ids onto slots that predated them");
                     return layout;
+                }
             }
         }
         catch (Exception ex)
@@ -633,6 +659,7 @@ public static class LayoutStore
             Log.Warn($"Failed to load layout.json, regenerating default: {ex.Message}");
         }
 
+        // CreateDefault mints its own slots, so this needs no healing pass.
         var fallback = CreateDefault();
         Save(fallback);
         return fallback;

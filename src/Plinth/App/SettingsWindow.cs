@@ -1033,22 +1033,6 @@ public sealed class SettingsWindow : Form
                     });
                 ok["evictedIds"] = gone;
             }
-            if (secrets.Minted.Count > 0)
-            {
-                // Ids were stamped onto the host's copy; the editor still holds the
-                // id-less slots it sent. Hand the identities back, addressed by the
-                // position IT used, or its next save can't find its own credentials.
-                var ids = new JsonArray();
-                foreach (var m in secrets.Minted)
-                    ids.Add(new JsonObject
-                    {
-                        ["page"] = m.Page,
-                        ["slot"] = m.Slot,
-                        ["widgetId"] = m.WidgetId,
-                        ["instanceId"] = m.InstanceId,
-                    });
-                ok["mintedIds"] = ids;
-            }
             if (secretFailures.Count > 0)
             {
                 // The rest of the layout saved, but a credential did not: reporting a

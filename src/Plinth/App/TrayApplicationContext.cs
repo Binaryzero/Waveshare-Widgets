@@ -31,13 +31,6 @@ public sealed class TrayApplicationContext : ApplicationContext
         _config = AppConfig.Load();
 
         _library.Initialize();
-        // AFTER the library, because Initialize runs the stock-widget migrations that
-        // remove slots (LayoutStore.RemoveWidgets) — stamping identities onto tiles about
-        // to be deleted is work for nothing. BEFORE the dashboard and the settings window,
-        // which is the load-bearing half: a slot that reaches either client without an id
-        // acquires one THERE, from a layout whose credentials are blanked, and the save
-        // that carries the new id cannot find the value the old identity stored (#68).
-        LayoutStore.FreezeInstanceIds();
         _library.Changed += () => _dashboard?.ReloadDashboard();
 
         _hub.Start(_config.PollIntervalMs);
