@@ -62,6 +62,19 @@
 		font-family: 'ProbeLoopbackHttp';
 		src: url("http://localhost:28199/fonts/Deck.woff2") format("woff2");
 	}
+	/* A `.localhost` SUBDOMAIN is potentially trustworthy too — the whole name, not just
+	   the bare label — so this is fetchable and must survive. */
+	@font-face {
+		font-family: 'ProbeSubLocalhost';
+		src: url("http://fonts.localhost/Sub.woff2") format("woff2");
+	}
+	/* …and the direction that matters if the loopback test is ever loosened carelessly.
+	   `localhost.evil.invalid` is a name anyone can register. It must read as REMOTE and
+	   be stripped; a test anchored at the wrong end would let it through as loopback. */
+	@font-face {
+		font-family: 'ProbeFakeLocalhost';
+		src: url("http://localhost.evil.invalid/Fake.woff2") format("woff2");
+	}
 	/* The shape that CANNOT be decided by reading the CSS, and the one the Corsair
 	   packages actually hit: a same-origin RELATIVE path that 404s, pointing into the
 	   common/ folder the package never vendored. Indistinguishable from a path that is
@@ -139,9 +152,12 @@
 	// started all of this while the broader marker still reads clean.
 	const qrcLeft = () => survivors((r) => prop(r, 'src').indexOf('qrc:') !== -1);
 	// Every scheme this origin cannot fetch. `http:` does not match `https:` — the colon
-	// is part of the pattern — and loopback http is deliberately NOT counted here: it is
-	// fetchable, and ProbeLoopbackHttp below asserts it survived.
-	const UNFETCHABLE = /(qrc|file):|http:\/\/(?!localhost|127\.)/i;
+	// is part of the pattern — and loopback http is deliberately NOT counted here, since
+	// it is fetchable. The host must END at localhost (`:` port, `/` path, or the string's
+	// end), which is what keeps `localhost.evil.invalid` on the unfetchable side where
+	// ProbeFakeLocalhost expects it. The per-face markers below are the real assertions;
+	// this only names survivors.
+	const UNFETCHABLE = /(qrc|file):|http:\/\/(?!(?:[a-z0-9-]+\.)*localhost\.?(?::|\/|$)|127\.)/i;
 	const unfetchLeft = () => survivors((r) => UNFETCHABLE.test(prop(r, 'src')));
 	// The half no scheme test can reach: a face still able to block first paint. This is
 	// what actually stops the flood for ProbeMissingRel, whose source stays put.
@@ -198,6 +214,15 @@
 	const embedded = () => nestedState('embeddedframe');
 	const nestedSlot = () => nestedState('slotframe');
 
+	const faceKept = (name, needle) => {
+		let v = 'gone';
+		eachFace((r) => {
+			if (named(r).indexOf(name) === -1) return;
+			v = prop(r, 'src').indexOf(needle) !== -1 ? 'kept' : 'stripped';
+		});
+		return v;
+	};
+
 	// The loopback embed case: fetchable http, and it must still be there.
 	const loopbackKept = () => {
 		let v = 'gone';
@@ -250,6 +275,8 @@
 			log('nodisplay-left:' + noDisplayLeft());
 			log('mixed-kept:' + mixedKept());
 			log('loopback-kept:' + loopbackKept());
+			log('sublocalhost:' + faceKept('ProbeSubLocalhost', 'fonts.localhost'));
+			log('fakelocalhost:' + faceKept('ProbeFakeLocalhost', 'evil.invalid'));
 			log('embedded:' + embedded());
 			log('nested-slot:' + nestedSlot());
 			log('own-display:' + ownDisplay());

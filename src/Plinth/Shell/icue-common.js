@@ -433,7 +433,14 @@
   // document that is not itself https. That second branch does not arise today, since
   // packages are served over https, but it is the actual reason the scheme is special and
   // it keeps this correct if the gate above or the shell's scheme ever changes.
-  const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?)$/i;
+  //
+  // `.localhost` SUBDOMAINS count too — secure contexts treats the whole of that name,
+  // not just the bare label, as potentially trustworthy, so http://fonts.localhost/ is
+  // fetchable and must not be stripped. The anchors are the security-relevant part: the
+  // host has to END at localhost, or `localhost.evil.example` — a name anyone can
+  // register — would be read as loopback and let a remote source through the test that
+  // exists to keep remote sources out.
+  const LOOPBACK = /^(?:(?:[a-z0-9-]+\.)*localhost\.?|127\.\d+\.\d+\.\d+|\[?::1\]?)$/i;
   function httpIsFetchable(hostname) {
     if (location.protocol !== 'https:') return true;
     return LOOPBACK.test(hostname);

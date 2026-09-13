@@ -485,6 +485,9 @@ is kept wherever mixed content does not apply: when the target is loopback — p
 trustworthy, and therefore exempt even from an https document, which is how a widget
 pointing at a local server (StreamDeckEmbeded serves its Virtual Stream Deck on
 `http://localhost:28199`) keeps its font — and from a document that is not itself https.
+Loopback covers `127.0.0.0/8`, `::1`, and the whole of the `localhost` name including
+subdomains such as `fonts.localhost`. The host must *end* there: `localhost.evil.example`
+is a registrable name and reads as remote.
 
 Both repairs run in **widget package documents only**. The shim is injected into every
 document in the WebView, so it also reaches whatever the Embed, YouTube and Twitch

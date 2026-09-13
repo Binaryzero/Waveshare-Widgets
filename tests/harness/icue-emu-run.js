@@ -108,6 +108,17 @@
 //                          that replica shell frames the widgets, so every previewed
 //                          widget is a grandchild and would have gone unswept. Reads
 //                          `shim:untouched` if the gate goes back to counting frames.
+//        sublocalhost:kept / fakelocalhost:stripped — the loopback test, pinned from both
+//                          sides. Secure contexts treats the whole `.localhost` name as
+//                          potentially trustworthy, so http://fonts.localhost/ is
+//                          fetchable and stripping it would substitute a font that was
+//                          going to load. The pair exists because widening that test is
+//                          exactly where an over-broad match slips in:
+//                          `localhost.evil.invalid` is a name anyone can register, and a
+//                          pattern anchored at the wrong end would read it as loopback and
+//                          admit a remote source through the check that keeps remote
+//                          sources out. One marker alone would let the widening pass while
+//                          the boundary moved.
 //        own-display:block — the shim fills in a MISSING font-display; it does not
 //                          overrule an author who chose one. Reads `swap` if the widening
 //                          became an override, which would change rendering for every
@@ -157,7 +168,8 @@ const check = (name, ok, detail) => {
 const MARKERS = ['module-alive', 'mediaviewer-ok', 'hex:255, 0, 57',
   'tr-then:Compat says hello', 'notif:0', 'device-created', 'icons:3', 'click-sent',
   'live-tiles', 'qrc-left:none', 'unfetch-left:none', 'nodisplay-left:none',
-  'mixed-kept:local', 'loopback-kept:kept', 'own-display:block',
+  'mixed-kept:local', 'loopback-kept:kept', 'sublocalhost:kept',
+  'fakelocalhost:stripped', 'own-display:block',
   'embedded:shim:untouched', 'nested-slot:shim:swept',
   'datavideo:video', 'wrapids:A,B',
   'datefirst:rendered'];
