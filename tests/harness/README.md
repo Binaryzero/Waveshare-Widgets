@@ -346,10 +346,13 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   it can mistake for loadable: `qrc:`, `file:` and `http:` sources that must be dropped,
   a relative 404 that must NOT be dropped but must get `font-display`, a loopback `http:`
   source that must survive, an ordered list whose good sibling must survive, and an
-  author's own `font-display` that must not be overruled — plus a nested embedded frame
-  the sweep must leave alone entirely, asserting both that the shim ran there and that it
-  kept its hands off — every marker naming the survivors, so a regression says which case
-  broke rather than just that one did),
+  author's own `font-display` that must not be overruled — plus a PAIR of nested frames
+  loading one document, differing only in whether the src carries the shell's `#ww-slot=`
+  marker, which pins the sweep's gate to widget identity rather than frame depth (depth
+  broke the settings live preview, where the replica shell makes every previewed widget a
+  grandchild); each asserts the shim ran there as well as what it did — every marker
+  naming the survivors, so a regression says which case broke rather than just that one
+  did),
   thenable `tr()` against the nested i18next `translation.json`, the
   Notificationsprovider requestId/asyncResponse round trip, and the Streamdeck plugin
   emulation against the `--sd` fixture (`virtualDeviceCreated`, per-key

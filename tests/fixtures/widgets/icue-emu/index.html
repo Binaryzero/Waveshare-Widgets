@@ -160,14 +160,27 @@
 	// would be editing content Plinth is meant to display unchanged. Reports both halves,
 	// because "untouched" alone would also be what a shim that never ran looks like: the
 	// marker has to prove the shim WAS present and still kept its hands off.
-	const nf = document.createElement('iframe');
-	nf.id = 'nestedframe';
-	nf.style.display = 'none';
-	nf.srcdoc = "<style>@font-face { font-family: 'ProbeEmbedded';"
-		+ " src: url(\"qrc:/fonts/Embedded.ttf\") format(\"truetype\"); }</style>";
-	document.documentElement.appendChild(nf);
-	const embedded = () => {
-		const f = document.getElementById('nestedframe');
+	// A PAIR, and the pairing is the whole point. Both frames are grandchildren of the top
+	// page loading the same document; they differ only in whether the src carries the
+	// shell's #ww-slot= marker. Together they pin the gate to widget IDENTITY and away
+	// from frame depth — which was the first attempt here and broke the settings live
+	// preview, where settings.html frames index.html?preview=1 and that replica shell
+	// frames the widgets, making every previewed widget a grandchild.
+	const frameAt = (id, src) => {
+		const f = document.createElement('iframe');
+		f.id = id;
+		f.style.display = 'none';
+		f.src = src;
+		document.documentElement.appendChild(f);
+	};
+	frameAt('embeddedframe', 'nested-slot.html');                  // what an Embed widget frames
+	frameAt('slotframe', 'nested-slot.html#ww-slot=p9s9');         // a widget slot, nested
+
+	// Reports the shim's PRESENCE alongside the outcome, because "untouched" on its own is
+	// also what a shim that never ran looks like — the marker has to distinguish a gate
+	// that held from a script that was never there.
+	const nestedState = (id) => {
+		const f = document.getElementById(id);
 		if (!f || !f.contentWindow) return 'noframe';
 		let ran;
 		try { ran = f.contentWindow.__wwIcueCommon === true; } catch (e) { return 'blocked'; }
@@ -182,6 +195,8 @@
 		} catch (e) { return 'unreadable'; }
 		return (ran ? 'shim' : 'noshim') + ':' + (left ? 'untouched' : 'swept');
 	};
+	const embedded = () => nestedState('embeddedframe');
+	const nestedSlot = () => nestedState('slotframe');
 
 	// The loopback embed case: fetchable http, and it must still be there.
 	const loopbackKept = () => {
@@ -236,6 +251,7 @@
 			log('mixed-kept:' + mixedKept());
 			log('loopback-kept:' + loopbackKept());
 			log('embedded:' + embedded());
+			log('nested-slot:' + nestedSlot());
 			log('own-display:' + ownDisplay());
 		}, 2000);
 	});

@@ -491,10 +491,13 @@ document in the WebView, so it also reaches whatever the Embed, YouTube and Twit
 widgets frame. Defining helper globals there is inert, but rewriting that page's CSS is
 not: it would drop an `http:` source the page's own `upgrade-insecure-requests` would
 have upgraded, and set `font-display` on faces that were loading fine, buying a page
-Plinth is meant to display unchanged a set of fallback flashes and layout shifts. A
-widget frame is a direct child of the top document; anything a widget frames itself is a
-grandchild, and the sweep gates on that. The cost is a widget's own nested sub-document
-going unswept, which iCUE packages do not exercise.
+Plinth is meant to display unchanged a set of fallback flashes and layout shifts.
+
+The test is the slot marker. `shell.js` builds every widget frame's src as
+`<widget url>#ww-slot=<tag>&ww-settings=…` — the same fragment `icue-compat.js` reads to
+derive `uniqueId` — and a page framed from a URL the user typed carries none. Frame depth
+would not do: the settings window frames `index.html?preview=1`, and that replica shell
+frames the widgets, so every widget in the live preview is a grandchild.
 
 A same-origin *relative* URL that 404s cannot be told apart from one the package really
 vendored, so it is never dropped on suspicion — the shim adds `font-display: swap`

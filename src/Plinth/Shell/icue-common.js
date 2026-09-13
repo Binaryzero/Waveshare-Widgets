@@ -404,18 +404,26 @@
   // and setting font-display on faces that were loading perfectly well, which buys that
   // page fallback flashes and layout shifts it never asked for.
   //
-  // A widget frame is a DIRECT child of the top document: shell.js appends it into the
-  // page grid, and the harness's host page does the same. Anything a widget frames itself
-  // is a grandchild — which is exactly the embedded-content case, and the only thing this
-  // needs to separate. Origin is the other candidate and is worse: the harness serves
-  // packages from https://widget.test rather than *.widgets.plinth, so a hostname test
-  // would switch the sweep off precisely where it is proven.
+  // The test is the SLOT MARKER, not frame depth. shell.js builds every widget frame's
+  // src as `<widget url>#ww-slot=<tag>&ww-settings=…`, the harness's host page mirrors it
+  // exactly, and icue-compat.js already reads that same fragment to derive uniqueId — so
+  // it is an established positive signal for "the shell created this frame as a widget
+  // slot", not something invented here. A page the Embed widget frames is loaded from the
+  // URL the user typed and carries no such marker.
   //
-  // The cost is a widget's own nested sub-document going unswept. iCUE packages are
-  // single-document by convention, and that is much the better error of the two.
-  const isWidgetDocument = (() => {
-    try { return window.parent === window.top; } catch (e) { return false; }
-  })();
+  // Frame depth was the first attempt and is wrong: the settings window frames
+  // index.html?preview=1, and THAT replica shell creates the widget frames, so every
+  // widget in the live preview is a grandchild. Depth would have switched the sweep off
+  // for exactly the imported packages the preview exists to show. Origin is wrong too —
+  // the harness serves packages from https://widget.test rather than *.widgets.plinth, so
+  // a hostname test would switch it off where it is proven. The marker is right in all
+  // three places because it travels with the frame rather than with its position.
+  //
+  // A user could of course type an embed URL that carries `#ww-slot=`. That buys them a
+  // font rewrite in their own embedded page, and it is the same fragment the shim already
+  // trusts for settings injection — a forged one is a pre-existing and much larger
+  // concern than this, so keying on it here adds nothing new.
+  const isWidgetDocument = /ww-slot=/.test(location.hash);
 
   // `http:` is still not a flat yes or no, even inside a package. It cannot complete only
   // because of mixed content, so it is fetchable wherever mixed content does not apply:

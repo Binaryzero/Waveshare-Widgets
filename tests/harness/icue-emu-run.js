@@ -99,6 +99,15 @@
 //                          that never ran would look like, so it asserts the shim WAS
 //                          there (__wwIcueCommon) and still kept its hands off. Reads
 //                          `shim:swept` if the gate goes away.
+//        nested-slot:shim:swept — the other half of that pair, and what keeps the gate
+//                          keyed to widget IDENTITY rather than frame depth. Both frames
+//                          are grandchildren loading the same document; only this one's
+//                          src carries the shell's #ww-slot= marker, and only this one is
+//                          swept. Depth was the first gate tried and it broke the settings
+//                          live preview: settings.html frames index.html?preview=1, and
+//                          that replica shell frames the widgets, so every previewed
+//                          widget is a grandchild and would have gone unswept. Reads
+//                          `shim:untouched` if the gate goes back to counting frames.
 //        own-display:block — the shim fills in a MISSING font-display; it does not
 //                          overrule an author who chose one. Reads `swap` if the widening
 //                          became an override, which would change rendering for every
@@ -149,7 +158,7 @@ const MARKERS = ['module-alive', 'mediaviewer-ok', 'hex:255, 0, 57',
   'tr-then:Compat says hello', 'notif:0', 'device-created', 'icons:3', 'click-sent',
   'live-tiles', 'qrc-left:none', 'unfetch-left:none', 'nodisplay-left:none',
   'mixed-kept:local', 'loopback-kept:kept', 'own-display:block',
-  'embedded:shim:untouched',
+  'embedded:shim:untouched', 'nested-slot:shim:swept',
   'datavideo:video', 'wrapids:A,B',
   'datefirst:rendered'];
 
