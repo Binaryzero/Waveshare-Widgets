@@ -393,6 +393,25 @@
   // dropped otherwise:
   const FETCHABLE_SCHEMES = new Set(['https', 'data', 'blob']);
 
+  // `http:` is the one scheme whose answer depends on WHERE it is asked, so it cannot sit
+  // in that set. This shim is injected with AddScriptToExecuteOnDocumentCreated, which
+  // reaches EVERY document in the WebView — not only widget packages on
+  // https://…widgets.plinth, but whatever page the Embed widget frames. The documented
+  // embed target is StreamDeckEmbeded's http://localhost:28199, and an absolute
+  // same-origin http: face in that document loads perfectly well; rejecting the scheme
+  // outright would have swapped that page's typography for the local substitute.
+  //
+  // http: cannot complete only because of mixed content, so it is fetchable when mixed
+  // content does not apply: from a document that is not itself https, and from anywhere
+  // when the target is loopback, which is potentially trustworthy and therefore exempt.
+  // (That exemption is also why a loopback embed can be framed by the https shell at all;
+  // a non-loopback http embed is blocked as mixed content before its fonts matter.)
+  const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?)$/i;
+  function httpIsFetchable(hostname) {
+    if (location.protocol !== 'https:') return true;
+    return LOOPBACK.test(hostname);
+  }
+
   // …which leaves the shape that cannot be decided by reading the CSS at all: a
   // SAME-ORIGIN RELATIVE url that 404s. `common/fonts/Corsair.woff2` is indistinguishable
   // from a path the package really vendored until the request comes back, and dropping
@@ -415,13 +434,20 @@
   // and the cost of being wrong here is a font the widget wanted, silently removed.
   function isFetchableSource(part) {
     if (/^local\s*\(/i.test(part)) return true;
-    const url = /url\s*\(\s*(['"]?)([^'")]*)\1\s*\)/i.exec(part);
-    if (!url) return true;
-    const scheme = /^([a-z][a-z0-9+.\-]*):/i.exec(url[2].trim());
-    // No scheme is a relative or protocol-relative URL: same origin, may 404, may not.
-    // Undecidable here, and handled by FONT_DISPLAY above rather than by removal.
-    if (!scheme) return true;
-    return FETCHABLE_SCHEMES.has(scheme[1].toLowerCase());
+    const match = /url\s*\(\s*(['"]?)([^'")]*)\1\s*\)/i.exec(part);
+    if (!match) return true;
+    const raw = match[2].trim();
+    if (!raw) return true;
+    // Resolved against the document, so a RELATIVE url arrives here as the document's own
+    // scheme and is kept — same origin, may 404, may not. Undecidable from the CSS, and
+    // handled by FONT_DISPLAY above rather than by removal. The parser also settles
+    // protocol-relative urls and odd spellings that a scheme regex reads wrong.
+    let url;
+    try { url = new URL(raw, location.href); }
+    catch (e) { return true; }   // unparseable is not evidence of unfetchable
+    const scheme = url.protocol.replace(/:$/, '').toLowerCase();
+    if (scheme === 'http') return httpIsFetchable(url.hostname);
+    return FETCHABLE_SCHEMES.has(scheme);
   }
 
   // `src` is an ORDERED fallback list, so dropping the whole descriptor because one

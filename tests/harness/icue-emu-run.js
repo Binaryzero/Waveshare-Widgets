@@ -71,6 +71,20 @@
 //                          entry must leave the good sibling: this face pairs a qrc: url
 //                          with local("Arial"), and reads `lost` if the widening started
 //                          discarding whole descriptors.
+//        loopback-kept:kept — `http:` is not unfetchable everywhere, and treating it as
+//                          though it were is a regression with real reach. This shim is
+//                          injected into EVERY document in the WebView, so it also runs
+//                          inside whatever the Embed widget frames — documented target
+//                          StreamDeckEmbeded's http://localhost:28199. Loopback is
+//                          potentially trustworthy, exempt from mixed content, and loads
+//                          even from an https document; dropping it would swap an
+//                          embedded page's typography for the local substitute. Reads
+//                          `stripped` if the allowlist goes back to judging by scheme
+//                          alone. (The other half of that rule — http being fetchable
+//                          from a document that is not itself https — is reasoned, not
+//                          probed: this harness serves every fixture over
+//                          https://widget.test, so there is no http document here to
+//                          run the shim in.)
 //        own-display:block — the shim fills in a MISSING font-display; it does not
 //                          overrule an author who chose one. Reads `swap` if the widening
 //                          became an override, which would change rendering for every
@@ -120,7 +134,8 @@ const check = (name, ok, detail) => {
 const MARKERS = ['module-alive', 'mediaviewer-ok', 'hex:255, 0, 57',
   'tr-then:Compat says hello', 'notif:0', 'device-created', 'icons:3', 'click-sent',
   'live-tiles', 'qrc-left:none', 'unfetch-left:none', 'nodisplay-left:none',
-  'mixed-kept:local', 'own-display:block', 'datavideo:video', 'wrapids:A,B',
+  'mixed-kept:local', 'loopback-kept:kept', 'own-display:block',
+  'datavideo:video', 'wrapids:A,B',
   'datefirst:rendered'];
 
 // icue-sd.json, not streamdeck-sd.json: same deck plus a capture frame, so the

@@ -52,6 +52,16 @@
 		font-family: 'ProbeHttpScheme';
 		src: url("http://fonts.invalid/Probe.woff2") format("woff2");
 	}
+	/* …but `http:` is NOT unfetchable everywhere, and that is the trap. This shim reaches
+	   every document in the WebView, not just widget packages — including whatever the
+	   Embed widget frames, whose documented target is StreamDeckEmbeded's
+	   http://localhost:28199. Loopback is potentially trustworthy, so it is exempt from
+	   mixed content and loads even from this https document. Rejecting the scheme
+	   outright would swap an embedded page's real typography for the substitute. */
+	@font-face {
+		font-family: 'ProbeLoopbackHttp';
+		src: url("http://localhost:28199/fonts/Deck.woff2") format("woff2");
+	}
 	/* The shape that CANNOT be decided by reading the CSS, and the one the Corsair
 	   packages actually hit: a same-origin RELATIVE path that 404s, pointing into the
 	   common/ folder the package never vendored. Indistinguishable from a path that is
@@ -128,9 +138,10 @@
 	// regression in the widening must not be able to quietly reopen the hole that
 	// started all of this while the broader marker still reads clean.
 	const qrcLeft = () => survivors((r) => prop(r, 'src').indexOf('qrc:') !== -1);
-	// Every scheme this origin cannot fetch. `http:` does not match `https:` — the
-	// colon is part of the pattern.
-	const UNFETCHABLE = /(qrc|file|http):/i;
+	// Every scheme this origin cannot fetch. `http:` does not match `https:` — the colon
+	// is part of the pattern — and loopback http is deliberately NOT counted here: it is
+	// fetchable, and ProbeLoopbackHttp below asserts it survived.
+	const UNFETCHABLE = /(qrc|file):|http:\/\/(?!localhost|127\.)/i;
 	const unfetchLeft = () => survivors((r) => UNFETCHABLE.test(prop(r, 'src')));
 	// The half no scheme test can reach: a face still able to block first paint. This is
 	// what actually stops the flood for ProbeMissingRel, whose source stays put.
@@ -141,6 +152,15 @@
 		eachFace((r) => {
 			if (named(r).indexOf('ProbeMixed') === -1) return;
 			v = prop(r, 'src').indexOf('local(') !== -1 ? 'local' : 'lost';
+		});
+		return v;
+	};
+	// The loopback embed case: fetchable http, and it must still be there.
+	const loopbackKept = () => {
+		let v = 'gone';
+		eachFace((r) => {
+			if (named(r).indexOf('ProbeLoopbackHttp') === -1) return;
+			v = prop(r, 'src').indexOf('localhost:28199') !== -1 ? 'kept' : 'stripped';
 		});
 		return v;
 	};
@@ -186,6 +206,7 @@
 			log('unfetch-left:' + unfetchLeft());
 			log('nodisplay-left:' + noDisplayLeft());
 			log('mixed-kept:' + mixedKept());
+			log('loopback-kept:' + loopbackKept());
 			log('own-display:' + ownDisplay());
 		}, 2000);
 	});

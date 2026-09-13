@@ -473,12 +473,19 @@ never arrives logs a "Fallback font will be used" intervention for every element
 on it — hundreds of lines from a single widget — so the shim defuses `@font-face` rules
 two ways.
 
-Sources the widget's origin cannot fetch are dropped from the `src` descriptor. That is
-an allowlist (`https:`, `data:`, `blob:`, plus `local()` and relative URLs), not a list
-of known-bad schemes: Qt's `qrc:/` was the first shape found, but `file:` is cross-scheme
-from an https origin and plain `http:` is blockable mixed content, and a package can
-invent another. The list is an ordered fallback, so a sibling `.woff2` survives; a
-descriptor left with nothing falls back to `local()` faces.
+Sources the document cannot fetch are dropped from the `src` descriptor. That is an
+allowlist (`https:`, `data:`, `blob:`, plus `local()` and relative URLs), not a list of
+known-bad schemes: Qt's `qrc:/` was the first shape found, but `file:` is cross-scheme
+from an https origin, and a package can invent another. The list is an ordered fallback,
+so a sibling `.woff2` survives; a descriptor left with nothing falls back to `local()`
+faces.
+
+`http:` is decided per document rather than by scheme, because the shim is injected into
+*every* document in the WebView — including whatever the Embed widget frames, whose
+documented target is StreamDeckEmbeded's `http://localhost:28199`. It cannot complete
+only because of mixed content, so it is kept when mixed content does not apply: from a
+document that is not itself https, and from anywhere when the target is loopback, which
+is potentially trustworthy and therefore exempt.
 
 A same-origin *relative* URL that 404s cannot be told apart from one the package really
 vendored, so it is never dropped on suspicion — the shim adds `font-display: swap`
