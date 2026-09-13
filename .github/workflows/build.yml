@@ -86,6 +86,19 @@ jobs:
       - name: Fetch body ceiling holds against a real server
         run: node tests/harness/bodycap-run.js browser-fetch.generated.js browser-fetch.lowered.js
 
+      # Removing a widget RETIRES it (#226) — its config, credential included, moves to the
+      # attic so it can come back. That held for the two form ✕ buttons but not for the one
+      # in the settings window's live preview, which discarded instead: the preview replica
+      # is handed every secret blanked, so anything it retired arrived empty. The preview now
+      # NAMES the slot and the settings side retires it on the one path that holds the
+      # unscrubbed copy. Plain Node: the decision is a pure pair of functions, extracted from
+      # the real settings.js between markers and executed — not transcribed, so a regression
+      # in the shipped commit cannot leave this green. The browser half (the postMessage
+      # relay) stays in the Playwright harnesses on the maintainer's machine, the same split
+      # as the fetch ceiling above.
+      - name: A preview removal retires on the one retire path
+        run: node tests/harness/atticretire-run.js
+
       # A Stream Deck profile names its plugin and action UUIDs, and the icon resolver used
       # both to build filesystem paths — so a crafted or imported profile could point them at
       # any readable file, whose contents are then base64'd into the profile payload and sent

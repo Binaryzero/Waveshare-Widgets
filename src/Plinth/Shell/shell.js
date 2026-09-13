@@ -1443,6 +1443,44 @@
       instanceId: (selected && selected.def.instanceId) || null, gen: previewGen });
   }
 
+  // The preview's ✕ does not retire here — it NAMES the slot and lets the settings
+  // window run its own removeSlotAt against the UNSCRUBBED working copy. This document
+  // is handed every secret blanked (settings.js replicaLayout), so a def retired here
+  // would reach the attic empty, and nothing could reunite it with the value the user
+  // typed. One retire path, and it is the one holding the credential.
+  //
+  // Deliberately NO mint. A replica-minted instanceId is the exact object the withdrawn
+  // union died on: it links to nothing on the settings side, and bridging it would be
+  // the "sole id-less slot of this widget" guess #68 forbids. Send the id we were given
+  // or null, and let the side that can address the credential decide.
+  function requestRemoveSlot(record) {
+    if (!PREVIEW) return;
+    // Resolve against the LIVE tree, never record.page — an init may have reassigned
+    // layoutData while the two-tap confirm was armed. Same reason removeSlot does it.
+    const page = layoutData.pages.find((p) => (p.slots || []).indexOf(record.def) >= 0);
+    if (!page) {
+      // Orphaned record: nothing left to name, but the tile is still on glass. This is
+      // removeSlot's own orphan cleanup, which no longer runs in PREVIEW, so it lives
+      // with the caller that can still reach the case.
+      record.el.remove();
+      slots = slots.filter((s) => s !== record);
+      return;
+    }
+    if (drag && drag.record === record) cancelDrag(); // removed out from under a drag
+    // Dim now: the parent's answer arrives as a full re-init up to 350ms later, and a ✕
+    // that does nothing visible reads as broken. Self-clearing, so a REFUSED request
+    // un-dims on its own instead of stranding a ghost tile.
+    record.el.classList.add('retiring');
+    setTimeout(() => { record.el.classList.remove('retiring'); }, 1200);
+    postToHost({
+      type: 'remove-slot',
+      page: layoutData.pages.indexOf(page),
+      index: (page.slots || []).indexOf(record.def),
+      instanceId: record.def.instanceId || null,
+      gen: previewGen,
+    });
+  }
+
   function selectRecord(record, announce) {
     selected = record || null;
     applySelectionClass();
@@ -1638,7 +1676,12 @@
     remove.title = 'Remove this widget (tap twice)';
     remove.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      confirmThen(remove, '✕', true, () => removeSlot(record));
+      // One retire path (#226): on glass we retire locally; in the settings replica we
+      // hand off, because only the settings side holds the unscrubbed def. Same shape as
+      // the 🎨 handoff below and openPalette's.
+      confirmThen(remove, '✕', true, () => {
+        if (PREVIEW) requestRemoveSlot(record); else removeSlot(record);
+      });
     });
     ov.appendChild(remove);
 
@@ -1783,6 +1826,14 @@
   }
 
   function removeSlot(record) {
+    // Panel-only, structurally. In the settings replica `layoutData.retained` is
+    // undefined for the document's life — replicaLayout deletes `retained` on the way
+    // down — so a retire here would author a PHANTOM attic: an entry the settings side
+    // never sees, holding a def whose credential was blanked before it arrived. Worse,
+    // if such a capture ever did land it would seat one instanceId in both pages and
+    // retained, the twin state the host's stored-index poison punishes by blanking the
+    // LIVE credential. The preview's ✕ routes through requestRemoveSlot instead.
+    if (PREVIEW) return;
     if (drag && drag.record === record) cancelDrag(); // removed out from under a drag
     if (styleTarget === record) closeStyleEditor(false);
     if (propTarget === record) closePropSheet(false);
