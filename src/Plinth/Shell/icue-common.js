@@ -393,19 +393,38 @@
   // dropped otherwise:
   const FETCHABLE_SCHEMES = new Set(['https', 'data', 'blob']);
 
-  // `http:` is the one scheme whose answer depends on WHERE it is asked, so it cannot sit
-  // in that set. This shim is injected with AddScriptToExecuteOnDocumentCreated, which
-  // reaches EVERY document in the WebView — not only widget packages on
-  // https://…widgets.plinth, but whatever page the Embed widget frames. The documented
-  // embed target is StreamDeckEmbeded's http://localhost:28199, and an absolute
-  // same-origin http: face in that document loads perfectly well; rejecting the scheme
-  // outright would have swapped that page's typography for the local substitute.
+  // …and both repairs are for WIDGET PACKAGES ONLY.
   //
-  // http: cannot complete only because of mixed content, so it is fetchable when mixed
-  // content does not apply: from a document that is not itself https, and from anywhere
-  // when the target is loopback, which is potentially trustworthy and therefore exempt.
-  // (That exemption is also why a loopback embed can be framed by the https shell at all;
-  // a non-loopback http embed is blocked as mixed content before its fonts matter.)
+  // This shim is injected with AddScriptToExecuteOnDocumentCreated, which reaches EVERY
+  // document in the WebView. Defining helper globals everywhere is harmless — an
+  // embedded page never reads them. REWRITING THE PAGE'S CSS is not. The Embed, YouTube
+  // and Twitch widgets each frame a page Plinth is meant to display unchanged, and both
+  // repairs below would edit it: dropping an http: source that the page's own
+  // `Content-Security-Policy: upgrade-insecure-requests` would have upgraded and loaded,
+  // and setting font-display on faces that were loading perfectly well, which buys that
+  // page fallback flashes and layout shifts it never asked for.
+  //
+  // A widget frame is a DIRECT child of the top document: shell.js appends it into the
+  // page grid, and the harness's host page does the same. Anything a widget frames itself
+  // is a grandchild — which is exactly the embedded-content case, and the only thing this
+  // needs to separate. Origin is the other candidate and is worse: the harness serves
+  // packages from https://widget.test rather than *.widgets.plinth, so a hostname test
+  // would switch the sweep off precisely where it is proven.
+  //
+  // The cost is a widget's own nested sub-document going unswept. iCUE packages are
+  // single-document by convention, and that is much the better error of the two.
+  const isWidgetDocument = (() => {
+    try { return window.parent === window.top; } catch (e) { return false; }
+  })();
+
+  // `http:` is still not a flat yes or no, even inside a package. It cannot complete only
+  // because of mixed content, so it is fetchable wherever mixed content does not apply:
+  // when the target is loopback — potentially trustworthy, and therefore exempt even from
+  // an https document, which is how a widget pointing at a local server (StreamDeckEmbeded
+  // serves the Virtual Stream Deck on http://localhost:28199) keeps its font — and from a
+  // document that is not itself https. That second branch does not arise today, since
+  // packages are served over https, but it is the actual reason the scheme is special and
+  // it keeps this correct if the gate above or the shell's scheme ever changes.
   const LOOPBACK = /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?)$/i;
   function httpIsFetchable(hostname) {
     if (location.protocol !== 'https:') return true;
@@ -537,6 +556,7 @@
   // Sheets arrive over the document's lifetime, so sweep at both readiness points —
   // and once more shortly after load for anything a script appended.
   function sweepFonts() {
+    if (!isWidgetDocument) return;
     const { dropped, unblocked } = defuseFonts();
     if (dropped || unblocked) {
       try {
@@ -628,6 +648,7 @@
   function watchForSheets() {
     // The shim runs at document-created, before <html> exists; called again at each
     // readiness point, so the first call that has a root wins and the rest no-op.
+    if (!isWidgetDocument) return;   // nothing to sweep, so nothing to watch for
     if (watching || typeof MutationObserver !== 'function') return;
     const root = document.documentElement;
     if (!root) return;

@@ -85,6 +85,20 @@
 //                          probed: this harness serves every fixture over
 //                          https://widget.test, so there is no http document here to
 //                          run the shim in.)
+//        embedded:shim:untouched — the sweep is for widget PACKAGES, and this shim reaches
+//                          every document in the WebView, so it also runs inside whatever
+//                          the Embed/YouTube/Twitch widgets frame. Defining helper globals
+//                          there is inert; REWRITING that page's CSS is not — dropping an
+//                          http: source its own `upgrade-insecure-requests` would have
+//                          upgraded, or setting font-display on faces that were loading
+//                          fine, buys a page Plinth is meant to show unchanged a set of
+//                          fallback flashes and layout shifts. A widget frame is a direct
+//                          child of the top document; anything a widget frames itself is a
+//                          grandchild, and the sweep now gates on that. The marker reports
+//                          BOTH halves on purpose — `untouched` alone is also what a shim
+//                          that never ran would look like, so it asserts the shim WAS
+//                          there (__wwIcueCommon) and still kept its hands off. Reads
+//                          `shim:swept` if the gate goes away.
 //        own-display:block — the shim fills in a MISSING font-display; it does not
 //                          overrule an author who chose one. Reads `swap` if the widening
 //                          became an override, which would change rendering for every
@@ -135,6 +149,7 @@ const MARKERS = ['module-alive', 'mediaviewer-ok', 'hex:255, 0, 57',
   'tr-then:Compat says hello', 'notif:0', 'device-created', 'icons:3', 'click-sent',
   'live-tiles', 'qrc-left:none', 'unfetch-left:none', 'nodisplay-left:none',
   'mixed-kept:local', 'loopback-kept:kept', 'own-display:block',
+  'embedded:shim:untouched',
   'datavideo:video', 'wrapids:A,B',
   'datefirst:rendered'];
 

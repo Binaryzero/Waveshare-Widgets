@@ -155,6 +155,34 @@
 		});
 		return v;
 	};
+	// An EMBEDDED page — what the Embed/YouTube/Twitch widgets frame. The shim reaches
+	// every document in the WebView, so it runs in here too, but rewriting this page's CSS
+	// would be editing content Plinth is meant to display unchanged. Reports both halves,
+	// because "untouched" alone would also be what a shim that never ran looks like: the
+	// marker has to prove the shim WAS present and still kept its hands off.
+	const nf = document.createElement('iframe');
+	nf.id = 'nestedframe';
+	nf.style.display = 'none';
+	nf.srcdoc = "<style>@font-face { font-family: 'ProbeEmbedded';"
+		+ " src: url(\"qrc:/fonts/Embedded.ttf\") format(\"truetype\"); }</style>";
+	document.documentElement.appendChild(nf);
+	const embedded = () => {
+		const f = document.getElementById('nestedframe');
+		if (!f || !f.contentWindow) return 'noframe';
+		let ran;
+		try { ran = f.contentWindow.__wwIcueCommon === true; } catch (e) { return 'blocked'; }
+		let left = false;
+		try {
+			for (const sheet of Array.from(f.contentDocument.styleSheets)) {
+				for (const rule of Array.from(sheet.cssRules || [])) {
+					if (rule.type !== 5) continue;
+					if ((rule.style.getPropertyValue('src') || '').indexOf('qrc:') !== -1) left = true;
+				}
+			}
+		} catch (e) { return 'unreadable'; }
+		return (ran ? 'shim' : 'noshim') + ':' + (left ? 'untouched' : 'swept');
+	};
+
 	// The loopback embed case: fetchable http, and it must still be there.
 	const loopbackKept = () => {
 		let v = 'gone';
@@ -207,6 +235,7 @@
 			log('nodisplay-left:' + noDisplayLeft());
 			log('mixed-kept:' + mixedKept());
 			log('loopback-kept:' + loopbackKept());
+			log('embedded:' + embedded());
 			log('own-display:' + ownDisplay());
 		}, 2000);
 	});

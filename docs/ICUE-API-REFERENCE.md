@@ -480,12 +480,21 @@ from an https origin, and a package can invent another. The list is an ordered f
 so a sibling `.woff2` survives; a descriptor left with nothing falls back to `local()`
 faces.
 
-`http:` is decided per document rather than by scheme, because the shim is injected into
-*every* document in the WebView — including whatever the Embed widget frames, whose
-documented target is StreamDeckEmbeded's `http://localhost:28199`. It cannot complete
-only because of mixed content, so it is kept when mixed content does not apply: from a
-document that is not itself https, and from anywhere when the target is loopback, which
-is potentially trustworthy and therefore exempt.
+`http:` is not a flat yes or no. It cannot complete only because of mixed content, so it
+is kept wherever mixed content does not apply: when the target is loopback — potentially
+trustworthy, and therefore exempt even from an https document, which is how a widget
+pointing at a local server (StreamDeckEmbeded serves its Virtual Stream Deck on
+`http://localhost:28199`) keeps its font — and from a document that is not itself https.
+
+Both repairs run in **widget package documents only**. The shim is injected into every
+document in the WebView, so it also reaches whatever the Embed, YouTube and Twitch
+widgets frame. Defining helper globals there is inert, but rewriting that page's CSS is
+not: it would drop an `http:` source the page's own `upgrade-insecure-requests` would
+have upgraded, and set `font-display` on faces that were loading fine, buying a page
+Plinth is meant to display unchanged a set of fallback flashes and layout shifts. A
+widget frame is a direct child of the top document; anything a widget frames itself is a
+grandchild, and the sweep gates on that. The cost is a widget's own nested sub-document
+going unswept, which iCUE packages do not exercise.
 
 A same-origin *relative* URL that 404s cannot be told apart from one the package really
 vendored, so it is never dropped on suspicion — the shim adds `font-display: swap`
