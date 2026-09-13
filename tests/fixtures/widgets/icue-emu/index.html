@@ -20,10 +20,12 @@
 	<script src="../common/tools/ColorTools.js"></script>
 	<script src="../common/tools/media_viewer/MediaViewer.js"></script>
 	<link rel="stylesheet" href="../common/tools/media_viewer/MediaViewer.css">
-	<!-- Qt resource-scheme faces, the way iCUE packages ship them. Chromium cannot load
-	     `qrc:` at all, and every element waiting on one logs a "Fallback font will be
-	     used" intervention — hundreds of lines from one widget. Two placements, because
-	     the sweep once handled only the first:
+	<!-- Faces that never arrive, in every shape that floods. Chromium logs a "Fallback
+	     font will be used" intervention per element waiting on one — hundreds of lines
+	     from a single widget. Qt resource-scheme (`qrc:`) faces are how iCUE packages
+	     ship them and were the first shape found; the ones below the @media group are
+	     the shapes the qrc:-only test missed. Two PLACEMENTS first, because the sweep
+	     once handled only the first:
 	       · top level, and
 	       · inside an @media group, which is not itself a FONT_FACE_RULE, so a scan that
 	         only tested the outermost rule's type never saw the face inside it.
@@ -38,6 +40,63 @@
 			font-family: 'ProbeGrouped';
 			src: url("qrc:/fonts/OpenSans-Bold.ttf") format("truetype");
 		}
+	}
+	/* Not qrc:, and every bit as unloadable — the shapes a qrc:-only test walked past.
+	   `file:` is cross-scheme from an https origin; `http:` is blockable mixed content.
+	   Both flood exactly as qrc: did, and both were live in the field. */
+	@font-face {
+		font-family: 'ProbeFileScheme';
+		src: url("file:///C:/Windows/Fonts/segoeui.ttf") format("truetype");
+	}
+	@font-face {
+		font-family: 'ProbeHttpScheme';
+		src: url("http://fonts.invalid/Probe.woff2") format("woff2");
+	}
+	/* …but `http:` is NOT unfetchable everywhere, and that is the trap. This shim reaches
+	   every document in the WebView, not just widget packages — including whatever the
+	   Embed widget frames, whose documented target is StreamDeckEmbeded's
+	   http://localhost:28199. Loopback is potentially trustworthy, so it is exempt from
+	   mixed content and loads even from this https document. Rejecting the scheme
+	   outright would swap an embedded page's real typography for the substitute. */
+	@font-face {
+		font-family: 'ProbeLoopbackHttp';
+		src: url("http://localhost:28199/fonts/Deck.woff2") format("woff2");
+	}
+	/* A `.localhost` SUBDOMAIN is potentially trustworthy too — the whole name, not just
+	   the bare label — so this is fetchable and must survive. */
+	@font-face {
+		font-family: 'ProbeSubLocalhost';
+		src: url("http://fonts.localhost/Sub.woff2") format("woff2");
+	}
+	/* …and the direction that matters if the loopback test is ever loosened carelessly.
+	   `localhost.evil.invalid` is a name anyone can register. It must read as REMOTE and
+	   be stripped; a test anchored at the wrong end would let it through as loopback. */
+	@font-face {
+		font-family: 'ProbeFakeLocalhost';
+		src: url("http://localhost.evil.invalid/Fake.woff2") format("woff2");
+	}
+	/* The shape that CANNOT be decided by reading the CSS, and the one the Corsair
+	   packages actually hit: a same-origin RELATIVE path that 404s, pointing into the
+	   common/ folder the package never vendored. Indistinguishable from a path that is
+	   really there until the request answers, so it must NOT be stripped — it has to be
+	   defused by font-display instead. A regression that "fixes" this by removing the
+	   source would break every widget that ships its own fonts correctly. */
+	@font-face {
+		font-family: 'ProbeMissingRel';
+		src: url("common/fonts/Missing.woff2") format("woff2");
+	}
+	/* src is an ORDERED list: dropping the unloadable entry must not take the good
+	   sibling with it. */
+	@font-face {
+		font-family: 'ProbeMixed';
+		src: url("qrc:/fonts/OpenSans-Semi.ttf") format("truetype"), local("Arial");
+	}
+	/* An author who chose a display mode keeps it. The shim fills in a missing
+	   font-display; it does not overrule one that is there. */
+	@font-face {
+		font-family: 'ProbeOwnDisplay';
+		src: url("qrc:/fonts/OpenSans-Mono.ttf") format("truetype");
+		font-display: block;
 	}
 	</style>
 </head>
@@ -62,19 +121,13 @@
 	log('module-alive');
 
 	// Whether a face was defused is only visible in the CSSOM — the page cannot observe
-	// the interventions it no longer causes. Report the qrc: sources still present, per
-	// placement, so the marker names WHICH hole is open rather than just "some".
-	const qrcLeft = () => {
-		const left = [];
+	// the interventions it no longer causes. Every marker below names the SURVIVORS, so
+	// a regression says which face reopened rather than just "some".
+	const eachFace = (fn) => {
 		const walk = (rules) => {
 			for (const rule of Array.from(rules || [])) {
 				if (!rule) continue;
-				if (rule.type === 5) {
-					let src = '';
-					try { src = rule.style.getPropertyValue('src') || ''; } catch (e) { src = ''; }
-					if (src.indexOf('qrc:') !== -1) left.push(rule.style.getPropertyValue('font-family'));
-					continue;
-				}
+				if (rule.type === 5) { fn(rule); continue; }
 				let nested = null;
 				try { nested = rule.cssRules; } catch (e) { nested = null; }
 				if (nested) walk(nested);
@@ -83,7 +136,109 @@
 		for (const sheet of Array.from(document.styleSheets)) {
 			try { walk(sheet.cssRules); } catch (e) { /* cross-origin */ }
 		}
-		return left;
+	};
+	const prop = (rule, name) => {
+		try { return rule.style.getPropertyValue(name) || ''; } catch (e) { return ''; }
+	};
+	const named = (rule) => prop(rule, 'font-family') || '?';
+	const survivors = (test) => {
+		const left = [];
+		eachFace((rule) => { if (test(rule)) left.push(named(rule)); });
+		return left.join(',') || 'none';
+	};
+
+	// qrc: on its own, kept as its own marker: the widened rule subsumes it, and a
+	// regression in the widening must not be able to quietly reopen the hole that
+	// started all of this while the broader marker still reads clean.
+	const qrcLeft = () => survivors((r) => prop(r, 'src').indexOf('qrc:') !== -1);
+	// Every scheme this origin cannot fetch. `http:` does not match `https:` — the colon
+	// is part of the pattern — and loopback http is deliberately NOT counted here, since
+	// it is fetchable. The host must END at localhost (`:` port, `/` path, or the string's
+	// end), which is what keeps `localhost.evil.invalid` on the unfetchable side where
+	// ProbeFakeLocalhost expects it. The per-face markers below are the real assertions;
+	// this only names survivors.
+	const UNFETCHABLE = /(qrc|file):|http:\/\/(?!(?:[a-z0-9-]+\.)*localhost\.?(?::|\/|$)|127\.)/i;
+	const unfetchLeft = () => survivors((r) => UNFETCHABLE.test(prop(r, 'src')));
+	// The half no scheme test can reach: a face still able to block first paint. This is
+	// what actually stops the flood for ProbeMissingRel, whose source stays put.
+	const noDisplayLeft = () => survivors((r) => !prop(r, 'font-display'));
+	// …and the two things the widening must NOT break.
+	const mixedKept = () => {
+		let v = 'gone';
+		eachFace((r) => {
+			if (named(r).indexOf('ProbeMixed') === -1) return;
+			v = prop(r, 'src').indexOf('local(') !== -1 ? 'local' : 'lost';
+		});
+		return v;
+	};
+	// An EMBEDDED page — what the Embed/YouTube/Twitch widgets frame. The shim reaches
+	// every document in the WebView, so it runs in here too, but rewriting this page's CSS
+	// would be editing content Plinth is meant to display unchanged. Reports both halves,
+	// because "untouched" alone would also be what a shim that never ran looks like: the
+	// marker has to prove the shim WAS present and still kept its hands off.
+	// A PAIR, and the pairing is the whole point. Both frames are grandchildren of the top
+	// page loading the same document; they differ only in whether the src carries the
+	// shell's #ww-slot= marker. Together they pin the gate to widget IDENTITY and away
+	// from frame depth — which was the first attempt here and broke the settings live
+	// preview, where settings.html frames index.html?preview=1 and that replica shell
+	// frames the widgets, making every previewed widget a grandchild.
+	const frameAt = (id, src) => {
+		const f = document.createElement('iframe');
+		f.id = id;
+		f.style.display = 'none';
+		f.src = src;
+		document.documentElement.appendChild(f);
+	};
+	frameAt('embeddedframe', 'nested-slot.html');                  // what an Embed widget frames
+	frameAt('slotframe', 'nested-slot.html#ww-slot=p9s9');         // a widget slot, nested
+
+	// Reports the shim's PRESENCE alongside the outcome, because "untouched" on its own is
+	// also what a shim that never ran looks like — the marker has to distinguish a gate
+	// that held from a script that was never there.
+	const nestedState = (id) => {
+		const f = document.getElementById(id);
+		if (!f || !f.contentWindow) return 'noframe';
+		let ran;
+		try { ran = f.contentWindow.__wwIcueCommon === true; } catch (e) { return 'blocked'; }
+		let left = false;
+		try {
+			for (const sheet of Array.from(f.contentDocument.styleSheets)) {
+				for (const rule of Array.from(sheet.cssRules || [])) {
+					if (rule.type !== 5) continue;
+					if ((rule.style.getPropertyValue('src') || '').indexOf('qrc:') !== -1) left = true;
+				}
+			}
+		} catch (e) { return 'unreadable'; }
+		return (ran ? 'shim' : 'noshim') + ':' + (left ? 'untouched' : 'swept');
+	};
+	const embedded = () => nestedState('embeddedframe');
+	const nestedSlot = () => nestedState('slotframe');
+
+	const faceKept = (name, needle) => {
+		let v = 'gone';
+		eachFace((r) => {
+			if (named(r).indexOf(name) === -1) return;
+			v = prop(r, 'src').indexOf(needle) !== -1 ? 'kept' : 'stripped';
+		});
+		return v;
+	};
+
+	// The loopback embed case: fetchable http, and it must still be there.
+	const loopbackKept = () => {
+		let v = 'gone';
+		eachFace((r) => {
+			if (named(r).indexOf('ProbeLoopbackHttp') === -1) return;
+			v = prop(r, 'src').indexOf('localhost:28199') !== -1 ? 'kept' : 'stripped';
+		});
+		return v;
+	};
+	const ownDisplay = () => {
+		let v = 'gone';
+		eachFace((r) => {
+			if (named(r).indexOf('ProbeOwnDisplay') === -1) return;
+			v = prop(r, 'font-display') || 'cleared';
+		});
+		return v;
 	};
 
 	// Sheets that arrive well after load, when every scheduled sweep has run. Two
@@ -114,7 +269,18 @@
 			document.body.appendChild(container);
 		}, 1700);
 		// After the observer's coalesced sweep has had a turn on both.
-		setTimeout(() => log('qrc-left:' + (qrcLeft().join(',') || 'none')), 2000);
+		setTimeout(() => {
+			log('qrc-left:' + qrcLeft());
+			log('unfetch-left:' + unfetchLeft());
+			log('nodisplay-left:' + noDisplayLeft());
+			log('mixed-kept:' + mixedKept());
+			log('loopback-kept:' + loopbackKept());
+			log('sublocalhost:' + faceKept('ProbeSubLocalhost', 'fonts.localhost'));
+			log('fakelocalhost:' + faceKept('ProbeFakeLocalhost', 'evil.invalid'));
+			log('embedded:' + embedded());
+			log('nested-slot:' + nestedSlot());
+			log('own-display:' + ownDisplay());
+		}, 2000);
 	});
 
 	const viewer = new MediaViewer({ container: document.getElementById('bg') });

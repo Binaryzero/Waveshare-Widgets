@@ -50,6 +50,79 @@
 //                          that walks every sheet and defuses the nested one incidentally,
 //                          so the nested case would prove nothing. The marker names the
 //                          survivors, so a regression says WHICH placement broke.
+//        unfetch-left:none  — the same sweep, widened past `qrc:`. That scheme was only
+//                          the first shape found; a face on `file:` (cross-scheme from
+//                          an https origin) or plain `http:` (blockable mixed content)
+//                          cannot complete either, and floods identically. The rule is
+//                          now an allowlist of schemes the origin CAN fetch, so a
+//                          package that invents another one is covered without a new
+//                          case. The probe plants one of each beside the qrc: faces.
+//        nodisplay-left:none — the half no scheme test can reach. A same-origin RELATIVE
+//                          url that 404s — a face pointing into the common/ folder the
+//                          package never vendored, which is what the Corsair widgets
+//                          actually do — is indistinguishable from a vendored one until
+//                          the request answers, so it cannot be stripped on suspicion.
+//                          `font-display: swap` removes the block period the intervention
+//                          exists to override, so Chromium stops logging and the font
+//                          still swaps in if it turns out to be there. Asserted over
+//                          EVERY face, because the flood is per waiting element and one
+//                          missed face is still a flood.
+//        mixed-kept:local  — `src` is an ordered fallback list. Dropping the unloadable
+//                          entry must leave the good sibling: this face pairs a qrc: url
+//                          with local("Arial"), and reads `lost` if the widening started
+//                          discarding whole descriptors.
+//        loopback-kept:kept — `http:` is not unfetchable everywhere, and treating it as
+//                          though it were is a regression with real reach. This shim is
+//                          injected into EVERY document in the WebView, so it also runs
+//                          inside whatever the Embed widget frames — documented target
+//                          StreamDeckEmbeded's http://localhost:28199. Loopback is
+//                          potentially trustworthy, exempt from mixed content, and loads
+//                          even from an https document; dropping it would swap an
+//                          embedded page's typography for the local substitute. Reads
+//                          `stripped` if the allowlist goes back to judging by scheme
+//                          alone. (The other half of that rule — http being fetchable
+//                          from a document that is not itself https — is reasoned, not
+//                          probed: this harness serves every fixture over
+//                          https://widget.test, so there is no http document here to
+//                          run the shim in.)
+//        embedded:shim:untouched — the sweep is for widget PACKAGES, and this shim reaches
+//                          every document in the WebView, so it also runs inside whatever
+//                          the Embed/YouTube/Twitch widgets frame. Defining helper globals
+//                          there is inert; REWRITING that page's CSS is not — dropping an
+//                          http: source its own `upgrade-insecure-requests` would have
+//                          upgraded, or setting font-display on faces that were loading
+//                          fine, buys a page Plinth is meant to show unchanged a set of
+//                          fallback flashes and layout shifts. A widget frame is a direct
+//                          child of the top document; anything a widget frames itself is a
+//                          grandchild, and the sweep now gates on that. The marker reports
+//                          BOTH halves on purpose — `untouched` alone is also what a shim
+//                          that never ran would look like, so it asserts the shim WAS
+//                          there (__wwIcueCommon) and still kept its hands off. Reads
+//                          `shim:swept` if the gate goes away.
+//        nested-slot:shim:swept — the other half of that pair, and what keeps the gate
+//                          keyed to widget IDENTITY rather than frame depth. Both frames
+//                          are grandchildren loading the same document; only this one's
+//                          src carries the shell's #ww-slot= marker, and only this one is
+//                          swept. Depth was the first gate tried and it broke the settings
+//                          live preview: settings.html frames index.html?preview=1, and
+//                          that replica shell frames the widgets, so every previewed
+//                          widget is a grandchild and would have gone unswept. Reads
+//                          `shim:untouched` if the gate goes back to counting frames.
+//        sublocalhost:kept / fakelocalhost:stripped — the loopback test, pinned from both
+//                          sides. Secure contexts treats the whole `.localhost` name as
+//                          potentially trustworthy, so http://fonts.localhost/ is
+//                          fetchable and stripping it would substitute a font that was
+//                          going to load. The pair exists because widening that test is
+//                          exactly where an over-broad match slips in:
+//                          `localhost.evil.invalid` is a name anyone can register, and a
+//                          pattern anchored at the wrong end would read it as loopback and
+//                          admit a remote source through the check that keeps remote
+//                          sources out. One marker alone would let the widening pass while
+//                          the boundary moved.
+//        own-display:block — the shim fills in a MISSING font-display; it does not
+//                          overrule an author who chose one. Reads `swap` if the widening
+//                          became an override, which would change rendering for every
+//                          correctly-built widget on the panel.
 //   E2 · teeth for the Stream Deck path: the --sd fixture was actually served (the
 //        runner's own "profile was served" check is part of the green run).
 //   E3 · wiring, text-level (the pattern tools/StreamDeckPaths uses for what a Node
@@ -94,7 +167,12 @@ const check = (name, ok, detail) => {
 
 const MARKERS = ['module-alive', 'mediaviewer-ok', 'hex:255, 0, 57',
   'tr-then:Compat says hello', 'notif:0', 'device-created', 'icons:3', 'click-sent',
-  'live-tiles', 'qrc-left:none', 'datavideo:video', 'wrapids:A,B', 'datefirst:rendered'];
+  'live-tiles', 'qrc-left:none', 'unfetch-left:none', 'nodisplay-left:none',
+  'mixed-kept:local', 'loopback-kept:kept', 'sublocalhost:kept',
+  'fakelocalhost:stripped', 'own-display:block',
+  'embedded:shim:untouched', 'nested-slot:shim:swept',
+  'datavideo:video', 'wrapids:A,B',
+  'datefirst:rendered'];
 
 // icue-sd.json, not streamdeck-sd.json: same deck plus a capture frame, so the
 // slice-into-per-key-faces path runs (the capture poll fires at 500ms — the --wait

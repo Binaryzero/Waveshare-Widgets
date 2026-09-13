@@ -468,12 +468,48 @@ URLs was tried first and withdrawn: it failed on a real device while the code wa
 present, and a filter miss and a missing file are the same silent 404. Each helper is a
 window property, so a vendored copy (served normally by the package's own folder
 mapping) shadows ours rather than colliding with it. That includes a `MediaViewer` stand-in, so widgets construct
-and degrade cleanly even though `media-selector` itself stays unsupported. Fonts
-referenced over Qt's `qrc:/` scheme cannot load in a browser engine at all, and each
-element waiting on one logs a "Fallback font will be used" intervention — hundreds of
-lines from a single widget. The shim rewrites those `src` descriptors: only the `qrc:`
-entries are dropped (the list is an ordered fallback, so a sibling `.woff2` survives),
-and a descriptor left with nothing falls back to `local()` faces. It sweeps every
-same-origin sheet — recursing `@import`s and grouping rules like `@media`/`@supports`/
-`@layer`, where a nested `@font-face` is not itself the outermost rule — and watches for
-stylesheets appended later, so a widget that loads a skin after startup is covered too.
+and degrade cleanly even though `media-selector` itself stays unsupported. A font that
+never arrives logs a "Fallback font will be used" intervention for every element waiting
+on it — hundreds of lines from a single widget — so the shim defuses `@font-face` rules
+two ways.
+
+Sources the document cannot fetch are dropped from the `src` descriptor. That is an
+allowlist (`https:`, `data:`, `blob:`, plus `local()` and relative URLs), not a list of
+known-bad schemes: Qt's `qrc:/` was the first shape found, but `file:` is cross-scheme
+from an https origin, and a package can invent another. The list is an ordered fallback,
+so a sibling `.woff2` survives; a descriptor left with nothing falls back to `local()`
+faces.
+
+`http:` is not a flat yes or no. It cannot complete only because of mixed content, so it
+is kept wherever mixed content does not apply: when the target is loopback — potentially
+trustworthy, and therefore exempt even from an https document, which is how a widget
+pointing at a local server (StreamDeckEmbeded serves its Virtual Stream Deck on
+`http://localhost:28199`) keeps its font — and from a document that is not itself https.
+Loopback covers `127.0.0.0/8`, `::1`, and the whole of the `localhost` name including
+subdomains such as `fonts.localhost`. The host must *end* there: `localhost.evil.example`
+is a registrable name and reads as remote.
+
+Both repairs run in **widget package documents only**. The shim is injected into every
+document in the WebView, so it also reaches whatever the Embed, YouTube and Twitch
+widgets frame. Defining helper globals there is inert, but rewriting that page's CSS is
+not: it would drop an `http:` source the page's own `upgrade-insecure-requests` would
+have upgraded, and set `font-display` on faces that were loading fine, buying a page
+Plinth is meant to display unchanged a set of fallback flashes and layout shifts.
+
+The test is the slot marker. `shell.js` builds every widget frame's src as
+`<widget url>#ww-slot=<tag>&ww-settings=…` — the same fragment `icue-compat.js` reads to
+derive `uniqueId` — and a page framed from a URL the user typed carries none. Frame depth
+would not do: the settings window frames `index.html?preview=1`, and that replica shell
+frames the widgets, so every widget in the live preview is a grandchild.
+
+A same-origin *relative* URL that 404s cannot be told apart from one the package really
+vendored, so it is never dropped on suspicion — the shim adds `font-display: swap`
+instead, which removes the block period the intervention exists to override. The font
+still swaps in if it turns out to be there. Faces that declare their own `font-display`
+are left alone. This is the half that covers a package referencing a `common/` folder it
+never vendored, which is what Corsair's own widgets do.
+
+Both sweep every same-origin sheet — recursing `@import`s and grouping rules like
+`@media`/`@supports`/`@layer`, where a nested `@font-face` is not itself the outermost
+rule — and watch for stylesheets appended later, so a widget that loads a skin after
+startup is covered too.
