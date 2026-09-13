@@ -368,12 +368,16 @@ Learned at cost on #61, #65 and #69; they apply to every step above.
 
 ## The retained attic (#226): an identity-only address space
 
-A slot removed on-panel or from the settings form is RETIRED, not discarded: its def
-moves verbatim into the top-level `retained[]` array of `layout.json`, addressed solely
-by `widgetId|i:instanceId` — the same key `SlotKey` derives for an id-bearing live slot,
-and never by grid position. The retire paths (`shell.js removeSlot`, `settings.js
-removeSlotAt`) mint an `instanceId` first when the def has none, so every attic entry is
-id-bearing; `Seal` and `BuildStoredIndex` visit retained slots (an on-panel-retired
+A slot removed on-panel, from the settings form, or through the settings window's live
+preview is RETIRED, not discarded: its def moves verbatim into the top-level `retained[]`
+array of `layout.json`, addressed solely by `widgetId|i:instanceId` — the same key
+`SlotKey` derives for an id-bearing live slot, and never by grid position. There are two
+retire paths, one per surface that holds a real def: `shell.js removeSlot` (panel-only by
+construction — it returns immediately under `?preview=1`) and `settings.js removeSlotAt`,
+which serves both the settings form and the preview. The preview NAMES a slot and never
+mints, so no client-invented identity crosses that boundary; the settings side corroborates
+the id against the one it holds and refuses a mismatch rather than guessing. Both paths
+mint an `instanceId` first when the def has none, so every attic entry is id-bearing; `Seal` and `BuildStoredIndex` visit retained slots (an on-panel-retired
 tile's revealed plaintext is re-sealed; an already-retired tile's ciphertext is findable
 across saves), while `Reveal`, `Mask`, and the `(page,slot)` cleared-marker channel
 deliberately do **not** — a retained tile never renders, so its secret travels to both

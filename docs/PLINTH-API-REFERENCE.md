@@ -344,12 +344,15 @@ Layout lives in `%LocalAppData%\Plinth\layout.json` (pages → slots → widget 
 size, per-instance settings) and is edited by the Settings window. Widgets should be
 fluid across their `supported_slots`.
 
-Removing a widget on-panel, or from the settings form's slot list, RETIRES its slot
-rather than discarding it: the def moves verbatim into the layout's top-level `retained`
+Removing a widget RETIRES its slot rather than discarding it — from all three ✕
+surfaces: the on-panel edit overlay, the settings form's slot list, and the settings
+window's live preview. The def moves verbatim into the layout's top-level `retained`
 array (with `retiredAt` and the origin page name), keeping its per-instance settings —
 sealed credentials included, as ciphertext — so a later restore can bring the tile back
-configured. (Removing one through the settings window's *preview* still discards it; that
-surface does not retire yet.) The attic is bounded (8 per
+configured. The preview's ✕ does not retire in the replica: it NAMES the slot and the
+settings window retires it on the same path its own form uses, because only that side
+holds the unscrubbed def (the replica is handed every credential blanked). The attic is
+bounded (8 per
 widget id, oldest evicted; eviction also purges the instance's protected store) and is
 addressed only by `widgetId` + `instanceId`, never by grid position.
 
@@ -396,6 +399,29 @@ and the tile comes back with credentials that still work.
 | `retained-gone` | host → settings | `widgetId`, `instanceId` — the PANEL deleted it |
 | `evicted-ids` | host → shell | array of `{widgetId, instanceId}` gone in the background (the attic cap, or a settings-side delete) |
 | `retained-error` | host → shell/settings | `reason` (`not-found` \| `bad-page` \| `failed`), `widgetId`, `instanceId` |
+
+### The settings preview seam
+
+The settings window frames the panel shell as a live replica (`index.html?preview=1`) and
+drives it as a second host. The replica is **not** trusted with state it should not own:
+it is handed every credential blanked and no attic at all, so gestures that need either
+are handed back rather than acted on locally. These are the messages it posts up.
+
+| Message | Direction | Payload |
+|---|---|---|
+| `save-layout` | shell (preview) → settings | `layout`, `gen` — the edit stream; structure only, merged over the working copy |
+| `slot-selected` | shell (preview) → settings | `page`, `index`, `instanceId`, `gen` |
+| `page-changed` | shell (preview) → settings | `index`, `gen` |
+| `style-widget` | shell (preview) → settings | `gen` — opens the settings-side inspector |
+| `add-widget` | shell (preview) → settings | `index`, `target` (`{col,row,w,h}` \| null), `gen` |
+| `remove-slot` | shell (preview) → settings | `page`, `index`, `instanceId` \| null, `gen` — the preview's ✕ |
+
+Every one of them carries `gen`, the token from the last `init`, and the settings side
+drops any that arrives with a stale `gen` or while it holds edits the replica has not yet
+received. An index from a layout the replica no longer shares would otherwise name the
+wrong tile. `remove-slot` additionally corroborates `instanceId` against the slot it is
+about to retire and refuses a mismatch — it never adopts an identity the replica supplied,
+which is what keeps the retire free of the positional inference #68 forbids.
 
 ---
 

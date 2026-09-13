@@ -349,6 +349,11 @@ body.editing .edit-overlay { display: block; }
 /* Slot being dragged + the slot currently under the finger. */
 .slot.drag-src { opacity: 0.35; }
 
+/* A tile whose removal has been handed to the settings window and not yet answered.
+   Same idiom as drag-src, for the same reason: the gesture landed, the tree has not
+   moved yet. Self-clearing in requestRemoveSlot, so a REFUSED request un-dims. */
+.slot.retiring { opacity: 0.35; filter: grayscale(1); transition: opacity 120ms ease; }
+
 /* Free-space landing spot: where the dragged widget will actually be placed. */
 .page .cell-hint {
   border: 2px dashed var(--accent, #4dd4e8);

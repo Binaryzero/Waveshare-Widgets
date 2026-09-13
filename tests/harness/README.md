@@ -309,6 +309,29 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   either alone leaves R2 green and deleting both fails it with `{"hidden":true,
   "text":"Error"}`, an error card with an empty corner. R2 falsifies the pair, not either
   member, and the file says so because the obvious single-line revert does not turn it red.
+- `atticretire-run.js` — a removal made in the settings window's live PREVIEW retires the
+  tile instead of discarding it (#226, and the scope cut withdrawn from PR #269). The
+  preview is a replica shell handed every credential blanked, so anything it retired
+  arrived empty and nothing could reunite it with the value the user typed — the bridge
+  would be the "sole id-less slot of this widget" guess #68 forbids. The preview now NAMES
+  the slot and the settings side retires it, on the one path that holds the unscrubbed
+  copy. Runs in CI on plain Node: `onReplicaRemove` and `removeSlotAt` are sliced out of
+  the real `settings.js` between `ww-replica-remove` markers and executed, so a regression
+  in the shipped commit cannot leave it green, and the shell half is pinned by regex source
+  guards (removeSlot really does begin `if (PREVIEW) return;`, and `requestRemoveSlot`
+  contains no id generator at all). Covers the refusals as hard as the happy path — a stale
+  generation, an armed replica timer, an identity mismatch, a replica-minted id on an
+  id-less slot, and eight bad index shapes, of which `-1` matters most: `removeSlotAt`
+  splices unconditionally, so `splice(-1, 1)` would silently discard the LAST tile on the
+  page. A9 runs the pre-fix behaviour and asserts it fails.
+- `previewretire-run.js` — the relay half of the same change, and browser-only for the
+  reason `atticretire-run.js` is not: whether the ✕ tap actually crosses the postMessage
+  seam needs two real documents. Boots the real `settings.html`, lets it drive the real
+  replica, answers as the native host, types a credential into the settings form that the
+  replica is never given, taps the preview's ✕ twice, then reads what reaches the host on
+  save. E10 is the point: that typed value must be sitting in the attic entry. Two tiles,
+  not one — with a single tile an off-by-one splice and a correct removal both leave the
+  page empty, so the survivor's identity is the assertion.
 - `listprims-run.js` — list settings whose entries may be bare values (issue #167). Both
   settings editors filtered a list down to objects before rendering, so a widget's
   primitive shorthand — endpoints accepts `"nas.lan"` and expands it itself — got no row:

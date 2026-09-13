@@ -608,19 +608,30 @@
     // the authoritative working copy here, or the first capture after a removal would erase
     // every retired tile.
     //
-    // A removal made in the PREVIEW's edit mode therefore does NOT retire: its capture
-    // carries an attic we drop on the floor, and the tile is discarded exactly as before
-    // #226. That is a deliberate scope cut, not an oversight. Accepting the replica's attic
-    // here was tried and withdrawn: the replica is handed every secret SCRUBBED, so a def
-    // retired there arrives blank, and reuniting it with the value the user actually typed
-    // needs the prior slot — which is reachable by identity only for a slot that already had
-    // one. A legacy id-less slot gets a FRESH id minted by the replica at retire time, so
-    // nothing links the two, and the only bridges left are provenance the replica does not
-    // send or a "the sole id-less slot of this widget" guess — the exact inference #68
-    // forbids, being indistinguishable from "deleted the credentialed tile, added a fresh
-    // one". Retiring from the preview belongs on ONE retire path (route the preview's ✕
-    // through removeSlotAt, which holds the unscrubbed working copy) rather than a merge
-    // rule that has to reconstruct what the scrub removed.
+    // Dropping the capture's attic is now discarding a state that CANNOT OCCUR rather
+    // than a rule fighting a live one: the replica no longer authors an attic at all.
+    // shell.js removeSlot returns immediately under PREVIEW, so layoutData.retained
+    // stays undefined for that document's life, and the preview's ✕ hands the removal
+    // over as `remove-slot` instead (onReplicaRemove -> removeSlotAt). That is the ONE
+    // retire path, and it runs here, on the unscrubbed working copy.
+    //
+    // Why it is a handoff and not a merge rule — the epitaph of the withdrawn union,
+    // kept because it is the only thing standing between a future reader and a fourth
+    // attempt at it. Accepting the replica's attic was tried and withdrawn: the replica
+    // is handed every secret SCRUBBED, so a def retired there arrives blank, and
+    // reuniting it with the value the user actually typed needs the prior slot — which
+    // is reachable by identity only for a slot that already had one. A legacy id-less
+    // slot got a FRESH id minted by the replica at retire time, so nothing linked the
+    // two, and the only bridges left were provenance the replica does not send or a
+    // "the sole id-less slot of this widget" guess — the exact inference #68 forbids,
+    // being indistinguishable from "deleted the credentialed tile, added a fresh one".
+    // Naming a slot the other side already holds sidesteps all of it: no identity the
+    // replica invented ever crosses the boundary.
+    //
+    // (That last hazard is also empty now: #289 made LayoutStore.Load stamp and persist
+    // an id onto every id-less slot, so the legacy population the guess was needed for
+    // no longer exists. The refusal stands anyway — it costs one comparison, and it is
+    // the rule, not the population, that must hold.)
     return Object.assign({}, captured, {
       pages, theme: (state.layout || {}).theme ?? null,
       retained: (state.layout || {}).retained,
@@ -789,6 +800,10 @@
         renderPageList();
       }
       openGallery();
+    } else if (m.type === 'remove-slot') {
+      // The preview's ✕, handed over rather than acted on there (#226). Raw fields:
+      // every check lives in onReplicaRemove, next to the retire it guards.
+      onReplicaRemove(m.page, m.index, m.instanceId || null, m.gen);
     } else if (m.type === 'fetch' || m.type === 'ping' || m.type === 'media-list' || m.type === 'audio-get') {
       post({ type: 'preview-data', message: m });
     } else if (m.type === 'notifications-watch') {
@@ -1973,6 +1988,45 @@
     renderEditor();
   }
 
+  // >>> ww-replica-remove — extracted and RUN by tests/harness/atticretire-run.js
+  // The probe slices this block out of the real file and evaluates it, so the pair's
+  // free variables must stay exactly the seven the vm sandbox supplies: state,
+  // replicaTimer, initGen, instanceSeq, selectedSlot, renderEditor, renderPageList.
+  // Reaching for another closure here breaks the harness at L0 rather than silently
+  // testing nothing — which is the whole point of the marker discipline (see the
+  // header of tests/harness/listprims-run.js).
+
+  // The preview's ✕, arriving as `remove-slot`. The replica names a slot; it never
+  // retires one, because it holds every credential blanked. We do the retire here, on
+  // the unscrubbed working copy, through the same removeSlotAt the form's own ✕ uses —
+  // one retire path (#226).
+  //
+  // The ladder is the house one, verbatim from add-widget and onReplicaSelection: an
+  // armed replicaTimer means we hold edits the replica has not received, and a stale
+  // gen means it has not yet applied the latest init. Either way its indices describe
+  // a layout we no longer hold, and following them would splice the wrong tile. This
+  // is also the double-tap guard — the second ✕ lands here after the first has already
+  // armed the timer.
+  function onReplicaRemove(pageIdx, slotIdx, instanceId, gen) {
+    if (replicaTimer || (gen | 0) !== initGen) return;
+    // Integers, not `| 0`. Bitwise coercion turns 1.5 into 1 and NaN into 0 silently;
+    // a bad index must be refused, not rounded into a neighbouring tile. -1 matters
+    // most: removeSlotAt splices unconditionally, so splice(-1, 1) would DISCARD the
+    // last tile on the page — a discard reintroduced through the new door.
+    if (!Number.isInteger(pageIdx) || !Number.isInteger(slotIdx)
+        || pageIdx < 0 || slotIdx < 0) return;
+    const page = state.layout && (state.layout.pages || [])[pageIdx];
+    const slot = page && (page.slots || [])[slotIdx];
+    if (!slot) return;
+    // One-way corroboration, as in onReplicaSelection: when the replica names an id it
+    // must be the one we hold. There is deliberately NO branch that adopts an id the
+    // replica minted — that inference is what #68 forbids and what killed the withdrawn
+    // union. The replica does not mint at all (shell.js requestRemoveSlot), so a
+    // mismatch here means a stale document, and stale means refuse.
+    if (instanceId && slot.instanceId !== instanceId) return;
+    removeSlotAt(page, slotIdx);
+  }
+
   function removeSlotAt(page, i) {
     // Same invariant guard as the panel's removeSlot: retire only a def that is live in
     // the CURRENT tree. A stale closure over a page object a settings-init has since
@@ -1986,8 +2040,12 @@
       // addressed only by widgetId|i:instanceId, never by position (#68); same
       // generator as the gallery add below. This editor holds secrets MASKED, so the
       // retired def carries a blank the host restores by identity from the stored
-      // layout on save; a def that was id-less in the STORED layout loses it — the
-      // accepted #68 "legacy loss", see docs/SECRET-ADDRESSING.md.
+      // layout on save.
+      //
+      // The mint is now belt only: #289 made LayoutStore.Load stamp every id-less slot
+      // and persist it, so a layout this process has read has no id-less slots left to
+      // find (LayoutStore.cs:104). The "legacy loss" this comment used to describe —
+      // a def id-less in the STORED layout losing its manifest secret — went with it.
       if (!slot.instanceId)
         slot.instanceId = 'i' + Date.now().toString(36) + '-' + (++instanceSeq);
       state.layout.retained = state.layout.retained || [];
@@ -2002,8 +2060,10 @@
       if (selectedSlot === i) selectedSlot = null;
       else if (selectedSlot > i) selectedSlot--;
     }
+    renderPageList();   // the strip's widget count changed
     renderEditor();
   }
+  // <<< ww-replica-remove
 
   function renderSlotDetail(page) {
     const host = el('slotDetail');
