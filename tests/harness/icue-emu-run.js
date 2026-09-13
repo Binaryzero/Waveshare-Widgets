@@ -50,6 +50,31 @@
 //                          that walks every sheet and defuses the nested one incidentally,
 //                          so the nested case would prove nothing. The marker names the
 //                          survivors, so a regression says WHICH placement broke.
+//        unfetch-left:none  — the same sweep, widened past `qrc:`. That scheme was only
+//                          the first shape found; a face on `file:` (cross-scheme from
+//                          an https origin) or plain `http:` (blockable mixed content)
+//                          cannot complete either, and floods identically. The rule is
+//                          now an allowlist of schemes the origin CAN fetch, so a
+//                          package that invents another one is covered without a new
+//                          case. The probe plants one of each beside the qrc: faces.
+//        nodisplay-left:none — the half no scheme test can reach. A same-origin RELATIVE
+//                          url that 404s — a face pointing into the common/ folder the
+//                          package never vendored, which is what the Corsair widgets
+//                          actually do — is indistinguishable from a vendored one until
+//                          the request answers, so it cannot be stripped on suspicion.
+//                          `font-display: swap` removes the block period the intervention
+//                          exists to override, so Chromium stops logging and the font
+//                          still swaps in if it turns out to be there. Asserted over
+//                          EVERY face, because the flood is per waiting element and one
+//                          missed face is still a flood.
+//        mixed-kept:local  — `src` is an ordered fallback list. Dropping the unloadable
+//                          entry must leave the good sibling: this face pairs a qrc: url
+//                          with local("Arial"), and reads `lost` if the widening started
+//                          discarding whole descriptors.
+//        own-display:block — the shim fills in a MISSING font-display; it does not
+//                          overrule an author who chose one. Reads `swap` if the widening
+//                          became an override, which would change rendering for every
+//                          correctly-built widget on the panel.
 //   E2 · teeth for the Stream Deck path: the --sd fixture was actually served (the
 //        runner's own "profile was served" check is part of the green run).
 //   E3 · wiring, text-level (the pattern tools/StreamDeckPaths uses for what a Node
@@ -94,7 +119,9 @@ const check = (name, ok, detail) => {
 
 const MARKERS = ['module-alive', 'mediaviewer-ok', 'hex:255, 0, 57',
   'tr-then:Compat says hello', 'notif:0', 'device-created', 'icons:3', 'click-sent',
-  'live-tiles', 'qrc-left:none', 'datavideo:video', 'wrapids:A,B', 'datefirst:rendered'];
+  'live-tiles', 'qrc-left:none', 'unfetch-left:none', 'nodisplay-left:none',
+  'mixed-kept:local', 'own-display:block', 'datavideo:video', 'wrapids:A,B',
+  'datefirst:rendered'];
 
 // icue-sd.json, not streamdeck-sd.json: same deck plus a capture frame, so the
 // slice-into-per-key-faces path runs (the capture poll fires at 500ms — the --wait

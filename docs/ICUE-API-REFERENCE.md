@@ -468,12 +468,26 @@ URLs was tried first and withdrawn: it failed on a real device while the code wa
 present, and a filter miss and a missing file are the same silent 404. Each helper is a
 window property, so a vendored copy (served normally by the package's own folder
 mapping) shadows ours rather than colliding with it. That includes a `MediaViewer` stand-in, so widgets construct
-and degrade cleanly even though `media-selector` itself stays unsupported. Fonts
-referenced over Qt's `qrc:/` scheme cannot load in a browser engine at all, and each
-element waiting on one logs a "Fallback font will be used" intervention — hundreds of
-lines from a single widget. The shim rewrites those `src` descriptors: only the `qrc:`
-entries are dropped (the list is an ordered fallback, so a sibling `.woff2` survives),
-and a descriptor left with nothing falls back to `local()` faces. It sweeps every
-same-origin sheet — recursing `@import`s and grouping rules like `@media`/`@supports`/
-`@layer`, where a nested `@font-face` is not itself the outermost rule — and watches for
-stylesheets appended later, so a widget that loads a skin after startup is covered too.
+and degrade cleanly even though `media-selector` itself stays unsupported. A font that
+never arrives logs a "Fallback font will be used" intervention for every element waiting
+on it — hundreds of lines from a single widget — so the shim defuses `@font-face` rules
+two ways.
+
+Sources the widget's origin cannot fetch are dropped from the `src` descriptor. That is
+an allowlist (`https:`, `data:`, `blob:`, plus `local()` and relative URLs), not a list
+of known-bad schemes: Qt's `qrc:/` was the first shape found, but `file:` is cross-scheme
+from an https origin and plain `http:` is blockable mixed content, and a package can
+invent another. The list is an ordered fallback, so a sibling `.woff2` survives; a
+descriptor left with nothing falls back to `local()` faces.
+
+A same-origin *relative* URL that 404s cannot be told apart from one the package really
+vendored, so it is never dropped on suspicion — the shim adds `font-display: swap`
+instead, which removes the block period the intervention exists to override. The font
+still swaps in if it turns out to be there. Faces that declare their own `font-display`
+are left alone. This is the half that covers a package referencing a `common/` folder it
+never vendored, which is what Corsair's own widgets do.
+
+Both sweep every same-origin sheet — recursing `@import`s and grouping rules like
+`@media`/`@supports`/`@layer`, where a nested `@font-face` is not itself the outermost
+rule — and watch for stylesheets appended later, so a widget that loads a skin after
+startup is covered too.

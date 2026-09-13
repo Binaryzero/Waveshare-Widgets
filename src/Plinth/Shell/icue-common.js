@@ -372,7 +372,7 @@
   if (document.head || document.documentElement) injectStyles();
   else document.addEventListener('DOMContentLoaded', injectStyles);
 
-  // --- qrc: fonts ------------------------------------------------------------------
+  // --- fonts that never arrive -----------------------------------------------------
   //
   // iCUE stylesheets load their faces from Qt's resource scheme
   // (@font-face { src: url("qrc:/fonts/OpenSans-Regular.ttf") }). That scheme exists
@@ -381,21 +381,65 @@
   // detected … Fallback font will be used" intervention for EVERY element waiting on
   // it. One widget produced hundreds of lines, which buries real errors in the console.
   //
-  // The face was never going to load, so point it at local() instead: no request, no
-  // intervention, and the text lands on a real installed font rather than whatever the
-  // fallback chain reaches last. Rules are found by INSPECTING each sheet rather than
-  // guessing family names, which differ per widget (OpenSansRegular, Saira-Medium,
-  // Bebas Neue Pro, …) and would go stale the moment a package used a new one.
+  // `qrc:` was the first shape found, and for a while the sweep tested for that string
+  // alone. It is not the only one. A package whose faces point INTO the common/ folder
+  // it never vendored (the same clamped paths its <script src> tags 404 on) floods
+  // identically, and so does a face on `file:` or plain `http:` — the first is
+  // cross-scheme from an https origin, the second is blockable mixed content. None of
+  // them can complete, and the qrc: test walked past all of them.
+  //
+  // So the rule is no longer a scheme BLACKLIST that has to grow a case per shape. A
+  // source is kept when the origin this document runs on can actually fetch it, and
+  // dropped otherwise:
+  const FETCHABLE_SCHEMES = new Set(['https', 'data', 'blob']);
+
+  // …which leaves the shape that cannot be decided by reading the CSS at all: a
+  // SAME-ORIGIN RELATIVE url that 404s. `common/fonts/Corsair.woff2` is indistinguishable
+  // from a path the package really vendored until the request comes back, and dropping
+  // sources on suspicion would break every widget that ships its own fonts correctly.
+  //
+  // `font-display` settles that half without guessing. The intervention exists to
+  // override a face's BLOCK period on a slow link; a face that declares `swap` has no
+  // block period to override, so Chromium renders the fallback immediately and logs
+  // nothing — and if the font does turn out to be there, it still swaps in. That is the
+  // same end state the intervention was forcing, minus the console flood and minus the
+  // invisible-text window before it. Only faces that declare no `font-display` of their
+  // own are touched: an author who wrote `block` meant it, and this shim is not the
+  // place to overrule them.
+  const FONT_DISPLAY = 'swap';
+
   const FONT_SUBSTITUTE = 'local("Segoe UI"), local("Tahoma"), local("Arial"), local("Helvetica")';
+
+  // `local(Family)` is not a request, so it always survives. Anything whose shape this
+  // does not recognise survives too — an unparsed entry is not evidence of a bad one,
+  // and the cost of being wrong here is a font the widget wanted, silently removed.
+  function isFetchableSource(part) {
+    if (/^local\s*\(/i.test(part)) return true;
+    const url = /url\s*\(\s*(['"]?)([^'")]*)\1\s*\)/i.exec(part);
+    if (!url) return true;
+    const scheme = /^([a-z][a-z0-9+.\-]*):/i.exec(url[2].trim());
+    // No scheme is a relative or protocol-relative URL: same origin, may 404, may not.
+    // Undecidable here, and handled by FONT_DISPLAY above rather than by removal.
+    if (!scheme) return true;
+    return FETCHABLE_SCHEMES.has(scheme[1].toLowerCase());
+  }
 
   // `src` is an ORDERED fallback list, so dropping the whole descriptor because one
   // entry is unusable would discard a perfectly good sibling — a package-relative
   // .woff2, or an installed branded face the widget would otherwise have got. Split the
-  // list, remove only the qrc: entries, and fall back to local() ONLY when nothing else
-  // is left. Commas inside url(…)/format(…) are not separators, hence the paren guard.
-  function stripQrcSources(src) {
-    const parts = String(src).split(/,(?![^(]*\))/);
-    const kept = parts.map((s) => s.trim()).filter((s) => s && s.indexOf('qrc:') === -1);
+  // list, remove only the entries that cannot complete, and fall back to local() ONLY
+  // when nothing else is left. Commas inside url(…)/format(…) are not separators, hence
+  // the paren guard.
+  //
+  // Returns null when every source is already fetchable, which is what keeps a re-sweep
+  // idempotent: the rewritten value contains no unfetchable entry, so the next pass over
+  // the same rule finds nothing to do and stays silent. Comparing serialised strings
+  // instead would re-report forever, because the CSSOM does not hand back the text it
+  // was given.
+  function rewriteSources(src) {
+    const parts = String(src).split(/,(?![^(]*\))/).map((s) => s.trim()).filter(Boolean);
+    const kept = parts.filter(isFetchableSource);
+    if (kept.length === parts.length) return null;
     return kept.length ? kept.join(', ') : FONT_SUBSTITUTE;
   }
 
@@ -404,24 +448,36 @@
   // cssRules, and a face nested in one is invisible to a scan that only tests the
   // outermost rule's type. iCUE packages do this (a @media block for the panel's
   // aspect), so the sweep reported success while those faces went on flooding.
-  function defuseRules(rules, seen) {
-    let patched = 0;
+  function defuseRules(rules, seen, tally) {
     for (const rule of Array.from(rules)) {
       if (!rule) continue;
       // An @import's sheet is reached through the rule, never as its own
       // document.styleSheets entry, so a widget that imports its font sheet kept
       // flooding the console while this reported success.
       if (rule.type === 3 /* CSSRule.IMPORT_RULE */) {
-        try { if (rule.styleSheet) patched += defuseSheet(rule.styleSheet, seen); }
+        try { if (rule.styleSheet) defuseSheet(rule.styleSheet, seen, tally); }
         catch (e) { /* cross-origin import */ }
         continue;
       }
       if (rule.type === 5 /* CSSRule.FONT_FACE_RULE */) {
+        // Two independent repairs, and a face can need either, both or neither. They are
+        // counted apart because they fail apart: a read-only sheet refuses both, but a
+        // face whose sources are all fetchable legitimately takes only the second.
         let value;
-        try { value = rule.style.getPropertyValue('src'); } catch (e) { continue; }
-        if (!value || value.indexOf('qrc:') === -1) continue;
-        try { rule.style.setProperty('src', stripQrcSources(value)); patched++; }
-        catch (e) { /* read-only sheet: leave it */ }
+        try { value = rule.style.getPropertyValue('src'); } catch (e) { value = ''; }
+        if (value) {
+          const rewritten = rewriteSources(value);
+          if (rewritten !== null) {
+            try { rule.style.setProperty('src', rewritten); tally.dropped++; }
+            catch (e) { /* read-only sheet: leave it */ }
+          }
+        }
+        let display;
+        try { display = rule.style.getPropertyValue('font-display'); } catch (e) { display = 'skip'; }
+        if (!display) {
+          try { rule.style.setProperty('font-display', FONT_DISPLAY); tally.unblocked++; }
+          catch (e) { /* read-only sheet: leave it */ }
+        }
         continue;
       }
       // Anything else that carries rules of its own. Tested by CAPABILITY, not by an
@@ -430,37 +486,37 @@
       // rules also answer here; walking them finds nothing and costs nothing.
       let nested;
       try { nested = rule.cssRules; } catch (e) { nested = null; }
-      if (nested && nested.length) patched += defuseRules(nested, seen);
+      if (nested && nested.length) defuseRules(nested, seen, tally);
     }
-    return patched;
   }
 
-  function defuseSheet(sheet, seen) {
+  function defuseSheet(sheet, seen, tally) {
     // A cross-origin sheet throws on .cssRules; widgets' own sheets are same-origin.
     let rules;
-    try { rules = sheet.cssRules; } catch (e) { return 0; }
-    if (!rules || seen.has(sheet)) return 0;
+    try { rules = sheet.cssRules; } catch (e) { return; }
+    if (!rules || seen.has(sheet)) return;
     seen.add(sheet);
-    return defuseRules(rules, seen);
+    defuseRules(rules, seen, tally);
   }
 
-  function defuseQrcFonts() {
+  function defuseFonts() {
+    const tally = { dropped: 0, unblocked: 0 };
     let sheets;
-    try { sheets = Array.from(document.styleSheets); } catch (e) { return 0; }
+    try { sheets = Array.from(document.styleSheets); } catch (e) { return tally; }
     const seen = new Set();
-    let patched = 0;
-    for (const sheet of sheets) patched += defuseSheet(sheet, seen);
-    return patched;
+    for (const sheet of sheets) defuseSheet(sheet, seen, tally);
+    return tally;
   }
 
   // Sheets arrive over the document's lifetime, so sweep at both readiness points —
   // and once more shortly after load for anything a script appended.
   function sweepFonts() {
-    const n = defuseQrcFonts();
-    if (n > 0) {
+    const { dropped, unblocked } = defuseFonts();
+    if (dropped || unblocked) {
       try {
         parent.postMessage({ type: 'ww-log',
-          message: 'icue-common: redirected ' + n + ' qrc: @font-face rule(s) to local fonts' }, '*');
+          message: 'icue-common: dropped unfetchable sources on ' + dropped
+                 + ' @font-face rule(s), set font-display on ' + unblocked }, '*');
       } catch (e) { /* frame gone */ }
     }
   }

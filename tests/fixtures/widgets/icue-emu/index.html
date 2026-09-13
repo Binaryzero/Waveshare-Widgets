@@ -20,10 +20,12 @@
 	<script src="../common/tools/ColorTools.js"></script>
 	<script src="../common/tools/media_viewer/MediaViewer.js"></script>
 	<link rel="stylesheet" href="../common/tools/media_viewer/MediaViewer.css">
-	<!-- Qt resource-scheme faces, the way iCUE packages ship them. Chromium cannot load
-	     `qrc:` at all, and every element waiting on one logs a "Fallback font will be
-	     used" intervention — hundreds of lines from one widget. Two placements, because
-	     the sweep once handled only the first:
+	<!-- Faces that never arrive, in every shape that floods. Chromium logs a "Fallback
+	     font will be used" intervention per element waiting on one — hundreds of lines
+	     from a single widget. Qt resource-scheme (`qrc:`) faces are how iCUE packages
+	     ship them and were the first shape found; the ones below the @media group are
+	     the shapes the qrc:-only test missed. Two PLACEMENTS first, because the sweep
+	     once handled only the first:
 	       · top level, and
 	       · inside an @media group, which is not itself a FONT_FACE_RULE, so a scan that
 	         only tested the outermost rule's type never saw the face inside it.
@@ -38,6 +40,40 @@
 			font-family: 'ProbeGrouped';
 			src: url("qrc:/fonts/OpenSans-Bold.ttf") format("truetype");
 		}
+	}
+	/* Not qrc:, and every bit as unloadable — the shapes a qrc:-only test walked past.
+	   `file:` is cross-scheme from an https origin; `http:` is blockable mixed content.
+	   Both flood exactly as qrc: did, and both were live in the field. */
+	@font-face {
+		font-family: 'ProbeFileScheme';
+		src: url("file:///C:/Windows/Fonts/segoeui.ttf") format("truetype");
+	}
+	@font-face {
+		font-family: 'ProbeHttpScheme';
+		src: url("http://fonts.invalid/Probe.woff2") format("woff2");
+	}
+	/* The shape that CANNOT be decided by reading the CSS, and the one the Corsair
+	   packages actually hit: a same-origin RELATIVE path that 404s, pointing into the
+	   common/ folder the package never vendored. Indistinguishable from a path that is
+	   really there until the request answers, so it must NOT be stripped — it has to be
+	   defused by font-display instead. A regression that "fixes" this by removing the
+	   source would break every widget that ships its own fonts correctly. */
+	@font-face {
+		font-family: 'ProbeMissingRel';
+		src: url("common/fonts/Missing.woff2") format("woff2");
+	}
+	/* src is an ORDERED list: dropping the unloadable entry must not take the good
+	   sibling with it. */
+	@font-face {
+		font-family: 'ProbeMixed';
+		src: url("qrc:/fonts/OpenSans-Semi.ttf") format("truetype"), local("Arial");
+	}
+	/* An author who chose a display mode keeps it. The shim fills in a missing
+	   font-display; it does not overrule one that is there. */
+	@font-face {
+		font-family: 'ProbeOwnDisplay';
+		src: url("qrc:/fonts/OpenSans-Mono.ttf") format("truetype");
+		font-display: block;
 	}
 	</style>
 </head>
@@ -62,19 +98,13 @@
 	log('module-alive');
 
 	// Whether a face was defused is only visible in the CSSOM — the page cannot observe
-	// the interventions it no longer causes. Report the qrc: sources still present, per
-	// placement, so the marker names WHICH hole is open rather than just "some".
-	const qrcLeft = () => {
-		const left = [];
+	// the interventions it no longer causes. Every marker below names the SURVIVORS, so
+	// a regression says which face reopened rather than just "some".
+	const eachFace = (fn) => {
 		const walk = (rules) => {
 			for (const rule of Array.from(rules || [])) {
 				if (!rule) continue;
-				if (rule.type === 5) {
-					let src = '';
-					try { src = rule.style.getPropertyValue('src') || ''; } catch (e) { src = ''; }
-					if (src.indexOf('qrc:') !== -1) left.push(rule.style.getPropertyValue('font-family'));
-					continue;
-				}
+				if (rule.type === 5) { fn(rule); continue; }
 				let nested = null;
 				try { nested = rule.cssRules; } catch (e) { nested = null; }
 				if (nested) walk(nested);
@@ -83,7 +113,44 @@
 		for (const sheet of Array.from(document.styleSheets)) {
 			try { walk(sheet.cssRules); } catch (e) { /* cross-origin */ }
 		}
-		return left;
+	};
+	const prop = (rule, name) => {
+		try { return rule.style.getPropertyValue(name) || ''; } catch (e) { return ''; }
+	};
+	const named = (rule) => prop(rule, 'font-family') || '?';
+	const survivors = (test) => {
+		const left = [];
+		eachFace((rule) => { if (test(rule)) left.push(named(rule)); });
+		return left.join(',') || 'none';
+	};
+
+	// qrc: on its own, kept as its own marker: the widened rule subsumes it, and a
+	// regression in the widening must not be able to quietly reopen the hole that
+	// started all of this while the broader marker still reads clean.
+	const qrcLeft = () => survivors((r) => prop(r, 'src').indexOf('qrc:') !== -1);
+	// Every scheme this origin cannot fetch. `http:` does not match `https:` — the
+	// colon is part of the pattern.
+	const UNFETCHABLE = /(qrc|file|http):/i;
+	const unfetchLeft = () => survivors((r) => UNFETCHABLE.test(prop(r, 'src')));
+	// The half no scheme test can reach: a face still able to block first paint. This is
+	// what actually stops the flood for ProbeMissingRel, whose source stays put.
+	const noDisplayLeft = () => survivors((r) => !prop(r, 'font-display'));
+	// …and the two things the widening must NOT break.
+	const mixedKept = () => {
+		let v = 'gone';
+		eachFace((r) => {
+			if (named(r).indexOf('ProbeMixed') === -1) return;
+			v = prop(r, 'src').indexOf('local(') !== -1 ? 'local' : 'lost';
+		});
+		return v;
+	};
+	const ownDisplay = () => {
+		let v = 'gone';
+		eachFace((r) => {
+			if (named(r).indexOf('ProbeOwnDisplay') === -1) return;
+			v = prop(r, 'font-display') || 'cleared';
+		});
+		return v;
 	};
 
 	// Sheets that arrive well after load, when every scheduled sweep has run. Two
@@ -114,7 +181,13 @@
 			document.body.appendChild(container);
 		}, 1700);
 		// After the observer's coalesced sweep has had a turn on both.
-		setTimeout(() => log('qrc-left:' + (qrcLeft().join(',') || 'none')), 2000);
+		setTimeout(() => {
+			log('qrc-left:' + qrcLeft());
+			log('unfetch-left:' + unfetchLeft());
+			log('nodisplay-left:' + noDisplayLeft());
+			log('mixed-kept:' + mixedKept());
+			log('own-display:' + ownDisplay());
+		}, 2000);
 	});
 
 	const viewer = new MediaViewer({ container: document.getElementById('bg') });
