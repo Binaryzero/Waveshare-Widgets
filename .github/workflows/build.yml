@@ -99,6 +99,15 @@ jobs:
       - name: A preview removal retires on the one retire path
         run: node tests/harness/atticretire-run.js
 
+      # A swipe that starts inside a widget pages the dashboard (#257), and a drift on the
+      # way to a tap still does not (#206). touch-action cannot serve both, so the widget API
+      # recognises a swipe by distance; this pins that rule — at a FIXED drift, so a retune
+      # of the threshold cannot quietly reopen #206 — plus the detector's wiring and the
+      # shell's gates. Plain Node against the real source. The real-touch half runs in
+      # tests/harness/touchpan-run.js on the maintainer's machine.
+      - name: Widget swipes page, drifts do not
+        run: node tests/harness/widgetswipe-run.js
+
       # A Stream Deck profile names its plugin and action UUIDs, and the icon resolver used
       # both to build filesystem paths — so a crafted or imported profile could point them at
       # any readable file, whose contents are then base64'd into the profile payload and sent

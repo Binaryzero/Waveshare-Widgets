@@ -348,7 +348,10 @@ body.bg-transparent {
  *
  * Do NOT put it on a control inside a scrolling region; that stops the region scrolling
  * whenever a finger lands on the control. Those regions want `touch-action: pan-y`
- * instead — see the four stock scrollers. */
+ * instead — see the four stock scrollers.
+ *
+ * Neither costs the user a page swipe (#257): widget-api.js recognises a deliberate
+ * stroke by distance and pages the dashboard itself, so these only stop the drift. */
 .no-pan { touch-action: none; }
 
 /* State theater: no tap may be a silent no-op.

@@ -347,6 +347,14 @@
       const stale = sender.el.querySelector('.error');
       if (stale) stale.remove();
       sendToSlot(sender, initMessage(sender));
+    } else if (msg.type === 'ww-swipe' && (msg.dir === 1 || msg.dir === -1)) {
+      // A deliberate horizontal swipe that started inside the widget (#257), recognised
+      // by widget-api.js because touch-action has to keep refusing the native pan there
+      // (#206). Only from a widget on the page being shown — or glided to — so a tile on
+      // a page nobody can see cannot page the dashboard; and never in edit mode, where
+      // overlays own every gesture and widgets are not live.
+      if (editing || sender.page !== layoutData.pages[editIndex()]) return;
+      goToPage(editIndex() + msg.dir);
     } else if (msg.type === 'ww-open-url' && typeof msg.url === 'string') {
       postToHost({ type: 'open-url', url: msg.url });
     } else if (msg.type === 'ww-action' && typeof msg.kind === 'string') {

@@ -457,6 +457,16 @@ The panel is touch-only: no cursor, no hover, no tooltips.
   Do not put `.no-pan` on a control *inside* a scrolling region; that stops the region
   scrolling whenever a finger lands on the control.
 
+  **Neither costs the user page swipes (#257).** Both refuse the browser's own sideways pan,
+  which is what a drift needs — but a deliberate swipe needs it too, so on their own they
+  turned a tile whose list fills it into a dead zone for paging. The injected widget API
+  recognises a real swipe by distance instead (at least 60px, clearly sideways, under
+  0.8s) and pages the dashboard itself; a drift stays far below that. So keep `pan-y` and
+  `.no-pan` exactly as above — they are still what stops the drift. A control whose own
+  job is a sideways drag keeps it: a native `<input type="range">` automatically, and
+  anything else by carrying `data-ww-no-swipe` (on itself or an ancestor). A widget that
+  implements its own drag and calls `preventDefault()` on the move is also left alone.
+
   The shell's `.edge` overlays receive the outermost 8px and do not forward those touches
   into an iframe. A control or hit surface under that rail is partly untappable even if its
   widget-side `touch-action` is correct; reserve the inset explicitly, including around a
