@@ -88,6 +88,12 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: dotnet publish src/Plinth/Plinth.csproj -c Release -r win-x64 --self-contained true -p:Version=$env:VERSION -o publish/scd
 
+      # The release's own file list (#240), so a copy installed by extracting this zip can
+      # retire files a later release drops from its very first in-app update.
+      - name: Install manifests
+        shell: pwsh
+        run: ./tools/write-install-manifest.ps1 publish/fdd publish/scd
+
       - name: Package
         shell: pwsh
         env:

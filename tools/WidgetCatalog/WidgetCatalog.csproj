@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CI guard for update indicators (issue #227). Widgets update with the app, so what
+       the user is owed is to be told: a widget new in an update is marked "New" until it
+       is placed or two weeks pass, and a placed tile whose widget changed its settings is
+       marked "Updated" until opened. This drives the real state class over a temp file. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>WidgetCatalogProbe</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Plinth/Widgets/WidgetCatalogState.cs" />
+    <Compile Include="../../src/Plinth/Widgets/WidgetManifest.cs" />
+    <Compile Include="../../src/Plinth/Widgets/CredentialNames.cs" />
+  </ItemGroup>
+</Project>

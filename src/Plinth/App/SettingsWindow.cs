@@ -231,6 +231,12 @@ public sealed class SettingsWindow : Form
                     HandleRestoreRetained(message);
                     break;
 
+                // The user opened a tile marked "Updated" (#227).
+                case "tile-reviewed":
+                    if (message["instanceId"]?.GetValue<string>() is { Length: > 0 } reviewed)
+                        WidgetCatalogState.Shared?.MarkReviewed(reviewed);
+                    break;
+
                 case "clear-retained":
                     HandleClearRetained(message);
                     break;
@@ -637,6 +643,8 @@ public sealed class SettingsWindow : Form
             url = $"https://{w.VirtualHost}/index.html",
             supportedSlots = w.Manifest.SupportedSlots,
             properties = w.Manifest.Properties,
+            // New in a recent update and not yet placed (#227): the palette badges it.
+            isNew = WidgetCatalogState.Shared?.IsNew(w.Manifest.Id, DateTime.UtcNow) ?? false,
         });
     }
 
@@ -805,6 +813,9 @@ public sealed class SettingsWindow : Form
                 ["layout"] = layoutNode,
                 ["widgets"] = JsonSerializer.SerializeToNode(widgets, BridgeJson),
                 ["rejectedWidgets"] = JsonSerializer.SerializeToNode(rejected, BridgeJson),
+                // Placed tiles whose widget changed its settings in an update (#227), by
+                // instance id; each is marked until the user opens it.
+                ["reviewTiles"] = JsonSerializer.SerializeToNode(WidgetCatalogState.Shared?.Review ?? [], BridgeJson),
                 ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
                 // Seed the replica's now-playing state: MediaUpdated only fires on
                 // change, so without this an already-playing track never appears.
@@ -1062,9 +1073,14 @@ public sealed class SettingsWindow : Form
                     Log.Warn($"Could not purge evicted retained credentials: {ex.GetType().Name}");
                 }
             }
-            LayoutStore.Save(layout, LayoutStore.SettingsWriter);
+            var landed = LayoutStore.Save(layout, LayoutStore.SettingsWriter);
             LayoutSaved?.Invoke();
-            var ok = new JsonObject { ["type"] = "saved" };
+            // Placing a widget ends its "New" badge (#227) — once the placement is on disk.
+            // A swallowed write failure placed nothing, and the badge would be gone for good.
+            if (landed)
+                WidgetCatalogState.Shared?.MarkPlaced(
+                    (layout.Pages ?? []).SelectMany(pg => pg.Slots ?? []).Select(sl => sl.WidgetId ?? "").Where(id => id.Length > 0));
+            var ok = new JsonObject { ["type"] = "saved", ["landed"] = landed };
             if (seq is not null) ok["seq"] = seq.Value;
             // What this editor's next payload must echo. Read AFTER the write, so a
             // swallowed write failure hands back the generation that is still on disk and
@@ -1137,6 +1153,17 @@ public sealed class SettingsWindow : Form
                 // is not in the catalog it just received.
                 ["pending"] = installed.Widget is null,
             });
+            // A package can replace an installed widget with one whose settings changed
+            // (#227). Compare again now, so its placed tiles are flagged while the new
+            // version is already running rather than after the next restart.
+            if (WidgetCatalogState.Shared is { } catalog)
+            {
+                var onDisk = LayoutStore.Load();
+                catalog.Refresh(
+                    _library.Widgets.Select(w => (w.Manifest.Id, WidgetCatalogState.ShapeOf(w.Manifest))),
+                    (onDisk.Pages ?? []).SelectMany(p => p.Slots ?? []).Select(sl => (sl.WidgetId ?? "", sl.InstanceId)),
+                    DateTime.UtcNow);
+            }
             PostInit(); // refresh widget list and sensor snapshot in the editor
         }
         catch (Exception ex)

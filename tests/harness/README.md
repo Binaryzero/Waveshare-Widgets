@@ -48,6 +48,10 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   with no working copy reads "not loaded". An older refused copy beside one that loaded
   gets its own block, naming the settings it withholds and the folder to remove. Which
   refusals the host sends is `tools/SecretRoundTrip` B1. Port used: 8958.
+- `widgetupdates-run.js` — update indicators in the settings window (#227). A widget the
+  host marks new carries "New" on the shelf until one is added. A tile the host flags
+  reads "Updated" until opened, and opening it tells the host. Which widgets and tiles
+  qualify is `tools/WidgetCatalog`. Port used: 8963.
 - `themelayers-run.js` — which appearance layer a tile follows (#225). A tile that overrides
   the theme is marked in the strip. Its Appearance panel says per value whether it comes from
   the theme or the widget, and offers "Follow the theme again". The Theme editor lists the
