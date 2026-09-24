@@ -2601,6 +2601,46 @@ Check("B1c shadowed refusals that withhold nothing stay hidden",
 Check("B1d ids match ordinally, as duplicate resolution does: 'Foo' is not shadowed by 'foo'",
     bannerLines.Contains("Foo:refused:"), string.Join(", ", bannerLines));
 
+// ---- LP · plaintext left by a `text` → `secret` retype is sealed at startup (#56) ----
+// Until the next save the editor called such a value "saved · encrypted" while
+// layout.json held it in the clear. The startup pass makes that label true. It must
+// encrypt ONLY what is plainly plaintext: an envelope from another machine is already
+// ciphertext, and wrapping it again would hand its bytes to the widget as the credential.
+{
+    var lpPlan = SecretPlan.FromManifests(Lookup);
+    var ownSealed = SecretStore.TryProtect("already-sealed", out var ownEnvelope) ? ownEnvelope : "";
+    var lp = LayoutWith(new JsonObject { ["apiToken"] = Token, ["repo"] = "owner/name" });
+    lp.Pages[0].Slots.Add(new LayoutSlot { WidgetId = "test.widget", InstanceId = "i2", Size = "half",
+        Settings = new JsonObject { ["apiToken"] = ForeignEnvelope } });
+    lp.Pages[0].Slots.Add(new LayoutSlot { WidgetId = "test.widget", InstanceId = "i3", Size = "half",
+        Settings = new JsonObject { ["apiToken"] = ownSealed } });
+    lp.Retained = [Retire(new JsonObject { ["apiToken"] = "retired-plain" }, "iLP")];
+
+    var (lpSealed, lpFailed) = SecretPolicy.SealLegacyPlaintext(lp, lpPlan);
+    var lpToken = Value(lp, "apiToken");
+    Check("LP1 a plaintext credential under a secret property is sealed, and opens back to itself",
+        lpToken is not null && lpToken != Token && SecretStore.Unprotect(lpToken) == Token, lpToken);
+    Check("LP2 an ordinary setting beside it is untouched", Value(lp, "repo") == "owner/name");
+    Check("LP3 an envelope from another machine is left exactly as it was, not wrapped again",
+        (lp.Pages[0].Slots[1].Settings?["apiToken"])?.GetValue<string>() == ForeignEnvelope);
+    Check("LP4 an envelope this machine sealed is left as it was",
+        (lp.Pages[0].Slots[2].Settings?["apiToken"])?.GetValue<string>() == ownSealed);
+    var lpRetired = lp.Retained[0].Def!.Settings?["apiToken"]?.GetValue<string>();
+    Check("LP5 a removed tile's plaintext credential in the attic is sealed too",
+        lpRetired is not null && SecretStore.Unprotect(lpRetired) == "retired-plain", lpRetired);
+    Check("LP6 the pass reports what it sealed", lpSealed == 2 && lpFailed == 0, $"{lpSealed} sealed, {lpFailed} failed");
+    var (lpAgain, _) = SecretPolicy.SealLegacyPlaintext(lp, lpPlan);
+    Check("LP7 a second run changes nothing", lpAgain == 0, $"{lpAgain} sealed");
+
+    var lpNoDpapi = LayoutWith(new JsonObject { ["apiToken"] = Token });
+    var lpSavedEncrypt = SecretStore.EncryptOverride;
+    SecretStore.EncryptOverride = _ => throw new PlatformNotSupportedException("no DPAPI here");
+    var (lpNone, lpFail) = SecretPolicy.SealLegacyPlaintext(lpNoDpapi, lpPlan);
+    SecretStore.EncryptOverride = lpSavedEncrypt;
+    Check("LP8 without data protection the value is left in place and reported, never dropped",
+        Value(lpNoDpapi, "apiToken") == Token && lpNone == 0 && lpFail == 1, $"{lpNone} sealed, {lpFail} failed");
+}
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 

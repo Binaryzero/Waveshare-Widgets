@@ -348,6 +348,15 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   and the shell's gates (past the bridge's identity-and-origin check, never in edit mode,
   only from a widget on the page shown) are pinned as source guards. F1 runs the pre-fix
   behaviour and requires it to fail.
+- `apppick-run.js` — Store apps in the app picker (#219). Runs in CI on plain Node: the
+  pickers' `ww-app-pick` block (the "no match" line and the rule that a pick fills an EMPTY
+  Name and never a typed one) is sliced out of both `settings.js` and `shell.js` and run,
+  and the two copies must behave the same; Deck's and Launcher's `ww-store-label` block,
+  which gives a `shell:AppsFolder\<id>` target a readable fallback label, is run the same
+  way. The wiring is pinned as source guards, and P6 runs the pre-#219 behaviour and
+  requires it to fail. The browser half is E36f/E36g in `secretfield-run.js` and N14k in
+  `panelsecret-run.js`; the host half (which ids are kept, how one starts) is
+  `tools/AppIds`.
 - `atticretire-run.js` — a removal made in the settings window's live PREVIEW retires the
   tile instead of discarding it (#226, and the scope cut withdrawn from PR #269). The
   preview is a replica shell handed every credential blanked, so anything it retired

@@ -297,9 +297,7 @@ public sealed class SettingsWindow : Form
                     // picked rather than known (#210). Enumerated per request instead of
                     // cached: the editor asks once when a picker opens, and a list built
                     // at startup would miss anything installed since.
-                    var appsPayload = InstalledApps.ToJson();
-                    appsPayload["type"] = "apps-result";
-                    Post(appsPayload);
+                    _ = PostInstalledAppsAsync();
                     break;
             }
         }
@@ -364,6 +362,18 @@ public sealed class SettingsWindow : Form
 
     private void OnMediaUpdated(MediaState media) =>
         PostPreviewThreadSafe("media", JsonSerializer.SerializeToNode(media, BridgeJson));
+
+    /// <summary>The installed-app list, built off the UI thread (it reads a shell COM
+    /// namespace) and posted back when ready (#219).</summary>
+    private async Task PostInstalledAppsAsync()
+    {
+        var payload = await InstalledApps.ToJsonAsync();
+        payload["type"] = "apps-result";
+        if (!IsHandleCreated || IsDisposed)
+            return;
+        try { BeginInvoke(() => Post(payload)); }
+        catch (ObjectDisposedException) { /* window closed */ }
+    }
 
     /// <summary>Live data for the embedded replica, marshaled onto the UI thread.</summary>
     private void PostPreviewThreadSafe(string type, JsonNode? data)
