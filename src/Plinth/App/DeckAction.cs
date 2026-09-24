@@ -6,7 +6,8 @@ namespace Plinth.App;
 /// <summary>
 /// Executes Control Deck button actions on the host. Self-contained — no external
 /// software required. Kinds:
-///   launch  — start an app/file/folder (target = path)
+///   launch  — start an app/file/folder (target = path, or shell:AppsFolder\&lt;id&gt; for a
+///             Store app — see AppIds)
 ///   url     — open a URL in the default browser (target = http/https URL)
 ///   hotkey  — send a keystroke combo (target = e.g. "ctrl+alt+k", "volumeup", "f5")
 ///   media   — transport control (target = "toggle" | "next" | "prev"), routed to the
@@ -24,7 +25,7 @@ internal static class DeckAction
             {
                 case "launch":
                     if (!string.IsNullOrWhiteSpace(target))
-                        Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
+                        Process.Start(AppIds.LaunchInfo(target, Environment.GetFolderPath(Environment.SpecialFolder.Windows)));
                     break;
 
                 case "url":

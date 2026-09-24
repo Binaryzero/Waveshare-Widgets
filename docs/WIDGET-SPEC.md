@@ -193,10 +193,12 @@ Install via tray → **Install widget…**, or unzip the folder directly into
     the icon and the rest is text (launcher shortcut names): the pick swaps only the
     leading emoji and keeps the text after it.
   - `"picker": "file"` — a path target. Both editors offer a searchable list of the
-    applications installed on the PC, read from the Start Menu, and fill the field with
-    the chosen shortcut's path; the desktop settings window adds a native file browser
-    beside it for targets that are a document or a script rather than a program. The
-    value stored is a path either way, so a widget reads it exactly as before.
+    applications installed on the PC, read from the Start Menu and the Store app list,
+    and fill the field with the chosen shortcut's path; the desktop settings window adds
+    a native file browser beside it for targets that are a document or a script rather
+    than a program. A Store app has no path, so its value is `shell:AppsFolder\<app id>`,
+    which the host's `launch` action starts by that id. When the row has an empty `label`
+    field, the pick fills it with the app's name.
 
   Field types: `text` and `color`. A widget upgraded from an older text property should
   keep accepting its legacy string form from saved layouts (the editor converts

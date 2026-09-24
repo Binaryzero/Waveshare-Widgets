@@ -267,6 +267,28 @@ const layout = {
     deskRowSaved.target === 'C:\\Users\\u\\Start Menu\\Code.lnk' && !('kind' in deskRowSaved),
     JSON.stringify({ saves: saved.length, row: deskRowSaved }));
 
+  // ---- E36f/g · a pick names an EMPTY Name, and only an empty one (#219). A Store app's
+  // target is an app id, which makes a poor label; the picker holds the name the user
+  // searched for.
+  check('E36f a Name the user typed survives a pick',
+    deskRowSaved.label === 'Steam', JSON.stringify(deskRowSaved));
+  const deskName = deskRow.locator('input[aria-label="Name"]');
+  await deskName.fill('');
+  if (await deskRow.locator('button').filter({ hasText: '🗂' }).count() === 1) {
+    await deskRow.locator('button').filter({ hasText: '🗂' }).click();
+    await page.waitForTimeout(250);
+    const again = page.locator('.app-pop .app-pop-list button').filter({ hasText: 'Visual Studio Code' });
+    if (await again.count() === 1) await again.click();
+    await page.waitForTimeout(250);
+  }
+  const namedShown = await deskName.inputValue();
+  await page.locator('#save').click();
+  await page.waitForTimeout(600);
+  const namedRow = ((saved.length ? saved[saved.length - 1].pages[0].slots[0].settings : {}).items || [])[0] || {};
+  check('E36g an emptied Name takes the picked app\'s name, on screen and in the save',
+    namedShown === 'Visual Studio Code' && namedRow.label === 'Visual Studio Code',
+    JSON.stringify({ shown: namedShown, saved: namedRow }));
+
   // ---- E2 · stored secret: honest "saved" state, nothing readable in the DOM
   check('E2 a stored secret reads as saved+encrypted, not as dots implying readability',
     /saved · encrypted \(hidden\)/.test(await stored.locator('.secret-state').textContent()),
