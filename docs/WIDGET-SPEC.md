@@ -113,7 +113,7 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   secret, so its unauthenticated state is what the preview shows. Widgets that used
   `text` for a credential should switch: the validator now fails
   credential-looking names on any other type (`prop-secret`), and an existing plaintext
-  value is encrypted the first time it is saved after the switch. That check catches
+  value is encrypted the next time Plinth starts after the switch. That check catches
   the obvious spellings — token, secret, password, api key, PAT — plus `webhook…` and a
   url/link/endpoint qualified as private, signed, or personal. It cannot judge a name
   like `icsUrl` or `feedUrl`, which may be a public feed or a secret address; if yours
