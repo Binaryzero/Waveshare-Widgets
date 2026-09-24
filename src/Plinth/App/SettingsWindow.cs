@@ -595,12 +595,17 @@ public sealed class SettingsWindow : Form
 
     /// <summary>Widgets on disk that the library refused to load. Without this the
     /// refusal is a line in app.log and, to the user, a tile that stopped existing.</summary>
-    private object RejectedCatalog() => _library.Rejected.Select(r => new
+    private object RejectedCatalog() => RefusalBanner.Entries(_library.AllRefusals,
+        id => _library.Widgets.FirstOrDefault(w => w.Manifest.Id == id)?.Manifest).Select(e => new
     {
-        id = r.Id,
-        name = r.Name,
-        folder = r.Folder,
-        reason = r.Reason,
+        id = e.Refusal.Id,
+        name = e.Refusal.Name,
+        folder = e.Refusal.Folder,
+        reason = e.Refusal.Reason,
+        // An older refused copy beside one that loaded, keeping these settings from it
+        // (#151). The banner says so, and says to remove the folder.
+        shadowed = e.Shadowed,
+        withheld = e.Withheld,
     });
 
     /// <summary>Re-sends the palette and the refusal list after the watcher rescans.

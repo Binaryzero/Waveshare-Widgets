@@ -1140,36 +1140,55 @@
     if (!box) return;
     box.textContent = '';
     const items = Array.isArray(list) ? list : [];
+    // Two different situations with opposite advice. A refused widget with no working copy
+    // is unavailable: fix the manifest or remove it. A SHADOWED one sits beside a copy that
+    // loaded and is keeping that copy's settings from it (#151): the widget works, and the
+    // fix is to delete the old folder. One message for both would tell the second user
+    // their working widget is broken.
+    const refused = items.filter((i) => !i.shadowed);
+    const shadowed = items.filter((i) => i.shadowed);
     box.hidden = items.length === 0;
     if (!items.length) return;
 
-    const title = document.createElement('h2');
-    title.textContent = items.length === 1
-      ? '1 widget was not loaded'
-      : `${items.length} widgets were not loaded`;
-    box.appendChild(title);
-
-    const intro = document.createElement('p');
-    intro.textContent = 'These are installed but refused, because loading them would store '
-      + 'a credential in plain text. Fix the manifest or remove the folder — the widget '
-      + 'stays unavailable until then, and any tile using it will be empty.';
-    box.appendChild(intro);
-
-    const ul = document.createElement('ul');
-    for (const item of items) {
-      const li = document.createElement('li');
-      const name = document.createElement('strong');
-      name.textContent = item.name || item.id || 'unknown widget';
-      li.append(name, document.createTextNode(' — ' + (item.reason || 'refused')));
-      if (item.folder) {
-        const where = document.createElement('div');
-        where.className = 'muted';
-        where.textContent = item.folder;
-        li.appendChild(where);
+    const block = (heading, text, entries, detail) => {
+      const title = document.createElement('h2');
+      title.textContent = heading;
+      const intro = document.createElement('p');
+      intro.textContent = text;
+      const ul = document.createElement('ul');
+      for (const item of entries) {
+        const li = document.createElement('li');
+        const name = document.createElement('strong');
+        name.textContent = item.name || item.id || 'unknown widget';
+        li.append(name, document.createTextNode(' — ' + detail(item)));
+        if (item.folder) {
+          const where = document.createElement('div');
+          where.className = 'muted';
+          where.textContent = item.folder;
+          li.appendChild(where);
+        }
+        ul.appendChild(li);
       }
-      ul.appendChild(li);
+      box.append(title, intro, ul);
+    };
+
+    if (refused.length) {
+      block(refused.length === 1 ? '1 widget was not loaded' : `${refused.length} widgets were not loaded`,
+        'These are installed but refused, because loading them would store '
+          + 'a credential in plain text. Fix the manifest or remove the folder — the widget '
+          + 'stays unavailable until then, and any tile using it will be empty.',
+        refused, (item) => item.reason || 'refused');
     }
-    box.appendChild(ul);
+    if (shadowed.length) {
+      block(shadowed.length === 1 ? 'An old copy of 1 widget is holding back its settings'
+        : `Old copies of ${shadowed.length} widgets are holding back their settings`,
+        'A newer copy of each widget below loaded, but an older copy that was refused is '
+          + 'still in the widgets folder. Until that folder is removed, the settings named '
+          + 'here are kept from the copy that loaded, so its tiles may show as not set up. '
+          + 'Remove the folder shown.',
+        shadowed, (item) => 'withholding ' + (Array.isArray(item.withheld) && item.withheld.length
+          ? item.withheld.join(', ') : 'a setting'));
+    }
   }
 
   /** The panel changed layout.json under unsaved work (#281).

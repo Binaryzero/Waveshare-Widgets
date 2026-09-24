@@ -2569,6 +2569,38 @@ Check("G6b ...and does not bump the generation",
 Check("G6c ...so the other window's payload is still fresh",
     !LayoutStore.IsStale(gBeforeFail, LayoutStore.PanelWriter));
 
+// ---- B1 · which refusals the settings banner shows (#151) ---------------------------
+// A shadowed refusal's names are planned ProtectWithoutReveal for the id, so a credential
+// the loaded copy also declares never reaches it. That was invisible: the banner showed
+// unshadowed refusals only. It must show a shadowed one exactly when it withholds
+// something, and say what.
+static RejectedWidget Refused(string id, params string[] names) =>
+    new(id, id + " (old)", "widgets/" + id + "-old", "declares a credential as text", names);
+var bannerLoaded = new Dictionary<string, WidgetManifest>(StringComparer.Ordinal)
+{
+    ["test.widget"] = manifest,   // declares apiToken (secret) and repo
+    ["foo"] = new WidgetManifest { Id = "foo", Name = "Foo", Properties = [new WidgetProperty { Name = "apiToken", Type = "secret" }] },
+};
+var banner = RefusalBanner.Entries(
+    [
+        Refused("gone.widget", "apiToken"),          // no copy loaded
+        Refused("test.widget", "apiToken", "extra"), // shadowed; withholds apiToken only
+        Refused("test.widget", "unrelated"),         // shadowed; withholds nothing
+        Refused("test.widget"),                      // shadowed; no credential names at all
+        Refused("Foo", "apiToken"),                  // differs from "foo" in case: not shadowed
+    ],
+    id => bannerLoaded.GetValueOrDefault(id));
+string BannerLine(BannerRefusal e) => $"{e.Refusal.Id}:{(e.Shadowed ? "shadowed" : "refused")}:{string.Join("+", e.Withheld)}";
+var bannerLines = banner.Select(BannerLine).ToList();
+Check("B1 an unavailable widget's refusal is shown",
+    bannerLines.Contains("gone.widget:refused:"), string.Join(", ", bannerLines));
+Check("B1b a shadowed refusal that withholds a setting the loaded copy declares is shown, naming only that setting",
+    bannerLines.Contains("test.widget:shadowed:apiToken"), string.Join(", ", bannerLines));
+Check("B1c shadowed refusals that withhold nothing stay hidden",
+    bannerLines.Count(l => l.StartsWith("test.widget:")) == 1, string.Join(", ", bannerLines));
+Check("B1d ids match ordinally, as duplicate resolution does: 'Foo' is not shadowed by 'foo'",
+    bannerLines.Contains("Foo:refused:"), string.Join(", ", bannerLines));
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURES");
 return failures == 0 ? 0 : 1;
 
