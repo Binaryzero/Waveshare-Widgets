@@ -2,8 +2,8 @@
   "id": "ws.stock.wow",
   "name": "WoW Panel",
   "author": "Plinth",
-  "version": "3.1.0",
-  "description": "Your character on the panel: portrait, level, spec and guild, professions with skill progress, the reputations you've pushed lately, mount and pet counts, your latest achievement — and the ones only a step or two from done.",
+  "version": "3.2.0",
+  "description": "Your character on the panel: portrait, level, spec, race, realm and guild, item level and achievement points, professions with skill progress, the reputations you've pushed lately, mount and pet counts, your latest achievements — and the ones only a step or two from done.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
   "properties": [

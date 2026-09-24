@@ -108,6 +108,14 @@ jobs:
       - name: Widget swipes page, drifts do not
         run: node tests/harness/widgetswipe-run.js
 
+      # The WoW Panel's choices of what to show (#258): no three-row caps on a tile with room
+      # for a dozen rows, and with no reputation movement seen yet, the newest factions lead
+      # rather than decade-old ones a sliver short of their next tier. Plain Node against the
+      # widget's own readers, extracted between markers, with a falsification pass. The
+      # layout half runs in tests/harness/wow-card-run.js on the maintainer's machine.
+      - name: WoW Panel shows the character's current data
+        run: node tests/harness/wowreaders-run.js
+
       # A Stream Deck profile names its plugin and action UUIDs, and the icon resolver used
       # both to build filesystem paths — so a crafted or imported profile could point them at
       # any readable file, whose contents are then base64'd into the profile payload and sent
