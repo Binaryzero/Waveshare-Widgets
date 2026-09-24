@@ -11,21 +11,6 @@ namespace Plinth.Widgets;
 /// the dashboard serves it from (one host per widget = one browser origin per widget).</summary>
 public sealed record InstalledWidget(WidgetManifest Manifest, string Folder, string VirtualHost);
 
-/// <summary>A widget on disk that the library refused to load, and why (issue #57).
-///
-/// Refusing is the whole point of the credential rule, but a refusal that only reaches
-/// app.log means the user's first symptom is a tile that quietly stopped existing. The
-/// settings window reads this list so the reason is visible where the widget isn't.
-///
-/// <paramref name="RedactNames"/> is redaction metadata, not display data: a refused
-/// widget has no manifest in the library, so nothing downstream can tell which of its
-/// stored settings are credentials. Carrying the names here is what lets the two windows
-/// plan those addresses as <see cref="SecretIntent.ProtectWithoutReveal"/> — masked,
-/// encrypted, never handed back out — instead of the refusal itself publishing the
-/// plaintext it was raised over.</summary>
-public sealed record RejectedWidget(
-    string Id, string Name, string Folder, string Reason, IReadOnlyList<string> RedactNames);
-
 /// <summary>The outcome of installing a package: what was installed, and whether it is
 /// being served yet.</summary>
 /// <param name="Widget">Null when the package is on disk but its origin could not be
@@ -51,8 +36,9 @@ public sealed partial class WidgetLibrary : IDisposable
     ///
     /// A refusal shadowed by a same-id widget that loaded is deliberately absent: the
     /// widget is present and working, so telling the user it is unavailable sends them
-    /// hunting for a problem they do not have. Use <see cref="AllRefusals"/> for anything
-    /// that is not a message to the user.</summary>
+    /// hunting for a problem they do not have. The settings banner reads
+    /// <see cref="RefusalBanner.Entries"/> over <see cref="AllRefusals"/> instead, which
+    /// adds a shadowed refusal back only when it withholds something (#151).</summary>
     public IReadOnlyList<RejectedWidget> Rejected { get; private set; } = [];
 
     /// <summary>Every refusal the scan recorded, INCLUDING ones shadowed by a same-id

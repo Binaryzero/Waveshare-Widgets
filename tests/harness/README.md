@@ -40,6 +40,10 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   secret (an empty string means "keep it"), and a save the host could not protect
   warns instead of reading as success. The encryption pipeline itself is guarded in
   CI by `dotnet run --project tools/SecretRoundTrip`. Port used: 8951.
+- `refusalbanner-run.js` — the settings window's refusal banner (#151). A refused widget
+  with no working copy reads "not loaded". An older refused copy beside one that loaded
+  gets its own block, naming the settings it withholds and the folder to remove. Which
+  refusals the host sends is `tools/SecretRoundTrip` B1. Port used: 8954.
 - `panelsecret-run.js` — the ON-PANEL half of the same contract. The dashboard is
   handed decrypted values, so the field really holds the credential and "the user
   emptied it" is ambiguous unless the shell says which it meant: both the ✕ Clear and

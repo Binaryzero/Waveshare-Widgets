@@ -101,6 +101,10 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   the secret pipeline: they are masked out of the settings window, and a save restores
   (and encrypts) them rather than writing the editor's blank over them. Repairing the
   manifest and letting the folder rescan is all that is needed to get the widget back.
+  Installing the fixed version BESIDE the refused folder is not enough on its own: while the
+  old copy is there, the credential names it declared are still withheld from the copy that
+  loaded. The settings window lists that old copy separately, names the settings it is
+  holding back, and asks for its folder to be removed.
 
   Declare no `default` for a secret. Two consequences of DPAPI worth knowing: the
   ciphertext is bound to **this Windows user on this machine**, so a `layout.json`
