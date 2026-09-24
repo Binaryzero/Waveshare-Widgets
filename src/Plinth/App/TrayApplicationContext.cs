@@ -38,6 +38,9 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _hub.Start(_config.PollIntervalMs);
 
+        // What is new or changed since the last start, for the settings palette (#227).
+        RefreshWidgetCatalog();
+
         _trayIcon = new NotifyIcon
         {
             Icon = CreateTrayIcon(),
@@ -450,6 +453,27 @@ public sealed class TrayApplicationContext : ApplicationContext
     private static void SetAutostart(bool enabled) => Autostart.SetEnabled(enabled);
 
 
+    /// <summary>Records what is installed now against what the last start saw (#227):
+    /// widgets new in this update, and placed tiles whose widget changed its settings.
+    /// </summary>
+    private void RefreshWidgetCatalog()
+    {
+        try
+        {
+            var state = new WidgetCatalogState(Path.Combine(AppPaths.DataDir, "widget-catalog.json"));
+            var layout = LayoutStore.Load();
+            state.Refresh(
+                _library.Widgets.Select(w => (w.Manifest.Id, WidgetCatalogState.ShapeOf(w.Manifest))),
+                (layout.Pages ?? []).SelectMany(p => p.Slots ?? []).Select(s => (s.WidgetId ?? "", s.InstanceId)),
+                DateTime.UtcNow);
+            WidgetCatalogState.Shared = state;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not check for new or changed widgets: {ex.Message}");
+        }
+    }
+
     /// <summary>A property retyped `text` → `secret` keeps its plaintext until the next
     /// save, while the settings editor already calls it "saved · encrypted" (#56). Encrypt
     /// such values once, here, so that label is true from the start.</summary>
@@ -479,6 +503,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             Log.Warn($"Could not check for plain-text credentials: {ex.Message}");
         }
     }
+
     private static Icon CreateTrayIcon()
     {
         // Drawn at runtime so the project needs no binary icon asset.

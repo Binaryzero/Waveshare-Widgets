@@ -48,6 +48,17 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   with no working copy reads "not loaded". An older refused copy beside one that loaded
   gets its own block, naming the settings it withholds and the folder to remove. Which
   refusals the host sends is `tools/SecretRoundTrip` B1. Port used: 8958.
+- `widgetupdates-run.js` — update indicators in the settings window (#227). A widget the
+  host marks new carries "New" on the shelf until one is added. A tile the host flags
+  reads "Updated" until opened, and opening it tells the host. Which widgets and tiles
+  qualify is `tools/WidgetCatalog`. Port used: 8963.
+- `themelayers-run.js` — which appearance layer a tile follows (#225). A tile that overrides
+  the theme is marked in the strip. Its Appearance panel says per value whether it comes from
+  the theme or the widget, and offers "Follow the theme again". The Theme editor lists the
+  widgets its colours will not reach and can revert each. Checking or unchecking a key
+  updates the revert and the strip mark at once (L6). Two copies of one widget get rows that
+  say which tile (L7). A revert from the Theme editor after a live-preview edit still reaches
+  the save (L8, driven through the real replica). Port used: 8962.
 - `panelsecret-run.js` — the ON-PANEL half of the same contract. The dashboard is
   handed decrypted values, so the field really holds the credential and "the user
   emptied it" is ambiguous unless the shell says which it meant: both the ✕ Clear and

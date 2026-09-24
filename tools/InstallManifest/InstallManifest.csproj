@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CI guard for update retirements (issue #240). An in-app update never removed a file
+       a release dropped, so the install drifted from a clean copy. The updater now keeps a
+       list of the files each release placed and retires the ones the next release lacks.
+       The dangerous direction is retiring something that is not the release's to remove,
+       so this drives the real list logic over the paths that must never qualify. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>InstallManifestProbe</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Plinth/InstallManifest.cs" />
+  </ItemGroup>
+</Project>

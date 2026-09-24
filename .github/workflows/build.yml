@@ -192,6 +192,22 @@ jobs:
       - name: LAN proxy redirects
         run: dotnet run --project tools/LanRedirects
 
+      # Widgets update with the app, so an update cannot be held back per tile; the user
+      # is told instead (#227). A widget new in an update is "New" until placed or two
+      # weeks pass, and a placed tile whose widget changed its settings is "Updated" until
+      # opened. This pins the state behind both, including that a fresh install announces
+      # nothing and a relabel is not a settings change.
+      - name: Update indicators
+        run: dotnet run --project tools/WidgetCatalog
+
+      # An in-app update never removed a file a release dropped, so the install drifted
+      # from a clean copy (#240). The updater now keeps a list of each release's files
+      # and retires what the next release lacks, inside the journaled swap. The risk is
+      # retiring something that is not the release's to remove; this pins the list logic
+      # and the wiring that puts retirements on the swap's rollback.
+      - name: Update retirements
+        run: dotnet run --project tools/InstallManifest
+
       # A widget's long-lived credential is sealed at rest; the SHORT-lived one it buys
       # with that had nowhere to go but localStorage — a plaintext file in the same
       # WebView profile, which hands back exactly what the sealing withholds (#175). The
@@ -236,6 +252,15 @@ jobs:
       # upgrades. run_number is workflow-controlled, not attacker-choosable text.
       - name: Publish
         run: dotnet publish src/Plinth/Plinth.csproj -c Release -r win-x64 --self-contained false -p:Version=0.0.0-ci.${{ github.run_number }} -o publish
+
+      # The same script release.yml runs before packing (#240), here so it runs on every
+      # change rather than first on release day: the list it writes must read back through
+      # the updater's own parser as exactly the files in the folder.
+      - name: Install manifest matches the published files
+        shell: pwsh
+        run: |
+          ./tools/write-install-manifest.ps1 publish
+          dotnet run --project tools/InstallManifest -- verify publish
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

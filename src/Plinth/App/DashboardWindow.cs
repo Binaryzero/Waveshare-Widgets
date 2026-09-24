@@ -349,6 +349,11 @@ public sealed class DashboardWindow : Form
                         // the file, and goes to the other window.
                         if (landed)
                             LayoutWritten?.Invoke();
+                        // Placing a widget from the panel ends its "New" badge as surely
+                        // as placing it from the settings window (#227).
+                        if (landed)
+                            WidgetCatalogState.Shared?.MarkPlaced((edited.Pages ?? [])
+                                .SelectMany(pg => pg.Slots ?? []).Select(sl => sl.WidgetId ?? "").Where(id => id.Length > 0));
                         // The panel had no success ack at all — it re-renders itself, so
                         // there was nothing to tell it. Now there is exactly one thing:
                         // the generation its NEXT payload should echo. Not a reload.
