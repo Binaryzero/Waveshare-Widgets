@@ -324,8 +324,11 @@
 
   // Blizzard's realm slug: lowercase, spaces to hyphens, apostrophes dropped —
   // "Argent Dawn" and "argent-dawn" both reach the same realm.
+  // Blizzard's slugs are plain ASCII: accents and brackets drop out, so Confrérie du
+  // Thorium is confrerie-du-thorium and Aggra (Português) is aggra-portugues.
   const slug = (s) => String(s == null ? '' : s).trim().toLowerCase()
-    .replace(/['’]/g, '').replace(/\s+/g, '-');
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '').normalize('NFC')
+    .replace(/['’()]/g, '').replace(/\s+/g, '-');
 
   function charBase() {
     return 'https://' + cfg.region + '.api.blizzard.com/profile/wow/character/'
@@ -921,11 +924,14 @@
         ? 'The Blizzard API did not answer in time. Type the realm, or press Find again.'
         : 'Could not read the realm list from the Blizzard API.');
     }
-    if (!isObj(json) || !Array.isArray(json.realms)) throw new Error('The realm list came back in a shape this tile does not know.');
-    return json.realms
+    const shape = 'The realm list came back in a shape this tile does not know.';
+    if (!isObj(json) || !Array.isArray(json.realms)) throw new Error(shape);
+    const choices = json.realms
       .filter((r) => isObj(r) && isText(r.slug))
-      .map((r) => ({ value: r.slug, label: isText(r.name) ? r.name : '' }))
-      .sort((a, b) => (a.label || a.value).localeCompare(b.label || b.value));
+      .map((r) => ({ value: r.slug, label: isText(r.name) ? r.name : '' }));
+    // Every region has realms: entries with none usable is a changed shape, not an empty region.
+    if (json.realms.length && !choices.length) throw new Error(shape);
+    return choices.sort((a, b) => (a.label || a.value).localeCompare(b.label || b.value));
   });
 
   // ---- Wiring ---------------------------------------------------------------

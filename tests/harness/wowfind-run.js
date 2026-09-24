@@ -13,6 +13,9 @@
 //   F7 · a slow sign-in and a slow realm read, each inside its own request deadline but
 //        20 s together, are reported by the widget inside the shell's 20 s wait, not left
 //        for the shell to time out
+//   F8 · a realm list whose entries are all unusable is an error, not an empty region
+//   F9 · a realm typed by its name, accents and brackets included, is looked up by
+//        Blizzard's slug (Confrérie du Thorium → confrerie-du-thorium)
 //
 // Run: CHROMIUM=/path/to/chrome node tests/harness/wowfind-run.js
 'use strict';
@@ -76,6 +79,7 @@ const REALMS = {
   await page.route('https://shell.test/**', (r) => r.fulfill({ contentType: 'text/html', body: SHELL_PAGE }));
   const asked = [];
   let realmsDelayMs = 0;
+  let realmsBody = null;
   await page.route(/https:\/\/(us|eu)\.api\.blizzard\.com\/.*/, (r) => {
     const req = r.request();
     if (req.method() === 'OPTIONS') return r.fulfill({ status: 204, headers: CORS, body: '' });
@@ -88,7 +92,7 @@ const REALMS = {
         contentType: 'application/json', body: JSON.stringify({ _links: {}, realms: REALMS[region] || [] }) }));
     if (u.pathname === '/data/wow/realm/index')
       return r.fulfill({ status: 200, headers: CORS, contentType: 'application/json',
-        body: JSON.stringify({ _links: {}, realms: REALMS[region] || [] }) });
+        body: JSON.stringify({ _links: {}, realms: realmsBody || REALMS[region] || [] }) });
     return r.fulfill({ status: 404, headers: CORS, body: '{}' });
   });
   // The token exchange is proxy-only; a direct request is a contract break.
@@ -215,6 +219,35 @@ const REALMS = {
     `${took} ms: ${JSON.stringify(silent)}`);
   realmsDelayMs = 0;
   await page.evaluate(() => { window.__tokenDelay = 0; });
+
+  // F8 · entries that lost their slug: a changed shape, reported rather than listed as nothing.
+  await page.evaluate((s) => window.__wwReinit(s), settings);
+  await page.waitForTimeout(300);
+  realmsBody = [{ id: 1, name: 'Argent Dawn' }, { id: 2, name: 'Silvermoon', slug: 7 }];
+  const unusable = await ask('f8', 'realm', null);
+  realmsBody = null;
+  check('F8 a realm list with no usable entries is an error, not an empty region',
+    !!(unusable && typeof unusable.error === 'string' && /shape/i.test(unusable.error) && !unusable.options),
+    JSON.stringify(unusable));
+
+  // F9 · the card's character lookup, with realms typed as their names.
+  const lookedUp = async (realm) => {
+    const before = asked.length;
+    await page.evaluate((s) => window.__wwReinit(s),
+      Object.assign({}, settings, { region: 'eu', realm, character: 'Thrall' }));
+    for (let i = 0; i < 40; i++) {
+      const hit = asked.slice(before).find((a) => a.path.startsWith('/profile/wow/character/'));
+      if (hit) return hit.path;
+      await page.waitForTimeout(100);
+    }
+    return '';
+  };
+  const accented = await lookedUp('Confrérie du Thorium');
+  const bracketed = await lookedUp('Aggra (Português)');
+  check('F9 realms typed by name, accents and brackets included, are looked up by Blizzard\'s slug',
+    accented.startsWith('/profile/wow/character/confrerie-du-thorium/thrall')
+      && bracketed.startsWith('/profile/wow/character/aggra-portugues/thrall'),
+    JSON.stringify([accented, bracketed]));
 
   await browser.close();
   console.log(failures ? `${failures} FAILURE(S)` : 'ALL PASS');

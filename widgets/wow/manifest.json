@@ -21,7 +21,7 @@
       "default": "",
       "placeholder": "argent-dawn",
       "optionsSource": "widget",
-      "help": "The realm's name or slug — Argent Dawn and argent-dawn both work — or press Find… to pick from the realms of the chosen region; Find needs the Battle.net client id and secret below."
+      "help": "The realm's slug, as in argent-dawn. Most names typed as shown work too; press Find… to pick the exact one from the realms of the chosen region. Find needs the Battle.net client id and secret below."
     },
     {
       "name": "character",
