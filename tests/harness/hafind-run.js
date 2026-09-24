@@ -9,6 +9,8 @@
 //   F3 · any other setting gets no answer from this widget ("unsupported")
 //   F4 · a rejected token comes back as the widget's own message, not a list
 //   F5 · with no address or token yet, Find says what is missing
+//   F6 · a Home Assistant that never answers is reported by the widget itself, inside the
+//        shell's 20 s wait, not left for the shell to time out
 //
 // Run: CHROMIUM=/path/to/chrome node tests/harness/hafind-run.js
 'use strict';
@@ -71,12 +73,14 @@ const WANT = ['light.kitchen', 'lock.front_door', 'sensor.outdoor_temp', 'switch
     serve(r, WIDGET, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '') || 'index.html'));
   await page.route('https://shell.test/**', (r) => r.fulfill({ contentType: 'text/html', body: SHELL_PAGE }));
   let statesStatus = 200;
+  let statesHang = false;
   const auth = [];
   await page.route('https://ha1.test/**', (r) => {
     const req = r.request();
     if (req.method() === 'OPTIONS') return r.fulfill({ status: 204, headers: CORS, body: '' });
     if (new URL(req.url()).pathname === '/api/states') {
       auth.push(req.headers()['authorization'] || '');
+      if (statesHang) return new Promise(() => {});   // accepts, then never answers
       if (statesStatus !== 200) return r.fulfill({ status: statesStatus, headers: CORS, body: '' });
       return r.fulfill({ status: 200, headers: CORS, contentType: 'application/json', body: JSON.stringify(STATES) });
     }
@@ -156,6 +160,23 @@ const WANT = ['light.kitchen', 'lock.front_door', 'sensor.outdoor_temp', 'switch
   check('F5 with no address or token, Find says what is missing',
     !!(empty && typeof empty.error === 'string' && /address and an access token/i.test(empty.error)),
     JSON.stringify(empty));
+
+  // F6 · back to a configured server that then goes silent.
+  await page.evaluate(() => window.__wwReinit({ baseUrl: 'https://ha1.test', accessToken: 'stub-token', entities: [], refreshSeconds: 20 }));
+  await page.waitForTimeout(300);
+  statesHang = true;
+  const t0 = Date.now();
+  await page.evaluate((q) => window.__wwPush(Object.assign({ type: 'ww-discover' }, q)), { id: 'f6', property: 'entities', field: 'entity' });
+  let silent = null;
+  for (let i = 0; i < 250 && !silent; i++) {
+    silent = await page.evaluate((k) => (window.__discovered || {})[k] || null, 'f6');
+    if (!silent) await page.waitForTimeout(100);
+  }
+  const took = Date.now() - t0;
+  check('F6 a server that never answers is reported by the widget inside the shell\'s 20 s wait',
+    !!(silent && typeof silent.error === 'string' && /did not answer in time/i.test(silent.error)) && took < 19000,
+    `${took} ms: ${JSON.stringify(silent)}`);
+  statesHang = false;
 
   await browser.close();
   console.log(failures ? `${failures} FAILURE(S)` : 'ALL PASS');
