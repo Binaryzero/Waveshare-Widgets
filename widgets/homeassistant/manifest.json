@@ -2,7 +2,7 @@
   "id": "ws.stock.homeassistant",
   "name": "Home Assistant",
   "author": "Plinth",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "description": "Entity states from Home Assistant with touch control for lights and switches. Locks and covers stay display-only until you arm them, and then need a long press.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
@@ -28,11 +28,12 @@
       "type": "list",
       "itemLabel": "entity",
       "fields": [
-        { "key": "entity", "label": "Entity ID", "type": "text", "placeholder": "light.kitchen" },
+        { "key": "entity", "label": "Entity ID", "type": "text", "placeholder": "light.kitchen", "optionsSource": "widget" },
         { "key": "label", "label": "Name", "type": "text", "placeholder": "Kitchen" },
         { "key": "control", "label": "Locks & covers", "type": "text", "placeholder": "blank = show only · allow = long-press to control" }
       ],
-      "default": []
+      "default": [],
+      "help": "One row per entity. Type its entity ID (light.kitchen) or press Find… to pick from the entities your Home Assistant has; Find needs the address and token above."
     },
     {
       "name": "refreshSeconds",
