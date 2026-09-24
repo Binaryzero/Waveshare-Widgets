@@ -2,7 +2,7 @@
   "id": "ws.stock.ghqueue",
   "name": "GitHub Queue",
   "author": "Plinth",
-  "version": "3.0.1",
+  "version": "3.1.0",
   "description": "The merge board: every open pull request across your repositories — title, age, CI verdict, review chatter — sorted worst first, so red and conflicted land on top. Uses conditional requests so it stays well inside the token's rate limit.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
@@ -14,10 +14,10 @@
       "itemLabel": "repository",
       "maxItems": 10,
       "fields": [
-        { "key": "repo", "label": "owner/name", "type": "text", "placeholder": "binaryzero/waveshare-widgets" }
+        { "key": "repo", "label": "owner/name", "type": "text", "placeholder": "binaryzero/waveshare-widgets", "optionsSource": "widget" }
       ],
       "default": [],
-      "help": "One row per repository, as owner/name — the same text that appears in its URL. The token below must have access to every one of them."
+      "help": "One row per repository, as owner/name — the same text that appears in its URL, or press Find… to pick from the repositories the token can see. The token below must have access to every one of them."
     },
     {
       "name": "apiToken",

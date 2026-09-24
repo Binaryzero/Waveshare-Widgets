@@ -190,6 +190,86 @@
     tick(gen);
   });
 
+  // Find (#210): the repositories this token can see, for a row of the Repositories list.
+  // GitHub lists them for the token itself, so a fine-grained token answers with the
+  // repositories it was given and a classic one with everything the account reaches.
+  // Recently pushed first and a few pages at most: the chooser has a search box, and a
+  // repository past the first few hundred can still be typed. Asked only when the user
+  // presses Find, never by the sweep, and kept out of the sweep's ETag cache.
+  //
+  // Six pages, one more than the 500 choices the chooser keeps: an account with more
+  // then sends more than 500, which is how the shell knows to say the list was cut. All
+  // pages share one budget, inside the shell's 20 s wait for an answer; a GitHub too slow
+  // to finish in it gets "did not answer in time" rather than a list silently short of
+  // the repositories it never reached.
+  const DISCOVER_PAGES = 6;
+  const DISCOVER_BUDGET = 15000;
+  WW.onDiscover(async ({ property, field }) => {
+    if (property !== 'repos' || field !== 'repo') return null;
+    if (!cfg.token) throw new Error('Add a personal access token to this widget first. Find lists the repositories it can see.');
+    if (rateLimitedUntil > Date.now()) throw new Error(rateLimitText());
+    const until = Date.now() + DISCOVER_BUDGET;
+    const names = [];
+    for (let page = 1; page <= DISCOVER_PAGES; page++) {
+      const batch = await listRepos(page, until);
+      for (const r of batch) if (r && typeof r.full_name === 'string') names.push(r.full_name);
+      if (batch.length < 100) break;
+    }
+    return names;
+  });
+
+  function rateLimitText() {
+    const at = new Date(rateLimitedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return 'GitHub’s rate limit for this token resets at ' + at + '. Type the repository for now.';
+  }
+
+  async function listRepos(page, until) {
+    const abort = new AbortController();
+    const left = until - Date.now();
+    if (left <= 0) throw new Error('GitHub did not answer in time. Type the repository, or press Find again.');
+    const deadline = setTimeout(() => abort.abort(), Math.min(REQUEST_DEADLINE, left));
+    try {
+      let res;
+      try {
+        res = await WW.fetch(API + '/user/repos?per_page=100&sort=pushed&page=' + page, {
+          headers: {
+            Authorization: 'Bearer ' + cfg.token,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+          maxBytes: RESPONSE_CAP,
+          signal: abort.signal,
+        });
+      } catch (e) {
+        throw new Error(abort.signal.aborted ? 'GitHub did not answer in time. Type the repository, or press Find again.'
+          : 'Could not reach GitHub.');
+      }
+      if (res.status === 401) throw new Error('GitHub refused the token. Check it in this widget’s settings.');
+      // The same gate the sweep keeps: a limit Find runs into pauses the board too, and a
+      // limit the board ran into answers Find without another request.
+      const limited = await rateLimitReset(res);
+      if (limited) {
+        rateLimitedUntil = limited;
+        throw new Error(rateLimitText());
+      }
+      if (!res.ok) {
+        let said = '';
+        try { said = String(((await res.json()) || {}).message || ''); } catch (e) { /* no JSON to quote */ }
+        throw new Error('GitHub answered ' + res.status + (said ? ': ' + said.slice(0, 120) : '') + '.');
+      }
+      let body;
+      try { body = await res.json(); }
+      catch (e) {
+        throw new Error(abort.signal.aborted ? 'GitHub did not answer in time. Type the repository, or press Find again.'
+          : 'GitHub’s answer could not be read.');
+      }
+      if (!Array.isArray(body)) throw new Error('GitHub’s answer was not a list of repositories.');
+      return body;
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
+
   // How many rows the slot can actually hold. A supported 200px band fits three, and
   // clipping the rest behind overflow:hidden would leave the summary naming a failing
   // PR no visible row could possibly be. Chrome is the body padding, the header, the
@@ -364,21 +444,11 @@
     // waiting for the reset. GitHub also says so in the BODY, and the body does survive
     // the hop, so that is what decides it. Headers still win when they are there: they
     // carry the exact reset time.
-    if (res.status === 403 || res.status === 429) {
-      const remaining = res.headers && res.headers.get && res.headers.get('x-ratelimit-remaining');
-      const resetHdr = res.headers && res.headers.get && res.headers.get('x-ratelimit-reset');
-      let said = false;
-      try {
-        const detail = await res.clone().json();
-        said = /rate limit|abuse detection/i.test(String((detail && detail.message) || ''));
-      } catch (e) { /* not JSON, or already consumed — the headers are all there is */ }
-      if (res.status === 429 || remaining === '0' || said) {
-        const reset = Number(resetHdr);
-        const until = Number.isFinite(reset) && reset > 0 ? reset * 1000 : Date.now() + 900000;
-        const err = fault('ratelimit', 'rate limited');
-        err.rateLimitedUntil = until;
-        throw err;
-      }
+    const limitedUntil = await rateLimitReset(res);
+    if (limitedUntil) {
+      const err = fault('ratelimit', 'rate limited');
+      err.rateLimitedUntil = limitedUntil;
+      throw err;
     }
     if (!res.ok) throw fault('http', 'HTTP ' + res.status, res.status);
     const etag = res.headers && res.headers.get && res.headers.get('etag');
@@ -395,6 +465,23 @@
     }
     if (etag) remember(url, etag, body);
     return { unchanged: false, body };
+  }
+
+  // When the answer is GitHub saying "rate limited", the time the limit resets (ms since
+  // the epoch); otherwise 0. See ghOnce for why the body decides and not the headers
+  // alone. Shared by the sweep and Find, so the two agree on what a limit looks like.
+  async function rateLimitReset(res) {
+    if (res.status !== 403 && res.status !== 429) return 0;
+    const remaining = res.headers && res.headers.get && res.headers.get('x-ratelimit-remaining');
+    const resetHdr = res.headers && res.headers.get && res.headers.get('x-ratelimit-reset');
+    let said = false;
+    try {
+      const detail = await res.clone().json();
+      said = /rate limit|abuse detection/i.test(String((detail && detail.message) || ''));
+    } catch (e) { /* not JSON, or already consumed — the headers are all there is */ }
+    if (res.status !== 429 && remaining !== '0' && !said) return 0;
+    const reset = Number(resetHdr);
+    return Number.isFinite(reset) && reset > 0 ? reset * 1000 : Date.now() + 900000;
   }
 
   // Every workflow run for the PR's head commit, folded to one verdict. A completed
