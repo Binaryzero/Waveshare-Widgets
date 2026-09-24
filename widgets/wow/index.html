@@ -324,8 +324,11 @@
 
   // Blizzard's realm slug: lowercase, spaces to hyphens, apostrophes dropped —
   // "Argent Dawn" and "argent-dawn" both reach the same realm.
+  // Blizzard's slugs are plain ASCII: accents and brackets drop out, so Confrérie du
+  // Thorium is confrerie-du-thorium and Aggra (Português) is aggra-portugues.
   const slug = (s) => String(s == null ? '' : s).trim().toLowerCase()
-    .replace(/['’]/g, '').replace(/\s+/g, '-');
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '').normalize('NFC')
+    .replace(/['’()]/g, '').replace(/\s+/g, '-');
 
   function charBase() {
     return 'https://' + cfg.region + '.api.blizzard.com/profile/wow/character/'
@@ -894,6 +897,42 @@
       tick();
     });
   }
+
+  // ---- Find (#210) ----------------------------------------------------------
+  // The realms of the chosen region, for the Realm setting. The realm index is Game Data,
+  // readable with the same client-credentials token the card already buys, and each realm
+  // is answered as its slug (what the card looks the character up by) labelled with its
+  // name. The character is not offered: listing a player's characters needs that player's
+  // own Battle.net sign-in, which this tile does not have. Works before a realm is set.
+  // One deadline over the whole lookup — sign-in, read, and the one retry a stale token
+  // earns — shorter than the shell's 20 s wait, so a slow Blizzard is reported by the
+  // widget rather than timed out by the shell.
+  const DISCOVER_DEADLINE = 15000;
+  WW.onDiscover(async ({ property }) => {
+    if (property !== 'realm') return null;
+    if (!cfg.clientId || !cfg.clientSecret)
+      throw new Error('Add the Battle.net client id and secret first. Find lists the realms of the chosen region.');
+    let json;
+    try {
+      const url = 'https://' + cfg.region + '.api.blizzard.com/data/wow/realm/index'
+        + '?namespace=dynamic-' + cfg.region + '&locale=' + (LOCALE[cfg.region] || 'en_US');
+      json = await withDeadline(DISCOVER_DEADLINE, new AbortController(), () => authed('realms', url));
+    } catch (e) {
+      throw new Error(e && e.tokenExchange && (e.status === 401 || e.status === 403)
+        ? 'Battle.net rejected the client credentials — check the id and secret.'
+        : e && e.message === 'timed out'
+        ? 'The Blizzard API did not answer in time. Type the realm, or press Find again.'
+        : 'Could not read the realm list from the Blizzard API.');
+    }
+    const shape = 'The realm list came back in a shape this tile does not know.';
+    if (!isObj(json) || !Array.isArray(json.realms)) throw new Error(shape);
+    const choices = json.realms
+      .filter((r) => isObj(r) && isText(r.slug))
+      .map((r) => ({ value: r.slug, label: isText(r.name) ? r.name : '' }));
+    // Every region has realms: entries with none usable is a changed shape, not an empty region.
+    if (json.realms.length && !choices.length) throw new Error(shape);
+    return choices.sort((a, b) => (a.label || a.value).localeCompare(b.label || b.value));
+  });
 
   // ---- Wiring ---------------------------------------------------------------
 

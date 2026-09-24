@@ -2,7 +2,7 @@
   "id": "ws.stock.wow",
   "name": "WoW Panel",
   "author": "Plinth",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "Your character on the panel: portrait, level, spec, race, realm and guild, item level and achievement points, professions with skill progress, the reputations you've pushed lately, mount and pet counts, your latest achievements — and the ones only a step or two from done.",
   "min_api_version": 1,
   "supported_slots": ["half", "full"],
@@ -19,7 +19,9 @@
       "label": "Realm",
       "type": "text",
       "default": "",
-      "placeholder": "argent-dawn"
+      "placeholder": "argent-dawn",
+      "optionsSource": "widget",
+      "help": "The realm's slug, as in argent-dawn. Most names typed as shown work too; press Find… to pick the exact one from the realms of the chosen region. Find needs the Battle.net client id and secret below."
     },
     {
       "name": "character",
