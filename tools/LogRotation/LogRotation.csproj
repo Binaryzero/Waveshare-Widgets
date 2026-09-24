@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CI guard for app.log management (issue #256). The log kept every session in one
+       file and, past 1 MB, deleted it: weeks of old runs mixed in with the current one,
+       and the history a bug report needed was thrown away the moment the file filled.
+       This drives the real RollingLog source in a temp directory. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>LogRotation</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Plinth/RollingLog.cs" />
+  </ItemGroup>
+</Project>

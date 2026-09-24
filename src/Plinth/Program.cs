@@ -126,6 +126,11 @@ internal static class Program
             return;
         }
 
+        // Only as the single instance, for the same reason as everything below: rolling
+        // app.log to app.1.log under a running instance would move its log out from under
+        // it. First, so update recovery's lines open this session's file.
+        Log.StartSession();
+
         // Only as the single instance: swap recovery MOVES files in the install dir,
         // and the sweep deletes rename-aside remnants — neither may race a sibling.
         var outcome = UpdateManager.CleanupAtStartup();
