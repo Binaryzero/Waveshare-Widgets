@@ -276,7 +276,8 @@
       const apps = (((msg.data && msg.data.apps) || [])
         .filter((a) => a && typeof a.name === 'string' && typeof a.path === 'string'));
       const cut = !!(msg.data && msg.data.truncated);
-      waiters.forEach((cb) => { try { cb(apps, cut); } catch (e) { /* row rebuilt */ } });
+      const storeListed = !(msg.data && msg.data.storeListed === false);
+      waiters.forEach((cb) => { try { cb(apps, cut, storeListed); } catch (e) { /* row rebuilt */ } });
     } else if (msg.type === 'sd-profile-result') {
       routeSd(msg, (data) => ({ type: 'ww-sd-profile', profile: data }));
     } else if (msg.type === 'sd-capture-result') {
@@ -2808,6 +2809,29 @@
     return btn;
   }
 
+  // >>> ww-app-pick — extracted and RUN by tests/harness/apppick-run.js (the same block
+  // lives in settings.js, for the desktop picker; the harness runs both copies).
+  /** What the app picker says when a search matches nothing. The list now holds Store apps
+   * too (#219), so "it may be a Store app" is only true when that half could not be read. */
+  function noMatchText(storeListed) {
+    return storeListed
+      ? 'No match among Start Menu programs and Store apps.'
+      : 'No match. Store apps could not be listed this time, so it may be one of those.';
+  }
+
+  /** A picked app names its row when the row's Name is empty (#219). A Store app's target
+   * is an app id, which makes a poor label, and a program's is a path; the picker holds the
+   * name the user actually searched for. A Name the user typed is never replaced.
+   * Returns true when it changed the item. */
+  function nameFromPick(item, fields, name) {
+    if (!item || typeof item !== 'object' || typeof name !== 'string' || !name.trim()) return false;
+    if (!Array.isArray(fields) || !fields.some((f) => f && f.key === 'label')) return false;
+    if (item.label != null && String(item.label).trim()) return false;
+    item.label = name.trim();
+    return true;
+  }
+  // <<< ww-app-pick
+
   /** Installed-application chooser for a path field (#210). A full-height sheet rather
    * than the emoji popover's grid: the list can run to hundreds of rows, it needs a
    * filter, and 44px targets do not fit in a popover on a 400px-tall panel. */
@@ -2844,6 +2868,7 @@
 
       let apps = [];
       let truncated = false;
+      let storeListed = true;
       const render = () => {
         const q = search.value.trim().toLowerCase();
         const shown = q ? apps.filter((a) => a.name.toLowerCase().includes(q)) : apps;
@@ -2858,7 +2883,7 @@
             input.dispatchEvent(new Event('input'));
             // Same hazard as the desktop picker: a migrated deck row carries a hidden
             // `kind` that classify() consults for a scheme-less target.
-            input.dispatchEvent(new CustomEvent('ww-app-picked'));
+            input.dispatchEvent(new CustomEvent('ww-app-picked', { detail: { name: app.name } }));
             sheet.remove();
           });
           list.appendChild(b);
@@ -2870,7 +2895,7 @@
           status.textContent = apps.length
             ? (truncated
               ? 'No match — and the list was cut short, so it may simply not have been reached.'
-              : 'No match. This lists Start Menu shortcuts — a packaged Store app may not have one.')
+              : noMatchText(storeListed))
             : 'No installed applications found.';
         } else if (shown.length > 200) {
           status.hidden = false;
@@ -2880,10 +2905,11 @@
         }
       };
       search.addEventListener('input', render);
-      psAppWaiters.push((result, wasTruncated) => {
+      psAppWaiters.push((result, wasTruncated, wasStoreListed) => {
         if (!sheet.isConnected) return;   // dismissed while the host was still walking
         apps = result;
         truncated = wasTruncated;
+        storeListed = wasStoreListed;
         render();
       });
       postToHost({ type: 'list-apps' });
@@ -3028,9 +3054,17 @@
             input.value = item[f.key] != null ? String(item[f.key]) : '';
           }
           input.setAttribute('aria-label', f.label || f.key);
+          input.dataset.key = f.key;
           input.oninput = () => { item[f.key] = input.value; commit(); };
-          input.addEventListener('ww-app-picked', () => {
-            if (item && typeof item === 'object' && 'kind' in item) { delete item.kind; commit(); }
+          input.addEventListener('ww-app-picked', (ev) => {
+            let changed = false;
+            if (item && typeof item === 'object' && 'kind' in item) { delete item.kind; changed = true; }
+            if (nameFromPick(item, fields, ev.detail && ev.detail.name)) {
+              changed = true;
+              const named = card.querySelector('input[data-key="label"]');
+              if (named) named.value = item.label;
+            }
+            if (changed) commit();
           });
           // LIST fields are where the pickers actually live: every shipped picker:'file'
           // is one (launcher items.target, deck buttons.target), and there is no top-level

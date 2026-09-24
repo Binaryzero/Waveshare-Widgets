@@ -32,6 +32,9 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _library.Initialize();
         _library.Changed += () => _dashboard?.ReloadDashboard();
+        // After the library (the plan needs its manifests), before either window reads
+        // the layout.
+        SealLegacySecrets();
 
         _hub.Start(_config.PollIntervalMs);
 
@@ -446,6 +449,36 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private static void SetAutostart(bool enabled) => Autostart.SetEnabled(enabled);
 
+
+    /// <summary>A property retyped `text` → `secret` keeps its plaintext until the next
+    /// save, while the settings editor already calls it "saved · encrypted" (#56). Encrypt
+    /// such values once, here, so that label is true from the start.</summary>
+    private void SealLegacySecrets()
+    {
+        try
+        {
+            var refused = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            foreach (var r in _library.AllRefusals)
+            {
+                if (string.IsNullOrEmpty(r.Id) || r.RedactNames.Count == 0) continue;
+                if (!refused.TryGetValue(r.Id, out var names)) refused[r.Id] = names = [];
+                names.AddRange(r.RedactNames.Where(n => !string.IsNullOrEmpty(n) && !names.Contains(n, StringComparer.Ordinal)));
+            }
+            var plan = SecretPlan.FromManifests(
+                id => _library.Widgets.FirstOrDefault(w => w.Manifest.Id == id)?.Manifest,
+                id => refused.TryGetValue(id, out var names) ? names : null);
+            var layout = LayoutStore.Load();
+            var (sealedCount, failed) = SecretPolicy.SealLegacyPlaintext(layout, plan);
+            if (sealedCount > 0 && LayoutStore.Save(layout, LayoutStore.HostWriter))
+                Log.Info($"Encrypted {sealedCount} credential(s) still stored as plain text");
+            if (failed > 0)
+                Log.Warn($"{failed} credential(s) are still plain text: Windows data protection is unavailable");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not check for plain-text credentials: {ex.Message}");
+        }
+    }
     private static Icon CreateTrayIcon()
     {
         // Drawn at runtime so the project needs no binary icon asset.

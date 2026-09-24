@@ -154,11 +154,27 @@
     if (exec.type === 'media') return MEDIA_ICON[exec.arg] || '🎵';
     return TYPE_ICON[exec.type] || '🎛️';
   }
+  // >>> ww-store-label — extracted and RUN by tests/harness/apppick-run.js
+  // A Store app target is shell:AppsFolder\ plus its app id (#219), which holds no file
+  // name: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App" would be labelled "Microsoft".
+  // The package name's last meaningful part is the nearest thing to the app's name. The
+  // settings pickers fill Name from the list, so this shows only when Name was cleared.
+  function storeAppName(target) {
+    const m = /^shell:AppsFolder\\([^!\\/]+)/i.exec(target);
+    if (!m) return '';
+    const family = m[1].replace(/_[a-z0-9]{13}$/i, '');   // the publisher hash
+    const parts = family.split('.').filter((p) => p && !/^\{.*\}$|^\d+$|^exe$/i.test(p));
+    return parts.pop() || family;
+  }
+  // <<< ww-store-label
+
   function deriveLabel(exec, target) {
     if (exec.type === 'url') {
       try { return new URL(exec.arg).hostname.replace(/^www\./i, '') || exec.arg; } catch (e) { return exec.arg; }
     }
     if (exec.type === 'launch') {
+      const app = storeAppName(exec.arg);
+      if (app) return app;
       const seg = exec.arg.split(/[\\/]/).filter(Boolean).pop() || exec.arg;
       return seg.replace(/\.[^.]+$/, '') || exec.arg;
     }

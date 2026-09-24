@@ -472,7 +472,7 @@
       const apps = Array.isArray(msg.apps)
         ? msg.apps.filter((a) => a && typeof a.name === 'string' && typeof a.path === 'string')
         : [];
-      waiters.forEach((cb) => cb(apps, msg.truncated === true));
+      waiters.forEach((cb) => cb(apps, msg.truncated === true, msg.storeListed !== false));
     } else if (msg.type === 'sd-profiles-result') {
       const waiters = sdProfileWaiters.splice(0);
       const profiles = Array.isArray(msg.profiles) ? msg.profiles.filter((p) => typeof p === 'string') : [];
@@ -2470,6 +2470,29 @@
   // host reads the Start Menu instead. Free text and Browse both stay: this is the
   // shortest path, not the only one.
 
+  // >>> ww-app-pick — extracted and RUN by tests/harness/apppick-run.js (the same block
+  // lives in shell.js, for the panel's sheet; the harness runs both copies).
+  /** What the app picker says when a search matches nothing. The list now holds Store apps
+   * too (#219), so "it may be a Store app" is only true when that half could not be read. */
+  function noMatchText(storeListed) {
+    return storeListed
+      ? 'No match among Start Menu programs and Store apps.'
+      : 'No match. Store apps could not be listed this time, so it may be one of those.';
+  }
+
+  /** A picked app names its row when the row's Name is empty (#219). A Store app's target
+   * is an app id, which makes a poor label, and a program's is a path; the picker holds the
+   * name the user actually searched for. A Name the user typed is never replaced.
+   * Returns true when it changed the item. */
+  function nameFromPick(item, fields, name) {
+    if (!item || typeof item !== 'object' || typeof name !== 'string' || !name.trim()) return false;
+    if (!Array.isArray(fields) || !fields.some((f) => f && f.key === 'label')) return false;
+    if (item.label != null && String(item.label).trim()) return false;
+    item.label = name.trim();
+    return true;
+  }
+  // <<< ww-app-pick
+
   function closeAppPop() {
     const pop = document.querySelector('.app-pop');
     if (pop) pop.remove();
@@ -2510,6 +2533,7 @@
 
       let apps = [];
       let truncated = false;
+      let storeListed = true;
       const render = () => {
         const q = search.value.trim().toLowerCase();
         const shown = q ? apps.filter((a) => a.name.toLowerCase().includes(q)) : apps;
@@ -2527,7 +2551,7 @@
             // renders it. classify() consults it for a scheme-less target, so a picked
             // .lnk would come out as "url target must be http(s)" or be parsed as a
             // hotkey. The row's own handler retires it.
-            input.dispatchEvent(new CustomEvent('ww-app-picked'));
+            input.dispatchEvent(new CustomEvent('ww-app-picked', { detail: { name: app.name } }));
             closeAppPop();
           });
           list.appendChild(b);
@@ -2540,7 +2564,7 @@
           status.textContent = apps.length
             ? (truncated
               ? 'No match — and the list was cut short, so it may simply not have been reached.'
-              : 'No match. This lists Start Menu shortcuts — a packaged Store app may not have one.')
+              : noMatchText(storeListed))
             : 'No installed applications found.';
         } else if (shown.length > 200) {
           status.hidden = false;
@@ -2551,10 +2575,11 @@
       };
       search.addEventListener('input', render);
 
-      appWaiters.push((result, wasTruncated) => {
+      appWaiters.push((result, wasTruncated, wasStoreListed) => {
         if (!pop.isConnected) return;   // closed while the host was still walking the menu
         apps = result;
         truncated = wasTruncated;
+        storeListed = wasStoreListed;
         render();
       });
       post({ type: 'list-apps' });
@@ -3233,9 +3258,17 @@
                 input.value = item[field.key] != null ? String(item[field.key]) : '';
               }
               input.setAttribute('aria-label', field.label || field.key);
+              input.dataset.key = field.key;
               input.oninput = () => { item[field.key] = input.value; commit(); };
-              input.addEventListener('ww-app-picked', () => {
-                if (item && typeof item === 'object' && 'kind' in item) { delete item.kind; commit(); }
+              input.addEventListener('ww-app-picked', (ev) => {
+                let changed = false;
+                if (item && typeof item === 'object' && 'kind' in item) { delete item.kind; changed = true; }
+                if (nameFromPick(item, fields, ev.detail && ev.detail.name)) {
+                  changed = true;
+                  const named = row.querySelector('input[data-key="label"]');
+                  if (named) named.value = item.label;
+                }
+                if (changed) commit();
               });
               row.appendChild(input);
               attachFieldPicker(row, field, input); // picker:'emoji' / picker:'file' (#48)

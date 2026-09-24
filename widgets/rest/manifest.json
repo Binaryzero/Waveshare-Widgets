@@ -2,7 +2,7 @@
   "id": "ws.stock.rest",
   "name": "REST Value",
   "author": "Plinth",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "Any JSON endpoint, one number on the panel: give it a URL and a path to the value. Polls on its own schedule, colors itself against warn/crit thresholds, and can authenticate with a static header or an OAuth2 client-credentials exchange.",
   "min_api_version": 1,
   "supported_slots": [
@@ -122,7 +122,7 @@
       "type": "text",
       "default": "",
       "placeholder": "The application's client id",
-      "help": "The client id from the application you registered with the API provider — the same place that issued the secret."
+      "help": "The client id from the application you registered with the API provider — the same place that issued the secret. It is used exactly as typed, spaces included."
     },
     {
       "name": "clientSecret",

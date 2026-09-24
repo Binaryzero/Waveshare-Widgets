@@ -125,6 +125,20 @@ jobs:
       - name: Find answers are bounded and routed to the asker
         run: node tests/harness/discover-run.js
 
+      # Store apps have no file to launch (#219): the picker lists them by app id and the
+      # launch action starts them through explorer.exe with that id as its argument. Which
+      # AppsFolder entries count as an id, what can reach that argument, and that every
+      # other target still starts exactly as before are string decisions; this drives them.
+      # The COM enumeration needs Windows and a desktop session, and is not covered here.
+      - name: Store app launch targets
+        run: dotnet run --project tools/AppIds
+
+      # ...and the picker side: a pick fills an empty Name and never a typed one, the
+      # "no match" line stops blaming Store apps, and Deck and Launcher give an app-id
+      # target a readable label. Plain Node against the real source, both picker copies.
+      - name: App picker names Store apps
+        run: node tests/harness/apppick-run.js
+
       # A Stream Deck profile names its plugin and action UUIDs, and the icon resolver used
       # both to build filesystem paths — so a crafted or imported profile could point them at
       # any readable file, whose contents are then base64'd into the profile payload and sent
