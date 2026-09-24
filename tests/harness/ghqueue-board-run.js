@@ -18,6 +18,12 @@
 //        GitHub's order, with the saved token on the request
 //   G8 · any other setting gets no answer from this widget ("unsupported")
 //   G9 · a refused token comes back as a message saying so, not a list
+//   G10 · a rate limit on Find comes back with its reset time, and closes the gate the
+//         sweep uses: the next Find answers without asking GitHub again
+//   G11 · an account past the chooser's 500 sends more than 500, so the shell can say the
+//         list was cut
+//   G12 · slow pages share one budget: Find answers inside the shell's 20 s wait, saying
+//         GitHub was too slow, instead of timing out the question
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -94,8 +100,13 @@ const listItem = (pr) => ({
 
 // /user/repos, paged by 100: a full first page and a short second one, so a handler that
 // reads only page one fails G7.
-const USER_REPOS = Array.from({ length: 102 }, (_, i) => ({ full_name: `me/repo-${i}`, private: i % 2 === 0 }));
+let repoCount = 102;
+const userRepos = () => Array.from({ length: repoCount }, (_, i) => ({ full_name: `me/repo-${i}`, private: i % 2 === 0 }));
+const USER_REPOS = userRepos();
 let reposStatus = 200;
+let reposBody = { message: 'Bad credentials' };
+let reposHeaders = {};
+let reposDelayMs = 0;
 const reposAuth = [];
 
 const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>'
@@ -140,11 +151,13 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     if (seg[0] === 'user' && seg[1] === 'repos') {
       reposAuth.push(r.request().headers()['authorization'] || '');
       if (reposStatus !== 200)
-        return r.fulfill({ status: reposStatus, contentType: 'application/json', headers: CORS,
-          body: JSON.stringify({ message: 'Bad credentials' }) });
+        return r.fulfill({ status: reposStatus, contentType: 'application/json',
+          headers: Object.assign({}, CORS, reposHeaders), body: JSON.stringify(reposBody) });
       const pageNo = Number(u.searchParams.get('page') || 1);
       const per = Number(u.searchParams.get('per_page') || 30);
-      return json(r, USER_REPOS.slice((pageNo - 1) * per, pageNo * per));
+      const page = userRepos().slice((pageNo - 1) * per, pageNo * per);
+      if (reposDelayMs) return new Promise((res) => setTimeout(res, reposDelayMs)).then(() => json(r, page));
+      return json(r, page);
     }
     const repo = seg[1] + '/' + seg[2];
     if (seg[3] === 'pulls' && !seg[4])
@@ -259,6 +272,60 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     !!(refused && typeof refused.error === 'string' && /refused the token/i.test(refused.error) && !refused.options),
     JSON.stringify(refused));
   reposStatus = 200;
+
+  // G10 · a primary rate limit, as GitHub sends it: 403, the body saying so, and the reset.
+  const resetAt = Math.floor(Date.now() / 1000) + 1800;
+  reposStatus = 403;
+  reposBody = { message: 'API rate limit exceeded for user ID 1.' };
+  reposHeaders = { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(resetAt),
+    'access-control-expose-headers': 'x-ratelimit-remaining, x-ratelimit-reset' };
+  const limited = await ask('d4', 'repos', 'repo');
+  const askedBefore = reposAuth.length;
+  const again = await ask('d5', 'repos', 'repo');
+  check('G10 a rate limit on Find says when it resets',
+    !!(limited && typeof limited.error === 'string' && /rate limit/i.test(limited.error) && /resets at/i.test(limited.error)),
+    JSON.stringify(limited));
+  check('G10b ...and closes the shared gate: the next Find answers without asking GitHub',
+    !!(again && /rate limit/i.test(String(again.error || ''))) && reposAuth.length === askedBefore,
+    `requests before ${askedBefore}, after ${reposAuth.length}`);
+  reposStatus = 200;
+  reposBody = { message: 'Bad credentials' };
+  reposHeaders = {};
+  // A settings change with a new token clears the gate (onInit), as it does for the board.
+  await page.evaluate((m) => window.__wwPush(m), { type: 'ww-init',
+    settings: { repos: [{ repo: 'me/alpha' }, { repo: 'me/beta' }], apiToken: 'stub-token-2', refreshMinutes: 5 },
+    sensors: [], media: null, theme: {}, status: { elevated: false, apiVersion: 1 } });
+  await page.waitForTimeout(500);
+
+  // G11 · more repositories than the chooser keeps.
+  repoCount = 650;
+  const many = await ask('d6', 'repos', 'repo');
+  const manyCount = many && Array.isArray(many.options) ? many.options.length : 0;
+  check('G11 an account past 500 repositories sends more than 500, so the list reads as cut',
+    manyCount > 500, `${manyCount} sent`);
+  repoCount = 102;
+
+  // G12 · every page slow: at 7 s a page, the third starts with 1 s of the budget left and
+  // must be cut off by it. Given its own full deadline instead, it would finish at 21 s,
+  // past the shell's 20 s wait, and the question would time out unanswered.
+  repoCount = 650;
+  reposDelayMs = 7000;
+  const t0 = Date.now();
+  const slow = await (async () => {
+    await page.evaluate((q) => window.__wwPush(Object.assign({ type: 'ww-discover' }, q)), { id: 'd7', property: 'repos', field: 'repo' });
+    for (let i = 0; i < 250; i++) {
+      const got = await page.evaluate((k) => (window.__discovered || {})[k] || null, 'd7');
+      if (got) return got;
+      await page.waitForTimeout(100);
+    }
+    return null;
+  })();
+  const took = Date.now() - t0;
+  check('G12 slow pages share one budget: Find answers inside the shell\'s 20 s wait, saying GitHub was too slow',
+    !!(slow && typeof slow.error === 'string' && /did not answer in time/i.test(slow.error)) && took < 19000,
+    `${took} ms: ${JSON.stringify(slow)}`);
+  reposDelayMs = 0;
+  repoCount = 102;
 
   const shot = path.join(__dirname, 'ghqueue-board.png');
   await page.screenshot({ path: shot });
