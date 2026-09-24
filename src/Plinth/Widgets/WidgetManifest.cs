@@ -78,7 +78,7 @@ public sealed class WidgetManifest
                 return false;
             }
 
-            if (p.Type != "secret" && CredentialNames.LooksLikeCredential(p.Name))
+            if (p.Type != "secret" && CredentialNames.LooksLikeCredential(p.Name, p.Type))
             {
                 error = $"property '{p.Name}' looks like a credential but is declared as "
                       + $"'{p.Type}'. Credentials must use type \"secret\" so the host can "
@@ -168,7 +168,7 @@ public sealed class WidgetManifest
         {
             if (string.IsNullOrEmpty(p.Name) || p.Type == "list")
                 continue;
-            if ((p.Type == "secret" || CredentialNames.LooksLikeCredential(p.Name)) && seen.Add(p.Name))
+            if ((p.Type == "secret" || CredentialNames.LooksLikeCredential(p.Name, p.Type)) && seen.Add(p.Name))
                 names.Add(p.Name);
         }
         return names;
