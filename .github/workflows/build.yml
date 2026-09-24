@@ -189,6 +189,14 @@ jobs:
       - name: URLs are redacted in the log
         run: dotnet run --project tools/UrlRedaction
 
+      # app.log kept every session in one file and deleted it past 1 MB (#256): old runs
+      # mixed in with the current one, and the history a bug report needed was what got
+      # thrown away. This drives the real RollingLog in a temp directory: a file per
+      # session, a cap that rolls instead of deleting, four previous files kept, a
+      # bounded total, a clipped runaway line, and no lost line when a roll cannot happen.
+      - name: app.log is rolled per session and bounded
+        run: dotnet run --project tools/LogRotation
+
       # The web-message handlers act on what they receive — save-layout writes
       # layout.json, open-url launches a browser, action runs configured actions — so they
       # check WHO sent it. Getting that predicate wrong in the permissive direction lets

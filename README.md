@@ -208,7 +208,7 @@ Everything lives in `%LocalAppData%\Plinth\`:
 | `layout.json` | Pages and slots — which widget goes where, with per-instance settings |
 | `config.json` | Display override, poll interval, dev tools toggle |
 | `widgets\` | Installed widgets (one folder per widget) |
-| `app.log` | Diagnostics |
+| `app.log` | Diagnostics for the current run. The previous four runs are kept as `app.1.log` (newest) to `app.4.log`; a file that passes 1 MB rolls over the same way, so the logs never take more than ~5 MB |
 
 Example `layout.json`:
 
