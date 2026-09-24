@@ -16,10 +16,14 @@
 //   P2  · Find lists what the widget found, label over value
 //   P3  · picking one writes the VALUE into that field and it is saved
 //   P4  · Find straight after an edit waits for the tile's reload instead of failing
+//   P5  · a setting with a declared picker offers the picker AND Find, as a text setting
+//         and as a list field
 // Settings window, with a fake host:
 //   S1  · Find asks the host with the slot's instanceId, property and field
 //   S2  · the answer is listed; picking writes the value; Save carries it
 //   S3  · no dashboard → the chooser says so, and the field stays typeable
+//   S4  · a setting that used to be secret (a hidden value kept to restore) offers Find,
+//         and a picked value replaces the hidden one like a typed value
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -87,7 +91,14 @@ const FINDER_PROPS = [
   { name: 'realm', label: 'Realm', type: 'text', optionsSource: 'widget' },
   { name: 'repos', label: 'Repositories', type: 'list', itemLabel: 'repository',
     fields: [{ key: 'repo', label: 'Repository', optionsSource: 'widget' }] },
+  // A declared picker and Find on one setting (P5), as a text setting and a list field.
+  { name: 'icon', label: 'Icon', type: 'text', picker: 'emoji', optionsSource: 'widget' },
+  { name: 'links', label: 'Links', type: 'list', itemLabel: 'link',
+    fields: [{ key: 'target', label: 'Target', picker: 'file', optionsSource: 'widget' }] },
+  // Once a secret; the settings window's slot keeps a hidden value to restore (S4).
+  { name: 'server', label: 'Server', type: 'text', optionsSource: 'widget' },
 ];
+const FIND_COUNT = 5;
 
 async function dashboard(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 400 } });
@@ -109,7 +120,7 @@ async function dashboard(browser) {
     { id: 'test.other', name: 'Other', url: 'https://other.widgets.plinth/index.html', supportedSlots: ['half'], properties: [] },
   ];
   const layout = { pages: [{ name: 'P', slots: [
-    { widgetId: 'test.finder', size: 'half', instanceId: 'f1', settings: { realm: '', repos: [{ repo: '' }] } },
+    { widgetId: 'test.finder', size: 'half', instanceId: 'f1', settings: { realm: '', repos: [{ repo: '' }], links: [{ target: '' }] } },
     { widgetId: 'test.other', size: 'half', instanceId: 'o1', settings: {} },
   ] }] };
   await page.addInitScript(() => {
@@ -189,8 +200,13 @@ async function dashboard(browser) {
   await page.locator('.slot').first().locator('.edit-overlay .gear').click();
   await wait(300);
   const finds = page.locator('#psRows .ps-find');
-  check('P1 the text setting and the list field each offer Find', await finds.count() === 2, String(await finds.count()));
-  if (await finds.count() === 2) {
+  check('P1 every text setting and list field that declares it offers Find', await finds.count() === FIND_COUNT, String(await finds.count()));
+  const pickerAndFind = await page.evaluate(() => [...document.querySelectorAll('#psRows .ps-inline')]
+    .filter((w) => w.querySelector('.ps-find') && [...w.querySelectorAll('button')].some((b) => !b.classList.contains('ps-find')))
+    .map((w) => [...w.querySelectorAll('button')].map((b) => b.textContent).join(' ')));
+  check('P5 a declared picker is offered beside Find, not replaced by it (text setting and list field)',
+    pickerAndFind.length === 2 && /😀/.test(pickerAndFind.join('|')) && /🗂/.test(pickerAndFind.join('|')), JSON.stringify(pickerAndFind));
+  if (await finds.count() === FIND_COUNT) {
     await finds.nth(1).click();   // the list field (Repositories comes after Realm)
     await wait(500);
     const sheet = page.locator('.ps-discover');
@@ -241,7 +257,8 @@ async function settings(browser) {
   page.on('pageerror', (e) => { failures++; console.log('[pageerror]', String(e).slice(0, 300)); });
   const widgets = [{ id: 'test.finder', name: 'Finder', supportedSlots: ['half'], properties: FINDER_PROPS }];
   const layout = { pages: [{ name: 'Main', slots: [
-    { widgetId: 'test.finder', size: 'half', instanceId: 'f1', settings: { realm: '', repos: [{ repo: '' }] } },
+    { widgetId: 'test.finder', size: 'half', instanceId: 'f1', settings: { realm: '', repos: [{ repo: '' }], links: [{ target: '' }] },
+      secretsRestorable: ['server'] },
   ] }] };
   const saved = [];
   const questions = [];
@@ -277,8 +294,8 @@ async function settings(browser) {
   await wait(250);
 
   const finds = page.locator('#slotDetail .discover-btn');
-  check('S0 the text setting and the list field each offer Find', await finds.count() === 2, String(await finds.count()));
-  if (await finds.count() !== 2) return page;
+  check('S0 every text setting and list field that declares it offers Find', await finds.count() === FIND_COUNT, String(await finds.count()));
+  if (await finds.count() !== FIND_COUNT) return page;
   await finds.nth(1).click();
   await wait(300);
   check('S1 Find asks the host with the slot\'s instanceId, property and field',
@@ -305,6 +322,30 @@ async function settings(browser) {
   check('S3 no dashboard: the chooser says so and leaves the field typeable',
     /panel is not running/.test(status) && /Type the value/.test(status), status);
   check('S3 ...and lists nothing', await page.locator('.discover-pop .app-pop-list button').count() === 0);
+
+  dashboardUp = true;
+  const restorableFind = page.locator('#slotDetail .restorable-wrap .discover-btn');
+  check('S4 a setting that used to be secret offers Find', await restorableFind.count() === 1, String(await restorableFind.count()));
+  if (await restorableFind.count() === 1) {
+    if (await page.locator('.discover-pop').count()) { await restorableFind.click(); await wait(150); } // closes S3's
+    await restorableFind.click();
+    await wait(300);
+    const asked = questions[questions.length - 1] || {};
+    const pickRows = page.locator('.discover-pop .app-pop-list button');
+    if (await pickRows.count()) await pickRows.nth(0).click();
+    await wait(200);
+    const wrap = page.locator('#slotDetail .restorable-wrap');
+    const value = await wrap.locator('input').inputValue();
+    const note = await wrap.locator('.secret-state').textContent();
+    await page.locator('#save').click();
+    await wait(600);
+    const last = saved.length ? saved[saved.length - 1].pages[0].slots[0] : {};
+    check('S4 ...a picked value replaces the hidden one, as a typed value does',
+      asked.property === 'server' && value === 'octo/one' && /will replace the stored value/.test(note)
+        && last.settings && last.settings.server === 'octo/one'
+        && !(Array.isArray(last.secretsCleared) && last.secretsCleared.includes('server')),
+      JSON.stringify({ asked: asked.property, value, note, server: last.settings && last.settings.server, cleared: last.secretsCleared }));
+  }
   return page;
 }
 

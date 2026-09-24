@@ -3552,6 +3552,8 @@
           // property would lose its Browse dialog exactly while the user is trying to
           // replace the leftover value by hand.
           if (prop.picker) attachFieldPicker(wrap, prop, input);
+          // Find too (#210): a looked-up value replaces the hidden one like a typed value.
+          if (prop.optionsSource === 'widget') wrap.appendChild(makeDiscoverBtn(input, slot, prop.name, null));
           return wrap;
         }
         if (prop.picker || prop.optionsSource === 'widget') {

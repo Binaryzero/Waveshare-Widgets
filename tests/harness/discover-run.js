@@ -217,9 +217,13 @@ async function ask(handler, msg) {
       && /DiscoveryRefused\("no-dashboard"\)/.test(setw));
   check('D4 the dashboard hands the shell\'s answer back by id',
     /case "discover-result":/.test(dash) && /CompleteDiscovery\(discoveryId,/.test(dash) && /PostToShell\("discover",/.test(dash));
-  for (const [name, src, btn, fieldVar] of [['settings.js', settings, 'makeDiscoverBtn(input, slot, ', 'field'], ['shell.js', shell, 'psDiscoverBtn(input, ', 'f']]) {
+  // settings.js has a third top-level site: a text setting that was once secret renders on
+  // its own branch (a hidden value kept to restore) and offers Find there too.
+  for (const [name, src, btn, fieldVar, sites] of [
+    ['settings.js', settings, 'makeDiscoverBtn(input, slot, ', 'field', 3],
+    ['shell.js', shell, 'psDiscoverBtn(input, ', 'f', 2]]) {
     const top = src.split(btn + 'prop.name, null)').length - 1;
-    check(`D4 ${name} offers Find on select and text settings`, top === 2, `${top} site(s)`);
+    check(`D4 ${name} offers Find on select and text settings`, top === sites, `${top} site(s)`);
     check(`D4 ${name} offers Find on a list row's field, naming the field`,
       src.includes(btn + `prop.name, ${fieldVar}.key)`) && src.includes(`if (${fieldVar}.optionsSource === 'widget')`));
   }

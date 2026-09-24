@@ -2654,33 +2654,25 @@
         if (prop.placeholder) input.placeholder = String(prop.placeholder);
         input.value = current != null ? String(current) : '';
         input.oninput = () => set(prop, input.value);
-        if (prop.optionsSource === 'widget') {
-          // A value the widget can look up itself (#210): WoW's realm and character.
-          const wrap = document.createElement('div');
-          wrap.className = 'ps-inline';
-          wrap.append(input, psDiscoverBtn(input, prop.name, null));
-          return wrap;
-        }
+        const extras = [];
         if (prop.picker === 'emoji' || prop.picker === 'emoji-prefix') {
-          const wrap = document.createElement('div');
-          wrap.className = 'ps-inline';
-          wrap.appendChild(input);
-          wrap.appendChild(psEmojiBtn(input, prop.picker === 'emoji-prefix'));
-          return wrap;
-        }
-        if (prop.picker === 'file') {
+          extras.push(psEmojiBtn(input, prop.picker === 'emoji-prefix'));
+        } else if (prop.picker === 'file') {
           // The panel cannot show a file dialog — it needs a Win32 owner window — so this
           // used to be the one place a full path had to be TYPED, on a touch strip, with
           // no keyboard. The installed-app list needs no dialog, so the surface that had
           // no picker at all now has the better one (#210). Free text stays for the
           // targets that are a document or a script rather than a program.
-          const wrap = document.createElement('div');
-          wrap.className = 'ps-inline';
-          wrap.appendChild(input);
-          wrap.appendChild(psAppBtn(input));
-          return wrap;
+          extras.push(psAppBtn(input));
         }
-        return input;
+        // A value the widget can look up itself (#210): WoW's realm and character. Beside
+        // a declared picker, not instead of it, as the desktop editor does.
+        if (prop.optionsSource === 'widget') extras.push(psDiscoverBtn(input, prop.name, null));
+        if (!extras.length) return input;
+        const wrap = document.createElement('div');
+        wrap.className = 'ps-inline';
+        wrap.append(input, ...extras);
+        return wrap;
       }
     }
   }
@@ -3070,19 +3062,19 @@
           // is one (launcher items.target, deck buttons.target), and there is no top-level
           // one anywhere in the catalog. A picker wired only to psControl's text branch
           // reaches nothing a user owns.
-          if (f.optionsSource === 'widget') {
-            // A row value the widget can look up (#210): repositories, entities.
-            const row = document.createElement('div');
-            row.className = 'ps-inline';
-            row.append(input, psDiscoverBtn(input, prop.name, f.key));
-            card.appendChild(row);
-          } else if (f.picker === 'emoji' || f.picker === 'emoji-prefix' || f.picker === 'file') {
-            const row = document.createElement('div');
-            row.className = 'ps-inline';
-            row.appendChild(input);
-            row.appendChild(f.picker === 'file'
+          const extras = [];
+          if (f.picker === 'emoji' || f.picker === 'emoji-prefix' || f.picker === 'file') {
+            extras.push(f.picker === 'file'
               ? psAppBtn(input)
               : psEmojiBtn(input, f.picker === 'emoji-prefix'));
+          }
+          // A row value the widget can look up (#210): repositories, entities. Beside a
+          // declared picker, not instead of it.
+          if (f.optionsSource === 'widget') extras.push(psDiscoverBtn(input, prop.name, f.key));
+          if (extras.length) {
+            const row = document.createElement('div');
+            row.className = 'ps-inline';
+            row.append(input, ...extras);
             card.appendChild(row);
           } else {
             card.appendChild(input);
