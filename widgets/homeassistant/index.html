@@ -126,9 +126,12 @@
   let lastOk = 0;
   let pollAnchor = 0;
   let fails = 0;
-  // entity id -> the poll sequence current when its command was sent. A guard may only be
-  // released by a poll that BEGAN after the command; one already in flight when the
-  // command went out carries a snapshot from before it and cannot reconcile anything.
+  // entity id -> {at}: the poll sequence current when its command SETTLED (Infinity while it
+  // is still in flight). A guard may only be released by a poll that BEGAN after the command
+  // settled: one already running when it went out carries a snapshot from before it, and
+  // one that began while it was in flight may too, since Home Assistant can still be
+  // answering with the pre-command state (#172). An object rather than a bare number, so a
+  // backstop timer can tell its own command's guard from a later one's.
   const acting = new Map();
   let pollSeq = 0;
   let refreshQueued = false;    // an action wants a poll as soon as the current one ends
@@ -497,12 +500,29 @@
       : (isOn ? 'close_cover' : 'open_cover');
     const serviceDomain = domain === 'garage_door' ? 'cover' : domain;
     const gen = generation;
-    acting.set(entry.entity, pollSeq);
+    // No poll may release this while the command is in flight: a SCHEDULED poll that
+    // begins between the send and the settle takes a higher sequence than the one current
+    // at send, but Home Assistant may still be answering it with the pre-command state.
+    // Releasing on it let a second press through against that state (#172).
+    const guard = { at: Infinity };
+    acting.set(entry.entity, guard);
+    // Once settled, stamp the guard with the sequence current NOW, so only a poll that
+    // begins after this point releases it — and arm the backstop. Called on every path,
+    // BEFORE reconcile() starts its poll (which must be able to release it) and before the
+    // generation check returns early (which would otherwise leave the guard at Infinity
+    // with no timer, and the tile would never act again). The backstop removes only THIS
+    // command's guard: once a poll has released it, a second command can be in flight
+    // under a guard of its own, and a bare delete eight seconds later opened that one.
+    const settle = () => {
+      guard.at = pollSeq;
+      setTimeout(() => { if (acting.get(entry.entity) === guard) acting.delete(entry.entity); }, ACT_DEADLINE);
+    };
     try {
       await ha('/api/services/' + serviceDomain + '/' + service, {
         method: 'POST',
         body: JSON.stringify({ entity_id: entry.entity }),
       }, ACT_DEADLINE);
+      settle();
       // The server this was aimed at may not be the one configured any more. Landing a
       // confirmation — or a re-poll — against a house nobody is looking at is worse than
       // dropping it silently.
@@ -510,6 +530,7 @@
       flash(root, 'confirm-flash');
       reconcile();
     } catch (e) {
+      settle();
       if (gen !== generation) return;
       // A REFUSAL is definite: the server answered and said no, so the flip comes back
       // and the tile says it failed. A timeout or a lost connection is NOT a refusal —
@@ -539,9 +560,8 @@
     // poll landing reads the same stale state and sends the opposite service — undoing
     // the first action, which is the very thing the guard was added to stop. A fast
     // Home Assistant makes that window an ordinary double tap. The guard is released
-    // when an authoritative refresh lands, with a timer as the backstop for a
+    // when an authoritative refresh lands, with settle()'s timer as the backstop for a
     // reconciliation that never arrives.
-    setTimeout(() => acting.delete(entry.entity), ACT_DEADLINE);
   }
 
   // Go and look, now. Someone acting on the panel has asked for its current state, so the
@@ -599,7 +619,7 @@
       // from before it — open the gate on the strength of stale data: a second press in
       // the window before the queued follow-up landed would read the pre-command state
       // and send the opposite service.
-      for (const [entity, atSeq] of acting) if (atSeq < seq) acting.delete(entity);
+      for (const [entity, guard] of acting) if (guard.at < seq) acting.delete(entity);
       document.body.classList.remove('stale');
       // A result can change WHICH entities deserve a tile, not only what one says.
       if (cfg.hidden && visibleKey() !== [...cards.keys()].join('\n')) build();
