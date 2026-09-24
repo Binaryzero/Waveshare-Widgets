@@ -901,17 +901,24 @@
   // is answered as its slug (what the card looks the character up by) labelled with its
   // name. The character is not offered: listing a player's characters needs that player's
   // own Battle.net sign-in, which this tile does not have. Works before a realm is set.
+  // One deadline over the whole lookup — sign-in, read, and the one retry a stale token
+  // earns — shorter than the shell's 20 s wait, so a slow Blizzard is reported by the
+  // widget rather than timed out by the shell.
+  const DISCOVER_DEADLINE = 15000;
   WW.onDiscover(async ({ property }) => {
     if (property !== 'realm') return null;
     if (!cfg.clientId || !cfg.clientSecret)
       throw new Error('Add the Battle.net client id and secret first. Find lists the realms of the chosen region.');
     let json;
     try {
-      json = await authed('realms', 'https://' + cfg.region + '.api.blizzard.com/data/wow/realm/index'
-        + '?namespace=dynamic-' + cfg.region + '&locale=' + (LOCALE[cfg.region] || 'en_US'));
+      const url = 'https://' + cfg.region + '.api.blizzard.com/data/wow/realm/index'
+        + '?namespace=dynamic-' + cfg.region + '&locale=' + (LOCALE[cfg.region] || 'en_US');
+      json = await withDeadline(DISCOVER_DEADLINE, new AbortController(), () => authed('realms', url));
     } catch (e) {
       throw new Error(e && e.tokenExchange && (e.status === 401 || e.status === 403)
         ? 'Battle.net rejected the client credentials — check the id and secret.'
+        : e && e.message === 'timed out'
+        ? 'The Blizzard API did not answer in time. Type the realm, or press Find again.'
         : 'Could not read the realm list from the Blizzard API.');
     }
     if (!isObj(json) || !Array.isArray(json.realms)) throw new Error('The realm list came back in a shape this tile does not know.');

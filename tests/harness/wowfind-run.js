@@ -10,6 +10,9 @@
 //   F4 · a region change asks that region's host, namespace and locale
 //   F5 · rejected client credentials come back as the widget's own message
 //   F6 · with no client credentials yet, Find says what is missing
+//   F7 · a slow sign-in and a slow realm read, each inside its own request deadline but
+//        20 s together, are reported by the widget inside the shell's 20 s wait, not left
+//        for the shell to time out
 //
 // Run: CHROMIUM=/path/to/chrome node tests/harness/wowfind-run.js
 'use strict';
@@ -72,6 +75,7 @@ const REALMS = {
     serve(r, WIDGET, decodeURIComponent(new URL(r.request().url()).pathname).replace(/^\/+/, '') || 'index.html'));
   await page.route('https://shell.test/**', (r) => r.fulfill({ contentType: 'text/html', body: SHELL_PAGE }));
   const asked = [];
+  let realmsDelayMs = 0;
   await page.route(/https:\/\/(us|eu)\.api\.blizzard\.com\/.*/, (r) => {
     const req = r.request();
     if (req.method() === 'OPTIONS') return r.fulfill({ status: 204, headers: CORS, body: '' });
@@ -79,6 +83,9 @@ const REALMS = {
     const region = u.host.split('.')[0];
     asked.push({ region, path: u.pathname, namespace: u.searchParams.get('namespace'),
       locale: u.searchParams.get('locale'), auth: req.headers()['authorization'] || '' });
+    if (u.pathname === '/data/wow/realm/index' && realmsDelayMs)
+      return new Promise((res) => setTimeout(res, realmsDelayMs)).then(() => r.fulfill({ status: 200, headers: CORS,
+        contentType: 'application/json', body: JSON.stringify({ _links: {}, realms: REALMS[region] || [] }) }));
     if (u.pathname === '/data/wow/realm/index')
       return r.fulfill({ status: 200, headers: CORS, contentType: 'application/json',
         body: JSON.stringify({ _links: {}, realms: REALMS[region] || [] }) });
@@ -117,10 +124,10 @@ const REALMS = {
       if (m.type === 'ww-fetch') {
         const url = String(m.url || '');
         if (url.startsWith('https://oauth.battle.net/token'))
-          return window.__wwPush(window.__tokenStatus === 200
+          return setTimeout(() => window.__wwPush(window.__tokenStatus === 200
             ? { type: 'ww-fetch-result', id: m.id, status: 200, contentType: 'application/json', bodyBase64: btoa(tokenBody) }
             : { type: 'ww-fetch-result', id: m.id, status: window.__tokenStatus, contentType: 'application/json',
-              bodyBase64: btoa('{"error":"invalid_client"}') });
+              bodyBase64: btoa('{"error":"invalid_client"}') }), window.__tokenDelay || 0);
         return window.__wwPush({ type: 'ww-fetch-result', id: m.id, error: 'offline probe' });
       }
     });
@@ -189,6 +196,25 @@ const REALMS = {
   const empty = await ask('f6', 'realm', null);
   check('F6 with no client credentials, Find says what is missing',
     !!(empty && typeof empty.error === 'string' && /client id and secret/i.test(empty.error)), JSON.stringify(empty));
+
+  // F7 · new credentials (so a sign-in is needed), a 10 s sign-in and a 10 s realm read.
+  await page.evaluate(() => { window.__tokenDelay = 10000; });
+  await page.evaluate((s) => window.__wwReinit(s), Object.assign({}, settings, { clientId: 'slow-id' }));
+  await page.waitForTimeout(300);
+  realmsDelayMs = 10000;
+  const t0 = Date.now();
+  await page.evaluate((q) => window.__wwPush(Object.assign({ type: 'ww-discover' }, q)), { id: 'f7', property: 'realm', field: null });
+  let silent = null;
+  for (let i = 0; i < 250 && !silent; i++) {
+    silent = await page.evaluate((k) => (window.__discovered || {})[k] || null, 'f7');
+    if (!silent) await page.waitForTimeout(100);
+  }
+  const took = Date.now() - t0;
+  check('F7 a slow sign-in plus a slow read is reported by the widget inside the shell\'s 20 s wait',
+    !!(silent && typeof silent.error === 'string' && /did not answer in time/i.test(silent.error)) && took < 19000,
+    `${took} ms: ${JSON.stringify(silent)}`);
+  realmsDelayMs = 0;
+  await page.evaluate(() => { window.__tokenDelay = 0; });
 
   await browser.close();
   console.log(failures ? `${failures} FAILURE(S)` : 'ALL PASS');
