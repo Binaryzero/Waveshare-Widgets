@@ -18,6 +18,11 @@
 //   C10-C12 · the ways past that wrapper — reading .body directly, formData(), and a clone,
 //        the last of which deadlocked on the tee rather than refusing
 //   C13 · the identity a rebuilt Response would otherwise lose (url, redirected, type)
+//   C16 · a BYOB reader over the capped stream (#138): a source chunk larger than the
+//        reader's view arrives intact across reads that all settle; the read waiting when
+//        the source ends is answered (C16b removes that respond(0) from the extracted block
+//        and requires the read to hang, so the check is known to test it); and the ceiling
+//        still refuses under BYOB reads
 //
 // Two properties of the wrapper are NOT checked here, deliberately: that it passes the Web
 // IDL brand check other platform APIs perform, and that its body accepts a BYOB reader.
@@ -192,7 +197,7 @@ function server() {
   // The block ends inside the trailing marker's comment, so the return statement needs its
   // own line or it is swallowed by it.
   const shim = new Function('TextDecoder', 'Blob',
-    `${block}\nreturn { readCapped, cappedResponse, resolveCap, MAX_BODY_BYTES };`)(TextDecoder, Blob);
+    `${block}\nreturn { readCapped, cappedResponse, resolveCap, MAX_BODY_BYTES, cappedStream };`)(TextDecoder, Blob);
   check('C6 setup: the shim ceiling is the same number the host uses', shim.MAX_BODY_BYTES === MAX,
     `${shim.MAX_BODY_BYTES} vs ${MAX}`);
 
@@ -374,6 +379,58 @@ function server() {
     check('C15c ...while one under it still comes back intact',
       !underLow.tooLarge && atobLen(underLow.b64) === 32 * 1024,
       JSON.stringify({ tooLarge: underLow.tooLarge, bytes: underLow.b64 ? atobLen(underLow.b64) : null }));
+  }
+
+  // C16 · BYOB reads over the capped stream (#138). Driven on cappedStream directly with a
+  // synthetic source, not through a Response: Node's Response re-wraps the body stream (see
+  // the header), but the byte stream itself follows the spec here, and the one line a BYOB
+  // reader depends on — answering the read that is waiting when the source ends — hangs
+  // the read in Node exactly as it does in Chromium when it is removed. Every read is
+  // raced against a timeout: the failure is a hang, and an unraced hang takes the whole
+  // suite down with no output.
+  {
+    const RESPOND0 = 'if (controller.byobRequest) controller.byobRequest.respond(0);';
+    const build = (src) => new Function('TextDecoder', 'Blob',
+      `${src}\nreturn { cappedStream };`)(TextDecoder, Blob).cappedStream;
+    const expected = Array.from({ length: 1000 }, (_, i) => i % 251);
+    // One chunk, larger than the reader's view, delivered after a real await — the shape a
+    // network body has — then the end.
+    const source = (chunks) => new ReadableStream({
+      async pull(c) {
+        await new Promise((r) => setTimeout(r, 10));
+        if (!chunks.length) { c.close(); return; }
+        c.enqueue(Uint8Array.from(chunks.shift()));
+      },
+    });
+    const drainByob = async (stream, view) => {
+      const reader = stream.getReader({ mode: 'byob' });
+      const got = [];
+      for (let i = 0; i < 200; i++) {
+        const r = await Promise.race([reader.read(new Uint8Array(view)),
+          new Promise((resolve) => setTimeout(() => resolve({ hung: true }), 2000))]);
+        if (r.hung) return { hung: true, got };
+        if (r.done) return { hung: false, got };
+        got.push(...r.value);
+      }
+      return { hung: false, got, runaway: true };
+    };
+
+    const ok = await drainByob(build(block)(source([expected]), MAX), 64);
+    check('C16 a BYOB reader gets a chunk larger than its view intact, every read settling',
+      !ok.hung && ok.got.length === expected.length && ok.got.every((b, i) => b === expected[i]),
+      `${ok.hung ? 'HUNG' : 'settled'} · ${ok.got.length}/${expected.length} bytes`);
+
+    const mutated = block.replace(RESPOND0, '');
+    const bare = mutated !== block ? await drainByob(build(mutated)(source([expected]), MAX), 64) : null;
+    check('C16b ...and it is the respond(0) at the end that makes it settle: without it the last read hangs',
+      !!bare && bare.hung && bare.got.length === expected.length,
+      bare ? `${bare.hung ? 'hung' : 'settled'} after ${bare.got.length} bytes` : 'respond(0) line not found in the block');
+
+    let refused = null;
+    try { await drainByob(build(block)(source([expected, expected]), 1500), 64); }
+    catch (e) { refused = e; }
+    check('C16c the ceiling still refuses under BYOB reads',
+      refused instanceof RangeError && /too large/.test(refused.message), refused ? refused.message : 'not refused');
   }
 
   // C5 · a body-forbidden response is an ANSWER, not a failure. The streaming rewrite has
