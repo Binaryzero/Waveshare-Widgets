@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CI guard for Store app launch targets (issue #219). A packaged app is started by its
+       app id through explorer.exe, so the id becomes a process argument. What reaches that
+       argument, which AppsFolder entries join the picker, and that every other target still
+       starts exactly as before are string decisions, and this drives them against the real
+       source. The COM enumeration and the process start need Windows and stay untested here. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>AppIds</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Plinth/App/AppIds.cs" />
+  </ItemGroup>
+</Project>
