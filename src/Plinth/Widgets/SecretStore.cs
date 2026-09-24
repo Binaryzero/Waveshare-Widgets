@@ -1190,6 +1190,43 @@ public static class SecretPolicy
         return null;
     }
 
+    /// <summary>Encrypts, in place, any protected setting still stored as plaintext (#56).
+    ///
+    /// A property retyped `text` → `secret` keeps its plaintext until something saves the
+    /// layout. The editor meanwhile reports it "saved · encrypted", because a readable
+    /// legacy value counts as set, so the label is false until then. Run once at startup,
+    /// this makes the label true instead of adding a third state to explain the gap.
+    ///
+    /// Deliberately narrower than Seal: anything shaped like an envelope is
+    /// left exactly as it is. Seal can treat a non-empty undecryptable value as plaintext
+    /// because on a save that value is something the user just typed; here it is what is
+    /// already on disk, and an envelope sealed on another machine would be wrapped a second
+    /// time. A value that cannot be encrypted (no DPAPI) is left too: the next save reports
+    /// it, and nothing at startup is worth destroying a working credential over.</summary>
+    /// <returns>How many values were encrypted, and how many could not be.</returns>
+    public static (int Sealed, int Failed) SealLegacyPlaintext(DashboardLayout layout, SecretPlan plan)
+    {
+        var sealedCount = 0;
+        var failed = 0;
+        Action<LayoutSlot, string, SecretIntent> visitor = (slot, name, intent) =>
+        {
+            if (!SecretIntents.Protects(intent))
+                return;
+            if (AsString(slot.Settings?[name]) is not { Length: > 0 } value || SecretStore.LooksLikeEnvelope(value))
+                return;
+            if (SecretStore.TryProtect(value, out var sealedValue))
+            {
+                slot.Settings![name] = sealedValue;
+                sealedCount++;
+            }
+            else
+                failed++;
+        };
+        Walk(layout, plan, visitor);
+        WalkRetained(layout, plan, visitor);
+        return (sealedCount, failed);
+    }
+
     /// <summary>Visits every planned (slot, property) pair of a layout, with the intent
     /// that applies. The visitor runs once per planned property, whether or not the slot
     /// carries a value — an absent value is itself a case several branches handle.</summary>
