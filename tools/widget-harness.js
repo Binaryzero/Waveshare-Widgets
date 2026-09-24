@@ -6,15 +6,16 @@
 //   node tools/widget-harness.js widgets/clock
 //   node tools/widget-harness.js widgets/cpu --slot quarter --theme light --shot cpu.png
 //   node tools/widget-harness.js widgets/hue --settings '{"bgStyle":"transparent"}' --json
-//   node tools/widget-harness.js widgets/notifications --notifications tests/fixtures/host/notifications.json
+//   node tools/widget-harness.js widgets/notifications --notifications tests/fixtures/host/notifications.json \
+//     --expect "Notification number 0"
 //
 // tests/fixtures/host/ holds a realistic sensor frame, media state and notifications payload,
 // so a host-fed widget can be seen POPULATED — its data-driven controls (the notifications eye
 // and dismiss buttons, the media transport) only exist then, and without them the tap and
 // edge-rail audits (#221, #206) run against an empty tile. --sensors and --media can go to any
 // widget; one that ignores them is unaffected. --notifications is an assertion as well as data:
-// pass it only to a widget that consumes notifications, and the run requires it to subscribe
-// and receive them.
+// pass it only to a widget that consumes notifications, and the run requires it to subscribe,
+// receive them, and render the --expect text it is given (at least one is required).
 //
 // Checks: loads with zero page errors; renders visible content after init; the
 // bgStyle class contract (body background = rgba(surface-rgb, alpha)); pushed theme
@@ -68,7 +69,7 @@ const opt = (name, dflt) => {
   return i >= 0 ? args[i + 1] : dflt;
 };
 if (!folder) {
-  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--sensors frame.json] [--media state.json] [--notifications data.json] [--shot out.png] [--json]');
+  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--sensors frame.json] [--media state.json] [--notifications data.json --expect "text"] [--shot out.png] [--json]');
   process.exit(1);
 }
 
@@ -87,6 +88,18 @@ const mediaState = mediaFile ? JSON.parse(fs.readFileSync(mediaFile, 'utf8')) : 
 // sweep's tap and rail audits have only ever seen it empty (#206 is about exactly those).
 const notificationsFile = opt('notifications', null);
 const notificationsData = notificationsFile ? JSON.parse(fs.readFileSync(notificationsFile, 'utf8')) : null;
+// --expect "text" (repeatable): text the widget must render, matched against its visible text —
+// the same option widget-datapath.js has. A generic runner cannot know what a widget looks
+// like POPULATED, so the caller says so. Required with --notifications: subscription and
+// delivery are both provable while the widget still sits on its spinner (widget-api stores
+// the payload before it calls the widget's render callback), and only rendered text is not.
+const expects = [];
+for (let i = 0; i < args.length; i++) if (args[i] === '--expect') expects.push(args[i + 1]);
+if (notificationsData && expects.length === 0) {
+  console.error('--notifications requires at least one --expect "text" that only the populated '
+    + 'widget renders (e.g. a notification title): delivery alone does not prove it drew anything.');
+  process.exit(2);
+}
 
 const slot = opt('slot', 'half');
 const [W, H] = SLOTS[slot] || slot.split('x').map(Number);
@@ -550,6 +563,11 @@ function loadPlaywright() {
     check('...and the payload reached it',
       await frame.evaluate(() => !!(window.WW && WW.notifications
         && Array.isArray(WW.notifications.items) && WW.notifications.items.length > 0)));
+  }
+  if (expects.length) {
+    const shown = await frame.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').trim());
+    for (const want of expects)
+      check(`widget renders ${JSON.stringify(want)}`, shown.includes(want), shown.slice(0, 220));
   }
 
   check('visible content rendered', await frame.evaluate(() =>
