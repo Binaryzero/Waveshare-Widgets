@@ -44,7 +44,7 @@ const shadowed = { id: 'test.gh', name: 'GitHub Queue', folder: 'C:\\widgets\\gi
   reason: "property 'apiToken' looks like a credential", shadowed: true, withheld: ['apiToken'] };
 
 (async () => {
-  const srv = await staticServer(REPO, 8954);
+  const srv = await staticServer(REPO, 8958);
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
   const page = await browser.newPage({ viewport: { width: 1100, height: 820 } });
   page.on('pageerror', (e) => { failures++; console.log('[pageerror]', String(e).slice(0, 300)); });
@@ -67,7 +67,7 @@ const shadowed = { id: 'test.gh', name: 'GitHub Queue', folder: 'C:\\widgets\\gi
     } };
     window.__hostPush = (json) => { const data = JSON.parse(json); listeners.forEach((cb) => { try { cb({ data }); } catch (e) {} }); };
   });
-  await page.goto('http://127.0.0.1:8954/src/Plinth/Shell/settings.html');
+  await page.goto('http://127.0.0.1:8958/src/Plinth/Shell/settings.html');
   await page.waitForTimeout(900);
 
   const box = page.locator('#rejectedWidgets');
