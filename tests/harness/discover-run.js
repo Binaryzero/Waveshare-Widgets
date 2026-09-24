@@ -106,6 +106,7 @@ async function ask(handler, msg) {
     shellTarget: () => 'https://app.plinth',
     discoverHandler: handler,
     DISCOVER_SEND_MAX: 2000,
+    DISCOVER_TEXT_MAX: 300,
     Promise,
   });
   if (!api) return null;
@@ -145,6 +146,12 @@ async function ask(handler, msg) {
     p = await ask(() => Array.from({ length: 3000 }, (_, i) => 'v' + i), { id: 'q8', property: 'realm' });
     check('D2 a runaway list is cut before it crosses the frame boundary',
       p.length === 1 && p[0].m.options.length === 2000, String(p[0] && p[0].m.options.length));
+    p = await ask(() => ['x'.repeat(301), { value: 'y'.repeat(301), label: 'Y' }, { value: 'ok', label: 'L'.repeat(5000) }, 'fine'],
+      { id: 'q9', property: 'realm' });
+    check('D2 an over-long value is dropped and an over-long label cut before crossing the frame boundary',
+      p.length === 1 && p[0].m.options.length === 2 && p[0].m.options[0].value === 'ok'
+        && p[0].m.options[0].label.length === 300 && p[0].m.options[1] === 'fine',
+      JSON.stringify(p[0] && p[0].m.options.map((o) => typeof o === 'string' ? o.length : [o.value, o.label.length])));
     for (const bad of [{}, { id: '' }, { id: 7 }]) {
       p = await ask(() => ['x'], bad);
       check(`D2 a question with no usable id is not answered (${JSON.stringify(bad)})`, p.length === 0, JSON.stringify(p));

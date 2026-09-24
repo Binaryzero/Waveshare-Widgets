@@ -67,6 +67,10 @@
   // Most choices sent back. The shell keeps fewer; this only stops a runaway array from
   // being cloned across the frame boundary in full.
   const DISCOVER_SEND_MAX = 2000;
+  // Longest value or label sent back — the shell's own limit. A value past it is dropped
+  // (a cut value would be a different value); a label is cut. Applied HERE because the
+  // structured clone copies whatever is posted before the shell can look at it.
+  const DISCOVER_TEXT_MAX = 300;
   const sdRequests = new Set();
   /// Remembers an outstanding request, and forgets it if no answer comes. Without the
   /// expiry the set only ever grows: the settings preview drops every sd-* message by
@@ -357,7 +361,7 @@
     document.addEventListener('DOMContentLoaded', stampBackground, { once: true });
 
   // >>> ww-discover-answer — extracted and RUN by tests/harness/discover-run.js. Free
-  // names: parent, shellTarget, discoverHandler, DISCOVER_SEND_MAX.
+  // names: parent, shellTarget, discoverHandler, DISCOVER_SEND_MAX, DISCOVER_TEXT_MAX.
   // #210 — the settings editor asked this widget, through the dashboard, which values
   // one of its settings can take. It is asked HERE because this frame holds the saved
   // credential and the settings window never does; the widget answers with its own
@@ -384,9 +388,14 @@
       const plain = [];
       for (const o of options) {
         if (plain.length >= DISCOVER_SEND_MAX) break;
-        if (typeof o === 'string' || typeof o === 'number') plain.push(String(o));
-        else if (o && typeof o === 'object' && (typeof o.value === 'string' || typeof o.value === 'number'))
-          plain.push({ value: String(o.value), label: o.label == null ? '' : String(o.label) });
+        if (typeof o === 'string' || typeof o === 'number') {
+          const v = String(o);
+          if (v.length <= DISCOVER_TEXT_MAX) plain.push(v);
+        } else if (o && typeof o === 'object' && (typeof o.value === 'string' || typeof o.value === 'number')) {
+          const v = String(o.value);
+          if (v.length <= DISCOVER_TEXT_MAX)
+            plain.push({ value: v, label: o.label == null ? '' : String(o.label).slice(0, DISCOVER_TEXT_MAX) });
+        }
       }
       reply({ options: plain });
     }, (e) => reply({ error: errText(e) }));

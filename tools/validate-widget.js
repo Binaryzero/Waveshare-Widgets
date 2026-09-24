@@ -583,8 +583,16 @@ function validate(folder) {
   // A setting that promises Find (#210) needs a widget that answers it. Without a handler
   // every Find ends in "this widget cannot look this setting up", which is the manifest
   // advertising a feature the widget does not have. The script may live beside the page.
-  if (discovers && !widgetSources(folder).some((text) => /\bWW\.onDiscover\s*\(/.test(withoutComments(text))))
-    err('discover-handler', 'a property declares optionsSource "widget", but nothing calls WW.onDiscover to answer it');
+  if (discovers) {
+    const sources = widgetSources(folder);
+    const found = sources.texts.some((text) => /\bWW\.onDiscover\s*\(/.test(withoutComments(text)));
+    // The walk is bounded. When a bound cut it short, not finding the handler proves
+    // nothing — the unread files may hold it — so that is a warning, not a refusal.
+    if (!found && sources.complete)
+      err('discover-handler', 'a property declares optionsSource "widget", but nothing calls WW.onDiscover to answer it');
+    else if (!found)
+      warn('discover-handler-unread', 'a property declares optionsSource "widget"; no WW.onDiscover call was found in the files read, and the folder was too large or deep to read in full');
+  }
 
   return report;
 }
@@ -602,23 +610,28 @@ function withoutComments(text) {
 }
 
 /** The widget's own page and script text, for rules about what its code does. Bounded:
- * a widget folder is small, and a validator should not walk a node_modules. */
-function widgetSources(folder) {
-  const out = [];
+ * a widget folder is small, and a validator should not walk a node_modules. `complete`
+ * says whether a bound cut the walk short, so a rule can tell "not there" from "not read". */
+function widgetSources(folder, maxDepth = 6, maxFiles = 400) {
+  const texts = [];
+  let complete = true;
   const walk = (dir, depth) => {
-    if (depth > 3 || out.length >= 200) return;
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
     for (const e of entries) {
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) { if (e.name !== 'node_modules') walk(full, depth + 1); }
-      else if (/\.(html?|m?js)$/i.test(e.name) && out.length < 200) {
-        try { out.push(fs.readFileSync(full, 'utf8')); } catch (err) { /* unreadable: skip */ }
+      if (e.isDirectory()) {
+        if (e.name === 'node_modules') continue;
+        if (depth >= maxDepth) { complete = false; continue; }
+        walk(full, depth + 1);
+      } else if (/\.(html?|m?js)$/i.test(e.name)) {
+        if (texts.length >= maxFiles) { complete = false; continue; }
+        try { texts.push(fs.readFileSync(full, 'utf8')); } catch (err) { /* unreadable: skip */ }
       }
     }
   };
   walk(folder, 0);
-  return out;
+  return { texts, complete };
 }
 
 function human(report) {
@@ -790,6 +803,32 @@ if (args.includes('--self-test')) {
       console.log(`  FAIL prop "${name}" should validate, but raised ${rules.join(', ')}`); propBad++;
     } else if (expected !== null && !rules.includes(expected)) {
       console.log(`  FAIL prop "${name}" should raise ${expected}, raised ${rules.join(', ') || 'nothing'}`); propBad++;
+    }
+  }
+  // A handler in a script below the page counts, and a folder too deep to read in full is
+  // a warning rather than a refusal — the file past the bound may be the one that holds it.
+  {
+    const discoverProp = { name: 'realm', label: 'Realm', type: 'text', optionsSource: 'widget' };
+    const deepDir = path.join(tmp, 'prop-discover-deep');
+    const nested = path.join(deepDir, 'a', 'b', 'c');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(deepDir, 'manifest.json'), JSON.stringify(Object.assign({}, manifest, { properties: [discoverProp] })));
+    fs.writeFileSync(path.join(deepDir, 'index.html'), doc(BASE));
+    fs.writeFileSync(path.join(nested, 'app.js'), 'WW.onDiscover(() => []);');
+    const deep = validate(deepDir);
+    if (deep.errors.some((e) => e.rule === 'discover-handler') || deep.warnings.some((w) => w.rule === 'discover-handler-unread')) {
+      console.log('  FAIL prop "discover-handler-in-nested-script" was not found'); propBad++;
+    }
+    const cutDir = path.join(tmp, 'prop-discover-cut');
+    let at = cutDir;
+    for (let i = 0; i < 9; i++) at = path.join(at, 'd' + i);
+    fs.mkdirSync(at, { recursive: true });
+    fs.writeFileSync(path.join(cutDir, 'manifest.json'), JSON.stringify(Object.assign({}, manifest, { properties: [discoverProp] })));
+    fs.writeFileSync(path.join(cutDir, 'index.html'), doc(BASE));
+    fs.writeFileSync(path.join(at, 'app.js'), 'WW.onDiscover(() => []);');
+    const cut = validate(cutDir);
+    if (cut.errors.some((e) => e.rule === 'discover-handler') || !cut.warnings.some((w) => w.rule === 'discover-handler-unread')) {
+      console.log('  FAIL prop "discover-handler-past-the-walk" should warn, not refuse'); propBad++;
     }
   }
   fs.rmSync(tmp, { recursive: true, force: true });
