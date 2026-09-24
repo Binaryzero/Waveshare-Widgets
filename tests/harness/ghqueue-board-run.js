@@ -22,7 +22,8 @@
 //         sweep uses: the next Find answers without asking GitHub again. The board it
 //         paused is dimmed as stale at once, not left looking current until the reset
 //         (G10c); a setup card stays a setup card (G10d); and a limit that lands while
-//         a sweep is out is not reopened by that sweep's success (G10e)
+//         a sweep is out is not reopened by that sweep's success (G10e); the board
+//         wakes at the reset, not at a refresh hours out (G10f)
 //   G11 · an account past the chooser's 500 sends more than 500, so the shell can say the
 //         list was cut
 //   G12 · slow pages share one budget: Find answers inside the shell's 20 s wait, saying
@@ -111,6 +112,7 @@ let reposBody = { message: 'Bad credentials' };
 let reposHeaders = {};
 let reposDelayMs = 0;
 let pullsDelayMs = 0;
+let pullsAsked = 0;
 const reposAuth = [];
 
 const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>'
@@ -166,6 +168,7 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     const repo = seg[1] + '/' + seg[2];
     if (seg[3] === 'pulls' && !seg[4]) {
       const list = PRS.filter((p) => p.repo === repo).map(listItem);
+      pullsAsked++;
       if (pullsDelayMs) return new Promise((res) => setTimeout(res, pullsDelayMs)).then(() => json(r, list));
       return json(r, list);
     }
@@ -330,6 +333,24 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
       && reposAuth.length === askedMid,
     JSON.stringify({ meta: swept.meta, rows: swept.rows, asked: reposAuth.length - askedMid }));
   pullsDelayMs = 0;
+  // G10f · a two-hour refresh, and a limit Find hits that resets in a few seconds: the
+  // board must sweep again once the reset passes, not sit dimmed until the refresh.
+  await page.evaluate((m) => window.__wwPush(m), { type: 'ww-init',
+    settings: { repos: [{ repo: 'me/alpha' }, { repo: 'me/beta' }], apiToken: 'stub-token-long', refreshMinutes: 120 },
+    sensors: [], media: null, theme: {}, status: { elevated: false, apiVersion: 1 } });
+  await frame.waitForFunction(() => !document.getElementById('board').hidden
+    && !document.body.classList.contains('stale') && /updated/.test(document.getElementById('meta').textContent),
+    null, { timeout: 8000 }).catch(() => {});
+  reposHeaders = { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Math.ceil(Date.now() / 1000) + 3),
+    'access-control-expose-headers': 'x-ratelimit-remaining, x-ratelimit-reset' };
+  const sweepsBefore = pullsAsked;
+  const shortLimit = await ask('d4f', 'repos', 'repo');
+  const dimmedNow = await frame.evaluate(() => document.body.classList.contains('stale'));
+  const woke = await frame.waitForFunction(() => !document.body.classList.contains('stale'), null, { timeout: 15000 })
+    .then(() => true, () => false);
+  check('G10f the board wakes at the reset, not at a refresh two hours out',
+    /rate limit/i.test(String((shortLimit || {}).error || '')) && dimmedNow && woke && pullsAsked > sweepsBefore,
+    JSON.stringify({ dimmedNow, woke, sweeps: pullsAsked - sweepsBefore }));
   reposStatus = 200;
   reposBody = { message: 'Bad credentials' };
   reposHeaders = {};

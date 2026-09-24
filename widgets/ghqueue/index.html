@@ -251,6 +251,9 @@
       if (limited) {
         rateLimitedUntil = limited;
         boardLimited();
+        // Wake the board at the reset, not at a refresh that may be hours out. A sweep
+        // still running re-arms from the gate itself when it finishes.
+        if (started && !inFlight) arm(generation);
         throw new Error(rateLimitText());
       }
       if (!res.ok) {
