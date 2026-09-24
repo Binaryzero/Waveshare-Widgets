@@ -6,6 +6,7 @@
 // M5      nothing is retired on the first update (no previous list)
 // M6      paths that are never the release's to remove are never retired
 // M7      the wiring: the list rides the journaled swap, retirements join its rollback
+// M8      a file of the same name that this updater did not write is not trusted
 using Plinth;
 
 var failures = 0;
@@ -44,9 +45,12 @@ string[] hostile =
     @"C:\Windows\System32\drivers\etc\hosts", @"\\server\share\x.dll", @"\rooted.dll", "/rooted.dll",
     @"sub\..\Plinth.exe", @".\Plinth.exe", @"file.dll:stream", "swap-journal.txt", "SWAP-JOURNAL.DONE",
     InstallManifest.FileName, "", "   ",
+    // Names no Windows file can have. The NUL is the one that mattered: Path.GetFullPath
+    // throws on it inside the swap, and the rollback restores the same list.
+    "bad\0name.dll", "tab\tname.dll", "a|b.dll", "q?.dll", "star*.dll", "\"quoted\".dll", "<x>.dll",
 ];
 var hostileRetire = InstallManifest.Retirements(hostile, next, Control);
-Check("M6 rooted, UNC, dot-segment, stream, control-file, manifest and blank paths are never retired",
+Check("M6 rooted, UNC, dot-segment, stream, invalid-character, control-file, manifest and blank paths are never retired",
     hostileRetire.Count == 0, Show(hostileRetire));
 var dupes = InstallManifest.Retirements(["a.dll", "A.DLL", "a.dll"], next, Control);
 Check("M6b a name listed twice is retired once", dupes.Count == 1, Show(dupes));
@@ -69,7 +73,24 @@ else
             @"var aside = \$""\{target\}\.\{stamp\}"";\s*File\.Move\(target, aside\);\s*renamed\.Add\(\(target, aside\)\);"));
     Check("M7c an archive that ships its own list is refused",
         code.Contains("entry.FullName.Equals(InstallManifest.FileName, StringComparison.OrdinalIgnoreCase)"));
+    Check("M7d a listed name the path API refuses is skipped, not thrown mid-swap",
+        System.Text.RegularExpressions.Regex.IsMatch(code,
+            @"try \{ target = Path\.GetFullPath\(Path\.Combine\(baseDir, rel\)\); \}\s*catch \(Exception ex\) when \(ex is ArgumentException"));
 }
+
+// ---- M8 --------------------------------------------------------------------------------
+// Releases before this one never wrote the list, so a file by that name on the first
+// update is someone else's — and reading it as the release's files would delete theirs.
+Check("M8 the list starts with the header", InstallManifest.Serialize(["a.dll"]).StartsWith(InstallManifest.Header + "\n"));
+Check("M8b a same-named file without the header is not read as a list",
+    InstallManifest.Parse("my-notes.txt\nPlinth.dll\nsaves\\game.sav\n").Count == 0);
+Check("M8c ...nor one whose first line only resembles it",
+    InstallManifest.Parse(InstallManifest.Header + " \nPlinth.dll\n").Count == 0
+    && InstallManifest.Parse(" " + InstallManifest.Header + "\nPlinth.dll\n").Count == 0);
+Check("M8d a header alone is an empty list", InstallManifest.Parse(InstallManifest.Header + "\n").Count == 0);
+Check("M8e a list torn inside its header is not read", InstallManifest.Parse(InstallManifest.Header[..10]).Count == 0);
+var headed = InstallManifest.Retirements(InstallManifest.Parse("Plinth.dll\nuser-file.dat\n"), next, Control);
+Check("M8f so on the first update a stray file of that name retires nothing", headed.Count == 0, Show(headed));
 
 Console.WriteLine(failures > 0 ? $"{failures} FAILURES" : "ALL PASS");
 return failures > 0 ? 1 : 0;

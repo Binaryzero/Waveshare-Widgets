@@ -515,7 +515,17 @@ public static class UpdateManager
             var root = baseDir.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
             foreach (var rel in retire)
             {
-                var target = Path.GetFullPath(Path.Combine(baseDir, rel));
+                // A name the path API refuses is skipped, not thrown: thrown here it would
+                // roll the whole update back, restore the same list, and fail every later
+                // update identically. Retirements already filters such names; this keeps
+                // one it missed from costing more than a stale file.
+                string target;
+                try { target = Path.GetFullPath(Path.Combine(baseDir, rel)); }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    Log.Warn($"Update: not retiring a listed file whose name is not a valid path: {ex.Message}");
+                    continue;
+                }
                 if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(target))
                     continue;
                 try { EnsureNoReparseAncestors(Path.GetDirectoryName(target)!, baseDir, vetted); }
