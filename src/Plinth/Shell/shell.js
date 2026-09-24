@@ -544,8 +544,19 @@
       // name, title, body — to every widget on the panel, subscriber or not, so a
       // widget needed no notification code at all to read the user's notifications.
       notifications: slot.notifWatch ? noteDelivered(slot, latestNotifications) : null,
+      withheld: withheldSecrets(slot),
       status,
     };
+  }
+
+  /// The names of this slot's secret settings that hold a value the settings PREVIEW is
+  /// not given (#59). Names only, never values: a widget that would otherwise fall back to
+  /// a plain setting when its secret one reads empty can tell "withheld here" from "not
+  /// set". Always empty on the panel, which is handed the real values.
+  function withheldSecrets(slot) {
+    if (!PREVIEW || !slot.def || !Array.isArray(slot.def.secretsSet)) return [];
+    const cleared = Array.isArray(slot.def.secretsCleared) ? slot.def.secretsCleared : [];
+    return slot.def.secretsSet.filter((n) => typeof n === 'string' && !cleared.includes(n));
   }
 
   /// Records which notification ids a slot has been shown, so a later dismiss can be

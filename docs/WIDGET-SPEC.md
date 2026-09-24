@@ -241,6 +241,7 @@ WW.settings          // merged property values, e.g. WW.settings.city
 WW.sensors           // latest snapshot: [{id, name, device, deviceType, type, units, value}]
 WW.media             // {available, title, artist, album, status, thumbnail}
 WW.status            // {elevated, apiVersion}
+WW.withheld          // names of secret settings that have a value this document is not given
 
 WW.sensorById('lhm:/gpu-nvidia/0/temperature/0')
 WW.findSensor({      // heuristic lookup
@@ -275,6 +276,13 @@ Return `null` for a setting the widget does not look up. Throw or reject with an
 whose message the user should read ("Token rejected — check it has repo access"). Use
 `WW.fetch` with the credential in `WW.settings`, as the widget already does. The shell
 keeps at most 500 choices, each value at most 300 characters.
+
+`WW.withheld` lists the secret settings that hold a value this document is not given, by
+name and never by value. The settings preview withholds every stored secret and hands the
+widget `""` for each, so a secret reads empty there even when it is set. This lets a widget
+tell "set, but not here" from "not set" — REST Value uses it so the preview does not fall
+back from its private endpoint to the plain one. It is always empty on the panel, which is
+given the real values.
 
 Notification strings are untrusted external text: render them with `textContent`, never
 `innerHTML`. Windows only grants the notification listener to apps with **package

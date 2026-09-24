@@ -14,7 +14,7 @@
   else document.addEventListener('DOMContentLoaded', function () {
     if (document.documentElement && !state.ready) document.documentElement.dataset.wwWaiting = '1';
   }, { once: true });
-  const state = { settings: {}, sensors: [], media: null, status: null, theme: null, notifications: null, ready: false };
+  const state = { settings: {}, sensors: [], media: null, status: null, theme: null, notifications: null, withheld: [], ready: false };
   // The shell's origin, learned from the init it answered us with — the shim is
   // injected into every document in the WebView and has no script URL of its own to
   // read it from, and hardcoding a host would break both the harness fixtures and
@@ -431,6 +431,9 @@
       state.sensors = msg.sensors || [];
       state.media = msg.media || null;
       state.status = msg.status || null;
+      // Secret settings that hold a value this document is not given — the settings
+      // preview's (#59). Names only; empty on the panel.
+      state.withheld = Array.isArray(msg.withheld) ? msg.withheld.filter((n) => typeof n === 'string') : [];
       // The media-relay credential (see WW.mediaUrl). Kept in this closure, never on
       // state: WW.settings-style getters hand copies of state around, and the token
       // has exactly one legitimate reader — the URL builder below.
@@ -744,6 +747,10 @@
     get media() { return state.media; },
     /** Host status: {elevated, apiVersion}. */
     get status() { return state.status; },
+    /** Names of secret settings that have a value this document is not given: the
+     * settings preview withholds every secret. Empty on the panel. Lets a widget tell
+     * "set, but not here" from "not set" (#59). */
+    get withheld() { return state.withheld.slice(); },
     /** Design-token map ({'--surface': '#111314', ...}); applied to :root automatically. */
     get theme() { return state.theme; },
 

@@ -808,9 +808,22 @@
   }
 
   function restart() {
+    if (cfg.privateWithheld) {
+      showState('◎', 'Private endpoint',
+        'The private endpoint is not given to this preview — the panel uses it.', false);
+      clearTimeout(timer);
+      timer = null;
+      return;
+    }
     if (!cfg.url) {
-      showState('◎', 'No endpoint set',
-        'Add the URL of a JSON endpoint in this widget’s settings, plus the path to the value you want on the panel.', false);
+      // In the settings preview a private endpoint is withheld like every secret — one
+      // typed but not saved yet has no stored value for the preview to be told about. Say
+      // so rather than send the user looking for a setting they already made. (A previewed
+      // widget's parent is the replica, not top.)
+      const preview = window.parent !== window.top;
+      showState('◎', 'No endpoint set', preview
+        ? 'A private endpoint is not shown in this preview — the panel uses it. Otherwise, add the URL of a JSON endpoint in this widget’s settings.'
+        : 'Add the URL of a JSON endpoint in this widget’s settings, plus the path to the value you want on the panel.', false);
       clearTimeout(timer);
       timer = null;
       return;
@@ -841,7 +854,15 @@
     };
 
     const prevUrl = cfg.url, prevPointer = cfg.pointer, prevHeader = cfg.headerName + '\n' + cfg.headerValue;
-    cfg.url = String(s.url || '').trim();
+    // The private endpoint wins when set (#59): an address that IS the credential is kept
+    // as a secret, and the plain field may be left empty or hold an old copy. It is part
+    // of the source identity below through cfg.url, so changing either one is a new source.
+    // In the settings preview a stored private endpoint is withheld, and falling back to
+    // the plain one there would fetch a source the user has overridden — so it does not.
+    const privateUrl = String(s.privateUrl == null ? '' : s.privateUrl).trim();
+    const withheld = Array.isArray(state.withheld) ? state.withheld : [];
+    cfg.privateWithheld = !privateUrl && withheld.includes('privateUrl');
+    cfg.url = privateUrl || (cfg.privateWithheld ? '' : String(s.url || '').trim());
     // NOT trimmed: a JSON Pointer's trailing whitespace can be part of the key name.
     // resolvePath strips the leading side, which is the only end that is never meaningful.
     cfg.pointer = String(s.jsonPointer || '');
