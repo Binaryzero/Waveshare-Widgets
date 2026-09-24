@@ -193,7 +193,9 @@ jobs:
       # mixed in with the current one, and the history a bug report needed was what got
       # thrown away. This drives the real RollingLog in a temp directory: a file per
       # session, a cap that rolls instead of deleting, four previous files kept, a
-      # bounded total, a clipped runaway line, and no lost line when a roll cannot happen.
+      # bounded total, a clipped runaway line, and no lost line when a roll cannot happen —
+      # plus recovery from a blocked or interrupted roll (#298): a crash-stranded log is
+      # filed, a blocked session roll is retried, an overgrown file is cut back to the cap.
       - name: app.log is rolled per session and bounded
         run: dotnet run --project tools/LogRotation
 

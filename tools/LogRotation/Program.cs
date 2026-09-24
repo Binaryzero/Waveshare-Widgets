@@ -15,6 +15,12 @@
 //        sharing) leaves every kept file exactly as it was, however often it is retried
 //   L9 · lines written before StartSession (a second launch on its way out, or anything
 //        before the single-instance lock) never roll the log
+//   L10 · a run that died mid-roll, its log stranded under the staging name, is filed as
+//         app.1.log by the next session — not left there for that whole run (#298)
+//   L11 · a session roll blocked at startup is retried on later lines, so the run does not
+//         stay mixed into the previous one; the new file says where its first lines went
+//   L12 · a file that outgrew the cap while a roll was blocked is cut to the cap (keeping
+//         its tail) when it is archived, so the directory's bound comes back
 //   F1 · falsification — the old logger's rule (one file, delete past the cap) fails L1
 //        and L3
 using System.Text;
@@ -196,6 +202,63 @@ Run(p => new Rolling(new RollingLog(p, Cap, 4)), quiet: false);
     Check("L9 lines written before StartSession never roll the log",
         !rolledEarly && Read(log.PathFor(1)).Contains("second launch 4 ") && !File.Exists(log.PathFor(2)),
         $"rolled before the session: {rolledEarly}; one roll at StartSession: {File.Exists(log.PathFor(1)) && !File.Exists(log.PathFor(2))}");
+}
+
+// ---- L10 · a run that died mid-roll ------------------------------------------------------
+{
+    var dir = NewDir();
+    var log = new RollingLog(Path.Combine(dir, "app.log"), Cap, 4);
+    File.WriteAllText(log.PathFor(2), "older run\n");
+    File.WriteAllText(log.PathFor(0) + ".rolling", "the run that crashed mid-roll\n");   // and no app.log
+    log.StartSession("== next run");
+    Check("L10 a log stranded under the staging name is filed as app.1.log at the next session",
+        Read(log.PathFor(1)).Contains("crashed mid-roll") && !File.Exists(log.PathFor(0) + ".rolling")
+        && Read(log.PathFor(0)).StartsWith("== next run") && Read(log.PathFor(2)).Contains("older run"),
+        $"app.1.log has it: {Read(log.PathFor(1)).Contains("crashed mid-roll")}; staging left: {File.Exists(log.PathFor(0) + ".rolling")}");
+}
+
+// ---- L11 · a blocked session roll is retried ----------------------------------------------
+// The same block as L8: a real share-mode lock on Windows, the staging-name stand-in elsewhere.
+{
+    var dir = NewDir();
+    var log = new RollingLog(Path.Combine(dir, "app.log"), Cap, 4);
+    File.WriteAllText(log.PathFor(0), "the previous run\n");
+    FileStream? holder = null;
+    var standIn = log.PathFor(0) + ".rolling";
+    if (OperatingSystem.IsWindows())
+        holder = new FileStream(log.PathFor(0), FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+    else
+        Directory.CreateDirectory(standIn);
+    log.StartSession("== this run");
+    log.Append("while still held");
+    holder?.Dispose();
+    if (!OperatingSystem.IsWindows()) Directory.Delete(standIn);
+    log.Append("after release");
+    var live = Read(log.PathFor(0));
+    var prev = Read(log.PathFor(1));
+    Check("L11 a session roll blocked at startup is retried once the file is free",
+        prev.Contains("the previous run") && !live.Contains("the previous run")
+        && live.Contains("after release") && live.Contains("first lines are at the end of app.1.log"),
+        $"{(OperatingSystem.IsWindows() ? "real share-mode lock" : "staging stand-in")}: "
+        + $"app.log free of the last run: {!live.Contains("the previous run")}; continued note: {live.Contains("first lines are at the end")}");
+}
+
+// ---- L12 · an oversized file is cut when it is archived ----------------------------------
+{
+    var dir = NewDir();
+    var log = new RollingLog(Path.Combine(dir, "app.log"), Cap, 4);
+    var big = new StringBuilder();
+    big.Append("FIRST line of an overgrown file\n");
+    for (var i = 0; big.Length < 3 * Cap; i++) big.Append($"grown {i} {new string('g', 100)}\n");
+    big.Append("LAST line before the roll\n");
+    File.WriteAllText(log.PathFor(0), big.ToString());     // grew to 3x the cap under a long block
+    log.StartSession("== next run");
+    var archived = new FileInfo(log.PathFor(1));
+    var text = Read(log.PathFor(1));
+    Check("L12 a file that outgrew the cap is cut to it, keeping the tail, when archived",
+        archived.Length <= Cap && text.Contains("LAST line before the roll") && !text.Contains("FIRST line")
+        && text.StartsWith("… [") && text.Contains("bytes dropped from the start"),
+        $"{big.Length} bytes -> {archived.Length} (cap {Cap}); tail kept: {text.Contains("LAST line")}");
 }
 
 // ---- F1 · the old logger's rule --------------------------------------------------------
