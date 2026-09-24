@@ -103,7 +103,7 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
   + 'bindEdge(document.getElementById("edgeLeft"),-1);bindEdge(document.getElementById("edgeRight"),1);})();<\/script>';
 
 const ITEMS = Array.from({ length: 24 }, (_, i) => ({
-  id: 'n' + i,
+  id: 1000 + i,   // numeric, as NotificationCenter sends it (UserNotification.Id is a uint)
   app: 'App ' + (i % 4),
   appId: 'app' + (i % 4),
   title: 'Notification number ' + i,

@@ -2,7 +2,7 @@
  "state": "allowed",
  "items": [
   {
-   "id": "n0",
+   "id": 1000,
    "app": "Outlook",
    "appId": "outlook",
    "title": "Notification number 0",
@@ -10,7 +10,7 @@
    "time": 1790211502331
   },
   {
-   "id": "n1",
+   "id": 1001,
    "app": "Teams",
    "appId": "teams",
    "title": "Notification number 1",
@@ -18,7 +18,7 @@
    "time": 1790211442331
   },
   {
-   "id": "n2",
+   "id": 1002,
    "app": "Discord",
    "appId": "discord",
    "title": "Notification number 2",
@@ -26,7 +26,7 @@
    "time": 1790211382331
   },
   {
-   "id": "n3",
+   "id": 1003,
    "app": "Windows Security",
    "appId": "winsec",
    "title": "Notification number 3",
@@ -34,7 +34,7 @@
    "time": 1790211322331
   },
   {
-   "id": "n4",
+   "id": 1004,
    "app": "Outlook",
    "appId": "outlook",
    "title": "Notification number 4",
@@ -42,7 +42,7 @@
    "time": 1790211262331
   },
   {
-   "id": "n5",
+   "id": 1005,
    "app": "Teams",
    "appId": "teams",
    "title": "Notification number 5",
@@ -50,7 +50,7 @@
    "time": 1790211202331
   },
   {
-   "id": "n6",
+   "id": 1006,
    "app": "Discord",
    "appId": "discord",
    "title": "Notification number 6",
@@ -58,7 +58,7 @@
    "time": 1790211142331
   },
   {
-   "id": "n7",
+   "id": 1007,
    "app": "Windows Security",
    "appId": "winsec",
    "title": "Notification number 7",
@@ -66,7 +66,7 @@
    "time": 1790211082331
   },
   {
-   "id": "n8",
+   "id": 1008,
    "app": "Outlook",
    "appId": "outlook",
    "title": "Notification number 8",
@@ -74,7 +74,7 @@
    "time": 1790211022331
   },
   {
-   "id": "n9",
+   "id": 1009,
    "app": "Teams",
    "appId": "teams",
    "title": "Notification number 9",
@@ -82,7 +82,7 @@
    "time": 1790210962331
   },
   {
-   "id": "n10",
+   "id": 1010,
    "app": "Discord",
    "appId": "discord",
    "title": "Notification number 10",
@@ -90,7 +90,7 @@
    "time": 1790210902331
   },
   {
-   "id": "n11",
+   "id": 1011,
    "app": "Windows Security",
    "appId": "winsec",
    "title": "Notification number 11",
@@ -98,7 +98,7 @@
    "time": 1790210842331
   },
   {
-   "id": "n12",
+   "id": 1012,
    "app": "Outlook",
    "appId": "outlook",
    "title": "Notification number 12",
@@ -106,7 +106,7 @@
    "time": 1790210782331
   },
   {
-   "id": "n13",
+   "id": 1013,
    "app": "Teams",
    "appId": "teams",
    "title": "Notification number 13",
@@ -114,7 +114,7 @@
    "time": 1790210722331
   },
   {
-   "id": "n14",
+   "id": 1014,
    "app": "Discord",
    "appId": "discord",
    "title": "Notification number 14",
@@ -122,7 +122,7 @@
    "time": 1790210662331
   },
   {
-   "id": "n15",
+   "id": 1015,
    "app": "Windows Security",
    "appId": "winsec",
    "title": "Notification number 15",
@@ -130,7 +130,7 @@
    "time": 1790210602331
   },
   {
-   "id": "n16",
+   "id": 1016,
    "app": "Outlook",
    "appId": "outlook",
    "title": "Notification number 16",
@@ -138,7 +138,7 @@
    "time": 1790210542331
   },
   {
-   "id": "n17",
+   "id": 1017,
    "app": "Teams",
    "appId": "teams",
    "title": "Notification number 17",
@@ -146,7 +146,7 @@
    "time": 1790210482331
   },
   {
-   "id": "n18",
+   "id": 1018,
    "app": "Discord",
    "appId": "discord",
    "title": "Notification number 18",
@@ -154,7 +154,7 @@
    "time": 1790210422331
   },
   {
-   "id": "n19",
+   "id": 1019,
    "app": "Windows Security",
    "appId": "winsec",
    "title": "Notification number 19",
@@ -162,7 +162,7 @@
    "time": 1790210362331
   },
   {
-   "id": "n20",
+   "id": 1020,
    "app": "Outlook",
    "appId": "outlook",
    "title": "Notification number 20",
@@ -170,7 +170,7 @@
    "time": 1790210302331
   },
   {
-   "id": "n21",
+   "id": 1021,
    "app": "Teams",
    "appId": "teams",
    "title": "Notification number 21",
@@ -178,7 +178,7 @@
    "time": 1790210242331
   },
   {
-   "id": "n22",
+   "id": 1022,
    "app": "Discord",
    "appId": "discord",
    "title": "Notification number 22",
@@ -186,7 +186,7 @@
    "time": 1790210182331
   },
   {
-   "id": "n23",
+   "id": 1023,
    "app": "Windows Security",
    "appId": "winsec",
    "title": "Notification number 23",
