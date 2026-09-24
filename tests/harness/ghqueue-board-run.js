@@ -19,7 +19,11 @@
 //   G8 · any other setting gets no answer from this widget ("unsupported")
 //   G9 · a refused token comes back as a message saying so, not a list
 //   G10 · a rate limit on Find comes back with its reset time, and closes the gate the
-//         sweep uses: the next Find answers without asking GitHub again
+//         sweep uses: the next Find answers without asking GitHub again. The board it
+//         paused is dimmed as stale at once, not left looking current until the reset
+//         (G10c); a setup card stays a setup card (G10d); and a limit that lands while
+//         a sweep is out is not reopened by that sweep's success (G10e); the board
+//         wakes at the reset, not at a refresh hours out (G10f)
 //   G11 · an account past the chooser's 500 sends more than 500, so the shell can say the
 //         list was cut
 //   G12 · slow pages share one budget: Find answers inside the shell's 20 s wait, saying
@@ -107,6 +111,8 @@ let reposStatus = 200;
 let reposBody = { message: 'Bad credentials' };
 let reposHeaders = {};
 let reposDelayMs = 0;
+let pullsDelayMs = 0;
+let pullsAsked = 0;
 const reposAuth = [];
 
 const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>'
@@ -160,8 +166,12 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
       return json(r, page);
     }
     const repo = seg[1] + '/' + seg[2];
-    if (seg[3] === 'pulls' && !seg[4])
-      return json(r, PRS.filter((p) => p.repo === repo).map(listItem));
+    if (seg[3] === 'pulls' && !seg[4]) {
+      const list = PRS.filter((p) => p.repo === repo).map(listItem);
+      pullsAsked++;
+      if (pullsDelayMs) return new Promise((res) => setTimeout(res, pullsDelayMs)).then(() => json(r, list));
+      return json(r, list);
+    }
     if (seg[3] === 'pulls' && seg[4]) {
       const pr = PRS.find((p) => p.repo === repo && String(p.number) === seg[4]);
       if (!pr) return r.fulfill({ status: 404, headers: CORS, body: '{}' });
@@ -280,6 +290,8 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
   reposHeaders = { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(resetAt),
     'access-control-expose-headers': 'x-ratelimit-remaining, x-ratelimit-reset' };
   const limited = await ask('d4', 'repos', 'repo');
+  const dimmed = await frame.evaluate(() => ({ stale: document.body.classList.contains('stale'),
+    pill: document.getElementById('pill').textContent }));
   const askedBefore = reposAuth.length;
   const again = await ask('d5', 'repos', 'repo');
   check('G10 a rate limit on Find says when it resets',
@@ -288,6 +300,57 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
   check('G10b ...and closes the shared gate: the next Find answers without asking GitHub',
     !!(again && /rate limit/i.test(String(again.error || ''))) && reposAuth.length === askedBefore,
     `requests before ${askedBefore}, after ${reposAuth.length}`);
+  check('G10c ...and the board it paused is dimmed as stale at once, not left looking current',
+    dimmed.stale && dimmed.pill === 'Stale', JSON.stringify(dimmed));
+  // G10d · a token but no repositories yet: the setup card, which is when Find is used.
+  await page.evaluate((m) => window.__wwPush(m), { type: 'ww-init',
+    settings: { repos: [], apiToken: 'stub-token-setup', refreshMinutes: 5 },
+    sensors: [], media: null, theme: {}, status: { elevated: false, apiVersion: 1 } });
+  await page.waitForTimeout(300);
+  const setupLimited = await ask('d4s', 'repos', 'repo');
+  const setupCard = await frame.evaluate(() => document.getElementById('state').textContent);
+  check('G10d on the setup card, a rate limit on Find leaves the setup card in place',
+    /rate limit/i.test(String((setupLimited || {}).error || '')) && /Not configured yet/.test(setupCard)
+      && !/Rate limited/.test(setupCard), JSON.stringify(setupCard.slice(0, 80)));
+  // G10e · a new token starts a sweep (and opens the gate); its listings are slow, and
+  // Find runs into the limit while it waits. The sweep's own requests still get through,
+  // as 304s do, and its success must not reopen the gate Find closed.
+  pullsDelayMs = 1500;
+  await page.evaluate((m) => window.__wwPush(m), { type: 'ww-init',
+    settings: { repos: [{ repo: 'me/alpha' }, { repo: 'me/beta' }], apiToken: 'stub-token-mid', refreshMinutes: 5 },
+    sensors: [], media: null, theme: {}, status: { elevated: false, apiVersion: 1 } });
+  await page.waitForTimeout(400);
+  const midSweep = await ask('d4m', 'repos', 'repo');
+  await frame.waitForFunction(() => /rate limited/.test(document.getElementById('meta').textContent)
+    && !document.getElementById('board').hidden, null, { timeout: 8000 }).catch(() => {});
+  const swept = await frame.evaluate(() => ({ meta: document.getElementById('meta').textContent,
+    board: !document.getElementById('board').hidden, rows: document.querySelectorAll('#board .pr').length }));
+  const askedMid = reposAuth.length;
+  const afterSweep = await ask('d4n', 'repos', 'repo');
+  check('G10e a Find limit that lands mid-sweep survives the sweep: fresh rows, gate still shut',
+    /rate limit/i.test(String((midSweep || {}).error || '')) && swept.board && swept.rows === PRS.length
+      && /rate limited/.test(swept.meta) && /rate limit/i.test(String((afterSweep || {}).error || ''))
+      && reposAuth.length === askedMid,
+    JSON.stringify({ meta: swept.meta, rows: swept.rows, asked: reposAuth.length - askedMid }));
+  pullsDelayMs = 0;
+  // G10f · a two-hour refresh, and a limit Find hits that resets in a few seconds: the
+  // board must sweep again once the reset passes, not sit dimmed until the refresh.
+  await page.evaluate((m) => window.__wwPush(m), { type: 'ww-init',
+    settings: { repos: [{ repo: 'me/alpha' }, { repo: 'me/beta' }], apiToken: 'stub-token-long', refreshMinutes: 120 },
+    sensors: [], media: null, theme: {}, status: { elevated: false, apiVersion: 1 } });
+  await frame.waitForFunction(() => !document.getElementById('board').hidden
+    && !document.body.classList.contains('stale') && /updated/.test(document.getElementById('meta').textContent),
+    null, { timeout: 8000 }).catch(() => {});
+  reposHeaders = { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Math.ceil(Date.now() / 1000) + 3),
+    'access-control-expose-headers': 'x-ratelimit-remaining, x-ratelimit-reset' };
+  const sweepsBefore = pullsAsked;
+  const shortLimit = await ask('d4f', 'repos', 'repo');
+  const dimmedNow = await frame.evaluate(() => document.body.classList.contains('stale'));
+  const woke = await frame.waitForFunction(() => !document.body.classList.contains('stale'), null, { timeout: 15000 })
+    .then(() => true, () => false);
+  check('G10f the board wakes at the reset, not at a refresh two hours out',
+    /rate limit/i.test(String((shortLimit || {}).error || '')) && dimmedNow && woke && pullsAsked > sweepsBefore,
+    JSON.stringify({ dimmedNow, woke, sweeps: pullsAsked - sweepsBefore }));
   reposStatus = 200;
   reposBody = { message: 'Bad credentials' };
   reposHeaders = {};
