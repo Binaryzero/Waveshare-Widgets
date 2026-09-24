@@ -19,7 +19,9 @@
 //        an ordinary button does not
 //   W1-W5 · widget-api.js: only widget documents listen, the mouse is excluded, a cancelled
 //        pointer (the browser took the pan) never reaches a verdict, a gesture the widget
-//        claimed is left alone, and a verdict posts ww-swipe
+//        claimed is left alone — judged after dispatch, so a widget's own window-level
+//        handler counts, and on the composed path, so a slider in a shadow root counts — and
+//        a verdict posts ww-swipe
 //   W6 · the tap-surface audit (#221) exempts the detector's two listeners by a tag — and ONLY
 //        those two: set in one place, wrapped around exactly pointerdown and pointerup, never
 //        carried by a widget (which could otherwise use it to slip a real tap past the audit)
@@ -106,17 +108,33 @@ function runRule(r, label) {
     [[-160, 0, -1], [-160, 0, NaN], [NaN, 0, 200], [-160, NaN, 200]].every(([a, b, c]) => dir(a, b, c) === 0));
 
   // ---- R6 · controls that own a sideways drag ------------------------------------------------
+  // ownsHorizontalDrag takes the event's COMPOSED path (target first, window last), which is
+  // what a window listener has to use: the target itself is retargeted out of a shadow tree.
   const body = el('BODY');
   const slider = el('INPUT', { type: 'range', parent: body });
   const marked = el('DIV', { attrs: ['data-ww-no-swipe'], parent: body });
   const insideMarked = el('SPAN', { parent: marked });
   const button = el('BUTTON', { parent: body });
   const text = el('INPUT', { type: 'text', parent: body });
-  check('R6 a native slider keeps its drag', owns(slider) === true);
-  check('R6b anything inside a data-ww-no-swipe element keeps its drag', owns(insideMarked) === true);
+  const shadowRoot = { nodeType: 11 };
+  const host = el('DIV', { parent: body });
+  const markedHost = el('DIV', { attrs: ['data-ww-no-swipe'], parent: body });
+  const WIN = { nodeType: undefined }, DOC = { nodeType: 9 };
+  check('R6 a native slider keeps its drag', owns([slider, body, DOC, WIN]) === true);
+  check('R6b anything inside a data-ww-no-swipe element keeps its drag',
+    owns([insideMarked, marked, body, DOC, WIN]) === true);
   check('R6c an ordinary button or text field does not — a stroke from it still pages',
-    owns(button) === false && owns(text) === false);
-  check('R6d a missing target is not an error', owns(null) === false);
+    owns([button, body, DOC, WIN]) === false && owns([text, body, DOC, WIN]) === false);
+  check('R6d a missing or empty path is not an error', owns(null) === false && owns([]) === false);
+  // The review finding on #294: an <input type=range> inside an OPEN shadow root. The composed
+  // path reaches it; the retargeted target (the host) alone does not.
+  const slider2 = el('INPUT', { type: 'range', parent: null });
+  check('R6e a slider inside an open shadow root is found through the composed path',
+    owns([slider2, shadowRoot, host, body, DOC, WIN]) === true);
+  check('R6f ...where the retargeted target alone would have missed it',
+    owns([host, body, DOC, WIN]) === false);
+  check('R6g a CLOSED shadow root hides its slider, and a marker on the host covers it',
+    owns([markedHost, body, DOC, WIN]) === true);
 }
 
 const real = loadRule();
@@ -135,7 +153,17 @@ check('W2 a mouse drag is not a swipe', /ev\.pointerType === 'mouse'/.test(det))
 check('W3 a cancelled pointer — the browser took the pan — never reaches a verdict',
   /addEventListener\('pointercancel'[\s\S]{0,160}stroke = null/.test(det));
 check('W4 a gesture the widget prevented is left to the widget',
-  /ev\.defaultPrevented\) stroke\.claimed = true/.test(det) && /if \(s\.claimed\) return;/.test(det));
+  /stroke\.pending && stroke\.pending\.defaultPrevented\) stroke\.claimed = true/.test(det)
+    && /if \(s\.claimed\) return;/.test(det));
+// The review finding on #294: the verdict is read only once a move has FINISHED dispatching.
+// An in-line read runs before a widget's own later-registered window handler.
+const upBody = (det.match(/addEventListener\('pointerup'[\s\S]*?\}\), true\);/) || [''])[0];
+check('W4b the claim is read after dispatch — never from the move being dispatched',
+  !/\(ev\) => \{ if \(stroke && ev\.defaultPrevented\)/.test(det)
+    && /settleClaim\(\);\s+\/\/ the previous move/.test(det)
+    && upBody.indexOf('settleClaim()') >= 0 && upBody.indexOf('settleClaim()') < upBody.indexOf('if (s.claimed) return;'));
+check('W4c ownership is judged on the composed path, not the retargeted target',
+  /ev\.composedPath\(\)/.test(det) && /ownsHorizontalDrag\(path\)/.test(det) && !/ownsHorizontalDrag\(ev\.target\)/.test(det));
 check('W5 a verdict posts ww-swipe with the direction', /type: 'ww-swipe', dir/.test(det));
 
 // ---- W6 · the audit exemption stays exactly as wide as the detector --------------------------

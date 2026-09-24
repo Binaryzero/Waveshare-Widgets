@@ -224,6 +224,19 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     window.__wwPanFrom = pg.scrollLeft; window.__wwPanMax = 0; window.__wwSwipes.length = 0;
   });
   const gestureLog = () => page.evaluate(() => ({ panMax: window.__wwPanMax, swipes: window.__wwSwipes.slice() }));
+  // Back to page 0 and STAYING there. After a native swipe the snap animation is still
+  // running, and a bare scrollLeft = 0 is overwritten when it lands — which left S6's widget
+  // off-screen and its touch outside the viewport. Poll until it reads 0 twice in a row.
+  const settleOnFirstPage = async () => {
+    for (let i = 0; i < 20; i++) {
+      await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+      await page.waitForTimeout(150);
+      const a = await pagesLeft();
+      await page.waitForTimeout(150);
+      if (a === 0 && (await pagesLeft()) === 0) return true;
+    }
+    return false;
+  };
   const listTop = () => frame.evaluate(() => document.getElementById('list').scrollTop);
 
   // ---- T1 · the preconditions, asserted rather than assumed ---------------------------
@@ -371,6 +384,61 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   const gs5 = await gestureLog();
   check('S5 where the browser pans natively, the page changes once and the detector stays out',
     s5 > 300 && gs5.swipes.length === 0, `from ${hdAt}: pages 0 -> ${s5}, swipes [${gs5.swipes}]`);
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await page.waitForTimeout(300);
+
+  // ---- S6 · a slider inside a shadow root keeps its drag (review on #294) ------------------
+  // A window listener sees an event from inside a shadow tree RETARGETED to the shadow host,
+  // so walking up from ev.target never meets the slider. A third-party widget built from web
+  // components is exactly where that happens. Planted here, then removed so the E-checks
+  // below measure the widget as it ships.
+  const settled6 = await settleOnFirstPage();
+  await frame.evaluate(() => {
+    const host = document.createElement('div');
+    host.id = 'wwShadowHost';
+    // touch-action:none, as a widget following the standard guards a control with no
+    // scroller around it. Without it the browser pans natively, cancels the pointer, and
+    // the detector never gets a say — which passes this check for the wrong reason.
+    host.style.cssText = 'position:fixed;left:200px;top:160px;width:300px;height:60px;z-index:99;'
+      + 'background:#222;touch-action:none';
+    host.attachShadow({ mode: 'open' }).innerHTML =
+      '<input type="range" min="0" max="100" value="80" style="width:280px;height:40px;margin:10px">';
+    document.body.appendChild(host);
+  });
+  await page.waitForTimeout(200);
+  const shBox = await frame.locator('#wwShadowHost').boundingBox();
+  await armGesture();
+  await drag(shBox.x + shBox.width * 0.8, shBox.y + shBox.height / 2, -160, 0);
+  const gs6 = await gestureLog();
+  const s6v = await frame.evaluate(() => document.getElementById('wwShadowHost').shadowRoot.querySelector('input').value);
+  check('S6 a slider inside a shadow root keeps its drag — it moves, and nothing pages',
+    settled6 && gs6.swipes.length === 0 && gs6.panMax < 5 && s6v !== '80',
+    `settled ${settled6}, slider 80 -> ${s6v}, native pan max ${gs6.panMax}px, swipes [${gs6.swipes}]`);
+  await frame.evaluate(() => document.getElementById('wwShadowHost').remove());
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await page.waitForTimeout(300);
+
+  // ---- S7 · a drag the widget claims on WINDOW is left to it (review on #294) --------------
+  // The API is injected before any widget script, so a widget's own window-level move
+  // handler is registered later and runs later. Read in-line, defaultPrevented is still
+  // false when the detector looks; the verdict must be read once the move has finished
+  // dispatching.
+  await frame.evaluate(() => {
+    window.__wwClaimMoves = true;
+    const claim = (e) => { if (window.__wwClaimMoves) e.preventDefault(); };
+    window.addEventListener('pointermove', claim, { passive: false });
+    window.addEventListener('touchmove', claim, { passive: false });
+  });
+  await frame.evaluate(() => { document.getElementById('list').scrollTop = 0; });
+  const settled7 = await settleOnFirstPage();
+  const listBox7 = await frame.locator('#list').boundingBox();
+  await armGesture();
+  await drag(listBox7.x + listBox7.width * 0.7, listBox7.y + listBox7.height / 2, -160, 0);
+  const gs7 = await gestureLog();
+  check('S7 a drag the widget claims with a window-level handler does not page',
+    settled7 && listBox7.x >= 0 && gs7.swipes.length === 0,
+    `settled ${settled7}, list at x=${Math.round(listBox7.x)}, swipes [${gs7.swipes}]`);
+  await frame.evaluate(() => { window.__wwClaimMoves = false; });
   await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
   await page.waitForTimeout(300);
 

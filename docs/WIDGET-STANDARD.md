@@ -463,9 +463,12 @@ The panel is touch-only: no cursor, no hover, no tooltips.
   recognises a real swipe by distance instead (at least 60px, clearly sideways, under
   0.8s) and pages the dashboard itself; a drift stays far below that. So keep `pan-y` and
   `.no-pan` exactly as above — they are still what stops the drift. A control whose own
-  job is a sideways drag keeps it: a native `<input type="range">` automatically, and
-  anything else by carrying `data-ww-no-swipe` (on itself or an ancestor). A widget that
-  implements its own drag and calls `preventDefault()` on the move is also left alone.
+  job is a sideways drag keeps it: a native `<input type="range">` automatically (inside
+  an open shadow root too), and anything else by carrying `data-ww-no-swipe` on itself or
+  an ancestor — for a control inside a *closed* shadow root, on its host, since nothing
+  inside a closed root is visible from outside it. A widget that implements its own drag
+  and calls `preventDefault()` on the move is also left alone, wherever that handler is
+  registered.
 
   The shell's `.edge` overlays receive the outermost 8px and do not forward those touches
   into an iframe. A control or hit surface under that rail is partly untappable even if its

@@ -1103,9 +1103,14 @@
     return dx < 0 ? 1 : -1;
   }
   /** A control whose own job is a sideways drag keeps it: a native slider, or anything
-   *  the widget marks with data-ww-no-swipe (on itself or an ancestor). */
-  function ownsHorizontalDrag(el) {
-    for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+   *  the widget marks with data-ww-no-swipe (on itself or an ancestor). Takes the event's
+   *  COMPOSED path, not its target: a window listener sees an event from inside a shadow
+   *  tree retargeted to the shadow host, so climbing from ev.target never meets a slider
+   *  that lives in an open shadow root. A closed root hides its insides from the path as
+   *  well, and there the host is what a widget marks. */
+  function ownsHorizontalDrag(path) {
+    for (const n of path || []) {
+      if (!n || n.nodeType !== 1) continue;   // text, shadow roots, document, window
       if (n.hasAttribute('data-ww-no-swipe')) return true;
       if (n.tagName === 'INPUT' && String(n.type).toLowerCase() === 'range') return true;
     }
@@ -1129,21 +1134,32 @@
     window.addEventListener('pointerdown', strokeObserver((ev) => {
       // Touch and pen only: a mouse drag on the desktop is text selection or a widget's
       // own drag, and the edge strips already page for a mouse.
-      stroke = (!ev.isPrimary || ev.pointerType === 'mouse' || ownsHorizontalDrag(ev.target))
+      const path = typeof ev.composedPath === 'function' ? ev.composedPath() : [];
+      stroke = (!ev.isPrimary || ev.pointerType === 'mouse' || ownsHorizontalDrag(path))
         ? null
-        : { id: ev.pointerId, x: ev.clientX, y: ev.clientY, t: ev.timeStamp, claimed: false };
+        : { id: ev.pointerId, x: ev.clientX, y: ev.clientY, t: ev.timeStamp, claimed: false, pending: null };
     }), true);
     // A widget that handles the drag itself says so the usual way, by preventing the
-    // default on the move. Bubble phase and passive: this only READS the verdict the
-    // widget's own handlers already reached.
-    const noteClaim = (ev) => { if (stroke && ev.defaultPrevented) stroke.claimed = true; };
-    window.addEventListener('pointermove', noteClaim, { passive: true });
-    window.addEventListener('touchmove', noteClaim, { passive: true });
+    // default on the move. That verdict is read only once a move has FINISHED dispatching —
+    // at the next move, or at pointerup — never in-line: this API is injected before any
+    // widget script, so a widget's own window-level move handler is registered later and
+    // runs later, and an in-line read would see defaultPrevented before it had been set.
+    const settleClaim = () => {
+      if (stroke && stroke.pending && stroke.pending.defaultPrevented) stroke.claimed = true;
+    };
+    const noteMove = (ev) => {
+      if (!stroke) return;
+      settleClaim();          // the previous move is fully dispatched by now
+      stroke.pending = ev;
+    };
+    window.addEventListener('pointermove', noteMove, { passive: true });
+    window.addEventListener('touchmove', noteMove, { passive: true });
     window.addEventListener('pointercancel', (ev) => {
       if (stroke && ev.pointerId === stroke.id) stroke = null;   // the browser took it
     }, true);
     window.addEventListener('pointerup', strokeObserver((ev) => {
       if (!stroke || ev.pointerId !== stroke.id) return;
+      settleClaim();          // the last move, dispatched before this pointerup began
       const s = stroke;
       stroke = null;
       if (s.claimed) return;
