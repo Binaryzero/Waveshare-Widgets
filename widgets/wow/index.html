@@ -895,6 +895,32 @@
     });
   }
 
+  // ---- Find (#210) ----------------------------------------------------------
+  // The realms of the chosen region, for the Realm setting. The realm index is Game Data,
+  // readable with the same client-credentials token the card already buys, and each realm
+  // is answered as its slug (what the card looks the character up by) labelled with its
+  // name. The character is not offered: listing a player's characters needs that player's
+  // own Battle.net sign-in, which this tile does not have. Works before a realm is set.
+  WW.onDiscover(async ({ property }) => {
+    if (property !== 'realm') return null;
+    if (!cfg.clientId || !cfg.clientSecret)
+      throw new Error('Add the Battle.net client id and secret first. Find lists the realms of the chosen region.');
+    let json;
+    try {
+      json = await authed('realms', 'https://' + cfg.region + '.api.blizzard.com/data/wow/realm/index'
+        + '?namespace=dynamic-' + cfg.region + '&locale=' + (LOCALE[cfg.region] || 'en_US'));
+    } catch (e) {
+      throw new Error(e && e.tokenExchange && (e.status === 401 || e.status === 403)
+        ? 'Battle.net rejected the client credentials — check the id and secret.'
+        : 'Could not read the realm list from the Blizzard API.');
+    }
+    if (!isObj(json) || !Array.isArray(json.realms)) throw new Error('The realm list came back in a shape this tile does not know.');
+    return json.realms
+      .filter((r) => isObj(r) && isText(r.slug))
+      .map((r) => ({ value: r.slug, label: isText(r.name) ? r.name : '' }))
+      .sort((a, b) => (a.label || a.value).localeCompare(b.label || b.value));
+  });
+
   // ---- Wiring ---------------------------------------------------------------
 
   WW.onInit((s0) => {

@@ -369,6 +369,13 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   save the picked value. On the panel, Find straight after an edit waits for the tile's
   reload and asks with the edited settings (P4). The settings window says so when there is
   no panel.
+- `wowfind-run.js` — WoW Panel's Find (#210). The OAuth exchange is answered on the host-proxy
+  tier as on the panel, and the realm index directly. The Realm setting lists the region's
+  realms as slugs labelled with their names, sorted by name, from the dynamic namespace in
+  the region's locale (F1, F4), and it answers while the widget is still on its setup card.
+  The character gets "unsupported": listing a player's characters needs their own
+  Battle.net sign-in. Rejected credentials and missing ones come back as the widget's own
+  messages.
 - `apppick-run.js` — Store apps in the app picker (#219). Runs in CI on plain Node: the
   pickers' `ww-app-pick` block (the "no match" line and the rule that a pick fills an EMPTY
   Name and never a typed one) is sliced out of both `settings.js` and `shell.js` and run,
