@@ -8,10 +8,13 @@
 //   node tools/widget-harness.js widgets/hue --settings '{"bgStyle":"transparent"}' --json
 //   node tools/widget-harness.js widgets/notifications --notifications tests/fixtures/host/notifications.json
 //
-// tests/fixtures/host/ holds a realistic sensor frame, media state and notifications payload.
-// Pass all three to see a host-fed widget POPULATED — its data-driven controls (the
-// notifications eye and dismiss buttons, the media transport) only exist then, so a sweep
-// without them runs the tap and edge-rail audits (#221, #206) against an empty tile.
+// tests/fixtures/host/ holds a realistic sensor frame, media state and notifications payload,
+// so a host-fed widget can be seen POPULATED — its data-driven controls (the notifications eye
+// and dismiss buttons, the media transport) only exist then, and without them the tap and
+// edge-rail audits (#221, #206) run against an empty tile. --sensors and --media can go to any
+// widget; one that ignores them is unaffected. --notifications is an assertion as well as data:
+// pass it only to a widget that consumes notifications, and the run requires it to subscribe
+// and receive them.
 //
 // Checks: loads with zero page errors; renders visible content after init; the
 // bgStyle class contract (body background = rgba(surface-rgb, alpha)); pushed theme
@@ -536,6 +539,18 @@ function loadPlaywright() {
   // back to a topology that never occurs on the panel.
   check('iCUE compatibility shim ran (framed topology)',
     await frame.evaluate(() => window.__wwIcue === true));
+  // --notifications means "this widget consumes notifications", and the run holds it to that.
+  // Delivery waits for the widget's subscription, so a missing or broken
+  // WW.watchNotifications(true) leaves it on its loading state — which would otherwise still
+  // pass "visible content rendered" and let the tap and rail audits run against a spinner.
+  if (notificationsData) {
+    check('the widget subscribed to notifications (--notifications)',
+      await page.evaluate(() => window.__wwNotifSubscribed === true),
+      'pass --notifications only to a widget that consumes them');
+    check('...and the payload reached it',
+      await frame.evaluate(() => !!(window.WW && WW.notifications
+        && Array.isArray(WW.notifications.items) && WW.notifications.items.length > 0)));
+  }
 
   check('visible content rendered', await frame.evaluate(() =>
     [...document.body.querySelectorAll('*')].some((el) => {
