@@ -969,6 +969,22 @@ const TOKEN = 'Bearer super-secret-probe-token';
   const rp5 = await read();
   check('RP5 neither set is the setup card, worded for the panel (not the preview)',
     /No endpoint set/.test(rp5.title) && !/preview/.test(rp5.body), `${rp5.title} · ${rp5.body}`);
+  // RP6 · in the settings preview a stored private endpoint is withheld (the shell names it
+  // in `withheld`). Falling back to the plain one there would fetch a source the user has
+  // overridden, so the tile says the private one is not shown instead.
+  await page.evaluate((s) => {
+    window.postMessage({ type: 'ww-init', settings: s, withheld: ['privateUrl'], sensors: [], media: null,
+      theme: null, status: { elevated: false, apiVersion: 1 } }, '*');
+  }, Object.assign({}, manifestDefaults, base, { url: 'https://api.test/plainRP6', privateUrl: '', jsonPointer: '/v', pollSeconds: 60 }));
+  await wait(700);
+  const rp6 = await read();
+  check('RP6 a withheld private endpoint is not replaced by the plain one',
+    fetched('/plainRP6') === 0 && /Private endpoint/.test(rp6.title) && /panel uses it/.test(rp6.body),
+    `plain ${fetched('/plainRP6')} · ${rp6.title} · ${rp6.body}`);
+  await init(Object.assign({}, base, { url: 'https://api.test/plainRP6', privateUrl: '', jsonPointer: '/v', pollSeconds: 60 }));
+  await wait(700);
+  check('RP6b ...while with nothing withheld the plain one is used as before',
+    fetched('/plainRP6') >= 1, `plain ${fetched('/plainRP6')}`);
 
   // ---- AH · #60.3: the age ticker must not recompute the footer while HIDDEN --------
   // The 30s ticker keeps the "Xs ago" label honest between polls (R11) — but while the
