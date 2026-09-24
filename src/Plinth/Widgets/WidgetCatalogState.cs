@@ -28,10 +28,19 @@ public sealed class WidgetCatalogState
         public bool Placed { get; set; }
     }
 
+    /// <summary>A tile to mark "Updated", and the widget whose settings changed. The widget
+    /// is kept because a tile's widget can be swapped under the same instance id (Edit layout
+    /// as JSON), and the new widget's settings did not change.</summary>
+    public sealed class ReviewMark
+    {
+        public string InstanceId { get; set; } = "";
+        public string WidgetId { get; set; } = "";
+    }
+
     private sealed class Model
     {
         public Dictionary<string, Entry> Widgets { get; set; } = new(StringComparer.Ordinal);
-        public List<string> Review { get; set; } = [];
+        public List<ReviewMark> Review { get; set; } = [];
     }
 
     private readonly string _path;
@@ -83,16 +92,20 @@ public sealed class WidgetCatalogState
                 else if (entry.Shape != shape)
                 {
                     foreach (var t in tiles)
-                        if (t.WidgetId == id && !string.IsNullOrEmpty(t.InstanceId) && !_model.Review.Contains(t.InstanceId!))
-                            _model.Review.Add(t.InstanceId!);
+                        if (t.WidgetId == id && !string.IsNullOrEmpty(t.InstanceId)
+                            && !_model.Review.Any(m => m.InstanceId == t.InstanceId && m.WidgetId == id))
+                            _model.Review.Add(new ReviewMark { InstanceId = t.InstanceId!, WidgetId = id });
                     entry.Shape = shape;
                 }
                 if (placedIds.Contains(id))
                     entry.Placed = true;
             }
-            // A flag for a tile that no longer exists is only clutter.
-            var live = new HashSet<string>(tiles.Where(t => t.InstanceId is not null).Select(t => t.InstanceId!), StringComparer.Ordinal);
-            _model.Review.RemoveAll(i => !live.Contains(i));
+            // A flag for a tile that no longer exists is only clutter, and so is one for a tile
+            // that now holds a different widget.
+            var live = tiles.Where(t => t.InstanceId is not null)
+                .Select(t => (t.InstanceId!, t.WidgetId))
+                .ToHashSet();
+            _model.Review.RemoveAll(m => !live.Contains((m.InstanceId, m.WidgetId)));
             _baseline = false;
             Save();
         }
@@ -108,13 +121,24 @@ public sealed class WidgetCatalogState
     /// <summary>Tiles to mark "Updated", by instance id.</summary>
     public IReadOnlyList<string> Review
     {
-        get { lock (_sync) return _model.Review.ToList(); }
+        get { lock (_sync) return _model.Review.Select(m => m.InstanceId).Distinct().ToList(); }
+    }
+
+    /// <summary>The same tiles, each with the widget it was flagged for. The settings window
+    /// marks a tile only while it still holds that widget.</summary>
+    public IReadOnlyList<ReviewMark> ReviewTiles
+    {
+        get
+        {
+            lock (_sync)
+                return _model.Review.Select(m => new ReviewMark { InstanceId = m.InstanceId, WidgetId = m.WidgetId }).ToList();
+        }
     }
 
     public void MarkReviewed(string instanceId)
     {
         lock (_sync)
-            if (_model.Review.Remove(instanceId))
+            if (_model.Review.RemoveAll(m => m.InstanceId == instanceId) > 0)
                 Save();
     }
 
@@ -149,7 +173,8 @@ public sealed class WidgetCatalogState
             // Valid JSON can still hold nulls ({"Widgets":{"x":null}}). Read as-is, one would
             // throw in Refresh on every start, before the file is ever rewritten, and leave
             // the indicators off for good. Same answer as a file that does not parse.
-            if (model.Widgets.Values.Any(e => e is null || e.Shape is null) || model.Review.Any(r => r is null))
+            if (model.Widgets.Values.Any(e => e is null || e.Shape is null)
+                || model.Review.Any(r => r is null || string.IsNullOrEmpty(r.InstanceId) || string.IsNullOrEmpty(r.WidgetId)))
                 throw new InvalidDataException("null entry");
             return model;
         }

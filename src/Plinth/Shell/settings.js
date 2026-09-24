@@ -33,7 +33,9 @@
   const secretsTypedHere = new Set();
   // Instance ids of tiles marked "Updated" (#227): their widget changed its settings in an
   // update. Opening one clears it, here and on the host.
-  let reviewTiles = new Set();
+  // instanceId -> the widget it was flagged for (#227). A tile whose widget has since been
+  // swapped (Edit layout as JSON keeps the instance id) is not the tile that changed.
+  let reviewTiles = new Map();
   const secretKey = (slot, name) => {
     // The widget id rides along with the instance id: the widget picker keeps a slot's
     // instanceId, and the host keys credentials by widget as well, so a new widget that
@@ -181,7 +183,9 @@
       state.widgets = window.WWAppearance.normalizeCatalog(state.widgets);
       widgetsById = new Map(state.widgets.map((w) => [w.id, w]));
       // Placed tiles whose widget changed its settings in an update (#227).
-      reviewTiles = new Set(Array.isArray(state.reviewTiles) ? state.reviewTiles : []);
+      reviewTiles = new Map((Array.isArray(state.reviewTiles) ? state.reviewTiles : [])
+        .filter((r) => r && typeof r.instanceId === 'string' && typeof r.widgetId === 'string')
+        .map((r) => [r.instanceId, r.widgetId]));
       // A full init is the one moment the union may be dropped: this layout was
       // masked by the host against the CURRENT manifests, so no unsaved plaintext
       // from the previous catalog survives in it for the old names to protect.
@@ -2023,7 +2027,7 @@
       const parts = parseSize(slot.size);
       size.textContent = CHIP_WIDTH[parts.width] + CHIP_BAND[parts.band];
       main.append(name, size);
-      if (slot.instanceId && reviewTiles.has(slot.instanceId)) {
+      if (needsReview(slot)) {
         const updated = document.createElement('span');
         updated.className = 'chip-updated';
         updated.textContent = 'Updated';
@@ -2055,8 +2059,12 @@
   /** Opening a tile marked "Updated" is the review it asked for (#227) — from the strip
    * or from a tap in the live preview, which is the main way in. */
   function markReviewed(slot) {
-    if (slot && slot.instanceId && reviewTiles.delete(slot.instanceId))
+    if (needsReview(slot) && reviewTiles.delete(slot.instanceId))
       post({ type: 'tile-reviewed', instanceId: slot.instanceId });
+  }
+
+  function needsReview(slot) {
+    return !!(slot && slot.instanceId && reviewTiles.get(slot.instanceId) === slot.widgetId);
   }
 
   function selectSlot(i) {
