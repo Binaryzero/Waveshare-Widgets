@@ -43,6 +43,7 @@
   .col { flex: 1 1 0; display: flex; flex-direction: column; gap: clamp(12px, 4.4vh, 18px);
     min-width: 0; overflow: hidden; }
   .sect { display: flex; flex-direction: column; gap: clamp(5px, 1.9vh, 8px); min-height: 0; flex: none; }
+  .sect[hidden], .trow[hidden] { display: none; }
   .sect .kicker { flex: none; margin-bottom: 1px; }
   .trow { display: flex; align-items: center; gap: 12px; min-width: 0; }
   .trow .lbl {
@@ -64,7 +65,7 @@
     flex: none; font-variant-numeric: tabular-nums; white-space: nowrap;
   }
   .none { color: var(--text-dim); font-size: 12px; }
-  #stats { display: flex; flex-wrap: wrap; gap: 8px 26px; flex: none; }
+  #stats { display: flex; flex-wrap: wrap; gap: 8px 20px; flex: none; }
   .stat { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .stat .value { font-size: clamp(18px, 6.6vh, 28px); }
   .stat[hidden] { display: none; }
@@ -72,6 +73,11 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #state { position: fixed; inset: 0; }
   body.stale #card { opacity: 0.6; }
+  /* Narrower than a full slot, four headline numbers do not fit on one line, and a
+   * free wrap strands one on a line of its own: pair them, two and two. */
+  @media (max-width: 1100px) {
+    #stats .stat { flex: 0 0 calc(50% - 10px); }
+  }
   /* Half slot (≈640px): the identity block does not need a full-slot anchor's width,
    * and the two content columns are what get squeezed — so hand the width back to
    * them and pull the portrait down to match. */
@@ -89,6 +95,23 @@
     .trow .lbl { font-size: 13px; }
     .trow .val { font-size: 12px; }
     .trow .meter { min-width: 24px; }
+  }
+  /* A 200px band — every width is offered one (WIDGET-SPEC, supported_slots). The
+   * identity block shrinks to portrait, name and level line, everything steps down a
+   * size, and fitCols() may drop whole sections, the almost list first, so what stays
+   * is readable instead of clipped. */
+  @media (max-height: 240px) {
+    body { padding: 8px 14px; gap: 4px; }
+    #who { gap: 4px; }
+    #portrait, #initial { width: 52px; height: 52px; font-size: 22px; margin-bottom: 0; }
+    #cname { font-size: 15px; }
+    #cfrom, #guild { display: none; }
+    .col { gap: 8px; }
+    .sect { gap: 4px; }
+    .trow .lbl { font-size: 12px; }
+    .trow .val { font-size: 11px; }
+    #stats { gap: 4px 16px; }
+    .stat .value { font-size: 17px; }
   }
 </style>
 </head>
@@ -699,6 +722,7 @@
 
   function fillSect(id, rows, emptyText) {
     const box = el(id);
+    box.hidden = false;         // fitCols() may have dropped it for a smaller box
     while (box.children.length > 1) box.removeChild(box.lastChild);
     if (!rows.length) {
       const none = document.createElement('div');
@@ -755,19 +779,35 @@
   // Each column's lists were rendered in full; now drop rows, lowest priority first,
   // until nothing is cut off. Every entry is [section, rows to keep], worked in order,
   // so a column gives up its extra reputations before any profession, and keeps two or
-  // three of everything before any list is cut to one. Rows removed here come back on
-  // the next render — a bigger slot, or a font that finished loading, re-fits.
+  // three of everything before any list is cut to one. Keeping 0 drops the section
+  // whole — a heading over nothing is a row's height saying nothing — which only a
+  // 200px band ever needs. Dropping a section frees room that rows trimmed on the way
+  // there could use, so a last pass hands those back, most important list first.
+  // Everything hidden here is rebuilt on the next render: a bigger slot, or a font that
+  // finished loading, re-fits from the full lists.
   const FIT = [
-    [['reps', 3], ['profs', 3], ['reps', 2], ['profs', 1], ['reps', 1]],
-    [['almost', 3], ['latest', 1], ['almost', 1]],
+    [['reps', 3], ['profs', 3], ['reps', 2], ['profs', 1], ['reps', 1], ['reps', 0]],
+    [['almost', 3], ['latest', 1], ['almost', 1], ['almost', 0], ['latest', 0]],
   ];
+  const REFILL = [['profs', 'reps'], ['latest', 'almost']];
   function fitCols() {
     document.querySelectorAll('#card .col').forEach((col, i) => {
+      // scrollHeight past clientHeight is exactly "overflow: hidden is cutting
+      // something off". No slack: a pixel of allowance let a 200px band keep a
+      // section whose last line hung a pixel past the column's edge.
+      const over = () => col.scrollHeight > col.clientHeight;
       for (const [id, keep] of FIT[i] || []) {
-        const rows = el(id).getElementsByClassName('trow');
-        // scrollHeight past clientHeight is exactly "overflow: hidden is cutting
-        // something off"; the 1px slack absorbs sub-pixel row heights.
-        while (col.scrollHeight > col.clientHeight + 1 && rows.length > keep) rows[rows.length - 1].remove();
+        const sect = el(id);
+        if (keep === 0) { if (over()) sect.hidden = true; continue; }
+        const shown = () => sect.querySelectorAll('.trow:not([hidden])');
+        for (let rows = shown(); over() && rows.length > keep; rows = shown()) rows[rows.length - 1].hidden = true;
+      }
+      for (const id of REFILL[i] || []) {
+        if (el(id).hidden) continue;
+        for (const row of el(id).querySelectorAll('.trow[hidden]')) {
+          row.hidden = false;
+          if (over()) { row.hidden = true; break; }
+        }
       }
     });
   }

@@ -19,10 +19,10 @@
 //   W7 · the portrait image actually loaded (stubbed render host)
 //   W8 · none of the struck features appear anywhere in the card's text
 //   W9 · the meter fill is painted
-//   W10-W12 · at each size the owner runs it (half; full at 400px and at the panel's
-//        360px): nothing is cut off, the sections sit at a fixed rhythm instead of
-//        spreading into gaps, and no list was trimmed while there was room for its
-//        next row (#258)
+//   W10-W15 · at every size the widget is offered (half, three-quarter and full at 400px,
+//        the panel's 360px, and the 200px upper/lower bands): nothing is cut off, the
+//        sections sit at a fixed rhythm instead of spreading into gaps, and no list was
+//        trimmed — or dropped — while there was room for more (#258)
 //
 // Run: CHROMIUM=/path/to/chrome node tests/harness/wow-card-run.js
 'use strict';
@@ -227,7 +227,7 @@ const measure = (frame) => frame.evaluate(() => [...document.querySelectorAll('#
   const cr = col.getBoundingClientRect();
   const kids = [...col.children].filter((k) => !k.hidden && k.getBoundingClientRect().height > 0);
   const gaps = kids.slice(1).map((k, i) => Math.round(k.getBoundingClientRect().top - kids[i].getBoundingClientRect().bottom));
-  const rows = [...col.querySelectorAll('.trow')];
+  const rows = [...col.querySelectorAll('.sect:not([hidden]) .trow:not([hidden])')];
   const rowH = rows.length ? Math.max(...rows.map((r) => r.getBoundingClientRect().height)) : 0;
   const lastBottom = kids.length ? kids[kids.length - 1].getBoundingClientRect().bottom : cr.top;
   return {
@@ -237,8 +237,12 @@ const measure = (frame) => frame.evaluate(() => [...document.querySelectorAll('#
     rowGap: parseFloat(getComputedStyle(col.querySelector('.sect') || col).rowGap) || 0,
     rowH: Math.round(rowH),
     spare: Math.round(cr.bottom - lastBottom),
-    lists: Object.fromEntries([...col.querySelectorAll('.sect[id]')].map((sct) =>
-      [sct.id, [...sct.querySelectorAll('.trow .lbl')].map((l) => l.textContent)])),
+    colGap: parseFloat(getComputedStyle(col).rowGap) || 0,
+    kickerH: Math.round(Math.max(0, ...[...col.querySelectorAll('.sect:not([hidden]) > .kicker')]
+      .map((k) => k.getBoundingClientRect().height))),
+    lists: Object.fromEntries([...col.querySelectorAll('.sect[id]:not([hidden])')].map((sct) =>
+      [sct.id, [...sct.querySelectorAll('.trow:not([hidden]) .lbl')].map((l) => l.textContent)])),
+    dropped: [...col.querySelectorAll('.sect[id][hidden]')].map((sct) => sct.id),
   };
 }));
 
@@ -248,7 +252,7 @@ const measure = (frame) => frame.evaluate(() => [...document.querySelectorAll('#
   const { page, frame } = await mount(browser, { width: 1280, height: 360 });
 
   const card = await frame.evaluate(() => {
-    const rowsOf = (id) => [...document.querySelectorAll('#' + id + ' .trow')].map((row) => ({
+    const rowsOf = (id) => [...document.querySelectorAll('#' + id + ' .trow:not([hidden])')].map((row) => ({
       lbl: row.querySelector('.lbl').textContent,
       val: row.querySelector('.val').textContent,
     }));
@@ -334,8 +338,11 @@ const measure = (frame) => frame.evaluate(() => [...document.querySelectorAll('#
   // not have fit.
   const SIZES = [
     ['W10', 'half 640x400', { width: 640, height: 400 }],
-    ['W11', 'full 1280x400', { width: 1280, height: 400 }],
-    ['W12', 'full 1280x360 (the panel)', { width: 1280, height: 360 }],
+    ['W11', 'three-quarter 960x400', { width: 960, height: 400 }],
+    ['W12', 'full 1280x400', { width: 1280, height: 400 }],
+    ['W13', 'full 1280x360 (the panel)', { width: 1280, height: 360 }],
+    ['W14', 'half band 640x200', { width: 640, height: 200 }],
+    ['W15', 'full band 1280x200', { width: 1280, height: 200 }],
   ];
   for (const [tag, label, viewport] of SIZES) {
     const m = await mount(browser, viewport);
@@ -350,10 +357,16 @@ const measure = (frame) => frame.evaluate(() => [...document.querySelectorAll('#
       else if (got.length < EXPECT[id].length && c.spare >= c.rowH + c.rowGap)
         cut.push(`${id} trimmed to ${got.length} with ${c.spare}px spare (row ${c.rowH}px)`);
     }
+    // A section dropped whole needs its heading AND a row back; any less room is fine.
+    for (const c of cols) for (const id of c.dropped) {
+      if (c.spare >= c.kickerH + c.rowGap + c.rowH + c.colGap)
+        cut.push(`${id} dropped with ${c.spare}px spare`);
+    }
     check(`${tag} ${label}: nothing is cut off`, !clipped, JSON.stringify(cols.map((c) => c.clipped)));
     check(`${tag} ${label}: sections at a fixed rhythm, no canyons`, bigGap <= 24, `largest gap ${bigGap}px`);
     check(`${tag} ${label}: lists fill the room they have`, cut.length === 0,
-      cut.length ? cut.join('; ') : cols.map((c) => Object.entries(c.lists).map(([k, v]) => k + ' ' + v.length).join(', ')).join(' | '));
+      cut.length ? cut.join('; ') : cols.map((c) => Object.entries(c.lists).map(([k, v]) => k + ' ' + v.length)
+        .concat(c.dropped.map((d) => d + ' dropped')).join(', ')).join(' | '));
     await m.page.screenshot({ path: path.join(shotDir, `wow-card-${viewport.width}x${viewport.height}.png`) });
     await m.page.close();
   }
