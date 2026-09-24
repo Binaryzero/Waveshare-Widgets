@@ -7,7 +7,29 @@
 // M6      paths that are never the release's to remove are never retired
 // M7      the wiring: the list rides the journaled swap, retirements join its rollback
 // M8      a file of the same name that this updater did not write is not trusted
+// M9      release zips carry the list, so an extracted install can retire from its first update
 using Plinth;
+
+// `verify <dir>`: the list tools/write-install-manifest.ps1 wrote into a publish folder
+// reads back, through the updater's own parser, as exactly the files in that folder.
+// build.yml runs it on the Windows agent, where the script can run.
+if (args.Length == 2 && args[0] == "verify")
+{
+    var dir = Path.GetFullPath(args[1]);
+    var listed = InstallManifest.Parse(File.ReadAllText(Path.Combine(dir, InstallManifest.FileName)));
+    var actual = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
+        .Select(f => Path.GetRelativePath(dir, f))
+        .Where(r => !r.Equals(InstallManifest.FileName, StringComparison.OrdinalIgnoreCase))
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var missing = actual.Where(f => !listed.Contains(f, StringComparer.OrdinalIgnoreCase)).ToList();
+    var extra = listed.Where(f => !actual.Contains(f)).ToList();
+    Console.WriteLine($"  {listed.Count} listed, {actual.Count} on disk");
+    foreach (var f in missing.Take(10)) Console.WriteLine($"  FAIL not listed: {f}");
+    foreach (var f in extra.Take(10)) Console.WriteLine($"  FAIL listed but absent: {f}");
+    var good = listed.Count > 0 && missing.Count == 0 && extra.Count == 0;
+    Console.WriteLine(good ? "install manifest matches the folder" : "install manifest does NOT match the folder");
+    return good ? 0 : 1;
+}
 
 var failures = 0;
 void Check(string name, bool ok, string? detail = null)
@@ -71,8 +93,13 @@ else
     Check("M7b a retired file is renamed aside under the stamp and joins the rollback list",
         System.Text.RegularExpressions.Regex.IsMatch(code,
             @"var aside = \$""\{target\}\.\{stamp\}"";\s*File\.Move\(target, aside\);\s*renamed\.Add\(\(target, aside\)\);"));
-    Check("M7c an archive that ships its own list is refused",
-        code.Contains("entry.FullName.Equals(InstallManifest.FileName, StringComparison.OrdinalIgnoreCase)"));
+    // An archive may carry a list (release zips do, M9) but is never trusted for it: the
+    // staged copy is overwritten with the list computed from what was actually shipped.
+    var writeAt = code.IndexOf("File.WriteAllText(Path.Combine(staging, InstallManifest.FileName), InstallManifest.Serialize(shipped));", StringComparison.Ordinal);
+    var shippedAt = code.IndexOf("var shipped = Directory.EnumerateFiles(staging", StringComparison.Ordinal);
+    Check("M7c an archive's own list is overwritten with one computed from what it ships",
+        shippedAt > 0 && writeAt > shippedAt
+        && System.Text.RegularExpressions.Regex.IsMatch(code, @"var shipped = Directory\.EnumerateFiles\(staging[\s\S]{0,300}!rel\.Equals\(InstallManifest\.FileName"));
     Check("M7d a listed name the path API refuses is skipped, not thrown mid-swap",
         System.Text.RegularExpressions.Regex.IsMatch(code,
             @"try \{ target = Path\.GetFullPath\(Path\.Combine\(baseDir, rel\)\); \}\s*catch \(Exception ex\) when \(ex is ArgumentException"));
@@ -91,6 +118,25 @@ Check("M8d a header alone is an empty list", InstallManifest.Parse(InstallManife
 Check("M8e a list torn inside its header is not read", InstallManifest.Parse(InstallManifest.Header[..10]).Count == 0);
 var headed = InstallManifest.Retirements(InstallManifest.Parse("Plinth.dll\nuser-file.dat\n"), next, Control);
 Check("M8f so on the first update a stray file of that name retires nothing", headed.Count == 0, Show(headed));
+Check("M8g a byte-order mark in front of the header is tolerated",
+    InstallManifest.Parse("\uFEFF" + InstallManifest.Serialize(["a.dll"])).SequenceEqual(["a.dll"]));
+
+// ---- M9 --------------------------------------------------------------------------------
+// A copy installed by extracting a release zip has no list unless the zip carries one, and
+// then the first in-app update cannot retire anything. The release workflow writes it.
+var release = FindUpwards(".github/workflows/release.yml");
+var releaseYml = release is null ? "" : File.ReadAllText(release);
+var script = FindUpwards("tools/write-install-manifest.ps1");
+var scriptText = script is null ? "" : File.ReadAllText(script);
+var manifestStep = releaseYml.IndexOf("./tools/write-install-manifest.ps1 publish/fdd publish/scd", StringComparison.Ordinal);
+var packageStep = releaseYml.IndexOf("- name: Package", StringComparison.Ordinal);
+Check("M9 both release zips get the list, written before they are packed",
+    manifestStep > 0 && packageStep > manifestStep);
+Check("M9b ...with the header the updater requires, character for character",
+    scriptText.Contains("\"" + InstallManifest.Header + "`n\"", StringComparison.Ordinal));
+Check("M9c ...and without listing itself",
+    scriptText.Contains("Where-Object { $_ -ne '" + InstallManifest.FileName + "' }", StringComparison.Ordinal));
+// The script's own output is checked end to end by `verify`, on the Windows agent.
 
 Console.WriteLine(failures > 0 ? $"{failures} FAILURES" : "ALL PASS");
 return failures > 0 ? 1 : 0;

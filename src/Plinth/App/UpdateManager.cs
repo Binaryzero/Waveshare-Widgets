@@ -333,8 +333,11 @@ public static class UpdateManager
             expanded += entry.Length;
             if (entry.Length > MaxExpandedBytes || expanded > MaxExpandedBytes)
                 throw new InvalidOperationException($"archive expands past {MaxExpandedBytes} bytes — refusing it");
-            if (IsUpdaterControlFile(entry.FullName)
-                || entry.FullName.Equals(InstallManifest.FileName, StringComparison.OrdinalIgnoreCase))
+            // The release's file list (#240) is allowed in the archive — release zips carry
+            // one, so a copy installed by extracting the zip has a list from the start —
+            // but never trusted from it: Apply overwrites the staged copy with the list it
+            // computes from what the archive actually ships.
+            if (IsUpdaterControlFile(entry.FullName))
                 throw new InvalidOperationException($"archive entry collides with an updater control file: {entry.FullName}");
             // FullName, not Name: the application must sit at the archive ROOT. A
             // publish output accidentally wrapped in a folder still contains a
@@ -418,8 +421,9 @@ public static class UpdateManager
         // The release's own file list (#240). Written into STAGING, so it is placed by the
         // same journaled swap as every other file: a rollback puts the previous list back
         // with the previous files. The files the previous list names and this archive
-        // lacks are retired inside the transaction below. No previous list (the first
-        // update after this shipped) retires nothing.
+        // lacks are retired inside the transaction below. No previous list (an install
+        // older than any release that carried one) retires nothing. A list the archive
+        // brought is overwritten here, never read.
         var shipped = Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories)
             .Select(f => Path.GetRelativePath(staging, f))
             .Where(rel => !IsUpdaterControlFile(rel)

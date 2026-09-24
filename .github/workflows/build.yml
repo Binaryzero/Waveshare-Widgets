@@ -231,6 +231,15 @@ jobs:
       - name: Publish
         run: dotnet publish src/Plinth/Plinth.csproj -c Release -r win-x64 --self-contained false -p:Version=0.0.0-ci.${{ github.run_number }} -o publish
 
+      # The same script release.yml runs before packing (#240), here so it runs on every
+      # change rather than first on release day: the list it writes must read back through
+      # the updater's own parser as exactly the files in the folder.
+      - name: Install manifest matches the published files
+        shell: pwsh
+        run: |
+          ./tools/write-install-manifest.ps1 publish
+          dotnet run --project tools/InstallManifest -- verify publish
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

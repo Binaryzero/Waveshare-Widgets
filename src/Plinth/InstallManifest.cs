@@ -34,7 +34,10 @@ internal static class InstallManifest
     {
         if (string.IsNullOrEmpty(text))
             return [];
-        var lines = text.Replace("\r", "").Split('\n');
+        // A byte-order mark is tolerated: the release build writes the list, and an
+        // encoder's BOM in front of the header must not make the release's own list
+        // read as someone else's.
+        var lines = text.TrimStart('\uFEFF').Replace("\r", "").Split('\n');
         if (lines.Length < 2 || lines[0] != Header)
             return [];
         // Split leaves "" after the final newline; anything else there is the torn line.
