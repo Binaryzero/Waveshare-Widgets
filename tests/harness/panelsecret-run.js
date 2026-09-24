@@ -340,6 +340,23 @@ const widgets = [{
   check('N14h the sheet closes on a pick',
     await page.locator('.ps-apps').count() === 0);
 
+  // ---- N14k · an emptied Name takes the picked app's name (#219); N14g above is the
+  // other half — a typed one is kept.
+  const nameInput = page.locator('#psRows .ps-item').first().locator('input[aria-label="Name"]');
+  const haveName = await nameInput.count() === 1;
+  if (haveName && havePicker) {
+    await nameInput.fill('');
+    await wait(300);
+    await targetField.locator('.ps-pick').click();
+    await wait(250);
+    const pickCode = page.locator('.ps-apps .ps-apps-list button').filter({ hasText: 'Visual Studio Code' });
+    if (await pickCode.count() === 1) await pickCode.click();
+    await wait(900);
+  }
+  check('N14k an emptied Name takes the picked app\'s name, on screen and in the save',
+    haveName && await nameInput.inputValue() === 'Visual Studio Code' && savedRow().label === 'Visual Studio Code',
+    JSON.stringify({ shown: haveName ? await nameInput.inputValue() : null, saved: savedRow() }));
+
   // N14i · the sheet must not outlive the editor that opened it. It is appended to
   // <body>, so hiding the property sheet does nothing to it — and left behind it still
   // holds the old input, so a pick writes into a slot whose editor is gone.
