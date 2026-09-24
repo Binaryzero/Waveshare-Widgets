@@ -32,7 +32,10 @@
   // which the host honours by restoring what it just stored.
   const secretsTypedHere = new Set();
   const secretKey = (slot, name) => {
-    if (slot.instanceId) return 'i:' + slot.instanceId + '|' + name;
+    // The widget id rides along with the instance id: the widget picker keeps a slot's
+    // instanceId, and the host keys credentials by widget as well, so a new widget that
+    // declares the same name (`token`) has nothing stored under this one's entry (#56).
+    if (slot.instanceId) return 'i:' + slot.instanceId + '@' + slot.widgetId + '|' + name;
     // No id: the key must name the SLOT, not just the widget — two id-less instances of
     // one widget on a page would otherwise share a key, and typing a secret for one
     // would make the other's empty field claim "saved · encrypted".
@@ -184,7 +187,7 @@
       el('appVersion').textContent = (state.status && state.status.version) || '';
       selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
       selectedSlot = null;
-      lastWorkingLayout = replicaLayoutJson(); // loaded state IS the edit baseline
+      lastWorkingLayout = editLayoutJson(); // loaded state IS the edit baseline
       initializing = true;
       renderAll();
       initializing = false;
@@ -339,7 +342,7 @@
         // invite a save that only rewrites what is there and bump editSeq under an
         // in-flight save's ack, which then refuses to clear the marker. Same posture as
         // the evicted-ids adoption above.
-        lastWorkingLayout = replicaLayoutJson();
+        lastWorkingLayout = editLayoutJson();
         // The restore was a HOST write, so it did not make this editor the last writer.
         // Adopting its generation with the def is what keeps the next save acceptable —
         // otherwise the splice converges the model and the rule refuses it anyway (#281).
@@ -391,7 +394,7 @@
           selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
           selectedSlot = null;          // the slot OBJECTS are new; an index into the old
                                         // page means nothing against this list
-          lastWorkingLayout = replicaLayoutJson(); // a host fact, not an edit
+          lastWorkingLayout = editLayoutJson(); // a host fact, not an edit
           initializing = true;
           renderAll();
           initializing = false;
@@ -521,8 +524,8 @@
    * Save, and the replica hosts real widget iframes — so without this the widget holds
    * (and could transmit) a credential the user has not committed, in a surface the spec
    * says always shows an empty secret. Blanked per manifest, on a copy. */
-  function replicaLayout() {
-    const secretsOf = (widgetId) => knownSecretNames(widgetId);
+  function replicaLayout(keepSecrets) {
+    const secretsOf = (widgetId) => keepSecrets ? [] : knownSecretNames(widgetId);
     const copy = { pages: ((state.layout || {}).pages || []).map((page) => Object.assign({}, page, {
       slots: (page.slots || []).map((slot) => {
         const names = secretsOf(slot.widgetId);
@@ -540,6 +543,12 @@
     return out;
   }
   const replicaLayoutJson = () => JSON.stringify(replicaLayout());
+  /** The same projection with the secrets LEFT IN, for the edit detector only. Typing a
+   * new credential over a saved one changes nothing in the blanked copy ('' either way),
+   * so comparing that one never marked the editor dirty: Save stayed unlit, an earlier
+   * save's ack could clear the marker, and a panel write adopted over the typed token
+   * as if nothing were unsaved (#56). Never posted anywhere. */
+  const editLayoutJson = () => JSON.stringify(replicaLayout(true));
 
   /** Fold a replica capture back into the authoritative layout. Everything the replica
    * can legitimately change (slot set, order, size, page) comes from the capture;
@@ -704,8 +713,9 @@
       return;
     }
     const json = replicaLayoutJson();
-    if (json !== lastWorkingLayout) { // a real structural edit, replica alive or not
-      lastWorkingLayout = json;
+    const working = editLayoutJson();
+    if (working !== lastWorkingLayout) { // a real edit, replica alive or not
+      lastWorkingLayout = working;
       markDirty();
     }
     if (!replicaReady || previewStage.classList.contains('collapsed')) return;
@@ -847,7 +857,7 @@
     // but has not saved. Take the structure, keep the settings-side values.
     state.layout = mergeReplicaCapture(layout);
     lastReplicaLayout = replicaLayoutJson();
-    lastWorkingLayout = lastReplicaLayout; // replica edits advance the edit baseline too
+    lastWorkingLayout = editLayoutJson(); // replica edits advance the edit baseline too
     selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
     markDirty();
     renderPageList();
