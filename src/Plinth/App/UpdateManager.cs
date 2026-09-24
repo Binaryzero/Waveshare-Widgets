@@ -333,6 +333,10 @@ public static class UpdateManager
             expanded += entry.Length;
             if (entry.Length > MaxExpandedBytes || expanded > MaxExpandedBytes)
                 throw new InvalidOperationException($"archive expands past {MaxExpandedBytes} bytes — refusing it");
+            // The release's file list (#240) is allowed in the archive — release zips carry
+            // one, so a copy installed by extracting the zip has a list from the start —
+            // but never trusted from it: Apply overwrites the staged copy with the list it
+            // computes from what the archive actually ships.
             if (IsUpdaterControlFile(entry.FullName))
                 throw new InvalidOperationException($"archive entry collides with an updater control file: {entry.FullName}");
             // FullName, not Name: the application must sit at the archive ROOT. A
@@ -414,6 +418,32 @@ public static class UpdateManager
             }
         }
 
+        // The release's own file list (#240). Written into STAGING, so it is placed by the
+        // same journaled swap as every other file: a rollback puts the previous list back
+        // with the previous files. The files the previous list names and this archive
+        // lacks are retired inside the transaction below. No previous list (an install
+        // older than any release that carried one) retires nothing. A list the archive
+        // brought is overwritten here, never read.
+        var shipped = Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories)
+            .Select(f => Path.GetRelativePath(staging, f))
+            .Where(rel => !IsUpdaterControlFile(rel)
+                && !rel.Equals(InstallManifest.FileName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        IReadOnlyList<string> retire = [];
+        try
+        {
+            var previousManifest = Path.Combine(baseDir, InstallManifest.FileName);
+            if (File.Exists(previousManifest))
+                retire = InstallManifest.Retirements(
+                    InstallManifest.Parse(File.ReadAllText(previousManifest)), shipped, IsUpdaterControlFile);
+        }
+        catch (Exception ex)
+        {
+            // An unreadable list only costs the retirements: files stay, nothing breaks.
+            Log.Warn($"Could not read the install manifest; no files will be retired this update: {ex.Message}");
+        }
+        File.WriteAllText(Path.Combine(staging, InstallManifest.FileName), InstallManifest.Serialize(shipped));
+
         // Tick joins the pid so a recycled process id can never collide with a stale
         // remnant from an earlier failed swap.
         var stamp = $"old-{Environment.ProcessId}-{Environment.TickCount64}";
@@ -477,6 +507,46 @@ public static class UpdateManager
                 }
                 placed.Add(target);
             }
+
+            // Retirements (#240): renamed aside under the stamp exactly like a replaced
+            // original, and added to the same rollback list. That is the whole design —
+            // startup recovery restores every *.<stamp> aside whether or not its target
+            // still exists, and the commit's sweep deletes them, so a retirement needs no
+            // record of its own and no path the existing recovery does not already run.
+            var retired = 0;
+            // Same root form recovery uses: a volume-root install keeps its trailing
+            // separator through the trim above, and must not end up with two.
+            var root = baseDir.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            foreach (var rel in retire)
+            {
+                // A name the path API refuses is skipped, not thrown: thrown here it would
+                // roll the whole update back, restore the same list, and fail every later
+                // update identically. Retirements already filters such names; this keeps
+                // one it missed from costing more than a stale file.
+                string target;
+                try { target = Path.GetFullPath(Path.Combine(baseDir, rel)); }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    Log.Warn($"Update: not retiring a listed file whose name is not a valid path: {ex.Message}");
+                    continue;
+                }
+                if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(target))
+                    continue;
+                try { EnsureNoReparseAncestors(Path.GetDirectoryName(target)!, baseDir, vetted); }
+                catch (Exception)
+                {
+                    // Reached through a junction: the file is not really in the install.
+                    // Leaving it is the safe direction.
+                    Log.Warn($"Update: not retiring {rel}, which is reached through a link");
+                    continue;
+                }
+                var aside = $"{target}.{stamp}";
+                File.Move(target, aside);
+                renamed.Add((target, aside));
+                retired++;
+            }
+            if (retired > 0)
+                Log.Info($"Update retired {retired} file(s) the new release no longer ships");
         }
         catch (Exception ex)
         {
