@@ -48,6 +48,10 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   with no working copy reads "not loaded". An older refused copy beside one that loaded
   gets its own block, naming the settings it withholds and the folder to remove. Which
   refusals the host sends is `tools/SecretRoundTrip` B1. Port used: 8958.
+- `widgetupdates-run.js` — update indicators in the settings window (#227). A widget the
+  host marks new carries "New" on the shelf until one is added. A tile the host flags
+  reads "Updated" until opened, and opening it tells the host. Which widgets and tiles
+  qualify is `tools/WidgetCatalog`. Port used: 8963.
 - `panelsecret-run.js` — the ON-PANEL half of the same contract. The dashboard is
   handed decrypted values, so the field really holds the credential and "the user
   emptied it" is ambiguous unless the shell says which it meant: both the ✕ Clear and

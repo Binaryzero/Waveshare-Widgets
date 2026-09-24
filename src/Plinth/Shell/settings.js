@@ -31,6 +31,9 @@
   // "not set" again after any page/slot action, and emptying the field would send "",
   // which the host honours by restoring what it just stored.
   const secretsTypedHere = new Set();
+  // Instance ids of tiles marked "Updated" (#227): their widget changed its settings in an
+  // update. Opening one clears it, here and on the host.
+  let reviewTiles = new Set();
   const secretKey = (slot, name) => {
     // The widget id rides along with the instance id: the widget picker keeps a slot's
     // instanceId, and the host keys credentials by widget as well, so a new widget that
@@ -174,6 +177,8 @@
       // the projection back to the host all read one already-correct property list.
       state.widgets = window.WWAppearance.normalizeCatalog(state.widgets);
       widgetsById = new Map(state.widgets.map((w) => [w.id, w]));
+      // Placed tiles whose widget changed its settings in an update (#227).
+      reviewTiles = new Set(Array.isArray(state.reviewTiles) ? state.reviewTiles : []);
       // A full init is the one moment the union may be dropped: this layout was
       // masked by the host against the CURRENT manifests, so no unsaved plaintext
       // from the previous catalog survives in it for the old names to protect.
@@ -1604,6 +1609,14 @@
       // this name (WidgetIdentity.DisplayNames); otherwise it is the plain name.
       name.textContent = widget.displayName || widget.name;
       btn.append(glyph, name);
+      // New in a recent update (#227). The host ends it once one is placed; hidden here
+      // as soon as this copy has one, so an add shows at once rather than after a save.
+      if (widget.isNew && !(state.layout.pages || []).some((pg) => (pg.slots || []).some((sl) => sl.widgetId === widget.id))) {
+        const fresh = document.createElement('span');
+        fresh.className = 'g-new';
+        fresh.textContent = 'New';
+        btn.appendChild(fresh);
+      }
       // Unavailable WITH a reason (#77) — but in two words, because a full sentence
       // per tile was what turned this shelf into a wall of text. The banner above
       // carries the long form once instead of twenty-four times.
@@ -1939,6 +1952,13 @@
       const parts = parseSize(slot.size);
       size.textContent = CHIP_WIDTH[parts.width] + CHIP_BAND[parts.band];
       main.append(name, size);
+      if (slot.instanceId && reviewTiles.has(slot.instanceId)) {
+        const updated = document.createElement('span');
+        updated.className = 'chip-updated';
+        updated.textContent = 'Updated';
+        updated.title = 'This widget’s settings changed in the last update. Open it to check them.';
+        main.appendChild(updated);
+      }
       main.addEventListener('click', () => selectSlot(i));
       // ⧉ before ✕ — the constructive one first, and the destructive one stays where the
       // hand already knows to find it.
@@ -1953,6 +1973,10 @@
 
   function selectSlot(i) {
     selectedSlot = selectedSlot === i ? null : i; // click the active chip to deselect
+    // Opening a tile marked "Updated" is the review it asked for (#227).
+    const opened = selectedSlot != null && ((state.layout.pages[selectedPage] || {}).slots || [])[selectedSlot];
+    if (opened && opened.instanceId && reviewTiles.delete(opened.instanceId))
+      post({ type: 'tile-reviewed', instanceId: opened.instanceId });
     galleryOpen = false; // chip interaction takes the Widget tab over from the gallery
     renderEditorPanel();
     if (selectedSlot != null) openPanel('widget'); // chip select opens the inspector

@@ -231,6 +231,12 @@ public sealed class SettingsWindow : Form
                     HandleRestoreRetained(message);
                     break;
 
+                // The user opened a tile marked "Updated" (#227).
+                case "tile-reviewed":
+                    if (message["instanceId"]?.GetValue<string>() is { Length: > 0 } reviewed)
+                        WidgetCatalogState.Shared?.MarkReviewed(reviewed);
+                    break;
+
                 case "clear-retained":
                     HandleClearRetained(message);
                     break;
@@ -590,6 +596,8 @@ public sealed class SettingsWindow : Form
             url = $"https://{w.VirtualHost}/index.html",
             supportedSlots = w.Manifest.SupportedSlots,
             properties = w.Manifest.Properties,
+            // New in a recent update and not yet placed (#227): the palette badges it.
+            isNew = WidgetCatalogState.Shared?.IsNew(w.Manifest.Id, DateTime.UtcNow) ?? false,
         });
     }
 
@@ -758,6 +766,9 @@ public sealed class SettingsWindow : Form
                 ["layout"] = layoutNode,
                 ["widgets"] = JsonSerializer.SerializeToNode(widgets, BridgeJson),
                 ["rejectedWidgets"] = JsonSerializer.SerializeToNode(rejected, BridgeJson),
+                // Placed tiles whose widget changed its settings in an update (#227), by
+                // instance id; each is marked until the user opens it.
+                ["reviewTiles"] = JsonSerializer.SerializeToNode(WidgetCatalogState.Shared?.Review ?? [], BridgeJson),
                 ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
                 // Seed the replica's now-playing state: MediaUpdated only fires on
                 // change, so without this an already-playing track never appears.
@@ -1017,6 +1028,9 @@ public sealed class SettingsWindow : Form
             }
             LayoutStore.Save(layout, LayoutStore.SettingsWriter);
             LayoutSaved?.Invoke();
+            // Placing a widget ends its "New" badge (#227).
+            WidgetCatalogState.Shared?.MarkPlaced(
+                (layout.Pages ?? []).SelectMany(pg => pg.Slots ?? []).Select(sl => sl.WidgetId ?? "").Where(id => id.Length > 0));
             var ok = new JsonObject { ["type"] = "saved" };
             if (seq is not null) ok["seq"] = seq.Value;
             // What this editor's next payload must echo. Read AFTER the write, so a

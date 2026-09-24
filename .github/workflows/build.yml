@@ -178,6 +178,14 @@ jobs:
       - name: LAN proxy redirects
         run: dotnet run --project tools/LanRedirects
 
+      # Widgets update with the app, so an update cannot be held back per tile; the user
+      # is told instead (#227). A widget new in an update is "New" until placed or two
+      # weeks pass, and a placed tile whose widget changed its settings is "Updated" until
+      # opened. This pins the state behind both, including that a fresh install announces
+      # nothing and a relabel is not a settings change.
+      - name: Update indicators
+        run: dotnet run --project tools/WidgetCatalog
+
       # A widget's long-lived credential is sealed at rest; the SHORT-lived one it buys
       # with that had nowhere to go but localStorage — a plaintext file in the same
       # WebView profile, which hands back exactly what the sealing withholds (#175). The
