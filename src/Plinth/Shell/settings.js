@@ -31,6 +31,9 @@
   // "not set" again after any page/slot action, and emptying the field would send "",
   // which the host honours by restoring what it just stored.
   const secretsTypedHere = new Set();
+  // Instance ids of tiles marked "Updated" (#227): their widget changed its settings in an
+  // update. Opening one clears it, here and on the host.
+  let reviewTiles = new Set();
   const secretKey = (slot, name) => {
     // The widget id rides along with the instance id: the widget picker keeps a slot's
     // instanceId, and the host keys credentials by widget as well, so a new widget that
@@ -177,6 +180,8 @@
       // the projection back to the host all read one already-correct property list.
       state.widgets = window.WWAppearance.normalizeCatalog(state.widgets);
       widgetsById = new Map(state.widgets.map((w) => [w.id, w]));
+      // Placed tiles whose widget changed its settings in an update (#227).
+      reviewTiles = new Set(Array.isArray(state.reviewTiles) ? state.reviewTiles : []);
       // A full init is the one moment the union may be dropped: this layout was
       // masked by the host against the CURRENT manifests, so no unsaved plaintext
       // from the previous catalog survives in it for the old names to protect.
@@ -237,6 +242,15 @@
       // so a swallowed write failure hands back the generation still on disk rather than
       // one that never happened.
       if (typeof msg.generation === 'number') layoutGeneration = msg.generation;
+      // A placement that reached disk ends "New" for good (#227), so a tile removed again
+      // before this window closes must not bring the badge back. The host has already
+      // recorded it; this is the copy of the catalog this window was handed.
+      if (msg.landed !== false) {
+        const placed = new Set();
+        for (const pg of (state.layout && state.layout.pages) || [])
+          for (const sl of pg.slots || []) if (sl && sl.widgetId) placed.add(sl.widgetId);
+        for (const w of state.widgets || []) if (w && w.isNew && placed.has(w.id)) w.isNew = false;
+      }
       // Dirty is cleared only for a FULLY successful save. A credential the host could
       // not protect exists solely in this working copy; marking the editor clean would
       // let the user close the window and lose it, with no visible sign anything failed.
@@ -910,6 +924,7 @@
     if (instanceId && (page.slots || [])[slotIdx].instanceId !== instanceId) return;
     selectedPage = pageIdx;
     selectedSlot = slotIdx;
+    markReviewed(page.slots[slotIdx]);
     galleryOpen = false; // the tap picked an existing widget — detail takes over
     renderPageList();
     renderEditorPanel();
@@ -1665,6 +1680,14 @@
       // this name (WidgetIdentity.DisplayNames); otherwise it is the plain name.
       name.textContent = widget.displayName || widget.name;
       btn.append(glyph, name);
+      // New in a recent update (#227). The host ends it once one is placed; hidden here
+      // as soon as this copy has one, so an add shows at once rather than after a save.
+      if (widget.isNew && !(state.layout.pages || []).some((pg) => (pg.slots || []).some((sl) => sl.widgetId === widget.id))) {
+        const fresh = document.createElement('span');
+        fresh.className = 'g-new';
+        fresh.textContent = 'New';
+        btn.appendChild(fresh);
+      }
       // Unavailable WITH a reason (#77) — but in two words, because a full sentence
       // per tile was what turned this shelf into a wall of text. The banner above
       // carries the long form once instead of twenty-four times.
@@ -2000,6 +2023,13 @@
       const parts = parseSize(slot.size);
       size.textContent = CHIP_WIDTH[parts.width] + CHIP_BAND[parts.band];
       main.append(name, size);
+      if (slot.instanceId && reviewTiles.has(slot.instanceId)) {
+        const updated = document.createElement('span');
+        updated.className = 'chip-updated';
+        updated.textContent = 'Updated';
+        updated.title = 'This widget’s settings changed in the last update. Open it to check them.';
+        main.appendChild(updated);
+      }
       // #225: a tile that overrides the theme does not follow it, and nothing else in
       // the strip would say so. Marked here, where every tile on the page is listed.
       const overrides = styleOverrideKeys(slot);
@@ -2022,8 +2052,16 @@
     });
   }
 
+  /** Opening a tile marked "Updated" is the review it asked for (#227) — from the strip
+   * or from a tap in the live preview, which is the main way in. */
+  function markReviewed(slot) {
+    if (slot && slot.instanceId && reviewTiles.delete(slot.instanceId))
+      post({ type: 'tile-reviewed', instanceId: slot.instanceId });
+  }
+
   function selectSlot(i) {
     selectedSlot = selectedSlot === i ? null : i; // click the active chip to deselect
+    if (selectedSlot != null) markReviewed(((state.layout.pages[selectedPage] || {}).slots || [])[selectedSlot]);
     galleryOpen = false; // chip interaction takes the Widget tab over from the gallery
     renderEditorPanel();
     if (selectedSlot != null) openPanel('widget'); // chip select opens the inspector

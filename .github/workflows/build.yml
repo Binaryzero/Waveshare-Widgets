@@ -192,6 +192,14 @@ jobs:
       - name: LAN proxy redirects
         run: dotnet run --project tools/LanRedirects
 
+      # Widgets update with the app, so an update cannot be held back per tile; the user
+      # is told instead (#227). A widget new in an update is "New" until placed or two
+      # weeks pass, and a placed tile whose widget changed its settings is "Updated" until
+      # opened. This pins the state behind both, including that a fresh install announces
+      # nothing and a relabel is not a settings change.
+      - name: Update indicators
+        run: dotnet run --project tools/WidgetCatalog
+
       # An in-app update never removed a file a release dropped, so the install drifted
       # from a clean copy (#240). The updater now keeps a list of each release's files
       # and retires what the next release lacks, inside the journaled swap. The risk is
