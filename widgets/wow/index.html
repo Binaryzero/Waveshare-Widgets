@@ -7,48 +7,47 @@
 <style>
   /* Layout only — colors, background, bgStyle and the typography base come from
    * widget-base.css. The card is three columns: who you are, what you're working
-   * on (professions, reputations), and what you've gathered (collections, the
-   * latest achievement, the almost-done list).
+   * on (professions, reputations), and what you've gathered (the headline numbers,
+   * the latest achievements, the almost-done list).
    *
-   * The panel is wide (a full slot is 1280px) and the data is a fixed handful of
-   * rows, so the job of the layout is to SPEND that width rather than pool it in the
-   * gaps: the identity block is a real anchor on the left, and every row's meter
-   * GROWS to fill the space between its label and its value instead of a fixed strip
-   * with dead air on both sides. */
+   * The panel is wide (a full slot is 1280px) and tall enough for a dozen rows a
+   * column, so the job of the layout is to spend that room on DATA (#258). Sections
+   * stack from the top at a fixed rhythm, every list is rendered in full, and
+   * fitCols() then drops the lowest-priority rows until nothing is cut off — so a
+   * bigger slot shows more rows instead of wider gaps. Each row's meter grows to fill
+   * the space between its label and its value. */
   body { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; }
   header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
-  #card { flex: 1 1 auto; display: flex; gap: 26px; min-height: 0; overflow: hidden; }
-  #who { flex: 0 0 176px; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 9px; min-width: 0; text-align: center; }
-  #portrait {
-    width: 108px; height: 108px; border-radius: var(--radius-control);
-    border: 1px solid var(--line); object-fit: cover; background: var(--card-surface);
+  #card { flex: 1 1 auto; display: flex; gap: 28px; min-height: 0; overflow: hidden; }
+  #who { flex: 0 0 196px; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 7px; min-width: 0; text-align: center; }
+  #portrait, #initial {
+    width: clamp(84px, 33vh, 128px); height: clamp(84px, 33vh, 128px);
+    border-radius: var(--radius-control); border: 1px solid var(--line);
+    background: var(--card-surface); margin-bottom: 3px;
   }
+  #portrait { object-fit: cover; }
   #initial {
-    width: 108px; height: 108px; border-radius: var(--radius-control);
-    border: 1px solid var(--line); background: var(--card-surface);
     display: flex; align-items: center; justify-content: center;
-    color: var(--accent-fg); font-size: 44px; font-weight: 700;
+    color: var(--accent-fg); font-size: 48px; font-weight: 700;
   }
   #cname {
-    color: var(--text); font-weight: 700; font-size: clamp(15px, 4.4vh, 20px);
+    color: var(--text); font-weight: 700; font-size: clamp(16px, 6vh, 24px); line-height: 1.15;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
   }
-  #cline, #guild {
-    color: var(--text-muted); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  #cline, #cfrom, #guild {
+    color: var(--text-muted); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
     overflow: hidden; max-width: 100%; line-height: 1.35;
   }
-  #guild { color: var(--text-dim); white-space: nowrap; text-overflow: ellipsis; }
-  /* The sections SPREAD over the column: this card replaced one whose bottom half was
-   * a chart nobody wanted, and stacking everything at the top would waste the same
-   * half a different way. */
-  .col { flex: 1 1 0; display: flex; flex-direction: column; gap: 10px; min-width: 0;
-    overflow: hidden; justify-content: space-evenly; }
-  .sect { display: flex; flex-direction: column; gap: 7px; min-height: 0; }
+  #cfrom, #guild { color: var(--text-dim); white-space: nowrap; text-overflow: ellipsis; }
+  .col { flex: 1 1 0; display: flex; flex-direction: column; gap: clamp(12px, 4.4vh, 18px);
+    min-width: 0; overflow: hidden; }
+  .sect { display: flex; flex-direction: column; gap: clamp(5px, 1.9vh, 8px); min-height: 0; flex: none; }
+  .sect[hidden], .trow[hidden] { display: none; }
   .sect .kicker { flex: none; margin-bottom: 1px; }
   .trow { display: flex; align-items: center; gap: 12px; min-width: 0; }
   .trow .lbl {
-    color: var(--text); font-size: clamp(11px, 3vh, 13px); font-weight: 600;
+    color: var(--text); font-size: clamp(12px, 3.9vh, 15px); font-weight: 600;
     flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   /* The meter is the elastic member: it takes whatever space the label and value
@@ -56,23 +55,29 @@
    * doing the filling. It GROWS to eat spare width but SHRINKS eight times faster
    * than the label, so on a narrow (half-slot) column the bar gives way first and the
    * name stays whole rather than clipping to an ellipsis. */
-  .trow .meter { flex: 1 8 auto; min-width: 40px; height: 5px; }
-  /* A meterless row (a renown standing, the latest achievement) has no bar to stretch
+  .trow .meter { flex: 1 8 auto; min-width: 40px; height: 6px; }
+  /* A meterless row (a renown standing, a latest achievement) has no bar to stretch
    * across the column, so its name and value stay together on the left instead of
    * being flung to opposite edges with a canyon between them. */
   .trow.nobar { justify-content: flex-start; gap: 14px; }
   .trow .val {
-    color: var(--text-muted); font-size: clamp(10px, 2.8vh, 12px); font-weight: 600;
+    color: var(--text-muted); font-size: clamp(11px, 3.4vh, 13px); font-weight: 600;
     flex: none; font-variant-numeric: tabular-nums; white-space: nowrap;
   }
-  .none { color: var(--text-dim); font-size: 11px; }
-  #stats { display: flex; gap: 22px; flex: none; }
-  .stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .stat .value { font-size: clamp(17px, 5.4vh, 26px); }
+  .none { color: var(--text-dim); font-size: 12px; }
+  #stats { display: flex; flex-wrap: wrap; gap: 8px 20px; flex: none; }
+  .stat { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .stat .value { font-size: clamp(18px, 6.6vh, 28px); }
+  .stat[hidden] { display: none; }
   footer { color: var(--text-dim); font-size: 11px; flex: none; font-variant-numeric: tabular-nums;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #state { position: fixed; inset: 0; }
   body.stale #card { opacity: 0.6; }
+  /* Narrower than a full slot, four headline numbers do not fit on one line, and a
+   * free wrap strands one on a line of its own: pair them, two and two. */
+  @media (max-width: 1100px) {
+    #stats .stat { flex: 0 0 calc(50% - 10px); }
+  }
   /* Half slot (≈640px): the identity block does not need a full-slot anchor's width,
    * and the two content columns are what get squeezed — so hand the width back to
    * them and pull the portrait down to match. */
@@ -81,13 +86,32 @@
     #who { flex-basis: 132px; }
     #portrait, #initial { width: 88px; height: 88px; font-size: 36px; }
     #cname { font-size: clamp(14px, 4.4vh, 18px); }
+    #cline, #cfrom, #guild { font-size: 11px; }
+    #stats { gap: 6px 18px; }
+    .stat .value { font-size: clamp(16px, 5.4vh, 22px); }
+    /* A 220px column: a full-size label leaves the bar no room and the name clips, so
+     * both step down and the bar may shrink further before the name gives. */
+    .trow { gap: 8px; }
+    .trow .lbl { font-size: 13px; }
+    .trow .val { font-size: 12px; }
+    .trow .meter { min-width: 24px; }
   }
-  /* A 200px band: the portrait and the almost-list are the first things to give, so
-   * professions and reputations keep readable rows. */
+  /* A 200px band — every width is offered one (WIDGET-SPEC, supported_slots). The
+   * identity block shrinks to portrait, name and level line, everything steps down a
+   * size, and fitCols() may drop whole sections, the almost list first, so what stays
+   * is readable instead of clipped. */
   @media (max-height: 240px) {
-    #portrait, #initial { width: 52px; height: 52px; font-size: 22px; }
-    #who { flex-basis: 120px; }
-    #guild, #almost { display: none; }
+    body { padding: 8px 14px; gap: 4px; }
+    #who { gap: 4px; }
+    #portrait, #initial { width: 52px; height: 52px; font-size: 22px; margin-bottom: 0; }
+    #cname { font-size: 15px; }
+    #cfrom, #guild { display: none; }
+    .col { gap: 8px; }
+    .sect { gap: 4px; }
+    .trow .lbl { font-size: 12px; }
+    .trow .val { font-size: 11px; }
+    #stats { gap: 4px 16px; }
+    .stat .value { font-size: 17px; }
   }
 </style>
 </head>
@@ -103,6 +127,7 @@
       <div id="initial" hidden></div>
       <div id="cname"></div>
       <div id="cline"></div>
+      <div id="cfrom"></div>
       <div id="guild"></div>
     </div>
     <div class="col">
@@ -115,6 +140,8 @@
     </div>
     <div class="col">
       <div id="stats">
+        <div class="stat" id="ilvlStat" hidden><span class="kicker">Item level</span><span class="value" id="ilvl">--</span></div>
+        <div class="stat" id="pointsStat" hidden><span class="kicker">Achievements</span><span class="value" id="points">--</span></div>
         <div class="stat"><span class="kicker">Mounts</span><span class="value" id="mounts">--</span></div>
         <div class="stat"><span class="kicker">Pets</span><span class="value" id="pets">--</span></div>
       </div>
@@ -283,6 +310,7 @@
     return bearer.token;
   }
 
+  // >>> wow-readers — tests/harness/wowreaders-run.js executes this block in CI.
   // ---- Payload shapes -------------------------------------------------------
   // A body is matched against a STATED shape and anything that does not match is
   // malformed rather than sparse. Validate first, read afterwards — the six review
@@ -336,11 +364,17 @@
     if (!isObj(json) || !isText(json.name)) throw new Error('profile: unexpected response');
     const spec = isObj(json.active_spec) && isText(json.active_spec.name) ? json.active_spec.name : '';
     const cls = isObj(json.character_class) && isText(json.character_class.name) ? json.character_class.name : '';
+    const named = (o) => (isObj(o) && isText(o.name) ? o.name : '');
     return {
       name: json.name,
       level: isNum(json.level) ? json.level : null,
       line: [spec, cls].filter(Boolean).join(' '),
-      guild: isObj(json.guild) && isText(json.guild.name) ? json.guild.name : '',
+      guild: named(json.guild),
+      // The rest of what the profile call already carries (#258): no extra request buys
+      // any of it, and a card with 1280px to fill should not throw it away.
+      from: [named(json.race), named(json.realm)].filter(Boolean).join(' · '),
+      ilvl: isNum(json.equipped_item_level) && json.equipped_item_level > 0 ? json.equipped_item_level : null,
+      points: isNum(json.achievement_points) ? json.achievement_points : null,
     };
   }
 
@@ -360,9 +394,10 @@
   function readProfs(json) {
     if (!isObj(json)) throw new Error('professions: unexpected response');
     const out = [];
-    // Primaries first, then secondaries, one three-row cap over both: the spec promises
-    // professions, and a character with two primaries still cooks — gating secondaries
-    // on HAVING no primaries hid Cooking and Fishing from almost everyone.
+    // Primaries first, then secondaries, and ALL of them: the spec promises professions,
+    // and a character with two primaries still cooks and fishes. The old three-row cap
+    // cut Fishing from a card with room to spare (#258); fitCols() is what decides how
+    // many rows a slot can hold.
     const take = (list) => {
       // Absent is a real answer — a character with no professions of that kind. A
       // present non-array is the API not answering this question at all.
@@ -383,13 +418,16 @@
     };
     take(json.primaries);
     take(json.secondaries);
-    return out.slice(0, 3);
+    return out.slice(0, 8);
   }
 
   // Which reputations go on the card: the ones that MOVED most recently. The API has no
   // timestamps, so movement is self-recorded — each refresh diffs against the last seen
   // values in localStorage (public game data, not a credential) and stamps changers.
-  // Before any movement has ever been seen, the closest-to-done in-progress ones stand in.
+  // Until something has moved, the NEWEST in-progress factions stand in: faction ids
+  // rise with each content release, so the highest ids are the current expansion's.
+  // Ranking that fallback by closeness-to-done instead filled the card with a decade of
+  // stalled leftovers — Gilneas, Tushui — sitting a sliver short of their next tier (#258).
   function repStoreKey() {
     return 'wowrep:' + cfg.region + ':' + slug(cfg.realm) + ':' + cfg.character.trim().toLowerCase();
   }
@@ -413,7 +451,8 @@
       const renown = isNum(s.renown_level) ? s.renown_level : null;
       if (!hasBar && renown == null) continue;
       const tier = isText(s.name) ? s.name : (renown != null ? 'Renown ' + renown : '');
-      all.push({ name: r.faction.name, value: hasBar ? s.value : null, max: hasBar ? s.max : null, renown, tier });
+      all.push({ name: r.faction.name, id: isNum(r.faction.id) ? r.faction.id : 0,
+        value: hasBar ? s.value : null, max: hasBar ? s.max : null, renown, tier });
     }
     let seen = {};
     try { seen = JSON.parse(localStorage.getItem(storeKey) || '{}') || {}; } catch (e) { seen = {}; }
@@ -436,8 +475,8 @@
     const frac = (r) => (r.max ? r.value / r.max : 0);
     const inProgress = (r) => r.renown != null || (r.value != null && r.value < r.max);
     return all.filter((r) => r.t > 0 || inProgress(r))
-      .sort((a, b) => (b.t - a.t) || (frac(b) - frac(a)))
-      .slice(0, 3);
+      .sort((a, b) => (b.t - a.t) || (b.id - a.id) || (frac(b) - frac(a)))
+      .slice(0, 8);
   }
 
   const readCount = (json, key) => {
@@ -449,12 +488,12 @@
   // every in-progress one with its criteria tree. One payload answers both questions.
   function readAchievements(json) {
     if (!isObj(json) || !Array.isArray(json.achievements)) throw new Error('achievements: unexpected response');
-    let latest = null;
+    const done = [];
     const almost = [];
     for (const a of json.achievements) {
       if (!isObj(a) || !isObj(a.achievement) || !isText(a.achievement.name)) continue;
       if (isNum(a.completed_timestamp)) {
-        if (!latest || a.completed_timestamp > latest.when) latest = { name: a.achievement.name, when: a.completed_timestamp };
+        done.push({ name: a.achievement.name, when: a.completed_timestamp });
         continue;
       }
       if (!isObj(a.criteria)) continue;
@@ -467,7 +506,7 @@
       // not spend. Unsatisfied any-of parents therefore still read conservatively.
       // A single-leaf achievement carries no usable fraction — "0/1" describes
       // everything not started — so those are skipped.
-      let done = 0, total = 0;
+      let met = 0, total = 0;
       const walk = (c) => {
         if (!isObj(c)) return;
         const kids = Array.isArray(c.child_criteria) ? c.child_criteria : [];
@@ -477,22 +516,27 @@
           // group as five, drowning an unmet sibling (5/6 for a logical 1/2).
           // An UNSATISFIED group still expands, which can only understate
           // progress — the conservative direction for an almost-there list.
-          if (c.is_completed === true) { total++; done++; return; }
+          if (c.is_completed === true) { total++; met++; return; }
           for (const ch of kids) walk(ch);
           return;
         }
         total++;
-        if (c.is_completed === true) done++;
+        if (c.is_completed === true) met++;
       };
       walk(a.criteria);
-      if (total < 2 || !done || done >= total) continue;
-      const left = total - done;
+      if (total < 2 || !met || met >= total) continue;
+      const left = total - met;
       // The owner's bar, verbatim: one or two steps out, or at a certain percent.
-      if (left <= 2 || done / total >= 0.85) almost.push({ name: a.achievement.name, done, total, left });
+      if (left <= 2 || met / total >= 0.85) almost.push({ name: a.achievement.name, done: met, total, left });
     }
     almost.sort((a, b) => (a.left - b.left) || (b.done / b.total - a.done / a.total));
-    return { latest, almost: almost.slice(0, 3) };
+    // Newest first. Several, not one: the spec's "latest achievement" leads the list, and
+    // the ones just behind it are what a wide card has room for (#258).
+    done.sort((a, b) => b.when - a.when);
+    return { latest: done.slice(0, 3), almost: almost.slice(0, 10) };
   }
+
+  // <<< wow-readers
 
   // ---- The refresh ----------------------------------------------------------
 
@@ -532,7 +576,7 @@
       const next = data
         ? { who, portrait: data.portrait, profs: data.profs, reps: data.reps,
             mounts: data.mounts, pets: data.pets, latest: data.latest, almost: data.almost }
-        : { who, portrait: '', profs: [], reps: [], mounts: null, pets: null, latest: null, almost: [] };
+        : { who, portrait: '', profs: [], reps: [], mounts: null, pets: null, latest: [], almost: [] };
       // Everything else degrades per section: a failed collections call must not cost
       // the professions their rows. Each failure is named once for the footer. The
       // six questions are independent, so they are asked CONCURRENTLY — serially,
@@ -678,6 +722,7 @@
 
   function fillSect(id, rows, emptyText) {
     const box = el(id);
+    box.hidden = false;         // fitCols() may have dropped it for a smaller box
     while (box.children.length > 1) box.removeChild(box.lastChild);
     if (!rows.length) {
       const none = document.createElement('div');
@@ -694,6 +739,7 @@
     const who = data.who;
     el('cname').textContent = who.name;
     el('cline').textContent = [who.level != null ? 'Level ' + who.level : '', who.line].filter(Boolean).join(' · ');
+    el('cfrom').textContent = who.from || '';
     el('guild').textContent = who.guild ? '<' + who.guild + '>' : '';
     paintPortrait(who);
 
@@ -702,10 +748,15 @@
     fillSect('reps', data.reps.map((r) =>
       trow(r.name, r.max ? r.value / r.max * 100 : null,
         r.tier || (r.max ? Math.round(r.value / r.max * 100) + '%' : ''))), 'Nothing in progress');
-    el('mounts').textContent = data.mounts == null ? '--' : String(data.mounts);
-    el('pets').textContent = data.pets == null ? '--' : String(data.pets);
-    fillSect('latest', data.latest
-      ? [trow(data.latest.name, null, ageText(data.latest.when))] : [], 'Nothing yet');
+    // A number the profile did not carry hides its whole stat rather than showing "--"
+    // beside the counts that did arrive.
+    el('ilvlStat').hidden = who.ilvl == null;
+    el('ilvl').textContent = who.ilvl == null ? '--' : count(who.ilvl);
+    el('pointsStat').hidden = who.points == null;
+    el('points').textContent = who.points == null ? '--' : count(who.points);
+    el('mounts').textContent = data.mounts == null ? '--' : count(data.mounts);
+    el('pets').textContent = data.pets == null ? '--' : count(data.pets);
+    fillSect('latest', data.latest.map((a) => trow(a.name, null, ageText(a.when))), 'Nothing yet');
     fillSect('almost', data.almost.map((a) =>
       trow(a.name, a.done / a.total * 100, a.done + '/' + a.total)), 'Nothing close right now');
 
@@ -720,6 +771,45 @@
 
     el('state').hidden = true;
     el('card').hidden = false;
+    fitCols();
+  }
+
+  const count = (n) => Math.round(n).toLocaleString('en-US');
+
+  // Each column's lists were rendered in full; now drop rows, lowest priority first,
+  // until nothing is cut off. Every entry is [section, rows to keep], worked in order,
+  // so a column gives up its extra reputations before any profession, and keeps two or
+  // three of everything before any list is cut to one. Keeping 0 drops the section
+  // whole — a heading over nothing is a row's height saying nothing — which only a
+  // 200px band ever needs. Dropping a section frees room that rows trimmed on the way
+  // there could use, so a last pass hands those back, most important list first.
+  // Everything hidden here is rebuilt on the next render: a bigger slot, or a font that
+  // finished loading, re-fits from the full lists.
+  const FIT = [
+    [['reps', 3], ['profs', 3], ['reps', 2], ['profs', 1], ['reps', 1], ['reps', 0]],
+    [['almost', 3], ['latest', 1], ['almost', 1], ['almost', 0], ['latest', 0]],
+  ];
+  const REFILL = [['profs', 'reps'], ['latest', 'almost']];
+  function fitCols() {
+    document.querySelectorAll('#card .col').forEach((col, i) => {
+      // scrollHeight past clientHeight is exactly "overflow: hidden is cutting
+      // something off". No slack: a pixel of allowance let a 200px band keep a
+      // section whose last line hung a pixel past the column's edge.
+      const over = () => col.scrollHeight > col.clientHeight;
+      for (const [id, keep] of FIT[i] || []) {
+        const sect = el(id);
+        if (keep === 0) { if (over()) sect.hidden = true; continue; }
+        const shown = () => sect.querySelectorAll('.trow:not([hidden])');
+        for (let rows = shown(); over() && rows.length > keep; rows = shown()) rows[rows.length - 1].hidden = true;
+      }
+      for (const id of REFILL[i] || []) {
+        if (el(id).hidden) continue;
+        for (const row of el(id).querySelectorAll('.trow[hidden]')) {
+          row.hidden = false;
+          if (over()) { row.hidden = true; break; }
+        }
+      }
+    });
   }
 
   function paintMeta() {
@@ -865,6 +955,19 @@
   // written only at render time it still said "0m ago" hours later. One repaint a
   // minute keeps it honest, held while the panel is hidden like all other work.
   setInterval(() => { if (!document.hidden && started && data) paintMeta(); }, 60000);
+
+  // Rows fitCols() dropped for a smaller box have to come back for a bigger one, and the
+  // row height is not final until the web font lands: both re-render, which rebuilds
+  // every list in full and fits it again.
+  const refit = () => { if (data && !el('card').hidden) render(); };
+  window.addEventListener('resize', refit);
+  // `loadingdone`, not only `ready`: the card is hidden until the first answer, so its
+  // weights are not even requested until render() shows it — `ready` has long since
+  // resolved by then, and a row that grew when the font landed stayed cut off.
+  if (document.fonts) {
+    if (document.fonts.ready) document.fonts.ready.then(refit);
+    document.fonts.addEventListener('loadingdone', refit);
+  }
 </script>
 </body>
 </html>
