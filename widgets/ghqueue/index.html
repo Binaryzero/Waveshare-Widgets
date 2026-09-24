@@ -710,7 +710,11 @@
       }
       state = { prs, faults, overflow, listShort, budgetSkipped };
       lastOk = Date.now();
-      rateLimitedUntil = 0;
+      // tick() only starts a sweep with the gate open, so a limit still ahead of us was
+      // set by Find while this sweep was out. It stands: this sweep's requests got
+      // through (a 304 costs nothing), but the next ones would not. The board is fresh,
+      // so it is not dimmed; the footer says it is rate limited until the reset.
+      if (rateLimitedUntil <= lastOk) rateLimitedUntil = 0;
       fails = 0;
       document.body.classList.remove('stale');
       // Results change WHICH PRs deserve a row, not only what one says. Rebuilding
