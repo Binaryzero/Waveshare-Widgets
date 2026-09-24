@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 
 namespace Plinth.App;
@@ -13,14 +15,12 @@ namespace Plinth.App;
 /// typed on a touch strip.</para>
 ///
 /// <para>This reads the Start Menu instead, which is where Windows already keeps the
-/// answer for traditional desktop programs. It is NOT the whole answer: packaged
-/// AppX/MSIX/UWP applications are registered in the AppsFolder namespace and many create
-/// no .lnk anywhere on disk, so they are absent here. Covering them needs COM enumeration
-/// AND a different launch path — an AppUserModelId is started through
-/// `explorer.exe shell:AppsFolder\&lt;aumid&gt;`, not by Process.Start on a path — which is a
-/// second mechanism rather than a wider glob. The pickers say where their list came from
-/// when a search finds nothing, so the absence has an explanation rather than looking
-/// like a broken picker.</para> The entries are the SHORTCUTS themselves, not resolved targets: every launch
+/// answer for traditional desktop programs. Packaged (Store) applications are the other
+/// half: many create no .lnk anywhere on disk, so they are read from the AppsFolder
+/// namespace and listed by their app id, launched through <see cref="AppIds"/> (#219).
+/// A name the Start Menu already supplies keeps its shortcut.</para>
+///
+/// <para>Start Menu entries are the SHORTCUTS themselves, not resolved targets: every launch
 /// path in this app goes through <c>Process.Start(… UseShellExecute = true)</c>, which
 /// starts a .lnk exactly as Explorer does — with the shortcut's own arguments, working
 /// directory and app-id intact. Resolving to the underlying .exe would need COM and would
@@ -47,11 +47,13 @@ internal static class InstalledApps
     /// <summary>Machine-wide and per-user Start Menu programs, merged, de-duplicated by
     /// display name and sorted. Per-user wins a tie: if someone has their own shortcut for
     /// a name the machine also publishes, theirs is the one they see in their own menu.</summary>
-    public static IReadOnlyList<App> List() => List(out _);
+    public static IReadOnlyList<App> List() => List(out _, out _);
 
     /// <param name="truncated">True when a bound stopped the walk, so the caller can say
     /// so instead of presenting a partial list as the whole answer.</param>
-    public static IReadOnlyList<App> List(out bool truncated)
+    /// <param name="storeListed">False when the AppsFolder could not be read, so the
+    /// picker does not claim a Store app is absent when it was never asked.</param>
+    public static IReadOnlyList<App> List(out bool truncated, out bool storeListed)
     {
         var byName = new Dictionary<string, App>(StringComparer.OrdinalIgnoreCase);
 
@@ -77,6 +79,17 @@ internal static class InstalledApps
         if (truncated)
             Log.Warn($"Installed-app walk stopped early ({byName.Count} apps, {visited} entries seen); the picker is showing a partial list");
 
+        var folder = ReadAppsFolder(out storeListed, out var folderCut);
+        var taken = new HashSet<string>(byName.Keys, StringComparer.OrdinalIgnoreCase);
+        var store = AppIds.Additions(folder, taken, IsNoise, Math.Max(0, MaxEntries - byName.Count), out var storeCut);
+        foreach (var (name, target) in store)
+            byName[name] = new App(name, target);
+        if (folderCut || storeCut)
+        {
+            truncated = true;
+            Log.Warn($"Store app list stopped early ({store.Count} added, {folder.Count} read); the picker is showing a partial list");
+        }
+
         return byName.Values
             .OrderBy(a => a.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
@@ -93,11 +106,102 @@ internal static class InstalledApps
     /// silent one.</para></summary>
     public static JsonObject ToJson()
     {
-        var apps = List(out var truncated);
+        var apps = List(out var truncated, out var storeListed);
         var arr = new JsonArray();
         foreach (var app in apps)
             arr.Add(new JsonObject { ["name"] = app.Name, ["path"] = app.Path });
-        return new JsonObject { ["apps"] = arr, ["truncated"] = truncated };
+        return new JsonObject { ["apps"] = arr, ["truncated"] = truncated, ["storeListed"] = storeListed };
+    }
+
+    /// <summary><see cref="ToJson"/> on a thread of its own. The AppsFolder is a shell COM
+    /// namespace, which wants an STA thread, and reading it can take a second on a slow
+    /// machine; the window's UI thread is where the request arrives and where nothing
+    /// should wait that long. Never faults: a failure answers with an empty, cut-short
+    /// list, so the picker says so instead of waiting on a reply that never comes.</summary>
+    public static Task<JsonObject> ToJsonAsync()
+    {
+        var done = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try { done.SetResult(ToJson()); }
+            catch (Exception ex)
+            {
+                Log.Warn($"Installed-app list failed: {ex.Message}");
+                done.SetResult(new JsonObject { ["apps"] = new JsonArray(), ["truncated"] = true, ["storeListed"] = false });
+            }
+        })
+        { IsBackground = true, Name = "Installed apps" };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return done.Task;
+    }
+
+    /// <summary>Most AppsFolder items read. The folder mirrors the Start Menu plus every
+    /// packaged app, so it is a few hundred entries on an ordinary machine.</summary>
+    private const int MaxFolderItems = 3_000;
+
+    /// <summary>Name and Path of every AppsFolder item, through the Shell.Application
+    /// automation object. A packaged app's Path is its app id; <see cref="AppIds.Additions"/>
+    /// decides what is kept.</summary>
+    private static List<(string Name, string Path)> ReadAppsFolder(out bool listed, out bool truncated)
+    {
+        listed = false;
+        truncated = false;
+        var found = new List<(string, string)>();
+        object? shell = null, folder = null, items = null;
+        try
+        {
+            var type = Type.GetTypeFromProgID("Shell.Application");
+            if (type is null)
+                return found;
+            shell = Activator.CreateInstance(type);
+            folder = Call(shell, "NameSpace", "shell:AppsFolder")
+                ?? Call(shell, "NameSpace", "shell:::{4234d49b-0245-4df3-b780-3893943456e1}");
+            if (folder is null)
+                return found;
+            items = Call(folder, "Items");
+            var count = Convert.ToInt32(Prop(items, "Count"));
+            for (var i = 0; i < count; i++)
+            {
+                if (i >= MaxFolderItems) { truncated = true; break; }
+                object? item = null;
+                try
+                {
+                    item = Call(items, "Item", i);
+                    if (Prop(item, "Name") is string name && Prop(item, "Path") is string path)
+                        found.Add((name, path));
+                }
+                catch (Exception ex) when (ex is COMException or TargetInvocationException or InvalidCastException)
+                {
+                    // One unreadable item is not a reason to drop the rest.
+                }
+                finally { Release(item); }
+            }
+            listed = true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Store apps could not be listed: {ex.Message}");
+        }
+        finally
+        {
+            Release(items);
+            Release(folder);
+            Release(shell);
+        }
+        return found;
+    }
+
+    private static object? Call(object? target, string method, params object[] args) =>
+        target?.GetType().InvokeMember(method, BindingFlags.InvokeMethod, null, target, args);
+
+    private static object? Prop(object? target, string name) =>
+        target?.GetType().InvokeMember(name, BindingFlags.GetProperty, null, target, null);
+
+    private static void Release(object? com)
+    {
+        if (com is not null && OperatingSystem.IsWindows() && Marshal.IsComObject(com))
+            Marshal.ReleaseComObject(com);
     }
 
     private static void Collect(string dir, int depth, Dictionary<string, App> into,

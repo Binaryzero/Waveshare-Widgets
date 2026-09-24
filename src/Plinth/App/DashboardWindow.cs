@@ -517,7 +517,7 @@ public sealed class DashboardWindow : Form
                     // desktop: the file dialog needs a Win32 owner window, so picker:'file'
                     // had no picker at all on the panel and the path had to be typed on a
                     // touch strip.
-                    PostToShell("apps-result", InstalledApps.ToJson());
+                    _ = PostInstalledAppsAsync();
                     break;
 
                 case "notifications-watch":
@@ -1681,6 +1681,11 @@ public sealed class DashboardWindow : Form
         }
         _revealedRedactions = redactions;
     }
+
+    /// <summary>The installed-app list, built off the UI thread (it reads a shell COM
+    /// namespace) and posted back when ready (#219).</summary>
+    private async Task PostInstalledAppsAsync() =>
+        PostToShellThreadSafe("apps-result", await InstalledApps.ToJsonAsync());
 
     private void PostToShellThreadSafe(string type, JsonNode? data, string? gen = null)
     {
