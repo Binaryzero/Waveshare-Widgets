@@ -264,6 +264,8 @@ function validate(folder) {
   else for (const s of slots)
     if (!KNOWN_SLOTS.has(s)) err('manifest-slots', `unknown slot "${s}"`);
 
+  // Set by any property or list field that declares optionsSource "widget" (#210).
+  let discovers = false;
   for (const prop of manifest.properties || []) {
     const where = `property "${prop.name || '?'}"`;
     if (!prop.name) err('prop-name', 'a property is missing "name"');
@@ -294,6 +296,21 @@ function validate(folder) {
       err('prop-secret-help', `${where}: a secret needs "help" saying where the value comes from and what access it needs — a placeholder cannot, it vanishes as soon as the user types`);
     if (type === 'select' && !Array.isArray(prop.options) && !prop.optionsSource)
       err('prop-select', `${where}: select needs "options" or "optionsSource"`);
+    // Where the choices come from. "sd-profiles" is answered by the host and fills a
+    // dropdown; "widget" (#210) puts Find beside a text value and asks the placed widget
+    // through WW.onDiscover. Anything else renders as a control with nothing in it.
+    if (prop.optionsSource != null) {
+      const src = prop.optionsSource;
+      if (src === 'widget') {
+        if (type !== 'text' && type !== 'select')
+          err('prop-options-source', `${where}: optionsSource "widget" works on text and select properties (and text list fields), not "${type}"`);
+        discovers = true;
+      } else if (src === 'sd-profiles') {
+        if (type !== 'select') err('prop-options-source', `${where}: optionsSource "sd-profiles" works on select properties only`);
+      } else {
+        err('prop-options-source', `${where}: unknown optionsSource ${JSON.stringify(src)} (sd-profiles | widget)`);
+      }
+    }
     if (type === 'slider' && (typeof prop.min !== 'number' || typeof prop.max !== 'number'))
       err('prop-slider', `${where}: slider needs numeric min/max`);
     if (type === 'list') {
@@ -308,6 +325,11 @@ function validate(folder) {
           err('prop-secret', `${where}: list field "${f.key}" looks like a credential, and list rows are NEVER encrypted — give the widget a top-level "secret" property instead`);
         if (!LIST_FIELD_TYPES.has(f.type || 'text'))
           err('prop-list', `${where}: list field type "${f.type}" not supported (text | color)`);
+        if (f.optionsSource != null) {
+          if (f.optionsSource !== 'widget' || (f.type || 'text') !== 'text')
+            err('prop-options-source', `${where}: list field "${f.key}" — only text fields take an optionsSource, and only "widget"`);
+          else discovers = true;
+        }
       }
     }
   }
@@ -558,7 +580,58 @@ function validate(folder) {
   if (/animation[^;]*infinite/.test(noComments) && !/prefers-reduced-motion/.test(noComments))
     warn('reduced-motion', 'infinite animation without a prefers-reduced-motion guard (widget-base.css covers its own classes only)');
 
+  // A setting that promises Find (#210) needs a widget that answers it. Without a handler
+  // every Find ends in "this widget cannot look this setting up", which is the manifest
+  // advertising a feature the widget does not have. The script may live beside the page.
+  if (discovers) {
+    const sources = widgetSources(folder);
+    const found = sources.texts.some((text) => /\bWW\.onDiscover\s*\(/.test(withoutComments(text)));
+    // The walk is bounded. When a bound cut it short, not finding the handler proves
+    // nothing — the unread files may hold it — so that is a warning, not a refusal.
+    if (!found && sources.complete)
+      err('discover-handler', 'a property declares optionsSource "widget", but nothing calls WW.onDiscover to answer it');
+    else if (!found)
+      warn('discover-handler-unread', 'a property declares optionsSource "widget"; no WW.onDiscover call was found in the files read, and the folder was too large or deep to read in full');
+  }
+
   return report;
+}
+
+/** Source text with HTML and JavaScript comments removed, so a call that is only
+ * mentioned — commented out, or shown in a note — does not count as made. A `//` counts as
+ * a comment only at the start of a line, after whitespace, after punctuation that can end
+ * a statement, or straight after a tag, so the `//` in `https://` is kept. String literals are not parsed: a call
+ * spelled out inside a string still counts, which errs toward accepting the widget. */
+function withoutComments(text) {
+  return String(text)
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[\s;{}()>,])\/\/[^\n]*/g, '$1');
+}
+
+/** The widget's own page and script text, for rules about what its code does. Bounded:
+ * a widget folder is small, and a validator should not walk a node_modules. `complete`
+ * says whether a bound cut the walk short, so a rule can tell "not there" from "not read". */
+function widgetSources(folder, maxDepth = 6, maxFiles = 400) {
+  const texts = [];
+  let complete = true;
+  const walk = (dir, depth) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name === 'node_modules') continue;
+        if (depth >= maxDepth) { complete = false; continue; }
+        walk(full, depth + 1);
+      } else if (/\.(html?|m?js)$/i.test(e.name)) {
+        if (texts.length >= maxFiles) { complete = false; continue; }
+        try { texts.push(fs.readFileSync(full, 'utf8')); } catch (err) { /* unreadable: skip */ }
+      }
+    }
+  };
+  walk(folder, 0);
+  return { texts, complete };
 }
 
 function human(report) {
@@ -605,6 +678,8 @@ if (args.includes('--self-test')) {
   const doc = (head) => `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <title>T</title>${head}<style>body { color: var(--text); }</style></head>
 <body><script src="https://app.plinth/widget-api.js"></script></body></html>`;
+  // A page whose script answers Find (#210).
+  const ANSWERS = doc(BASE + '<script>WW.onDiscover(() => []);</script>');
   const htmlCases = [
     ['clean', doc(BASE), null],
     // #121 — \b matches after a hyphen, so data-rel was read as the real rel and the
@@ -693,19 +768,67 @@ if (args.includes('--self-test')) {
     ['help-number', { name: 'city', label: 'City', type: 'text', help: 42 }, 'prop-help-type'],
     // ...and a secret whose help is an object is BOTH: unloadable and unguided.
     ['help-object-on-secret', { name: 'apiToken', label: 'Token', type: 'secret', help: {} }, 'prop-secret-help'],
+    // #210 — where Find is offered, and that the widget answers it.
+    ['discover-text', { name: 'realm', label: 'Realm', type: 'text', optionsSource: 'widget' }, null, ANSWERS],
+    ['discover-select', { name: 'realm', label: 'Realm', type: 'select', optionsSource: 'widget' }, null, ANSWERS],
+    ['discover-list-field', { name: 'repos', label: 'Repositories', type: 'list',
+      fields: [{ key: 'repo', label: 'Repository', optionsSource: 'widget' }] }, null, ANSWERS],
+    ['discover-no-handler', { name: 'realm', label: 'Realm', type: 'text', optionsSource: 'widget' }, 'discover-handler'],
+    // A handler that is only mentioned is not a handler.
+    ['discover-handler-commented-out', { name: 'realm', label: 'Realm', type: 'text', optionsSource: 'widget' },
+      'discover-handler', doc(BASE + '<script>// WW.onDiscover(() => []);\n/* WW.onDiscover(() => []); */</script>')],
+    ['discover-handler-in-html-comment', { name: 'realm', label: 'Realm', type: 'text', optionsSource: 'widget' },
+      'discover-handler', doc(BASE + '<!-- <script>WW.onDiscover(() => []);</script> -->')],
+    // ...while a real one after a URL on the same line still counts.
+    ['discover-handler-after-url', { name: 'realm', label: 'Realm', type: 'text', optionsSource: 'widget' },
+      null, doc(BASE + "<script>const u = 'https://api.example'; WW.onDiscover(() => []);</script>")],
+    ['discover-list-no-handler', { name: 'repos', label: 'Repositories', type: 'list',
+      fields: [{ key: 'repo', label: 'Repository', optionsSource: 'widget' }] }, 'discover-handler'],
+    ['discover-on-number', { name: 'n', label: 'N', type: 'number', optionsSource: 'widget' }, 'prop-options-source', ANSWERS],
+    ['discover-on-color-field', { name: 'c', label: 'C', type: 'list',
+      fields: [{ key: 'tint', label: 'Tint', type: 'color', optionsSource: 'widget' }] }, 'prop-options-source', ANSWERS],
+    ['unknown-options-source', { name: 's', label: 'S', type: 'select', optionsSource: 'repos' }, 'prop-options-source'],
+    ['sd-profiles-on-text', { name: 's', label: 'S', type: 'text', optionsSource: 'sd-profiles' }, 'prop-options-source'],
+    ['sd-profiles-on-select', { name: 's', label: 'S', type: 'select', optionsSource: 'sd-profiles' }, null],
   ];
   let propBad = 0;
-  for (const [name, prop, expected] of propCases) {
+  for (const [name, prop, expected, page] of propCases) {
     const dir = path.join(tmp, 'prop-' + name);
     fs.mkdirSync(dir);
     fs.writeFileSync(path.join(dir, 'manifest.json'),
       JSON.stringify(Object.assign({}, manifest, { properties: [prop] })));
-    fs.writeFileSync(path.join(dir, 'index.html'), doc(BASE));
+    fs.writeFileSync(path.join(dir, 'index.html'), page || doc(BASE));
     const rules = validate(dir).errors.map((e) => e.rule);
     if (expected === null && rules.length) {
       console.log(`  FAIL prop "${name}" should validate, but raised ${rules.join(', ')}`); propBad++;
     } else if (expected !== null && !rules.includes(expected)) {
       console.log(`  FAIL prop "${name}" should raise ${expected}, raised ${rules.join(', ') || 'nothing'}`); propBad++;
+    }
+  }
+  // A handler in a script below the page counts, and a folder too deep to read in full is
+  // a warning rather than a refusal — the file past the bound may be the one that holds it.
+  {
+    const discoverProp = { name: 'realm', label: 'Realm', type: 'text', optionsSource: 'widget' };
+    const deepDir = path.join(tmp, 'prop-discover-deep');
+    const nested = path.join(deepDir, 'a', 'b', 'c');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(deepDir, 'manifest.json'), JSON.stringify(Object.assign({}, manifest, { properties: [discoverProp] })));
+    fs.writeFileSync(path.join(deepDir, 'index.html'), doc(BASE));
+    fs.writeFileSync(path.join(nested, 'app.js'), 'WW.onDiscover(() => []);');
+    const deep = validate(deepDir);
+    if (deep.errors.some((e) => e.rule === 'discover-handler') || deep.warnings.some((w) => w.rule === 'discover-handler-unread')) {
+      console.log('  FAIL prop "discover-handler-in-nested-script" was not found'); propBad++;
+    }
+    const cutDir = path.join(tmp, 'prop-discover-cut');
+    let at = cutDir;
+    for (let i = 0; i < 9; i++) at = path.join(at, 'd' + i);
+    fs.mkdirSync(at, { recursive: true });
+    fs.writeFileSync(path.join(cutDir, 'manifest.json'), JSON.stringify(Object.assign({}, manifest, { properties: [discoverProp] })));
+    fs.writeFileSync(path.join(cutDir, 'index.html'), doc(BASE));
+    fs.writeFileSync(path.join(at, 'app.js'), 'WW.onDiscover(() => []);');
+    const cut = validate(cutDir);
+    if (cut.errors.some((e) => e.rule === 'discover-handler') || !cut.warnings.some((w) => w.rule === 'discover-handler-unread')) {
+      console.log('  FAIL prop "discover-handler-past-the-walk" should warn, not refuse'); propBad++;
     }
   }
   fs.rmSync(tmp, { recursive: true, force: true });

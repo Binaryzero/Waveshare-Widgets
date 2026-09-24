@@ -887,3 +887,8 @@ header h1 #appVersion {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .app-pop-list button:hover { background: color-mix(in srgb, var(--accent, #4dd4e8) 25%, transparent); }
+/* Find (#210): a word, because "ask the widget" has no glyph anyone reads. */
+.discover-btn { flex: none; white-space: nowrap; }
+/* The value under a label that differs from it: "Living room" over sensor.living_temp. */
+.discover-value { display: block; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.discover-hint { border-top: 1px solid color-mix(in srgb, var(--muted) 30%, transparent); padding-top: 6px; }

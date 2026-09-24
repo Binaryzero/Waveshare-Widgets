@@ -290,6 +290,10 @@ public sealed class SettingsWindow : Form
                     }
                     break;
 
+                case "discover":
+                    HandleDiscover(message);
+                    break;
+
                 case "sd-profiles":
                     Post(new JsonObject
                     {
@@ -368,6 +372,39 @@ public sealed class SettingsWindow : Form
 
     private void OnMediaUpdated(MediaState media) =>
         PostPreviewThreadSafe("media", JsonSerializer.SerializeToNode(media, BridgeJson));
+
+    /// <summary>"Find…" on a setting the widget can look up itself (#210). This window never
+    /// holds the widget's decrypted settings, so the question goes to the placed widget on
+    /// the panel, and only its list of choices comes back. No panel, no lookup: the answer
+    /// says so at once and the field stays typeable.</summary>
+    private void HandleDiscover(JsonNode message)
+    {
+        var id = message["id"]?.GetValue<string>() ?? "";
+        if (id.Length is 0 or > 64)
+            return;
+        void Answer(JsonObject result)
+        {
+            result["type"] = "discover-result";
+            result["id"] = id;
+            if (IsDisposed || !IsHandleCreated)
+                return;
+            try { BeginInvoke(() => Post(result)); }
+            catch (ObjectDisposedException) { /* window closed */ }
+        }
+
+        var instanceId = message["instanceId"]?.GetValue<string>() ?? "";
+        var property = message["property"]?.GetValue<string>() ?? "";
+        var field = message["field"]?.GetValue<string>();
+        if (instanceId.Length is 0 or > 128 || property.Length is 0 or > 128 || field is { Length: > 128 })
+        {
+            Answer(DashboardWindow.DiscoveryRefused("not-placed"));
+            return;
+        }
+        if (Dashboard is { IsDisposed: false } dashboard)
+            dashboard.RequestDiscovery(instanceId, property, field, Answer);
+        else
+            Answer(DashboardWindow.DiscoveryRefused("no-dashboard"));
+    }
 
     /// <summary>The installed-app list, built off the UI thread (it reads a shell COM
     /// namespace) and posted back when ready (#219).</summary>

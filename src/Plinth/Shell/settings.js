@@ -71,6 +71,8 @@
   let pendingBgPick = null;    // callback(source, kind) for the in-flight file dialog
   let sdProfileWaiters = [];   // callbacks awaiting an sd-profiles-result
   let appWaiters = [];         // callbacks awaiting an apps-result (#210)
+  const discoverWaiters = new Map(); // discovery id -> callback awaiting a discover-result (#210)
+  let discoverSeq = 0;
   let galleryOpen = false;     // settings-side add-widget gallery (Widget tab)
   let instanceSeq = 0;         // suffix for minted instanceIds (gallery adds)
   // The free region a replica "+" tap named, if any (#84). The panel's add zones are
@@ -473,6 +475,19 @@
     } else if (msg.type === 'background-failed') {
       pendingBgPick = null;
       toast('Could not load background: ' + msg.message, true);
+    } else if (msg.type === 'discover-result') {
+      const waiter = discoverWaiters.get(msg.id);
+      if (!waiter) return;
+      discoverWaiters.delete(msg.id);
+      waiter({
+        ok: msg.ok === true,
+        options: Array.isArray(msg.options)
+          ? msg.options.filter((o) => o && typeof o.value === 'string' && typeof o.label === 'string')
+          : [],
+        truncated: msg.truncated === true,
+        error: typeof msg.error === 'string' ? msg.error : '',
+        message: typeof msg.message === 'string' ? msg.message : '',
+      });
     } else if (msg.type === 'apps-result') {
       const waiters = appWaiters.splice(0);
       const apps = Array.isArray(msg.apps)
@@ -2772,6 +2787,122 @@
   }
   // <<< ww-list-mapping
 
+  // >>> ww-discover-text — extracted and RUN by tests/harness/discover-run.js (the same
+  // block lives in shell.js, for the panel's sheet; the harness runs both copies).
+  /** What the Find chooser says about an answer (#210). Finding is a shortcut, never the
+   * only way in, so every dead end says the value can still be typed. Empty when the list
+   * speaks for itself. */
+  function discoverStatusText(result) {
+    if (!result || typeof result !== 'object') return 'No answer came back. Type the value instead.';
+    if (result.ok) {
+      const n = Array.isArray(result.options) ? result.options.length : 0;
+      if (!n) return 'The widget found nothing to offer. Type the value instead.';
+      return result.truncated ? 'Showing the first ' + n + ' the widget found — search to narrow them.' : '';
+    }
+    switch (result.error) {
+      case 'no-dashboard': return 'The panel is not running, so the widget cannot be asked. Type the value instead.';
+      case 'not-placed': return 'This widget is not on the panel yet. Save, then try again — or type the value.';
+      case 'not-ready': return 'The widget on the panel is still loading. Try again in a moment.';
+      case 'timeout': return 'The widget on the panel did not answer. Type the value instead.';
+      case 'unsupported': return 'This widget cannot look this setting up. Type the value instead.';
+      case 'widget': return 'The widget could not look this up: ' + String(result.message || 'no reason given');
+      default: return 'The widget sent an answer that could not be read. Type the value instead.';
+    }
+  }
+  // <<< ww-discover-text
+
+  // ---- widget lookups (#210) --------------------------------------------------------
+  // A setting declaring optionsSource:'widget' is one the widget can look up itself —
+  // repositories, entities, characters. This window never holds the widget's credential,
+  // so the question goes through the host to the placed widget on the panel, and only the
+  // list of choices comes back. Typing always works; Find is the shortcut.
+
+  /** How long to wait before saying the panel did not answer. The host and the panel each
+   * time out sooner and say why; this only covers an answer that never arrives at all. */
+  const DISCOVER_WAIT_MS = 30000;
+
+  function makeDiscoverBtn(input, slot, property, field) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ghost discover-btn';
+    btn.textContent = 'Find…';
+    btn.title = 'Ask this widget, on the panel, for the values it can use';
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (document.querySelector('.app-pop')) { closeAppPop(); return; }
+      const pop = document.createElement('div');
+      pop.className = 'app-pop discover-pop';
+      const search = document.createElement('input');
+      search.type = 'text';
+      search.className = 'app-pop-search';
+      search.placeholder = 'Search…';
+      const status = document.createElement('p');
+      status.className = 'app-pop-status';
+      status.textContent = 'Asking the widget on the panel…';
+      const list = document.createElement('div');
+      list.className = 'app-pop-list';
+      // The lookup runs with what the PANEL has, so an edit not saved yet is not in it.
+      const hint = document.createElement('p');
+      hint.className = 'app-pop-status discover-hint';
+      hint.textContent = 'Looked up by the widget on the panel, with its saved settings.';
+      pop.append(search, status, list, hint);
+      const r = ev.currentTarget.getBoundingClientRect();
+      document.body.appendChild(pop);
+      pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 320)) + 'px';
+      pop.style.top = Math.min(r.bottom + 6, window.innerHeight - 340) + 'px';
+      document.addEventListener('pointerdown', onAppOutside, true);
+      search.focus();
+
+      let options = [];
+      let note = '';
+      const render = () => {
+        const q = search.value.trim().toLowerCase();
+        const shown = q
+          ? options.filter((o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q))
+          : options;
+        list.textContent = '';
+        for (const o of shown) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = o.label;
+          b.title = o.value;
+          if (o.label !== o.value) {
+            const sub = document.createElement('span');
+            sub.className = 'discover-value';
+            sub.textContent = o.value;
+            b.appendChild(sub);
+          }
+          b.addEventListener('click', () => {
+            input.value = o.value;
+            input.dispatchEvent(new Event('input')); // commits through the field's handler
+            closeAppPop();
+          });
+          list.appendChild(b);
+        }
+        const text = options.length && !shown.length ? 'No match.' : note;
+        status.hidden = !text;
+        status.textContent = text;
+      };
+      search.addEventListener('input', render);
+
+      const finish = (result) => {
+        if (!pop.isConnected) return;   // closed while the widget was looking
+        options = result.ok ? result.options : [];
+        note = discoverStatusText(result);
+        render();
+      };
+      const instanceId = slot && slot.instanceId;
+      if (!instanceId) { finish({ ok: false, error: 'not-placed' }); return; }
+      const id = 'dq' + (++discoverSeq);
+      const timer = setTimeout(() => {
+        if (discoverWaiters.delete(id)) finish({ ok: false, error: 'timeout' });
+      }, DISCOVER_WAIT_MS);
+      discoverWaiters.set(id, (result) => { clearTimeout(timer); finish(result); });
+      post({ type: 'discover', id, instanceId, property, field: field || null });
+    });
+    return btn;
+  }
+
   function attachFieldPicker(container, spec, input) {
     if (spec.picker === 'emoji' || spec.picker === 'emoji-prefix')
       container.appendChild(makeEmojiBtn(input, spec.picker === 'emoji-prefix'));
@@ -3140,6 +3271,19 @@
         // report: settings should be visible, not a wall of form controls).
         // Dynamic lists (host-backed profiles, sensors) keep the dropdown.
         const staticOpts = prop.options || [];
+        if (prop.optionsSource === 'widget') {
+          // The choices exist only once the widget is asked (#210), so the value is text
+          // with a Find beside it — typing always works, finding is the shortcut.
+          const input = document.createElement('input');
+          input.type = 'text';
+          if (prop.placeholder) input.placeholder = String(prop.placeholder);
+          input.value = current != null ? String(current) : '';
+          input.oninput = () => set(input.value);
+          const wrap = document.createElement('div');
+          wrap.className = 'picker-wrap';
+          wrap.append(input, makeDiscoverBtn(input, slot, prop.name, null));
+          return wrap;
+        }
         if (!prop.optionsSource && staticOpts.length >= 2 && staticOpts.length <= 5) {
           return segmented(staticOpts, current, set);
         }
@@ -3284,6 +3428,7 @@
               });
               row.appendChild(input);
               attachFieldPicker(row, field, input); // picker:'emoji' / picker:'file' (#48)
+              if (field.optionsSource === 'widget') row.appendChild(makeDiscoverBtn(input, slot, prop.name, field.key));
             }
             row.appendChild(iconButton('✕', 'Remove ' + (prop.itemLabel || 'item'), () => {
               items.splice(i, 1); commit(); renderList();
@@ -3415,14 +3560,18 @@
           // property would lose its Browse dialog exactly while the user is trying to
           // replace the leftover value by hand.
           if (prop.picker) attachFieldPicker(wrap, prop, input);
+          // Find too (#210): a looked-up value replaces the hidden one like a typed value.
+          if (prop.optionsSource === 'widget') wrap.appendChild(makeDiscoverBtn(input, slot, prop.name, null));
           return wrap;
         }
-        if (prop.picker) {
-          // picker:'emoji' / picker:'file' on a top-level text property (#48).
+        if (prop.picker || prop.optionsSource === 'widget') {
+          // picker:'emoji' / picker:'file' on a top-level text property (#48), and Find
+          // for a value the widget can look up itself (#210).
           const wrap = document.createElement('div');
           wrap.className = 'picker-wrap';
           wrap.appendChild(input);
-          attachFieldPicker(wrap, prop, input);
+          if (prop.picker) attachFieldPicker(wrap, prop, input);
+          if (prop.optionsSource === 'widget') wrap.appendChild(makeDiscoverBtn(input, slot, prop.name, null));
           return wrap;
         }
         return input;

@@ -414,6 +414,21 @@ public sealed class DashboardWindow : Form
                     OpenExternalUrl(message["url"]?.GetValue<string>());
                     break;
 
+                case "discover-result":
+                    // The shell's answer to RequestDiscovery (#210), already reduced there to
+                    // plain choices. Copied field by field, so nothing else the message
+                    // carried reaches the settings window.
+                    if (message["id"]?.GetValue<string>() is { } discoveryId)
+                        CompleteDiscovery(discoveryId, new JsonObject
+                        {
+                            ["ok"] = message["ok"]?.GetValue<bool>() == true,
+                            ["options"] = message["options"] is JsonArray found ? found.DeepClone() : new JsonArray(),
+                            ["truncated"] = message["truncated"]?.GetValue<bool>() == true,
+                            ["error"] = message["error"]?.GetValue<string>(),
+                            ["message"] = message["message"]?.GetValue<string>(),
+                        });
+                    break;
+
                 case "action":
                     DeckAction.Execute(
                         message["kind"]?.GetValue<string>(),
@@ -857,6 +872,55 @@ public sealed class DashboardWindow : Form
             ["widgetId"] = widgetId,
             ["instanceId"] = instanceId,
         });
+
+    /// <summary>Lookups the settings window is waiting on (#210), by id. UI thread only.</summary>
+    private readonly Dictionary<string, Action<JsonObject>> _discoveries = new();
+
+    /// <summary>Longer than the shell's own 20 s, so the shell's "did not answer" is the one
+    /// the user reads when the shell can say it; this covers a shell that never answers at
+    /// all, such as a reload in the middle of the question.</summary>
+    private static readonly TimeSpan DiscoveryTimeout = TimeSpan.FromSeconds(25);
+
+    internal static JsonObject DiscoveryRefused(string reason) =>
+        new() { ["ok"] = false, ["error"] = reason };
+
+    /// <summary>
+    /// Asks the placed widget with this instanceId which values one of its settings can
+    /// take (#210), and calls <paramref name="reply"/> once with the answer. The question is
+    /// asked here because the dashboard holds the widget's decrypted settings and the
+    /// settings window never does: the widget looks the values up with its own fetch and
+    /// its own credential, and only the choices come back.
+    /// </summary>
+    public void RequestDiscovery(string instanceId, string property, string? field, Action<JsonObject> reply)
+    {
+        if (!_shellReady || IsDisposed)
+        {
+            reply(DiscoveryRefused("no-dashboard"));
+            return;
+        }
+        var id = "d" + Guid.NewGuid().ToString("N");
+        _discoveries[id] = reply;
+        PostToShell("discover", new JsonObject
+        {
+            ["id"] = id,
+            ["instanceId"] = instanceId,
+            ["property"] = property,
+            ["field"] = field,
+        });
+        _ = Task.Delay(DiscoveryTimeout).ContinueWith(_ =>
+        {
+            if (IsDisposed || !IsHandleCreated)
+                return;
+            try { BeginInvoke(() => CompleteDiscovery(id, DiscoveryRefused("timeout"))); }
+            catch (ObjectDisposedException) { /* window closed */ }
+        });
+    }
+
+    private void CompleteDiscovery(string id, JsonObject result)
+    {
+        if (_discoveries.Remove(id, out var reply))
+            reply(result);
+    }
 
     /// <summary>
     /// Routes a settings-window replica's widget data request (fetch / ping /
