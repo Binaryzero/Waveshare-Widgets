@@ -250,6 +250,7 @@
       const limited = await rateLimitReset(res);
       if (limited) {
         rateLimitedUntil = limited;
+        boardLimited();
         throw new Error(rateLimitText());
       }
       if (!res.ok) {
@@ -724,13 +725,7 @@
       fails++;
       if (e.rateLimitedUntil) {
         rateLimitedUntil = e.rateLimitedUntil;
-        // Rate limiting is not an error tile: the data on screen is still true, it is
-        // just aging. Show it dimmed with how old it is.
-        document.body.classList.add('stale');
-        // No Retry offered while limited: the gate at the top of tick() would turn it
-        // away without a request, leaving a card that says "Retrying" for the rest of
-        // the reset window. The one honest thing to show is the wait.
-        if (state) render(); else showWaiting('Rate limit reached. Waiting for it to reset.');
+        boardLimited();
       } else if (state) {
         document.body.classList.add('stale');
         render();
@@ -978,6 +973,18 @@
     // A healthy, uncaveated clear is NOMINAL: the card already says it, and the
     // pill-quiet rule (#211) applies to empty boards exactly as to full ones.
     if (!stale && !caveats.length) el('pill').hidden = true;
+  }
+
+  // The board under a closed rate-limit gate, whichever request closed it — a sweep or
+  // Find. Rate limiting is not an error tile: the data on screen is still true, it is
+  // just aging, so it shows dimmed with how old it is. No Retry is offered: the gate at
+  // the top of tick() would turn it away without a request, leaving a card that says
+  // "Retrying" for the rest of the reset window. The one honest thing to show is the wait.
+  // The setup card is left alone: nothing is being swept, and Find is how it gets filled.
+  function boardLimited() {
+    if (!started) return;
+    document.body.classList.add('stale');
+    if (state) render(); else showWaiting('Rate limit reached. Waiting for it to reset.');
   }
 
   // A card with no Retry, for a wait that a button cannot shorten.

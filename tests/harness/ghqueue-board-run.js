@@ -19,7 +19,9 @@
 //   G8 · any other setting gets no answer from this widget ("unsupported")
 //   G9 · a refused token comes back as a message saying so, not a list
 //   G10 · a rate limit on Find comes back with its reset time, and closes the gate the
-//         sweep uses: the next Find answers without asking GitHub again
+//         sweep uses: the next Find answers without asking GitHub again. The board it
+//         paused is dimmed as stale at once, not left looking current until the reset
+//         (G10c); a setup card stays a setup card (G10d)
 //   G11 · an account past the chooser's 500 sends more than 500, so the shell can say the
 //         list was cut
 //   G12 · slow pages share one budget: Find answers inside the shell's 20 s wait, saying
@@ -280,6 +282,8 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
   reposHeaders = { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(resetAt),
     'access-control-expose-headers': 'x-ratelimit-remaining, x-ratelimit-reset' };
   const limited = await ask('d4', 'repos', 'repo');
+  const dimmed = await frame.evaluate(() => ({ stale: document.body.classList.contains('stale'),
+    pill: document.getElementById('pill').textContent }));
   const askedBefore = reposAuth.length;
   const again = await ask('d5', 'repos', 'repo');
   check('G10 a rate limit on Find says when it resets',
@@ -288,6 +292,18 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
   check('G10b ...and closes the shared gate: the next Find answers without asking GitHub',
     !!(again && /rate limit/i.test(String(again.error || ''))) && reposAuth.length === askedBefore,
     `requests before ${askedBefore}, after ${reposAuth.length}`);
+  check('G10c ...and the board it paused is dimmed as stale at once, not left looking current',
+    dimmed.stale && dimmed.pill === 'Stale', JSON.stringify(dimmed));
+  // G10d · a token but no repositories yet: the setup card, which is when Find is used.
+  await page.evaluate((m) => window.__wwPush(m), { type: 'ww-init',
+    settings: { repos: [], apiToken: 'stub-token-setup', refreshMinutes: 5 },
+    sensors: [], media: null, theme: {}, status: { elevated: false, apiVersion: 1 } });
+  await page.waitForTimeout(300);
+  const setupLimited = await ask('d4s', 'repos', 'repo');
+  const setupCard = await frame.evaluate(() => document.getElementById('state').textContent);
+  check('G10d on the setup card, a rate limit on Find leaves the setup card in place',
+    /rate limit/i.test(String((setupLimited || {}).error || '')) && /Not configured yet/.test(setupCard)
+      && !/Rate limited/.test(setupCard), JSON.stringify(setupCard.slice(0, 80)));
   reposStatus = 200;
   reposBody = { message: 'Bad credentials' };
   reposHeaders = {};
