@@ -113,7 +113,8 @@ const TOKEN = 'Bearer super-secret-probe-token';
         if (m.type !== 'ww-fetch') return;
         // What the host would receive, for R26: the URL and whether the widget asked for
         // the certificate check to be skipped.
-        (window.__proxied = window.__proxied || []).push({ url: String(m.url), insecure: m.insecure === true });
+        (window.__proxied = window.__proxied || []).push({ url: String(m.url), insecure: m.insecure === true,
+          authorization: (m.headers && (m.headers.Authorization || m.headers.authorization)) || '' });
         // R26e holds one URL's host answer, so a request can be caught in flight.
         if (window.__holdProxy && String(m.url).includes(window.__holdProxy)) {
           setTimeout(() => window.postMessage({ type: 'ww-fetch-result', id: m.id, error: window.__probeHostError }, '*'), 3000);
@@ -126,6 +127,12 @@ const TOKEN = 'Bearer super-secret-probe-token';
         // host-error behaviour untouched.
         if (window.__tokenEndpoint && String(m.url).indexOf(window.__tokenEndpoint) === 0) {
           window.__grants = (window.__grants || 0) + 1;
+          // RC (#176): a scripted refusal, as a token endpoint answers bad credentials.
+          if (window.__tokenStatus) {
+            window.postMessage({ type: 'ww-fetch-result', id: m.id, status: window.__tokenStatus,
+              contentType: 'application/json', bodyBase64: btoa('{"error":"invalid_client"}') }, '*');
+            return;
+          }
           const body = JSON.stringify(window.__tokenResp
             || { access_token: 'probe-token', token_type: 'DPoP', expires_in: 3600 });
           window.postMessage({ type: 'ww-fetch-result', id: m.id, status: 200,
@@ -896,6 +903,38 @@ const TOKEN = 'Bearer super-secret-probe-token';
     /Unsupported token type/.test(rt4After.title) && rt4After.bodyHidden,
     `title "${rt4After.title}" · bodyHidden ${rt4After.bodyHidden} · value "${rt4After.value}"`);
   await page.evaluate(() => { window.__tokenEndpoint = undefined; });   // clear for anything after
+
+  // ---- RC · #176: the client ID is used exactly as typed; a stray space is named -------
+  // RFC 6749 allows spaces in a client id, so the tile no longer trims it. The cost of not
+  // trimming is a pasted stray space turning into a bare 401, so the sign-in error says
+  // which credential has an edge space when the endpoint refuses them.
+  await page.evaluate(() => { window.__proxied = []; window.__grants = 0; window.__tokenStatus = 401;
+    window.__tokenEndpoint = 'https://api.test/tokRC'; window.__tokenResp = null; });
+  respond = () => ({ status: 200, body: JSON.stringify({ v: 1 }) });
+  const oauthRC = { url: 'https://api.test/oauthRC', jsonPointer: '/v', pollSeconds: 60,
+    authMode: 'oauth2', tokenEndpoint: 'https://api.test/tokRC', clientSecret: 'sec' };
+  await init(Object.assign({}, base, oauthRC, { clientId: 'my-id ' }));
+  await wait(800);
+  const rcSent = await page.evaluate(() => (window.__proxied || [])
+    .filter((m) => m.url.indexOf('https://api.test/tokRC') === 0).map((m) => m.authorization));
+  const rcCred = rcSent.length ? Buffer.from(String(rcSent[0]).replace(/^Basic /, ''), 'base64').toString() : '';
+  check('RC1 the client ID reaches the token endpoint exactly as typed, trailing space included',
+    rcCred === 'my-id+:sec', JSON.stringify(rcCred));
+  const rcCard = await read();
+  check('RC2 a refused sign-in names the stray space',
+    /Sign-in failed/.test(rcCard.title) && /client ID starts or ends with a space/.test(rcCard.body),
+    `${rcCard.title} · ${rcCard.body}`);
+  await init(Object.assign({}, base, oauthRC, { clientId: 'my-id' }));
+  await wait(800);
+  const rcClean = await read();
+  check('RC3 ...and says nothing about spaces when there are none',
+    /Sign-in failed/.test(rcClean.title) && !/space/.test(rcClean.body), `${rcClean.title} · ${rcClean.body}`);
+  await init(Object.assign({}, base, oauthRC, { clientId: '   ' }));
+  await wait(400);
+  const rcBlank = await read();
+  check('RC4 a client ID of only spaces still counts as not set',
+    /No client ID set/.test(rcBlank.title), rcBlank.title);
+  await page.evaluate(() => { window.__tokenEndpoint = undefined; window.__tokenStatus = 0; });
 
   // ---- AH · #60.3: the age ticker must not recompute the footer while HIDDEN --------
   // The 30s ticker keeps the "Xs ago" label honest between polls (R11) — but while the

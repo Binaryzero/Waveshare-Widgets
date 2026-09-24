@@ -396,7 +396,18 @@
       return;
     }
     failures++;
-    if (!showStale('sign-in failed')) showState('⚠', 'Sign-in failed', detail + e.message + '.', true);
+    if (!showStale('sign-in failed')) showState('⚠', 'Sign-in failed', detail + e.message + '.' + edgeSpaceHint(e), true);
+  }
+
+  /** When the token endpoint refuses the credentials and one of them starts or ends with a
+   *  space, say so. The space may be real, which is why it is kept, but a pasted stray one
+   *  is the common case and otherwise reads only as "answered 401" (#176). */
+  function edgeSpaceHint(e) {
+    if (!e || !e.tokenExchange || (e.status !== 400 && e.status !== 401)) return '';
+    const edged = (v) => v !== v.trim();
+    const which = edged(cfg.clientId) ? 'client ID' : edged(cfg.clientSecret) ? 'client secret' : '';
+    return which ? ' The ' + which + ' starts or ends with a space. If that was pasted by accident, '
+      + 'remove it in this widget’s settings.' : '';
   }
 
   /** How long before expiry a token stops being offered. Fixed headroom is right for the
@@ -587,7 +598,7 @@
         // without this the preview alone would post empty credentials to the real token
         // endpoint on every poll.
         const missing = !cfg.tokenEndpoint ? 'token endpoint'
-          : !cfg.clientId ? 'client ID' : !cfg.clientSecret ? 'client secret' : '';
+          : !cfg.clientId.trim() ? 'client ID' : !cfg.clientSecret ? 'client secret' : '';
         if (missing) {
           showState('◎', 'No ' + missing + ' set',
             'OAuth2 needs the URL of the token endpoint, plus the client ID and secret, in this widget’s settings.', false);
@@ -847,7 +858,10 @@
     const prevAuth = cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope;
     cfg.authMode = s.authMode === 'oauth2' ? 'oauth2' : s.authMode === 'header' ? 'header' : 'none';
     cfg.tokenEndpoint = String(s.tokenEndpoint || '').trim();
-    cfg.clientId = String(s.clientId || '').trim();
+    // Exactly as typed (#176). RFC 6749 allows spaces in a client id, so trimming could
+    // break an id that is correct; a stray pasted space is named on the sign-in error
+    // instead (edgeSpaceHint), where it would otherwise surface as a bare 401.
+    cfg.clientId = String(s.clientId == null ? '' : s.clientId);
     cfg.clientSecret = String(s.clientSecret == null ? '' : s.clientSecret);
     cfg.scope = String(s.scope || '').trim();
     // Any change to WHO we are drops the held bearer immediately. Leaving it would
