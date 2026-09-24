@@ -778,7 +778,7 @@ public sealed class SettingsWindow : Form
                 ["rejectedWidgets"] = JsonSerializer.SerializeToNode(rejected, BridgeJson),
                 // Placed tiles whose widget changed its settings in an update (#227), by
                 // instance id; each is marked until the user opens it.
-                ["reviewTiles"] = JsonSerializer.SerializeToNode(WidgetCatalogState.Shared?.Review ?? [], BridgeJson),
+                ["reviewTiles"] = JsonSerializer.SerializeToNode(WidgetCatalogState.Shared?.ReviewTiles ?? [], BridgeJson),
                 ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
                 // Seed the replica's now-playing state: MediaUpdated only fires on
                 // change, so without this an already-playing track never appears.

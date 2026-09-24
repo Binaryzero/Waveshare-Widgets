@@ -8,6 +8,8 @@
 //   U4 · adding the new widget hides its badge at once, before any save
 //   U5 · opening a flagged tile from the live preview counts as opening it too
 //   U6 · a saved placement ends "New" for good, even if the tile is removed again
+//   U7 · a flag raised for another widget under the same instance id (a widget swapped by
+//        editing the layout as JSON) is not shown
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -58,7 +60,9 @@ const layout = { pages: [{ name: 'Main', slots: [
     received.push(msg);
     if (msg.type === 'settings-ready') {
       push({ type: 'settings-init', data: {
-        layout, widgets, sensors: [], backgroundHost: 'backgrounds.plinth', reviewTiles: ['c1'],
+        layout, widgets, sensors: [], backgroundHost: 'backgrounds.plinth',
+        // c2's flag was raised for a widget it no longer holds.
+        reviewTiles: [{ instanceId: 'c1', widgetId: 'test.clock' }, { instanceId: 'c2', widgetId: 'test.hue' }],
         status: { elevated: false, version: 'v0.2.0 (probe)' },
       } });
     } else if (msg.type === 'save-layout') {
@@ -83,6 +87,8 @@ const layout = { pages: [{ name: 'Main', slots: [
   const chips = page.locator('#slotList .slot-chip');
   check('U2 the flagged tile reads "Updated"', await chips.nth(0).locator('.chip-updated').count() === 1);
   check('U2b ...and the unflagged one does not', await chips.nth(1).locator('.chip-updated').count() === 0);
+  check('U7 a flag raised for the widget a tile held before is not shown',
+    await chips.nth(1).locator('.chip-updated').count() === 0 && await chips.nth(0).locator('.chip-updated').count() === 1);
 
   await chips.nth(0).locator('.chip-main').click();
   await page.waitForTimeout(250);
@@ -117,7 +123,8 @@ const layout = { pages: [{ name: 'Main', slots: [
   // U5 · the preview is the main way in. A fresh init flags c2; the 🎨 on its tile in the
   // replica selects it through the real slot-selected handoff.
   await push({ type: 'settings-init', data: {
-    layout: JSON.parse(JSON.stringify(layout)), widgets, sensors: [], backgroundHost: 'backgrounds.plinth', reviewTiles: ['c2'],
+    layout: JSON.parse(JSON.stringify(layout)), widgets, sensors: [], backgroundHost: 'backgrounds.plinth',
+    reviewTiles: [{ instanceId: 'c2', widgetId: 'test.clock' }],
     status: { elevated: false, version: 'v0.2.0 (probe)' },
   } });
   await page.waitForTimeout(2500);   // settings re-renders; the replica re-inits

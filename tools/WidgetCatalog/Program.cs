@@ -10,6 +10,8 @@
 // W10     property names holding the old delimiters cannot make two shapes compare equal
 // W11     a second comparison in the same run (an in-app install) is not a baseline
 // W12     a settings-window save marks placed only when it lands; an install compares again
+// W13     a flag stays with the widget it was raised for: a tile that now holds another
+//         widget under the same instance id is not flagged
 using Plinth.Widgets;
 
 var failures = 0;
@@ -84,6 +86,8 @@ foreach (var (label, json) in new[]
     ("a null widget entry", "{\"Widgets\":{\"ws.stock.clock\":null},\"Review\":[]}"),
     ("a null shape", "{\"Widgets\":{\"ws.stock.clock\":{\"FirstSeen\":null,\"Shape\":null,\"Placed\":false}},\"Review\":[]}"),
     ("a null review id", "{\"Widgets\":{},\"Review\":[null]}"),
+    ("a review mark without its widget", "{\"Widgets\":{},\"Review\":[{\"InstanceId\":\"c1\"}]}"),
+    ("a review list in the earlier bare-id form", "{\"Widgets\":{},\"Review\":[\"c1\"]}"),
 })
 {
     File.WriteAllText(path, json);
@@ -136,6 +140,20 @@ Check("W12 a settings save marks its widgets placed only when the write lands",
 Check("W12b an in-app install compares the catalog again before the editor is refreshed",
     System.Text.RegularExpressions.Regex.IsMatch(setCode,
         @"_library\.InstallPackage\([\s\S]{0,2500}catalog\.Refresh\([\s\S]{0,600}PostInit\(\);"));
+
+// ---- W13 · a widget swapped under the same instance id -----------------------------------
+var swapPath = Path.Combine(dir.FullName, "swap.json");
+var s13 = new WidgetCatalogState(swapPath);
+s13.Refresh([Shape(clock), Shape(cpu)], Tiles(("ws.stock.clock", "c1")), t0);
+s13.Refresh([Shape(clock2), Shape(cpu)], Tiles(("ws.stock.clock", "c1")), t0.AddDays(1));
+Check("W13 setup: the clock tile is flagged, for the clock",
+    s13.ReviewTiles.Any(m => m.InstanceId == "c1" && m.WidgetId == "ws.stock.clock"));
+var s13b = new WidgetCatalogState(swapPath);
+s13b.Refresh([Shape(clock2), Shape(cpu)], Tiles(("ws.stock.cpu", "c1")), t0.AddDays(2));
+Check("W13 once that instance holds another widget, whose settings did not change, the flag goes",
+    s13b.Review.Count == 0, string.Join(",", s13b.Review));
+Check("W13b the settings window is sent each flag with its widget, so it can tell the same",
+    System.Text.RegularExpressions.Regex.IsMatch(setCode, @"\[""reviewTiles""\] = JsonSerializer\.SerializeToNode\(WidgetCatalogState\.Shared\?\.ReviewTiles"));
 
 try { dir.Delete(recursive: true); } catch { }
 Console.WriteLine(failures > 0 ? $"{failures} FAILURES" : "ALL PASS");
