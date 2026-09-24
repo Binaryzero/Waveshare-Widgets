@@ -82,7 +82,9 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   threshold colouring in both directions, non-2xx / unreachable / non-JSON / null /
   pointer-miss states, the Stale path (a failure after a good read keeps the number),
   no stacked pollers across repeated inits, and that a configured auth header reaches
-  the request while appearing nowhere in the DOM. Also writes the populated
+  the request while appearing nowhere in the DOM. RP (#59): a private endpoint, stored as
+  a secret, is fetched instead of the plain one when set, is part of the tile's source
+  identity, and falls back to the plain one when cleared. Also writes the populated
   `restvalue-*.png` screenshots. Routes are fulfilled in-process — no ports.
 - `nextfetch-run.js` — three scheduling/rendering follow-ups on the Next Event widget
   (issue #180). All three are timing bugs the real-time probes on that PR could not place
