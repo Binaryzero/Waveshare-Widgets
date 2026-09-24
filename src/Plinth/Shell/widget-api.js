@@ -157,7 +157,6 @@
   /// consumer on responses of any size, including ones nowhere near the ceiling.
   function cappedStream(source, maxBytes) {
     let reader = null;
-    let pending = null;   // read from the source, not yet handed to the consumer
     let total = 0;
     return new ReadableStream({
       type: 'bytes',
@@ -168,37 +167,29 @@
         // looking at .body break every reader after it, which is a stranger failure than
         // the one this wrapper exists to prevent.
         if (!reader) reader = source.getReader();
-        if (!pending || !pending.length) {
-          const { done, value } = await reader.read();
-          if (done) {
-            controller.close();
-            // A BYOB read that is waiting when the source ends has to be answered, or it
-            // never settles: close() alone leaves that reader hanging on a stream it can
-            // see is closed.
-            if (controller.byobRequest) controller.byobRequest.respond(0);
-            return;
-          }
-          if (total + value.length > maxBytes) {
-            cancelQuietly(reader);
-            controller.error(new RangeError('response too large: exceeds ' + maxBytes + ' bytes'));
-            return;
-          }
-          total += value.length;
-          pending = value;
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          // A BYOB read that is waiting when the source ends has to be answered, or it
+          // never settles: close() alone leaves that reader hanging on a stream it can see
+          // is closed. This is the line a BYOB reader depends on — tests/harness/bodycap-run
+          // C16b removes it and watches the last read hang, in CI.
+          if (controller.byobRequest) controller.byobRequest.respond(0);
+          return;
         }
-        // A byte stream must SERVE a pending BYOB request by writing into the view the
-        // reader supplied — enqueue() does not answer one, and the read then waits forever.
-        // Verified in both Chromium and Node: enqueue-only + a BYOB reader hangs, which is
-        // worse than the plain stream this replaced (that one at least threw). Chunks from
-        // the source are whatever size the network gave us and the view is whatever size the
-        // caller asked for, so `pending` carries the remainder across pulls.
-        const req = controller.byobRequest;
-        if (!req) { controller.enqueue(pending); pending = null; return; }
-        const n = Math.min(req.view.byteLength, pending.length);
-        new Uint8Array(req.view.buffer, req.view.byteOffset, req.view.byteLength)
-          .set(pending.subarray(0, n));
-        pending = pending.subarray(n);
-        req.respond(n);
+        if (total + value.length > maxBytes) {
+          cancelQuietly(reader);
+          controller.error(new RangeError('response too large: exceeds ' + maxBytes + ' bytes'));
+          return;
+        }
+        total += value.length;
+        // enqueue() also answers a pending BYOB read: the stream copies from its queue into
+        // the reader's view and keeps the remainder for the next read. This used to serve
+        // byobRequest by hand, on the belief that enqueue() left a BYOB read hanging — but
+        // with that branch removed every read still settles, intact, in Chromium and Node
+        // alike; the hang it was credited with fixing was the missing respond(0) above
+        // (#138). A branch no probe can tell from its absence is not kept.
+        controller.enqueue(value);
       },
       cancel() { cancelQuietly(reader || source); },   // never read: cancel the source itself
     });
