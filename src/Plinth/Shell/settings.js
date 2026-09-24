@@ -2869,11 +2869,16 @@
         reset.textContent = 'Use theme';
         reset.title = 'Clear this override and follow the theme';
         const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
+        // Not on a demoted secret (#157). The reset deletes the key, and absent is one of
+        // the shapes the host reads as untouched, so there it RESTORED the stored value
+        // while its label promised the theme. The field's ✕ says what it does; the
+        // reset would sit beside it meaning the opposite.
+        const restorable = Array.isArray(slot.secretsRestorable) && slot.secretsRestorable.includes(prop.name);
         const sync = () => {
           const overridden = slot.settings[prop.name] !== undefined && norm(slot.settings[prop.name]) !== norm(prop.default);
           state.textContent = overridden ? 'custom' : 'themed';
           state.classList.toggle('overridden', overridden);
-          reset.hidden = !overridden;
+          reset.hidden = !overridden || restorable;
         };
         input.oninput = () => { set(input.value); sync(); };
         reset.onclick = () => {
