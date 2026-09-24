@@ -277,6 +277,33 @@
     tick(gen);
   });
 
+  // Find (#210): the entities this Home Assistant has, for a row's Entity ID. The same
+  // /api/states read the poll makes, under the same deadline and size cap, answered as
+  // entity ids with their friendly names and sorted by id so each domain reads together.
+  // It needs only the address and the token, so it works before any entity is added.
+  // Its deadline is shorter than the poll's: the shell stops waiting for an answer at
+  // 20 s, and one that arrives after that is thrown away, so the widget has to say
+  // "did not answer in time" itself, first.
+  const DISCOVER_DEADLINE = 15000;
+  WW.onDiscover(async ({ property, field }) => {
+    if (property !== 'entities' || field !== 'entity') return null;
+    if (!cfg.base || !cfg.token)
+      throw new Error('Add the Home Assistant address and an access token first. Find lists the entities they reach.');
+    let all;
+    try {
+      all = await haJson('/api/states', { maxBytes: 4 * 1024 * 1024 }, DISCOVER_DEADLINE, true);
+    } catch (e) {
+      throw new Error(e && e.kind ? faultText(e.kind, e.status) : 'Could not read the entity list.');
+    }
+    return all
+      .filter((item) => item && typeof item.entity_id === 'string' && item.entity_id)
+      .map((item) => ({
+        value: item.entity_id,
+        label: String((item.attributes && item.attributes.friendly_name) || ''),
+      }))
+      .sort((a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
+  });
+
   // How many tiles the slot can actually hold. Columns followed the entity COUNT alone,
   // so a supported 200px band asked for four rows of 44px tiles in about 120px of room
   // and the grid simply overflowed — the tiles past the fold were still polled and still

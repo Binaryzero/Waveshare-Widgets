@@ -369,13 +369,21 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   save the picked value. On the panel, Find straight after an edit waits for the tile's
   reload and asks with the edited settings (P4). The settings window says so when there is
   no panel.
+- `hafind-run.js` — Home Assistant's Find (#210), asked the way the shell asks, against a
+  stub server. The Entity ID field lists every entity sorted by id with its friendly name
+  (F1), and it answers while the widget is still on its setup card (F2). Other settings
+  get "unsupported". A rejected token and a missing address come back as the widget's own
+  messages, and a server that never answers is reported by the widget at about 15 s,
+  inside the shell's 20 s wait (F6).
 - `wowfind-run.js` — WoW Panel's Find (#210). The OAuth exchange is answered on the host-proxy
   tier as on the panel, and the realm index directly. The Realm setting lists the region's
   realms as slugs labelled with their names, sorted by name, from the dynamic namespace in
   the region's locale (F1, F4), and it answers while the widget is still on its setup card.
   The character gets "unsupported": listing a player's characters needs their own
   Battle.net sign-in. Rejected credentials and missing ones come back as the widget's own
-  messages.
+  messages. A slow sign-in plus a slow read is reported at about 15 s (F7, so the run takes
+  about 20 s), a list with no usable realms is an error (F8), and a realm typed by its name
+  is looked up by Blizzard's slug, accents and brackets dropped (F9).
 - `apppick-run.js` — Store apps in the app picker (#219). Runs in CI on plain Node: the
   pickers' `ww-app-pick` block (the "no match" line and the rule that a pick fills an EMPTY
   Name and never a typed one) is sliced out of both `settings.js` and `shell.js` and run,
