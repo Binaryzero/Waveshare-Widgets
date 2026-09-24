@@ -341,6 +341,19 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   and the shell's gates (past the bridge's identity-and-origin check, never in edit mode,
   only from a widget on the page shown) are pinned as source guards. F1 runs the pre-fix
   behaviour and requires it to fail.
+- `discover-run.js` — Find, a widget looking up its own setting values (#210 slice 2). Runs
+  in CI on plain Node. The shell's `ww-discover-clean` block must reduce a widget's answer
+  to bounded, plain `{value, label}` choices. The widget API's `ww-discover-answer` block
+  must answer every question exactly once, in plain data, and say "unsupported" rather
+  than stay silent. The editors' `ww-discover-text` block (both copies) must leave every
+  dead end typeable. The wiring across the host is pinned as source guards. D5 runs a
+  pass-through cleaner and requires D1 to fail.
+- `discoverroute-run.js` — the same, for real, in a browser. In the dashboard shell with a
+  fake host, a question reaches only the widget it names. Another widget quoting the live
+  id is ignored (R4). A question is answered once, and a silent widget becomes a timeout
+  after 20 s (so the run takes about 30 s). The panel's property sheet and the settings
+  window each offer Find on a text setting and a list field, list label over value, and
+  save the picked value. The settings window says so when there is no panel.
 - `atticretire-run.js` — a removal made in the settings window's live PREVIEW retires the
   tile instead of discarding it (#226, and the scope cut withdrawn from PR #269). The
   preview is a replica shell handed every credential blanked, so anything it retired

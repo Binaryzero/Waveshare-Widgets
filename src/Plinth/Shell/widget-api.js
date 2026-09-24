@@ -61,6 +61,12 @@
   // document made can still be answered into this one and overwrite the profile it just
   // selected. Tracking the ids we issued restores the symmetry: this set is empty in a
   // fresh document, so nothing the old one asked for is accepted here.
+  // #210 — the one handler that answers "which values can this setting take". One, not a
+  // list: a question has one answer, and two handlers would race to give it.
+  let discoverHandler = null;
+  // Most choices sent back. The shell keeps fewer; this only stops a runaway array from
+  // being cloned across the frame boundary in full.
+  const DISCOVER_SEND_MAX = 2000;
   const sdRequests = new Set();
   /// Remembers an outstanding request, and forgets it if no answer comes. Without the
   /// expiry the set only ever grows: the settings preview drops every sd-* message by
@@ -350,6 +356,43 @@
   if (typeof document !== 'undefined' && document.addEventListener)
     document.addEventListener('DOMContentLoaded', stampBackground, { once: true });
 
+  // >>> ww-discover-answer — extracted and RUN by tests/harness/discover-run.js. Free
+  // names: parent, shellTarget, discoverHandler, DISCOVER_SEND_MAX.
+  // #210 — the settings editor asked this widget, through the dashboard, which values
+  // one of its settings can take. It is asked HERE because this frame holds the saved
+  // credential and the settings window never does; the widget answers with its own
+  // fetch. A widget with no handler, or one that returns nothing for this property,
+  // says so rather than staying silent, so the editor can stop waiting.
+  function answerDiscover(msg) {
+    const id = msg.id;
+    if (typeof id !== 'string' || !id) return;
+    const reply = (body) => {
+      body.type = 'ww-discover-result';
+      body.id = id;
+      try { parent.postMessage(body, shellTarget()); }
+      catch (e) { parent.postMessage({ type: 'ww-discover-result', id, error: 'The answer could not be sent.' }, shellTarget()); }
+    };
+    const errText = (e) => String((e && e.message) || e || 'Lookup failed.').slice(0, 300);
+    if (!discoverHandler) { reply({ unsupported: true }); return; }
+    const ask = { property: String(msg.property || ''), field: msg.field ? String(msg.field) : null };
+    let out;
+    try { out = discoverHandler(ask); } catch (e) { reply({ error: errText(e) }); return; }
+    Promise.resolve(out).then((options) => {
+      if (!Array.isArray(options)) { reply({ unsupported: true }); return; }
+      // Plain strings and {value, label} only: anything else would fail the structured
+      // clone, and the shell reads nothing more.
+      const plain = [];
+      for (const o of options) {
+        if (plain.length >= DISCOVER_SEND_MAX) break;
+        if (typeof o === 'string' || typeof o === 'number') plain.push(String(o));
+        else if (o && typeof o === 'object' && (typeof o.value === 'string' || typeof o.value === 'number'))
+          plain.push({ value: String(o.value), label: o.label == null ? '' : String(o.label) });
+      }
+      reply({ options: plain });
+    }, (e) => reply({ error: errText(e) }));
+  }
+  // <<< ww-discover-answer
+
   function applyThemeTokens(theme) {
     if (!theme || typeof theme !== 'object') return;
     state.theme = theme;
@@ -449,6 +492,8 @@
         pendingAudioGets.delete(msg.id);
         pending.resolve({ available: msg.available !== false, master: msg.master || null, sessions: msg.sessions || [] });
       }
+    } else if (msg.type === 'ww-discover') {
+      answerDiscover(msg);
     } else if (msg.type === 'ww-secure-result') {
       const pending = pendingSecure.get(msg.id);
       if (!pending) return;
@@ -901,6 +946,13 @@
      * model, windowAvailable, capture?}. `windowAvailable:false` = the deck's window is
      * not open, so refuse the tap instead of sending a click that lands nowhere. */
     onStreamDeck(cb) { listeners.streamdeck.push(cb); },
+    /** Answer "which values can this setting take" for a property that declares
+     * optionsSource: "widget" (#210). cb({property, field}) returns an array — or a
+     * promise of one — of strings or {value, label}; field is the list field's key when
+     * the setting is a list. Return null for a property this widget does not look up.
+     * Throw (or reject) with a message the user should read when the lookup fails.
+     * Runs on the panel with the widget's SAVED settings, and only when the user asks. */
+    onDiscover(cb) { discoverHandler = typeof cb === 'function' ? cb : null; },
     /** Capture-only fast path for live mirroring: cheaper than requestStreamDeck (no
      * profile re-parse; the host skips the frame entirely when pixels are unchanged). */
     requestStreamDeckCapture() {

@@ -116,6 +116,15 @@ jobs:
       - name: WoW Panel shows the character's current data
         run: node tests/harness/wowreaders-run.js
 
+      # Find (#210): a widget looks up its own setting values on the panel, where its
+      # credential is, and the settings window gets only the list of choices. The widget
+      # is the untrusted party, so what the shell keeps from its answer is bounded, and
+      # every dead end has to leave the field typeable. Plain Node against the real source;
+      # the browser round trip is tests/harness/discoverroute-run.js on the maintainer's
+      # machine.
+      - name: Find answers are bounded and routed to the asker
+        run: node tests/harness/discover-run.js
+
       # A Stream Deck profile names its plugin and action UUIDs, and the icon resolver used
       # both to build filesystem paths — so a crafted or imported profile could point them at
       # any readable file, whose contents are then base64'd into the profile payload and sent

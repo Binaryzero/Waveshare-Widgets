@@ -63,6 +63,11 @@
   // not tell two askers apart (#127).
   const sdRoutes = new Map();    // sd request id -> { win, origin }
   let sdSeq = 0;                 // only for a caller that sent no id of its own
+  // #210 — outstanding "which values can this setting take" questions, by id. The route
+  // holds the SLOT asked, not just its window: only that frame's answer is accepted.
+  const discoverRoutes = new Map(); // discovery id -> { slot, done, timer }
+  let discoverSeq = 0;
+  const DISCOVER_TIMEOUT_MS = 20000;
 
   let backgroundHost = 'backgrounds.plinth';
   let bgGlobal = null;         // dashboard-wide background spec
@@ -256,6 +261,15 @@
       const waiters = psProfileWaiters.splice(0);
       const profiles = ((msg.data && msg.data.profiles) || []).filter((p) => typeof p === 'string');
       waiters.forEach((cb) => { try { cb(profiles); } catch (e) { /* row rebuilt */ } });
+    } else if (msg.type === 'discover') {
+      // The settings window asks a placed widget for a setting's choices (#210). The
+      // answer goes back to the host, which hands it to the settings window.
+      const d = msg.data || {};
+      const hostId = typeof d.id === 'string' ? d.id : '';
+      if (!hostId || PREVIEW) return;
+      discoverFrom(String(d.instanceId || ''), String(d.property || ''),
+        d.field ? String(d.field) : null,
+        (result) => postToHost(Object.assign({ type: 'discover-result', id: hostId }, result)));
     } else if (msg.type === 'apps-result') {
       // Installed applications for the sheet's path pickers (#210).
       const waiters = psAppWaiters.splice(0);
@@ -355,6 +369,15 @@
       // overlays own every gesture and widgets are not live.
       if (editing || sender.page !== layoutData.pages[editIndex()]) return;
       goToPage(editIndex() + msg.dir);
+    } else if (msg.type === 'ww-discover-result') {
+      // Only the frame that was asked, and only once. A route is per question and holds
+      // the slot record itself, so another widget — or this one after a reload that
+      // outlived the question — cannot answer it.
+      const route = discoverRoutes.get(msg.id);
+      if (!route || route.slot !== sender) return;
+      discoverRoutes.delete(msg.id);
+      clearTimeout(route.timer);
+      route.done(cleanDiscovery(msg));
     } else if (msg.type === 'ww-open-url' && typeof msg.url === 'string') {
       postToHost({ type: 'open-url', url: msg.url });
     } else if (msg.type === 'ww-action' && typeof msg.kind === 'string') {
@@ -527,6 +550,59 @@
     for (const n of items) if (n && n.id != null) slot.notifSeen.add(String(n.id));
     return payload;
   }
+
+  /// Asks the placed widget with this instanceId which values one of its settings can take
+  /// (#210), and calls done exactly once with the cleaned answer or a reason there is none.
+  /// The widget answers with its own fetch and its own saved credential — the reason the
+  /// question is asked here, on the panel, rather than in the settings window.
+  function discoverFrom(instanceId, property, field, done) {
+    const slot = instanceId && slots.find((s) => s.def && s.def.instanceId === instanceId && s.frame);
+    if (!slot) { done({ ok: false, error: 'not-placed' }); return; }
+    discoverSlot(slot, property, field, done);
+  }
+
+  function discoverSlot(slot, property, field, done) {
+    if (!slot.frame || !slot.initialized || !slot.origin) { done({ ok: false, error: 'not-ready' }); return; }
+    const id = 'dq' + (++discoverSeq) + '-' + Math.random().toString(36).slice(2);
+    const timer = setTimeout(() => {
+      if (discoverRoutes.delete(id)) done({ ok: false, error: 'timeout' });
+    }, DISCOVER_TIMEOUT_MS);
+    discoverRoutes.set(id, { slot, done, timer });
+    sendToSlot(slot, { type: 'ww-discover', id, property, field: field || null });
+  }
+
+  // >>> ww-discover-clean — extracted and RUN by tests/harness/discover-run.js
+  /** A widget's answer, reduced to what the editors show: at most 500 choices, each a
+   * non-blank string value of at most 300 characters and a label (the value when none is
+   * given), no repeats. The widget is the untrusted party here; nothing else it sent is
+   * passed on. */
+  function cleanDiscovery(msg) {
+    const MAX = 500;
+    const MAXLEN = 300;
+    if (!msg || typeof msg !== 'object') return { ok: false, error: 'bad-reply' };
+    if (msg.unsupported === true) return { ok: false, error: 'unsupported' };
+    if (typeof msg.error === 'string' && msg.error.trim())
+      return { ok: false, error: 'widget', message: msg.error.trim().slice(0, MAXLEN) };
+    if (!Array.isArray(msg.options)) return { ok: false, error: 'bad-reply' };
+    const seen = new Set();
+    const options = [];
+    let truncated = false;
+    for (const o of msg.options) {
+      let value;
+      let label;
+      if (typeof o === 'string') { value = o; label = o; }
+      else if (o && typeof o === 'object' && typeof o.value === 'string') {
+        value = o.value;
+        label = typeof o.label === 'string' && o.label.trim() ? o.label : o.value;
+      } else continue;
+      if (!value.trim() || value.length > MAXLEN || seen.has(value)) continue;
+      if (options.length >= MAX) { truncated = true; break; }
+      seen.add(value);
+      options.push({ value, label: label.trim().slice(0, MAXLEN) });
+    }
+    return { ok: true, options, truncated };
+  }
+  // <<< ww-discover-clean
 
   /// Remembers who asked, so the answer can go back to exactly that frame. The shim
   /// mints the id; a caller that sent none still works, on an id minted here, because a
@@ -2424,6 +2500,19 @@
         // Short static lists show every choice as a tappable segment (dropdowns
         // are miserable on the strip anyway); dynamic lists keep the dropdown.
         const staticOpts = prop.options || [];
+        if (prop.optionsSource === 'widget') {
+          // The choices exist only once the widget is asked (#210), so the value is text
+          // with a Find beside it — typing always works, finding is the shortcut.
+          const input = document.createElement('input');
+          input.type = 'text';
+          if (prop.placeholder) input.placeholder = String(prop.placeholder);
+          input.value = current != null ? String(current) : '';
+          input.oninput = () => set(prop, input.value);
+          const wrap = document.createElement('div');
+          wrap.className = 'ps-inline';
+          wrap.append(input, psDiscoverBtn(input, prop.name, null));
+          return wrap;
+        }
         if (!prop.optionsSource && staticOpts.length >= 2 && staticOpts.length <= 5) {
           return psSegmented(staticOpts, current, (v) => set(prop, v));
         }
@@ -2556,6 +2645,13 @@
         if (prop.placeholder) input.placeholder = String(prop.placeholder);
         input.value = current != null ? String(current) : '';
         input.oninput = () => set(prop, input.value);
+        if (prop.optionsSource === 'widget') {
+          // A value the widget can look up itself (#210): WoW's realm and character.
+          const wrap = document.createElement('div');
+          wrap.className = 'ps-inline';
+          wrap.append(input, psDiscoverBtn(input, prop.name, null));
+          return wrap;
+        }
         if (prop.picker === 'emoji' || prop.picker === 'emoji-prefix') {
           const wrap = document.createElement('div');
           wrap.className = 'ps-inline';
@@ -2592,6 +2688,113 @@
         // prefix mode keeps the text and swaps only the leading icon.
         input.value = prefix ? (e + ' ' + input.value.replace(PS_LEAD_EMOJI, '')).trimEnd() : e;
         input.dispatchEvent(new Event('input'));
+      });
+    });
+    return btn;
+  }
+
+  // >>> ww-discover-text — extracted and RUN by tests/harness/discover-run.js (the same
+  // block lives in settings.js, for the desktop chooser; the harness runs both copies).
+  /** What the Find chooser says about an answer (#210). Finding is a shortcut, never the
+   * only way in, so every dead end says the value can still be typed. Empty when the list
+   * speaks for itself. */
+  function discoverStatusText(result) {
+    if (!result || typeof result !== 'object') return 'No answer came back. Type the value instead.';
+    if (result.ok) {
+      const n = Array.isArray(result.options) ? result.options.length : 0;
+      if (!n) return 'The widget found nothing to offer. Type the value instead.';
+      return result.truncated ? 'Showing the first ' + n + ' the widget found — search to narrow them.' : '';
+    }
+    switch (result.error) {
+      case 'no-dashboard': return 'The panel is not running, so the widget cannot be asked. Type the value instead.';
+      case 'not-placed': return 'This widget is not on the panel yet. Save, then try again — or type the value.';
+      case 'not-ready': return 'The widget on the panel is still loading. Try again in a moment.';
+      case 'timeout': return 'The widget on the panel did not answer. Type the value instead.';
+      case 'unsupported': return 'This widget cannot look this setting up. Type the value instead.';
+      case 'widget': return 'The widget could not look this up: ' + String(result.message || 'no reason given');
+      default: return 'The widget sent an answer that could not be read. Type the value instead.';
+    }
+  }
+  // <<< ww-discover-text
+
+  /** "Find…" for a setting the widget can look up itself (#210). The panel holds the
+   * widget, so the question goes straight to its frame; the desktop editor asks the same
+   * question through the host. Same sheet as the app chooser, for the same reasons. */
+  function psDiscoverBtn(input, property, field) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ps-pick ps-find no-pan';
+    btn.textContent = 'Find…';
+    btn.title = 'Ask this widget for the values it can use';
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const record = propTarget;
+      if (document.querySelector('.ps-apps') || !record) return;
+      // Pending edits first. The widget answers from its live settings, so a token typed
+      // a moment ago has to reach it before the question does.
+      if (propApplyTimer) {
+        clearTimeout(propApplyTimer);
+        propApplyTimer = null;
+        applyPropNow(record);
+      }
+      const sheet = document.createElement('div');
+      sheet.className = 'ps-apps ps-discover';
+      const head = document.createElement('div');
+      head.className = 'ps-apps-head';
+      const search = document.createElement('input');
+      search.type = 'text';
+      search.placeholder = 'Search…';
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'ps-pick no-pan';
+      close.textContent = '✕';
+      close.title = 'Close';
+      close.addEventListener('click', () => sheet.remove());
+      head.append(search, close);
+      const list = document.createElement('div');
+      list.className = 'ps-apps-list';
+      const status = document.createElement('p');
+      status.className = 'ps-apps-status';
+      status.textContent = 'Asking the widget…';
+      sheet.append(head, status, list);
+      document.body.appendChild(sheet);
+
+      let options = [];
+      let note = '';
+      const render = () => {
+        const q = search.value.trim().toLowerCase();
+        const shown = q
+          ? options.filter((o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q))
+          : options;
+        list.textContent = '';
+        for (const o of shown) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'no-pan';
+          b.textContent = o.label;
+          if (o.label !== o.value) {
+            const sub = document.createElement('span');
+            sub.className = 'ps-find-value';
+            sub.textContent = o.value;
+            b.appendChild(sub);
+          }
+          b.addEventListener('click', () => {
+            input.value = o.value;
+            input.dispatchEvent(new Event('input'));
+            sheet.remove();
+          });
+          list.appendChild(b);
+        }
+        const text = options.length && !shown.length ? 'No match.' : note;
+        status.hidden = !text;
+        status.textContent = text;
+      };
+      search.addEventListener('input', render);
+      discoverSlot(record, property, field, (result) => {
+        if (!sheet.isConnected) return;   // dismissed while the widget was looking
+        options = result.ok ? result.options : [];
+        note = discoverStatusText(result);
+        render();
       });
     });
     return btn;
@@ -2825,7 +3028,13 @@
           // is one (launcher items.target, deck buttons.target), and there is no top-level
           // one anywhere in the catalog. A picker wired only to psControl's text branch
           // reaches nothing a user owns.
-          if (f.picker === 'emoji' || f.picker === 'emoji-prefix' || f.picker === 'file') {
+          if (f.optionsSource === 'widget') {
+            // A row value the widget can look up (#210): repositories, entities.
+            const row = document.createElement('div');
+            row.className = 'ps-inline';
+            row.append(input, psDiscoverBtn(input, prop.name, f.key));
+            card.appendChild(row);
+          } else if (f.picker === 'emoji' || f.picker === 'emoji-prefix' || f.picker === 'file') {
             const row = document.createElement('div');
             row.className = 'ps-inline';
             row.appendChild(input);
