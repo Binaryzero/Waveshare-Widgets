@@ -79,14 +79,18 @@ public static partial class CredentialNames
     // `value`, `url` and `name` are absent for that reason.
     // A duration unit and `mode` join it for the same reason: `tokenExpirySeconds` holds a
     // number and `credentialMode` an enum (#56).
-    [GeneratedRegex(@"(^|[^a-z0-9])(endpoints?|expiry|expires|expiration|ttl|lifetime|type|label|format|algorithm|issuer|scopes?|count|prefix|enabled|modes?|ms|seconds|minutes|hours)$", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"(^|[^a-z0-9])(endpoints?|expiry|expires|expiration|ttl|lifetime|type|label|format|algorithm|issuer|scopes?|count|prefix|enabled|modes?|ms|milliseconds|seconds|minutes|hours)$", RegexOptions.IgnoreCase)]
     private static partial Regex MetadataTail();
 
-    // A name that STARTS with one of these is a switch that acts on the credential field,
-    // not the field: `showPassword`, `maskApiKey`. The verb must be a whole word, so
-    // `maskedPassword` and `showcaseToken` are still flagged.
+    // A name that STARTS with one of these can be a switch that acts on the credential
+    // field: `showPassword`, `maskApiKey`. Only the TYPE proves it. A switch or a select
+    // stores one of the manifest's own options, never something the user typed; a text
+    // field named `showToken` could hold the token. The verb must be a whole word, so
+    // `maskedPassword` is flagged whatever its type.
     [GeneratedRegex(@"^(show|hide|reveal|mask)([^a-z0-9]|$)", RegexOptions.IgnoreCase)]
     private static partial Regex SwitchHead();
+
+    private static bool IsSwitchType(string? type) => type is "switch" or "select";
 
     [GeneratedRegex(@"([A-Z]+)([A-Z][a-z])")] private static partial Regex AcronymThenWord();
     [GeneratedRegex(@"([a-z0-9])([A-Z])")] private static partial Regex WordThenWord();
@@ -94,8 +98,10 @@ public static partial class CredentialNames
     [GeneratedRegex(@"\s+")] private static partial Regex Whitespace();
 
     /// <summary>True when this property name denotes a credential, and so must be
-    /// declared <c>type: "secret"</c> rather than stored as plaintext.</summary>
-    public static bool LooksLikeCredential(string? name)
+    /// declared <c>type: "secret"</c> rather than stored as plaintext.
+    /// <paramref name="type"/> is the property's declared type; null where there is none
+    /// (a list field).</summary>
+    public static bool LooksLikeCredential(string? name, string? type = null)
     {
         // Two case boundaries, because initialisms are everywhere in this domain:
         //   acronym->word  "APIToken" -> "API Token"
@@ -110,7 +116,7 @@ public static partial class CredentialNames
 
         var trimmed = spaced.Trim();
         // Metadata about a credential is not the credential; see MetadataTail and SwitchHead.
-        if (!MetadataTail().IsMatch(trimmed) && !SwitchHead().IsMatch(trimmed))
+        if (!MetadataTail().IsMatch(trimmed) && !(IsSwitchType(type) && SwitchHead().IsMatch(trimmed)))
         {
             if (CredentialWord().IsMatch(spaced) || CredentialWord().IsMatch(squashed)) return true;
             if (Compound().IsMatch(squashed)) return true;

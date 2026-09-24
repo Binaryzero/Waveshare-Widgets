@@ -29,7 +29,7 @@ var innocentNames = fixture["innocent"]!.AsArray().Select(n => n!.GetValue<strin
 
 // ---- C1 · the C# rule agrees with the shared fixture --------------------------------
 var missed = credentialNames.Where(n => !CredentialNames.LooksLikeCredential(n)).ToList();
-var falsePositives = innocentNames.Where(CredentialNames.LooksLikeCredential).ToList();
+var falsePositives = innocentNames.Where(n => CredentialNames.LooksLikeCredential(n)).ToList();
 Check($"C1 every credential spelling in the fixture is flagged ({credentialNames.Count})",
     missed.Count == 0, missed.Count == 0 ? null : "missed: " + string.Join(", ", missed));
 Check($"C1b no innocent name in the fixture is flagged ({innocentNames.Count})",
@@ -45,6 +45,21 @@ Check("C1c the fixture is substantial enough to mean something",
 // ---- C2 · a flagged name becomes a refusal ------------------------------------------
 static WidgetManifest ManifestWith(params WidgetProperty[] props) =>
     new() { Id = "com.example.test", Name = "Test", Properties = [.. props] };
+
+// The typed cases go through the manifest check itself, and through the redaction set,
+// which must agree with it: a property the check accepts is ordinary config, and
+// redacting it would empty the user's setting in the editor.
+var typedCases = fixture["typed"]!.AsArray().Select(n => (
+    Name: n!["name"]!.GetValue<string>(), Type: n["type"]!.GetValue<string>(),
+    Credential: n["credential"]!.GetValue<bool>())).ToList();
+var typedWrong = typedCases.Where(c =>
+{
+    var m = ManifestWith(new WidgetProperty { Name = c.Name, Type = c.Type });
+    return m.CredentialsAreTyped(out _) == c.Credential
+        || m.CredentialPropertyNames().Contains(c.Name) != c.Credential;
+}).Select(c => $"{c.Name} as {c.Type}").ToList();
+Check($"C1d the name-and-type cases agree with the manifest check and the redaction set ({typedCases.Count})",
+    typedCases.Count > 0 && typedWrong.Count == 0, typedWrong.Count == 0 ? null : "wrong: " + string.Join(", ", typedWrong));
 
 var plaintextToken = ManifestWith(new WidgetProperty { Name = "apiToken", Label = "API token", Type = "text" });
 Check("C2 a credential declared as text is refused",
