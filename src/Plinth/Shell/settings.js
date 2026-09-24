@@ -92,6 +92,9 @@
   function setTab(name) {
     if (!PANES[name]) name = 'page';
     activeTab = name;
+    // Drawn fresh on open: its list of tiles that override the theme (#225) is a snapshot,
+    // and tile edits made since on the Widget tab would otherwise be missing from it.
+    if (name === 'theme') renderThemeEditor();
     for (const key of Object.keys(TABS)) {
       const on = key === name;
       el(TABS[key]).classList.toggle('active', on);
@@ -862,6 +865,8 @@
     markDirty();
     renderPageList();
     renderEditorPanel();
+    // The Theme tab's override list holds rows for the slot objects just replaced (#225).
+    if (activeTab === 'theme') renderThemeEditor();
   }
 
   function onReplicaSelection(pageIdx, slotIdx, instanceId, gen) {
@@ -1311,9 +1316,9 @@
     // keeps it through any change made here, which otherwise reads as the theme editor
     // not working on that tile.
     const overriding = [];
-    (state.layout.pages || []).forEach((page, pi) => (page.slots || []).forEach((slot) => {
+    (state.layout.pages || []).forEach((page, pi) => (page.slots || []).forEach((slot, si) => {
       const keys = styleOverrideKeys(slot);
-      if (keys.length) overriding.push({ page, pi, slot, keys });
+      if (keys.length) overriding.push({ page, pi, slot, si, keys });
     }));
     if (overriding.length) {
       const box = document.createElement('div');
@@ -1329,14 +1334,23 @@
         row.className = 'theme-override';
         const w = widgetsById.get(o.slot.widgetId);
         const what = document.createElement('span');
+        // The tile's position as well as its page: two copies of one widget on a page are
+        // a supported layout, and without it their rows read the same.
         what.textContent = (w ? (w.displayName || w.name) : o.slot.widgetId)
-          + ' · ' + (o.page.name || 'Page ' + (o.pi + 1)) + ' — ' + o.keys.join(', ');
+          + ' · ' + (o.page.name || 'Page ' + (o.pi + 1)) + ', tile ' + (o.si + 1)
+          + ' — ' + o.keys.join(', ');
         const back = document.createElement('button');
         back.type = 'button';
         back.className = 'ghost';
         back.textContent = 'Follow the theme again';
         back.onclick = () => {
-          delete o.slot.style;
+          // Found again by id: a live-preview drag since this row was drawn replaces the
+          // slot objects, and clearing the old one would change nothing that is saved.
+          const id = o.slot.instanceId;
+          const live = id
+            ? (state.layout.pages || []).flatMap((p) => p.slots || []).find((x) => x.instanceId === id)
+            : o.slot;
+          if (live) delete live.style;
           refreshReplica('layout');
           renderThemeEditor();
           renderEditor();
@@ -2358,11 +2372,33 @@
       + 'anything unchecked keeps following the global theme.';
     wrap.appendChild(hint);
 
+    // #225: one step back to the theme, matching the on-panel editor's button. Shown
+    // only while something is overridden, so its presence is itself the signal.
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'ghost style-revert';
+    back.textContent = 'Follow the theme again';
+    back.onclick = () => {
+      delete slot.style;
+      refreshReplica('layout');
+      renderEditor();
+    };
+    back.hidden = !styleOverrideKeys(slot).length;
+
     const setStyleKey = (key, value) => {
+      const before = styleOverrideKeys(slot).join();
       const s = slot.style || (slot.style = {});
       if (value == null) delete s[key]; else s[key] = value;
       if (!Object.keys(s).length) delete slot.style;
       refreshReplica('layout');
+      // Checking or unchecking a key changes WHETHER this tile overrides the theme, and
+      // the marks that say so were drawn before the change: the revert button here and
+      // the 🎨 on the tile strip. A colour dragged within an override changes neither.
+      if (styleOverrideKeys(slot).join() !== before) {
+        back.hidden = !styleOverrideKeys(slot).length;
+        const page = (state.layout.pages || [])[selectedPage];
+        if (page) { el('slotList').textContent = ''; renderSlotStrip(page); }
+      }
     };
     const cur = slot.style || {};
     const seeds = Object.assign({}, THEME_DEFAULTS, state.layout.theme || {});
@@ -2429,20 +2465,7 @@
     row.append(check, label, range, out, alphaSrc.tag);
     wrap.appendChild(row);
 
-    // #225: one step back to the theme, matching the on-panel editor's button. Shown
-    // only while something is overridden, so its presence is itself the signal.
-    if (styleOverrideKeys(slot).length) {
-      const back = document.createElement('button');
-      back.type = 'button';
-      back.className = 'ghost style-revert';
-      back.textContent = 'Follow the theme again';
-      back.onclick = () => {
-        delete slot.style;
-        refreshReplica('layout');
-        renderEditor();
-      };
-      wrap.appendChild(back);
-    }
+    wrap.appendChild(back);
     return wrap;
   }
 
