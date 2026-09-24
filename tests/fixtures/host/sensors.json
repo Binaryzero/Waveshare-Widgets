@@ -1,0 +1,83 @@
+[
+ {
+  "id": "/amdcpu/0/load/0",
+  "name": "CPU Total",
+  "device": "AMD Ryzen 9 7950X",
+  "deviceType": "Cpu",
+  "type": "Load",
+  "units": "%",
+  "value": 37.5
+ },
+ {
+  "id": "/amdcpu/0/temperature/2",
+  "name": "Core (Tctl/Tdie)",
+  "device": "AMD Ryzen 9 7950X",
+  "deviceType": "Cpu",
+  "type": "Temperature",
+  "units": "\u00b0C",
+  "value": 61.2
+ },
+ {
+  "id": "/amdcpu/0/clock/1",
+  "name": "Core #1",
+  "device": "AMD Ryzen 9 7950X",
+  "deviceType": "Cpu",
+  "type": "Clock",
+  "units": "MHz",
+  "value": 5120
+ },
+ {
+  "id": "/gpu-nvidia/0/load/0",
+  "name": "GPU Core",
+  "device": "NVIDIA GeForce RTX 4080",
+  "deviceType": "GpuNvidia",
+  "type": "Load",
+  "units": "%",
+  "value": 54
+ },
+ {
+  "id": "/gpu-nvidia/0/temperature/0",
+  "name": "GPU Core",
+  "device": "NVIDIA GeForce RTX 4080",
+  "deviceType": "GpuNvidia",
+  "type": "Temperature",
+  "units": "\u00b0C",
+  "value": 67
+ },
+ {
+  "id": "/gpu-nvidia/0/clock/0",
+  "name": "GPU Core",
+  "device": "NVIDIA GeForce RTX 4080",
+  "deviceType": "GpuNvidia",
+  "type": "Clock",
+  "units": "MHz",
+  "value": 2610
+ },
+ {
+  "id": "/battery/0/level/0",
+  "name": "Charge Level",
+  "device": "Primary Battery",
+  "deviceType": "Battery",
+  "type": "Level",
+  "units": "%",
+  "value": 82
+ },
+ {
+  "id": "/ram/load/0",
+  "name": "Memory",
+  "device": "Generic Memory",
+  "deviceType": "Memory",
+  "type": "Load",
+  "units": "%",
+  "value": 48
+ },
+ {
+  "id": "sys:cpu:load",
+  "name": "CPU Total",
+  "device": "System",
+  "deviceType": "System",
+  "type": "Load",
+  "units": "%",
+  "value": 37.5
+ }
+]

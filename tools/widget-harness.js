@@ -6,6 +6,12 @@
 //   node tools/widget-harness.js widgets/clock
 //   node tools/widget-harness.js widgets/cpu --slot quarter --theme light --shot cpu.png
 //   node tools/widget-harness.js widgets/hue --settings '{"bgStyle":"transparent"}' --json
+//   node tools/widget-harness.js widgets/notifications --notifications tests/fixtures/host/notifications.json
+//
+// tests/fixtures/host/ holds a realistic sensor frame, media state and notifications payload.
+// Pass all three to see a host-fed widget POPULATED — its data-driven controls (the
+// notifications eye and dismiss buttons, the media transport) only exist then, so a sweep
+// without them runs the tap and edge-rail audits (#221, #206) against an empty tile.
 //
 // Checks: loads with zero page errors; renders visible content after init; the
 // bgStyle class contract (body background = rgba(surface-rgb, alpha)); pushed theme
@@ -59,7 +65,7 @@ const opt = (name, dflt) => {
   return i >= 0 ? args[i + 1] : dflt;
 };
 if (!folder) {
-  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--sensors frame.json] [--media state.json] [--shot out.png] [--json]');
+  console.error('usage: widget-harness.js <widget-folder> [--slot half] [--theme dark|light|{json}] [--settings {json}] [--sensors frame.json] [--media state.json] [--notifications data.json] [--shot out.png] [--json]');
   process.exit(1);
 }
 
@@ -72,6 +78,12 @@ const sensorFrame = sensorsFile ? JSON.parse(fs.readFileSync(sensorsFile, 'utf8'
 // follow-up push is synthesized (see the sensors-only note at the push below).
 const mediaFile = opt('media', null);
 const mediaState = mediaFile ? JSON.parse(fs.readFileSync(mediaFile, 'utf8')) : null;
+// Optional notifications payload ({ items, supported }), pushed after mount as the host's
+// ww-notifications does. The notifications widget's controls — the eye, the count pill,
+// the per-app rows — only exist once there is something to show, so without this the
+// sweep's tap and rail audits have only ever seen it empty (#206 is about exactly those).
+const notificationsFile = opt('notifications', null);
+const notificationsData = notificationsFile ? JSON.parse(fs.readFileSync(notificationsFile, 'utf8')) : null;
 
 const slot = opt('slot', 'half');
 const [W, H] = SLOTS[slot] || slot.split('x').map(Number);
@@ -494,6 +506,9 @@ function loadPlaywright() {
   // not the null this used to synthesize — so that push was wrong twice over.
   await page.waitForTimeout(150);
   await page.evaluate((frame) => window.__wwPush({ type: 'ww-sensors', sensors: frame }), sensorFrame);
+  if (notificationsData) {
+    await page.evaluate((data) => window.__wwPush({ type: 'ww-notifications', data }), notificationsData);
+  }
   await page.waitForTimeout(1200);
 
   const frameErrors = await frame.evaluate(() => window.__wwErrors || []).catch(() => []);
