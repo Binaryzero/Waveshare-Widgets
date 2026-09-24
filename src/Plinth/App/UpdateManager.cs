@@ -1,6 +1,8 @@
 using System.IO.Compression;
 using System.Reflection;
 using System.Text.Json;
+using Microsoft.Win32;
+using Plinth.Recover;
 
 namespace Plinth.App;
 
@@ -75,6 +77,100 @@ public static class UpdateManager
             FileAccess.Write, FileShare.Read);
         fs.Write(System.Text.Encoding.UTF8.GetBytes(content));
         fs.Flush(flushToDisk: true);
+    }
+
+    /// <summary>The recovery helper's net (#239). Startup recovery lives in Plinth.dll, and on
+    /// the self-contained build the swap also replaces the .NET runtime files: a swap cut off
+    /// by a power loss can leave a mix of runtimes that fails before any of Plinth runs, so
+    /// nothing reads the journal. PlinthRecover.exe ships beside Plinth.exe, built for the
+    /// .NET Framework in Windows. Before the swap touches a file, a copy of it goes into
+    /// updates/ and this account's RunOnce key names the copy; once the swap commits or rolls
+    /// back, both go. At the first sign-in after a cut-off swap Windows runs the copy, which
+    /// needs nothing the swap replaced: it puts the originals back and starts Plinth, whose
+    /// recovery then retires the journal as usual (SwapRestore).
+    ///
+    /// <para>Best effort throughout. Failing to arm leaves the swap exactly as protected as it
+    /// was before the helper existed, so it is logged and the update goes ahead.</para></summary>
+    private static void ArmRecoveryHelper(string baseDir, string stamp)
+    {
+        // The running install's own helper: it reads the journal this version writes.
+        var shipped = Path.Combine(baseDir, SwapRestore.HelperFileName);
+        if (!File.Exists(shipped))
+        {
+            Log.Info("Update: this install has no recovery helper; startup recovery is the only net for this swap");
+            return;
+        }
+        var copy = Path.Combine(UpdatesDir, SwapRestore.CopyName(stamp));
+        var command = SwapRestore.Command(copy, JournalFile, stamp);
+        if (command is null)
+        {
+            Log.Warn("Update: the recovery helper's sign-in command would be over Windows' length limit; startup recovery is the only net for this swap");
+            return;
+        }
+        try
+        {
+            Directory.CreateDirectory(UpdatesDir);
+            // Flushed like the journal: File.Copy only closes the file, so a power loss could
+            // keep the entry and the journal while the exe they name never reached the disk.
+            using (var source = File.OpenRead(shipped))
+            using (var target = new FileStream(copy, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                source.CopyTo(target);
+                target.Flush(flushToDisk: true);
+            }
+            using var key = Registry.CurrentUser.CreateSubKey(SwapRestore.RunOnceKey);
+            key.SetValue(SwapRestore.ValueName(stamp), command, RegistryValueKind.String);
+            // Registry writes reach the disk lazily. The entry has to be there before the
+            // journal it protects is, or a power loss could keep the journal and lose it.
+            key.Flush();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Update: could not arm the recovery helper ({ex.Message}); startup recovery is the only net for this swap");
+            DisarmRecoveryHelper(stamp);
+        }
+    }
+
+    /// <summary>Removes the sign-in entry and the copy once transaction <paramref name="stamp"/>
+    /// no longer needs them. Called only when no journal for it remains open.</summary>
+    private static void DisarmRecoveryHelper(string stamp)
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(SwapRestore.RunOnceKey, writable: true);
+            key?.DeleteValue(SwapRestore.ValueName(stamp), throwOnMissingValue: false);
+        }
+        catch (Exception ex)
+        {
+            // The copy stays while the entry naming it does: deleting it would leave a sign-in
+            // entry pointing at nothing. The sweep takes it once the entry is gone.
+            Log.Warn($"Could not remove the recovery helper's sign-in entry: {ex.Message}");
+            return;
+        }
+        try { File.Delete(Path.Combine(UpdatesDir, SwapRestore.CopyName(stamp))); }
+        catch (Exception) { /* swept at a later start, once its entry is gone */ }
+    }
+
+    /// <summary>A helper copy whose sign-in entry is gone has nothing left to do: Windows
+    /// removes the entry as it runs it, and Disarm removes it otherwise. A copy whose entry
+    /// is still there belongs to a transaction that has not been settled, perhaps another
+    /// portable install's, and stays.</summary>
+    private static void SweepRecoveryHelpers()
+    {
+        if (!Directory.Exists(UpdatesDir))
+            return;
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(SwapRestore.RunOnceKey);
+            foreach (var file in Directory.EnumerateFiles(UpdatesDir, "recover-*.exe"))
+            {
+                var stamp = SwapRestore.StampOfCopy(Path.GetFileName(file));
+                if (stamp is null || key?.GetValue(SwapRestore.ValueName(stamp)) is not null)
+                    continue;
+                try { File.Delete(file); } catch (Exception) { /* next start */ }
+            }
+        }
+        catch (Exception ex) { Log.Warn($"Recovery helper sweep: {ex.Message}"); }
     }
 
     public sealed record UpdateInfo(Version Version, string Tag, string AssetName, string AssetUrl, long Size);
@@ -455,7 +551,18 @@ public static class UpdateManager
         // exception but not a kill or a power cut, and the startup sweep would then
         // DELETE the very backups a recovery needs. With the file present, the next
         // start rolls the transaction back instead.
-        WriteJournalDurable(baseDir + Environment.NewLine + stamp + Environment.NewLine, append: false);
+        // The recovery helper is armed first, so no journal is ever on disk without it (#239).
+        ArmRecoveryHelper(baseDir, stamp);
+        try
+        {
+            WriteJournalDurable(baseDir + Environment.NewLine + stamp + Environment.NewLine, append: false);
+        }
+        catch
+        {
+            // Nothing has moved, so there is nothing for the helper to undo.
+            DisarmRecoveryHelper(stamp);
+            throw;
+        }
         var renamed = new List<(string Target, string Aside)>();
         var placed = new List<string>();
         var vetted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -594,6 +701,10 @@ public static class UpdateManager
                 if (!WriteSweepMarker(stamp))
                     Log.Warn("Sweep marker could not persist; this stamp's remnants (if any) stay unswept");
                 try { File.Delete(JournalFile); } catch (IOException) { /* recovery re-runs harmlessly */ }
+                // A journal that would not delete still asks for a rollback, and the helper
+                // stays armed to do it, the same way the next start would.
+                if (!File.Exists(JournalFile))
+                    DisarmRecoveryHelper(stamp);
             }
             throw;
         }
@@ -617,8 +728,13 @@ public static class UpdateManager
         // once the journal is truly gone: a surviving journal means the next start
         // ROLLS BACK to the very mixed install the advisory describes, and clearing
         // it first would leave that state silent.
+        // The helper is disarmed on the same condition. A surviving journal means the next
+        // start rolls this update back, and the helper, should it run first, does the same.
         if (journalGone)
+        {
+            DisarmRecoveryHelper(stamp);
             try { File.Delete(RepairAdvisedFile); } catch (Exception) { /* advisory stays; balloon repeats */ }
+        }
         try { Directory.Delete(staging, recursive: true); }
         catch (Exception ex) { Log.Warn($"Staging cleanup after update: {ex.Message}"); }
         // ALL failures, not just IOException: an ACL that allows creating the zip
@@ -941,6 +1057,7 @@ public static class UpdateManager
                             File.Delete(zip);
                     }
                     catch (IOException) { }
+            SweepRecoveryHelpers();
             return Outcome(restoredAny, manualRepair: false);
         }
         catch (Exception ex)
@@ -1179,6 +1296,9 @@ public static class UpdateManager
         catch (Exception ex) { Log.Warn($"Could not record recovery completion: {ex.Message}"); }
         try { File.Delete(JournalFile); File.Delete(JournalDoneFile); }
         catch (Exception ex) { Log.Warn($"Journal cleanup after recovery: {ex.Message}"); }
+        // Rolled back in full, so the helper has nothing left to restore. A journal that would
+        // not delete is inert once the done file names its stamp, and the helper checks that.
+        DisarmRecoveryHelper(stamp);
         return (true, restored > 0, false);
         }
         catch (Exception ex)

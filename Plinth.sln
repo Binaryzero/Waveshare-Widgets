@@ -4,6 +4,10 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Plinth", "src\Plinth\Plinth.csproj", "{7B2A9C41-3E5D-4F86-9A17-D2C4E8B0F513}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{4190E39D-63B0-4F24-AB78-1A7FA5921FAB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PlinthRecover", "src\PlinthRecover\PlinthRecover.csproj", "{9C46B22E-11A9-44BF-AA18-014D1FE0BD46}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -14,8 +18,15 @@ Global
 		{7B2A9C41-3E5D-4F86-9A17-D2C4E8B0F513}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{7B2A9C41-3E5D-4F86-9A17-D2C4E8B0F513}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{7B2A9C41-3E5D-4F86-9A17-D2C4E8B0F513}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9C46B22E-11A9-44BF-AA18-014D1FE0BD46}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9C46B22E-11A9-44BF-AA18-014D1FE0BD46}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9C46B22E-11A9-44BF-AA18-014D1FE0BD46}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9C46B22E-11A9-44BF-AA18-014D1FE0BD46}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{9C46B22E-11A9-44BF-AA18-014D1FE0BD46} = {4190E39D-63B0-4F24-AB78-1A7FA5921FAB}
 	EndGlobalSection
 EndGlobal

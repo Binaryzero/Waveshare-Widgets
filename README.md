@@ -156,7 +156,9 @@ the zip matching your install (framework-dependent or self-contained), swaps the
 files in place, and restarts itself. A quiet daily check shows a tray notification
 when a new version exists — it never downloads or installs anything on its own.
 Your layout, theme, and widgets live under `%LocalAppData%\Plinth` and are never
-touched by an update.
+touched by an update. If an update is cut off partway (a power loss, say), Plinth puts
+the previous version back the next time it starts. If it can't start, the small
+`PlinthRecover.exe` that ships beside it does the same at your next sign-in.
 
 ### About CPU temperature and fan RPM
 

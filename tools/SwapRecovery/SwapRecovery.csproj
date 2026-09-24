@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CI guard for the update recovery helper (issue #239). A power loss during an update's
+       swap can leave the self-contained build unable to start, so its own recovery never
+       runs. PlinthRecover.exe, started from outside the install at the next sign-in, puts
+       the originals back. This drives its restore logic over real folders, checks the
+       updater arms and disarms it around the swap, and, given a published folder, checks the
+       helper is there, needs only the .NET Framework in Windows, and restores for real. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>SwapRecoveryProbe</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/PlinthRecover/SwapRestore.cs" />
+  </ItemGroup>
+</Project>

@@ -217,6 +217,14 @@ jobs:
       - name: Update retirements
         run: dotnet run --project tools/InstallManifest
 
+      # A power loss during an update's swap can leave the self-contained build unable to
+      # start, so its own recovery never runs (#239). PlinthRecover.exe, built for the .NET
+      # Framework in Windows and run from outside the install at the next sign-in, puts the
+      # originals back. This drives its restore logic over real folders and checks the
+      # updater arms it before the journal and disarms it only once no journal is left.
+      - name: Update recovery helper
+        run: dotnet run --project tools/SwapRecovery
+
       # A widget's long-lived credential is sealed at rest; the SHORT-lived one it buys
       # with that had nowhere to go but localStorage — a plaintext file in the same
       # WebView profile, which hands back exactly what the sealing withholds (#175). The
@@ -270,6 +278,21 @@ jobs:
         run: |
           ./tools/write-install-manifest.ps1 publish
           dotnet run --project tools/InstallManifest -- verify publish
+
+      # The helper the updater relies on (#239) must be in the published folder, bind only to
+      # the .NET Framework in Windows, and undo a cut-off swap when actually run, as the
+      # updater runs it: a copy outside the install, given the journal and the stamp.
+      - name: Recovery helper is published and restores a cut-off swap
+        run: dotnet run --project tools/SwapRecovery -- verify publish
+
+      # The self-contained build is the one the helper exists for, and only release.yml
+      # published it before. A change that breaks the helper's build there, or leaves it
+      # out, fails on the pull request instead of on release day.
+      - name: Self-contained build carries the recovery helper
+        run: |
+          dotnet publish src/Plinth/Plinth.csproj -c Release -r win-x64 --self-contained true -o publish-scd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project tools/SwapRecovery -- verify publish-scd
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
