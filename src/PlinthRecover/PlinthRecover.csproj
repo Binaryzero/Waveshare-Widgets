@@ -14,6 +14,10 @@
     <!-- The exe alone is copied out of the install, so it carries no side files. A .NET
          Framework 4 exe needs no .config to run on the 4.x runtime. -->
     <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
+    <!-- Named, not left to the SDK: on Windows it gives a .NET Framework exe with none a
+         default of win-x86, while a restore run from Plinth's publish (-r win-x64) records
+         win-x64, and the build then finds no assets for the one it picked. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <DebugType>none</DebugType>
   </PropertyGroup>
 </Project>

@@ -22,3 +22,4 @@ tests/harness/*.png
 
 # Emitted by tools/FetchLimits for the syntax check and the body-cap harness.
 browser-fetch.generated.js
+publish-scd/
