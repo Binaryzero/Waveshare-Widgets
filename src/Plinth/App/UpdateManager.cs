@@ -140,7 +140,13 @@ public static class UpdateManager
             using var key = Registry.CurrentUser.OpenSubKey(SwapRestore.RunOnceKey, writable: true);
             key?.DeleteValue(SwapRestore.ValueName(stamp), throwOnMissingValue: false);
         }
-        catch (Exception ex) { Log.Warn($"Could not remove the recovery helper's sign-in entry: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            // The copy stays while the entry naming it does: deleting it would leave a sign-in
+            // entry pointing at nothing. The sweep takes it once the entry is gone.
+            Log.Warn($"Could not remove the recovery helper's sign-in entry: {ex.Message}");
+            return;
+        }
         try { File.Delete(Path.Combine(UpdatesDir, SwapRestore.CopyName(stamp))); }
         catch (Exception) { /* swept at a later start, once its entry is gone */ }
     }

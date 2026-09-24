@@ -8,7 +8,7 @@
 // R7      a linked folder is not walked into, and Plinth's updates folder is left out
 // R8      a second run finds nothing to do
 // C1-C2   the sign-in command line and the copy's name
-// W1-W13  the wiring: the updater arms the helper (its copy flushed) before the journal and
+// W1-W14  the wiring: the updater arms the helper (its copy flushed) before the journal and
 //         disarms it only once no journal is left; the helper shares Plinth's lock and
 //         registers itself again when it cannot finish; the build ships it
 //
@@ -253,6 +253,8 @@ Check("W12b ...naming this same copy, flushed, under this update's own entry",
     Regex.IsMatch(helperMain, @"SwapRestore\.Command\(Assembly\.GetEntryAssembly\(\)!\.Location, journal, stamp\)[\s\S]{0,300}?key\.SetValue\(SwapRestore\.ValueName\(stamp\), command, RegistryValueKind\.String\);\s*key\.Flush\(\);"));
 Check("W12c ...and a restore that threw counts as one that could not finish",
     helperMain.Contains("new SwapRestore.Result { Relaunch = true, Failed = 1 }"));
+Check("W14 disarming keeps the copy when its sign-in entry could not be removed",
+    Regex.IsMatch(updater, @"DeleteValue\(SwapRestore\.ValueName\(stamp\), throwOnMissingValue: false\);\s*\}\s*catch \(Exception ex\)\s*\{[\s\S]{0,400}?return;\s*\}\s*try \{ File\.Delete\(Path\.Combine\(UpdatesDir, SwapRestore\.CopyName\(stamp\)\)\); \}"));
 Check("W13 the helper's copy is flushed to disk before its entry and the journal are written",
     Regex.IsMatch(updater, @"target\.Flush\(flushToDisk: true\);\s*\}\s*using var key = Registry\.CurrentUser\.CreateSubKey\(SwapRestore\.RunOnceKey\);")
     && !Regex.IsMatch(updater, @"File\.Copy\(shipped, copy"));
