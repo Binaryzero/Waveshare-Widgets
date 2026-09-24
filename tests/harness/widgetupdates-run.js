@@ -7,6 +7,7 @@
 //   U3 · opening the flagged tile tells the host and clears the mark
 //   U4 · adding the new widget hides its badge at once, before any save
 //   U5 · opening a flagged tile from the live preview counts as opening it too
+//   U6 · a saved placement ends "New" for good, even if the tile is removed again
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -60,6 +61,8 @@ const layout = { pages: [{ name: 'Main', slots: [
         layout, widgets, sensors: [], backgroundHost: 'backgrounds.plinth', reviewTiles: ['c1'],
         status: { elevated: false, version: 'v0.2.0 (probe)' },
       } });
+    } else if (msg.type === 'save-layout') {
+      push({ type: 'saved', seq: msg.seq, landed: true });
     }
   });
   await page.addInitScript(() => {
@@ -93,6 +96,23 @@ const layout = { pages: [{ name: 'Main', slots: [
   check('U4 adding the new widget hides its badge at once',
     await page.locator('#slotList .slot-chip', { hasText: 'Hue' }).count() === 1
       && await item('Hue').locator('.g-new').count() === 0);
+
+  // U6 · once the placement is saved, removing the tile again must not bring "New" back.
+  await page.locator('#save').click();
+  await page.waitForTimeout(500);
+  const hueChip = page.locator('#slotList .slot-chip', { hasText: 'Hue' });
+  if (await hueChip.count()) {
+    const remove = hueChip.locator('button[title="Remove"]');
+    await remove.click();
+    await page.waitForTimeout(150);
+    if (await hueChip.count()) { await remove.click().catch(() => {}); await page.waitForTimeout(150); }
+  }
+  await page.waitForTimeout(300);
+  check('U6 a saved placement ends "New" even if the tile is removed again before closing',
+    await page.locator('#slotList .slot-chip', { hasText: 'Hue' }).count() === 0
+      && await item('Hue').locator('.g-new').count() === 0,
+    JSON.stringify({ chips: await page.locator('#slotList .slot-chip', { hasText: 'Hue' }).count(),
+      badge: await item('Hue').locator('.g-new').count() }));
 
   // U5 · the preview is the main way in. A fresh init flags c2; the 🎨 on its tile in the
   // replica selects it through the real slot-selected handoff.

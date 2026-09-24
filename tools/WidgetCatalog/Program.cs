@@ -7,6 +7,9 @@
 // W7      a damaged state file is a baseline, not "everything is new"
 // W8      ...and so is valid JSON holding nulls, which used to throw on every start
 // W9      a placement made on the panel ends "New" too (source guard: DashboardWindow)
+// W10     property names holding the old delimiters cannot make two shapes compare equal
+// W11     a second comparison in the same run (an in-app install) is not a baseline
+// W12     a settings-window save marks placed only when it lands; an install compares again
 using Plinth.Widgets;
 
 var failures = 0;
@@ -105,6 +108,34 @@ var dashCode = dash is null ? "" : File.ReadAllText(dash);
 Check("W9 a save from the on-panel editor marks its widgets placed",
     System.Text.RegularExpressions.Regex.IsMatch(dashCode,
         @"var landed = LayoutStore\.Save\(edited, LayoutStore\.PanelWriter\);[\s\S]{0,900}if \(landed\)\s*WidgetCatalogState\.Shared\?\.MarkPlaced\("));
+
+// ---- W10 · shapes are structural -------------------------------------------------------
+var joinedA = M("x", ("alpha:text|beta", "text"));
+var joinedB = M("x", ("alpha", "text"), ("beta", "text"));
+Check("W10 one property named \"alpha:text|beta\" is not the same shape as \"alpha\" + \"beta\"",
+    WidgetCatalogState.ShapeOf(joinedA) != WidgetCatalogState.ShapeOf(joinedB),
+    WidgetCatalogState.ShapeOf(joinedA) + " vs " + WidgetCatalogState.ShapeOf(joinedB));
+Check("W10b ...nor is a name/type split moved across the delimiter",
+    WidgetCatalogState.ShapeOf(M("x", ("a:b", "text"))) != WidgetCatalogState.ShapeOf(M("x", ("a", "b:text"))));
+
+// ---- W11 · only the first comparison is a baseline ---------------------------------------
+var fresh = Path.Combine(dir.FullName, "fresh.json");
+var s11 = new WidgetCatalogState(fresh);
+s11.Refresh([Shape(clock), Shape(cpu)], Tiles(), t0);
+Check("W11 setup: the first comparison is a baseline", !s11.IsNew("ws.stock.clock", t0));
+var installedLater = M("ws.third.party", ("x", "text"));
+s11.Refresh([Shape(clock), Shape(cpu), Shape(installedLater)], Tiles(), t0.AddMinutes(5));
+Check("W11 a widget installed in the same run after that is New", s11.IsNew("ws.third.party", t0.AddMinutes(5)));
+
+// ---- W12 · the settings window's save and install paths --------------------------------
+var settingsWin = FindUpwards("src/Plinth/App/SettingsWindow.cs");
+var setCode = settingsWin is null ? "" : File.ReadAllText(settingsWin);
+Check("W12 a settings save marks its widgets placed only when the write lands",
+    System.Text.RegularExpressions.Regex.IsMatch(setCode,
+        @"var landed = LayoutStore\.Save\(layout, LayoutStore\.SettingsWriter\);[\s\S]{0,400}if \(landed\)\s*WidgetCatalogState\.Shared\?\.MarkPlaced\("));
+Check("W12b an in-app install compares the catalog again before the editor is refreshed",
+    System.Text.RegularExpressions.Regex.IsMatch(setCode,
+        @"_library\.InstallPackage\([\s\S]{0,2500}catalog\.Refresh\([\s\S]{0,600}PostInit\(\);"));
 
 try { dir.Delete(recursive: true); } catch { }
 Console.WriteLine(failures > 0 ? $"{failures} FAILURES" : "ALL PASS");

@@ -37,7 +37,10 @@ public sealed class WidgetCatalogState
     private readonly string _path;
     private readonly object _sync = new();
     private Model _model;
-    private readonly bool _baseline;
+    /// <summary>True for the first comparison of a state that had no file: everything
+    /// installed then is simply what there is. A later comparison in the same run (after an
+    /// in-app install) is not a baseline — what it finds new is new.</summary>
+    private bool _baseline;
 
     public WidgetCatalogState(string path)
     {
@@ -48,11 +51,16 @@ public sealed class WidgetCatalogState
 
     /// <summary>The settings shape of a widget: its property names and types, in order of
     /// name. A label, help text or default is not a change the user has to check.</summary>
+    /// <remarks>Serialized as JSON pairs, not joined text: a third-party property name may
+    /// hold any character, and "a:text|b" joined is the same string as two properties
+    /// named "a" and "b" — a real change that would compare equal.</remarks>
     public static string ShapeOf(WidgetManifest manifest) =>
-        string.Join("|", manifest.Properties
+        JsonSerializer.Serialize(manifest.Properties
             .Where(p => !string.IsNullOrEmpty(p.Name))
-            .Select(p => p.Name + ":" + (string.IsNullOrEmpty(p.Type) ? "text" : p.Type))
-            .OrderBy(s => s, StringComparer.Ordinal));
+            .Select(p => new[] { p.Name, string.IsNullOrEmpty(p.Type) ? "text" : p.Type })
+            .OrderBy(pair => pair[0], StringComparer.Ordinal)
+            .ThenBy(pair => pair[1], StringComparer.Ordinal)
+            .ToArray());
 
     /// <summary>Compares what is installed now with what was recorded, once per start.</summary>
     /// <param name="installed">Every installed widget and its current shape.</param>
@@ -85,6 +93,7 @@ public sealed class WidgetCatalogState
             // A flag for a tile that no longer exists is only clutter.
             var live = new HashSet<string>(tiles.Where(t => t.InstanceId is not null).Select(t => t.InstanceId!), StringComparer.Ordinal);
             _model.Review.RemoveAll(i => !live.Contains(i));
+            _baseline = false;
             Save();
         }
     }

@@ -239,6 +239,15 @@
       // so a swallowed write failure hands back the generation still on disk rather than
       // one that never happened.
       if (typeof msg.generation === 'number') layoutGeneration = msg.generation;
+      // A placement that reached disk ends "New" for good (#227), so a tile removed again
+      // before this window closes must not bring the badge back. The host has already
+      // recorded it; this is the copy of the catalog this window was handed.
+      if (msg.landed !== false) {
+        const placed = new Set();
+        for (const pg of (state.layout && state.layout.pages) || [])
+          for (const sl of pg.slots || []) if (sl && sl.widgetId) placed.add(sl.widgetId);
+        for (const w of state.widgets || []) if (w && w.isNew && placed.has(w.id)) w.isNew = false;
+      }
       // Dirty is cleared only for a FULLY successful save. A credential the host could
       // not protect exists solely in this working copy; marking the editor clean would
       // let the user close the window and lose it, with no visible sign anything failed.
