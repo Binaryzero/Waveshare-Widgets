@@ -137,6 +137,19 @@ async Task<StubNet.Seen> Second(string method, int status, string? body = "{\"on
             && r308.Method == "PUT" && r308.Body == "{\"on\":true}",
         $"{r307.Method}/{r307.Body}/{r307.ContentType} {r308.Method}/{r308.Body}");
 
+    // A body dropped by a rewrite stays dropped: a later 307 keeps the method it is
+    // given, a GET, and must not bring the POST's body back with it.
+    var chain = new StubNet()
+        .Redirect("http://10.0.0.5/x", 302, "http://10.0.0.5/y")
+        .Redirect("http://10.0.0.5/y", 307, "http://10.0.0.5/z")
+        .Ok("http://10.0.0.5/z");
+    await PrivateNetwork.SendAsync(new HttpRequestMessage(HttpMethod.Post, "http://10.0.0.5/x")
+        { Content = new StringContent("{\"on\":true}", Encoding.UTF8, "application/json") }, chain.Send, deadline);
+    var last = chain.Log.LastOrDefault();
+    Check("L6e ...and a body a rewrite dropped stays dropped through a later 307",
+        chain.Count == 3 && last?.Method == "GET" && last.Body is null && last.ContentType is null,
+        string.Join(" ", chain.Log.Select(x => $"{x.Method}/{x.Body ?? "-"}")));
+
     Check("L7 Authorization is dropped on a redirect; the device's own headers and HTTP version are kept",
         !r307.Headers.ContainsKey("Authorization") && r307.Headers.GetValueOrDefault("hue-application-key") == "k1"
             && r307.Version == HttpVersion.Version11,

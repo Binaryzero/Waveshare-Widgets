@@ -95,12 +95,13 @@ internal static class PrivateNetwork
                 response.Dispose();
 
                 var method = request.Method;
-                var keepBody = true;
                 if ((status is 300 or 301 or 302 && method == HttpMethod.Post)
                     || (status == 303 && method != HttpMethod.Get && method != HttpMethod.Head))
                 {
+                    // For the rest of the chain, not just this hop: a later 307 keeps
+                    // the GET, and must not bring the POST's body back with it.
                     method = HttpMethod.Get;
-                    keepBody = false;
+                    body = null;
                 }
 
                 var next = new HttpRequestMessage(method, target)
@@ -111,7 +112,7 @@ internal static class PrivateNetwork
                 foreach (var (name, values) in headers)
                     if (!name.Equals("Authorization", StringComparison.OrdinalIgnoreCase))
                         next.Headers.TryAddWithoutValidation(name, values);
-                if (keepBody && body is not null)
+                if (body is not null)
                 {
                     next.Content = new ByteArrayContent(body);
                     foreach (var (name, values) in contentHeaders!)
