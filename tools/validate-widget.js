@@ -71,8 +71,18 @@ const SECRET_QUALIFIER = /(^|[^a-z0-9])(private|secret|signed|personal|sas)([^a-
 // Deliberately tight: every entry must be a word that cannot itself hold the secret.
 // `value`, `url` and `name` are absent for that reason — `tokenValue` and `secretUrl`
 // stay flagged.
-const METADATA_TAIL = /(^|[^a-z0-9])(endpoints?|expiry|expires|expiration|ttl|lifetime|type|label|format|algorithm|issuer|scopes?|count|prefix|enabled)$/i;
-const looksLikeCredential = (name) => {
+// A duration unit and `mode` join it for the same reason: `tokenExpirySeconds` holds a
+// number and `credentialMode` an enum (#56).
+const METADATA_TAIL = /(^|[^a-z0-9])(endpoints?|expiry|expires|expiration|ttl|lifetime|type|label|format|algorithm|issuer|scopes?|count|prefix|enabled|modes?|ms|milliseconds|seconds|minutes|hours)$/i;
+// A name that STARTS with one of these can be a switch that acts on the credential
+// field: `showPassword`, `maskApiKey`. Only the TYPE proves it. A switch or a select
+// stores one of the manifest's own options, never something the user typed; a text
+// field named `showToken` could hold the token. The verb must be a whole word, so
+// `maskedPassword` is flagged whatever its type.
+const SWITCH_HEAD = /^(show|hide|reveal|mask)([^a-z0-9]|$)/i;
+const SWITCH_TYPES = new Set(['switch', 'select']);
+// `type` is the property's declared type; omit it where there is none (a list field).
+const looksLikeCredential = (name, type) => {
   // Two case boundaries, because initialisms are everywhere in this domain:
   //   acronym->word  "APIToken" -> "API Token", "JWTToken" -> "JWT Token"
   //   word->Word     "apiToken" -> "api Token", "githubPAT" -> "github PAT"
@@ -86,8 +96,8 @@ const looksLikeCredential = (name) => {
     .replace(/[_\-.]+/g, ' ');
   const squashed = spaced.replace(/\s+/g, '');
   const trimmed = spaced.trim();
-  // Metadata about a credential is not the credential; see METADATA_TAIL.
-  if (!METADATA_TAIL.test(trimmed)) {
+  // Metadata about a credential is not the credential; see METADATA_TAIL and SWITCH_HEAD.
+  if (!METADATA_TAIL.test(trimmed) && !(SWITCH_TYPES.has(type) && SWITCH_HEAD.test(trimmed))) {
     if (CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(squashed)) return true;
     if (COMPOUND.test(squashed)) return true;
     if (UNSTRUCTURED.test(String(name || '')) && COMPOUND_ANYWHERE.test(squashed)) return true;
@@ -264,7 +274,7 @@ function validate(folder) {
     // Credentials MUST be type "secret": that is the only type the host encrypts
     // (DPAPI, CurrentUser) before writing layout.json. As "text" the token sits on
     // disk in the clear and rides any layout copy off the machine.
-    if (type !== 'secret' && looksLikeCredential(prop.name))
+    if (type !== 'secret' && looksLikeCredential(prop.name, type))
       err('prop-secret', `${where}: a credential must use type "secret" (the host encrypts those with DPAPI); "${type}" stores it as plaintext in layout.json`);
     if (type === 'secret' && prop.default != null && String(prop.default) !== '')
       err('prop-secret-default', `${where}: a secret must not ship a default value`);
@@ -577,10 +587,15 @@ if (args.includes('--self-test')) {
   for (const name of fixture.innocent) {
     if (looksLikeCredential(name)) { console.log(`  FAIL innocent "${name}" WAS flagged`); bad++; }
   }
-  const total = fixture.credential.length + fixture.innocent.length;
+  for (const c of fixture.typed) {
+    if (looksLikeCredential(c.name, c.type) !== c.credential) {
+      console.log(`  FAIL typed "${c.name}" as ${c.type} should${c.credential ? '' : ' NOT'} be flagged`); bad++;
+    }
+  }
+  const total = fixture.credential.length + fixture.innocent.length + fixture.typed.length;
   console.log(bad
     ? `${bad} of ${total} disagree with tools/credential-names.json`
-    : `credential rule agrees with the fixture on all ${total} names`);
+    : `credential rule agrees with the fixture on all ${total} cases`);
 
   // The HTML rules get the same treatment, because both of the ways they leaked were
   // spellings nobody had written down: a browser-legal shape the regex did not model

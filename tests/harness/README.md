@@ -40,6 +40,10 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   secret (an empty string means "keep it"), and a save the host could not protect
   warns instead of reading as success. The encryption pipeline itself is guarded in
   CI by `dotnet run --project tools/SecretRoundTrip`. Port used: 8951.
+- `secretedit-run.js` — two editor bugs from #56. Typing a credential over a saved one
+  marks the editor dirty, so a panel write is not adopted over the unsaved token. After
+  the widget picker swaps a slot's widget, a same-named secret the old widget saved this
+  session reads "not set". Port used: 8953.
 - `refusalbanner-run.js` — the settings window's refusal banner (#151). A refused widget
   with no working copy reads "not loaded". An older refused copy beside one that loaded
   gets its own block, naming the settings it withholds and the folder to remove. Which
