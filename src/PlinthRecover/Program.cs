@@ -1,7 +1,9 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Threading;
+using Microsoft.Win32;
 
 namespace Plinth.Recover;
 
@@ -11,8 +13,9 @@ namespace Plinth.Recover;
 /// <para>Before an update swaps any file, Plinth copies this exe to
 /// <c>%LocalAppData%\Plinth\updates</c> and registers the copy under the current user's
 /// RunOnce key, and it removes both once the swap has committed or rolled back. So this
-/// only ever runs at the first sign-in after an update was cut off, which is when a
-/// self-contained install may be unable to start and repair itself.</para>
+/// only runs at a sign-in after an update was cut off, which is when a self-contained
+/// install may be unable to start and repair itself. If it cannot put every file back, it
+/// registers itself again for the next sign-in.</para>
 ///
 /// <para>It does nothing while Plinth runs: holding the single-instance lock means Plinth
 /// started, and its own recovery ran first. Otherwise it takes the lock, restores the
@@ -62,7 +65,7 @@ internal static class Program
             catch (Exception ex)
             {
                 Log("Restore stopped: " + ex.Message);
-                result = new SwapRestore.Result { Relaunch = true };
+                result = new SwapRestore.Result { Relaunch = true, Failed = 1 };
             }
             finally
             {
@@ -74,6 +77,12 @@ internal static class Program
             ? "Nothing restored: " + result.Skipped
             : "An interrupted update was undone: " + result.Restored + " file(s) restored, "
               + result.Removed + " removed, " + result.Failed + " failed");
+        // Windows removed the entry that started this run before starting it. With files still
+        // out of place (a lock held at sign-in, say) the install may still fail to start, so
+        // the entry goes back for the next sign-in. It goes back before Plinth starts: Plinth
+        // removes it once its own recovery finishes, and that must not come first.
+        if (result.Failed > 0)
+            Rearm(journal, args[1]);
         if (result.Relaunch)
         {
             // Plinth was running the update when it stopped. Its own recovery finishes the
@@ -89,6 +98,24 @@ internal static class Program
             catch (Exception ex) { Log("Could not start Plinth: " + ex.Message); }
         }
         return 0;
+    }
+
+    /// <summary>Puts this run's sign-in entry back, naming this same copy.</summary>
+    private static void Rearm(string journal, string stamp)
+    {
+        try
+        {
+            var command = SwapRestore.Command(Assembly.GetEntryAssembly()!.Location, journal, stamp);
+            if (command == null)
+                return;
+            using (var key = Registry.CurrentUser.CreateSubKey(SwapRestore.RunOnceKey))
+            {
+                key.SetValue(SwapRestore.ValueName(stamp), command, RegistryValueKind.String);
+                key.Flush();
+            }
+            Log("Some files could not be put back; trying again at the next sign-in");
+        }
+        catch (Exception ex) { Log("Could not schedule another try: " + ex.Message); }
     }
 
     private static string DataDir() => Path.Combine(

@@ -8,12 +8,14 @@
 // R7      a linked folder is not walked into, and Plinth's updates folder is left out
 // R8      a second run finds nothing to do
 // C1-C2   the sign-in command line and the copy's name
-// W1-W11  the wiring: the updater arms the helper before the journal and disarms it only
-//         once no journal is left, the helper shares Plinth's lock, the build ships it
+// W1-W13  the wiring: the updater arms the helper (its copy flushed) before the journal and
+//         disarms it only once no journal is left; the helper shares Plinth's lock and
+//         registers itself again when it cannot finish; the build ships it
 //
 // `verify <dir>` (build.yml and release.yml, on Windows, after publishing):
-// V1-V4   the published helper is there, needs only the .NET Framework in Windows, and
-//         undoes a cut-off swap for real, but not while Plinth holds its lock
+// V1-V5   the published helper is there, needs only the .NET Framework in Windows, and
+//         undoes a cut-off swap for real, but not while Plinth holds its lock; one a lock
+//         stops registers itself again for the next sign-in, and one that finishes does not
 using System.Diagnostics;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
@@ -105,7 +107,9 @@ Check("R8 a second run finds nothing to do",
 // ---- R5 --------------------------------------------------------------------------------
 void Untouched(string label, string journalText, bool relaunch, string? done = null, string? extra = null)
 {
-    var install = NewInstall("skip-" + label.Replace(' ', '-'));
+    // Letters and digits only: Windows drops a folder name's trailing dots, so a label
+    // ending in ".." would name a folder that is never created.
+    var install = NewInstall("skip-" + Regex.Replace(label, "[^A-Za-z0-9]+", "-"));
     Put(Path.Combine(install, "Plinth.dll"), "new");
     Put(Path.Combine(install, "Plinth.dll." + Stamp), "old");
     if (extra is not null) Put(extra, "kept");
@@ -238,6 +242,20 @@ Check("W10 the helper never writes, moves or deletes the journal",
     && !Regex.IsMatch(helperMain + restore, @"(File\.(Delete|Move|Replace|Copy|Write\w*|Append\w*|Open\w*|Create\w*)|new FileStream)\(\s*journal"));
 Check("W11 a helper run is logged where the owner already looks",
     helperMain.Contains("\"app.log\""));
+// Windows removes a RunOnce entry before running it, so a restore that could not finish
+// has to put its own entry back, or a still-broken install gets no second try.
+var rearmAt = helperMain.IndexOf("if (result.Failed > 0)", StringComparison.Ordinal);
+var relaunchAt = helperMain.IndexOf("Process.Start(", StringComparison.Ordinal);
+Check("W12 a restore that could not put every file back registers the helper again, before Plinth starts",
+    Regex.IsMatch(helperMain, @"if \(result\.Failed > 0\)\s*Rearm\(journal, args\[1\]\);")
+    && rearmAt > 0 && relaunchAt > rearmAt);
+Check("W12b ...naming this same copy, flushed, under this update's own entry",
+    Regex.IsMatch(helperMain, @"SwapRestore\.Command\(Assembly\.GetEntryAssembly\(\)!\.Location, journal, stamp\)[\s\S]{0,300}?key\.SetValue\(SwapRestore\.ValueName\(stamp\), command, RegistryValueKind\.String\);\s*key\.Flush\(\);"));
+Check("W12c ...and a restore that threw counts as one that could not finish",
+    helperMain.Contains("new SwapRestore.Result { Relaunch = true, Failed = 1 }"));
+Check("W13 the helper's copy is flushed to disk before its entry and the journal are written",
+    Regex.IsMatch(updater, @"target\.Flush\(flushToDisk: true\);\s*\}\s*using var key = Registry\.CurrentUser\.CreateSubKey\(SwapRestore\.RunOnceKey\);")
+    && !Regex.IsMatch(updater, @"File\.Copy\(shipped, copy"));
 
 try { Directory.Delete(tmp, recursive: true); } catch (Exception) { }
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILED");
@@ -262,10 +280,12 @@ int Verify(string dir)
 
     if (!OperatingSystem.IsWindows())
     {
-        Console.WriteLine("  NOTE V3-V4 start the helper, so they run on Windows only");
+        Console.WriteLine("  NOTE V3-V5 start the helper, so they run on Windows only");
     }
     else
     {
+        // A leftover entry from an earlier run on this machine would pass V4c and V5 falsely.
+        ClearEntry();
         // As the updater runs it: a copy outside the install, given the journal and stamp.
         var outsideCopy = Path.Combine(tmp, "updates-copy", SwapRestore.CopyName(Stamp));
         Directory.CreateDirectory(Path.GetDirectoryName(outsideCopy)!);
@@ -302,6 +322,38 @@ int Verify(string dir)
             $"exit {exit}, Plinth.dll: {Read(Path.Combine(cut, "Plinth.dll"))}");
         Check("V4b ...and leaves the journal for Plinth's recovery",
             File.Exists(journal) && File.ReadAllText(journal) == before);
+        Check("V4c ...and, having put everything back, registers nothing for the next sign-in",
+            Entry() is null, Entry());
+
+        // Windows removes the entry before running it; a lock held at sign-in stops one file.
+        var blocked = CutOffSwap("verify-blocked");
+        var blockedJournal = Path.Combine(blocked, SwapRestore.JournalName);
+        int blockedExit;
+        using (File.Open(Path.Combine(blocked, "Plinth.dll"), FileMode.Open, FileAccess.Read, FileShare.None))
+            blockedExit = RunHelper(blockedJournal);
+        var entry = Entry();
+        Check("V5 a restore a lock stopped registers the helper again for the next sign-in, naming the same copy",
+            blockedExit == 0 && string.Equals(entry, SwapRestore.Command(outsideCopy, blockedJournal, Stamp), StringComparison.OrdinalIgnoreCase),
+            entry ?? "<no entry>");
+        ClearEntry();
+        var secondExit = RunHelper(blockedJournal);
+        Check("V5b ...and that next run, with the lock gone, finishes the job and registers nothing",
+            secondExit == 0 && Read(Path.Combine(blocked, "Plinth.dll")) == "old" && Entry() is null,
+            $"exit {secondExit}, Plinth.dll: {Read(Path.Combine(blocked, "Plinth.dll"))}");
+        ClearEntry();
+
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+        static string? Entry()
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(SwapRestore.RunOnceKey);
+            return key?.GetValue(SwapRestore.ValueName(Stamp)) as string;
+        }
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+        static void ClearEntry()
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(SwapRestore.RunOnceKey, writable: true);
+            key?.DeleteValue(SwapRestore.ValueName(Stamp), throwOnMissingValue: false);
+        }
     }
     try { Directory.Delete(tmp, recursive: true); } catch (Exception) { }
     Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILED");

@@ -110,7 +110,14 @@ public static class UpdateManager
         try
         {
             Directory.CreateDirectory(UpdatesDir);
-            File.Copy(shipped, copy, overwrite: true);
+            // Flushed like the journal: File.Copy only closes the file, so a power loss could
+            // keep the entry and the journal while the exe they name never reached the disk.
+            using (var source = File.OpenRead(shipped))
+            using (var target = new FileStream(copy, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                source.CopyTo(target);
+                target.Flush(flushToDisk: true);
+            }
             using var key = Registry.CurrentUser.CreateSubKey(SwapRestore.RunOnceKey);
             key.SetValue(SwapRestore.ValueName(stamp), command, RegistryValueKind.String);
             // Registry writes reach the disk lazily. The entry has to be there before the
