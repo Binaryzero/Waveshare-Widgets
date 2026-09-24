@@ -62,6 +62,9 @@ const widgets = [{
     // A demoted property of a NON-text type: the host blanks and lists it exactly the
     // same way, and the Clear affordance has to reach it too.
     { name: 'legacyTint', label: 'Legacy tint', type: 'color', default: '#00d4ff' },
+    // An ORDINARY color, so E30e can show the demoted case's missing reset is about the
+    // demotion and not about color controls (#157).
+    { name: 'accent', label: 'Accent colour', type: 'color', default: '#00d4ff' },
     // A demoted property whose control has a legitimately EMPTY choice: an sd-profiles
     // select where "" means "first available". Choosing it must NOT cancel a pending
     // removal — "" is the one value that cannot contradict a clear, because it is the
@@ -1304,6 +1307,28 @@ const layout = {
     JSON.stringify(last.secretsCleared));
   check('E30b and the replacement is what gets saved',
     last.settings.legacyTint === '#123456', JSON.stringify(last.settings.legacyTint));
+  // #157: the color control's own "Use theme" deletes the key, and absent is one of the
+  // shapes the host reads as untouched, so on a demoted property it RESTORED the stored
+  // value while its label promised the theme. The field's ✕ is the button that says
+  // what it does there, so the reset is not offered beside it.
+  const tintReset = tintField2.locator('.color-reset');
+  check('E30c a demoted color offers no "Use theme" reset, even while overridden',
+    await tintReset.count() === 1 && await tintReset.evaluate((n) => n.hidden) === true,
+    await tintReset.count() ? 'hidden=' + await tintReset.evaluate((n) => n.hidden) : 'no reset rendered');
+  check('E30d ...and the ✕ is still there to remove the stored value',
+    await tintField2.locator('.prop-clear').count() === 1);
+  const accentField = page.locator('#slotDetail .prop-field').filter({ hasText: 'Accent colour' });
+  await accentField.locator('input[type=color]').evaluate((el) => {
+    el.value = '#654321';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForTimeout(120);
+  const accentReset = accentField.locator('.color-reset');
+  const accentOffered = await accentReset.count() === 1 && await accentReset.evaluate((n) => !n.hidden);
+  if (accentOffered) { await accentReset.click(); await page.waitForTimeout(120); }
+  check('E30e an ordinary color still offers "Use theme", and it still works',
+    accentOffered && ((await accentField.locator('.color-state').textContent()) || '').trim() === 'themed',
+    JSON.stringify({ offered: accentOffered, state: await accentField.locator('.color-state').textContent() }));
 
   // ---- E31 · an EMPTY choice does not cancel a removal -------------------------------
   // The cancel added for E30 was unconditional, which put the latch back the other way
