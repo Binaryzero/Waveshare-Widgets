@@ -103,7 +103,7 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
   + 'bindEdge(document.getElementById("edgeLeft"),-1);bindEdge(document.getElementById("edgeRight"),1);})();<\/script>';
 
 const ITEMS = Array.from({ length: 24 }, (_, i) => ({
-  id: 'n' + i,
+  id: 1000 + i,   // numeric, as NotificationCenter sends it (UserNotification.Id is a uint)
   app: 'App ' + (i % 4),
   appId: 'app' + (i % 4),
   title: 'Notification number ' + i,
@@ -180,7 +180,8 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     // `data`, not `payload` — widget-api.js reads msg.data. Getting this wrong renders an
     // empty tile that still mounts cleanly, which is why T1 asserts the list overflowed
     // rather than trusting the push to have landed.
-    notif: { type: 'ww-notifications', data: { items: ITEMS, supported: true } },
+    // The shape NotificationCenter.Push sends: { state: 'allowed', items }.
+    notif: { type: 'ww-notifications', data: { state: 'allowed', items: ITEMS } },
   });
 
   await page.goto('https://shell.test/host.html');
