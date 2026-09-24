@@ -23,8 +23,8 @@
 //   R26 · the LAN self-signed switch (#60): on, the request the HOST receives asks for its
 //         certificate not to be checked (the host alone decides, for private addresses);
 //         off — the default — it does not; switching it on applies to the very next
-//         request (every settings edit polls at once); and the OAuth2 token exchange
-//         carries it as well
+//         request (every settings edit polls at once), even one made while a request is
+//         in flight (R26e); and the OAuth2 token exchange carries it as well
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -113,6 +113,11 @@ const TOKEN = 'Bearer super-secret-probe-token';
         // What the host would receive, for R26: the URL and whether the widget asked for
         // the certificate check to be skipped.
         (window.__proxied = window.__proxied || []).push({ url: String(m.url), insecure: m.insecure === true });
+        // R26e holds one URL's host answer, so a request can be caught in flight.
+        if (window.__holdProxy && String(m.url).includes(window.__holdProxy)) {
+          setTimeout(() => window.postMessage({ type: 'ww-fetch-result', id: m.id, error: window.__probeHostError }, '*'), 3000);
+          return;
+        }
         // OAuth2 token exchanges use proxy:'always', so they arrive here rather than on the
         // browser tier. When a token endpoint is armed (RT, #176.1), answer it with a
         // scriptable token body and COUNT the grant — that count is how the halt is proven,
@@ -976,17 +981,36 @@ const TOKEN = 'Bearer super-secret-probe-token';
   check('R26d ...and the OAuth2 token exchange carries it too',
     lanTok.length > 0 && lanTok.every((m) => m.insecure === true), JSON.stringify(lanTok));
   await page.evaluate(() => { window.__tokenEndpoint = null; window.__tokenResp = null; });
+  // R26e · switched while a request is OUT: that request snapshotted the old setting, and
+  // restart()'s poll finds it in flight and does nothing — so the switch waited for it to
+  // land and then for the ordinary schedule. The host answer for this URL is held 3 s; the
+  // switch is flipped a moment after it goes out, and a request carrying it must follow at
+  // once rather than after the held one and a 5 s interval.
+  await page.evaluate(() => { window.__proxied = []; window.__holdProxy = '/lan-slow'; });
+  await init(Object.assign({}, base, { url: 'https://api.test/lan-slow', jsonPointer: '/v' }));
+  await wait(300);
+  await init(Object.assign({}, base, { url: 'https://api.test/lan-slow', jsonPointer: '/v', selfSigned: 'on' }));
+  await wait(800);
+  const lanSlow = await proxiedFor('/lan-slow');
+  check('R26e switching it while a request is in flight retires that request and asks again at once',
+    lanSlow.length === 2 && lanSlow[0].insecure === false && lanSlow[1].insecure === true, JSON.stringify(lanSlow));
+  await page.evaluate(() => { window.__holdProxy = null; });
 
   // ---- populated screenshots (the eyes, not just the contract) ---------------------
   respond = () => ({ status: 200, body: JSON.stringify({ data: { temperature: 87.3 } }) });
+  const shotValues = [];
   for (const [w, h, name] of [[320, 400, 'quarter'], [640, 400, 'half'], [640, 200, 'half-upper']]) {
     await page.setViewportSize({ width: w, height: h });
     await init({ url: 'https://api.test/shot', jsonPointer: '/data/temperature', label: 'Reactor core',
       unit: '°C', decimals: 1, warn: '80', crit: '95', pollSeconds: 60, bgStyle: 'solid' });
     await wait(400);
+    shotValues.push(name + '=' + (await read()).value);
     await page.screenshot({ path: path.join(__dirname, 'restvalue-' + name + '.png') });
   }
-  check('R9 populated screenshots captured for quarter / half / half-upper', true);
+  // Checked, not assumed: a screenshot of an error card is not a populated screenshot, and
+  // an unconditional pass here let exactly that through.
+  check('R9 populated screenshots captured for quarter / half / half-upper, each showing the value',
+    shotValues.length === 3 && shotValues.every((v) => v.endsWith('=87.3')), shotValues.join(' '));
 
   await browser.close();
   console.log(failures ? `${failures} FAILURES` : 'ALL PASS');

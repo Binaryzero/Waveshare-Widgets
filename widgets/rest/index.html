@@ -838,9 +838,7 @@
     cfg.crit = num(s.crit);
     cfg.headerName = String(s.headerName || '').trim();
     cfg.headerValue = String(s.headerValue || '');
-    // Not part of the source identity below: every init polls at once through restart(),
-    // so an edit to this takes effect on the very next request without discarding a
-    // reading the tile already has.
+    const prevSelfSigned = cfg.selfSigned;
     cfg.selfSigned = s.selfSigned === 'on';
 
     const prevAuth = cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope;
@@ -873,6 +871,19 @@
     const authNow = cfg.authMode + '\n' + tokenKey() + '\n' + cfg.clientSecret + '\n' + cfg.scope;
     const sourceChanged = cfg.url !== prevUrl || cfg.pointer !== prevPointer ||
       (cfg.headerName + '\n' + cfg.headerValue) !== prevHeader || authNow !== prevAuth;
+    // The certificate switch is not part of the source identity: the endpoint and what
+    // the tile shows are the same either way, so a reading it already has stays. But the
+    // TRANSPORT changed, and a request already out carries the old setting snapshotted —
+    // restart()'s poll would find it in flight and do nothing, and it would re-arm the
+    // ordinary schedule, so the switch could wait out a whole interval (up to a day)
+    // before it was tried. Retire that request so the edit is tried at once.
+    if (!sourceChanged && cfg.selfSigned !== prevSelfSigned) {
+      generation++;
+      failures = 0;
+      if (activeController) { try { activeController.abort(); } catch (e) { /* already gone */ } }
+      activeController = null;
+      inFlight = false;
+    }
     if (sourceChanged) {
       last = null;
       lastAt = 0;
