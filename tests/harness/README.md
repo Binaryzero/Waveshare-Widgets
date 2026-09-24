@@ -369,6 +369,11 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   save the picked value. On the panel, Find straight after an edit waits for the tile's
   reload and asks with the edited settings (P4). The settings window says so when there is
   no panel.
+- `hafind-run.js` — Home Assistant's Find (#210), asked the way the shell asks, against a
+  stub server. The Entity ID field lists every entity sorted by id with its friendly name
+  (F1), and it answers while the widget is still on its setup card (F2). Other settings
+  get "unsupported". A rejected token and a missing address come back as the widget's own
+  messages.
 - `apppick-run.js` — Store apps in the app picker (#219). Runs in CI on plain Node: the
   pickers' `ww-app-pick` block (the "no match" line and the rule that a pick fills an EMPTY
   Name and never a typed one) is sliced out of both `settings.js` and `shell.js` and run,
