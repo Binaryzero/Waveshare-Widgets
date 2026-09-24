@@ -24,7 +24,8 @@
 //         certificate not to be checked (the host alone decides, for private addresses);
 //         off — the default — it does not; switching it on applies to the very next
 //         request (every settings edit polls at once), even one made while a request is
-//         in flight (R26e); and the OAuth2 token exchange carries it as well
+//         in flight (R26e); the OAuth2 token exchange carries it as well; and an http://
+//         endpoint never does (R26f) — there is no certificate to skip
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -995,6 +996,16 @@ const TOKEN = 'Bearer super-secret-probe-token';
   check('R26e switching it while a request is in flight retires that request and asks again at once',
     lanSlow.length === 2 && lanSlow[0].insecure === false && lanSlow[1].insecure === true, JSON.stringify(lanSlow));
   await page.evaluate(() => { window.__holdProxy = null; });
+  // R26f · plain HTTP has no certificate to skip, and the flag would still send it down the
+  // host's one-connection-per-device LAN client. The switch on an http:// endpoint sends
+  // nothing extra. The fixture host is https, so the request is aimed at an http URL the
+  // route table does not answer — it escalates to the stub host like any refused request.
+  await page.evaluate(() => { window.__proxied = []; });
+  await init(Object.assign({}, base, { url: 'http://api.test/lan-plain', jsonPointer: '/v', selfSigned: 'on' }));
+  await wait(800);
+  const lanPlain = await proxiedFor('/lan-plain');
+  check('R26f an http:// endpoint does not carry the flag, switch on or not',
+    lanPlain.length > 0 && lanPlain.every((m) => m.insecure === false), JSON.stringify(lanPlain));
 
   // ---- populated screenshots (the eyes, not just the contract) ---------------------
   respond = () => ({ status: 200, body: JSON.stringify({ data: { temperature: 87.3 } }) });

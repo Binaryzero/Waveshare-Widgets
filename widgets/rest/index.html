@@ -84,6 +84,7 @@
   'use strict';
 
   const el = (id) => document.getElementById(id);
+  const isHttps = (u) => /^https:\/\//i.test(String(u || ''));
   const cfg = {
     url: '', pointer: '', unit: '', decimals: 0,
     pollSeconds: 60, warn: null, crit: null,
@@ -439,7 +440,7 @@
         proxy: 'always',
         // The same LAN opt-in as the data request: a device that serves its data over a
         // self-signed certificate serves its token endpoint over the same one.
-        insecure: cfg.selfSigned,
+        insecure: cfg.selfSigned && isHttps(cfg.tokenEndpoint),
         signal: signal,
         headers: {
           // HTTP Basic is the form every client-credentials server accepts; putting the
@@ -530,8 +531,10 @@
       // checked. The host decides whether to honour it and does so for private addresses
       // alone (DashboardWindow.IsPrivateHost), so an internet endpoint is validated
       // whatever the switch says; the browser tier ignores the field, fails the TLS
-      // handshake, and escalates to the host carrying it.
-      if (cfg.selfSigned) init.insecure = true;
+      // handshake, and escalates to the host carrying it. HTTPS only: plain HTTP has no
+      // certificate to skip, and the flag would still route it through the host's LAN
+      // client — one connection per device — serialising every tile on that device.
+      if (cfg.selfSigned && isHttps(cfg.url)) init.insecure = true;
       // Never wait longer than the poll period (floor 10 s, cap 30 s): a request still
       // outstanding when the next one is due has already failed in every way that matters.
       const budget = Math.min(30000, Math.max(10000, cfg.pollSeconds * 1000));
