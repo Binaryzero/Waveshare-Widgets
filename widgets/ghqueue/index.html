@@ -190,6 +190,62 @@
     tick(gen);
   });
 
+  // Find (#210): the repositories this token can see, for a row of the Repositories list.
+  // GitHub lists them for the token itself, so a fine-grained token answers with the
+  // repositories it was given and a classic one with everything the account reaches.
+  // Recently pushed first and a few pages at most: the chooser has a search box, and a
+  // repository past the first few hundred can still be typed. Asked only when the user
+  // presses Find, never by the sweep, and kept out of the sweep's ETag cache.
+  const DISCOVER_PAGES = 5;
+  WW.onDiscover(async ({ property, field }) => {
+    if (property !== 'repos' || field !== 'repo') return null;
+    if (!cfg.token) throw new Error('Add a personal access token to this widget first. Find lists the repositories it can see.');
+    if (rateLimitedUntil > Date.now()) {
+      const at = new Date(rateLimitedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      throw new Error('GitHub’s rate limit for this token resets at ' + at + '. Type the repository for now.');
+    }
+    const names = [];
+    for (let page = 1; page <= DISCOVER_PAGES; page++) {
+      const batch = await listRepos(page);
+      for (const r of batch) if (r && typeof r.full_name === 'string') names.push(r.full_name);
+      if (batch.length < 100) break;
+    }
+    return names;
+  });
+
+  async function listRepos(page) {
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), REQUEST_DEADLINE);
+    try {
+      let res;
+      try {
+        res = await WW.fetch(API + '/user/repos?per_page=100&sort=pushed&page=' + page, {
+          headers: {
+            Authorization: 'Bearer ' + cfg.token,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+          maxBytes: RESPONSE_CAP,
+          signal: abort.signal,
+        });
+      } catch (e) {
+        throw new Error(abort.signal.aborted ? 'GitHub did not answer in time.' : 'Could not reach GitHub.');
+      }
+      if (res.status === 401) throw new Error('GitHub refused the token. Check it in this widget’s settings.');
+      if (!res.ok) {
+        let said = '';
+        try { said = String(((await res.json()) || {}).message || ''); } catch (e) { /* no JSON to quote */ }
+        throw new Error('GitHub answered ' + res.status + (said ? ': ' + said.slice(0, 120) : '') + '.');
+      }
+      let body;
+      try { body = await res.json(); } catch (e) { throw new Error('GitHub’s answer could not be read.'); }
+      if (!Array.isArray(body)) throw new Error('GitHub’s answer was not a list of repositories.');
+      return body;
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
+
   // How many rows the slot can actually hold. A supported 200px band fits three, and
   // clipping the rest behind overflow:hidden would leave the summary naming a failing
   // PR no visible row could possibly be. Chrome is the body padding, the header, the

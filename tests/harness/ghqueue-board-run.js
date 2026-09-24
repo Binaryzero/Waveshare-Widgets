@@ -13,6 +13,11 @@
 //   G4 · a row names its PR (repo#number + title) and shows an age
 //   G5 · the review-chatter marker appears on the PR that has comments
 //   G6 · the footer reports freshness ("updated ...")
+// Find (#210), asked the way the shell asks — a ww-discover message to the frame:
+//   G7 · the Repositories field lists every repository the token can see, all pages, in
+//        GitHub's order, with the saved token on the request
+//   G8 · any other setting gets no answer from this widget ("unsupported")
+//   G9 · a refused token comes back as a message saying so, not a list
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -87,6 +92,12 @@ const listItem = (pr) => ({
   head: { sha: pr.sha }, created_at: pr.created, updated_at: pr.created,
 });
 
+// /user/repos, paged by 100: a full first page and a short second one, so a handler that
+// reads only page one fails G7.
+const USER_REPOS = Array.from({ length: 102 }, (_, i) => ({ full_name: `me/repo-${i}`, private: i % 2 === 0 }));
+let reposStatus = 200;
+const reposAuth = [];
+
 const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>'
   + '<style>html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#000}'
   + 'iframe{display:block;border:0;width:100vw;height:100vh}</style>';
@@ -126,6 +137,15 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     if (r.request().method() === 'OPTIONS') return r.fulfill({ status: 204, headers: CORS, body: '' });
     const u = new URL(r.request().url());
     const seg = u.pathname.split('/').filter(Boolean);   // repos/{o}/{r}/...
+    if (seg[0] === 'user' && seg[1] === 'repos') {
+      reposAuth.push(r.request().headers()['authorization'] || '');
+      if (reposStatus !== 200)
+        return r.fulfill({ status: reposStatus, contentType: 'application/json', headers: CORS,
+          body: JSON.stringify({ message: 'Bad credentials' }) });
+      const pageNo = Number(u.searchParams.get('page') || 1);
+      const per = Number(u.searchParams.get('per_page') || 30);
+      return json(r, USER_REPOS.slice((pageNo - 1) * per, pageNo * per));
+    }
     const repo = seg[1] + '/' + seg[2];
     if (seg[3] === 'pulls' && !seg[4])
       return json(r, PRS.filter((p) => p.repo === repo).map(listItem));
@@ -162,6 +182,7 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
       const m = ev.data || {};
       if (m.type === 'ww-log') console.log('[ww-log]', String(m.message || m.text || '').slice(0, 200));
       if (m.type === 'ww-ready') return window.__wwPush(initMessage);
+      if (m.type === 'ww-discover-result') (window.__discovered = window.__discovered || {})[m.id] = m;
       // The board must be fed by the direct tier the stub serves; an escalation to the
       // host proxy would answer the same way the host does, and is refused so the run
       // cannot pass on a tier this runner does not control.
@@ -212,6 +233,32 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     `"${top.name}" age="${top.age}"`);
   check('G5 review chatter shows where it exists', top.msgs === '💬5', `"${top.msgs}"`);
   check('G6 the footer reports freshness', /updated .+ago/.test(board.meta), `"${board.meta}"`);
+
+  // ---- Find (#210) ----------------------------------------------------------------------
+  const ask = async (id, property, field) => {
+    await page.evaluate((q) => window.__wwPush(Object.assign({ type: 'ww-discover' }, q)), { id, property, field });
+    for (let i = 0; i < 50; i++) {
+      const got = await page.evaluate((k) => (window.__discovered || {})[k] || null, id);
+      if (got) return got;
+      await page.waitForTimeout(100);
+    }
+    return null;
+  };
+  const listed = await ask('d1', 'repos', 'repo');
+  const values = listed && Array.isArray(listed.options) ? listed.options.map((o) => (typeof o === 'string' ? o : o.value)) : [];
+  check('G7 Find lists every repository the token can see, across pages, in GitHub\'s order',
+    values.length === USER_REPOS.length && values[0] === 'me/repo-0' && values[101] === 'me/repo-101',
+    listed ? `${values.length} listed` : 'no answer');
+  check('G7b ...asked with the saved token', reposAuth.length >= 2 && reposAuth.every((a) => a === 'Bearer stub-token'),
+    JSON.stringify(reposAuth.slice(0, 3)));
+  const other = await ask('d2', 'refreshMinutes', null);
+  check('G8 any other setting gets no answer from this widget', !!(other && other.unsupported), JSON.stringify(other));
+  reposStatus = 401;
+  const refused = await ask('d3', 'repos', 'repo');
+  check('G9 a refused token comes back as a message saying so',
+    !!(refused && typeof refused.error === 'string' && /refused the token/i.test(refused.error) && !refused.options),
+    JSON.stringify(refused));
+  reposStatus = 200;
 
   const shot = path.join(__dirname, 'ghqueue-board.png');
   await page.screenshot({ path: shot });
