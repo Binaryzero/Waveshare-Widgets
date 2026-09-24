@@ -2,7 +2,7 @@
   "id": "ws.stock.rest",
   "name": "REST Value",
   "author": "Plinth",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Any JSON endpoint, one number on the panel: give it a URL and a path to the value. Polls on its own schedule, colors itself against warn/crit thresholds, and can authenticate with a static header or an OAuth2 client-credentials exchange.",
   "min_api_version": 1,
   "supported_slots": [
@@ -85,6 +85,17 @@
       "type": "secret",
       "placeholder": "Bearer eyJhbGciOi…",
       "help": "The value the header is sent with, copied exactly — most APIs want it prefixed, as in \"Bearer eyJhbGciOi…\". Leave it empty if the endpoint needs no auth. It is still sent when Authentication is OAuth2, so an API that wants a key header alongside the bearer works — fill both."
+    },
+    {
+      "name": "selfSigned",
+      "label": "Accept a self-signed certificate (LAN only)",
+      "type": "select",
+      "options": [
+        "off",
+        "on"
+      ],
+      "default": "off",
+      "help": "For an HTTPS device on your own network — a NAS, a router, a Home Assistant box — whose certificate it signed itself, which a browser refuses. On skips checking the certificate, nothing else, and only when the endpoint is written as a private IP address or localhost (https://192.168.1.20/…, 10.x, 172.16–31.x). A name such as nas.local is always checked, because a name cannot be proven private — use the device’s IP address. Internet addresses are always checked, whatever this says."
     },
     {
       "name": "authMode",

@@ -20,6 +20,12 @@
 //         failure keeps the type, and the state, that means "unreachable"
 //   R24/R25 · the wrapper WW.fetch returns IS a Response — its body takes a BYOB reader and
 //         it survives the brand check cache.put performs. Neither is expressible in Node.
+//   R26 · the LAN self-signed switch (#60): on, the request the HOST receives asks for its
+//         certificate not to be checked (the host alone decides, for private addresses);
+//         off — the default — it does not; switching it on applies to the very next
+//         request (every settings edit polls at once), even one made while a request is
+//         in flight (R26e); the OAuth2 token exchange carries it as well; and an http://
+//         endpoint never does (R26f) — there is no certificate to skip
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -105,6 +111,14 @@ const TOKEN = 'Bearer super-secret-probe-token';
       window.addEventListener('message', (ev) => {
         const m = ev.data || {};
         if (m.type !== 'ww-fetch') return;
+        // What the host would receive, for R26: the URL and whether the widget asked for
+        // the certificate check to be skipped.
+        (window.__proxied = window.__proxied || []).push({ url: String(m.url), insecure: m.insecure === true });
+        // R26e holds one URL's host answer, so a request can be caught in flight.
+        if (window.__holdProxy && String(m.url).includes(window.__holdProxy)) {
+          setTimeout(() => window.postMessage({ type: 'ww-fetch-result', id: m.id, error: window.__probeHostError }, '*'), 3000);
+          return;
+        }
         // OAuth2 token exchanges use proxy:'always', so they arrive here rather than on the
         // browser tier. When a token endpoint is armed (RT, #176.1), answer it with a
         // scriptable token body and COUNT the grant — that count is how the halt is proven,
@@ -931,16 +945,83 @@ const TOKEN = 'Bearer super-secret-probe-token';
     /^5m ago/.test(ageOnShow), ageOnShow);
   await agePage.close();
 
+  // ---- R26 · the LAN self-signed switch reaches the host (#60) -----------------------
+  // A self-signed endpoint fails the browser's TLS handshake, so WW.fetch escalates to the
+  // host; that hop is where the switch has to arrive. The fixture aborts the direct request
+  // the way a refused certificate does, and the stub host records what it was asked.
+  respond = (url) => (url.includes('/lan-') ? { abort: true } : { status: 200, body: '{}' });
+  const proxiedFor = (frag) => page.evaluate((f) => (window.__proxied || []).filter((m) => m.url.includes(f)), frag);
+  await page.evaluate(() => { window.__proxied = []; });
+  await init(Object.assign({}, base, { url: 'https://api.test/lan-on', jsonPointer: '/v', selfSigned: 'on' }));
+  await wait(800);
+  const lanOn = await proxiedFor('/lan-on');
+  check('R26 with the switch on, the request the host receives asks for its certificate not to be checked',
+    lanOn.length > 0 && lanOn.every((m) => m.insecure === true), JSON.stringify(lanOn));
+  await page.evaluate(() => { window.__proxied = []; });
+  await init(Object.assign({}, base, { url: 'https://api.test/lan-off', jsonPointer: '/v' }));
+  await wait(800);
+  const lanOff = await proxiedFor('/lan-off');
+  check('R26b with it off (the default), the certificate is checked',
+    lanOff.length > 0 && lanOff.every((m) => m.insecure === false), JSON.stringify(lanOff));
+  // Same endpoint, still failing, now with the switch on: the ask that follows the edit —
+  // at once, since every init polls — already carries it.
+  await page.evaluate(() => { window.__proxied = []; });
+  await init(Object.assign({}, base, { url: 'https://api.test/lan-off', jsonPointer: '/v', selfSigned: 'on' }));
+  await wait(800);
+  const lanFlip = await proxiedFor('/lan-off');
+  check('R26c switching it on applies to the very next request, the one the edit triggers',
+    lanFlip.length > 0 && lanFlip.every((m) => m.insecure === true), `${lanFlip.length} request(s) within 0.8s`);
+  // The token endpoint of a LAN device is served over the same certificate as its data.
+  // Token exchanges always travel the host tier (proxy: 'always'), so this is recorded too.
+  await page.evaluate(() => { window.__proxied = []; window.__tokenEndpoint = 'https://api.test/lan-tok';
+    window.__tokenResp = { access_token: 'lan-bearer', token_type: 'Bearer', expires_in: 3600 }; });
+  await init(Object.assign({}, base, { url: 'https://api.test/lan-data', jsonPointer: '/v', selfSigned: 'on',
+    authMode: 'oauth2', tokenEndpoint: 'https://api.test/lan-tok', clientId: 'id', clientSecret: 'sec' }));
+  await wait(800);
+  const lanTok = await proxiedFor('/lan-tok');
+  check('R26d ...and the OAuth2 token exchange carries it too',
+    lanTok.length > 0 && lanTok.every((m) => m.insecure === true), JSON.stringify(lanTok));
+  await page.evaluate(() => { window.__tokenEndpoint = null; window.__tokenResp = null; });
+  // R26e · switched while a request is OUT: that request snapshotted the old setting, and
+  // restart()'s poll finds it in flight and does nothing — so the switch waited for it to
+  // land and then for the ordinary schedule. The host answer for this URL is held 3 s; the
+  // switch is flipped a moment after it goes out, and a request carrying it must follow at
+  // once rather than after the held one and a 5 s interval.
+  await page.evaluate(() => { window.__proxied = []; window.__holdProxy = '/lan-slow'; });
+  await init(Object.assign({}, base, { url: 'https://api.test/lan-slow', jsonPointer: '/v' }));
+  await wait(300);
+  await init(Object.assign({}, base, { url: 'https://api.test/lan-slow', jsonPointer: '/v', selfSigned: 'on' }));
+  await wait(800);
+  const lanSlow = await proxiedFor('/lan-slow');
+  check('R26e switching it while a request is in flight retires that request and asks again at once',
+    lanSlow.length === 2 && lanSlow[0].insecure === false && lanSlow[1].insecure === true, JSON.stringify(lanSlow));
+  await page.evaluate(() => { window.__holdProxy = null; });
+  // R26f · plain HTTP has no certificate to skip, and the flag would still send it down the
+  // host's one-connection-per-device LAN client. The switch on an http:// endpoint sends
+  // nothing extra. The fixture host is https, so the request is aimed at an http URL the
+  // route table does not answer — it escalates to the stub host like any refused request.
+  await page.evaluate(() => { window.__proxied = []; });
+  await init(Object.assign({}, base, { url: 'http://api.test/lan-plain', jsonPointer: '/v', selfSigned: 'on' }));
+  await wait(800);
+  const lanPlain = await proxiedFor('/lan-plain');
+  check('R26f an http:// endpoint does not carry the flag, switch on or not',
+    lanPlain.length > 0 && lanPlain.every((m) => m.insecure === false), JSON.stringify(lanPlain));
+
   // ---- populated screenshots (the eyes, not just the contract) ---------------------
   respond = () => ({ status: 200, body: JSON.stringify({ data: { temperature: 87.3 } }) });
+  const shotValues = [];
   for (const [w, h, name] of [[320, 400, 'quarter'], [640, 400, 'half'], [640, 200, 'half-upper']]) {
     await page.setViewportSize({ width: w, height: h });
     await init({ url: 'https://api.test/shot', jsonPointer: '/data/temperature', label: 'Reactor core',
       unit: '°C', decimals: 1, warn: '80', crit: '95', pollSeconds: 60, bgStyle: 'solid' });
     await wait(400);
+    shotValues.push(name + '=' + (await read()).value);
     await page.screenshot({ path: path.join(__dirname, 'restvalue-' + name + '.png') });
   }
-  check('R9 populated screenshots captured for quarter / half / half-upper', true);
+  // Checked, not assumed: a screenshot of an error card is not a populated screenshot, and
+  // an unconditional pass here let exactly that through.
+  check('R9 populated screenshots captured for quarter / half / half-upper, each showing the value',
+    shotValues.length === 3 && shotValues.every((v) => v.endsWith('=87.3')), shotValues.join(' '));
 
   await browser.close();
   console.log(failures ? `${failures} FAILURES` : 'ALL PASS');
