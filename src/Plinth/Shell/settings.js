@@ -95,6 +95,9 @@
   function setTab(name) {
     if (!PANES[name]) name = 'page';
     activeTab = name;
+    // Drawn fresh on open: its list of tiles that override the theme (#225) is a snapshot,
+    // and tile edits made since on the Widget tab would otherwise be missing from it.
+    if (name === 'theme') renderThemeEditor();
     for (const key of Object.keys(TABS)) {
       const on = key === name;
       el(TABS[key]).classList.toggle('active', on);
@@ -876,6 +879,8 @@
     markDirty();
     renderPageList();
     renderEditorPanel();
+    // The Theme tab's override list holds rows for the slot objects just replaced (#225).
+    if (activeTab === 'theme') renderThemeEditor();
   }
 
   function onReplicaSelection(pageIdx, slotIdx, instanceId, gen) {
@@ -1264,6 +1269,13 @@
 
   // Stock seeds mirrored from PaletteEngine's defaults; shown when no theme is set.
   const THEME_DEFAULTS = { accent: '#4dd4e8', background: '#070b12', text: '#dde2e8', panelAlpha: 0.92 };
+  const STYLE_KEY_LABELS = { accent: 'accent', background: 'background', text: 'text', panelAlpha: 'panel opacity' };
+
+  /** The theme keys a slot overrides, as readable names; empty when it follows the theme. */
+  function styleOverrideKeys(slot) {
+    const style = (slot && slot.style) || {};
+    return Object.keys(STYLE_KEY_LABELS).filter((k) => style[k] != null).map((k) => STYLE_KEY_LABELS[k]);
+  }
 
   // Palette derivation lives in palette.js (shared with the dashboard shell for the
   // live replica and per-widget style overrides).
@@ -1314,6 +1326,55 @@
     reset.textContent = 'Reset to stock theme';
     reset.onclick = () => { delete state.layout.theme; renderThemeEditor(); refreshReplica('theme'); };
     container.appendChild(bgRow('', reset));
+
+    // #225: the widgets these colours will NOT reach. A tile carrying its own override
+    // keeps it through any change made here, which otherwise reads as the theme editor
+    // not working on that tile.
+    const overriding = [];
+    (state.layout.pages || []).forEach((page, pi) => (page.slots || []).forEach((slot, si) => {
+      const keys = styleOverrideKeys(slot);
+      if (keys.length) overriding.push({ page, pi, slot, si, keys });
+    }));
+    if (overriding.length) {
+      const box = document.createElement('div');
+      box.className = 'theme-overrides';
+      const intro = document.createElement('p');
+      intro.className = 'panel-hint';
+      intro.textContent = overriding.length === 1
+        ? '1 widget overrides part of this theme, so those colours stay its own:'
+        : overriding.length + ' widgets override part of this theme, so those colours stay their own:';
+      box.appendChild(intro);
+      for (const o of overriding) {
+        const row = document.createElement('div');
+        row.className = 'theme-override';
+        const w = widgetsById.get(o.slot.widgetId);
+        const what = document.createElement('span');
+        // The tile's position as well as its page: two copies of one widget on a page are
+        // a supported layout, and without it their rows read the same.
+        what.textContent = (w ? (w.displayName || w.name) : o.slot.widgetId)
+          + ' · ' + (o.page.name || 'Page ' + (o.pi + 1)) + ', tile ' + (o.si + 1)
+          + ' — ' + o.keys.join(', ');
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.className = 'ghost';
+        back.textContent = 'Follow the theme again';
+        back.onclick = () => {
+          // Found again by id: a live-preview drag since this row was drawn replaces the
+          // slot objects, and clearing the old one would change nothing that is saved.
+          const id = o.slot.instanceId;
+          const live = id
+            ? (state.layout.pages || []).flatMap((p) => p.slots || []).find((x) => x.instanceId === id)
+            : o.slot;
+          if (live) delete live.style;
+          refreshReplica('layout');
+          renderThemeEditor();
+          renderEditor();
+        };
+        row.append(what, back);
+        box.appendChild(row);
+      }
+      container.appendChild(box);
+    }
     refreshPreview();
   }
 
@@ -1969,6 +2030,16 @@
         updated.title = 'This widget’s settings changed in the last update. Open it to check them.';
         main.appendChild(updated);
       }
+      // #225: a tile that overrides the theme does not follow it, and nothing else in
+      // the strip would say so. Marked here, where every tile on the page is listed.
+      const overrides = styleOverrideKeys(slot);
+      if (overrides.length) {
+        const mark = document.createElement('span');
+        mark.className = 'chip-style';
+        mark.textContent = '🎨';
+        mark.title = 'Overrides the theme: ' + overrides.join(', ');
+        main.appendChild(mark);
+      }
       main.addEventListener('click', () => selectSlot(i));
       // ⧉ before ✕ — the constructive one first, and the destructive one stays where the
       // hand already knows to find it.
@@ -2339,15 +2410,48 @@
       + 'anything unchecked keeps following the global theme.';
     wrap.appendChild(hint);
 
+    // #225: one step back to the theme, matching the on-panel editor's button. Shown
+    // only while something is overridden, so its presence is itself the signal.
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'ghost style-revert';
+    back.textContent = 'Follow the theme again';
+    back.onclick = () => {
+      delete slot.style;
+      refreshReplica('layout');
+      renderEditor();
+    };
+    back.hidden = !styleOverrideKeys(slot).length;
+
     const setStyleKey = (key, value) => {
+      const before = styleOverrideKeys(slot).join();
       const s = slot.style || (slot.style = {});
       if (value == null) delete s[key]; else s[key] = value;
       if (!Object.keys(s).length) delete slot.style;
       refreshReplica('layout');
+      // Checking or unchecking a key changes WHETHER this tile overrides the theme, and
+      // the marks that say so were drawn before the change: the revert button here and
+      // the 🎨 on the tile strip. A colour dragged within an override changes neither.
+      if (styleOverrideKeys(slot).join() !== before) {
+        back.hidden = !styleOverrideKeys(slot).length;
+        const page = (state.layout.pages || [])[selectedPage];
+        if (page) { el('slotList').textContent = ''; renderSlotStrip(page); }
+      }
     };
     const cur = slot.style || {};
     const seeds = Object.assign({}, THEME_DEFAULTS, state.layout.theme || {});
     const hex6 = (v, fb) => (/^#[0-9a-f]{6}$/i.test(v || '') ? v : fb);
+    // #225: say which layer each value comes from, beside the value.
+    const source = (on) => {
+      const tag = document.createElement('span');
+      tag.className = 'style-source';
+      const paint = (overridden) => {
+        tag.textContent = overridden ? 'this widget' : 'theme';
+        tag.classList.toggle('overridden', overridden);
+      };
+      paint(on);
+      return { tag, paint };
+    };
 
     for (const [key, labelText] of [['accent', 'Accent'], ['background', 'Background'], ['text', 'Text']]) {
       const row = document.createElement('div');
@@ -2361,12 +2465,14 @@
       color.type = 'color';
       color.disabled = !check.checked;
       color.value = hex6(cur[key], hex6(seeds[key], '#4dd4e8'));
+      const src = source(check.checked);
       check.onchange = () => {
         color.disabled = !check.checked;
+        src.paint(check.checked);
         setStyleKey(key, check.checked ? color.value : null);
       };
       color.oninput = () => setStyleKey(key, color.value);
-      row.append(check, label, color);
+      row.append(check, label, color, src.tag);
       wrap.appendChild(row);
     }
 
@@ -2384,16 +2490,20 @@
     range.disabled = !check.checked;
     range.value = String(Math.round((cur.panelAlpha != null ? cur.panelAlpha : seeds.panelAlpha) * 100));
     out.value = range.value + '%';
+    const alphaSrc = source(check.checked);
     check.onchange = () => {
       range.disabled = !check.checked;
+      alphaSrc.paint(check.checked);
       setStyleKey('panelAlpha', check.checked ? Number(range.value) / 100 : null);
     };
     range.oninput = () => {
       out.value = range.value + '%';
       setStyleKey('panelAlpha', Number(range.value) / 100);
     };
-    row.append(check, label, range, out);
+    row.append(check, label, range, out, alphaSrc.tag);
     wrap.appendChild(row);
+
+    wrap.appendChild(back);
     return wrap;
   }
 
