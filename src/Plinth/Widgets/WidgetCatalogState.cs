@@ -137,6 +137,11 @@ public sealed class WidgetCatalogState
             var model = JsonSerializer.Deserialize<Model>(File.ReadAllText(path)) ?? new Model();
             model.Widgets = new Dictionary<string, Entry>(model.Widgets ?? new(), StringComparer.Ordinal);
             model.Review ??= [];
+            // Valid JSON can still hold nulls ({"Widgets":{"x":null}}). Read as-is, one would
+            // throw in Refresh on every start, before the file is ever rewritten, and leave
+            // the indicators off for good. Same answer as a file that does not parse.
+            if (model.Widgets.Values.Any(e => e is null || e.Shape is null) || model.Review.Any(r => r is null))
+                throw new InvalidDataException("null entry");
             return model;
         }
         catch (Exception)

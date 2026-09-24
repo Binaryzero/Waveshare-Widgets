@@ -5,6 +5,8 @@
 // W4      a placed tile whose widget changed its settings is flagged; a relabel is not a change
 // W5-W6   opening a flagged tile clears it; a flag for a removed tile goes
 // W7      a damaged state file is a baseline, not "everything is new"
+// W8      ...and so is valid JSON holding nulls, which used to throw on every start
+// W9      a placement made on the panel ends "New" too (source guard: DashboardWindow)
 using Plinth.Widgets;
 
 var failures = 0;
@@ -73,6 +75,49 @@ s7.Refresh([Shape(clock), Shape(cpu), Shape(hue)], Tiles(), t0.AddDays(5));
 Check("W7 a damaged state file is a baseline, not every widget announced as new",
     !s7.IsNew("ws.stock.clock", t0.AddDays(5)) && !s7.IsNew("ws.stock.hue", t0.AddDays(5)));
 
+// ---- W8 · valid JSON, invalid model ----------------------------------------------------
+foreach (var (label, json) in new[]
+{
+    ("a null widget entry", "{\"Widgets\":{\"ws.stock.clock\":null},\"Review\":[]}"),
+    ("a null shape", "{\"Widgets\":{\"ws.stock.clock\":{\"FirstSeen\":null,\"Shape\":null,\"Placed\":false}},\"Review\":[]}"),
+    ("a null review id", "{\"Widgets\":{},\"Review\":[null]}"),
+})
+{
+    File.WriteAllText(path, json);
+    Exception? thrown = null;
+    WidgetCatalogState? s8 = null;
+    try
+    {
+        s8 = new WidgetCatalogState(path);
+        s8.Refresh([Shape(clock), Shape(hue)], Tiles(("ws.stock.clock", "c1")), t0.AddDays(6));
+    }
+    catch (Exception ex) { thrown = ex; }
+    Check($"W8 {label} is read as a baseline, not a crash on every start",
+        thrown is null && s8 is not null && !s8.IsNew("ws.stock.hue", t0.AddDays(6)) && s8.Review.Count == 0,
+        thrown?.GetType().Name);
+}
+var s8b = new WidgetCatalogState(path);
+Check("W8b ...and the rewritten file reads back cleanly", s8b.Review.Count == 0 && !s8b.IsNew("ws.stock.clock", t0.AddDays(6)));
+
+// ---- W9 · the panel's save path --------------------------------------------------------
+var dash = FindUpwards("src/Plinth/App/DashboardWindow.cs");
+var dashCode = dash is null ? "" : File.ReadAllText(dash);
+Check("W9 a save from the on-panel editor marks its widgets placed",
+    System.Text.RegularExpressions.Regex.IsMatch(dashCode,
+        @"var landed = LayoutStore\.Save\(edited, LayoutStore\.PanelWriter\);[\s\S]{0,900}if \(landed\)\s*WidgetCatalogState\.Shared\?\.MarkPlaced\("));
+
 try { dir.Delete(recursive: true); } catch { }
 Console.WriteLine(failures > 0 ? $"{failures} FAILURES" : "ALL PASS");
 return failures > 0 ? 1 : 0;
+
+static string? FindUpwards(string relative)
+{
+    var d = new DirectoryInfo(AppContext.BaseDirectory);
+    while (d is not null)
+    {
+        var candidate = Path.Combine(d.FullName, relative.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(candidate)) return candidate;
+        d = d.Parent;
+    }
+    return null;
+}

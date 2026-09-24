@@ -6,6 +6,7 @@
 //   U2 · a tile flagged by the host reads "Updated" in the strip; an unflagged one does not
 //   U3 · opening the flagged tile tells the host and clears the mark
 //   U4 · adding the new widget hides its badge at once, before any save
+//   U5 · opening a flagged tile from the live preview counts as opening it too
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -92,6 +93,28 @@ const layout = { pages: [{ name: 'Main', slots: [
   check('U4 adding the new widget hides its badge at once',
     await page.locator('#slotList .slot-chip', { hasText: 'Hue' }).count() === 1
       && await item('Hue').locator('.g-new').count() === 0);
+
+  // U5 · the preview is the main way in. A fresh init flags c2; the 🎨 on its tile in the
+  // replica selects it through the real slot-selected handoff.
+  await push({ type: 'settings-init', data: {
+    layout: JSON.parse(JSON.stringify(layout)), widgets, sensors: [], backgroundHost: 'backgrounds.plinth', reviewTiles: ['c2'],
+    status: { elevated: false, version: 'v0.2.0 (probe)' },
+  } });
+  await page.waitForTimeout(2500);   // settings re-renders; the replica re-inits
+  const replica = page.frames().find((f) => /Shell\/index\.html/.test(f.url()));
+  const flaggedBefore = await chips.nth(1).locator('.chip-updated').count();
+  const tapped = replica ? await replica.evaluate(() => {
+    const btn = document.querySelectorAll('.slot .edit-overlay .style')[1];
+    if (!btn) return 'no style button on the second tile';
+    btn.click();
+    return 'tapped';
+  }) : 'no replica';
+  await page.waitForTimeout(500);
+  const told5 = received.filter((m) => m.type === 'tile-reviewed' && m.instanceId === 'c2');
+  check('U5 opening a flagged tile from the live preview tells the host and clears the mark',
+    flaggedBefore === 1 && tapped === 'tapped' && told5.length === 1
+      && await page.locator('#slotList .slot-chip .chip-updated').count() === 0,
+    JSON.stringify({ flaggedBefore, tapped, told: told5.length }));
 
   await browser.close();
   srv.close();

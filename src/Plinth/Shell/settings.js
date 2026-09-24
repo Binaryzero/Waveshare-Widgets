@@ -910,6 +910,7 @@
     if (instanceId && (page.slots || [])[slotIdx].instanceId !== instanceId) return;
     selectedPage = pageIdx;
     selectedSlot = slotIdx;
+    markReviewed(page.slots[slotIdx]);
     galleryOpen = false; // the tap picked an existing widget — detail takes over
     renderPageList();
     renderEditorPanel();
@@ -1971,12 +1972,16 @@
     });
   }
 
+  /** Opening a tile marked "Updated" is the review it asked for (#227) — from the strip
+   * or from a tap in the live preview, which is the main way in. */
+  function markReviewed(slot) {
+    if (slot && slot.instanceId && reviewTiles.delete(slot.instanceId))
+      post({ type: 'tile-reviewed', instanceId: slot.instanceId });
+  }
+
   function selectSlot(i) {
     selectedSlot = selectedSlot === i ? null : i; // click the active chip to deselect
-    // Opening a tile marked "Updated" is the review it asked for (#227).
-    const opened = selectedSlot != null && ((state.layout.pages[selectedPage] || {}).slots || [])[selectedSlot];
-    if (opened && opened.instanceId && reviewTiles.delete(opened.instanceId))
-      post({ type: 'tile-reviewed', instanceId: opened.instanceId });
+    if (selectedSlot != null) markReviewed(((state.layout.pages[selectedPage] || {}).slots || [])[selectedSlot]);
     galleryOpen = false; // chip interaction takes the Widget tab over from the gallery
     renderEditorPanel();
     if (selectedSlot != null) openPanel('widget'); // chip select opens the inspector
