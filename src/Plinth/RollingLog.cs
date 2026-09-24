@@ -34,6 +34,11 @@ internal sealed class RollingLog
     /// but never roll anything.</summary>
     private bool _sessionOwner;
 
+    /// <summary>The session header, while the roll that should have started this session's
+    /// file is still owed: something held app.log open at StartSession, so the header went
+    /// onto the previous run's file. Every append retries until the roll lands (#298).</summary>
+    private string? _pendingSession;
+
     public RollingLog(string path, long maxBytes = DefaultMaxBytes, int keep = DefaultKeep)
     {
         _path = path;
@@ -54,11 +59,16 @@ internal sealed class RollingLog
     /// about to exit must not roll the running instance's log out from under it.</summary>
     public void StartSession(string header)
     {
+        header = Clip(header);
         lock (_sync)
         {
             _sessionOwner = true;
-            if (File.Exists(_path) && new FileInfo(_path).Length > 0) TryRoll();
-            File.AppendAllText(_path, Clip(header) + Environment.NewLine);
+            // The staging file counts on its own: a roll the last run died in the middle of
+            // left its log there, and it belongs in app.1.log now, not at some later
+            // size-triggered roll. Checking only the live file skipped exactly that run.
+            var owed = (File.Exists(_path) && new FileInfo(_path).Length > 0) || File.Exists(Staged);
+            _pendingSession = owed && !TryRoll() ? header : null;
+            File.AppendAllText(_path, header + Environment.NewLine);
         }
     }
 
@@ -72,7 +82,19 @@ internal sealed class RollingLog
             // lock (or by a second launch on its way out) rolling here would move the running
             // instance's log out from under it, or spend a slot just before StartSession
             // rolls again.
-            if (_sessionOwner && File.Exists(_path)
+            if (_sessionOwner && _pendingSession is not null)
+            {
+                // The session's own roll is still owed. When it lands, the new file says
+                // where this run's first lines went.
+                if (TryRoll())
+                {
+                    File.AppendAllText(_path, _pendingSession + " (continued: app.log was held open "
+                        + "when this run started, so its first lines are at the end of app.1.log)"
+                        + Environment.NewLine);
+                    _pendingSession = null;
+                }
+            }
+            else if (_sessionOwner && File.Exists(_path)
                 && new FileInfo(_path).Length + System.Text.Encoding.UTF8.GetByteCount(line) > _maxBytes)
                 TryRoll();
             File.AppendAllText(_path, line);
@@ -93,20 +115,61 @@ internal sealed class RollingLog
     /// can block, so it has to fail before any kept file is touched. Shifting the kept
     /// files first meant a blocked roll had already deleted the oldest and shuffled the
     /// rest, and every following line retried it, so four lines could erase all four.
-    /// A roll that fails LATER, after staging, is made safe by <see cref="Vacate"/>.</summary>
-    private void TryRoll()
+    /// A roll that fails LATER, after staging, is made safe by <see cref="Vacate"/>.
+    ///
+    /// Returns whether the live file is out of the way — moved, or never there — which is
+    /// what a new session needs; filing the staged file as app.1.log may still be pending.</summary>
+    private bool TryRoll()
     {
-        var staged = _path + ".rolling";
         try
         {
             // A roll that stopped after staging left the last file here: finish that one.
-            if (File.Exists(staged)) { Vacate(1); File.Move(staged, PathFor(1)); }
-            File.Move(_path, staged);
-            Vacate(1);
-            File.Move(staged, PathFor(1));
+            if (File.Exists(Staged)) Install();
+            if (!File.Exists(_path)) return true;
+            File.Move(_path, Staged);
         }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+        try { Install(); }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
+        return true;
+    }
+
+    private string Staged => _path + ".rolling";
+
+    /// <summary>Files the staged log as app.1.log, cut to the cap first. A roll blocked for a
+    /// long time lets the live file grow past the cap so no line is lost; archived whole,
+    /// that one file would then ride through every kept slot and break the directory's bound
+    /// until it aged out (#298). The tail is what survives: the lines nearest whatever went
+    /// wrong.</summary>
+    private void Install()
+    {
+        TrimToCap(Staged);
+        Vacate(1);
+        File.Move(Staged, PathFor(1));
+    }
+
+    private void TrimToCap(string file)
+    {
+        var length = new FileInfo(file).Length;
+        if (length <= _maxBytes) return;
+        var keep = Math.Max(0, _maxBytes - 200);   // room for the note saying what was cut
+        var tail = new byte[keep];
+        using (var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            fs.Seek(length - keep, SeekOrigin.Begin);
+            fs.ReadExactly(tail);
+        }
+        // Start on a whole line. A UTF-8 continuation byte is never 0x0A, so this cannot
+        // split a character.
+        var start = Array.IndexOf(tail, (byte)'\n') + 1;
+        var note = System.Text.Encoding.UTF8.GetBytes(
+            $"… [{length - (keep - start)} bytes dropped from the start of this file: it outgrew "
+            + $"the {_maxBytes}-byte cap while a roll was blocked]" + Environment.NewLine);
+        using var output = new FileStream(file, FileMode.Create, FileAccess.Write, FileShare.None);
+        output.Write(note);
+        output.Write(tail, start, tail.Length - start);
     }
 
     /// <summary>Frees slot n by pushing what is in it one slot down, making room there
