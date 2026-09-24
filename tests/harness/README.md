@@ -48,6 +48,10 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   with no working copy reads "not loaded". An older refused copy beside one that loaded
   gets its own block, naming the settings it withholds and the folder to remove. Which
   refusals the host sends is `tools/SecretRoundTrip` B1. Port used: 8958.
+- `themelayers-run.js` — which appearance layer a tile follows (#225). A tile that overrides
+  the theme is marked in the strip. Its Appearance panel says per value whether it comes from
+  the theme or the widget, and offers "Follow the theme again". The Theme editor lists the
+  widgets its colours will not reach and can revert each. Port used: 8962.
 - `panelsecret-run.js` — the ON-PANEL half of the same contract. The dashboard is
   handed decrypted values, so the field really holds the credential and "the user
   emptied it" is ambiguous unless the shell says which it meant: both the ✕ Clear and

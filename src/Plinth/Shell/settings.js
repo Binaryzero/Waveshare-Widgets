@@ -1249,6 +1249,13 @@
 
   // Stock seeds mirrored from PaletteEngine's defaults; shown when no theme is set.
   const THEME_DEFAULTS = { accent: '#4dd4e8', background: '#070b12', text: '#dde2e8', panelAlpha: 0.92 };
+  const STYLE_KEY_LABELS = { accent: 'accent', background: 'background', text: 'text', panelAlpha: 'panel opacity' };
+
+  /** The theme keys a slot overrides, as readable names; empty when it follows the theme. */
+  function styleOverrideKeys(slot) {
+    const style = (slot && slot.style) || {};
+    return Object.keys(STYLE_KEY_LABELS).filter((k) => style[k] != null).map((k) => STYLE_KEY_LABELS[k]);
+  }
 
   // Palette derivation lives in palette.js (shared with the dashboard shell for the
   // live replica and per-widget style overrides).
@@ -1299,6 +1306,46 @@
     reset.textContent = 'Reset to stock theme';
     reset.onclick = () => { delete state.layout.theme; renderThemeEditor(); refreshReplica('theme'); };
     container.appendChild(bgRow('', reset));
+
+    // #225: the widgets these colours will NOT reach. A tile carrying its own override
+    // keeps it through any change made here, which otherwise reads as the theme editor
+    // not working on that tile.
+    const overriding = [];
+    (state.layout.pages || []).forEach((page, pi) => (page.slots || []).forEach((slot) => {
+      const keys = styleOverrideKeys(slot);
+      if (keys.length) overriding.push({ page, pi, slot, keys });
+    }));
+    if (overriding.length) {
+      const box = document.createElement('div');
+      box.className = 'theme-overrides';
+      const intro = document.createElement('p');
+      intro.className = 'panel-hint';
+      intro.textContent = overriding.length === 1
+        ? '1 widget overrides part of this theme, so those colours stay its own:'
+        : overriding.length + ' widgets override part of this theme, so those colours stay their own:';
+      box.appendChild(intro);
+      for (const o of overriding) {
+        const row = document.createElement('div');
+        row.className = 'theme-override';
+        const w = widgetsById.get(o.slot.widgetId);
+        const what = document.createElement('span');
+        what.textContent = (w ? (w.displayName || w.name) : o.slot.widgetId)
+          + ' · ' + (o.page.name || 'Page ' + (o.pi + 1)) + ' — ' + o.keys.join(', ');
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.className = 'ghost';
+        back.textContent = 'Follow the theme again';
+        back.onclick = () => {
+          delete o.slot.style;
+          refreshReplica('layout');
+          renderThemeEditor();
+          renderEditor();
+        };
+        row.append(what, back);
+        box.appendChild(row);
+      }
+      container.appendChild(box);
+    }
     refreshPreview();
   }
 
@@ -1939,6 +1986,16 @@
       const parts = parseSize(slot.size);
       size.textContent = CHIP_WIDTH[parts.width] + CHIP_BAND[parts.band];
       main.append(name, size);
+      // #225: a tile that overrides the theme does not follow it, and nothing else in
+      // the strip would say so. Marked here, where every tile on the page is listed.
+      const overrides = styleOverrideKeys(slot);
+      if (overrides.length) {
+        const mark = document.createElement('span');
+        mark.className = 'chip-style';
+        mark.textContent = '🎨';
+        mark.title = 'Overrides the theme: ' + overrides.join(', ');
+        main.appendChild(mark);
+      }
       main.addEventListener('click', () => selectSlot(i));
       // ⧉ before ✕ — the constructive one first, and the destructive one stays where the
       // hand already knows to find it.
@@ -2310,6 +2367,17 @@
     const cur = slot.style || {};
     const seeds = Object.assign({}, THEME_DEFAULTS, state.layout.theme || {});
     const hex6 = (v, fb) => (/^#[0-9a-f]{6}$/i.test(v || '') ? v : fb);
+    // #225: say which layer each value comes from, beside the value.
+    const source = (on) => {
+      const tag = document.createElement('span');
+      tag.className = 'style-source';
+      const paint = (overridden) => {
+        tag.textContent = overridden ? 'this widget' : 'theme';
+        tag.classList.toggle('overridden', overridden);
+      };
+      paint(on);
+      return { tag, paint };
+    };
 
     for (const [key, labelText] of [['accent', 'Accent'], ['background', 'Background'], ['text', 'Text']]) {
       const row = document.createElement('div');
@@ -2323,12 +2391,14 @@
       color.type = 'color';
       color.disabled = !check.checked;
       color.value = hex6(cur[key], hex6(seeds[key], '#4dd4e8'));
+      const src = source(check.checked);
       check.onchange = () => {
         color.disabled = !check.checked;
+        src.paint(check.checked);
         setStyleKey(key, check.checked ? color.value : null);
       };
       color.oninput = () => setStyleKey(key, color.value);
-      row.append(check, label, color);
+      row.append(check, label, color, src.tag);
       wrap.appendChild(row);
     }
 
@@ -2346,16 +2416,33 @@
     range.disabled = !check.checked;
     range.value = String(Math.round((cur.panelAlpha != null ? cur.panelAlpha : seeds.panelAlpha) * 100));
     out.value = range.value + '%';
+    const alphaSrc = source(check.checked);
     check.onchange = () => {
       range.disabled = !check.checked;
+      alphaSrc.paint(check.checked);
       setStyleKey('panelAlpha', check.checked ? Number(range.value) / 100 : null);
     };
     range.oninput = () => {
       out.value = range.value + '%';
       setStyleKey('panelAlpha', Number(range.value) / 100);
     };
-    row.append(check, label, range, out);
+    row.append(check, label, range, out, alphaSrc.tag);
     wrap.appendChild(row);
+
+    // #225: one step back to the theme, matching the on-panel editor's button. Shown
+    // only while something is overridden, so its presence is itself the signal.
+    if (styleOverrideKeys(slot).length) {
+      const back = document.createElement('button');
+      back.type = 'button';
+      back.className = 'ghost style-revert';
+      back.textContent = 'Follow the theme again';
+      back.onclick = () => {
+        delete slot.style;
+        refreshReplica('layout');
+        renderEditor();
+      };
+      wrap.appendChild(back);
+    }
     return wrap;
   }
 
