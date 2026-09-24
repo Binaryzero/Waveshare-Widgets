@@ -895,10 +895,13 @@ public sealed class DashboardWindow : Form
 
     // LAN IoT devices (Hue Bridge CLIP v2, Nanoleaf, ...) speak HTTPS with self-signed
     // certificates. This client skips certificate validation and is ONLY ever used for
-    // hosts that IsPrivateHost approves — never for internet targets.
+    // hosts that IsPrivateHost approves — never for internet targets. That includes
+    // where a device redirects to, so redirects are followed by PrivateNetwork.SendAsync,
+    // which checks every hop, and never by the handler, which checked only the first (#303).
     private static readonly HttpClient ProxyClientInsecure = new(new SocketsHttpHandler
     {
         AutomaticDecompression = System.Net.DecompressionMethods.All,
+        AllowAutoRedirect = false,
         // Embedded TLS servers on LAN devices mishandle parallel handshakes, so
         // requests to a device are serialized through one pooled connection.
         // TLS protocol versions stay at system defaults — the documented contract
@@ -910,26 +913,6 @@ public sealed class DashboardWindow : Form
         },
     })
     { Timeout = TimeSpan.FromSeconds(15) };
-
-    /// <summary>Loopback or RFC1918/link-local private addresses only (no DNS lookups —
-    /// a hostname that isn't a literal private IP or localhost doesn't qualify).
-    /// Internal because it is THE private-host policy: the media relay
-    /// (<see cref="MediaRelay"/>) must gate on exactly the same set the insecure
-    /// proxy tier does.</summary>
-    internal static bool IsPrivateHost(Uri uri)
-    {
-        if (uri.IsLoopback)
-            return true;
-        if (!System.Net.IPAddress.TryParse(uri.Host, out var ip))
-            return false;
-        var b = ip.GetAddressBytes();
-        if (b.Length != 4)
-            return false;
-        return b[0] == 10
-            || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
-            || (b[0] == 192 && b[1] == 168)
-            || (b[0] == 169 && b[1] == 254);
-    }
 
     // Several services widgets rely on (Reddit in particular) refuse non-browser
     // user agents, and iCUE's embedded browser sends a Chrome UA; match that behavior.
@@ -974,11 +957,11 @@ public sealed class DashboardWindow : Form
                 throw new InvalidOperationException($"method {method} not allowed");
 
             var insecureRequested = message["insecure"]?.GetValue<bool>() ?? false;
-            var lanDevice = insecureRequested && IsPrivateHost(uri);
+            var lanDevice = insecureRequested && PrivateNetwork.IsPrivateHost(uri);
             // Any widget that reaches a private host through this proxy marks the
             // authority as a legitimate media-relay target (see MediaRelay for why
             // that list exists and what it does and doesn't authorize).
-            if (IsPrivateHost(uri))
+            if (PrivateNetwork.IsPrivateHost(uri))
                 MediaRelay.AllowHost(uri);
 
             using var request = new HttpRequestMessage(new HttpMethod(method), uri)
@@ -1058,8 +1041,19 @@ public sealed class DashboardWindow : Form
                 uri.Host.EndsWith("redditmedia.com", StringComparison.OrdinalIgnoreCase))
                 request.Headers.TryAddWithoutValidation("Referer", "https://www.reddit.com/");
 
-            var client = lanDevice ? ProxyClientInsecure : ProxyClient;
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            HttpResponseMessage sent;
+            if (lanDevice)
+            {
+                var lan = await PrivateNetwork.SendAsync(request,
+                    (hop, token) => ProxyClientInsecure.SendAsync(hop, HttpCompletionOption.ResponseHeadersRead, token),
+                    ProxyClientInsecure.Timeout);
+                if (lan.Stopped is not null)
+                    Log.Warn($"proxy fetch {SafeUrl.Describe(uri)}: {lan.Stopped}; the widget gets the redirect itself");
+                sent = lan.Response;
+            }
+            else
+                sent = await ProxyClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            using var response = sent;
 
             // A wall can masquerade as SUCCESS: reddit's image CDN answers the .NET
             // fingerprint with its block page at HTTP 200 (field log: fifteen different

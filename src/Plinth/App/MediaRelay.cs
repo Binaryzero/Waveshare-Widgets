@@ -82,7 +82,7 @@ internal static class MediaRelay
     { Timeout = Timeout.InfiniteTimeSpan };
 
     /// <summary>Record an authority a widget reached through the host proxy. Private
-    /// hosts only — the caller gates on <see cref="DashboardWindow.IsPrivateHost"/>.</summary>
+    /// hosts only — the caller gates on <see cref="PrivateNetwork.IsPrivateHost"/>.</summary>
     public static void AllowHost(Uri uri) =>
         AllowedAuthorities.TryAdd(uri.Scheme + "://" + uri.Authority, 0);
 
@@ -325,7 +325,7 @@ internal static class MediaRelay
         if (!Uri.TryCreate(QueryValue(outer, "u"), UriKind.Absolute, out var target)
             || (target.Scheme != Uri.UriSchemeHttp && target.Scheme != Uri.UriSchemeHttps))
             return Refuse(403, "no parseable http(s) target");
-        if (!DashboardWindow.IsPrivateHost(target))
+        if (!PrivateNetwork.IsPrivateHost(target))
             return Refuse(403, "not a private address: " + target.Host);
         if (!AllowedAuthorities.ContainsKey(target.Scheme + "://" + target.Authority))
             return Refuse(403, "authority not registered: " + target.Scheme + "://" + target.Authority);

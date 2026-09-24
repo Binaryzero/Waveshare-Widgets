@@ -258,7 +258,9 @@ pairs — all shapes survive the host proxy hop, so authenticated APIs keep thei
 `init.insecure: true` skips certificate validation — honored only for private/loopback
 literal IPs (for self-signed devices like the Hue bridge). Insecure LAN requests go
 over HTTP/1.1 on a single serialized connection per device, since embedded TLS
-servers mishandle h2 offers and parallel handshakes.
+servers mishandle h2 offers and parallel handshakes. Redirects are followed only
+while they stay on a private/loopback literal IP; a redirect anywhere else comes back
+to the widget as the 3xx itself.
 
 **Media from LAN servers** must not be handed to a `<video>`/`<audio>` element
 directly: the renderer's network gates (mixed content, Local Network Access) block
