@@ -333,7 +333,8 @@ public static class UpdateManager
             expanded += entry.Length;
             if (entry.Length > MaxExpandedBytes || expanded > MaxExpandedBytes)
                 throw new InvalidOperationException($"archive expands past {MaxExpandedBytes} bytes — refusing it");
-            if (IsUpdaterControlFile(entry.FullName))
+            if (IsUpdaterControlFile(entry.FullName)
+                || entry.FullName.Equals(InstallManifest.FileName, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException($"archive entry collides with an updater control file: {entry.FullName}");
             // FullName, not Name: the application must sit at the archive ROOT. A
             // publish output accidentally wrapped in a folder still contains a
@@ -414,6 +415,31 @@ public static class UpdateManager
             }
         }
 
+        // The release's own file list (#240). Written into STAGING, so it is placed by the
+        // same journaled swap as every other file: a rollback puts the previous list back
+        // with the previous files. The files the previous list names and this archive
+        // lacks are retired inside the transaction below. No previous list (the first
+        // update after this shipped) retires nothing.
+        var shipped = Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories)
+            .Select(f => Path.GetRelativePath(staging, f))
+            .Where(rel => !IsUpdaterControlFile(rel)
+                && !rel.Equals(InstallManifest.FileName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        IReadOnlyList<string> retire = [];
+        try
+        {
+            var previousManifest = Path.Combine(baseDir, InstallManifest.FileName);
+            if (File.Exists(previousManifest))
+                retire = InstallManifest.Retirements(
+                    InstallManifest.Parse(File.ReadAllText(previousManifest)), shipped, IsUpdaterControlFile);
+        }
+        catch (Exception ex)
+        {
+            // An unreadable list only costs the retirements: files stay, nothing breaks.
+            Log.Warn($"Could not read the install manifest; no files will be retired this update: {ex.Message}");
+        }
+        File.WriteAllText(Path.Combine(staging, InstallManifest.FileName), InstallManifest.Serialize(shipped));
+
         // Tick joins the pid so a recycled process id can never collide with a stale
         // remnant from an earlier failed swap.
         var stamp = $"old-{Environment.ProcessId}-{Environment.TickCount64}";
@@ -477,6 +503,36 @@ public static class UpdateManager
                 }
                 placed.Add(target);
             }
+
+            // Retirements (#240): renamed aside under the stamp exactly like a replaced
+            // original, and added to the same rollback list. That is the whole design —
+            // startup recovery restores every *.<stamp> aside whether or not its target
+            // still exists, and the commit's sweep deletes them, so a retirement needs no
+            // record of its own and no path the existing recovery does not already run.
+            var retired = 0;
+            // Same root form recovery uses: a volume-root install keeps its trailing
+            // separator through the trim above, and must not end up with two.
+            var root = baseDir.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            foreach (var rel in retire)
+            {
+                var target = Path.GetFullPath(Path.Combine(baseDir, rel));
+                if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(target))
+                    continue;
+                try { EnsureNoReparseAncestors(Path.GetDirectoryName(target)!, baseDir, vetted); }
+                catch (Exception)
+                {
+                    // Reached through a junction: the file is not really in the install.
+                    // Leaving it is the safe direction.
+                    Log.Warn($"Update: not retiring {rel}, which is reached through a link");
+                    continue;
+                }
+                var aside = $"{target}.{stamp}";
+                File.Move(target, aside);
+                renamed.Add((target, aside));
+                retired++;
+            }
+            if (retired > 0)
+                Log.Info($"Update retired {retired} file(s) the new release no longer ships");
         }
         catch (Exception ex)
         {
