@@ -180,7 +180,8 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     // `data`, not `payload` — widget-api.js reads msg.data. Getting this wrong renders an
     // empty tile that still mounts cleanly, which is why T1 asserts the list overflowed
     // rather than trusting the push to have landed.
-    notif: { type: 'ww-notifications', data: { items: ITEMS, supported: true } },
+    // The shape NotificationCenter.Push sends: { state: 'allowed', items }.
+    notif: { type: 'ww-notifications', data: { state: 'allowed', items: ITEMS } },
   });
 
   await page.goto('https://shell.test/host.html');

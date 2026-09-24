@@ -1,4 +1,5 @@
 {
+ "state": "allowed",
  "items": [
   {
    "id": "n0",
@@ -192,6 +193,5 @@
    "body": "A body long enough to give the row some height and make the list overflow.",
    "time": 1790210122331
   }
- ],
- "supported": true
+ ]
 }

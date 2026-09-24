@@ -78,8 +78,8 @@ const sensorFrame = sensorsFile ? JSON.parse(fs.readFileSync(sensorsFile, 'utf8'
 // follow-up push is synthesized (see the sensors-only note at the push below).
 const mediaFile = opt('media', null);
 const mediaState = mediaFile ? JSON.parse(fs.readFileSync(mediaFile, 'utf8')) : null;
-// Optional notifications payload ({ items, supported }), pushed after mount as the host's
-// ww-notifications does. The notifications widget's controls — the eye, the count pill,
+// Optional notifications payload ({ state, items }, the shape NotificationCenter.Push sends),
+// delivered when the widget subscribes with ww-notifications-watch, as the host does. The notifications widget's controls — the eye, the count pill,
 // the per-app rows — only exist once there is something to show, so without this the
 // sweep's tap and rail audits have only ever seen it empty (#206 is about exactly those).
 const notificationsFile = opt('notifications', null);
@@ -353,7 +353,7 @@ function loadPlaywright() {
   // message whose ev.source is not window.parent, so a reply the widget's own document
   // posts to itself is discarded — which is exactly what the previous top-level harness
   // relied on, and why it had to run the widget unframed to work at all (#161).
-  await page.addInitScript(({ widgetUrl, widgetOrigin, slotHash, initMessage }) => {
+  await page.addInitScript(({ widgetUrl, widgetOrigin, slotHash, initMessage, notificationsData }) => {
     if (window.top !== window) return;   // shell-side only; the widget frame gets the shim
     // The two channels that leave the machine WITHOUT passing page.route: the shim posts
     // them to the shell and the HOST dials out. `WW.fetch(url, { proxy: 'always' })`
@@ -458,6 +458,15 @@ function loadPlaywright() {
       // is the honest offline answer rather than a stub.
       else if (m.type === 'ww-sd-profile') reply({ type: 'ww-sd-profile', id: m.id, profile: null });
       else if (m.type === 'ww-sd-capture') reply({ type: 'ww-sd-capture-result', id: m.id, data: null });
+      // Notifications reach a widget only after it SUBSCRIBES, as in shell.js: the slot's
+      // notifWatch stays false until ww-notifications-watch arrives, and deliverNotifications
+      // sends nothing to a slot that never asked. Answering the subscription — rather than
+      // pushing unprompted — means a widget whose WW.watchNotifications(true) is missing or
+      // broken stays on its loading state here, exactly as it would on the panel.
+      else if (m.type === 'ww-notifications-watch' && m.on !== false && notificationsData) {
+        window.__wwNotifSubscribed = true;
+        reply({ type: 'ww-notifications', data: notificationsData });
+      }
     });
     // Deliver a message into the widget after mount — see the follow-up push below.
     window.__wwPush = (msg) => {
@@ -474,6 +483,7 @@ function loadPlaywright() {
     // panel too — stated rather than omitted, so the difference is a decision.
     initMessage: { type: 'ww-init', settings, sensors: sensorFrame, media: mediaState, theme,
       notifications: null, status: { elevated: false, apiVersion: 1 } },
+    notificationsData,
   });
 
   await page.goto('https://shell.test/host.html');
@@ -506,9 +516,6 @@ function loadPlaywright() {
   // not the null this used to synthesize — so that push was wrong twice over.
   await page.waitForTimeout(150);
   await page.evaluate((frame) => window.__wwPush({ type: 'ww-sensors', sensors: frame }), sensorFrame);
-  if (notificationsData) {
-    await page.evaluate((data) => window.__wwPush({ type: 'ww-notifications', data }), notificationsData);
-  }
   await page.waitForTimeout(1200);
 
   const frameErrors = await frame.evaluate(() => window.__wwErrors || []).catch(() => []);
