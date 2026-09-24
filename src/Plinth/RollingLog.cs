@@ -29,6 +29,11 @@ internal sealed class RollingLog
     private readonly int _keep;
     private readonly object _sync = new();
 
+    /// <summary>Set by <see cref="StartSession"/>. Until then this process has not shown it
+    /// owns the log — it may be a second launch about to exit — so its lines are appended
+    /// but never roll anything.</summary>
+    private bool _sessionOwner;
+
     public RollingLog(string path, long maxBytes = DefaultMaxBytes, int keep = DefaultKeep)
     {
         _path = path;
@@ -51,6 +56,7 @@ internal sealed class RollingLog
     {
         lock (_sync)
         {
+            _sessionOwner = true;
             if (File.Exists(_path) && new FileInfo(_path).Length > 0) TryRoll();
             File.AppendAllText(_path, Clip(header) + Environment.NewLine);
         }
@@ -61,8 +67,12 @@ internal sealed class RollingLog
         line = Clip(line) + Environment.NewLine;
         lock (_sync)
         {
-            // Roll BEFORE the write that would cross the cap, so the live file stays under it.
-            if (File.Exists(_path)
+            // Roll BEFORE the write that would cross the cap, so the live file stays under it —
+            // but only as the session's owner. A line written before the single-instance
+            // lock (or by a second launch on its way out) rolling here would move the running
+            // instance's log out from under it, or spend a slot just before StartSession
+            // rolls again.
+            if (_sessionOwner && File.Exists(_path)
                 && new FileInfo(_path).Length + System.Text.Encoding.UTF8.GetByteCount(line) > _maxBytes)
                 TryRoll();
             File.AppendAllText(_path, line);
@@ -75,23 +85,40 @@ internal sealed class RollingLog
         return line[..MaxLineChars] + $" … [{line.Length - MaxLineChars} more characters not logged]";
     }
 
-    /// <summary>A roll that fails (another process has a file open, say) leaves app.log in
-    /// place and the line is still written: losing the line is worse than one file running
-    /// past its cap until the next write's roll succeeds.</summary>
+    /// <summary>A roll that fails (a viewer holding app.log open without delete sharing, say)
+    /// leaves app.log in place and the line is still written: losing the line is worse than
+    /// one file running past its cap until a later roll succeeds.
+    ///
+    /// The LIVE file moves first, to a staging name. That is the step something outside
+    /// can block, so it has to fail before any kept file is touched. Shifting the kept
+    /// files first meant a blocked roll had already deleted the oldest and shuffled the
+    /// rest, and every following line retried it, so four lines could erase all four.
+    /// A roll that fails LATER, after staging, is made safe by <see cref="Vacate"/>.</summary>
     private void TryRoll()
     {
+        var staged = _path + ".rolling";
         try
         {
-            var oldest = PathFor(_keep);
-            if (File.Exists(oldest)) File.Delete(oldest);
-            for (var n = _keep - 1; n >= 1; n--)
-            {
-                var from = PathFor(n);
-                if (File.Exists(from)) File.Move(from, PathFor(n + 1), overwrite: true);
-            }
-            File.Move(_path, PathFor(1), overwrite: true);
+            // A roll that stopped after staging left the last file here: finish that one.
+            if (File.Exists(staged)) { Vacate(1); File.Move(staged, PathFor(1)); }
+            File.Move(_path, staged);
+            Vacate(1);
+            File.Move(staged, PathFor(1));
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
+    }
+
+    /// <summary>Frees slot n by pushing what is in it one slot down, making room there
+    /// first. Only a FULL chain loses its oldest file, so a roll that keeps failing part-way
+    /// cannot erase the kept files one retry at a time: after one attempt the chain has a
+    /// gap, and a gap stops the next attempt from deleting anything.</summary>
+    private void Vacate(int n)
+    {
+        var at = PathFor(n);
+        if (!File.Exists(at)) return;
+        if (n >= _keep) { File.Delete(at); return; }
+        Vacate(n + 1);
+        File.Move(at, PathFor(n + 1));
     }
 }

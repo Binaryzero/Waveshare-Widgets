@@ -8,8 +8,13 @@
 //   L4 · the whole directory stays bounded, (keep + 1) × cap, however much is written
 //   L5 · one enormous line is clipped and says so, rather than filling the file alone
 //   L6 · an empty log is not rolled into an empty app.1.log that pushes a real one out
-//   L7 · a roll that cannot happen still writes the line — a log that loses lines when
-//        something holds a file open is worse than one briefly over its cap
+//   L7 · a roll that cannot finish still writes every line, and retrying it does not eat
+//        the kept files — a log that loses lines when something holds a file open is worse
+//        than one briefly over its cap
+//   L8 · a roll blocked on the LIVE file (a viewer holding app.log open without delete
+//        sharing) leaves every kept file exactly as it was, however often it is retried
+//   L9 · lines written before StartSession (a second launch on its way out, or anything
+//        before the single-instance lock) never roll the log
 //   F1 · falsification — the old logger's rule (one file, delete past the cap) fails L1
 //        and L3
 using System.Text;
@@ -133,18 +138,64 @@ Run(p => new Rolling(new RollingLog(p, Cap, 4)), quiet: false);
         $"app.1.log has the real session: {Read(log.PathFor(1)).Contains("worth keeping")}");
 }
 
-// ---- L7 · a roll that cannot happen still writes the line ------------------------------
+// ---- L7 · a roll that cannot finish -----------------------------------------------------
+// The block here is on the LAST step (nothing can be renamed onto a directory squatting on
+// app.1.log), after the live file has already been staged: every retry reaches it again.
 {
     var dir = NewDir();
     var log = new RollingLog(Path.Combine(dir, "app.log"), Cap, 4);
+    for (var n = 2; n <= 4; n++) File.WriteAllText(log.PathFor(n), $"kept session {n}\n");
     log.StartSession("== session");
-    Directory.CreateDirectory(log.PathFor(1));      // nothing can be renamed onto a directory
+    Directory.CreateDirectory(log.PathFor(1));
     var filler = new string('w', 200);
-    for (var i = 0; i < 30; i++) log.Append($"kept {i} {filler}");
+    for (var i = 0; i < 30; i++) log.Append($"line {i} {filler}");
+    var all = string.Concat(Directory.GetFiles(dir).Select(File.ReadAllText));
+    var kept = Enumerable.Range(2, 3).Select(n => Read(log.PathFor(n)).Trim()).ToArray();
+    Check("L7 a roll that cannot finish loses no line, and retrying it deletes no kept file",
+        Enumerable.Range(0, 30).All(i => all.Contains($"line {i} "))
+        && kept.SequenceEqual(Enumerable.Range(2, 3).Select(n => $"kept session {n}")),
+        $"{Enumerable.Range(0, 30).Count(i => all.Contains($"line {i} "))}/30 lines on disk; kept {string.Join(" | ", kept)}");
+}
+
+// ---- L8 · a blocked roll leaves the kept files alone ------------------------------------
+// On Windows (CI) the block is the real one: app.log held open with read/write sharing but
+// not delete, so it cannot be renamed. Elsewhere renames ignore share modes, so the stand-in
+// is a directory squatting on the staging name the roll moves the live file to first.
+{
+    var dir = NewDir();
+    var log = new RollingLog(Path.Combine(dir, "app.log"), Cap, 4);
+    for (var n = 1; n <= 4; n++) File.WriteAllText(log.PathFor(n), $"kept session {n}\n");
+    log.StartSession("== session");
+    var filler = new string('v', 200);
+    while (new FileInfo(log.PathFor(0)).Length < Cap - 300) log.Append($"fill {filler}");
+    FileStream? holder = null;
+    if (OperatingSystem.IsWindows())
+        holder = new FileStream(log.PathFor(0), FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+    else
+        Directory.CreateDirectory(log.PathFor(0) + ".rolling");
+    for (var i = 0; i < 12; i++) log.Append($"during {i} {filler}");  // every one past the cap retries the roll
+    holder?.Dispose();
+    var kept = Enumerable.Range(1, 4).Select(n => Read(log.PathFor(n)).Trim()).ToArray();
     var live = Read(log.PathFor(0));
-    Check("L7 when the roll cannot happen, no line is lost",
-        Enumerable.Range(0, 30).All(i => live.Contains($"kept {i} ")),
-        $"{Enumerable.Range(0, 30).Count(i => live.Contains($"kept {i} "))}/30 lines written");
+    Check("L8 a roll blocked on the live file leaves every kept file as it was",
+        kept.SequenceEqual(Enumerable.Range(1, 4).Select(n => $"kept session {n}"))
+        && Enumerable.Range(0, 12).All(i => live.Contains($"during {i} ")),
+        $"{(OperatingSystem.IsWindows() ? "real share-mode lock" : "staging stand-in")}: kept {string.Join(" | ", kept)}; "
+        + $"{Enumerable.Range(0, 12).Count(i => live.Contains($"during {i} "))}/12 lines written");
+}
+
+// ---- L9 · no roll before the session is ours --------------------------------------------
+{
+    var dir = NewDir();
+    var log = new RollingLog(Path.Combine(dir, "app.log"), Cap, 4);
+    File.WriteAllText(log.PathFor(0), new string('r', (int)Cap - 100) + "\n");  // the running instance's log, nearly full
+    var filler = new string('u', 200);
+    for (var i = 0; i < 5; i++) log.Append($"second launch {i} {filler}");       // no StartSession: not the owner
+    var rolledEarly = File.Exists(log.PathFor(1));
+    log.StartSession("== owner");
+    Check("L9 lines written before StartSession never roll the log",
+        !rolledEarly && Read(log.PathFor(1)).Contains("second launch 4 ") && !File.Exists(log.PathFor(2)),
+        $"rolled before the session: {rolledEarly}; one roll at StartSession: {File.Exists(log.PathFor(1)) && !File.Exists(log.PathFor(2))}");
 }
 
 // ---- F1 · the old logger's rule --------------------------------------------------------
