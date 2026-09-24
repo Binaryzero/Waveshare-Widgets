@@ -21,8 +21,22 @@
 //   T1 · setup: the list really does overflow, and the shell really can page
 //   T2 · a vertical drag inside the list still scrolls it — the fix must not buy T3 by
 //        making scrollable regions unscrollable, which is the obvious way to get this wrong
-//   T3 · a drag that starts on the eye does NOT page the panel
+//   T3 · a DRIFT that starts on the eye does NOT page the panel
 //   T4 · ...and a tap on it still toggles, so T3 is not satisfied by a dead control
+//
+// #257 moved the line T3 and T9 draw. They used to drag 160px sideways and require that
+// nothing page — which is a full swipe, not the drift #206 was about, and it is exactly
+// the gesture a user makes to change page. touch-action cannot tell the two apart, so a
+// list that fills its tile (notifications, jellyfin) became a dead zone for paging.
+// widget-api.js now recognises a real swipe by distance and hands it to the shell, so:
+//
+//   T3/T9 · a drift of half SWIPE_MIN_PX does not page, AND the browser never even began
+//        a native pan (a scroll-snap container snaps a short pan back, so "did not page"
+//        alone would pass with the pan-y guard deleted)
+//   S1 · a deliberate swipe that starts inside the list pages forward — via the detector
+//   S2 · ...and a swipe the other way pages back
+//   S3 · a swipe that starts ON the eye pages too, and does not also press it
+//   S4 · the vertical drags above (T2/T7) posted no swipe at all
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -57,6 +71,11 @@ const check = (name, ok, detail) => {
 const EDGE_CSS = fs.readFileSync(path.join(SHELL, 'shell.css'), 'utf8');
 const EDGE_BLOCK = (EDGE_CSS.match(/(?:^|\n)\.edge\s*\{[^}]*\}/) || [''])[0];
 const EDGE_W = Number((EDGE_BLOCK.match(/width:\s*(\d+)px/) || [])[1]);
+// The swipe threshold is READ from widget-api.js for the same reason: the drift checks
+// below use half of it, so a retune of the constant moves the test with it.
+const API_SRC = fs.readFileSync(path.join(SHELL, 'widget-api.js'), 'utf8');
+const SWIPE_MIN_PX = Number((API_SRC.match(/const SWIPE_MIN_PX = (\d+);/) || [])[1]);
+const DRIFT_PX = Math.floor(SWIPE_MIN_PX / 2);
 
 // The shell, reduced to the part that matters: a horizontal snap scroller with two pages,
 // PLUS the two .edge overlays (#213) — fixed strips above the iframes that page on a tap.
@@ -133,10 +152,23 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
       document.getElementById('p0').appendChild(frame);
     };
     window.__wwPush = (msg) => { if (frame && frame.contentWindow) frame.contentWindow.postMessage(msg, widgetOrigin); };
+    // Every ww-swipe the widget document posts, so a check can tell a page change the
+    // detector caused from one the browser's own pan caused — they look identical in
+    // scrollLeft, and #257 is precisely the difference between them.
+    window.__wwSwipes = [];
     window.addEventListener('message', (ev) => {
       if (!frame || ev.source !== frame.contentWindow || ev.origin !== widgetOrigin) return;
       const m = ev.data || {};
       if (m.type === 'ww-ready') { window.__wwPush(init); window.__wwPush(notif); }
+      // Mirrors shell.js's ww-swipe branch: page by one in the stated direction, clamped.
+      // The acceptance gates there (edit mode, sender on the shown page) are pinned by
+      // widgetswipe-run.js against the real source; this stand-in has one page of widgets
+      // and no edit mode, so both are trivially satisfied here.
+      if (m.type === 'ww-swipe' && (m.dir === 1 || m.dir === -1)) {
+        window.__wwSwipes.push(m.dir);
+        const pg = document.getElementById('pages');
+        pg.scrollLeft = Math.max(0, Math.min(pg.scrollWidth - pg.clientWidth, pg.scrollLeft + m.dir * pg.clientWidth));
+      }
     });
   }, {
     widgetUrl: 'https://widget.test/index.html',
@@ -176,6 +208,35 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   };
 
   const pagesLeft = () => page.evaluate(() => document.getElementById('pages').scrollLeft);
+  // How far #pages moved at ANY point during a gesture, not just where it came to rest.
+  // A short native pan into a mandatory scroll-snap container snaps back on release, so
+  // the resting scrollLeft cannot tell "the guard held" from "the browser panned and
+  // un-panned" — this can.
+  await page.evaluate(() => {
+    const pg = document.getElementById('pages');
+    window.__wwPanFrom = 0; window.__wwPanMax = 0;
+    pg.addEventListener('scroll', () => {
+      window.__wwPanMax = Math.max(window.__wwPanMax, Math.abs(pg.scrollLeft - window.__wwPanFrom));
+    }, { passive: true });
+  });
+  const armGesture = () => page.evaluate(() => {
+    const pg = document.getElementById('pages');
+    window.__wwPanFrom = pg.scrollLeft; window.__wwPanMax = 0; window.__wwSwipes.length = 0;
+  });
+  const gestureLog = () => page.evaluate(() => ({ panMax: window.__wwPanMax, swipes: window.__wwSwipes.slice() }));
+  // Back to page 0 and STAYING there. After a native swipe the snap animation is still
+  // running, and a bare scrollLeft = 0 is overwritten when it lands — which left S6's widget
+  // off-screen and its touch outside the viewport. Poll until it reads 0 twice in a row.
+  const settleOnFirstPage = async () => {
+    for (let i = 0; i < 20; i++) {
+      await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+      await page.waitForTimeout(150);
+      const a = await pagesLeft();
+      await page.waitForTimeout(150);
+      if (a === 0 && (await pagesLeft()) === 0) return true;
+    }
+    return false;
+  };
   const listTop = () => frame.evaluate(() => document.getElementById('list').scrollTop);
 
   // ---- T1 · the preconditions, asserted rather than assumed ---------------------------
@@ -214,6 +275,13 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   check('T7 a drag that starts ON a control inside the list still scrolls the list',
     rowScrolled > 10, `scrollTop ${rowScrolled}`);
 
+  // ---- S4 · vertical scrolling is not a swipe ----------------------------------------
+  // The browser takes a vertical drag in a pan-y list as a scroll and cancels the
+  // pointer, so the detector must never reach a verdict on one. Read before T9 re-arms.
+  const vSwipes = await page.evaluate(() => window.__wwSwipes.slice());
+  check('S4 the vertical drags above (T2, T7) posted no swipe at all',
+    vSwipes.length === 0, `swipes [${vSwipes}]`);
+
   // ---- T9 · the axis T7 cannot see ----------------------------------------------------
   // T7 drags vertically out of a control inside the list and the list scrolls. A HORIZONTAL
   // drag from the same control is a different question: the list is still the nearest
@@ -226,20 +294,26 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   await page.waitForTimeout(250);
   const rowBox2 = await frame.locator('.app-head').first().boundingBox();
   const hBefore = await pagesLeft();
-  await drag(rowBox2.x + rowBox2.width * 0.4, rowBox2.y + rowBox2.height / 2, -160, 0);
+  await armGesture();
+  await drag(rowBox2.x + rowBox2.width * 0.4, rowBox2.y + rowBox2.height / 2, -DRIFT_PX, 0);
   const hAfter = await pagesLeft();
-  check('T9 a HORIZONTAL drag from a control inside the list does not page the panel',
-    Math.abs(hAfter - hBefore) < 5, `pages scrollLeft ${hBefore} -> ${hAfter}`);
+  const g9 = await gestureLog();
+  check('T9 a horizontal DRIFT from a control inside the list does not page the panel',
+    Math.abs(hAfter - hBefore) < 5 && g9.panMax < 5 && g9.swipes.length === 0,
+    `${DRIFT_PX}px drift: pages ${hBefore} -> ${hAfter}, native pan max ${g9.panMax}px, swipes [${g9.swipes}]`);
 
   // ---- T3 · the reported bug -----------------------------------------------------------
   await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
   await page.waitForTimeout(300);
   const eyeBox = await frame.locator('#eyeBtn').boundingBox();
   const before = await pagesLeft();
-  await drag(eyeBox.x + eyeBox.width / 2, eyeBox.y + eyeBox.height / 2, -160, 0);
+  await armGesture();
+  await drag(eyeBox.x + eyeBox.width / 2, eyeBox.y + eyeBox.height / 2, -DRIFT_PX, 0);
   const after = await pagesLeft();
-  check('T3 a drag that starts on the eye does not page the panel',
-    Math.abs(after - before) < 5, `pages scrollLeft ${before} -> ${after}`);
+  const g3 = await gestureLog();
+  check('T3 a DRIFT that starts on the eye does not page the panel',
+    Math.abs(after - before) < 5 && g3.panMax < 5 && g3.swipes.length === 0,
+    `${DRIFT_PX}px drift: pages ${before} -> ${after}, native pan max ${g3.panMax}px, swipes [${g3.swipes}]`);
 
   // ---- T4 · ...and the control still does its job ---------------------------------------
   await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
@@ -250,6 +324,123 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
   const pressedAfter = await frame.evaluate(() => document.getElementById('eyeBtn').getAttribute('aria-pressed'));
   check('T4 ...and a tap on it still toggles, so T3 is not a dead control',
     pressedBefore !== pressedAfter, `aria-pressed ${pressedBefore} -> ${pressedAfter}`);
+
+  // ---- S1/S2/S3/S5 · #257 — a real swipe pages, from anywhere on the tile ----------------
+  // The report: the whole notifications tile refused to page. T3/T9 above pin that a drift
+  // still does not; these pin that a stroke does, and that it is the detector doing it.
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await frame.evaluate(() => { document.getElementById('list').scrollTop = 0; });
+  await page.waitForTimeout(300);
+  const listBoxS = await frame.locator('#list').boundingBox();
+  await armGesture();
+  await drag(listBoxS.x + listBoxS.width * 0.7, listBoxS.y + listBoxS.height / 2, -160, 0);
+  const s1 = await pagesLeft();
+  const gs1 = await gestureLog();
+  check('S1 a swipe that starts inside the list pages forward — the #257 dead zone',
+    s1 > 300 && gs1.swipes.length === 1 && gs1.swipes[0] === 1,
+    `pages 0 -> ${s1}, swipes [${gs1.swipes}]`);
+
+  // The other direction. The widget lives on the first page, so there is no earlier page
+  // to land on — the stand-in clamps, as goToPage does — and what is asserted is the
+  // request the widget made, which is the part widget-api.js owns.
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await page.waitForTimeout(300);
+  await armGesture();
+  await drag(listBoxS.x + listBoxS.width * 0.3, listBoxS.y + listBoxS.height / 2, 160, 0);
+  const gs2 = await gestureLog();
+  check('S2 ...and a swipe the other way asks for the previous page',
+    gs2.swipes.length === 1 && gs2.swipes[0] === -1, `swipes [${gs2.swipes}]`);
+
+  // A stroke that begins on a control is still a stroke. The control must not ALSO fire:
+  // a tap needs the finger to stay within the browser's slop, and 160px is far outside it.
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await page.waitForTimeout(300);
+  const eyeBoxS = await frame.locator('#eyeBtn').boundingBox();
+  const eyeBeforeS = await frame.evaluate(() => document.getElementById('eyeBtn').getAttribute('aria-pressed'));
+  await armGesture();
+  await drag(eyeBoxS.x + eyeBoxS.width / 2, eyeBoxS.y + eyeBoxS.height / 2, -160, 0);
+  const s3 = await pagesLeft();
+  const gs3 = await gestureLog();
+  const eyeAfterS = await frame.evaluate(() => document.getElementById('eyeBtn').getAttribute('aria-pressed'));
+  check('S3 a swipe that starts ON the eye pages, and does not also press it',
+    s3 > 300 && gs3.swipes.length === 1 && eyeBeforeS === eyeAfterS,
+    `pages 0 -> ${s3}, swipes [${gs3.swipes}], aria-pressed ${eyeBeforeS} -> ${eyeAfterS}`);
+
+  // Where the browser still pans natively — the header, which has no scroller and no
+  // touch-action of its own — the pan chains to #pages and the widget's pointer is
+  // cancelled. The detector must stay out of it, or every such swipe pages twice. Started
+  // from the header's middle: its title sits at the far left, and a 160px stroke from
+  // there leaves the viewport, which ends the gesture rather than testing it.
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await page.waitForTimeout(300);
+  const hdBox = await frame.locator('header.hd').boundingBox();
+  const hdAt = await frame.evaluate(({ x, y }) => {
+    const el = document.elementFromPoint(x, y);
+    return el ? (el.id || el.className || el.tagName) : null;
+  }, { x: hdBox.width * 0.55, y: hdBox.height / 2 });
+  await armGesture();
+  await drag(hdBox.x + hdBox.width * 0.55, hdBox.y + hdBox.height / 2, -160, 0);
+  const s5 = await pagesLeft();
+  const gs5 = await gestureLog();
+  check('S5 where the browser pans natively, the page changes once and the detector stays out',
+    s5 > 300 && gs5.swipes.length === 0, `from ${hdAt}: pages 0 -> ${s5}, swipes [${gs5.swipes}]`);
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await page.waitForTimeout(300);
+
+  // ---- S6 · a slider inside a shadow root keeps its drag (review on #294) ------------------
+  // A window listener sees an event from inside a shadow tree RETARGETED to the shadow host,
+  // so walking up from ev.target never meets the slider. A third-party widget built from web
+  // components is exactly where that happens. Planted here, then removed so the E-checks
+  // below measure the widget as it ships.
+  const settled6 = await settleOnFirstPage();
+  await frame.evaluate(() => {
+    const host = document.createElement('div');
+    host.id = 'wwShadowHost';
+    // touch-action:none, as a widget following the standard guards a control with no
+    // scroller around it. Without it the browser pans natively, cancels the pointer, and
+    // the detector never gets a say — which passes this check for the wrong reason.
+    host.style.cssText = 'position:fixed;left:200px;top:160px;width:300px;height:60px;z-index:99;'
+      + 'background:#222;touch-action:none';
+    host.attachShadow({ mode: 'open' }).innerHTML =
+      '<input type="range" min="0" max="100" value="80" style="width:280px;height:40px;margin:10px">';
+    document.body.appendChild(host);
+  });
+  await page.waitForTimeout(200);
+  const shBox = await frame.locator('#wwShadowHost').boundingBox();
+  await armGesture();
+  await drag(shBox.x + shBox.width * 0.8, shBox.y + shBox.height / 2, -160, 0);
+  const gs6 = await gestureLog();
+  const s6v = await frame.evaluate(() => document.getElementById('wwShadowHost').shadowRoot.querySelector('input').value);
+  check('S6 a slider inside a shadow root keeps its drag — it moves, and nothing pages',
+    settled6 && gs6.swipes.length === 0 && gs6.panMax < 5 && s6v !== '80',
+    `settled ${settled6}, slider 80 -> ${s6v}, native pan max ${gs6.panMax}px, swipes [${gs6.swipes}]`);
+  await frame.evaluate(() => document.getElementById('wwShadowHost').remove());
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await page.waitForTimeout(300);
+
+  // ---- S7 · a drag the widget claims on WINDOW is left to it (review on #294) --------------
+  // The API is injected before any widget script, so a widget's own window-level move
+  // handler is registered later and runs later. Read in-line, defaultPrevented is still
+  // false when the detector looks; the verdict must be read once the move has finished
+  // dispatching.
+  await frame.evaluate(() => {
+    window.__wwClaimMoves = true;
+    const claim = (e) => { if (window.__wwClaimMoves) e.preventDefault(); };
+    window.addEventListener('pointermove', claim, { passive: false });
+    window.addEventListener('touchmove', claim, { passive: false });
+  });
+  await frame.evaluate(() => { document.getElementById('list').scrollTop = 0; });
+  const settled7 = await settleOnFirstPage();
+  const listBox7 = await frame.locator('#list').boundingBox();
+  await armGesture();
+  await drag(listBox7.x + listBox7.width * 0.7, listBox7.y + listBox7.height / 2, -160, 0);
+  const gs7 = await gestureLog();
+  check('S7 a drag the widget claims with a window-level handler does not page',
+    settled7 && listBox7.x >= 0 && gs7.swipes.length === 0,
+    `settled ${settled7}, list at x=${Math.round(listBox7.x)}, swipes [${gs7.swipes}]`);
+  await frame.evaluate(() => { window.__wwClaimMoves = false; });
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await page.waitForTimeout(300);
 
   // ---- E1/E2/E3 · the edge overlay no longer steals a tap near the screen edge (#213) -----
   // T3/T4 exercised the widget-side fix (#212). This exercises the SHELL side: the .edge

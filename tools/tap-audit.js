@@ -32,7 +32,12 @@ function tapInitScript() {
   const native = proto.addEventListener;
   proto.addEventListener = function (type, listener, opts) {
     try {
-      if (TAP[type]) {
+      // widget-api.js's swipe detector (#257) listens for pointerdown/up on window to MEASURE
+      // a stroke, not to act on a tap, and tags those two listeners __wwStrokeObserver. It is
+      // exempt here because counting it would demand an x-blocking touch-action on the
+      // document root — the one thing that would stop every swipe the detector delivers.
+      // widgetswipe-run.js pins that the tag appears on exactly those two listeners.
+      if (TAP[type] && !(listener && listener.__wwStrokeObserver)) {
         // body/documentElement are Elements and carry an ancestor chain, so they are marked
         // as elements; only document and window have no element to mark.
         if (this instanceof Element) { if (marks.els.indexOf(this) < 0) marks.els.push(this); }

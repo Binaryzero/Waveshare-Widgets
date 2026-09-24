@@ -1076,6 +1076,99 @@
     diag('visibility', 'document loaded hidden — timers will be throttled');
   document.addEventListener('visibilitychange', () => diag('visibility', 'now ' + document.visibilityState));
 
+  // ---- page swipes that start inside the widget (#257) ------------------------------
+  // The dashboard pages by horizontal scroll-snap on the shell's #pages. A swipe that
+  // starts in a widget only reaches it if the widget lets the browser chain the pan out
+  // of its frame — and #206 deliberately stopped that: a scrolling list declares
+  // `touch-action: pan-y` and a control `.no-pan`, because a finger drifting a few pixels
+  // on the way to a tap was changing page. touch-action cannot tell that drift from a
+  // real swipe, so the fix for one broke the other, and a widget whose list fills its
+  // tile (notifications, jellyfin) became a dead zone for paging.
+  //
+  // So the swipe is recognised here, by distance, and handed to the shell. The drift
+  // #206 fixed is a few pixels; a swipe is a deliberate stroke well past SWIPE_MIN_PX.
+  // Where the browser DOES pan natively — a region that still chains to #pages, or a
+  // widget's own horizontal scroller — it fires pointercancel and this never reaches a
+  // verdict, so nothing is paged twice and no horizontal scroller is overridden.
+  //
+  // >>> ww-swipe-rule — extracted and RUN by tests/harness/widgetswipe-run.js
+  // Free variables must stay none: the harness evaluates this block on its own.
+  const SWIPE_MIN_PX = 60;    // a stroke, not a drift — #206's drift is a few pixels
+  const SWIPE_MAX_MS = 800;   // past this it is a press-and-slide (slide off to cancel)
+  /** +1 = next page (finger moved left), -1 = previous, 0 = not a swipe. */
+  function swipeDirection(dx, dy, dt) {
+    if (!(dt >= 0 && dt <= SWIPE_MAX_MS)) return 0;
+    if (!(Math.abs(dx) >= SWIPE_MIN_PX)) return 0;
+    if (!(Math.abs(dx) >= 2 * Math.abs(dy))) return 0;   // clearly sideways, not a diagonal
+    return dx < 0 ? 1 : -1;
+  }
+  /** A control whose own job is a sideways drag keeps it: a native slider, or anything
+   *  the widget marks with data-ww-no-swipe (on itself or an ancestor). Takes the event's
+   *  COMPOSED path, not its target: a window listener sees an event from inside a shadow
+   *  tree retargeted to the shadow host, so climbing from ev.target never meets a slider
+   *  that lives in an open shadow root. A closed root hides its insides from the path as
+   *  well, and there the host is what a widget marks. */
+  function ownsHorizontalDrag(path) {
+    for (const n of path || []) {
+      if (!n || n.nodeType !== 1) continue;   // text, shadow roots, document, window
+      if (n.hasAttribute('data-ww-no-swipe')) return true;
+      if (n.tagName === 'INPUT' && String(n.type).toLowerCase() === 'range') return true;
+    }
+    return false;
+  }
+  // <<< ww-swipe-rule
+
+  // Widget documents only — the same marker icue-common.js gates on (#292). The shim is
+  // injected into every document in the WebView, embedded pages included, and those
+  // have no business paging the dashboard; the shell would refuse them anyway (its
+  // bridge answers only a registered slot frame), so this just keeps the listeners off
+  // pages they are not for.
+  if (window.parent !== window && /ww-slot=/.test(location.hash)) {
+    let stroke = null;
+    // These two MEASURE a stroke; they do not act on a tap. tools/tap-audit.js (#221) reads
+    // any pointerdown/pointerup listener on the document as the widget making its whole
+    // surface tappable, and would demand an x-blocking touch-action on the root — which
+    // would take back every swipe this exists to deliver. The tag is the audit's one
+    // documented exemption, and widgetswipe-run.js pins that nothing else carries it.
+    const strokeObserver = (fn) => { fn.__wwStrokeObserver = true; return fn; };
+    window.addEventListener('pointerdown', strokeObserver((ev) => {
+      // Touch and pen only: a mouse drag on the desktop is text selection or a widget's
+      // own drag, and the edge strips already page for a mouse.
+      const path = typeof ev.composedPath === 'function' ? ev.composedPath() : [];
+      stroke = (!ev.isPrimary || ev.pointerType === 'mouse' || ownsHorizontalDrag(path))
+        ? null
+        : { id: ev.pointerId, x: ev.clientX, y: ev.clientY, t: ev.timeStamp, claimed: false, pending: null };
+    }), true);
+    // A widget that handles the drag itself says so the usual way, by preventing the
+    // default on the move. That verdict is read only once a move has FINISHED dispatching —
+    // at the next move, or at pointerup — never in-line: this API is injected before any
+    // widget script, so a widget's own window-level move handler is registered later and
+    // runs later, and an in-line read would see defaultPrevented before it had been set.
+    const settleClaim = () => {
+      if (stroke && stroke.pending && stroke.pending.defaultPrevented) stroke.claimed = true;
+    };
+    const noteMove = (ev) => {
+      if (!stroke) return;
+      settleClaim();          // the previous move is fully dispatched by now
+      stroke.pending = ev;
+    };
+    window.addEventListener('pointermove', noteMove, { passive: true });
+    window.addEventListener('touchmove', noteMove, { passive: true });
+    window.addEventListener('pointercancel', (ev) => {
+      if (stroke && ev.pointerId === stroke.id) stroke = null;   // the browser took it
+    }, true);
+    window.addEventListener('pointerup', strokeObserver((ev) => {
+      if (!stroke || ev.pointerId !== stroke.id) return;
+      settleClaim();          // the last move, dispatched before this pointerup began
+      const s = stroke;
+      stroke = null;
+      if (s.claimed) return;
+      const dir = swipeDirection(ev.clientX - s.x, ev.clientY - s.y, ev.timeStamp - s.t);
+      if (!dir) return;
+      try { parent.postMessage({ type: 'ww-swipe', dir }, shellTarget()); } catch (e) { /* parent gone */ }
+    }), true);
+  }
+
   window.WW = WW;
   parent.postMessage({ type: 'ww-ready' }, shellTarget());
 })();

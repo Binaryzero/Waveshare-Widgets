@@ -263,6 +263,19 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   that scrolls. They are kept because that is the invariant worth pinning, and because T3
   responding to the CSS while T5-T7 do not is what shows the gesture pipeline is really
   evaluating `touch-action` rather than the harness measuring nothing.
+
+  **#257 moved the line T3 and T9 draw.** Both used to drag 160px sideways and require that
+  nothing page — a full swipe, not the drift #206 was about, and exactly the gesture a user
+  makes to change page. They now drift half the swipe threshold (read from `widget-api.js`)
+  and require not only that the page stays put but that the browser never *began* a native
+  pan: a short pan into a mandatory scroll-snap container snaps back on release, so the
+  resting position alone passes with the `pan-y` guard deleted. S1-S3 swipe from inside the
+  list, the other way, and from the eye (which pages and is not also pressed); S4 confirms
+  the vertical drags posted no swipe; S5 swipes where the browser still pans natively and
+  requires the page to change once with no swipe posted, so nothing pages twice. The stand-in
+  shell records every `ww-swipe`, because a page change the detector caused and one the
+  browser caused are identical in `scrollLeft`. Disabling the detector fails S1-S3; deleting
+  the list's `pan-y` fails T9; deleting the eye's `.no-pan` fails T3.
 - `edgerail-run.js` — proof that the #206 edge-reservation audit (`auditEdgeReservation` in
   `tools/tap-audit.js`) discriminates, so its all-clear across the sweep means something.
   `touchpan-run.js` proves the *shell* behaves and pins a hand-list of the controls known to
@@ -309,6 +322,17 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   either alone leaves R2 green and deleting both fails it with `{"hidden":true,
   "text":"Error"}`, an error card with an empty corner. R2 falsifies the pair, not either
   member, and the file says so because the obvious single-line revert does not turn it red.
+- `widgetswipe-run.js` — a swipe that starts inside a widget pages the dashboard (#257), and
+  a drift on the way to a tap still does not (#206). The two pull opposite ways and
+  `touch-action` cannot serve both: #206 made scrolling lists `pan-y` and controls `.no-pan`
+  so a few pixels of drift stopped changing page, which also turned any tile whose list
+  fills it (notifications, jellyfin) into a dead zone for paging. `widget-api.js` now
+  recognises a swipe by distance and posts `ww-swipe`. Runs in CI on plain Node: the rule is
+  sliced out of the real source between `ww-swipe-rule` markers and executed, with the drift
+  pinned at a FIXED 30px so retuning the threshold cannot reopen #206; the detector's wiring
+  and the shell's gates (past the bridge's identity-and-origin check, never in edit mode,
+  only from a widget on the page shown) are pinned as source guards. F1 runs the pre-fix
+  behaviour and requires it to fail.
 - `atticretire-run.js` — a removal made in the settings window's live PREVIEW retires the
   tile instead of discarding it (#226, and the scope cut withdrawn from PR #269). The
   preview is a replica shell handed every credential blanked, so anything it retired
