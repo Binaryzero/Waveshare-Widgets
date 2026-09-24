@@ -187,7 +187,9 @@ on the proxy path too, and `init.insecure: true` skips TLS certificate validatio
 only for private/loopback literal IPs (RFC 1918, link-local, 127.x), for devices with
 self-signed certs like the Philips Hue bridge. Public hostnames always validate.
 Insecure LAN requests use HTTP/1.1 and are serialized through one connection per
-device — embedded TLS servers mishandle h2 offers and parallel handshakes.
+device — embedded TLS servers mishandle h2 offers and parallel handshakes. They follow
+redirects only while each hop is still a private/loopback literal IP; a redirect off the
+private network is not followed, and the widget receives the 3xx response instead.
 
 **Media relay (`stream.plinth` / `WW.mediaUrl`).** Media elements cannot load LAN
 URLs directly — the renderer's network gates (mixed content, Local Network Access)

@@ -170,6 +170,14 @@ jobs:
       - name: Proxy header rules
         run: dotnet run --project tools/ProxyHeaders
 
+      # The proxy's LAN client accepts every certificate, which is safe only while the
+      # peer is on the private network. Its handler checked that for the first URL and
+      # then followed a device's redirect anywhere (#303). Redirects are now followed by
+      # PrivateNetwork.SendAsync, which checks every hop; this drives it against a stub
+      # network and asserts the handler itself no longer follows them.
+      - name: LAN proxy redirects
+        run: dotnet run --project tools/LanRedirects
+
       # A widget's long-lived credential is sealed at rest; the SHORT-lived one it buys
       # with that had nowhere to go but localStorage — a plaintext file in the same
       # WebView profile, which hands back exactly what the sealing withholds (#175). The

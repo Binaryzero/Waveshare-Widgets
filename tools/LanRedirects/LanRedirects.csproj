@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CI guard for the LAN proxy's redirects (issue #303). The proxy's certificate-blind
+       client is safe only while the peer is on the private network, and its handler
+       checked that for the first URL alone, then followed a device's redirect anywhere.
+       This drives the real PrivateNetwork source against a stub send: no network,
+       no WebView2. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>LanRedirects</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Plinth/PrivateNetwork.cs" />
+  </ItemGroup>
+</Project>
