@@ -88,6 +88,16 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: dotnet publish src/Plinth/Plinth.csproj -c Release -r win-x64 --self-contained true -p:Version=$env:VERSION -o publish/scd
 
+      # Both zips must carry the update recovery helper (#239), and it must run: the
+      # self-contained one most of all, since that is the build it exists for.
+      - name: Recovery helper in both builds
+        shell: pwsh
+        run: |
+          dotnet run --project tools/SwapRecovery -- verify publish/fdd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project tools/SwapRecovery -- verify publish/scd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # The release's own file list (#240), so a copy installed by extracting this zip can
       # retire files a later release drops from its very first in-app update.
       - name: Install manifests

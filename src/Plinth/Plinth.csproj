@@ -29,6 +29,20 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The update recovery helper (#239) ships beside Plinth.exe. Built for .NET Framework,
+         so the runtime identifier and self-contained choice of this build do not apply to it;
+         only its exe is taken, as content, not as a reference. -->
+    <ProjectReference Include="..\PlinthRecover\PlinthRecover.csproj"
+                      ReferenceOutputAssembly="false"
+                      SkipGetTargetFrameworkProperties="true"
+                      GlobalPropertiesToRemove="RuntimeIdentifier;SelfContained;TargetFramework"
+                      OutputItemType="Content"
+                      CopyToOutputDirectory="PreserveNewest" />
+    <!-- Compiled into both, so the sign-in entry Plinth writes is the one the helper reads. -->
+    <Compile Include="..\PlinthRecover\SwapRestore.cs" Link="App\SwapRestore.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="Shell\**" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\widgets\**" Link="stock-widgets\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

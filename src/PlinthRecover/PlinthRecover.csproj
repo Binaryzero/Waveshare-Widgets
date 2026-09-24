@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The update recovery helper (#239). Built for the .NET Framework that ships with every
+       Windows version Plinth runs on, so it depends on none of the files an update replaces:
+       on the self-contained build those include the .NET runtime itself. Plinth.csproj puts
+       the exe beside Plinth.exe; the updater runs a copy of it from outside the install. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Plinth.Recover</RootNamespace>
+    <AssemblyName>PlinthRecover</AssemblyName>
+    <Description>Undoes a Plinth update that was cut off mid-swap</Description>
+    <!-- The exe alone is copied out of the install, so it carries no side files. A .NET
+         Framework 4 exe needs no .config to run on the 4.x runtime. -->
+    <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+</Project>
