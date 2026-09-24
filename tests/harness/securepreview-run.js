@@ -27,6 +27,8 @@
 //   P7 · the SAME widget code in a non-preview shell DOES reach the host — without this,
 //        P6 would pass just as well if the branch never worked at all — carrying both
 //        scopes the shell stamps from the slot: the widget id and the #226 instance id
+//   W1 · the preview names the stored secrets it withholds (names only) so a widget can
+//        tell "set, but not here" from "not set" (#59); W2 · the panel withholds nothing
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -64,7 +66,7 @@ const WIDGET_HTML = `<!DOCTYPE html><meta charset="utf-8">
 <body style="margin:0;background:#111">
 <script src="https://app.plinth/widget-api.js"></script>
 <script>
-  WW.onInit(() => { document.body.dataset.inited = '1'; });
+  WW.onInit(() => { document.body.dataset.inited = '1'; window.__withheld = WW.withheld; });
   window.__timed = async (fn) => {
     const t0 = Date.now();
     const value = await fn();
@@ -117,7 +119,10 @@ const PARENT_HTML = `<!DOCTYPE html><meta charset="utf-8">
     supportedSlots: ['half'], properties: [],
   }];
   const layout = { pages: [{ name: 'P', slots: [
-    { widgetId: 'test.oauth', size: 'half', instanceId: 'o1', settings: {} },
+    // secretsSet as the host sends it to the settings window: names of stored secrets, one
+    // of them marked for removal. W1/W2 check what each shell tells the widget from it.
+    { widgetId: 'test.oauth', size: 'half', instanceId: 'o1', settings: { token: '', old: '' },
+      secretsSet: ['token', 'old'], secretsCleared: ['old'] },
   ] }] };
   const initData = { genBase: 3, layout, widgets, sensors: [], status: { elevated: false, version: 'probe' } };
 
@@ -156,6 +161,12 @@ const PARENT_HTML = `<!DOCTYPE html><meta charset="utf-8">
       && await previewWidget.evaluate(() => document.body.dataset.inited === '1'),
     `shell ${!!previewShell} preview ${isPreview} widget ${!!previewWidget}`);
   if (!previewShell || !previewWidget) { await browser.close(); srv.close(); process.exit(1); }
+
+  // W1 · the preview names the secrets it withholds (#59): names only, and not one the
+  // user has already marked for removal.
+  const previewWithheld = await previewWidget.evaluate(() => window.__withheld);
+  check('W1 the preview tells the widget which stored secrets it withholds, by name',
+    JSON.stringify(previewWithheld) === '["token"]', JSON.stringify(previewWithheld));
 
   // The relay is real and it is the settings.js allow-list. Without this, P6's "no
   // secure-* went up" would be satisfied by a parent that hears nothing at all.
@@ -214,6 +225,10 @@ const PARENT_HTML = `<!DOCTYPE html><meta charset="utf-8">
   const panelWidget = panel.frames().find((f) => /oauth\.widgets\.plinth/.test(f.url()));
   check('P7 setup: the panel widget initialized', !!panelWidget
     && await panelWidget.evaluate(() => document.body.dataset.inited === '1'));
+  // W2 · the panel is handed the real values, so nothing is withheld there — even from the
+  // same layout, which is what makes W1 a statement about the preview and not the data.
+  check('W2 the panel withholds nothing, from the same layout',
+    !!panelWidget && JSON.stringify(await panelWidget.evaluate(() => window.__withheld)) === '[]');
   if (panelWidget) {
     // Not awaited: the fake host never answers, and what is being checked is what the
     // shell SENT, not what came back.

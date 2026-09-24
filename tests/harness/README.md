@@ -48,6 +48,10 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   with no working copy reads "not loaded". An older refused copy beside one that loaded
   gets its own block, naming the settings it withholds and the folder to remove. Which
   refusals the host sends is `tools/SecretRoundTrip` B1. Port used: 8958.
+- `widgetupdates-run.js` — update indicators in the settings window (#227). A widget the
+  host marks new carries "New" on the shelf until one is added. A tile the host flags
+  reads "Updated" until opened, and opening it tells the host. Which widgets and tiles
+  qualify is `tools/WidgetCatalog`. Port used: 8963.
 - `themelayers-run.js` — which appearance layer a tile follows (#225). A tile that overrides
   the theme is marked in the strip. Its Appearance panel says per value whether it comes from
   the theme or the widget, and offers "Follow the theme again". The Theme editor lists the
@@ -78,7 +82,9 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   threshold colouring in both directions, non-2xx / unreachable / non-JSON / null /
   pointer-miss states, the Stale path (a failure after a good read keeps the number),
   no stacked pollers across repeated inits, and that a configured auth header reaches
-  the request while appearing nowhere in the DOM. Also writes the populated
+  the request while appearing nowhere in the DOM. RP (#59): a private endpoint, stored as
+  a secret, is fetched instead of the plain one when set, is part of the tile's source
+  identity, and falls back to the plain one when cleared. Also writes the populated
   `restvalue-*.png` screenshots. Routes are fulfilled in-process — no ports.
 - `nextfetch-run.js` — three scheduling/rendering follow-ups on the Next Event widget
   (issue #180). All three are timing bugs the real-time probes on that PR could not place
@@ -348,6 +354,21 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   and the shell's gates (past the bridge's identity-and-origin check, never in edit mode,
   only from a widget on the page shown) are pinned as source guards. F1 runs the pre-fix
   behaviour and requires it to fail.
+- `discover-run.js` — Find, a widget looking up its own setting values (#210 slice 2). Runs
+  in CI on plain Node. The shell's `ww-discover-clean` block must reduce a widget's answer
+  to bounded, plain `{value, label}` choices. The widget API's `ww-discover-answer` block
+  must answer every question exactly once, in plain data, and say "unsupported" rather
+  than stay silent. The editors' `ww-discover-text` block (both copies) must leave every
+  dead end typeable. The wiring across the host is pinned as source guards. D5 runs a
+  pass-through cleaner and requires D1 to fail.
+- `discoverroute-run.js` — the same, for real, in a browser. In the dashboard shell with a
+  fake host, a question reaches only the widget it names. Another widget quoting the live
+  id is ignored (R4). A question is answered once, and a silent widget becomes a timeout
+  after 20 s (so the run takes about 30 s). The panel's property sheet and the settings
+  window each offer Find on a text setting and a list field, list label over value, and
+  save the picked value. On the panel, Find straight after an edit waits for the tile's
+  reload and asks with the edited settings (P4). The settings window says so when there is
+  no panel.
 - `apppick-run.js` — Store apps in the app picker (#219). Runs in CI on plain Node: the
   pickers' `ww-app-pick` block (the "no match" line and the rule that a pick fills an EMPTY
   Name and never a typed one) is sliced out of both `settings.js` and `shell.js` and run,

@@ -2,7 +2,7 @@
   "id": "ws.stock.rest",
   "name": "REST Value",
   "author": "Plinth",
-  "version": "2.4.1",
+  "version": "2.5.0",
   "description": "Any JSON endpoint, one number on the panel: give it a URL and a path to the value. Polls on its own schedule, colors itself against warn/crit thresholds, and can authenticate with a static header or an OAuth2 client-credentials exchange.",
   "min_api_version": 1,
   "supported_slots": [
@@ -16,7 +16,15 @@
       "label": "Endpoint",
       "type": "text",
       "default": "",
-      "placeholder": "https://api.example.com/v1/status"
+      "placeholder": "https://api.example.com/v1/status",
+      "help": "The address of the JSON endpoint. If the address itself is a secret — a key or token in it, or a signed or webhook link — put it in Private endpoint below instead, where it is stored encrypted."
+    },
+    {
+      "name": "privateUrl",
+      "label": "Private endpoint (optional)",
+      "type": "secret",
+      "placeholder": "https://api.example.com/v1/status?key=…",
+      "help": "For an endpoint whose address is the credential. It is stored encrypted and, once set, is used instead of Endpoint. If the same address is still in Endpoint, clear it there: that copy is stored as plain text. The settings preview is never given this value, so it shows the tile as having no endpoint; the panel uses it."
     },
     {
       "name": "jsonPointer",

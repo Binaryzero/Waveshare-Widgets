@@ -211,6 +211,18 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   `"sd-profiles"` (installed Virtual Stream Deck profile names; `""` still means
   "first available").
 
+  `"optionsSource": "widget"` is for values only the widget can look up, because they
+  sit behind its own credential: repositories, entities, characters. It works on `text`
+  and `select` properties and on `text` fields inside a `list`. Both editors keep the
+  value as text and put a **Find…** button beside it. Find asks the placed widget on the
+  panel, through `WW.onDiscover` (below), and lists what it returns; picking one fills
+  the field. The settings window never holds a decrypted secret, so the question always
+  goes to the panel, where the widget runs with its **saved** settings. It is asked only
+  when the user presses Find. No panel, a widget that is not placed yet, or no answer
+  within 20 seconds each end with the field left to be typed, so Find is a shortcut and
+  never the only way in. A widget that declares this must call `WW.onDiscover`; the
+  validator refuses it otherwise.
+
 ## The widget API (`window.WW`)
 
 Include the API from the shell's origin:
@@ -229,6 +241,7 @@ WW.settings          // merged property values, e.g. WW.settings.city
 WW.sensors           // latest snapshot: [{id, name, device, deviceType, type, units, value}]
 WW.media             // {available, title, artist, album, status, thumbnail}
 WW.status            // {elevated, apiVersion}
+WW.withheld          // names of secret settings that have a value this document is not given
 
 WW.sensorById('lhm:/gpu-nvidia/0/temperature/0')
 WW.findSensor({      // heuristic lookup
@@ -246,11 +259,30 @@ WW.listMedia()                                 // list the user's media folder -
 WW.getAudio()                                  // Windows volume mixer snapshot (master + sessions)
 WW.setAudio(target, {level?, muted?})          // set master ('master') or per-app volume/mute; resolves {ok}
 
+WW.onDiscover(({ property, field }) => [...])   // answer Find for optionsSource "widget" (see below)
+
 WW.watchNotifications(true)                    // start the host's notification mirror (demand-gated)
 WW.notifications                               // {state: 'allowed'|'denied'|'unavailable', items:[{id, app, appId, title, body, time}]}
 WW.onNotifications((n) => { ... })             // fires when the mirrored list changes
 WW.dismissNotification(id)                     // dismiss one toast by id
 ```
+
+`WW.onDiscover(cb)` answers Find (#210). `cb({property, field})` is called when the
+user presses Find on a setting that declares `optionsSource: "widget"`. `property` is
+the property name. `field` is the list field's key, or `null` for a top-level setting.
+Return an array, or a promise of one, of strings or `{value, label}` objects. The label
+is shown and the value is stored; the value is shown under the label when they differ.
+Return `null` for a setting the widget does not look up. Throw or reject with an `Error`
+whose message the user should read ("Token rejected — check it has repo access"). Use
+`WW.fetch` with the credential in `WW.settings`, as the widget already does. The shell
+keeps at most 500 choices, each value at most 300 characters.
+
+`WW.withheld` lists the secret settings that hold a value this document is not given, by
+name and never by value. The settings preview withholds every stored secret and hands the
+widget `""` for each, so a secret reads empty there even when it is set. This lets a widget
+tell "set, but not here" from "not set" — REST Value uses it so the preview does not fall
+back from its private endpoint to the plain one. It is always empty on the panel, which is
+given the real values.
 
 Notification strings are untrusted external text: render them with `textContent`, never
 `innerHTML`. Windows only grants the notification listener to apps with **package

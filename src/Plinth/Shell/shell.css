@@ -874,3 +874,8 @@ input.toggle-check:checked::after { transform: translateX(22px); }
   text-align: left;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Find (#210): a word, not an icon — nothing on the strip says "ask the widget" as a glyph. */
+.ps-inline .ps-pick.ps-find { flex: none; padding: 0 12px; font-size: 13px; }
+/* The value under a label that differs from it: "Living room" over sensor.living_temp. */
+.ps-find-value { display: block; font-size: 11px; color: var(--text-muted, #8e9196); overflow: hidden; text-overflow: ellipsis; }
+.ps-discover .ps-apps-list button:has(.ps-find-value) { padding-top: 4px; padding-bottom: 4px; }

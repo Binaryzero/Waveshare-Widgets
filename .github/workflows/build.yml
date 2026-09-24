@@ -116,6 +116,15 @@ jobs:
       - name: WoW Panel shows the character's current data
         run: node tests/harness/wowreaders-run.js
 
+      # Find (#210): a widget looks up its own setting values on the panel, where its
+      # credential is, and the settings window gets only the list of choices. The widget
+      # is the untrusted party, so what the shell keeps from its answer is bounded, and
+      # every dead end has to leave the field typeable. Plain Node against the real source;
+      # the browser round trip is tests/harness/discoverroute-run.js on the maintainer's
+      # machine.
+      - name: Find answers are bounded and routed to the asker
+        run: node tests/harness/discover-run.js
+
       # Store apps have no file to launch (#219): the picker lists them by app id and the
       # launch action starts them through explorer.exe with that id as its argument. Which
       # AppsFolder entries count as an id, what can reach that argument, and that every
@@ -191,6 +200,14 @@ jobs:
       # network and asserts the handler itself no longer follows them.
       - name: LAN proxy redirects
         run: dotnet run --project tools/LanRedirects
+
+      # Widgets update with the app, so an update cannot be held back per tile; the user
+      # is told instead (#227). A widget new in an update is "New" until placed or two
+      # weeks pass, and a placed tile whose widget changed its settings is "Updated" until
+      # opened. This pins the state behind both, including that a fresh install announces
+      # nothing and a relabel is not a settings change.
+      - name: Update indicators
+        run: dotnet run --project tools/WidgetCatalog
 
       # An in-app update never removed a file a release dropped, so the install drifted
       # from a clean copy (#240). The updater now keeps a list of each release's files
