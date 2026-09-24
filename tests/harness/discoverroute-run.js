@@ -15,6 +15,7 @@
 //   P1  · a text setting and a list field each offer Find
 //   P2  · Find lists what the widget found, label over value
 //   P3  · picking one writes the VALUE into that field and it is saved
+//   P4  · Find straight after an edit waits for the tile's reload instead of failing
 // Settings window, with a fake host:
 //   S1  · Find asks the host with the slot's instanceId, property and field
 //   S2  · the answer is listed; picking writes the value; Save carries it
@@ -58,7 +59,7 @@ const FINDER_HTML = `<!DOCTYPE html><meta charset="utf-8">
   window.__asked = [];
   WW.onInit(() => { document.body.dataset.inited = '1'; });
   WW.onDiscover((q) => {
-    window.__asked.push(q);
+    window.__asked.push(Object.assign({ realmSetting: WW.settings.realm }, q));
     if (q.property === 'repos') return [{ value: 'octo/one', label: 'One' }, 'octo/two', { value: 'octo/one' }];
     if (q.property === 'realm') return ['Silvermoon', 'Argent Dawn'];
     if (q.property === 'fail') throw new Error('Token rejected (401)');
@@ -210,6 +211,20 @@ async function dashboard(browser) {
     await wait(500);
     const realms = await page.locator('.ps-discover .ps-apps-list button').allTextContents();
     check('P3 ...and a top-level text setting gets its own answer', JSON.stringify(realms) === '["Silvermoon","Argent Dawn"]', JSON.stringify(realms));
+    await page.locator('.ps-discover .ps-apps-head .ps-pick').click().catch(() => {});
+
+    // P4 · Find straight after an edit. The sheet applies the edit first, which reloads
+    // the tile; the question has to wait for the new document, not be refused.
+    const realmInput = page.locator('#psRows .ps-inline').filter({ has: page.locator('.ps-find') }).first().locator('input');
+    await realmInput.fill('Draenor');
+    await finds.nth(0).click();          // inside the 400 ms apply debounce
+    await wait(2500);
+    const afterEdit = await page.locator('.ps-discover .ps-apps-list button').allTextContents();
+    const status4 = await page.locator('.ps-discover .ps-apps-status').textContent().catch(() => '');
+    const lastAsk = await finder.evaluate(() => window.__asked[window.__asked.length - 1] || null).catch(() => null);
+    check('P4 Find right after an edit waits for the reload and asks with the edited settings',
+      JSON.stringify(afterEdit) === '["Silvermoon","Argent Dawn"]' && lastAsk && lastAsk.realmSetting === 'Draenor',
+      JSON.stringify({ afterEdit, status4, lastAsk }));
     await page.locator('.ps-discover .ps-apps-head .ps-pick').click().catch(() => {});
   }
 

@@ -361,6 +361,11 @@
       const stale = sender.el.querySelector('.error');
       if (stale) stale.remove();
       sendToSlot(sender, initMessage(sender));
+      // Open lookups for this tile (#210): asked while it reloaded, or asked of the
+      // document this one replaced, which can no longer answer. Answered once either way —
+      // the route goes with the first answer.
+      for (const route of discoverRoutes.values())
+        if (route.slot === sender) sendToSlot(sender, route.question);
     } else if (msg.type === 'ww-swipe' && (msg.dir === 1 || msg.dir === -1)) {
       // A deliberate horizontal swipe that started inside the widget (#257), recognised
       // by widget-api.js because touch-action has to keep refusing the native pan there
@@ -562,13 +567,16 @@
   }
 
   function discoverSlot(slot, property, field, done) {
-    if (!slot.frame || !slot.initialized || !slot.origin) { done({ ok: false, error: 'not-ready' }); return; }
+    if (!slot.frame || !slot.origin) { done({ ok: false, error: 'not-ready' }); return; }
     const id = 'dq' + (++discoverSeq) + '-' + Math.random().toString(36).slice(2);
     const timer = setTimeout(() => {
       if (discoverRoutes.delete(id)) done({ ok: false, error: 'timeout' });
     }, DISCOVER_TIMEOUT_MS);
-    discoverRoutes.set(id, { slot, done, timer });
-    sendToSlot(slot, { type: 'ww-discover', id, property, field: field || null });
+    const question = { type: 'ww-discover', id, property, field: field || null };
+    discoverRoutes.set(id, { slot, done, timer, question });
+    // A tile mid-reload has no document to ask yet — the panel's Find applies pending
+    // edits first, and that reloads it. Its ww-ready sends every open question on.
+    if (slot.initialized) sendToSlot(slot, question);
   }
 
   // >>> ww-discover-clean — extracted and RUN by tests/harness/discover-run.js

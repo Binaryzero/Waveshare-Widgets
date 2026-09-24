@@ -353,7 +353,9 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   id is ignored (R4). A question is answered once, and a silent widget becomes a timeout
   after 20 s (so the run takes about 30 s). The panel's property sheet and the settings
   window each offer Find on a text setting and a list field, list label over value, and
-  save the picked value. The settings window says so when there is no panel.
+  save the picked value. On the panel, Find straight after an edit waits for the tile's
+  reload and asks with the edited settings (P4). The settings window says so when there is
+  no panel.
 - `atticretire-run.js` — a removal made in the settings window's live PREVIEW retires the
   tile instead of discarding it (#226, and the scope cut withdrawn from PR #269). The
   preview is a replica shell handed every credential blanked, so anything it retired

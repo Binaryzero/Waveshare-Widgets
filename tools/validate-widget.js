@@ -583,10 +583,22 @@ function validate(folder) {
   // A setting that promises Find (#210) needs a widget that answers it. Without a handler
   // every Find ends in "this widget cannot look this setting up", which is the manifest
   // advertising a feature the widget does not have. The script may live beside the page.
-  if (discovers && !widgetSources(folder).some((text) => /\bWW\.onDiscover\s*\(/.test(text)))
+  if (discovers && !widgetSources(folder).some((text) => /\bWW\.onDiscover\s*\(/.test(withoutComments(text))))
     err('discover-handler', 'a property declares optionsSource "widget", but nothing calls WW.onDiscover to answer it');
 
   return report;
+}
+
+/** Source text with HTML and JavaScript comments removed, so a call that is only
+ * mentioned — commented out, or shown in a note — does not count as made. A `//` counts as
+ * a comment only at the start of a line, after whitespace, after punctuation that can end
+ * a statement, or straight after a tag, so the `//` in `https://` is kept. String literals are not parsed: a call
+ * spelled out inside a string still counts, which errs toward accepting the widget. */
+function withoutComments(text) {
+  return String(text)
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[\s;{}()>,])\/\/[^\n]*/g, '$1');
 }
 
 /** The widget's own page and script text, for rules about what its code does. Bounded:
@@ -749,6 +761,14 @@ if (args.includes('--self-test')) {
     ['discover-list-field', { name: 'repos', label: 'Repositories', type: 'list',
       fields: [{ key: 'repo', label: 'Repository', optionsSource: 'widget' }] }, null, ANSWERS],
     ['discover-no-handler', { name: 'realm', label: 'Realm', type: 'text', optionsSource: 'widget' }, 'discover-handler'],
+    // A handler that is only mentioned is not a handler.
+    ['discover-handler-commented-out', { name: 'realm', label: 'Realm', type: 'text', optionsSource: 'widget' },
+      'discover-handler', doc(BASE + '<script>// WW.onDiscover(() => []);\n/* WW.onDiscover(() => []); */</script>')],
+    ['discover-handler-in-html-comment', { name: 'realm', label: 'Realm', type: 'text', optionsSource: 'widget' },
+      'discover-handler', doc(BASE + '<!-- <script>WW.onDiscover(() => []);</script> -->')],
+    // ...while a real one after a URL on the same line still counts.
+    ['discover-handler-after-url', { name: 'realm', label: 'Realm', type: 'text', optionsSource: 'widget' },
+      null, doc(BASE + "<script>const u = 'https://api.example'; WW.onDiscover(() => []);</script>")],
     ['discover-list-no-handler', { name: 'repos', label: 'Repositories', type: 'list',
       fields: [{ key: 'repo', label: 'Repository', optionsSource: 'widget' }] }, 'discover-handler'],
     ['discover-on-number', { name: 'n', label: 'N', type: 'number', optionsSource: 'widget' }, 'prop-options-source', ANSWERS],

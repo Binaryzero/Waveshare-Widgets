@@ -198,6 +198,9 @@ async function ask(handler, msg) {
     /discoverRoutes\.delete\(msg\.id\);\s*clearTimeout\(route\.timer\);\s*route\.done\(cleanDiscovery\(msg\)\);/.test(shell));
   check('D4 the shell answers the host\'s question with discover-result',
     /msg\.type === 'discover'\)/.test(shell) && /postToHost\(Object\.assign\(\{ type: 'discover-result', id: hostId \}, result\)\)/.test(shell));
+  check('D4 a tile mid-reload is asked once its new document is ready, not refused',
+    /if \(slot\.initialized\) sendToSlot\(slot, question\);/.test(shell)
+      && /sendToSlot\(sender, initMessage\(sender\)\);[\s\S]{0,500}for \(const route of discoverRoutes\.values\(\)\)\s*if \(route\.slot === sender\) sendToSlot\(sender, route\.question\);/.test(shell));
   check('D4 the panel sheet asks the slot being edited, after applying pending edits',
     /discoverSlot\(record, property, field,/.test(shell) && /function psDiscoverBtn[\s\S]{0,1200}applyPropNow\(record\);[\s\S]{0,2600}discoverSlot\(record/.test(shell));
   check('D4 settings asks the host with the slot\'s instanceId',
