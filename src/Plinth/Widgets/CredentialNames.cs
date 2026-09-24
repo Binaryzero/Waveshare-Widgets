@@ -77,8 +77,16 @@ public static partial class CredentialNames
     // still run, because `webhookEndpoint` genuinely IS the credential.
     // Deliberately tight: every entry must be a word that cannot itself hold the secret.
     // `value`, `url` and `name` are absent for that reason.
-    [GeneratedRegex(@"(^|[^a-z0-9])(endpoints?|expiry|expires|expiration|ttl|lifetime|type|label|format|algorithm|issuer|scopes?|count|prefix|enabled)$", RegexOptions.IgnoreCase)]
+    // A duration unit and `mode` join it for the same reason: `tokenExpirySeconds` holds a
+    // number and `credentialMode` an enum (#56).
+    [GeneratedRegex(@"(^|[^a-z0-9])(endpoints?|expiry|expires|expiration|ttl|lifetime|type|label|format|algorithm|issuer|scopes?|count|prefix|enabled|modes?|ms|seconds|minutes|hours)$", RegexOptions.IgnoreCase)]
     private static partial Regex MetadataTail();
+
+    // A name that STARTS with one of these is a switch that acts on the credential field,
+    // not the field: `showPassword`, `maskApiKey`. The verb must be a whole word, so
+    // `maskedPassword` and `showcaseToken` are still flagged.
+    [GeneratedRegex(@"^(show|hide|reveal|mask)([^a-z0-9]|$)", RegexOptions.IgnoreCase)]
+    private static partial Regex SwitchHead();
 
     [GeneratedRegex(@"([A-Z]+)([A-Z][a-z])")] private static partial Regex AcronymThenWord();
     [GeneratedRegex(@"([a-z0-9])([A-Z])")] private static partial Regex WordThenWord();
@@ -101,8 +109,8 @@ public static partial class CredentialNames
         var squashed = Whitespace().Replace(spaced, "");
 
         var trimmed = spaced.Trim();
-        // Metadata about a credential is not the credential; see MetadataTail.
-        if (!MetadataTail().IsMatch(trimmed))
+        // Metadata about a credential is not the credential; see MetadataTail and SwitchHead.
+        if (!MetadataTail().IsMatch(trimmed) && !SwitchHead().IsMatch(trimmed))
         {
             if (CredentialWord().IsMatch(spaced) || CredentialWord().IsMatch(squashed)) return true;
             if (Compound().IsMatch(squashed)) return true;

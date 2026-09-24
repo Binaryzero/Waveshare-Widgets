@@ -71,7 +71,13 @@ const SECRET_QUALIFIER = /(^|[^a-z0-9])(private|secret|signed|personal|sas)([^a-
 // Deliberately tight: every entry must be a word that cannot itself hold the secret.
 // `value`, `url` and `name` are absent for that reason — `tokenValue` and `secretUrl`
 // stay flagged.
-const METADATA_TAIL = /(^|[^a-z0-9])(endpoints?|expiry|expires|expiration|ttl|lifetime|type|label|format|algorithm|issuer|scopes?|count|prefix|enabled)$/i;
+// A duration unit and `mode` join it for the same reason: `tokenExpirySeconds` holds a
+// number and `credentialMode` an enum (#56).
+const METADATA_TAIL = /(^|[^a-z0-9])(endpoints?|expiry|expires|expiration|ttl|lifetime|type|label|format|algorithm|issuer|scopes?|count|prefix|enabled|modes?|ms|seconds|minutes|hours)$/i;
+// A name that STARTS with one of these is a switch that acts on the credential field,
+// not the field: `showPassword`, `maskApiKey`. The verb must be a whole word, so
+// `maskedPassword` and `showcaseToken` are still flagged.
+const SWITCH_HEAD = /^(show|hide|reveal|mask)([^a-z0-9]|$)/i;
 const looksLikeCredential = (name) => {
   // Two case boundaries, because initialisms are everywhere in this domain:
   //   acronym->word  "APIToken" -> "API Token", "JWTToken" -> "JWT Token"
@@ -86,8 +92,8 @@ const looksLikeCredential = (name) => {
     .replace(/[_\-.]+/g, ' ');
   const squashed = spaced.replace(/\s+/g, '');
   const trimmed = spaced.trim();
-  // Metadata about a credential is not the credential; see METADATA_TAIL.
-  if (!METADATA_TAIL.test(trimmed)) {
+  // Metadata about a credential is not the credential; see METADATA_TAIL and SWITCH_HEAD.
+  if (!METADATA_TAIL.test(trimmed) && !SWITCH_HEAD.test(trimmed)) {
     if (CREDENTIAL_WORD.test(spaced) || CREDENTIAL_WORD.test(squashed)) return true;
     if (COMPOUND.test(squashed)) return true;
     if (UNSTRUCTURED.test(String(name || '')) && COMPOUND_ANYWHERE.test(squashed)) return true;
