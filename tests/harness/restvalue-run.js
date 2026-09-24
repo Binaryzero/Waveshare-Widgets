@@ -26,6 +26,8 @@
 //         request (every settings edit polls at once), even one made while a request is
 //         in flight (R26e); the OAuth2 token exchange carries it as well; and an http://
 //         endpoint never does (R26f) — there is no certificate to skip
+//   RP · #59 — a private (secret) endpoint is used instead of the plain one when set, is
+//         part of the tile's source identity, and falls back to the plain one when cleared
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -935,6 +937,38 @@ const TOKEN = 'Bearer super-secret-probe-token';
   check('RC4 a client ID of only spaces still counts as not set',
     /No client ID set/.test(rcBlank.title), rcBlank.title);
   await page.evaluate(() => { window.__tokenEndpoint = undefined; window.__tokenStatus = 0; });
+
+  // ---- RP · #59: a private endpoint, for an address that IS the credential -------------
+  // Stored as a secret; when set it is the endpoint, whatever the plain field holds.
+  const fetched = (frag) => seen.filter((x) => x.url.includes(frag)).length;
+  respond = (u) => ({ status: 200, body: JSON.stringify({ v: u.includes('privRP3') ? 3 : u.includes('privRP') ? 2 : 1 }),
+    delayMs: u.includes('privRP3') ? 1500 : 0 });
+  await init(Object.assign({}, base, { url: '', privateUrl: 'https://api.test/privRP?key=K', jsonPointer: '/v', pollSeconds: 60 }));
+  await wait(700);
+  const rp1 = await read();
+  check('RP1 a private endpoint alone is fetched and read',
+    fetched('/privRP?key=K') >= 1 && rp1.value === '2' && !rp1.bodyHidden, `${fetched('/privRP?key=K')} · "${rp1.value}"`);
+  await init(Object.assign({}, base, { url: 'https://api.test/plainRP', privateUrl: 'https://api.test/privRP2', jsonPointer: '/v', pollSeconds: 60 }));
+  await wait(700);
+  const rp2 = await read();
+  check('RP2 with both set, the private one is used and the plain one is never fetched',
+    fetched('/privRP2') >= 1 && fetched('/plainRP') === 0 && rp2.value === '2', `private ${fetched('/privRP2')} · plain ${fetched('/plainRP')} · "${rp2.value}"`);
+  await init(Object.assign({}, base, { url: 'https://api.test/plainRP', privateUrl: 'https://api.test/privRP3', jsonPointer: '/v', pollSeconds: 60 }));
+  await wait(300);
+  const rp3 = await read();
+  check('RP3 changing only the private endpoint is a new source: the old reading goes at once',
+    rp3.value !== '2' || rp3.bodyHidden, `"${rp3.value}" · bodyHidden ${rp3.bodyHidden}`);
+  await wait(1600);
+  check('RP3b ...and the new one is read', (await read()).value === '3', (await read()).value);
+  await init(Object.assign({}, base, { url: 'https://api.test/plainRP', privateUrl: '', jsonPointer: '/v', pollSeconds: 60 }));
+  await wait(700);
+  check('RP4 clearing the private endpoint falls back to the plain one',
+    fetched('/plainRP') >= 1 && (await read()).value === '1', `plain ${fetched('/plainRP')}`);
+  await init(Object.assign({}, base, { url: '', privateUrl: '', jsonPointer: '/v' }));
+  await wait(300);
+  const rp5 = await read();
+  check('RP5 neither set is the setup card, worded for the panel (not the preview)',
+    /No endpoint set/.test(rp5.title) && !/preview/.test(rp5.body), `${rp5.title} · ${rp5.body}`);
 
   // ---- AH · #60.3: the age ticker must not recompute the footer while HIDDEN --------
   // The 30s ticker keeps the "Xs ago" label honest between polls (R11) — but while the
