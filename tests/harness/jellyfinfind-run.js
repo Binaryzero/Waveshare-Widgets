@@ -13,6 +13,9 @@
 //   J7 · with no address or key yet, Find says what is missing
 //   J8 · a server that never answers is reported by the widget itself, inside the
 //        shell's 20 s wait, not left for the shell to time out
+//   J9 · a server with more users than the chooser keeps: the list, well over 256 KiB as
+//        real user records are, is read whole, and a search (Find by query) is answered
+//        with the names (or labels) that contain it, case-insensitively, past the 500th
 //
 // Run: CHROMIUM=/path/to/chrome node tests/harness/jellyfinfind-run.js
 'use strict';
@@ -84,6 +87,11 @@ const FOLDERS = { Items: [
   let status = 200;
   let hang = false;
   let malformed = false;
+  let many = false;
+  // 600 users padded to about a kilobyte each, the size of a real UserDto with its
+  // Configuration and Policy: some 600 KiB, over the 256 KiB the tile's own lookups take.
+  const MANY = Array.from({ length: 600 }, (_, i) => ({ Name: 'user' + String(i).padStart(3, '0'), Id: 'm' + i,
+    Policy: { IsAdministrator: false, IsDisabled: false }, Configuration: { Pad: 'x'.repeat(900) } }));
   const keys = [];
   await page.route('https://jf1.test/**', (r) => {
     const req = r.request();
@@ -93,7 +101,7 @@ const FOLDERS = { Items: [
       keys.push(req.headers()['x-emby-token'] || '');
       if (hang) return new Promise(() => {});   // accepts, then never answers
       if (status !== 200) return r.fulfill({ status, headers: CORS, body: '' });
-      const reply = malformed ? { error: 'not a list' } : at === '/Users' ? USERS : FOLDERS;
+      const reply = malformed ? { error: 'not a list' } : at === '/Users' ? (many ? MANY : USERS) : FOLDERS;
       return r.fulfill({ status: 200, headers: CORS, contentType: 'application/json', body: JSON.stringify(reply) });
     }
     return r.fulfill({ status: 404, headers: CORS, body: '{}' });
@@ -134,8 +142,8 @@ const FOLDERS = { Items: [
   await frame.waitForSelector('#state', { timeout: 10000 }).catch(() => {});
   await page.waitForTimeout(600);
 
-  const ask = async (id, property, field, waitMs = 5000) => {
-    await page.evaluate((q) => window.__wwPush(Object.assign({ type: 'ww-discover' }, q)), { id, property, field });
+  const ask = async (id, property, field, waitMs = 5000, query) => {
+    await page.evaluate((q) => window.__wwPush(Object.assign({ type: 'ww-discover' }, q)), { id, property, field, query });
     for (let i = 0; i < waitMs / 100; i++) {
       const got = await page.evaluate((k) => (window.__discovered || {})[k] || null, id);
       if (got) return got;
@@ -197,6 +205,21 @@ const FOLDERS = { Items: [
     !!(silent && typeof silent.error === 'string' && /did not answer in time/i.test(silent.error)) && took < 19000,
     `${took} ms: ${JSON.stringify(silent)}`);
   hang = false;
+
+  many = true;
+  const whole = await ask('j9', 'userName', null);
+  const searched = await ask('j9b', 'userName', null, 5000, 'USER59');
+  const values = (r) => (r && Array.isArray(r.options) ? r.options.map((o) => o.value) : []);
+  check('J9 a list of 600 users, some 600 KiB, is read whole',
+    values(whole).length === 600 && values(whole)[599] === 'user599',
+    JSON.stringify(whole && whole.error ? whole : values(whole).length));
+  check('J9b ...and a search is answered with the names that contain it, past the 500th',
+    JSON.stringify(values(searched)) === JSON.stringify(Array.from({ length: 10 }, (_, i) => 'user59' + i)),
+    JSON.stringify(searched && searched.error ? searched : values(searched)));
+  many = false;
+  const byLabel = await ask('j9c', 'userName', null, 5000, 'disabled');
+  check('J9c ...matching a label too, as the chooser\'s own filter does',
+    JSON.stringify(values(byLabel)) === '["guest"]', JSON.stringify(values(byLabel)));
 
   await browser.close();
   console.log(failures ? `${failures} FAILURE(S)` : 'ALL PASS');

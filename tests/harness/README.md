@@ -388,7 +388,9 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   either setting is filled in. Other settings get "unsupported". A rejected key, a reply
   that is not a list and a missing address come back as the widget's own messages, and a
   server that never answers is reported at about 15 s, inside the shell's 20 s wait (J8,
-  so the run takes about 20 s).
+  so the run takes about 20 s). A list of 600 users, some 600 KiB as real user records
+  are, is read whole, and a search (Find by query) is answered with the names or labels
+  that contain it, past the 500th (J9).
 - `wowfind-run.js` — WoW Panel's Find (#210). The OAuth exchange is answered on the host-proxy
   tier as on the panel, and the realm index directly. The Realm setting lists the region's
   realms as slugs labelled with their names, sorted by name, from the dynamic namespace in
