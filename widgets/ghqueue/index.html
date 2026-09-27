@@ -202,28 +202,44 @@
   // pages share one budget, inside the shell's 20 s wait for an answer; a GitHub too slow
   // to finish in it gets "did not answer in time" rather than a list silently short of
   // the repositories it never reached.
+  //
+  // Find by query: when that first answer is cut short, the editor asks again with the
+  // user's search once typing pauses. Fetching every page again for each search would
+  // spend the token's rate limit on typing, so the list the first ask fetched is kept for
+  // a minute, for the token that fetched it, and a search filters that.
   const DISCOVER_PAGES = 6;
   const DISCOVER_BUDGET = 15000;
-  WW.onDiscover(async ({ property, field }) => {
+  const DISCOVER_KEEP = 60000;
+  let discovered = null;   // { token, at, names } — the last full list Find fetched
+  WW.onDiscover(async ({ property, field, query }) => {
     if (property !== 'repos' || field !== 'repo') return null;
     if (!cfg.token) throw new Error('Add a personal access token to this widget first. Find lists the repositories it can see.');
+    const q = String(query || '').trim().toLowerCase();
+    const matching = (names) => (q ? names.filter((n) => n.toLowerCase().includes(q)) : names);
+    if (q && discovered && discovered.token === cfg.token && Date.now() - discovered.at < DISCOVER_KEEP)
+      return matching(discovered.names);
     if (rateLimitedUntil > Date.now()) throw new Error(rateLimitText());
     const until = Date.now() + DISCOVER_BUDGET;
+    // One token for the whole lookup: a settings change part-way through must not turn
+    // the later pages, or a limit they run into, into the new token's — nor the list they
+    // make into the one a search under the new token filters.
+    const token = cfg.token;
     const names = [];
     for (let page = 1; page <= DISCOVER_PAGES; page++) {
-      const batch = await listRepos(page, until);
+      const batch = await listRepos(page, until, token);
       for (const r of batch) if (r && typeof r.full_name === 'string') names.push(r.full_name);
       if (batch.length < 100) break;
     }
-    return names;
+    if (token === cfg.token) discovered = { token, at: Date.now(), names };
+    return matching(names);
   });
 
-  function rateLimitText() {
-    const at = new Date(rateLimitedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  function rateLimitText(resetAt = rateLimitedUntil) {
+    const at = new Date(resetAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     return 'GitHub’s rate limit for this token resets at ' + at + '. Type the repository for now.';
   }
 
-  async function listRepos(page, until) {
+  async function listRepos(page, until, token) {
     const abort = new AbortController();
     const left = until - Date.now();
     if (left <= 0) throw new Error('GitHub did not answer in time. Type the repository, or press Find again.');
@@ -233,7 +249,7 @@
       try {
         res = await WW.fetch(API + '/user/repos?per_page=100&sort=pushed&page=' + page, {
           headers: {
-            Authorization: 'Bearer ' + cfg.token,
+            Authorization: 'Bearer ' + token,
             Accept: 'application/vnd.github+json',
             'X-GitHub-Api-Version': '2022-11-28',
           },
@@ -248,6 +264,9 @@
       // The same gate the sweep keeps: a limit Find runs into pauses the board too, and a
       // limit the board ran into answers Find without another request.
       const limited = await rateLimitReset(res);
+      // A limit belongs to the token that earned it. One that arrives after the token was
+      // changed is answered, but it does not close the gate on the new token (#322).
+      if (limited && token !== cfg.token) throw new Error(rateLimitText(limited));
       if (limited) {
         rateLimitedUntil = limited;
         boardLimited();

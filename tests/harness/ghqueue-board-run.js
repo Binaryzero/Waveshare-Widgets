@@ -23,11 +23,15 @@
 //         paused is dimmed as stale at once, not left looking current until the reset
 //         (G10c); a setup card stays a setup card (G10d); and a limit that lands while
 //         a sweep is out is not reopened by that sweep's success (G10e); the board
-//         wakes at the reset, not at a refresh hours out (G10f)
+//         wakes at the reset, not at a refresh hours out (G10f); and a limit earned by
+//         a token that has since been replaced does not close the gate on the new one
+//         (G10g)
 //   G11 · an account past the chooser's 500 sends more than 500, so the shell can say the
 //         list was cut
 //   G12 · slow pages share one budget: Find answers inside the shell's 20 s wait, saying
 //         GitHub was too slow, instead of timing out the question
+//   G13 · a search (Find by query) filters the list the first ask fetched, without asking
+//         GitHub again; a different token fetches its own
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -156,9 +160,12 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     const seg = u.pathname.split('/').filter(Boolean);   // repos/{o}/{r}/...
     if (seg[0] === 'user' && seg[1] === 'repos') {
       reposAuth.push(r.request().headers()['authorization'] || '');
-      if (reposStatus !== 200)
-        return r.fulfill({ status: reposStatus, contentType: 'application/json',
+      if (reposStatus !== 200) {
+        const refuse = () => r.fulfill({ status: reposStatus, contentType: 'application/json',
           headers: Object.assign({}, CORS, reposHeaders), body: JSON.stringify(reposBody) });
+        if (reposDelayMs) return new Promise((res) => setTimeout(res, reposDelayMs)).then(refuse);
+        return refuse();
+      }
       const pageNo = Number(u.searchParams.get('page') || 1);
       const per = Number(u.searchParams.get('per_page') || 30);
       const page = userRepos().slice((pageNo - 1) * per, pageNo * per);
@@ -351,6 +358,34 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
   check('G10f the board wakes at the reset, not at a refresh two hours out',
     /rate limit/i.test(String((shortLimit || {}).error || '')) && dimmedNow && woke && pullsAsked > sweepsBefore,
     JSON.stringify({ dimmedNow, woke, sweeps: pullsAsked - sweepsBefore }));
+  // G10g · Find asks with token A and GitHub is slow to say A is limited; the token is
+  // changed to B in the meantime. A's limit must not shut the gate on B.
+  const initWith = (token) => page.evaluate((m) => window.__wwPush(m), { type: 'ww-init',
+    settings: { repos: [{ repo: 'me/alpha' }, { repo: 'me/beta' }], apiToken: token, refreshMinutes: 5 },
+    sensors: [], media: null, theme: {}, status: { elevated: false, apiVersion: 1 } });
+  await initWith('stub-token-A');
+  await page.waitForTimeout(500);
+  reposHeaders = { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 1800),
+    'access-control-expose-headers': 'x-ratelimit-remaining, x-ratelimit-reset' };
+  reposDelayMs = 1500;
+  await page.evaluate((q) => window.__wwPush(Object.assign({ type: 'ww-discover' }, q)), { id: 'd4g', property: 'repos', field: 'repo' });
+  await page.waitForTimeout(300);
+  await initWith('stub-token-B');
+  let oldAnswer = null;
+  for (let i = 0; i < 40 && !oldAnswer; i++) {
+    oldAnswer = await page.evaluate((k) => (window.__discovered || {})[k] || null, 'd4g');
+    if (!oldAnswer) await page.waitForTimeout(100);
+  }
+  reposDelayMs = 0;
+  reposStatus = 200;
+  const askedBeforeB = reposAuth.length;
+  const underB = await ask('d4h', 'repos', 'repo');
+  const bOpts = underB && Array.isArray(underB.options) ? underB.options.length : 0;
+  const bAuth = reposAuth.slice(askedBeforeB);
+  check('G10g a limit earned by a replaced token does not shut the gate on the new one',
+    /rate limit/i.test(String((oldAnswer || {}).error || '')) && bOpts === USER_REPOS.length
+      && bAuth.length > 0 && bAuth.every((a) => a === 'Bearer stub-token-B'),
+    JSON.stringify({ old: (oldAnswer || {}).error, listedUnderB: bOpts, authUnderB: bAuth.slice(0, 2) }));
   reposStatus = 200;
   reposBody = { message: 'Bad credentials' };
   reposHeaders = {};
@@ -388,6 +423,54 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     !!(slow && typeof slow.error === 'string' && /did not answer in time/i.test(slow.error)) && took < 19000,
     `${took} ms: ${JSON.stringify(slow)}`);
   reposDelayMs = 0;
+  repoCount = 102;
+
+  // G13 · Find by query. A new token (the gate G10 closed opens with it), then a first ask
+  // and a search.
+  const initToken = (token) => page.evaluate((m) => window.__wwPush(m), { type: 'ww-init',
+    settings: { repos: [{ repo: 'me/alpha' }, { repo: 'me/beta' }], apiToken: token, refreshMinutes: 5 },
+    sensors: [], media: null, theme: {}, status: { elevated: false, apiVersion: 1 } });
+  await initToken('stub-token-q');
+  await page.waitForTimeout(500);
+  repoCount = 650;
+  const full = await ask('d8', 'repos', 'repo');
+  const askedAfterFirst = reposAuth.length;
+  const searched = await (async () => {
+    await page.evaluate((q) => window.__wwPush(Object.assign({ type: 'ww-discover' }, q)),
+      { id: 'd9', property: 'repos', field: 'repo', query: 'REPO-59' });
+    for (let i = 0; i < 50; i++) {
+      const got = await page.evaluate((k) => (window.__discovered || {})[k] || null, 'd9');
+      if (got) return got;
+      await page.waitForTimeout(100);
+    }
+    return null;
+  })();
+  const matchValues = searched && Array.isArray(searched.options)
+    ? searched.options.map((o) => (typeof o === 'string' ? o : o.value)) : [];
+  check('G13 a search filters the list the first ask fetched, without asking GitHub again',
+    full && Array.isArray(full.options) && full.options.length === 600
+      && matchValues.length === 11 && matchValues[0] === 'me/repo-59' && matchValues.includes('me/repo-599')
+      && reposAuth.length === askedAfterFirst,
+    JSON.stringify({ first: full && full.options && full.options.length, matches: matchValues.length,
+      requests: reposAuth.length - askedAfterFirst }));
+  await initToken('stub-token-q2');
+  await page.waitForTimeout(500);
+  const askedBeforeOther = reposAuth.length;
+  const otherToken = await (async () => {
+    await page.evaluate((q) => window.__wwPush(Object.assign({ type: 'ww-discover' }, q)),
+      { id: 'd10', property: 'repos', field: 'repo', query: 'repo-59' });
+    for (let i = 0; i < 50; i++) {
+      const got = await page.evaluate((k) => (window.__discovered || {})[k] || null, 'd10');
+      if (got) return got;
+      await page.waitForTimeout(100);
+    }
+    return null;
+  })();
+  const otherAuth = reposAuth.slice(askedBeforeOther);
+  check('G13b ...and a different token fetches its own list rather than reading another token\'s',
+    otherToken && Array.isArray(otherToken.options) && otherToken.options.length === 11
+      && otherAuth.length > 0 && otherAuth.every((a) => a === 'Bearer stub-token-q2'),
+    JSON.stringify({ matches: otherToken && otherToken.options && otherToken.options.length, requests: otherAuth.length }));
   repoCount = 102;
 
   const shot = path.join(__dirname, 'ghqueue-board.png');

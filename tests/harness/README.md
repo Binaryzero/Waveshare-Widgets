@@ -368,7 +368,9 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   must answer every question exactly once, in plain data, and say "unsupported" rather
   than stay silent. The editors' `ww-discover-text` block (both copies) must leave every
   dead end typeable. The wiring across the host is pinned as source guards. D5 runs a
-  pass-through cleaner and requires D1 to fail.
+  pass-through cleaner and requires D1 to fail. D6 is Find by query: the user's search
+  reaches the widget as `query`, capped at 100 characters, a search with no match names
+  it, and both editors send one only when the first answer was cut short.
 - `discoverroute-run.js` — the same, for real, in a browser. In the dashboard shell with a
   fake host, a question reaches only the widget it names. Another widget quoting the live
   id is ignored (R4). A question is answered once, and a silent widget becomes a timeout
@@ -376,13 +378,17 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   window each offer Find on a text setting and a list field, list label over value, and
   save the picked value. On the panel, Find straight after an edit waits for the tile's
   reload and asks with the edited settings (P4). The settings window says so when there is
-  no panel.
+  no panel. Find by query (P6, S5): with 600 choices, a search goes to the widget once
+  typing pauses and its matches past the first 500 are listed. An extension of a complete
+  answer and an emptied search ask nothing, a list that was not cut short never sends a
+  search, and a late answer for an older search does not replace the latest one.
 - `hafind-run.js` — Home Assistant's Find (#210), asked the way the shell asks, against a
   stub server. The Entity ID field lists every entity sorted by id with its friendly name
   (F1), and it answers while the widget is still on its setup card (F2). Other settings
   get "unsupported". A rejected token and a missing address come back as the widget's own
   messages, and a server that never answers is reported by the widget at about 15 s,
-  inside the shell's 20 s wait (F6).
+  inside the shell's 20 s wait (F6). A search (Find by query) is answered with the
+  entities whose id or friendly name contains it (F7).
 - `wowfind-run.js` — WoW Panel's Find (#210). The OAuth exchange is answered on the host-proxy
   tier as on the panel, and the realm index directly. The Realm setting lists the region's
   realms as slugs labelled with their names, sorted by name, from the dynamic namespace in

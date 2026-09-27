@@ -378,7 +378,10 @@
     };
     const errText = (e) => String((e && e.message) || e || 'Lookup failed.').slice(0, 300);
     if (!discoverHandler) { reply({ unsupported: true }); return; }
-    const ask = { property: String(msg.property || ''), field: msg.field ? String(msg.field) : null };
+    // `query` is the user's search (Find by query): '' for the first ask, and the text
+    // they typed when that answer was cut short. Capped as the editors cap it.
+    const ask = { property: String(msg.property || ''), field: msg.field ? String(msg.field) : null,
+      query: typeof msg.query === 'string' ? msg.query.slice(0, 100) : '' };
     let out;
     try { out = discoverHandler(ask); } catch (e) { reply({ error: errText(e) }); return; }
     Promise.resolve(out).then((options) => {
@@ -963,9 +966,11 @@
      * not open, so refuse the tap instead of sending a click that lands nowhere. */
     onStreamDeck(cb) { listeners.streamdeck.push(cb); },
     /** Answer "which values can this setting take" for a property that declares
-     * optionsSource: "widget" (#210). cb({property, field}) returns an array — or a
+     * optionsSource: "widget" (#210). cb({property, field, query}) returns an array — or a
      * promise of one — of strings or {value, label}; field is the list field's key when
-     * the setting is a list. Return null for a property this widget does not look up.
+     * the setting is a list. query is '' on the first ask; when that answer was cut short,
+     * the editor asks again with what the user is searching for, and a widget can answer
+     * with just the matches. Return null for a property this widget does not look up.
      * Throw (or reject) with a message the user should read when the lookup fails.
      * Runs on the panel with the widget's SAVED settings, and only when the user asks. */
     onDiscover(cb) { discoverHandler = typeof cb === 'function' ? cb : null; },
