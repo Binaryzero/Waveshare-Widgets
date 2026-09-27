@@ -358,14 +358,16 @@ bounded (8 per
 widget id, oldest evicted; eviction also purges the instance's protected store) and is
 addressed only by `widgetId` + `instanceId`, never by grid position.
 
-**⧉ duplicates a tile** — same widget, same size, same settings, on the same page — from
-the on-panel edit overlay and from the settings window's slot chip. The copy is a NEW
-instance: it gets its own `instanceId`, so it has its own widget-local storage and its own
-(empty) protected store, and it starts with **no credentials**. Every property the manifest
-types `secret` is dropped, and so is any value that looks like something this host sealed,
-whether the manifest names it or not — a widget the library refused, or a property demoted
-from `secret` to `text`, can leave ciphertext under a name nothing calls a credential, and a
-new tile should not begin life holding one nobody gave it.
+**⧉ duplicates a tile** — same widget, same size, same settings, **credentials included** —
+on the same page, from the on-panel edit overlay and from the settings window's slot chip.
+The copy is a NEW instance: it gets its own `instanceId`, so it has its own widget-local
+storage and its own (empty) protected store — derived tokens (`WW.secure`) are not copied, and
+the copy buys its own with the copied credential. The panel holds credentials revealed, so its
+copy carries them and the host seals them for the new tile. The settings window never holds a
+stored credential, so its copy names its source in a transient `copiedFrom` marker and the host
+fills each untouched blank from the source's stored value on the copy's first save (see
+`docs/SECRET-ADDRESSING.md`). A pending Clear on the source travels with the copy, and a
+credential typed into the copy, or cleared on it, wins over the source's.
 
 The fresh `instanceId` is load-bearing rather than tidy. A legacy tile that has never been
 edited on-panel has no id, and its credential is addressed positionally — an address that

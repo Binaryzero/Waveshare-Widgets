@@ -432,13 +432,29 @@ walking, so one `Cleared()` answers for both address spaces. The check runs ahea
 value branches, so a clear drops a retired def's revealed plaintext (the on-panel path) and
 its ciphertext alike — exactly as it does for a live slot.
 
-**Duplicate (#226) needs no addressing at all, which is the point.** A duplicate copies the
-settings MINUS every credential and mints a fresh `instanceId`, so it is an ordinary
-client-side add: no marker channel, no host operation, nothing new in this pipeline. The
-design that reached this document first had an opt-in to copy the stored credential, keyed
-by a `secretsCopiedFrom` marker naming the source instance — a second inbound marker channel
-and a second-chance lookup inside `Seal`, for one gesture. It was cut, and what remains is a
-gesture with no credential semantics to get wrong.
+**Duplicate (#226) copies the credential, through one bounded second chance.** The owner's
+call on #226's open question was that a duplicate keeps its credentials. The panel copy
+carries the revealed values and needs nothing new. The settings window never holds a stored
+credential, so its copy names its source in `copiedFrom` — an inbound projection marker like
+`secretsCleared`, read off the raw node by `ReadCopiedFromMarkers` at (page, slot) in the
+filtered model, never reaching layout.json. `Seal` treats it as a second place to look for an
+UNTOUCHED blank only, never as a value, and only under these rules:
+
+- The copy's own stored value comes first; a typed replacement or a named clear still wins.
+- It speaks only for a slot the disk has never held. Once the copy is saved it has an identity
+  of its own, so a marker still riding a later payload cannot bring back a credential the user
+  cleared from the copy.
+- The source key is built from the COPY's widget id, so a marker naming another widget's tile
+  finds nothing; a poisoned (twinned) source has nothing to give; one fresh identity claimed
+  twice in a payload gives to neither claimant.
+- A copy of a copy made before either was saved follows the named tile's own marker back to a
+  tile the disk holds, stopping at the first saved copy (whose current credential is the one
+  to take).
+- With protection unavailable, a copy of legacy plaintext gets nothing rather than becoming a
+  second plaintext credential under a new identity; the failure is reported.
+
+This is the identity channel `TryPrevious` says #68 lacks — the client saying which tile it
+copied — scoped to the one gesture that needs it. Probes E5–E5q pin every rule above.
 
 One thing it does depend on: the clone must be **id-bearing**. With the positional key
 retired, an id-less clone has no address at all and carries nothing — and, worse, the same
