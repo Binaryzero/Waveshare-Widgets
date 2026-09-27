@@ -3119,6 +3119,55 @@
     }, 1000);
   }
 
+  // ---- Find (#210) ----------------------------------------------------------
+  // The server's users, for the username, and its libraries, for a Hidden libraries row.
+  // Both are the same reads the tile already makes with the API key (/Users resolves the
+  // username, /Library/MediaFolders is the list the shelf's hide filter walks), so Find
+  // needs only the address and the key and works before either setting is filled in.
+  // Each answer is the name as Jellyfin shows it, since both settings match by name,
+  // and one name per spelling: both compare case-insensitively. The deadline is
+  // shorter than the shell's 20 s wait, so a slow server is reported by the widget
+  // rather than timed out by the shell. A server with more names than the chooser keeps
+  // (500) is asked again with what the user is searching for, and this answers with the
+  // names or labels that contain it, as the chooser's own filter matches (Find by query).
+  // So the read takes the list cap, not the 256 KiB the tile's own lookups use: a user
+  // record runs to a kilobyte or more, and a list that long would not fit in that.
+  const DISCOVER_DEADLINE = 15000;
+  const LIBRARY_KINDS = {
+    movies: 'Movies', tvshows: 'Shows', music: 'Music', musicvideos: 'Music videos',
+    homevideos: 'Home videos', boxsets: 'Collections', books: 'Books', photos: 'Photos',
+    playlists: 'Playlists', livetv: 'Live TV',
+  };
+  WW.onDiscover(async ({ property, field, query }) => {
+    const users = property === 'userName';
+    if (!users && !(property === 'hideLibraries' && field === 'name')) return null;
+    if (!cfg.base || !cfg.key)
+      throw new Error('Add the Jellyfin address and an API key first. Find lists the '
+        + (users ? 'users' : 'libraries') + ' they reach.');
+    let body;
+    try {
+      body = await jfJson(users ? '/Users' : '/Library/MediaFolders', DISCOVER_DEADLINE, LIST_MAX_BYTES);
+    } catch (e) {
+      throw new Error(e && e.kind ? faultText(e.kind, e.status)
+        : 'Could not read the ' + (users ? 'user' : 'library') + ' list.');
+    }
+    const rows = users ? body : body && body.Items;
+    if (!Array.isArray(rows)) throw new Error(faultText('format'));
+    const q = String(query || '').trim().toLowerCase();
+    const seen = new Set();
+    return rows
+      .filter((r) => r && typeof r.Name === 'string' && r.Name.trim())
+      .map((r) => ({
+        value: r.Name.trim(),
+        label: users
+          ? (r.Policy && r.Policy.IsDisabled ? 'Disabled' : r.Policy && r.Policy.IsAdministrator ? 'Administrator' : '')
+          : LIBRARY_KINDS[r.CollectionType] || (r.CollectionType ? '' : 'Mixed'),
+      }))
+      .filter((o) => !seen.has(o.value.toLowerCase()) && seen.add(o.value.toLowerCase()))
+      .filter((o) => !q || o.value.toLowerCase().includes(q) || o.label.toLowerCase().includes(q))
+      .sort((a, b) => a.value.localeCompare(b.value, undefined, { sensitivity: 'base' }));
+  });
+
   let resizeTimer = null;
   window.addEventListener('resize', () => {
     // The on-panel editor resizes the frame in place without another init.

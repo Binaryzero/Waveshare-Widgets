@@ -2,7 +2,7 @@
   "id": "ws.stock.jellyfin",
   "name": "Jellyfin",
   "author": "Plinth",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "description": "Who's streaming what from your Jellyfin server and the titles that just landed in the library — or a player that browses your movie and TV libraries (genres, sorting, series → seasons → episodes), picks up what you left part-watched, queues what's next up, keeps your favourites a tab away, and streams straight to the panel. Read from Jellyfin's own API, because the web app refuses to render inside a frame.",
   "min_api_version": 1,
   "supported_slots": [
@@ -42,7 +42,8 @@
       "type": "text",
       "default": "",
       "placeholder": "Optional — for Continue, Next up & Favorites",
-      "help": "Optional. Name a Jellyfin user (Administration → Users) and the Player gains three queue tabs — Continue (everything that user left part-watched, resuming where it stopped), Next up (the next unwatched episode of every series in progress) and Favorites — and the panel starts keeping that user's watch history: the position it reaches is saved, so a title stopped midway waits in Continue on every client, and a title played to the end is marked watched. Press and hold any title to favourite it or set it watched by hand, and library tiles start showing that user's ✓ and ♥. Blank keeps panel playback untracked and hides all three tabs. The API key already holds server-wide rights; the name only chooses whose history the panel reads and writes — and with a name set, the libraries listed are the ones that user may see."
+      "optionsSource": "widget",
+      "help": "Optional. Name a Jellyfin user (Administration → Users, or press Find… to pick one; Find needs the address and API key above) and the Player gains three queue tabs — Continue (everything that user left part-watched, resuming where it stopped), Next up (the next unwatched episode of every series in progress) and Favorites — and the panel starts keeping that user's watch history: the position it reaches is saved, so a title stopped midway waits in Continue on every client, and a title played to the end is marked watched. Press and hold any title to favourite it or set it watched by hand, and library tiles start showing that user's ✓ and ♥. Blank keeps panel playback untracked and hides all three tabs. The API key already holds server-wide rights; the name only chooses whose history the panel reads and writes — and with a name set, the libraries listed are the ones that user may see."
     },
     {
       "name": "view",
@@ -65,11 +66,12 @@
           "key": "name",
           "label": "Library name",
           "type": "text",
-          "placeholder": "Home Videos"
+          "placeholder": "Home Videos",
+          "optionsSource": "widget"
         }
       ],
       "default": [],
-      "help": "Libraries to leave out — gone from the Player's tabs and from the recently-added shelf alike. Names match as Jellyfin shows them, any capitalization. Empty shows every library."
+      "help": "Libraries to leave out — gone from the Player's tabs and from the recently-added shelf alike. Names match as Jellyfin shows them, any capitalization; press Find… to pick one from the server's libraries. Empty shows every library."
     },
     {
       "name": "latestTypes",
