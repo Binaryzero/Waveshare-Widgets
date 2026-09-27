@@ -917,8 +917,15 @@ public static class SecretPolicy
         // hand one source's credential to two claimants meanwhile.
         var storedKeys = new HashSet<string>(StringComparer.Ordinal);
         var incomingTwice = new HashSet<string>(StringComparer.Ordinal);
+        // A copy's own marker, by identity, so a copy of a copy made before either was saved
+        // can be followed back to a tile the disk holds.
+        var markerOf = new Dictionary<string, string>(StringComparer.Ordinal);
         if (copiedFrom is { Count: > 0 })
         {
+            foreach (var (slotRef, (p, i)) in address)
+                if (copiedFrom.TryGetValue((p, i), out var src) && !string.IsNullOrEmpty(src)
+                    && SlotKey(slotRef) is { } k)
+                    markerOf[k] = src;
             foreach (var s in (stored?.Pages ?? []).SelectMany(pg => pg.Slots ?? [])
                          .Concat((stored?.Retained ?? []).Select(r => r?.Def)))
                 if (s is not null && SlotKey(s) is { } k)
@@ -1009,11 +1016,15 @@ public static class SecretPolicy
             {
                 // Untouched masked field (or non-string junk): keep what is stored — or, on a
                 // duplicate's first save, what the tile it was copied from has stored.
-                if (!TryPrevious(key, slot, name, out var keptNode)
-                    && !TryCopied(slot, name, out keptNode, out _))
+                var fromCopy = false;
+                if (!TryPrevious(key, slot, name, out var keptNode))
                 {
-                    slot.Settings!.Remove(name);
-                    return;
+                    if (!TryCopied(slot, name, out keptNode, out _))
+                    {
+                        slot.Settings!.Remove(name);
+                        return;
+                    }
+                    fromCopy = true;
                 }
                 // A stored NON-STRING is restored exactly as it was. It was redacted for
                 // the editor like any other secret, so the blank coming back means
@@ -1052,8 +1063,14 @@ public static class SecretPolicy
                 else
                 {
                     // Keeping it leaves layout.json exactly as it already was; dropping
-                    // it would destroy the credential over a transient DPAPI failure.
-                    slot.Settings![name] = kept;
+                    // it would destroy the credential over a transient DPAPI failure. That
+                    // holds only for the slot that already held it: for a duplicate's copy
+                    // it would write ANOTHER plaintext credential, under a new identity, so
+                    // the copy goes without and the failure says so.
+                    if (fromCopy)
+                        slot.Settings!.Remove(name);
+                    else
+                        slot.Settings![name] = kept;
                     failures.Add(new SecretSealFailure(slot.WidgetId, name));
                 }
                 return;
@@ -1148,7 +1165,16 @@ public static class SecretPolicy
                 || storedKeys.Contains(own)
                 || incomingTwice.Contains(own))
                 return null;
-            return slot.WidgetId + "|i:" + source;
+            // The tile it names may itself be a copy nobody has saved yet, with nothing stored
+            // under its own id. Follow its marker back — within this widget, a bounded number of
+            // steps, stopping at the first tile the disk holds — rather than lose the credential
+            // the first copy was carrying. A saved copy stops the walk: its credential is the
+            // one it has now, which may no longer be its source's.
+            var key = slot.WidgetId + "|i:" + source;
+            for (var hops = 0; hops < 8 && !storedKeys.Contains(key)
+                     && markerOf.TryGetValue(key, out var next) && !string.IsNullOrEmpty(next); hops++)
+                key = slot.WidgetId + "|i:" + next;
+            return key == own ? null : key;
         }
 
         // The write half of RestoreIfUntouched (#66). Read semantics blanked this address;

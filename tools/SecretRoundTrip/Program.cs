@@ -2381,6 +2381,56 @@ Check("E5k the copiedFrom reader counts only the slots the save keeps",
 Check("E5l ...and the marker itself never reaches the model that is written to disk",
     !JsonSerializer.Serialize(eNode.Deserialize<DashboardLayout>()).Contains("copiedFrom"));
 
+// E5m · a copy of a copy, made before either was saved: the second names the first, which
+// has nothing stored under its own id yet. The walk follows the first's marker back to the
+// tile the disk holds (Codex, PR #324).
+static DashboardLayout ThreeInstances(JsonObject a, JsonObject b, JsonObject c, string idA, string idB, string idC) => new()
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = idA, Size = "quarter", Settings = a },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = idB, Size = "quarter", Settings = b },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = idC, Size = "quarter", Settings = c },
+    ] }],
+};
+var eChain = ThreeInstances(new JsonObject { ["apiToken"] = "" }, new JsonObject { ["apiToken"] = "" },
+    new JsonObject { ["apiToken"] = "" }, "iSrc", "iCopy1", "iCopy2");
+SecretPolicy.Seal(eChain, eSrcStored, ePlan, null, null,
+    new Dictionary<(int, int), string> { [(0, 1)] = "iSrc", [(0, 2)] = "iCopy1" });
+Check("E5m a copy of an unsaved copy follows it back to the saved source",
+    ValueAt(eChain, 1, "apiToken") == eSealed && ValueAt(eChain, 2, "apiToken") == eSealed,
+    ValueAt(eChain, 1, "apiToken") + " | " + ValueAt(eChain, 2, "apiToken"));
+// E5n · ...but a copy that HAS been saved stops the walk: its credential is the one it has
+// now, which here is no longer its source's.
+var eOtherSealed = SealOf("tok-copy1");
+var eSavedCopy = TwoInstances(new JsonObject { ["apiToken"] = eSealed }, new JsonObject { ["apiToken"] = eOtherSealed }, "iSrc", "iCopy1");
+var eFromSaved = ThreeInstances(new JsonObject { ["apiToken"] = "" }, new JsonObject { ["apiToken"] = "" },
+    new JsonObject { ["apiToken"] = "" }, "iSrc", "iCopy1", "iCopy2");
+SecretPolicy.Seal(eFromSaved, eSavedCopy, ePlan, null, null,
+    new Dictionary<(int, int), string> { [(0, 1)] = "iSrc", [(0, 2)] = "iCopy1" });
+Check("E5n a saved copy's own credential is what its copy takes",
+    ValueAt(eFromSaved, 2, "apiToken") == eOtherSealed, ValueAt(eFromSaved, 2, "apiToken"));
+// E5o · a marker loop (corruption, or two copies naming each other) ends, and gives nothing.
+var eLoop = ThreeInstances(new JsonObject(), new JsonObject { ["apiToken"] = "" },
+    new JsonObject { ["apiToken"] = "" }, "iOther", "iA", "iB");
+SecretPolicy.Seal(eLoop, eSrcStored, ePlan, null, null,
+    new Dictionary<(int, int), string> { [(0, 1)] = "iB", [(0, 2)] = "iA" });
+Check("E5o a loop of markers ends, and copies nothing",
+    ValueAt(eLoop, 1, "apiToken") is null && ValueAt(eLoop, 2, "apiToken") is null);
+
+// E5p · the source still holds LEGACY plaintext (a `text` -> `secret` upgrade) and
+// protection is unavailable. The source keeps its plaintext, as it always has — but the
+// copy must not become a second plaintext credential under a new identity (Codex, PR #324).
+var eLegacySrc = LayoutWith(new JsonObject { ["apiToken"] = "legacy-plaintext" }, instanceId: "iSrc");
+var eLegacyCopy = TwoInstances(new JsonObject { ["apiToken"] = "" }, new JsonObject { ["apiToken"] = "" }, "iSrc", "iCopy");
+SecretStore.EncryptOverride = _ => throw new CryptographicException("no DPAPI here");
+var eLegacyResult = SecretPolicy.Seal(eLegacyCopy, eLegacySrc, ePlan, null, null, CopiedAt(1, "iSrc"));
+SecretStore.EncryptOverride = Flip;
+Check("E5p with protection unavailable, a copy of legacy plaintext is not written in plaintext",
+    ValueAt(eLegacyCopy, 1, "apiToken") is null && ValueAt(eLegacyCopy, 0, "apiToken") == "legacy-plaintext",
+    ValueAt(eLegacyCopy, 0, "apiToken") + " | " + ValueAt(eLegacyCopy, 1, "apiToken"));
+Check("E5q ...and the failure is reported for both",
+    eLegacyResult.Failures.Count == 2, string.Join(",", eLegacyResult.Failures.Select(f => f.Property)));
+
 // ---- L · Load freezes identities, which is what retired the positional key (#68) ----
 // SlotKey no longer has a `|w:0` fallback. That deletion is only safe because an id-less
 // slot cannot reach it, and THIS is where that is proven — against the real Load, through
