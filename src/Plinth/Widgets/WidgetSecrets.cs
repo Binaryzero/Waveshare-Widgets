@@ -23,9 +23,10 @@ namespace Plinth.Widgets;
 /// still drops a whole widget's credentials in one move — while each tile's derived tokens
 /// live in their OWN bucket, isolated exactly as that tile's settings already are. Two
 /// instances of one widget no longer share entries (the earlier <c>localStorage</c>-parity
-/// scoping, #175); two different widgets never did. A derived token is a credential, and a
-/// credential should not ride from one tile to another on clone, removal, or reuse — which
-/// is the whole of what #226 turns on. Removing an instance's bucket removes the widget
+/// scoping, #175); two different widgets never did. A derived token is a credential bought
+/// for ONE tile, and it does not ride to another on removal or reuse. Nor on Duplicate: that
+/// copies the tile's <c>secret</c> settings (#226), so the copy buys a token of its own
+/// with them rather than sharing this one. Removing an instance's bucket removes the widget
 /// node once its last instance is gone, so "purge when no live instance remains" needs no
 /// separate bookkeeping.</para>
 ///

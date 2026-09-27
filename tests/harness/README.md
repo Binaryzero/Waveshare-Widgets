@@ -67,6 +67,14 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   panel's only way to contradict its own optimistic re-render, and (N13f, #217) pushes a
   floor-tuned CUSTOM palette through the same measurement — the case N13e's default theme
   could not exercise. Port used: 8952.
+- `duplicate-run.js` — Duplicate copies the credential (#226). The host half, Seal
+  filling a fresh copy's untouched blank from the tile named in `copiedFrom`, is
+  `tools/SecretRoundTrip` E5; this is what the two clients send. On the panel the copy
+  carries the revealed credential itself, names its source, and brings the source's
+  `secretsRestorable` and a pending Clear with it (P1-P5). In the settings window, which
+  never holds a stored credential, the copy names its source, reads "saved", carries a
+  value typed into the source this session and a pending Clear, keeps `copiedFrom` across
+  a preview capture, and drops it when swapped to another widget (S1-S6). Port used: 8965.
 - `palettecontrast-run.js` — issue #217: muted text must stay legible on the GLASS
   settings sheets, not only on the opaque surface. `#propSheet` / `#stylePanel` paint
   `--surface` at 94% over the wallpaper, so `--text-muted` renders over surface

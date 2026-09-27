@@ -2216,12 +2216,12 @@ Check("M10d a sibling instance of the same widget is not swept up",
     mSibling.Retained is { Count: 1 });
 
 // ---- E · duplicating a configured tile (#226) ---------------------------------------
-// A duplicate is a plain client-side add: same settings MINUS every credential, a FRESH
-// instanceId, no host operation at all. Nothing in the pipeline changes for it — which is
-// the claim worth pinning, because it rests entirely on the clone being id-BEARING. An
-// id-less clone would carry no identity at all, and with the positional |w:0 key retired
-// there is nothing for it to fall back to: E3 below is that loss, kept as the reason the
-// mint in duplicateSlot is not optional.
+// A duplicate is a client-side add with a FRESH instanceId. It copies the credential too,
+// and asks for that explicitly with the copiedFrom marker (E5 on). WITHOUT the marker
+// nothing carries over, and E1-E4 pin that baseline: it rests entirely on the clone being
+// id-BEARING. An id-less clone would carry no identity at all, and with the positional
+// |w:0 key retired there is nothing for it to fall back to: E3 below is that loss, kept as
+// the reason the mint in duplicateSlot is not optional.
 
 var eSealed = SealOf("tok-source");
 
@@ -2287,6 +2287,99 @@ var eTwice = new DashboardLayout
 SecretPolicy.Seal(eTwice, eLegacyStored, Lookup);
 Check("E4 a second clone changes nothing — an id-less source carries nothing either way",
     ValueAt(eTwice, 0, "apiToken") is null, ValueAt(eTwice, 0, "apiToken"));
+
+// E5 · Duplicate copies the credential (#226, the owner's call). The copy names its source
+// with copiedFrom; its untouched blank takes the source's stored value, sealed as it was.
+static IReadOnlyDictionary<(int Page, int Slot), string> CopiedAt(int slot, string source) =>
+    new Dictionary<(int, int), string> { [(0, slot)] = source };
+var ePlan = SecretPlan.FromManifests(Lookup);
+var eSrcStored = LayoutWith(new JsonObject { ["apiToken"] = eSealed }, instanceId: "iSrc");
+var eCopy = TwoInstances(new JsonObject { ["apiToken"] = "" }, new JsonObject { ["apiToken"] = "" }, "iSrc", "iCopy");
+SecretPolicy.Seal(eCopy, eSrcStored, ePlan, null, null, CopiedAt(1, "iSrc"));
+Check("E5 a duplicate takes the credential of the tile it was copied from",
+    ValueAt(eCopy, 1, "apiToken") == eSealed, ValueAt(eCopy, 1, "apiToken"));
+Check("E5b ...and the source keeps its own",
+    ValueAt(eCopy, 0, "apiToken") == eSealed, ValueAt(eCopy, 0, "apiToken"));
+// An absent key reads as untouched too.
+var eAbsent = TwoInstances(new JsonObject { ["apiToken"] = "" }, new JsonObject(), "iSrc", "iCopy");
+SecretPolicy.Seal(eAbsent, eSrcStored, ePlan, null, null, CopiedAt(1, "iSrc"));
+Check("E5c ...an absent key is an untouched blank too",
+    ValueAt(eAbsent, 1, "apiToken") == eSealed, ValueAt(eAbsent, 1, "apiToken"));
+
+// E5d · what the user did to the copy still wins: a typed replacement is sealed as typed,
+// and a named clear removes it.
+var eTyped = TwoInstances(new JsonObject { ["apiToken"] = "" }, new JsonObject { ["apiToken"] = "tok-new" }, "iSrc", "iCopy");
+SecretPolicy.Seal(eTyped, eSrcStored, ePlan, null, null, CopiedAt(1, "iSrc"));
+Check("E5d a replacement typed into the copy is what the copy keeps",
+    ValueAt(eTyped, 1, "apiToken") is { } eT && SecretStore.Unprotect(eT) == "tok-new", ValueAt(eTyped, 1, "apiToken"));
+var eCleared = TwoInstances(new JsonObject { ["apiToken"] = "" }, new JsonObject { ["apiToken"] = "" }, "iSrc", "iCopy");
+SecretPolicy.Seal(eCleared, eSrcStored, ePlan, ClearedAt(0, 1, "apiToken"), null, CopiedAt(1, "iSrc"));
+Check("E5e a clear named on the copy removes it, marker or not",
+    ValueAt(eCleared, 1, "apiToken") is null, ValueAt(eCleared, 1, "apiToken"));
+
+// E5f · the marker is spent once the copy has been saved. The disk now holds the copy's
+// identity — here without a credential, because the user cleared it — and a marker still
+// riding a later payload must not bring the source's back.
+var eSaved = TwoInstances(new JsonObject { ["apiToken"] = eSealed }, new JsonObject(), "iSrc", "iCopy");
+var eLater = TwoInstances(new JsonObject { ["apiToken"] = "" }, new JsonObject { ["apiToken"] = "" }, "iSrc", "iCopy");
+SecretPolicy.Seal(eLater, eSaved, ePlan, null, null, CopiedAt(1, "iSrc"));
+Check("E5f a copy the disk already holds ignores the marker — a cleared copy stays cleared",
+    ValueAt(eLater, 1, "apiToken") is null, ValueAt(eLater, 1, "apiToken"));
+
+// E5g · the source must be a tile of the SAME widget. A second manifest with the same
+// secret name, so the stored value really is indexed and only the key keeps it out.
+var eOtherManifest = new WidgetManifest
+{
+    Id = "other.widget", Name = "Other",
+    Properties = [new WidgetProperty { Name = "apiToken", Label = "API token", Type = "secret" }],
+};
+WidgetManifest? eBothLookup(string id) => id == "test.widget" ? manifest : id == "other.widget" ? eOtherManifest : null;
+var eOtherStored = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "other.widget", InstanceId = "iX", Size = "half",
+            Settings = new JsonObject { ["apiToken"] = eSealed } },
+    ] }],
+};
+var eCross = TwoInstances(new JsonObject(), new JsonObject { ["apiToken"] = "" }, "iUnrelated", "iCopy");
+SecretPolicy.Seal(eCross, eOtherStored, SecretPlan.FromManifests(eBothLookup), null, null, CopiedAt(1, "iX"));
+Check("E5g a marker naming another widget's tile copies nothing",
+    ValueAt(eCross, 1, "apiToken") is null, ValueAt(eCross, 1, "apiToken"));
+
+// E5h · a twinned source has nothing to give (its key is poisoned in the stored index),
+// and one fresh id claimed twice in the payload gives to neither claimant.
+var eTwinStored = TwoInstances(new JsonObject { ["apiToken"] = eSealed }, new JsonObject { ["apiToken"] = eSealed }, "iSrc", "iSrc");
+var eFromTwin = TwoInstances(new JsonObject(), new JsonObject { ["apiToken"] = "" }, "iOther", "iCopy");
+SecretPolicy.Seal(eFromTwin, eTwinStored, ePlan, null, null, CopiedAt(1, "iSrc"));
+Check("E5h a twinned source copies nothing",
+    ValueAt(eFromTwin, 1, "apiToken") is null, ValueAt(eFromTwin, 1, "apiToken"));
+var eDoubled = TwoInstances(new JsonObject { ["apiToken"] = "" }, new JsonObject { ["apiToken"] = "" }, "iCopy", "iCopy");
+SecretPolicy.Seal(eDoubled, eSrcStored, ePlan, null, null,
+    new Dictionary<(int, int), string> { [(0, 0)] = "iSrc", [(0, 1)] = "iSrc" });
+Check("E5i one fresh id claimed twice copies to neither",
+    ValueAt(eDoubled, 0, "apiToken") is null && ValueAt(eDoubled, 1, "apiToken") is null,
+    ValueAt(eDoubled, 0, "apiToken") + " | " + ValueAt(eDoubled, 1, "apiToken"));
+
+// E5j · a DEMOTED credential (secret -> text, #66) is blanked for both editors and put
+// back by RestoreIfUntouched. The copy's blank is put back from the source the same way.
+var eDemotedStored = LayoutWith(new JsonObject { ["apiToken"] = demotedCipher, ["repo"] = "owner/name" }, instanceId: "iSrc");
+var eDemotedCopy = TwoInstances(new JsonObject { ["apiToken"] = "" }, new JsonObject { ["apiToken"] = "" }, "iSrc", "iCopy");
+SecretPolicy.Seal(eDemotedCopy, eDemotedStored, SecretPlan.FromManifests(DemotedLookup), null, null, CopiedAt(1, "iSrc"));
+Check("E5j a demoted credential the editors were shown blank is copied too",
+    ValueAt(eDemotedCopy, 1, "apiToken") == demotedCipher, ValueAt(eDemotedCopy, 1, "apiToken"));
+
+// E5k · the reader addresses the FILTERED model, like ReadClearedMarkers: a placeholder
+// slot ahead of the copy must not shift the marker onto a neighbour.
+var eNode = JsonNode.Parse(@"{""pages"":[{""name"":""P"",""slots"":[
+    {""widgetId"":"""",""size"":""half""},
+    {""widgetId"":""test.widget"",""instanceId"":""iSrc"",""size"":""half""},
+    {""widgetId"":""test.widget"",""instanceId"":""iCopy"",""size"":""half"",""copiedFrom"":""iSrc""}]}]}");
+var eRead = SecretPolicy.ReadCopiedFromMarkers(eNode);
+Check("E5k the copiedFrom reader counts only the slots the save keeps",
+    eRead.Count == 1 && eRead.TryGetValue((0, 1), out var eSrc) && eSrc == "iSrc",
+    string.Join(",", eRead.Select(kv => $"{kv.Key}={kv.Value}")));
+Check("E5l ...and the marker itself never reaches the model that is written to disk",
+    !JsonSerializer.Serialize(eNode.Deserialize<DashboardLayout>()).Contains("copiedFrom"));
 
 // ---- L · Load freezes identities, which is what retired the positional key (#68) ----
 // SlotKey no longer has a `|w:0` fallback. That deletion is only safe because an id-less

@@ -318,7 +318,8 @@ public sealed class DashboardWindow : Form
                         // a value, which is what Reveal could not express (#153).
                         var secrets = SecretPolicy.Seal(edited, disk, RevealPlan(),
                             SecretPolicy.ReadClearedMarkers(message["layout"]),
-                            SecretPolicy.ReadRetainedClearedMarkers(message["layout"]));
+                            SecretPolicy.ReadRetainedClearedMarkers(message["layout"]),
+                            SecretPolicy.ReadCopiedFromMarkers(message["layout"]));
                         var secretFailures = secrets.Failures;
                         // Cap the attic and destroy what fell off (#226): the evicted
                         // entries' bytes leave layout.json with this save, and their
