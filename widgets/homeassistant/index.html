@@ -288,26 +288,40 @@
   // A large install has more entities than the chooser keeps (500), so when the first
   // answer is cut short the editor asks again with what the user is searching for, and
   // this answers with the entities whose id or friendly name contains it (Find by query).
+  // A search is asked on every pause in typing, and each full read can be megabytes, so
+  // the list the first ask read is kept for a minute, for the address and token that read
+  // it, and a search filters that.
   const DISCOVER_DEADLINE = 15000;
+  const DISCOVER_KEEP = 60000;
+  let discovered = null;   // { base, token, at, options } — the last full list Find read
   WW.onDiscover(async ({ property, field, query }) => {
     if (property !== 'entities' || field !== 'entity') return null;
     if (!cfg.base || !cfg.token)
       throw new Error('Add the Home Assistant address and an access token first. Find lists the entities they reach.');
+    const q = String(query || '').trim().toLowerCase();
+    const matching = (options) => (q
+      ? options.filter((o) => o.value.toLowerCase().includes(q) || o.label.toLowerCase().includes(q))
+      : options);
+    if (q && discovered && discovered.base === cfg.base && discovered.token === cfg.token
+        && Date.now() - discovered.at < DISCOVER_KEEP)
+      return matching(discovered.options);
+    const base = cfg.base;
+    const token = cfg.token;
     let all;
     try {
       all = await haJson('/api/states', { maxBytes: 4 * 1024 * 1024 }, DISCOVER_DEADLINE, true);
     } catch (e) {
       throw new Error(e && e.kind ? faultText(e.kind, e.status) : 'Could not read the entity list.');
     }
-    const q = String(query || '').trim().toLowerCase();
-    return all
+    const options = all
       .filter((item) => item && typeof item.entity_id === 'string' && item.entity_id)
       .map((item) => ({
         value: item.entity_id,
         label: String((item.attributes && item.attributes.friendly_name) || ''),
       }))
-      .filter((o) => !q || o.value.toLowerCase().includes(q) || o.label.toLowerCase().includes(q))
       .sort((a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
+    if (base === cfg.base && token === cfg.token) discovered = { base, token, at: Date.now(), options };
+    return matching(options);
   });
 
   // How many tiles the slot can actually hold. Columns followed the entity COUNT alone,

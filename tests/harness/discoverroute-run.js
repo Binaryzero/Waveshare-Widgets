@@ -22,7 +22,8 @@
 //         once typing pauses, and lists what it answers — past the first 500; a search
 //         extending a complete answer is filtered here; an emptied search goes back to the
 //         first answer; a list that was not cut short never sends one; an answer for an
-//         older search that arrives late does not replace the latest one (P6e)
+//         older search that arrives late does not replace the latest one (P6e); a search
+//         typed before the first answer arrives is sent once it does (P6f)
 // Settings window, with a fake host:
 //   S1  · Find asks the host with the slot's instanceId, property and field
 //   S2  · the answer is listed; picking writes the value; Save carries it
@@ -30,7 +31,8 @@
 //   S4  · a setting that used to be secret (a hidden value kept to restore) offers Find,
 //         and a picked value replaces the hidden one like a typed value
 //   S5  · Find by query through the host: the search rides the question, and an answer
-//         for an older search that arrives late does not replace the latest one
+//         for an older search that arrives late does not replace the latest one; a search
+//         typed before the first answer arrives is sent once it does (S5c)
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -82,6 +84,8 @@ const FINDER_HTML = `<!DOCTYPE html><meta charset="utf-8">
       const m = MANY.filter((v) => !q.query || v.includes(q.query));
       // The older search answers late, with a row the search box's filter would keep (P6e).
       if (q.query === 'v5') return new Promise((r) => setTimeout(() => r(m.concat('late-v55')), 1500));
+      // A slow first answer, so a search can be typed before it arrives (P6f).
+      if (!q.query && window.__slowFirst) return new Promise((r) => setTimeout(() => r(m), 1200));
       return m;
     }
     return null;
@@ -312,6 +316,19 @@ async function dashboard(browser) {
       await askedCount() === realmAsks && JSON.stringify(await sheetRows.allTextContents()) === '["Silvermoon"]',
       JSON.stringify({ asked: (await askedCount()) - realmAsks }));
     await page.locator('.ps-discover .ps-apps-head .ps-pick').click().catch(() => {});
+
+    // P6f · type the search while the first answer is still on its way.
+    await finder.evaluate(() => { window.__slowFirst = true; });
+    await finds.nth(5).click();
+    await wait(150);
+    await page.locator('.ps-discover .ps-apps-head input').fill('v55');
+    await wait(2600);
+    const early = await sheetRows.allTextContents();
+    check('P6f a search typed before the first answer arrives is sent once it does',
+      await lastQuery() === 'v55' && early.length === 10 && early.includes('v559'),
+      JSON.stringify({ query: await lastQuery(), rows: early.length }));
+    await finder.evaluate(() => { window.__slowFirst = false; });
+    await page.locator('.ps-discover .ps-apps-head .ps-pick').click().catch(() => {});
   }
 
   // R7 last: it waits out the shell's 20 s.
@@ -333,6 +350,7 @@ async function settings(browser) {
   const saved = [];
   const questions = [];
   let dashboardUp = true;
+  let slowFirst = false;
   await page.exposeFunction('__hostRecv', async (json) => {
     const msg = JSON.parse(json);
     const push = (obj) => page.evaluate((d) => window.__hostPush(d), JSON.stringify(obj)).catch(() => {});
@@ -352,7 +370,9 @@ async function settings(browser) {
         if (msg.query === 'v5') matches.push('late-v55');
         const answer = () => push({ type: 'discover-result', id: msg.id, ok: true,
           options: matches.slice(0, 500).map((v) => ({ value: v, label: v })), truncated: matches.length > 500 });
-        if (msg.query === 'v5') setTimeout(answer, 1500); else answer();
+        if (msg.query === 'v5') setTimeout(answer, 1500);
+        else if (!msg.query && slowFirst) setTimeout(answer, 1200);
+        else answer();
         return;
       }
       push(dashboardUp
@@ -449,6 +469,23 @@ async function settings(browser) {
     s5rows.length === 10 && s5rows.includes('v559') && JSON.stringify(s5after) === JSON.stringify(s5rows)
       && !s5after.includes('late-v55'),
     JSON.stringify({ rows: s5rows.length, after: s5after.length }));
+
+  // S5c · type the search while the first answer is still on its way.
+  // Close S5's chooser the way a click elsewhere does: it sits over the Find buttons.
+  await page.evaluate(() => document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })));
+  await wait(150);
+  slowFirst = true;
+  const asksBefore = questions.length;
+  await finds.nth(5).click();
+  await wait(150);
+  await page.locator('.discover-pop .app-pop-search').fill('v55');
+  await wait(2600);
+  const earlyRows = await page.locator('.discover-pop .app-pop-list button').allTextContents();
+  const earlyAsks = questions.slice(asksBefore).filter((q) => q.property === 'many').map((q) => q.query);
+  check('S5c a search typed before the first answer arrives is sent once it does',
+    JSON.stringify(earlyAsks) === '["","v55"]' && earlyRows.length === 10 && earlyRows.includes('v559'),
+    JSON.stringify({ earlyAsks, rows: earlyRows.length }));
+  slowFirst = false;
   return page;
 }
 

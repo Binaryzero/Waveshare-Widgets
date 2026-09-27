@@ -2916,6 +2916,8 @@
           if (!pop.isConnected || seq !== askSeq) return;   // closed, or overtaken
           if (!query) first = result;
           show(result, query);
+          // A search typed while the first answer was on its way had nothing to go to yet.
+          if (!query && search.value.trim()) onSearch();
         };
         if (!instanceId) { finish({ ok: false, error: 'not-placed' }); return; }
         const id = 'dq' + (++discoverSeq);
@@ -2925,7 +2927,7 @@
         discoverWaiters.set(id, (result) => { clearTimeout(timer); finish(result); });
         post({ type: 'discover', id, instanceId, property, field: field || null, query });
       };
-      search.addEventListener('input', () => {
+      const onSearch = () => {
         clearTimeout(askTimer);
         if (first && first.ok && first.truncated) {
           const query = search.value.trim().slice(0, DISCOVER_QUERY_MAX);
@@ -2939,7 +2941,8 @@
           }
         }
         render();
-      });
+      };
+      search.addEventListener('input', onSearch);
       ask('');
     });
     return btn;

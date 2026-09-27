@@ -2806,6 +2806,8 @@
           if (!sheet.isConnected || seq !== askSeq) return;   // dismissed, or overtaken
           if (!query) first = result;
           show(result, query);
+          // A search typed while the first answer was on its way had nothing to go to yet.
+          if (!query && search.value.trim()) onSearch();
         }, query);
       };
       const render = () => {
@@ -2837,7 +2839,7 @@
         status.hidden = !text;
         status.textContent = text;
       };
-      search.addEventListener('input', () => {
+      const onSearch = () => {
         clearTimeout(askTimer);
         if (first && first.ok && first.truncated) {
           const query = search.value.trim().slice(0, DISCOVER_QUERY_MAX);
@@ -2851,7 +2853,8 @@
           }
         }
         render();
-      });
+      };
+      search.addEventListener('input', onSearch);
       ask('');
     });
     return btn;
