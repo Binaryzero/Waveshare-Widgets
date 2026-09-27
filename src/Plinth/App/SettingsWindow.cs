@@ -1057,7 +1057,8 @@ public sealed class SettingsWindow : Form
             // SecretPolicy.ClearedMarkerKey.
             var secrets = SecretPolicy.Seal(layout, disk, MaskedPlan(),
                 SecretPolicy.ReadClearedMarkers(layoutNode),
-                SecretPolicy.ReadRetainedClearedMarkers(layoutNode));
+                SecretPolicy.ReadRetainedClearedMarkers(layoutNode),
+                SecretPolicy.ReadCopiedFromMarkers(layoutNode));
             var secretFailures = secrets.Failures;
             // Cap the attic and destroy what fell off (#226) — same order and reasoning
             // as the dashboard's save handler: liveness-guarded (#188), and destroy-

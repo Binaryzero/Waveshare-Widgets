@@ -1841,15 +1841,13 @@
     }
     if (widget && !PREVIEW) {
       // Duplicate (#226). Device-only, like the ⚙ below: the settings window has its own
-      // ⧉ on the slot chip, and one gesture per surface beats a handoff. Gated on `widget`
-      // for a reason beyond the label — the clone is scrubbed against the manifest's
-      // property list, and a record whose widget never loaded (refused, uninstalled) has
-      // none, so there would be nothing to scrub against.
+      // ⧉ on the slot chip, and one gesture per surface beats a handoff. Gated on `widget`:
+      // a tile whose widget never loaded (refused, uninstalled) is not one to multiply.
       const dupe = document.createElement('button');
       dupe.className = 'dupe';
       dupe.textContent = '⧉';
-      dupe.title = 'Add another one like this (without its credentials)';
-      dupe.addEventListener('click', (ev) => { ev.stopPropagation(); duplicateSlot(record, widget); });
+      dupe.title = 'Add another one like this, credentials included';
+      dupe.addEventListener('click', (ev) => { ev.stopPropagation(); duplicateSlot(record); });
       ov.appendChild(dupe);
 
       // On-device access to the widget's OWN settings (#48): the pencil could
@@ -1868,45 +1866,22 @@
     return ov;
   }
 
-  // Shaped like something this host sealed. Mirrors SecretStore.LooksLikeEnvelope, whose
-  // rule is marker + a NON-EMPTY, well-formed base64 payload — not merely the marker and
-  // some characters. The distinction matters in the permissive direction: an ordinary text
-  // setting of "dpapi:v1:a" is not ciphertext, and treating it as such would drop a
-  // perfectly good setting out of the duplicate.
-  function looksLikeEnvelope(value) {
-    if (typeof value !== 'string' || !value.startsWith('dpapi:v1:')) return false;
-    const payload = value.slice('dpapi:v1:'.length);
-    // Non-empty, base64 alphabet, and a length base64 can actually produce — the three
-    // things Convert.TryFromBase64String checks before it will decode anything.
-    if (!payload || payload.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload)) return false;
-    try { atob(payload); return true; } catch (e) { return false; }
-  }
-
-  // Settings for a duplicate: everything the source has EXCEPT its credentials.
+  // Duplicate (#226): another tile of the same widget, same size, same settings — its
+  // credentials included, which is the owner's call — and an identity of its own.
   //
-  // Two passes, because the manifest is not the whole story. The declared `secret` names
-  // are the ordinary case. The second pass catches what the first cannot see: a credential
-  // the library REFUSED, or one whose property was demoted to `text` (#66), reaches the
-  // panel as ciphertext under a name the manifest does not call secret — and the reveal
-  // deliberately leaves this machine's own ciphertext alone. Copying that into a new tile
-  // would hand it a credential nobody chose to give it.
-  function settingsWithoutSecrets(source, widget) {
-    const out = JSON.parse(JSON.stringify(source || {}));
-    for (const prop of (widget.properties || []))
-      if (prop && prop.type === 'secret' && prop.name) delete out[prop.name];
-    for (const [name, value] of Object.entries(out))
-      if (looksLikeEnvelope(value)) delete out[name];
-    return out;
-  }
-
-  // Duplicate (#226): another tile of the same widget, same size, same settings — minus
-  // every credential, and with an identity of its own.
+  // The panel holds the credentials revealed, so the copy simply carries them and the
+  // host seals them for the new tile on save. What the panel was NOT given — a demoted
+  // credential the host blanked for it (secretsRestorable) — the copy asks for by naming
+  // its source in `copiedFrom`: on the copy's first save the host fills an untouched blank
+  // from the source's stored value (SecretPolicy.CopiedFromMarkerKey). A pending Clear on
+  // the source travels too, so a credential the user is removing does not live on in the
+  // copy.
   //
   // The fresh instanceId is not cosmetic. A clone without one becomes a second id-less
   // claimant for this widget, and the positional key a LEGACY source's credential is
   // addressed by only survives while there is exactly one — so an id-less clone would
   // destroy the credential of the very tile being duplicated. Probes E2-E3 pin it.
-  function duplicateSlot(record, widget) {
+  function duplicateSlot(record) {
     mutate(() => {
       // Resolved INSIDE the mutation, as removeSlot does. `mutate` hands the callback to
       // startViewTransition where that exists, so it runs a turn later — long enough for a
@@ -1918,8 +1893,11 @@
         widgetId: record.def.widgetId,
         size: record.def.size,
         instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
-        settings: settingsWithoutSecrets(record.def.settings, widget),
+        settings: JSON.parse(JSON.stringify(record.def.settings || {})),
       };
+      if (record.def.instanceId) def.copiedFrom = record.def.instanceId;
+      for (const key of ['secretsRestorable', 'secretsCleared'])
+        if (Array.isArray(record.def[key]) && record.def[key].length) def[key] = record.def[key].slice();
       if (record.def.style) def.style = JSON.parse(JSON.stringify(record.def.style));
       // No `col`: the source's anchor is where the SOURCE sits. The clone flows into the
       // first free spot instead of fighting it for the same column.

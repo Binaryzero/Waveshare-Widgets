@@ -626,6 +626,9 @@
         // restored wholesale.
         if (prior.secretsSet) merged.secretsSet = prior.secretsSet;
         if (prior.secretsRestorable) merged.secretsRestorable = prior.secretsRestorable;
+        // And the duplicate's request for its source's credentials (#226), which only
+        // this side can make: the replica does not know which tile it copied.
+        if (prior.copiedFrom) merged.copiedFrom = prior.copiedFrom;
         // A pending removal is different: it is a statement the REPLICA can contradict.
         // replicaLayout passes secretsCleared through, so the panel receives the marker
         // and cancels it by setting a value — but cancelling deletes the key, which looks
@@ -2062,7 +2065,7 @@
       main.addEventListener('click', () => selectSlot(i));
       // ⧉ before ✕ — the constructive one first, and the destructive one stays where the
       // hand already knows to find it.
-      const dupe = iconButton('⧉', 'Add another one like this (without its credentials)',
+      const dupe = iconButton('⧉', 'Add another one like this, credentials included',
         () => duplicateSlotAt(page, i));
       dupe.disabled = !room[i];
       if (dupe.disabled) dupe.title = 'No room on this page for another one';
@@ -2092,34 +2095,20 @@
     replicaPost({ type: 'select-slot', page: selectedPage, index: selectedSlot == null ? -1 : selectedSlot });
   }
 
-  // Shaped like something this host sealed. Mirrors SecretStore.LooksLikeEnvelope, whose
-  // rule is marker + a NON-EMPTY, well-formed base64 payload — not merely the marker and
-  // some characters. The distinction matters in the permissive direction: an ordinary text
-  // setting of "dpapi:v1:a" is not ciphertext, and treating it as such would drop a
-  // perfectly good setting out of the duplicate.
-  function looksLikeEnvelope(value) {
-    if (typeof value !== 'string' || !value.startsWith('dpapi:v1:')) return false;
-    const payload = value.slice('dpapi:v1:'.length);
-    // Non-empty, base64 alphabet, and a length base64 can actually produce — the three
-    // things Convert.TryFromBase64String checks before it will decode anything.
-    if (!payload || payload.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload)) return false;
-    try { atob(payload); return true; } catch (e) { return false; }
-  }
-
-  // Duplicate (#226): another tile of the same widget, same size and settings — minus
-  // every credential, and with an identity of its own.
+  // Duplicate (#226): another tile of the same widget, same size and settings — its
+  // credentials included, which is the owner's call — and an identity of its own.
+  //
+  // This editor never holds a stored credential, only a blank and secretsSet, so the copy
+  // cannot carry one by value. It names its source in `copiedFrom` instead, and on the
+  // copy's first save the host fills each untouched blank from the source's stored value
+  // (SecretPolicy.CopiedFromMarkerKey). Anything typed into the source this session rides
+  // as the value it is, a pending Clear rides as a Clear, and secretsSet says which are
+  // saved, so the copy's rows read "saved" rather than "not set".
   //
   // The fresh instanceId is not cosmetic. A clone without one becomes a second id-less
   // claimant for this widget, and the positional key a LEGACY source's credential is
   // addressed by only survives while there is exactly one — so an id-less clone would
   // destroy the credential of the very tile being duplicated. Probes E2-E3 pin it.
-  //
-  // The credential scrub is two passes for the same reason the panel's is: the declared
-  // `secret` names are the ordinary case, and the second pass catches what the manifest
-  // cannot name — a REFUSED widget's credential, or one whose property was demoted to
-  // `text` (#66). Here the declared ones are blank anyway (this editor never holds them),
-  // so the pass that matters is the second; deleting rather than blanking is deliberate,
-  // since a blank would read as "the user cleared it" on the way back.
   function duplicateSlotAt(page, i) {
     // Same live-tree guard as removeSlotAt: a stale closure over a page a settings-init
     // has since replaced must not push into the current one.
@@ -2127,21 +2116,27 @@
     const source = (page.slots || [])[i];
     if (!source) return;
     if (!fitsFixed(page, source.size, null)) return;
-    const settings = JSON.parse(JSON.stringify(source.settings || {}));
-    for (const n of knownSecretNames(source.widgetId)) delete settings[n];
-    for (const [name, value] of Object.entries(settings))
-      if (looksLikeEnvelope(value)) delete settings[name];
     const def = {
       widgetId: source.widgetId,
       size: source.size,
       instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
-      settings,
+      settings: JSON.parse(JSON.stringify(source.settings || {})),
     };
+    if (source.instanceId) def.copiedFrom = source.instanceId;
+    const cleared = Array.isArray(source.secretsCleared) ? source.secretsCleared.slice() : [];
+    if (cleared.length) def.secretsCleared = cleared;
+    // Saved: what the host reported at init, plus what was typed and saved this session
+    // (secretsSet is never refreshed), minus a pending Clear.
+    const saved = new Set(Array.isArray(source.secretsSet) ? source.secretsSet : []);
+    for (const n of knownSecretNames(source.widgetId))
+      if (secretsTypedHere.has(secretKey(source, n))) saved.add(n);
+    for (const n of cleared) saved.delete(n);
+    if (saved.size) def.secretsSet = [...saved];
+    if (Array.isArray(source.secretsRestorable) && source.secretsRestorable.length)
+      def.secretsRestorable = source.secretsRestorable.slice();
     if (source.style) def.style = JSON.parse(JSON.stringify(source.style));
     // No `col`: the source's anchor is where the SOURCE sits, and the clone flowing into
-    // the first free spot beats the two of them contesting one column. No projection
-    // markers either — secretsSet and its siblings describe the SOURCE's stored state,
-    // and on a tile with no credentials they would be a claim about nothing.
+    // the first free spot beats the two of them contesting one column.
     page.slots.push(def);
     selectedSlot = page.slots.length - 1;
     openPanel('widget');   // the clone is what the user configures next
@@ -2273,6 +2268,8 @@
       delete slot.secretsSet;
       delete slot.secretsRestorable;
       delete slot.secretsCleared;
+      // A copy's source was a tile of the outgoing widget, so there is nothing left to copy.
+      delete slot.copiedFrom;
       const w = widgetsById.get(slot.widgetId);
       const widths = offeredWidths(w);
       const current = parseSize(slot.size);

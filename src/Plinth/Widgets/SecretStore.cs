@@ -383,6 +383,26 @@ public static class SecretPolicy
     /// model exists.</summary>
     public const string ClearedMarkerKey = "secretsCleared";
 
+    /// <summary>Transient projection key, EDITOR to HOST, on a DUPLICATED slot: the
+    /// instanceId of the tile it was copied from (#226). Duplicate copies the credential,
+    /// and this is how the settings editor asks for that. It never holds a stored secret —
+    /// only a blank and <see cref="SetMarkerKey"/> — so the value cannot travel with the
+    /// copy. The panel does hold it, and sends it, but a field the host blanked for the
+    /// panel (<see cref="RestorableMarkerKey"/>) has nothing to send either.
+    ///
+    /// Seal treats it as a second place to look for an UNTOUCHED blank, never as a value:
+    /// the copy's own stored value comes first, a typed replacement or a named clear still
+    /// wins, and the source must be the SAME widget. And it only speaks for a slot the disk
+    /// has never held. Once the copy has been saved it has a stored identity of its own, so
+    /// a marker still riding a later payload cannot bring a credential back that the user
+    /// cleared from the copy since.
+    ///
+    /// This is the identity channel <c>TryPrevious</c> explains is missing for #68: the
+    /// client saying which tile it copied, rather than the host guessing from a count.
+    /// <see cref="LayoutSlot"/> has no matching member, so it cannot reach layout.json, and
+    /// <see cref="ReadCopiedFromMarkers"/> is the only thing that reads it.</summary>
+    public const string CopiedFromMarkerKey = "copiedFrom";
+
     /// <summary>Writes a (page, slot) → names map onto a serialized layout as a per-slot
     /// projection. Used for the reveal-side <see cref="RestorableMarkerKey"/>, so the panel
     /// receives the same shape the settings editor already gets from <c>Mask</c>.</summary>
@@ -446,6 +466,34 @@ public static class SecretPolicy
             }
         }
         return cleared;
+    }
+
+    /// <summary>The <see cref="CopiedFromMarkerKey"/> source ids of a submitted layout,
+    /// addressed exactly as <see cref="ReadClearedMarkers"/> addresses its lists: (page,
+    /// slot) in the FILTERED model, counting only slots that survive the handlers' drop of
+    /// placeholders, and read off the RAW node for the same reason. Live pages only: a copy
+    /// retired before its first save has no position to be named by, and keeps nothing.</summary>
+    public static IReadOnlyDictionary<(int Page, int Slot), string> ReadCopiedFromMarkers(
+        JsonNode? layoutNode)
+    {
+        var copied = new Dictionary<(int, int), string>();
+        if (layoutNode?["pages"] is not JsonArray pages)
+            return copied;
+        for (var p = 0; p < pages.Count; p++)
+        {
+            if (pages[p]?["slots"] is not JsonArray slots)
+                continue;
+            var kept = 0;
+            for (var i = 0; i < slots.Count; i++)
+            {
+                if (string.IsNullOrWhiteSpace(AsString(slots[i]?["widgetId"])))
+                    continue;
+                var at = kept++;
+                if (AsString(slots[i]?[CopiedFromMarkerKey]) is { Length: > 0 } source)
+                    copied[(p, at)] = source;
+            }
+        }
+        return copied;
     }
 
     /// <summary>The same cleared-property lists for slots in the RETAINED attic, addressed
@@ -822,6 +870,8 @@ public static class SecretPolicy
     /// <item>A value that really decrypts is already sealed and passes through.</item>
     /// <item>Anything else is plaintext and gets encrypted — including a token that
     ///   merely LOOKS like an envelope.</item>
+    /// <item>A duplicated slot the disk has never held (<paramref name="copiedFrom"/>)
+    ///   fills an untouched blank from the tile it was copied from (#226).</item>
     /// </list>
     /// Carry-over identity is keyed by widget id + instance id and nothing else, so
     /// replacing a widget in a slot can never hand it the previous widget's credential.
@@ -834,7 +884,8 @@ public static class SecretPolicy
     public static SecretSealResult Seal(
         DashboardLayout layout, DashboardLayout? stored, SecretPlan plan,
         IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>>? cleared = null,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? retainedCleared = null)
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? retainedCleared = null,
+        IReadOnlyDictionary<(int Page, int Slot), string>? copiedFrom = null)
     {
         var previous = BuildStoredIndex(stored, plan);
         // The STORED layout's twins, as KEYS rather than slot references.
@@ -860,6 +911,31 @@ public static class SecretPolicy
         for (var p = 0; p < (layout.Pages?.Count ?? 0); p++)
             for (var i = 0; i < (layout.Pages![p].Slots?.Count ?? 0); i++)
                 address[layout.Pages[p].Slots![i]] = (p, i);
+        // For a duplicate's copy (#226): every identity the disk already holds, live or
+        // retired — a copy is only a copy until its first save — and every identity this
+        // payload holds more than once, which is corruption the shell heals, and must not
+        // hand one source's credential to two claimants meanwhile.
+        var storedKeys = new HashSet<string>(StringComparer.Ordinal);
+        var incomingTwice = new HashSet<string>(StringComparer.Ordinal);
+        // A copy's own marker, by identity, so a copy of a copy made before either was saved
+        // can be followed back to a tile the disk holds.
+        var markerOf = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (copiedFrom is { Count: > 0 })
+        {
+            foreach (var (slotRef, (p, i)) in address)
+                if (copiedFrom.TryGetValue((p, i), out var src) && !string.IsNullOrEmpty(src)
+                    && SlotKey(slotRef) is { } k)
+                    markerOf[k] = src;
+            foreach (var s in (stored?.Pages ?? []).SelectMany(pg => pg.Slots ?? [])
+                         .Concat((stored?.Retained ?? []).Select(r => r?.Def)))
+                if (s is not null && SlotKey(s) is { } k)
+                    storedKeys.Add(k);
+            var incomingSeen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var s in (layout.Pages ?? []).SelectMany(pg => pg.Slots ?? [])
+                         .Concat((layout.Retained ?? []).Select(r => r?.Def)))
+                if (s is not null && SlotKey(s) is { } k && !incomingSeen.Add(k))
+                    incomingTwice.Add(k);
+        }
         // The attic's half of the same question, resolved to slot REFERENCES up front so
         // the visitor below needs no retained/live distinction: a retired def is named by
         // identity (it has no position), and matching that identity here once is what lets
@@ -938,11 +1014,17 @@ public static class SecretPolicy
 
             if (string.IsNullOrEmpty(value))
             {
-                // Untouched masked field (or non-string junk): keep what is stored.
+                // Untouched masked field (or non-string junk): keep what is stored — or, on a
+                // duplicate's first save, what the tile it was copied from has stored.
+                var fromCopy = false;
                 if (!TryPrevious(key, slot, name, out var keptNode))
                 {
-                    slot.Settings!.Remove(name);
-                    return;
+                    if (!TryCopied(slot, name, out keptNode, out _))
+                    {
+                        slot.Settings!.Remove(name);
+                        return;
+                    }
+                    fromCopy = true;
                 }
                 // A stored NON-STRING is restored exactly as it was. It was redacted for
                 // the editor like any other secret, so the blank coming back means
@@ -981,8 +1063,14 @@ public static class SecretPolicy
                 else
                 {
                     // Keeping it leaves layout.json exactly as it already was; dropping
-                    // it would destroy the credential over a transient DPAPI failure.
-                    slot.Settings![name] = kept;
+                    // it would destroy the credential over a transient DPAPI failure. That
+                    // holds only for the slot that already held it: for a duplicate's copy
+                    // it would write ANOTHER plaintext credential, under a new identity, so
+                    // the copy goes without and the failure says so.
+                    if (fromCopy)
+                        slot.Settings!.Remove(name);
+                    else
+                        slot.Settings![name] = kept;
                     failures.Add(new SecretSealFailure(slot.WidgetId, name));
                 }
                 return;
@@ -1055,6 +1143,40 @@ public static class SecretPolicy
             return key is not null && previous.TryGetValue((key, name), out found);
         }
 
+        // Duplicate copies the credential (#226). The source is looked up in the same
+        // stored index, so a poisoned (twinned) source key has nothing to give, and the
+        // key is built from THIS slot's widget id, so a marker naming another widget's tile
+        // finds nothing. Only for untouched blanks; see CopiedFromMarkerKey.
+        bool TryCopied(LayoutSlot slot, string name, out JsonNode? found, out string? sourceKey)
+        {
+            found = null;
+            sourceKey = CopySource(slot);
+            return sourceKey is not null && previous.TryGetValue((sourceKey, name), out found);
+        }
+
+        string? CopySource(LayoutSlot slot)
+        {
+            if (copiedFrom is not { Count: > 0 }
+                || !address.TryGetValue(slot, out var at)
+                || !copiedFrom.TryGetValue(at, out var source)
+                || string.IsNullOrEmpty(source)
+                || SlotKey(slot) is not { } own
+                || source == slot.InstanceId
+                || storedKeys.Contains(own)
+                || incomingTwice.Contains(own))
+                return null;
+            // The tile it names may itself be a copy nobody has saved yet, with nothing stored
+            // under its own id. Follow its marker back — within this widget, a bounded number of
+            // steps, stopping at the first tile the disk holds — rather than lose the credential
+            // the first copy was carrying. A saved copy stops the walk: its credential is the
+            // one it has now, which may no longer be its source's.
+            var key = slot.WidgetId + "|i:" + source;
+            for (var hops = 0; hops < 8 && !storedKeys.Contains(key)
+                     && markerOf.TryGetValue(key, out var next) && !string.IsNullOrEmpty(next); hops++)
+                key = slot.WidgetId + "|i:" + next;
+            return key == own ? null : key;
+        }
+
         // The write half of RestoreIfUntouched (#66). Read semantics blanked this address;
         // write semantics must NOT follow, because the manifest now calls the property
         // ordinary and the user has to be able to type into it and empty it.
@@ -1093,11 +1215,14 @@ public static class SecretPolicy
                 return;
             if (!string.IsNullOrEmpty(value))
                 return;
-            TryPrevious(key, slot, name, out var kept);
+            var from = key;
+            if (!TryPrevious(key, slot, name, out var kept)
+                && TryCopied(slot, name, out kept, out var sourceKey))
+                from = sourceKey;
             if (kept is null)
                 return;
             if (!Blankable(slot.InstanceId, AsString(kept),
-                    key is not null && storedAmbiguousKeys.Contains(key)))
+                    from is not null && storedAmbiguousKeys.Contains(from)))
                 return;
             slot.Settings![name] = kept.DeepClone();
         }
