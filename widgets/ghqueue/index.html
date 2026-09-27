@@ -202,12 +202,24 @@
   // pages share one budget, inside the shell's 20 s wait for an answer; a GitHub too slow
   // to finish in it gets "did not answer in time" rather than a list silently short of
   // the repositories it never reached.
+  //
+  // Find by query: when that first answer is cut short, the editor asks again with the
+  // user's search once typing pauses. Fetching every page again for each search would
+  // spend the token's rate limit on typing, so the list the first ask fetched is kept for
+  // a minute, for the token that fetched it, and a search filters that.
   const DISCOVER_PAGES = 6;
   const DISCOVER_BUDGET = 15000;
-  WW.onDiscover(async ({ property, field }) => {
+  const DISCOVER_KEEP = 60000;
+  let discovered = null;   // { token, at, names } — the last full list Find fetched
+  WW.onDiscover(async ({ property, field, query }) => {
     if (property !== 'repos' || field !== 'repo') return null;
     if (!cfg.token) throw new Error('Add a personal access token to this widget first. Find lists the repositories it can see.');
+    const q = String(query || '').trim().toLowerCase();
+    const matching = (names) => (q ? names.filter((n) => n.toLowerCase().includes(q)) : names);
+    if (q && discovered && discovered.token === cfg.token && Date.now() - discovered.at < DISCOVER_KEEP)
+      return matching(discovered.names);
     if (rateLimitedUntil > Date.now()) throw new Error(rateLimitText());
+    const fetchedWith = cfg.token;
     const until = Date.now() + DISCOVER_BUDGET;
     const names = [];
     for (let page = 1; page <= DISCOVER_PAGES; page++) {
@@ -215,7 +227,8 @@
       for (const r of batch) if (r && typeof r.full_name === 'string') names.push(r.full_name);
       if (batch.length < 100) break;
     }
-    return names;
+    if (fetchedWith === cfg.token) discovered = { token: fetchedWith, at: Date.now(), names };
+    return matching(names);
   });
 
   function rateLimitText() {

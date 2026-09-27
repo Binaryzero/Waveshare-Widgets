@@ -284,8 +284,12 @@
   // Its deadline is shorter than the poll's: the shell stops waiting for an answer at
   // 20 s, and one that arrives after that is thrown away, so the widget has to say
   // "did not answer in time" itself, first.
+  //
+  // A large install has more entities than the chooser keeps (500), so when the first
+  // answer is cut short the editor asks again with what the user is searching for, and
+  // this answers with the entities whose id or friendly name contains it (Find by query).
   const DISCOVER_DEADLINE = 15000;
-  WW.onDiscover(async ({ property, field }) => {
+  WW.onDiscover(async ({ property, field, query }) => {
     if (property !== 'entities' || field !== 'entity') return null;
     if (!cfg.base || !cfg.token)
       throw new Error('Add the Home Assistant address and an access token first. Find lists the entities they reach.');
@@ -295,12 +299,14 @@
     } catch (e) {
       throw new Error(e && e.kind ? faultText(e.kind, e.status) : 'Could not read the entity list.');
     }
+    const q = String(query || '').trim().toLowerCase();
     return all
       .filter((item) => item && typeof item.entity_id === 'string' && item.entity_id)
       .map((item) => ({
         value: item.entity_id,
         label: String((item.attributes && item.attributes.friendly_name) || ''),
       }))
+      .filter((o) => !q || o.value.toLowerCase().includes(q) || o.label.toLowerCase().includes(q))
       .sort((a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
   });
 

@@ -2792,11 +2792,13 @@
   /** What the Find chooser says about an answer (#210). Finding is a shortcut, never the
    * only way in, so every dead end says the value can still be typed. Empty when the list
    * speaks for itself. */
-  function discoverStatusText(result) {
+  function discoverStatusText(result, query) {
     if (!result || typeof result !== 'object') return 'No answer came back. Type the value instead.';
     if (result.ok) {
       const n = Array.isArray(result.options) ? result.options.length : 0;
-      if (!n) return 'The widget found nothing to offer. Type the value instead.';
+      if (!n) return query
+        ? 'The widget found no match for “' + query + '”. Type the value instead.'
+        : 'The widget found nothing to offer. Type the value instead.';
       return result.truncated ? 'Showing the first ' + n + ' the widget found — search to narrow them.' : '';
     }
     switch (result.error) {
@@ -2820,6 +2822,10 @@
   /** How long to wait before saying the panel did not answer. The host and the panel each
    * time out sooner and say why; this only covers an answer that never arrives at all. */
   const DISCOVER_WAIT_MS = 30000;
+  // Find by query: the longest search sent to a widget, and the pause in typing before the
+  // search is sent. Mirrored in shell.js.
+  const DISCOVER_QUERY_MAX = 100;
+  const DISCOVER_QUERY_PAUSE_MS = 400;
 
   function makeDiscoverBtn(input, slot, property, field) {
     const btn = document.createElement('button');
@@ -2855,6 +2861,24 @@
 
       let options = [];
       let note = '';
+      // Find by query — the same rules as the panel's sheet (shell.js psDiscoverBtn): a first
+      // answer cut short sends the search to the widget once typing pauses; only the latest
+      // search's answer is shown; an emptied search goes back to the first answer, and a
+      // search that only extends one already answered in full is filtered here.
+      let first = null;       // the first answer
+      let answered = '';      // the search the listed options answer ('' for the first)
+      let complete = false;   // whether that answer was the widget's whole list
+      let searching = false;
+      let askSeq = 0;
+      let askTimer = null;
+      const show = (result, query) => {
+        options = result.ok ? result.options : [];
+        note = discoverStatusText(result, query);
+        answered = query;
+        complete = !!result.ok && !result.truncated;
+        searching = false;
+        render();
+      };
       const render = () => {
         const q = search.value.trim().toLowerCase();
         const shown = q
@@ -2879,26 +2903,44 @@
           });
           list.appendChild(b);
         }
-        const text = options.length && !shown.length ? 'No match.' : note;
+        const text = searching ? 'Asking the widget for matches…'
+          : options.length && !shown.length ? 'No match.' : note;
         status.hidden = !text;
         status.textContent = text;
       };
-      search.addEventListener('input', render);
 
-      const finish = (result) => {
-        if (!pop.isConnected) return;   // closed while the widget was looking
-        options = result.ok ? result.options : [];
-        note = discoverStatusText(result);
-        render();
-      };
       const instanceId = slot && slot.instanceId;
-      if (!instanceId) { finish({ ok: false, error: 'not-placed' }); return; }
-      const id = 'dq' + (++discoverSeq);
-      const timer = setTimeout(() => {
-        if (discoverWaiters.delete(id)) finish({ ok: false, error: 'timeout' });
-      }, DISCOVER_WAIT_MS);
-      discoverWaiters.set(id, (result) => { clearTimeout(timer); finish(result); });
-      post({ type: 'discover', id, instanceId, property, field: field || null });
+      const ask = (query) => {
+        const seq = ++askSeq;
+        const finish = (result) => {
+          if (!pop.isConnected || seq !== askSeq) return;   // closed, or overtaken
+          if (!query) first = result;
+          show(result, query);
+        };
+        if (!instanceId) { finish({ ok: false, error: 'not-placed' }); return; }
+        const id = 'dq' + (++discoverSeq);
+        const timer = setTimeout(() => {
+          if (discoverWaiters.delete(id)) finish({ ok: false, error: 'timeout' });
+        }, DISCOVER_WAIT_MS);
+        discoverWaiters.set(id, (result) => { clearTimeout(timer); finish(result); });
+        post({ type: 'discover', id, instanceId, property, field: field || null, query });
+      };
+      search.addEventListener('input', () => {
+        clearTimeout(askTimer);
+        if (first && first.ok && first.truncated) {
+          const query = search.value.trim().slice(0, DISCOVER_QUERY_MAX);
+          askSeq++;   // an answer still on its way is for an older search
+          searching = false;
+          if (!query) show(first, '');
+          else if (query !== answered
+              && !(complete && answered && query.toLowerCase().startsWith(answered.toLowerCase()))) {
+            searching = true;
+            askTimer = setTimeout(() => { if (pop.isConnected) ask(query); }, DISCOVER_QUERY_PAUSE_MS);
+          }
+        }
+        render();
+      });
+      ask('');
     });
     return btn;
   }

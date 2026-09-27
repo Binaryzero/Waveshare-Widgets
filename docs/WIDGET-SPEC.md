@@ -259,7 +259,7 @@ WW.listMedia()                                 // list the user's media folder -
 WW.getAudio()                                  // Windows volume mixer snapshot (master + sessions)
 WW.setAudio(target, {level?, muted?})          // set master ('master') or per-app volume/mute; resolves {ok}
 
-WW.onDiscover(({ property, field }) => [...])   // answer Find for optionsSource "widget" (see below)
+WW.onDiscover(({ property, field, query }) => [...])   // answer Find for optionsSource "widget" (see below)
 
 WW.watchNotifications(true)                    // start the host's notification mirror (demand-gated)
 WW.notifications                               // {state: 'allowed'|'denied'|'unavailable', items:[{id, app, appId, title, body, time}]}
@@ -267,9 +267,15 @@ WW.onNotifications((n) => { ... })             // fires when the mirrored list c
 WW.dismissNotification(id)                     // dismiss one toast by id
 ```
 
-`WW.onDiscover(cb)` answers Find (#210). `cb({property, field})` is called when the
+`WW.onDiscover(cb)` answers Find (#210). `cb({property, field, query})` is called when the
 user presses Find on a setting that declares `optionsSource: "widget"`. `property` is
 the property name. `field` is the list field's key, or `null` for a top-level setting.
+`query` is `""` on the first ask. When that answer is longer than the chooser keeps, the
+search box can only filter what arrived, so the editor asks again, once typing pauses,
+with what the user typed (at most 100 characters). Answer that with just the matches if
+you can; a widget that ignores `query` still works, filtered by the editor as before. The
+search is asked on every pause, so keep what the first ask fetched for a short while
+rather than fetching it again (GitHub Queue keeps it for a minute).
 Return an array, or a promise of one, of strings or `{value, label}` objects. The label
 is shown and the value is stored; the value is shown under the label when they differ.
 Return `null` for a setting the widget does not look up. Throw or reject with an `Error`

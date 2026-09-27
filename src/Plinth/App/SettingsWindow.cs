@@ -400,8 +400,13 @@ public sealed class SettingsWindow : Form
             Answer(DashboardWindow.DiscoveryRefused("not-placed"));
             return;
         }
+        // The user's search, when the first answer was cut short (Find by query). A widget
+        // may filter by it; nothing else reads it. Non-string or absent reads as none.
+        var query = message["query"] is JsonValue q && q.TryGetValue<string>(out var text) ? text.Trim() : "";
+        if (query.Length > 100)
+            query = query[..100];
         if (Dashboard is { IsDisposed: false } dashboard)
-            dashboard.RequestDiscovery(instanceId, property, field, Answer);
+            dashboard.RequestDiscovery(instanceId, property, field, query, Answer);
         else
             Answer(DashboardWindow.DiscoveryRefused("no-dashboard"));
     }

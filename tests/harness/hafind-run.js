@@ -9,6 +9,8 @@
 //   F3 · any other setting gets no answer from this widget ("unsupported")
 //   F4 · a rejected token comes back as the widget's own message, not a list
 //   F5 · with no address or token yet, Find says what is missing
+//   F7 · a search (Find by query) is answered with the entities whose id or friendly name
+//        contains it, case-insensitively
 //   F6 · a Home Assistant that never answers is reported by the widget itself, inside the
 //        shell's 20 s wait, not left for the shell to time out
 //
@@ -164,6 +166,24 @@ const WANT = ['light.kitchen', 'lock.front_door', 'sensor.outdoor_temp', 'switch
   // F6 · back to a configured server that then goes silent.
   await page.evaluate(() => window.__wwReinit({ baseUrl: 'https://ha1.test', accessToken: 'stub-token', entities: [], refreshSeconds: 20 }));
   await page.waitForTimeout(300);
+
+  // F7 · Find by query, before the server goes silent: one match by friendly name, one by id.
+  const askQ = async (id, query) => {
+    await page.evaluate((q) => window.__wwPush(Object.assign({ type: 'ww-discover' }, q)),
+      { id, property: 'entities', field: 'entity', query });
+    for (let i = 0; i < 60; i++) {
+      const got = await page.evaluate((k) => (window.__discovered || {})[k] || null, id);
+      if (got) return got;
+      await page.waitForTimeout(100);
+    }
+    return null;
+  };
+  const byName = await askQ('f7a', 'DESK');
+  const byId = await askQ('f7b', 'outdoor');
+  const valuesOf = (r) => (r && Array.isArray(r.options) ? r.options.map((o) => o.value) : []);
+  check('F7 a search is answered with the entities whose friendly name or id contains it',
+    JSON.stringify(valuesOf(byName)) === '["switch.fan"]' && JSON.stringify(valuesOf(byId)) === '["sensor.outdoor_temp"]',
+    JSON.stringify({ byName: valuesOf(byName), byId: valuesOf(byId) }));
   statesHang = true;
   const t0 = Date.now();
   await page.evaluate((q) => window.__wwPush(Object.assign({ type: 'ww-discover' }, q)), { id: 'f6', property: 'entities', field: 'entity' });
