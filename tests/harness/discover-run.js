@@ -8,6 +8,8 @@
 //   D4 · the plumbing is wired end to end (text, and says so — it runs across a browser
 //        and two WebViews; tests/harness/discoverroute-run.js drives it for real)
 //   D5 · falsification — D1 must FAIL against a shell that passes the answer through
+//   D6 · Find by query: the user's search reaches the widget, bounded, when the first
+//        answer was cut short — and only then
 //
 // Every function under test is loaded OUT OF the shipped file between markers and run,
 // never transcribed, so a regression in the real commit cannot leave this green.
@@ -131,6 +133,13 @@ async function ask(handler, msg) {
       JSON.stringify(p[0] && p[0].m.options));
     p = await ask((q) => { seen = q; return []; }, { id: 'q2', property: 'realm' });
     check('D2 a top-level setting has no field', seen.field === null && seen.property === 'realm', JSON.stringify(seen));
+    check('D6 a question without a search hands the widget an empty query', seen.query === '', JSON.stringify(seen));
+    await ask((q) => { seen = q; return []; }, { id: 'q2b', property: 'realm', query: 'silver' });
+    check('D6 the user\'s search reaches the widget as query', seen.query === 'silver', JSON.stringify(seen));
+    await ask((q) => { seen = q; return []; }, { id: 'q2c', property: 'realm', query: 'x'.repeat(250) });
+    check('D6 ...capped at 100 characters', seen.query.length === 100, String(seen.query.length));
+    await ask((q) => { seen = q; return []; }, { id: 'q2d', property: 'realm', query: { toString: () => 'no' } });
+    check('D6 ...and a query that is not text reads as none', seen.query === '', JSON.stringify(seen.query));
     p = await ask(() => Promise.resolve(['x']), { id: 'q3', property: 'realm' });
     check('D2 a promise is awaited', p.length === 1 && JSON.stringify(p[0].m.options) === '["x"]', JSON.stringify(p));
     p = await ask(null, { id: 'q4', property: 'realm' });
@@ -186,10 +195,14 @@ async function ask(handler, msg) {
     check(`D3 ${name}: the widget's own reason is shown`, /Token rejected \(401\)/.test(text(CASES[8])), text(CASES[8]));
     check(`D3 ${name}: no panel is not mistaken for an unplaced widget`,
       /panel is not running/.test(text(CASES[3])) && /not on the panel yet/.test(text(CASES[4])));
+    const noMatch = text(CASES[2], 'kitchen');
+    check(`D6 ${name}: a search the widget found nothing for names the search and leaves the field typeable`,
+      /kitchen/.test(noMatch) && /type the value/i.test(noMatch) && noMatch !== text(CASES[2]), noMatch);
   }
   if (copies['settings.js'] && copies['shell.js'])
     check('D3 the desktop chooser and the panel sheet say the same things',
-      CASES.every((r) => copies['settings.js'](r) === copies['shell.js'](r)));
+      CASES.every((r) => copies['settings.js'](r) === copies['shell.js'](r)
+        && copies['settings.js'](r, 'kitchen') === copies['shell.js'](r, 'kitchen')));
 
   // ---- D4 · wiring ---------------------------------------------------------------------------
   const shell = read(path.join(SHELL, 'shell.js'));
@@ -210,11 +223,19 @@ async function ask(handler, msg) {
       && /sendToSlot\(sender, initMessage\(sender\)\);[\s\S]{0,500}for \(const route of discoverRoutes\.values\(\)\)\s*if \(route\.slot === sender\) sendToSlot\(sender, route\.question\);/.test(shell));
   check('D4 the panel sheet asks the slot being edited, after applying pending edits',
     /discoverSlot\(record, property, field,/.test(shell) && /function psDiscoverBtn[\s\S]{0,1200}applyPropNow\(record\);[\s\S]{0,2600}discoverSlot\(record/.test(shell));
-  check('D4 settings asks the host with the slot\'s instanceId',
-    /post\(\{ type: 'discover', id, instanceId, property, field: field \|\| null \}\)/.test(settings));
+  check('D4 settings asks the host with the slot\'s instanceId, and the search',
+    /post\(\{ type: 'discover', id, instanceId, property, field: field \|\| null, query \}\)/.test(settings));
   check('D4 the settings window relays to the dashboard, or refuses at once without one',
-    /case "discover":\s*HandleDiscover\(message\);/.test(setw) && /dashboard\.RequestDiscovery\(instanceId, property, field, Answer\)/.test(setw)
+    /case "discover":\s*HandleDiscover\(message\);/.test(setw) && /dashboard\.RequestDiscovery\(instanceId, property, field, query, Answer\)/.test(setw)
       && /DiscoveryRefused\("no-dashboard"\)/.test(setw));
+  check('D6 the host bounds the search and hands it to the shell',
+    /if \(query\.Length > 100\)\s*query = query\[\.\.100\];/.test(setw) && /\["query"\] = query,/.test(dash));
+  check('D6 the shell passes the host\'s search to the widget, bounded',
+    /typeof d\.query === 'string' \? d\.query\.slice\(0, DISCOVER_QUERY_MAX\) : ''\);/.test(shell)
+      && /const question = \{ type: 'ww-discover', id, property, field: field \|\| null, query: query \|\| '' \};/.test(shell));
+  for (const [name, src] of [['settings.js', settings], ['shell.js', shell]])
+    check(`D6 ${name} sends a search only when the first answer was cut short`,
+      /if \(first && first\.ok && first\.truncated\) \{/.test(src) && /seq !== askSeq\) return;/.test(src));
   check('D4 the dashboard hands the shell\'s answer back by id',
     /case "discover-result":/.test(dash) && /CompleteDiscovery\(discoveryId,/.test(dash) && /PostToShell\("discover",/.test(dash));
   // settings.js has a third top-level site: a text setting that was once secret renders on

@@ -68,6 +68,10 @@
   const discoverRoutes = new Map(); // discovery id -> { slot, done, timer }
   let discoverSeq = 0;
   const DISCOVER_TIMEOUT_MS = 20000;
+  // Find by query: the longest search sent to a widget, and the pause in typing before the
+  // search is sent. Mirrored in settings.js.
+  const DISCOVER_QUERY_MAX = 100;
+  const DISCOVER_QUERY_PAUSE_MS = 400;
 
   let backgroundHost = 'backgrounds.plinth';
   let bgGlobal = null;         // dashboard-wide background spec
@@ -269,7 +273,8 @@
       if (!hostId || PREVIEW) return;
       discoverFrom(String(d.instanceId || ''), String(d.property || ''),
         d.field ? String(d.field) : null,
-        (result) => postToHost(Object.assign({ type: 'discover-result', id: hostId }, result)));
+        (result) => postToHost(Object.assign({ type: 'discover-result', id: hostId }, result)),
+        typeof d.query === 'string' ? d.query.slice(0, DISCOVER_QUERY_MAX) : '');
     } else if (msg.type === 'apps-result') {
       // Installed applications for the sheet's path pickers (#210).
       const waiters = psAppWaiters.splice(0);
@@ -572,19 +577,19 @@
   /// (#210), and calls done exactly once with the cleaned answer or a reason there is none.
   /// The widget answers with its own fetch and its own saved credential — the reason the
   /// question is asked here, on the panel, rather than in the settings window.
-  function discoverFrom(instanceId, property, field, done) {
+  function discoverFrom(instanceId, property, field, done, query) {
     const slot = instanceId && slots.find((s) => s.def && s.def.instanceId === instanceId && s.frame);
     if (!slot) { done({ ok: false, error: 'not-placed' }); return; }
-    discoverSlot(slot, property, field, done);
+    discoverSlot(slot, property, field, done, query);
   }
 
-  function discoverSlot(slot, property, field, done) {
+  function discoverSlot(slot, property, field, done, query) {
     if (!slot.frame || !slot.origin) { done({ ok: false, error: 'not-ready' }); return; }
     const id = 'dq' + (++discoverSeq) + '-' + Math.random().toString(36).slice(2);
     const timer = setTimeout(() => {
       if (discoverRoutes.delete(id)) done({ ok: false, error: 'timeout' });
     }, DISCOVER_TIMEOUT_MS);
-    const question = { type: 'ww-discover', id, property, field: field || null };
+    const question = { type: 'ww-discover', id, property, field: field || null, query: query || '' };
     discoverRoutes.set(id, { slot, done, timer, question });
     // A tile mid-reload has no document to ask yet — the panel's Find applies pending
     // edits first, and that reloads it. Its ww-ready sends every open question on.
@@ -2710,11 +2715,13 @@
   /** What the Find chooser says about an answer (#210). Finding is a shortcut, never the
    * only way in, so every dead end says the value can still be typed. Empty when the list
    * speaks for itself. */
-  function discoverStatusText(result) {
+  function discoverStatusText(result, query) {
     if (!result || typeof result !== 'object') return 'No answer came back. Type the value instead.';
     if (result.ok) {
       const n = Array.isArray(result.options) ? result.options.length : 0;
-      if (!n) return 'The widget found nothing to offer. Type the value instead.';
+      if (!n) return query
+        ? 'The widget found no match for “' + query + '”. Type the value instead.'
+        : 'The widget found nothing to offer. Type the value instead.';
       return result.truncated ? 'Showing the first ' + n + ' the widget found — search to narrow them.' : '';
     }
     switch (result.error) {
@@ -2773,6 +2780,36 @@
 
       let options = [];
       let note = '';
+      // Find by query. A first answer cut short at the shell's limit is not everything the
+      // widget has, and this search box can only filter what arrived. So once typing
+      // pauses, the search goes to the widget: one that filters answers with the matches,
+      // and one that ignores the search is filtered here as before. Only the latest
+      // search's answer is shown; an emptied search goes back to the first answer, and a
+      // search that only extends one already answered in full is filtered here.
+      let first = null;       // the first answer
+      let answered = '';      // the search the listed options answer ('' for the first)
+      let complete = false;   // whether that answer was the widget's whole list
+      let searching = false;
+      let askSeq = 0;
+      let askTimer = null;
+      const show = (result, query) => {
+        options = result.ok ? result.options : [];
+        note = discoverStatusText(result, query);
+        answered = query;
+        complete = !!result.ok && !result.truncated;
+        searching = false;
+        render();
+      };
+      const ask = (query) => {
+        const seq = ++askSeq;
+        discoverSlot(record, property, field, (result) => {
+          if (!sheet.isConnected || seq !== askSeq) return;   // dismissed, or overtaken
+          if (!query) first = result;
+          show(result, query);
+          // A search typed while the first answer was on its way had nothing to go to yet.
+          if (!query && search.value.trim()) onSearch();
+        }, query);
+      };
       const render = () => {
         const q = search.value.trim().toLowerCase();
         const shown = q
@@ -2797,17 +2834,28 @@
           });
           list.appendChild(b);
         }
-        const text = options.length && !shown.length ? 'No match.' : note;
+        const text = searching ? 'Asking the widget for matches…'
+          : options.length && !shown.length ? 'No match.' : note;
         status.hidden = !text;
         status.textContent = text;
       };
-      search.addEventListener('input', render);
-      discoverSlot(record, property, field, (result) => {
-        if (!sheet.isConnected) return;   // dismissed while the widget was looking
-        options = result.ok ? result.options : [];
-        note = discoverStatusText(result);
+      const onSearch = () => {
+        clearTimeout(askTimer);
+        if (first && first.ok && first.truncated) {
+          const query = search.value.trim().slice(0, DISCOVER_QUERY_MAX);
+          askSeq++;   // an answer still on its way is for an older search
+          searching = false;
+          if (!query) show(first, '');
+          else if (query !== answered
+              && !(complete && answered && query.toLowerCase().startsWith(answered.toLowerCase()))) {
+            searching = true;
+            askTimer = setTimeout(() => { if (sheet.isConnected) ask(query); }, DISCOVER_QUERY_PAUSE_MS);
+          }
+        }
         render();
-      });
+      };
+      search.addEventListener('input', onSearch);
+      ask('');
     });
     return btn;
   }

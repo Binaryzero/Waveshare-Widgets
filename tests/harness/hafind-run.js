@@ -9,6 +9,10 @@
 //   F3 · any other setting gets no answer from this widget ("unsupported")
 //   F4 · a rejected token comes back as the widget's own message, not a list
 //   F5 · with no address or token yet, Find says what is missing
+//   F7 · a search (Find by query) is answered with the entities whose id or friendly name
+//        contains it, case-insensitively
+//   F8 · ...from the list the first ask read, without reading /api/states again; another
+//        token reads its own
 //   F6 · a Home Assistant that never answers is reported by the widget itself, inside the
 //        shell's 20 s wait, not left for the shell to time out
 //
@@ -162,6 +166,43 @@ const WANT = ['light.kitchen', 'lock.front_door', 'sensor.outdoor_temp', 'switch
     JSON.stringify(empty));
 
   // F6 · back to a configured server that then goes silent.
+  await page.evaluate(() => window.__wwReinit({ baseUrl: 'https://ha1.test', accessToken: 'stub-token', entities: [], refreshSeconds: 20 }));
+  await page.waitForTimeout(300);
+
+  // F7 · Find by query, before the server goes silent: one match by friendly name, one by id.
+  const askQ = async (id, query) => {
+    await page.evaluate((q) => window.__wwPush(Object.assign({ type: 'ww-discover' }, q)),
+      { id, property: 'entities', field: 'entity', query });
+    for (let i = 0; i < 60; i++) {
+      const got = await page.evaluate((k) => (window.__discovered || {})[k] || null, id);
+      if (got) return got;
+      await page.waitForTimeout(100);
+    }
+    return null;
+  };
+  const byName = await askQ('f7a', 'DESK');
+  const byId = await askQ('f7b', 'outdoor');
+  const valuesOf = (r) => (r && Array.isArray(r.options) ? r.options.map((o) => o.value) : []);
+  check('F7 a search is answered with the entities whose friendly name or id contains it',
+    JSON.stringify(valuesOf(byName)) === '["switch.fan"]' && JSON.stringify(valuesOf(byId)) === '["sensor.outdoor_temp"]',
+    JSON.stringify({ byName: valuesOf(byName), byId: valuesOf(byId) }));
+
+  // F8 · a first ask, then a search: the search is filtered from what the first ask read.
+  const readsBefore = auth.length;
+  await askQ('f8a', '');
+  const readsAfterFirst = auth.length;
+  const searchedAgain = await askQ('f8b', 'kitchen');
+  check('F8 a search is filtered from the list the first ask read, without reading it again',
+    readsAfterFirst === readsBefore + 1 && auth.length === readsAfterFirst
+      && JSON.stringify(valuesOf(searchedAgain)) === '["light.kitchen"]',
+    JSON.stringify({ first: readsAfterFirst - readsBefore, search: auth.length - readsAfterFirst, found: valuesOf(searchedAgain) }));
+  await page.evaluate(() => window.__wwReinit({ baseUrl: 'https://ha1.test', accessToken: 'other-token', entities: [], refreshSeconds: 20 }));
+  await page.waitForTimeout(300);
+  const readsBeforeOther = auth.length;
+  const otherToken = await askQ('f8c', 'kitchen');
+  check('F8b ...and another token reads its own list rather than the first one\'s',
+    JSON.stringify(valuesOf(otherToken)) === '["light.kitchen"]' && auth.slice(readsBeforeOther).includes('Bearer other-token'),
+    JSON.stringify(auth.slice(readsBeforeOther)));
   await page.evaluate(() => window.__wwReinit({ baseUrl: 'https://ha1.test', accessToken: 'stub-token', entities: [], refreshSeconds: 20 }));
   await page.waitForTimeout(300);
   statesHang = true;

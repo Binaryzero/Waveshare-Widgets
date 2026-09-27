@@ -891,7 +891,7 @@ public sealed class DashboardWindow : Form
     /// settings window never does: the widget looks the values up with its own fetch and
     /// its own credential, and only the choices come back.
     /// </summary>
-    public void RequestDiscovery(string instanceId, string property, string? field, Action<JsonObject> reply)
+    public void RequestDiscovery(string instanceId, string property, string? field, string query, Action<JsonObject> reply)
     {
         if (!_shellReady || IsDisposed)
         {
@@ -906,6 +906,7 @@ public sealed class DashboardWindow : Form
             ["instanceId"] = instanceId,
             ["property"] = property,
             ["field"] = field,
+            ["query"] = query,
         });
         _ = Task.Delay(DiscoveryTimeout).ContinueWith(_ =>
         {
