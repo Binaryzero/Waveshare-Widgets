@@ -381,6 +381,14 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   messages, and a server that never answers is reported by the widget at about 15 s,
   inside the shell's 20 s wait (F6). A search (Find by query) is answered with the
   entities whose id or friendly name contains it (F7).
+- `jellyfinfind-run.js` — Jellyfin's Find (#210), asked the way the shell asks, against a
+  stub server. The username lists every user sorted by name, administrators and disabled
+  accounts labelled, asked with the saved API key (J1). A Hidden libraries row lists the
+  server's libraries sorted and labelled by kind, one per spelling (J2). Both answer before
+  either setting is filled in. Other settings get "unsupported". A rejected key, a reply
+  that is not a list and a missing address come back as the widget's own messages, and a
+  server that never answers is reported at about 15 s, inside the shell's 20 s wait (J8,
+  so the run takes about 20 s).
 - `wowfind-run.js` — WoW Panel's Find (#210). The OAuth exchange is answered on the host-proxy
   tier as on the panel, and the realm index directly. The Realm setting lists the region's
   realms as slugs labelled with their names, sorted by name, from the dynamic namespace in
