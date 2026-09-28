@@ -1065,6 +1065,10 @@
       const fill = Math.max(0, Math.floor(window.innerHeight - dockEl.getBoundingClientRect().top));
       dockEl.style.maxHeight = 'none';
       dockEl.style.height = fill + 'px';
+      // .filled lets a narrow window's wrapped rows share this height (settings.css).
+      // It can stay on while the dock is measured above: the dock body's own cap, back
+      // in force there, bounds the rows as the viewport caps did.
+      dockEl.classList.add('filled');
       if (dockBody) dockBody.style.maxHeight = 'none';
     }
   }

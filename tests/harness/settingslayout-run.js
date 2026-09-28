@@ -14,6 +14,9 @@
 //   L8 · the banner still shows when the panel changes the layout under unsaved work, and
 //        the dock it pushes down refits to end at the bottom edge, not past it (L8b)
 //   L12 · a refused-widget banner appearing refits the dock the same way
+//   L13 · a tall narrow window (columns wrapped into rows): the rows share the filled
+//         height down to the edge, with or without a widget open, Appearance across the
+//         width at 3:2, and a long form does not squeeze the canvas
 //   L11 · with nothing selected the dock's empty column says what goes there, and gives
 //         way once a widget is open
 //
@@ -196,6 +199,45 @@ const layout = { pages: [{ name: 'System', slots: [
     JSON.stringify(f.banner));
   check('L8b ...and the dock it pushed down still ends at the bottom edge, not past it',
     Math.abs(f.dock.bottom - f.inner) <= 1, `dock bottom ${f.dock.bottom} of ${f.inner}`);
+
+  // L13 · a tall NARROW window, where the dock's columns wrap into rows (<=1040px): the
+  // rows share the filled height rather than stopping at their viewport caps.
+  await page.setViewportSize({ width: 780, height: 1000 });
+  await page.evaluate(() => { const c = document.getElementById('panelClose'); if (c) c.click(); });
+  await wait(500);
+  const narrow = () => page.evaluate(() => {
+    const b = (id) => { const e = document.getElementById(id); if (!e || getComputedStyle(e).display === 'none') return null; const r = e.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), width: Math.round(r.width) }; };
+    return { inner: window.innerHeight, palette: b('dockPalette'), context: b('contextPanel'), empty: b('dockEmpty'), style: b('stylePanel'),
+      body: b('dockBody'), stage: b('previewStage') };
+  });
+  let n = await narrow();
+  check('L13 a tall narrow window with nothing selected: the dock\'s columns reach the bottom edge',
+    !!n.palette && Math.abs(n.palette.bottom - n.inner) <= 2 && !n.style, JSON.stringify(n));
+  // L8 added a page and left it selected; the widgets are on the first.
+  await page.locator('#pageList li').first().click();
+  await wait(300);
+  await page.evaluate(() => { const chip = document.querySelector('#slotList .slot-chip .chip-main'); if (chip) chip.click(); });
+  await wait(500);
+  n = await narrow();
+  check('L13b ...and with a widget open, its rows share the height down to the edge',
+    !!n.style && !!n.context && Math.abs(n.style.bottom - n.inner) <= 2 && Math.abs(n.palette.bottom - n.style.top) <= 2
+      && Math.abs(n.context.bottom - n.style.top) <= 2,
+    JSON.stringify(n));
+  const rowsH = n.style ? n.style.bottom - n.palette.top : 0;
+  check('L13c ...Appearance across the full width, the rows split 3:2',
+    !!n.style && Math.abs(n.style.width - n.body.width) <= 2 && Math.abs((n.style.bottom - n.style.top) / rowsH - 0.4) <= 0.03,
+    n.style ? `style ${n.style.width} of ${n.body.width} wide, ${n.style.bottom - n.style.top} of ${rowsH} tall` : 'no style panel');
+  // A form taller than the dock's caps: what the dock NEEDS is still measured under the
+  // caps, so the canvas keeps the size it had with the short form open.
+  const shortFormStage = n.stage.bottom - n.stage.top;
+  await page.evaluate(() => { const chips = document.querySelectorAll('#slotList .slot-chip .chip-main'); if (chips[1]) chips[1].click(); });
+  await wait(500);
+  n = await narrow();
+  check('L13d ...and a long form open does not squeeze the canvas: the dock is measured under its caps',
+    Math.abs(n.stage.bottom - n.stage.top - shortFormStage) <= 2 && Math.abs(n.style.bottom - n.inner) <= 2,
+    `stage ${n.stage.bottom - n.stage.top} vs ${shortFormStage} with the short form; style bottom ${n.style && n.style.bottom} of ${n.inner}`);
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await wait(400);
 
   // L12 · the other banner above the canvas: a widget refused while the window is open.
   await page.evaluate((w) => window.__hostPush(JSON.stringify({ type: 'widgets-changed', widgets: w,

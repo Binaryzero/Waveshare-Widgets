@@ -724,6 +724,24 @@ header h1 #appVersion {
     border-left: 0;
     border-top: 1px solid var(--line);
   }
+  /* The caps above are viewport shares. Once the dock is FILLED (given exactly the
+   * height the canvas leaves), they left a tall narrow window's rows stopping hundreds
+   * of pixels short of the bottom. What the dock needs is still measured under a cap:
+   * fitReplica restores #dockBody's own 46vh while it measures.
+   * Filled, the rows share the dock's own height instead: the palette and the inspector
+   * (or the empty-column hint) on the first row, Appearance across the second when it is
+   * shown, 3:2. Every panel scrolls inside its cell, so nothing hangs past the edge. */
+  #dock.filled #dockBody {
+    display: grid;
+    grid-template-columns: minmax(168px, 288px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 3fr);
+    grid-auto-rows: minmax(0, 2fr);
+    overflow: hidden;
+  }
+  #dock.filled #dockPalette,
+  #dock.filled #contextPanel,
+  #dock.filled #stylePanel { width: auto; min-width: 0; max-height: none; min-height: 0; }
+  #dock.filled #stylePanel { grid-column: 1 / -1; }
 }
 
 /* The replica's "+" zone still asks for "the gallery". It is already on screen, so
