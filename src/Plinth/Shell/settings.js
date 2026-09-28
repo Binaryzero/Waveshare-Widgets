@@ -437,6 +437,10 @@
           refreshRetiredUi();           // Restore/Delete need the new reason for going dead
         }
       }
+    } else if (msg.type === 'panel-changed') {
+      // The dashboard moved to another display, or its scaling changed. The preview is
+      // resized above; the editor is redrawn for the size labels.
+      if (adoptPanelPage(msg.panel)) renderEditor();
     } else if (msg.type === 'retained-gone') {
       // The PANEL destroyed this one. Drop it here too, or this window's next Save
       // re-ships it from memory and the tile returns with its still-decryptable bytes.
@@ -525,17 +529,19 @@
   const previewFrame = el('previewFrame');
   const previewStage = el('previewStage');
 
-  // The host's panel page size, if it is a sane one. Anything else keeps what the preview
-  // has: a bad size would draw every tile wrong, and a missing one means no panel.
+  // The host's panel page size, if it is a sane one, and whether it changed anything.
+  // Anything else keeps what the preview has: a bad size would draw every tile wrong, and
+  // a missing one means no panel.
   function adoptPanelPage(panel) {
     const w = panel && panel.width;
     const h = panel && panel.height;
-    if (!Number.isInteger(w) || !Number.isInteger(h) || w < 100 || h < 100 || w > 8192 || h > 8192) return;
-    if (w === panelPage.width && h === panelPage.height) return;
+    if (!Number.isInteger(w) || !Number.isInteger(h) || w < 100 || h < 100 || w > 8192 || h > 8192) return false;
+    if (w === panelPage.width && h === panelPage.height) return false;
     panelPage = { width: w, height: h };
     previewFrame.style.width = w + 'px';
     previewFrame.style.height = h + 'px';
     fitReplica();
+    return true;
   }
   let replicaReady = false;
   let replicaTimer = null;

@@ -343,7 +343,8 @@ top or bottom half. At 100% display scaling:
 These are CSS pixels, so at other scaling they shrink with it (the EDGE at 150% is a
 1707×480 page). A widget must lay out by its own size, never by assuming one of these.
 The settings window's preview is drawn at the connected panel's page size (`panel` in
-`settings-init`), and at 1280×400 when none is connected.
+`settings-init`, and `panel-changed` when the dashboard moves to another display or its
+scaling changes while the window is open), and at 1280×400 when none is connected.
 
 Slots are placed first-fit in declaration order (e.g. `quarter-upper` then
 `quarter-lower` stack in the same column; a full-height slot occupies both rows).

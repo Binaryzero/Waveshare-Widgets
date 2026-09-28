@@ -12,6 +12,8 @@
 //   E4 · ...and the size labels quote the EDGE's tiles
 //   E5 · the same panel at 150% display scaling is a 1707x480 page
 //   E6 · a size that is not a sane one keeps the preview as it was
+//   E7 · when the dashboard moves to another display with the window open, the preview
+//        and the labels follow (panel-changed); a notice with no panel keeps the last
 //
 // Run: CHROMIUM=/path/to/chrome node tests/harness/panelpage-run.js
 'use strict';
@@ -151,6 +153,21 @@ const layout = { pages: [{ name: 'Main', slots: [
     f = await frame();
     check(`E6 ${label} keeps the preview at 1280x400`, f.page[0] === 1280 && f.page[1] === 400, JSON.stringify(f.page));
   }
+
+  // E7 · the dashboard moves to another display while the window is open.
+  await open(undefined);
+  l = await labels();
+  check('E7 setup: a 1280x400 preview, a tile open', l.includes('Half (640×400)'), JSON.stringify(l));
+  await page.evaluate(() => window.__hostPush(JSON.stringify({ type: 'panel-changed', panel: { width: 2560, height: 720 } })));
+  await wait(800);
+  f = await frame();
+  const moved = await page.evaluate(() => [...document.querySelectorAll('#slotDetail select.size option')].map((o) => o.textContent));
+  check('E7 the preview follows it to the EDGE without reopening, labels too',
+    f.page[0] === 2560 && f.page[1] === 720 && moved.includes('Half (1280×720)'), JSON.stringify({ page: f.page, moved }));
+  await page.evaluate(() => window.__hostPush(JSON.stringify({ type: 'panel-changed', panel: null })));
+  await wait(400);
+  f = await frame();
+  check('E7b a notice with no panel keeps the last one', f.page[0] === 2560 && f.page[1] === 720, JSON.stringify(f.page));
 
   await browser.close();
   srv.close();

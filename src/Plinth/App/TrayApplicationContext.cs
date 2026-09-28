@@ -107,6 +107,10 @@ public sealed class TrayApplicationContext : ApplicationContext
             var vanished = screen is null && _dashboard is { IsDisposed: false, Visible: true };
             if (misplaced || vanished)
                 PlaceDashboard();
+            // The settings preview is drawn at the panel's page size. A display switch, a
+            // hotplug or a scaling change reaches an open settings window here, within a tick.
+            if (_settings is { IsDisposed: false })
+                _settings.PanelMoved(screen?.DeviceName);
         };
         _placementTimer.Start();
 

@@ -132,9 +132,13 @@ public sealed class SettingsWindow : Form
 
     private bool _placementSaved;
 
-    /// <summary>The panel's display, when one was found as the window opened: its size is
-    /// what the preview is drawn at.</summary>
-    private readonly string? _panelDeviceName;
+    /// <summary>The panel's display, as last found: its size is what the preview is drawn
+    /// at (<see cref="PanelMoved"/>).</summary>
+    private string? _panelDeviceName;
+
+    /// <summary>The panel page last sent to the editor, as JSON, so an unchanged one is not
+    /// sent again on every placement tick.</summary>
+    private string? _postedPanel;
 
     /// <param name="panelDeviceName">The panel's display, when one is found. The window
     /// never opens there: it is the dashboard's, and a 1280x400 one cannot hold it.</param>
@@ -841,6 +845,8 @@ public sealed class SettingsWindow : Form
 
         SnapshotManifests();   // this layout IS what the editor will hold — see MaskedPlan
         var layoutNode = MaskedLayoutFromDisk();
+        var panel = PanelPage();
+        _postedPanel = panel?.ToJsonString();
 
         Post(new JsonObject
         {
@@ -865,9 +871,24 @@ public sealed class SettingsWindow : Form
                 ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated, ["version"] = AppVersion.Describe },
                 // The page size the dashboard lays out at, so the preview shows the panel's
                 // own tiles. Null when no panel is connected; the editor assumes 1280x400.
-                ["panel"] = PanelPage(),
+                ["panel"] = panel,
             },
         });
+    }
+
+    /// <summary>The dashboard's display as the tray's placement tick last found it (null:
+    /// none). A display switch, a hotplug or a scaling change sends the new page size, so
+    /// the preview and the size labels follow without reopening the window. Nothing is sent
+    /// when it did not change, or when no panel is connected (the preview keeps the last).</summary>
+    public void PanelMoved(string? deviceName)
+    {
+        if (deviceName is not null) _panelDeviceName = deviceName;
+        var page = PanelPage();
+        if (page is null) return;
+        var text = page.ToJsonString();
+        if (text == _postedPanel) return;
+        _postedPanel = text;
+        Post(new JsonObject { ["type"] = "panel-changed", ["panel"] = page });
     }
 
     /// <summary>The panel's page size in CSS pixels (its pixels at its display scale) and
