@@ -7,9 +7,12 @@
 <style>
   /* Widget-specific layout only — tokens, background/bgStyle handling and the
    * .card/.state-card/.btn/.meter anatomy come from widget-base.css. */
+  /* Type, and the spacing that sits with it, is its smallest-tile size times the tile
+   * scale (widget-base.css), so a bigger tile reads bigger. The list keeps 8px at its
+   * edges: the shell's page rail. */
   #rooms {
     display: grid;
-    gap: 8px;
+    gap: calc(6px * var(--ts));
     padding: 8px;
     width: 100%;
     height: 100%;
@@ -22,60 +25,64 @@
     scrollbar-width: none;
   }
   .room {
-    padding: 8px 10px;   /* denser than the .card default — the panel is 400px tall */
+    padding: calc(6px * var(--ts)) calc(8px * var(--ts));   /* denser than the .card default */
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    min-width: 0; min-height: 0;
+    gap: calc(5px * var(--ts));
+    /* min-width 0 lets a long name ellipsize. No min-height 0: a grid row may not shrink
+     * below its card, or a tile with more rooms than fit squeezed the rows and the cards
+     * drew over each other; the list scrolls instead (pan-y, above). */
+    min-width: 0;
     transition: border-color var(--dur-mid) var(--ease), background var(--dur-mid) var(--ease);
   }
   .room.on {
     border-color: rgba(var(--accent-rgb), 0.55);
     background: rgba(var(--accent-rgb), 0.12);
   }
-  .room .head { display: flex; align-items: center; gap: 8px; cursor: pointer; touch-action: manipulation; }
-  .room .bulb { font-size: clamp(14px, 5.5vh, 24px); filter: grayscale(1) brightness(0.6); transition: filter var(--dur-mid) var(--ease); }
+  .room .head { display: flex; align-items: center; gap: calc(6px * var(--ts)); cursor: pointer; touch-action: manipulation; }
+  .room .bulb { font-size: calc(14px * var(--ts)); filter: grayscale(1) brightness(0.6); transition: filter var(--dur-mid) var(--ease); }
   .room.on .bulb { filter: none; }
   .room .name {
     flex: 1;
     color: var(--text);
-    font-size: calc(clamp(12px, 4.6vh, 18px) * var(--name-scale, 1));
+    font-size: calc(12px * var(--ts) * var(--name-scale, 1));
     font-weight: 600;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .room .state {
     color: var(--text-muted);
-    font-size: calc(clamp(9px, 3vh, 12px) * var(--detail-scale, 1));
+    font-size: calc(9px * var(--ts) * var(--detail-scale, 1));
     font-variant-numeric: tabular-nums;
   }
-  .room .bri { display: flex; align-items: center; gap: 8px; }
+  .room .bri { display: flex; align-items: center; gap: calc(6px * var(--ts)); }
   .room .bri button {
-    font: inherit; font-size: clamp(13px, 5vh, 20px);
+    font: inherit; font-size: calc(13px * var(--ts));
     color: var(--text); background: var(--control-bg); border: 1px solid var(--line);
     border-radius: var(--radius-control); width: 15%; min-width: 34px; padding: 2px 0;
     cursor: pointer; touch-action: manipulation; flex: none;
   }
   .room .bri button:active { border-color: var(--accent); }
-  .room .bri .meter { flex: 1; height: 10px; }
+  .room .bri .meter { flex: 1; height: calc(8px * var(--ts)); }
   .room .bri .meter > i { border-radius: 0; }
-  .scenes { display: flex; flex-wrap: wrap; gap: 5px; }
+  .scenes { display: flex; flex-wrap: wrap; gap: calc(4px * var(--ts)); }
   /* Scene chips ride on .btn for token colors/behavior; sized down to keep the
    * original chip layout. */
   .scenes .btn {
     min-width: 0; min-height: 0;
-    font-size: calc(clamp(9px, 3vh, 12px) * var(--detail-scale, 1));
+    font-size: calc(9px * var(--ts) * var(--detail-scale, 1));
     color: var(--text-muted);
-    border-radius: var(--radius-pill); padding: 2px 10px;
+    border-radius: var(--radius-pill); padding: calc(2px * var(--ts)) calc(8px * var(--ts));
     touch-action: manipulation;
     max-width: 46%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .scenes .btn:active { border-color: var(--accent); color: var(--accent); }
+  /* Accent TEXT is --accent-fg, the accent repaired for contrast; the raw pick may sit
+   * right on the surface. */
+  .scenes .btn:active { border-color: var(--accent-fg); color: var(--accent-fg); }
   /* Pairing / message overlays: .state-card anatomy, shown via inline display. */
   #pair, #message, #legacy { position: fixed; inset: 0; display: none; }
-  #pair .state-title, #message .state-title { font-size: clamp(13px, 5vh, 19px); }
   /* No touch-action here: it is an ID rule and would outrank the .no-pan class on the
    * button itself, silently leaving it pannable. The class carries the policy. */
-  #pairBtn { font-size: clamp(14px, 5.5vh, 22px); padding: 10px 30px; }
+  #pairBtn { font-size: calc(14px * var(--ts)); padding: calc(8px * var(--ts)) calc(22px * var(--ts)); }
 </style>
 </head>
 <body>
@@ -545,10 +552,11 @@
       return;
     }
     let cols = rooms.length <= 2 ? rooms.length : rooms.length <= 6 ? 3 : 4;
-    // Cap columns by available width (quarter slots are ~320 px): below ~150 px
-    // per card the name ellipsizes to one letter and the −/+ buttons squeeze the
-    // brightness bar to zero width.
-    cols = Math.max(1, Math.min(cols, Math.floor(document.body.clientWidth / 150) || 1));
+    // Cap columns by available width: below ~150 px per card at the smallest tile the
+    // name ellipsizes to one letter and the −/+ buttons squeeze the brightness bar to
+    // zero width. The card's text grows with the tile scale, so its width budget does too.
+    const minCard = 115 * WW.tileScale;
+    cols = Math.max(1, Math.min(cols, Math.floor(document.body.clientWidth / minCard) || 1));
     const sig = cols + '|' + rooms.map((r) =>
       r.key + ':' + r.name + ':' + r.scenes.map((sc) => sc.id + '=' + sc.name).join(',')).join(';');
     if (sig !== roomSig) {

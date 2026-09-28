@@ -13,13 +13,16 @@
     padding: clamp(6px, 2.4vh, 14px) clamp(8px, 2.8vh, 16px) clamp(4px, 1.6vh, 10px);
     min-height: 0;
   }
+  /* Type is its smallest-tile size times the tile scale (widget-base.css), so a bigger
+   * tile reads bigger. The value takes the standard .value size: its old floor (17px)
+   * would have made it smaller than it was on every 400px-tall tile. */
   #head {
-    display: flex; align-items: baseline; gap: 12px;
+    display: flex; align-items: baseline; gap: calc(8px * var(--ts));
     flex: none; min-width: 0;
   }
   #title {
     color: var(--text-muted);
-    font-size: calc(clamp(8px, 3vh, 11px) * var(--title-scale, 1));
+    font-size: calc(8px * var(--ts) * var(--title-scale, 1));
     font-weight: 600;
     letter-spacing: 0.24em;
     text-transform: uppercase;
@@ -28,7 +31,7 @@
   }
   #value {
     color: var(--text);
-    font-size: calc(clamp(17px, 8.5vh, 42px) * var(--value-scale, 1));
+    font-size: calc(22px * var(--ts) * var(--value-scale, 1));
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     line-height: 1.05;
@@ -46,7 +49,7 @@
     position: fixed; inset: 0;
     display: none; align-items: center; justify-content: center;
     text-align: center; padding: 16px;
-    color: var(--text-muted); font-size: clamp(12px, 4.5vh, 17px);
+    color: var(--text-muted); font-size: calc(12px * var(--ts));
   }
 </style>
 </head>
@@ -102,9 +105,10 @@
   // Chart colors for the canvas — canvases can't resolve var(), so read the tokens
   // off :root. Re-read on every init: theme edits arrive as a fresh ww-init with
   // the new token values already applied to :root. The line/area always paints in
-  // the theme accent (global theme or the per-slot style override).
+  // the theme accent (global theme or the per-slot style override); the newest value's
+  // label is TEXT, so it takes --accent-fg, the accent repaired for contrast.
   const chart = {
-    accent: '#4dd4e8', accentRgb: '77, 212, 232',
+    accent: '#4dd4e8', accentRgb: '77, 212, 232', accentFg: '#4dd4e8',
     textRgb: '221, 226, 232', mutedRgb: '136, 141, 147',
     font: '"Outfit", system-ui, sans-serif',
   };
@@ -113,6 +117,7 @@
     const read = (name) => cs.getPropertyValue(name).trim();
     const themeAccent = read('--accent') || '#4dd4e8';
     chart.accent = themeAccent;
+    chart.accentFg = read('--accent-fg') || themeAccent;
     chart.accentRgb = read('--accent-rgb') || toRgbParts(themeAccent) || '77, 212, 232';
     chart.textRgb = toRgbParts(read('--text')) || '221, 226, 232';
     chart.mutedRgb = toRgbParts(read('--text-muted')) || '136, 141, 147';
@@ -222,7 +227,9 @@
     ctx.clearRect(0, 0, cssW, cssH);
     if (samples.length < 2) return;
 
-    const label = Math.max(9, Math.min(11, cssH * 0.09)); // min/max/current label px
+    // min/max/current label px: its smallest-tile size, held to the plot's height, times
+    // the tile scale like every other type size (WIDGET-STANDARD §6).
+    const label = Math.max(9, Math.min(11, cssH * 0.09)) * WW.tileScale;
     const padT = label + 4, padB = 4, padL = 4, padR = 6;
     const plotW = cssW - padL - padR, plotH = cssH - padT - padB;
     if (plotW < 10 || plotH < 10) return;
@@ -295,7 +302,7 @@
     ctx.fillText('max ' + fmt(vMax), padL + 2, padT - 2);
     ctx.textBaseline = 'top';
     ctx.fillText('min ' + fmt(vMin), padL + 2, padT + plotH - label - 1);
-    ctx.fillStyle = chart.accent;
+    ctx.fillStyle = chart.accentFg;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'bottom';
     ctx.fillText(fmt(samples[samples.length - 1].v), padL + plotW, Math.max(padT - 2, last.y - 6));
