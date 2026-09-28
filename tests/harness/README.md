@@ -377,6 +377,9 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   as the tile grows. It runs in CI with `--curve`. Without the flag, S2-S5 run in Chromium:
   a widget frame gets the stamp and `WW.tileScale` agrees, body text is 13.5px times it, a
   resized frame re-stamps, and a page that is not a widget (no `#ww-slot=`) is left alone.
+  S6 answers `ww-ready` with an init at once, as the panel does, so the init lands while the
+  widget is still parsing: a widget measuring in `onInit` must see the scaled text. The
+  injected shim runs before `<html>` exists, so only the init handler's stamp is in time.
   Each of those fails when its line is removed.
 - `discover-run.js` — Find, a widget looking up its own setting values (#210 slice 2). Runs
   in CI on plain Node. The shell's `ww-discover-clean` block must reduce a widget's answer

@@ -12,6 +12,10 @@
 //   S4 · a resized tile re-stamps it without a reload
 //   S5 · a document that is not a widget (a page a widget embeds) gets no --ts: the shim
 //        is injected into every document, and the page may use the name itself
+//   S6 · a widget that measures in onInit, with the init answered as soon as it asks (so
+//        it lands while the document is still parsing), measures the scaled text: the
+//        injected shim runs before <html> exists, so its first stamp cannot land, and the
+//        DOMContentLoaded one comes after that onInit
 //
 // Run: CHROMIUM=/path/to/chrome node tests/harness/tilescale-run.js
 //      node tests/harness/tilescale-run.js --curve   (S1 only, no browser: what CI runs)
@@ -62,6 +66,13 @@ function loadPlaywright() {
 const WIDGET = '<!doctype html><html><head><meta charset="utf-8">'
   + '<link rel="stylesheet" href="https://app.plinth/widget-base.css"></head>'
   + '<body><p id="t">text</p><script src="https://app.plinth/widget-api.js"></script></body></html>';
+// S6's widget: measures its body text in onInit, from a script in the body, before
+// DOMContentLoaded — the moment a widget that fits rows to the tile takes its reading.
+const MEASURER = '<!doctype html><html><head><meta charset="utf-8">'
+  + '<link rel="stylesheet" href="https://app.plinth/widget-base.css"></head>'
+  + '<body><p>text</p><script src="https://app.plinth/widget-api.js"></script>'
+  + '<script>WW.onInit(function () { window.__measured = parseFloat(getComputedStyle(document.body).fontSize); });</script>'
+  + '<p>more of the document</p></body></html>';
 const EMBED = '<!doctype html><html><head><meta charset="utf-8"></head><body>embedded</body></html>';
 
 (async () => {
@@ -77,6 +88,7 @@ const EMBED = '<!doctype html><html><head><meta charset="utf-8"></head><body>emb
   });
   await page.route('https://widget.test/**', (r) => r.fulfill({ contentType: 'text/html', body: WIDGET }));
   await page.route('https://embed.test/**', (r) => r.fulfill({ contentType: 'text/html', body: EMBED }));
+  await page.route('https://measure.test/**', (r) => r.fulfill({ contentType: 'text/html', body: MEASURER }));
   await page.route('https://shell.test/**', (r) => r.fulfill({ contentType: 'text/html',
     body: '<!doctype html><meta charset="utf-8"><style>body{margin:0}iframe{border:0;display:block}</style>'
       + '<iframe id="w" style="width:1280px;height:400px" src="https://widget.test/index.html#ww-slot=p0s0"></iframe>'
@@ -108,6 +120,30 @@ const EMBED = '<!doctype html><html><head><meta charset="utf-8"></head><body>emb
   await e.waitForFunction(() => document.readyState === 'complete');
   const embedded = await e.evaluate(() => document.documentElement.style.getPropertyValue('--ts'));
   check('S5 a document that is not a widget gets no --ts', embedded === '', JSON.stringify(embedded));
+
+  // S6 · a shell that answers ww-ready with ww-init at once, as the panel does.
+  const p2 = await browser.newPage({ viewport: { width: 1280, height: 400 } });
+  p2.on('pageerror', (e) => { failures++; console.log('[pageerror]', String(e).slice(0, 300)); });
+  await p2.route('https://app.plinth/**', (r) => {
+    const f = path.join(SHELL, new URL(r.request().url()).pathname.slice(1));
+    if (!fs.existsSync(f)) return r.fulfill({ status: 404, body: '' });
+    return r.fulfill({ contentType: f.endsWith('.css') ? 'text/css' : f.endsWith('.js') ? 'application/javascript' : 'font/woff2',
+      body: fs.readFileSync(f) });
+  });
+  await p2.route('https://measure.test/**', (r) => r.fulfill({ contentType: 'text/html', body: MEASURER }));
+  await p2.route('https://shell.test/**', (r) => r.fulfill({ contentType: 'text/html',
+    body: '<!doctype html><meta charset="utf-8"><style>body{margin:0}iframe{border:0;display:block}</style>'
+      + '<script>addEventListener("message", function (ev) { if (ev.data && ev.data.type === "ww-ready")'
+      + ' ev.source.postMessage({ type: "ww-init", settings: {}, sensors: [], media: null, theme: {},'
+      + ' status: { elevated: false, apiVersion: 1 } }, "*"); });</script>'
+      + '<iframe id="m" style="width:1280px;height:400px" src="https://measure.test/index.html#ww-slot=p0s0"></iframe>' }));
+  await p2.addInitScript(API);
+  await p2.goto('https://shell.test/host.html');
+  const m = await (await p2.waitForSelector('#m')).contentFrame();
+  await m.waitForFunction(() => window.__measured !== undefined, null, { timeout: 5000 }).catch(() => {});
+  const measured = await m.evaluate(() => window.__measured);
+  check('S6 a widget measuring in onInit, mid-parse, sees the scaled text', Math.abs(measured - 13.5 * 1.97) < 0.05,
+    `${measured}px (want ${13.5 * 1.97})`);
 
   await browser.close();
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS');

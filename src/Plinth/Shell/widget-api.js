@@ -40,9 +40,12 @@
     if (isWidgetDocument && document.documentElement)
       document.documentElement.style.setProperty('--ts', String(tileScaleNow));
   }
-  // At document start the root can be missing (the shim is injected before parsing);
-  // the resize listener and DOMContentLoaded catch up. A slot resized in place (an edit on
-  // the panel, a size change in the preview) re-stamps without a reload.
+  // At document start the root is missing (the shim is injected before parsing), so this
+  // first stamp lands only for a document that loads the file itself. The ww-init handler
+  // stamps again before any onInit runs: the shell answers ww-ready at once, so the init
+  // can arrive while the document is still parsing, and a widget that measures in its
+  // onInit must measure the scaled text, not the 1 of the stylesheet. DOMContentLoaded
+  // catches a document that gets no init; a slot resized in place re-stamps on resize.
   stampTileScale();
   document.addEventListener('DOMContentLoaded', stampTileScale, { once: true });
   window.addEventListener('resize', stampTileScale);
@@ -473,8 +476,10 @@
       // has exactly one legitimate reader — the URL builder below.
       if (typeof msg.relayToken === 'string') relayToken = msg.relayToken;
       if (msg.notifications !== undefined) state.notifications = msg.notifications;
-      // Design tokens land on :root before init callbacks so first paint is themed.
+      // Design tokens land on :root before init callbacks so first paint is themed, and the
+      // tile scale with them, so the first measurement is of the scaled text.
       applyThemeTokens(msg.theme);
+      stampTileScale();
       // Same reason, same moment: a widget that measures or paints in its own onInit must
       // already be inside the right background, or a transparent tile paints one frame as
       // an opaque one. Re-runs on every init, which is also how a settings edit arrives.
