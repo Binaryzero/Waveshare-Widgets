@@ -440,6 +440,26 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   so the run takes about 20 s). A list of 600 users, some 600 KiB as real user records
   are, is read whole, and a search (Find by query) is answered with the names or labels
   that contain it, past the 500th (J9).
+- `jellyfinlayout-run.js` — Jellyfin with no header and type that scales with the tile
+  (beta.21), against the stub server in `tests/fixtures/widgets/jellyfin.json`, at every
+  size it is offered, the XENEON EDGE's included: no header, label or healthy pill (L1);
+  stream titles at 13.5px times the tile scale (L2); every stream row and the whole shelf
+  inside the body, and no shelf beside streams on a 200px band (L3); no dead band — the
+  shelf takes the height the rows leave, and the rows the rest once the posters are as
+  tall as their art (L4); and laying the tile out again changes nothing (L5) — a first
+  answer that beat DOMContentLoaded, where the tile scale lands, once sized a 1280x400
+  tile for text half its height. Stale shows in the footer beside the data's age, on a
+  band too, and in the Player's browse bar (L6); Retry is a spinner and "Retrying…", not
+  a setup card (L7); the Player fetches the page its grid measures, once, and keeps the
+  tab you are on in the row (L8); in a light theme the genre sheet is the theme's surface
+  and its title and a poster's watched mark read at 4.5:1 or better (L9).
+- `twitchtheme-run.js` — Twitch Chat follows the panel's appearance (beta.21: "most
+  widgets do not respect the theme setting"). The embed's one switch, darkpopout, comes
+  from the theme's --appearance: 'auto', the default, loads the light chat on a light
+  panel (T1) and the dark one on a dark panel (T4), and a live theme push swaps it both
+  ways (T2, T3). 'dark' and 'light' stay pinned through a push (T5, T6), and an unusable
+  channel loads nothing, push or not (T7). Twitch itself is never fetched: the src the
+  widget sets is the contract.
 - `wowfind-run.js` — WoW Panel's Find (#210). The OAuth exchange is answered on the host-proxy
   tier as on the panel, and the realm index directly. The Realm setting lists the region's
   realms as slugs labelled with their names, sorted by name, from the dynamic namespace in

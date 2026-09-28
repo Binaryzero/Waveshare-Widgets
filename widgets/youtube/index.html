@@ -19,18 +19,19 @@
     display: block;
     background: transparent;
   }
-  /* Empty/invalid setup state: .state-card anatomy, kept at the widget's fluid
-   * sizes. */
+  /* Empty/invalid setup state: .state-card anatomy at the state card's own sizes —
+   * the title's 13px and the body's 11px at the smallest tile — times the tile scale
+   * (--ts) and the Message size setting. (The example line was 72% of a 12px title,
+   * 8.6px of sentence at a 320x200 band.) */
   #message {
     position: fixed; inset: 0;
-    gap: 1.4vh;
+    gap: calc(4px * var(--ts));
     color: var(--text-muted);
-    font-size: calc(clamp(12px, 4.5vh, 18px) * var(--msg-scale, 1));
   }
-  #message .head { color: inherit; font-size: inherit; }
+  #message .head { color: inherit; font-size: calc(13px * var(--ts) * var(--msg-scale, 1)); }
   #message .ex {
     color: inherit;
-    font-size: 72%;
+    font-size: calc(11px * var(--ts) * var(--msg-scale, 1));
     opacity: 0.75;
     overflow-wrap: anywhere;
     max-width: 90%;
