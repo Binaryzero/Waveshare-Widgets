@@ -263,6 +263,14 @@ jobs:
       - name: Web messages are accepted only from the shell
         run: dotnet run --project tools/MessageOrigin
 
+      # The settings window opened at a fixed 1000x640 physical pixels, which at 150%
+      # display scaling left its page under the 780x480 the layout is built for. It now
+      # opens at a share of its display, sized in logical pixels at that display's DPI,
+      # never on the panel, and where it was left last time, fitted back onto a display
+      # that still exists. Pure arithmetic over the displays it is handed.
+      - name: The settings window opens sized for its display
+        run: dotnet run --project tools/WindowPlacement
+
       # Stamped BELOW every release on purpose: an unstamped artifact would carry the
       # csproj's fixed version, match the next release's number, and never be offered
       # that release by the updater. 0.0.0-ci.N ranks under everything and always

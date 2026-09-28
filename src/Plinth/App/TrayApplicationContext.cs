@@ -237,7 +237,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             _settings.BringToFront();
             return;
         }
-        _settings = new SettingsWindow(_hub, _library);
+        _settings = new SettingsWindow(_hub, _library, PanelLocator.Find(_config.DisplayDeviceName)?.DeviceName);
         _settings.Dashboard = _dashboard;
         _settings.LayoutSaved += () => _dashboard?.ReloadDashboard();
         _settings.Show();

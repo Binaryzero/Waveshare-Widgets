@@ -9,6 +9,9 @@ internal static class AppPaths
     public static string WidgetsDir { get; } = Path.Combine(DataDir, "widgets");
     public static string LayoutFile { get; } = Path.Combine(DataDir, "layout.json");
     public static string ConfigFile { get; } = Path.Combine(DataDir, "config.json");
+
+    /// <summary>Where the settings window was, and how big, when it last closed.</summary>
+    public static string SettingsWindowFile { get; } = Path.Combine(DataDir, "settings-window.json");
     public static string WebViewUserDataDir { get; } = Path.Combine(DataDir, "webview2");
 
     /// <summary>Separate profile for the browser-fetch tier. WebView2 requires every

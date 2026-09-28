@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Web.WebView2.Core;
@@ -118,15 +119,28 @@ public sealed class SettingsWindow : Form
         catch (ObjectDisposedException) { /* window closed between the check and the invoke */ }
     }
 
-    public SettingsWindow(SensorHub hub, WidgetLibrary library)
+    /// <summary>The bounds the window was placed at, re-asserted once the handle exists
+    /// in case creation rescaled them (see <see cref="OnLoad"/>).</summary>
+    private readonly Rectangle _placedBounds;
+
+    /// <param name="panelDeviceName">The panel's display, when one is found. The window
+    /// never opens there: a 1280x400 screen cannot hold it.</param>
+    public SettingsWindow(SensorHub hub, WidgetLibrary library, string? panelDeviceName = null)
     {
         _hub = hub;
         _library = library;
 
         Text = "Plinth — Settings";
-        StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(780, 480);
-        Size = new Size(1000, 640);
+        // Sized for the display it opens on, in that display's pixels, and where it was
+        // left last time (WindowPlacement). Set before the handle exists, so the window
+        // is created on its display at its size rather than moved there afterwards.
+        StartPosition = FormStartPosition.Manual;
+        var (placement, display) = PlaceWindow(panelDeviceName);
+        MinimumSize = WindowPlacement.MinimumFor(display);
+        Bounds = _placedBounds = placement.Bounds;
+        if (placement.Maximized)
+            WindowState = FormWindowState.Maximized;
+        FormClosing += (_, _) => SavePlacement();
         BackColor = Color.FromArgb(11, 14, 20);
 
         _webView.Dock = DockStyle.Fill;
@@ -1265,6 +1279,93 @@ public sealed class SettingsWindow : Form
         if (_webView.CoreWebView2 is not null)
             _webView.CoreWebView2.PostWebMessageAsJson(envelope.ToJsonString());
     }
+
+    private static (WindowPlacement.Placement, WindowPlacement.Display) PlaceWindow(string? panelDeviceName)
+    {
+        var screens = Screen.AllScreens;
+        var displays = screens.Select(s => new WindowPlacement.Display(
+            s.WorkingArea,
+            DpiOf(s),
+            s.DeviceName == panelDeviceName || PanelLocator.LooksLikePanel(s.Bounds),
+            s.Primary)).ToList();
+        var cursor = Array.FindIndex(screens, s => s.DeviceName == Screen.FromPoint(Cursor.Position).DeviceName);
+        WindowPlacement.Placement? saved = null;
+        try
+        {
+            if (File.Exists(AppPaths.SettingsWindowFile))
+                saved = WindowPlacement.Parse(File.ReadAllText(AppPaths.SettingsWindowFile));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not read the settings window's last position: {ex.Message}");
+        }
+        return WindowPlacement.Choose(displays, cursor, saved);
+    }
+
+    private void SavePlacement()
+    {
+        try
+        {
+            // RestoreBounds is the normal-state rectangle while maximized or minimized;
+            // a window closed from the taskbar while minimized reopens restored.
+            var bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+            DurableStore.Write(AppPaths.SettingsWindowFile, WindowPlacement.Serialize(
+                new WindowPlacement.Placement(bounds, WindowState == FormWindowState.Maximized)));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not save the settings window's position: {ex.Message}");
+        }
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        // The window was created on its display at the size placed for that display. If
+        // creation rescaled it anyway, put the placed size back: it is on the same display
+        // now, so this cannot start another DPI change.
+        if (WindowState == FormWindowState.Normal && Bounds != _placedBounds)
+            Bounds = _placedBounds;
+        base.OnLoad(e);
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        // Dragged to a display with another scale: the minimum is logical, so it follows.
+        MinimumSize = WindowPlacement.MinimumFor(new WindowPlacement.Display(
+            Screen.FromControl(this).WorkingArea, e.DeviceDpiNew, false, false));
+    }
+
+    /// <summary>A display's effective DPI (what WebView2 renders the page at there), or
+    /// 96 where Windows cannot say.</summary>
+    private static int DpiOf(Screen screen)
+    {
+        try
+        {
+            var area = screen.WorkingArea;
+            var monitor = MonitorFromPoint(new NativePoint { X = area.Left + area.Width / 2, Y = area.Top + area.Height / 2 },
+                MonitorDefaultToNearest);
+            if (monitor != IntPtr.Zero && GetDpiForMonitor(monitor, MdtEffectiveDpi, out var dpi, out _) == 0 && dpi > 0)
+                return (int)dpi;
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            // shcore.dll's GetDpiForMonitor is Windows 8.1+; older means 96.
+        }
+        return 96;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint { public int X; public int Y; }
+
+    private const uint MonitorDefaultToNearest = 2;
+    private const int MdtEffectiveDpi = 0;
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(NativePoint pt, uint flags);
+
+    [DllImport("shcore.dll")]
+    private static extern int GetDpiForMonitor(IntPtr monitor, int dpiType, out uint dpiX, out uint dpiY);
 
     protected override void Dispose(bool disposing)
     {

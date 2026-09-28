@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Where the settings window opens, and how big. The window used to open at a fixed
+       1000x640 physical pixels, which at 150% display scaling left the page under the
+       780x480 its layout is built for. The placement is arithmetic over the displays it is
+       handed, so it is driven here without Windows. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>WindowPlacementProbe</AssemblyName>
+    <RootNamespace>WindowPlacementProbe</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Plinth/App/WindowPlacement.cs" />
+  </ItemGroup>
+</Project>

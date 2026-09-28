@@ -653,6 +653,11 @@ header h1 #appVersion {
   /* The dock owns a bounded share of the window. Past this the columns scroll
    * internally rather than pushing the preview off the top. */
   max-height: min(46vh, 460px);
+  /* Takes the height the dock is given beyond its content. fitReplica gives it
+   * whatever the canvas leaves below once the canvas has its size, and lifts the cap
+   * above while it does, so a tall window ends in the dock's columns rather than an
+   * empty band under them. */
+  flex: 1 1 auto;
 }
 #dockPalette {
   /* Shrinkable, with a floor. Two fixed side columns (288 + 300) leave 192px for the
@@ -749,6 +754,15 @@ header h1 #appVersion {
 #contextPanel.open { display: flex; }
 /* Nothing selected: the palette still stands on its own, so the dock does not
  * collapse to a bare strip and the widget set stays visible. */
+#dockEmpty {
+  display: none;
+  flex: 1;
+  align-self: center;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
 #contextPanel:not(.open) + #dockEmpty { display: block; }
 #panelHead {
   display: flex;
@@ -846,6 +860,10 @@ header h1 #appVersion {
   align-items: center;
   gap: 12px;
 }
+/* `display: flex` above outranks the UA sheet's `[hidden] { display: none }`, so without
+ * this the banner never hid: an empty orange-bordered bar sat under the header on every
+ * open, stale or not. The panes carry the same rule for the same reason. */
+#staleLayout[hidden] { display: none; }
 #staleLayout .s-text { flex: 1 1 auto; min-width: 0; }
 #staleLayout h2 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
 #staleLayout p { margin: 0; font-size: 12px; color: var(--muted); }
