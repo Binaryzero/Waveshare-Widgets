@@ -123,6 +123,25 @@ var (w13b, w13bd) = Choose([fhd100 with { WorkingArea = new Rectangle(2700, 0, 1
 Check("W13b ...and with its centre off every screen, the display it overlaps MOST is the one, size kept",
     w13bd == qhd150 && w13b.Bounds == new Rectangle(1360, 100, 1200, 800), $"{w13b.Bounds} on {w13bd.WorkingArea}");
 
+// W14 · the frame is only known once the window exists, and it raises the minimum. A window
+// left flush with the bottom-right corner at the frameless minimum (W10's case, the scale
+// went up since) is placed again with the frame when it loads: moved in by the frame, not
+// grown where it stands past the working area's edge, behind the taskbar (#329).
+var corner = new Placement(new Rectangle(2560 - 1170, 1392 - 720, 1170, 720), false);
+var (w14, w14d) = Choose([qhd150], 0, corner);
+var w14Loaded = Fit(w14.Bounds, w14d, frame150);
+Check("W14 a window flush with the bottom-right corner, raised by its frame, stays in the working area",
+    qhd150.WorkingArea.Contains(w14Loaded) && w14Loaded.Size == MinimumFor(qhd150, frame150), $"{w14Loaded}");
+Check("W14b ...moved in by the frame on both edges",
+    w14Loaded == new Rectangle(2560 - 1194, 1392 - 767, 1194, 767), $"{w14Loaded}");
+Check("W14c ...while a window already over that minimum stays exactly where it was left",
+    Fit(left.Bounds, fhd100, frame150) == left.Bounds, $"{Fit(left.Bounds, fhd100, frame150)}");
+var settingsSrc = FindUpwards("src/Plinth/App/SettingsWindow.cs");
+var onLoad = settingsSrc is null ? "" : File.ReadAllText(settingsSrc);
+Check("W14d the settings window places itself again with its frame when it loads, before maximizing",
+    System.Text.RegularExpressions.Regex.IsMatch(onLoad,
+        @"var frame = Size - ClientSize;[\s\S]{0,900}var placed = WindowPlacement\.Fit\(_placedBounds, _placedDisplay, frame\);\s*if \(Bounds != placed\)\s*Bounds = placed;\s*if \(_placedMaximized\)"));
+
 Console.WriteLine("Stored form");
 
 // W11 · the file round-trips, and anything else costs the position, never the window.
@@ -164,3 +183,15 @@ Check("P5d a display that cannot say its DPI is taken at 100%", PanelModels.CssS
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");
 return failures == 0 ? 0 : 1;
+
+static string? FindUpwards(string relative)
+{
+    var d = new DirectoryInfo(AppContext.BaseDirectory);
+    while (d is not null)
+    {
+        var candidate = Path.Combine(d.FullName, relative.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(candidate)) return candidate;
+        d = d.Parent;
+    }
+    return null;
+}

@@ -98,11 +98,13 @@ public static class WindowPlacement
     }
 
     /// <summary>A rectangle kept on its display: no larger than the working area, no
-    /// smaller than the minimum, and moved inside it.</summary>
-    public static Rectangle Fit(Rectangle bounds, Display display)
+    /// smaller than the minimum, and moved inside it. The frame, once the window has one,
+    /// is part of the minimum (<see cref="MinimumFor"/>): raising a window to it in place
+    /// would push one left flush with the right or bottom edge past that edge.</summary>
+    public static Rectangle Fit(Rectangle bounds, Display display, Size frame = default)
     {
         var area = display.WorkingArea;
-        var min = MinimumFor(display);
+        var min = MinimumFor(display, frame);
         var w = Math.Clamp(bounds.Width, min.Width, area.Width);
         var h = Math.Clamp(bounds.Height, min.Height, area.Height);
         var x = Math.Clamp(bounds.X, area.Left, area.Right - w);

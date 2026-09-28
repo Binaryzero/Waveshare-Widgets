@@ -1165,13 +1165,18 @@ public sealed class SettingsWindow : Form
     protected override void OnLoad(EventArgs e)
     {
         // The frame is known now that the handle exists, so the minimum can be the page's.
-        MinimumSize = WindowPlacement.MinimumFor(_placedDisplay, Size - ClientSize);
+        var frame = Size - ClientSize;
+        MinimumSize = WindowPlacement.MinimumFor(_placedDisplay, frame);
         // The window was created on its display at the size placed for that display. If
         // creation rescaled it anyway, put the placed size back: it is on the same display
-        // now, so this cannot start another DPI change. Still in the normal state here, so
-        // these are also the bounds a maximized window restores to.
-        if (Bounds != _placedBounds)
-            Bounds = _placedBounds;
+        // now, so this cannot start another DPI change. Placed again with the frame in the
+        // minimum: raising MinimumSize grows the window where it stands, so one left flush
+        // with the right or bottom edge under the new minimum would hang past it (#329).
+        // Still in the normal state here, so these are also the bounds a maximized window
+        // restores to.
+        var placed = WindowPlacement.Fit(_placedBounds, _placedDisplay, frame);
+        if (Bounds != placed)
+            Bounds = placed;
         if (_placedMaximized)
             WindowState = FormWindowState.Maximized;
         base.OnLoad(e);
