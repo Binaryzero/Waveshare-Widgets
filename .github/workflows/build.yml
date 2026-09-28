@@ -29,6 +29,12 @@ jobs:
       - name: Manifest round-trip guard
         run: dotnet run --project tools/ManifestRoundTrip
 
+      # The app's icon (exe, settings window, tray) is a committed binary drawn by
+      # tools/plinth-icon.js. Checked pixel for pixel against the script, so the file
+      # cannot drift from its source unnoticed.
+      - name: The app icon is what its generator draws
+        run: node tools/plinth-icon.js --check
+
       # Credentials must never reach layout.json in the clear: this asserts the seal /
       # mask / reveal contract, the masked-save carry-over, and the no-DPAPI fail-safe.
       - name: Secret pipeline guard
