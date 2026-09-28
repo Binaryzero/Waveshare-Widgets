@@ -22,6 +22,8 @@
 //        shared options array would let an edit to one tile rewrite every other tile's
 //        declaration
 //   A6 · against the REAL stock manifests: exactly one bgStyle each, none declared on disk
+//   A9 · a stored value since renamed (bgStyle glass -> theme) shows as the new name, in
+//        both editors
 //
 // A6 is the one that would have caught this change going in half-done, and it reads the
 // shipped manifests rather than a fixture for that reason.
@@ -90,7 +92,7 @@ const declBg = outDecl.properties.filter((p) => p.name === 'bgStyle');
 check('A3 a declared bgStyle is replaced, not kept alongside', declBg.length === 1,
   `${declBg.length} bgStyle propert(ies)`);
 check('A3b ...and it is the SHELL\'s definition that survives',
-  declBg[0].default === 'solid' && declBg[0].options.join(',') === 'solid,glass,transparent'
+  declBg[0].default === 'theme' && declBg[0].options.join(',') === 'theme,solid,transparent'
     && declBg[0].label === 'Background',
   `default=${declBg[0].default} options=${declBg[0].options.join('|')} label=${declBg[0].label}`);
 check('A3c ...and the widget\'s unrelated property is untouched',
@@ -104,12 +106,12 @@ const bg2 = w2.properties.find((p) => p.name === 'bgStyle');
 bg1.options.push('MUTATED');
 bg1.default = 'MUTATED';
 check('A5 one widget\'s declaration is not shared with another',
-  bg2.default === 'solid' && !bg2.options.includes('MUTATED'),
+  bg2.default === 'theme' && !bg2.options.includes('MUTATED'),
   `second widget: default=${bg2.default} options=${bg2.options.join('|')}`);
 // ...and a fresh call is still clean, so the module-level constant was not written through.
 const bg3 = A.normalizeCatalog([{ id: 'c', properties: [] }])[0].properties.find((p) => p.name === 'bgStyle');
 check('A5b ...nor with any widget normalised afterwards',
-  bg3.default === 'solid' && !bg3.options.includes('MUTATED'),
+  bg3.default === 'theme' && !bg3.options.includes('MUTATED'),
   `third widget: default=${bg3.default} options=${bg3.options.join('|')}`);
 
 // ---- A6 · the real shipped manifests --------------------------------------------------
@@ -162,6 +164,27 @@ const endsGrouped = dirs.filter((d) => {
 check('A8 the misgrouping this guards is reachable from the shipped catalog',
   endsGrouped.length > 0,
   `${endsGrouped.length}/${dirs.length} widgets end on a grouped property`);
+
+// ---- A9 · a renamed stored value shows as its new name ---------------------------------
+// bgStyle's `glass` became `theme`. widget-api.js renders a stored `glass` as `theme`, and
+// both editors compare the stored value against the options to light one: shown raw, a
+// tile saved before the rename had no choice lit at all.
+const bgProp = A.universalProperties().find((p) => p.name === 'bgStyle');
+check('A9 a stored glass shows as theme, one of the options',
+  A.shownValue(bgProp, 'glass') === 'theme' && bgProp.options.includes(A.shownValue(bgProp, 'glass')),
+  String(A.shownValue(bgProp, 'glass')));
+check('A9b current values pass through unchanged',
+  ['theme', 'solid', 'transparent', undefined, 'unknown'].every((v) => A.shownValue(bgProp, v) === v));
+check('A9c another property is never renamed',
+  A.shownValue({ name: 'style' }, 'glass') === 'glass');
+// Both editors read the stored value through it. Source, because neither editor runs
+// outside a full window; the call is what matters, and it is one line in each.
+const settingsSrc = fs.readFileSync(path.join(SHELL, 'settings.js'), 'utf8');
+const shellSrc = fs.readFileSync(path.join(SHELL, 'shell.js'), 'utf8');
+check('A9d the settings window\'s editor shows the renamed value',
+  /function propEditor\(prop, slot\) \{\s*const current = window\.WWAppearance\.shownValue\(prop,/.test(settingsSrc));
+check('A9e the panel\'s property sheet shows the renamed value',
+  /const cur = \(prop\) => \{\s*const s = [^\n]*\n\s*return window\.WWAppearance\.shownValue\(prop,/.test(shellSrc));
 
 console.log(failures > 0 ? `\n${failures} FAILURES` : '\nALL PASS');
 process.exit(failures > 0 ? 1 : 0);

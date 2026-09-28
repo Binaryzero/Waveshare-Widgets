@@ -75,6 +75,17 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   never holds a stored credential, the copy names its source, reads "saved", carries a
   value typed into the source this session and a pending Clear, keeps `copiedFrom` across
   a preview capture, and drops it when swapped to another widget (S1-S6). Port used: 8965.
+- `paletteparity-run.js` — the theme palette is derived twice, by `PaletteEngine.cs` for
+  the panel and by `palette.js` for the settings preview. `tools/PaletteParity` writes the
+  C# derivation of 411 themes (the stock one, hand-picked edges, and a fixed-seed battery);
+  this derives the same themes in JS and compares every token (T1). Also that the tile is
+  the Background colour itself (T2) and that state colours follow the theme: a vivid and a
+  muted accent give different states, each state keeps its hue family, and a grey accent
+  still gives coloured states (T3). Node only; CI runs it after the probe.
+- `bgstyle-run.js` — a tile's Background and the Theme's Panel opacity. The default is
+  `theme`: a tile that never chose, one set to `theme`, one saved with the old `glass`,
+  and one with an unknown value all paint at the theme's opacity; `solid` stays opaque and
+  `transparent` has no tile (B1-B5).
 - `palettecontrast-run.js` — issue #217: muted text must stay legible on the GLASS
   settings sheets, not only on the opaque surface. `#propSheet` / `#stylePanel` paint
   `--surface` at 94% over the wallpaper, so `--text-muted` renders over surface

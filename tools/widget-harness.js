@@ -32,10 +32,9 @@ const derive = global.window.WWPalette.derive;
 // The panel's shell-owned appearance properties, loaded the same way. The runners merge
 // MANIFEST defaults into settings to mirror what a widget receives — but the panel also
 // supplies properties no manifest declares, so without this the offline payload is missing
-// fields the real ww-init always carries. Inert today (bgStyle's default is solid, which is
-// also what widget-api assumes when it is absent) and that is exactly why it is wired now:
-// the divergence would be invisible until a universal property arrived with a default that
-// mattered, and then it would look like a widget bug.
+// fields the real ww-init always carries. bgStyle's default is `theme` (the theme's Panel
+// opacity), which is also what widget-api assumes when it is absent; merging it here keeps
+// the offline payload the same shape as the panel's.
 require(path.join(__dirname, '../src/Plinth/Shell/appearance.js'));
 const universalProperties = global.window.WWAppearance.universalProperties;
 // #221 tap-surface detector, shared with widget-datapath.js so the populated render paths
@@ -583,7 +582,7 @@ function loadPlaywright() {
     color: getComputedStyle(document.body).backgroundColor,
     cls: document.body.className,
   }));
-  const alpha = settings.bgStyle === 'transparent' ? 0 : settings.bgStyle === 'glass' ? Number(theme['--panel-alpha']) : 1;
+  const alpha = settings.bgStyle === 'transparent' ? 0 : settings.bgStyle === 'solid' ? 1 : Number(theme['--panel-alpha']);
   const rgb = theme['--surface-rgb'];
   // Chromium ≥ 141 serializes a transparent computed background with its color
   // components preserved (rgba(r, g, b, 0)), older builds normalized to

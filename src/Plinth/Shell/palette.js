@@ -68,6 +68,37 @@
     const mixf = (a, b, t) => [0, 1, 2].map((i) => a[i] + (b[i] - a[i]) * t);
     const minCon = (c, surfaces) => Math.min.apply(null, surfaces.map((s) => contrastc(c, s)));
 
+    // HSL, for the state colours (see inAccent). Written as PaletteEngine.cs writes it,
+    // operation for operation, so both round to the same bytes.
+    const toHsl = (c) => {
+      const r = c[0] / 255, g = c[1] / 255, b = c[2] / 255;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      const l = (max + min) / 2;
+      if (max === min) return [0, 0, l];
+      const d = max - min;
+      const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      let h;
+      if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      return [h / 6, s, l];
+    };
+    const hueToRgb = (p, q, t) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+    const fromHsl = (h, s, l) => {
+      if (s === 0) { const v = Math.round(l * 255); return [v, v, v]; }
+      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+      const p = 2 * l - q;
+      return [Math.round(hueToRgb(p, q, h + 1 / 3) * 255), Math.round(hueToRgb(p, q, h) * 255),
+        Math.round(hueToRgb(p, q, h - 1 / 3) * 255)];
+    };
+
     const hexOf = (c) => '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('');
     const rgbOf = (c) => c[0] + ', ' + c[1] + ', ' + c[2];
     const tintOf = (c) => 'rgba(' + c[0] + ', ' + c[1] + ', ' + c[2] + ', 0.14)';
@@ -77,13 +108,20 @@
     let text = parse(spec.text, [0xdd, 0xe2, 0xe8]);
     const panelAlpha = Math.min(1.0, Math.max(0.15, spec.panelAlpha == null ? 0.92 : spec.panelAlpha));
     const dark = lum(background) < 0.35;
-    const surface = mixc(background, text, dark ? 0.055 : 0.035);
-    const surfaceAlt = mixc(background, text, dark ? 0.10 : 0.07);
-    const control = mixc(background, text, dark ? 0.15 : 0.11);
+    // The tile IS the Background colour the user picked; nested cards and controls sit a
+    // step toward the text colour from it, as they did from the old derived surface.
+    const surface = background.slice();
+    const surfaceAlt = mixc(background, text, dark ? 0.055 : 0.035);
+    const control = mixc(background, text, dark ? 0.10 : 0.07);
     let muted = mixc(text, surface, 0.42);
     let dim = mixc(text, surface, 0.60);
     const line = mixc(text, surface, 0.78);
     text = ensure(text, [surface], 7.0);
+    // Primary text also sits on nested cards and buttons. On a mid-tone Background the
+    // tile-only repair can pick the pole that clears the tile and falls below 4.5:1 on the
+    // fills a step toward the text colour; then all three are repaired to 4.5 at once.
+    // Only then: a theme whose text already clears them is left as it was.
+    if (minCon(text, [surfaceAlt, control]) < 4.5) text = ensure(text, [surface, surfaceAlt, control], 4.5);
     // #217 — the settings sheets (#propSheet / #stylePanel in shell.css) paint --surface at
     // ~94% opacity over the user's wallpaper, a SIBLING behind the glass, not an ancestor.
     // So muted text there renders over surface COMPOSITED with the wallpaper, not the opaque
@@ -108,10 +146,18 @@
     const mutedGlass = ensure(muted, glassSurf, 4.5);
     muted = minCon(mutedGlass, opaqueSurf) >= minCon(mutedOpaque, opaqueSurf) ? mutedGlass : mutedOpaque;
     dim = ensure(dim, [surface], 3.0);
-    const ok = ensureState([0x45, 0xd4, 0x83], surface, surfaceAlt);
-    const warn = ensureState([0xff, 0xae, 0x52], surface, surfaceAlt);
-    const err = ensureState([0xff, 0x62, 0x68], surface, surfaceAlt);
-    const info = ensureState([0x62, 0xcb, 0xea], surface, surfaceAlt);
+    // State colours in the theme's character: each keeps its own hue, so OK stays green and
+    // an error red, and takes the accent's saturation and lightness, clamped so the four stay
+    // recognisable and apart. A muted theme gets muted states, a vivid one vivid states; the
+    // contrast repair then holds them legible as before.
+    const [, accentS, accentL] = toHsl(accent);
+    const stateS = Math.min(0.95, Math.max(0.45, accentS));
+    const stateL = Math.min(0.70, Math.max(0.42, accentL));
+    const inAccent = (seed) => fromHsl(toHsl(seed)[0], stateS, stateL);
+    const ok = ensureState(inAccent([0x45, 0xd4, 0x83]), surface, surfaceAlt);
+    const warn = ensureState(inAccent([0xff, 0xae, 0x52]), surface, surfaceAlt);
+    const err = ensureState(inAccent([0xff, 0x62, 0x68]), surface, surfaceAlt);
+    const info = ensureState(inAccent([0x62, 0xcb, 0xea]), surface, surfaceAlt);
     const NEAR_BLACK = [0x0a, 0x0a, 0x0a];
     const onAccent = contrastc(accent, NEAR_BLACK) >= contrastc(accent, WHITE) ? NEAR_BLACK : WHITE;
     // Accent as a FOREGROUND: the seed itself is never repaired (it is the user's
@@ -127,7 +173,9 @@
       '--accent-rgb': rgbOf(accent), '--accent-fg': hexOf(accentFg), '--on-accent': hexOf(onAccent),
       '--ok': hexOf(ok), '--warn': hexOf(warn), '--err': hexOf(err), '--info': hexOf(info),
       '--ok-bg': tintOf(ok), '--warn-bg': tintOf(warn), '--err-bg': tintOf(err), '--info-bg': tintOf(info),
-      '--hover-bg': hexOf(hover), '--panel-alpha': String(panelAlpha),
+      // To three places, as PaletteEngine.cs formats it ("0.###"): the raw double printed
+      // 0.42000000000000004 where the host wrote 0.42.
+      '--hover-bg': hexOf(hover), '--panel-alpha': String(Math.round(panelAlpha * 1000) / 1000),
       '--appearance': dark ? 'dark' : 'light',
     };
   }

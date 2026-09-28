@@ -36,8 +36,8 @@ public sealed class ThemeSpec
     [JsonPropertyName("background")] public string? Background { get; set; }
     [JsonPropertyName("text")] public string? Text { get; set; }
 
-    /// <summary>Widget panel opacity, 0.15–1.0. Glass background style renders at this
-    /// level; solid forces 1; transparent forces 0.</summary>
+    /// <summary>Widget panel opacity, 0.15–1.0. A tile at the default `theme` background
+    /// (and the older `glass`) renders at this level; solid forces 1; transparent forces 0.</summary>
     [JsonPropertyName("panelAlpha")] public double PanelAlpha { get; set; } = 0.92;
 }
 

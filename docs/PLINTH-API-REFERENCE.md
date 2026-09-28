@@ -501,9 +501,9 @@ root and/or on any page:
   file name.
 - Widgets paint on top of the wallpaper; it shows through page margins and any widget that
   is itself transparent. A page with zero slots becomes a pure wallpaper screen.
-- Stock widgets (clock, CPU, GPU, weather, media, Stream Deck) have a **Background**
-  setting — `solid` (default), `glass` (translucent tint), or `transparent` — so they can
-  float directly on the wallpaper. Widget authors do NOT implement this: the panel declares
+- Every widget has a **Background** setting — `theme` (the default: the tile at the
+  Theme's Panel opacity), `solid` (always opaque) or `transparent` — so it can float
+  directly on the wallpaper. Widget authors do NOT implement this: the panel declares
   the property for every widget and `widget-api.js` applies the class inside your frame
   before `onInit` runs. Paint your base background on `body` and it fits in for free.
 

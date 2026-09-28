@@ -284,6 +284,14 @@ jobs:
       - name: The settings window opens sized for its display
         run: dotnet run --project tools/WindowPlacement
 
+      # The theme palette is derived twice: PaletteEngine.cs for the panel, palette.js for
+      # the settings window's preview. The C# derivation of a fixed battery of themes is
+      # written out, and the JS one must match it token for token.
+      - name: Theme palette is the same in C# and JS
+        run: |
+          dotnet run --project tools/PaletteParity -- palette-cs.json
+          node tests/harness/paletteparity-run.js palette-cs.json
+
       # Stamped BELOW every release on purpose: an unstamped artifact would carry the
       # csproj's fixed version, match the next release's number, and never be offered
       # that release by the updater. 0.0.0-ci.N ranks under everything and always
