@@ -621,8 +621,17 @@ header h1 #appVersion {
   /* Bounded + scrollable: the document is overflow:hidden, so a toolbar that
    * wraps into many chip rows must scroll itself — clipped rows would be
    * unreachable pages/widgets (the inspector clamp keeps its card usable). */
-  max-height: 38vh;
   overflow-y: auto;
+  /* Its own height, never less: the dock is given a fixed height (fitReplica), and as
+   * a shrinkable flex item the toolbar was squeezed under its one row of chips, cutting
+   * their bottom edges off behind a scrollbar. The columns below give up the height
+   * instead; they scroll already.
+   *
+   * But never more than half the dock: on a short window with many chip rows, a toolbar
+   * at its full 38vh took the whole dock and pushed the columns below the window. Past
+   * half it scrolls its own rows, as it always could past 38vh. */
+  flex: none;
+  max-height: min(38vh, 50%);
 }
 /* Chips WRAP (both lists): the document is overflow:hidden, so a long row
  * must grow downward — clipped chips would be unreachable pages/widgets.
