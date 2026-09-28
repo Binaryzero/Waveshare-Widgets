@@ -215,19 +215,16 @@ follows the Theme's Panel opacity. The setting's values are `theme`, `solid` and
 A standard widget has six layers. Not every widget needs all six visible at once, but
 each one that exists uses the standard classes so widgets read as one family.
 
-1. **Header** — the instrument headline. A `.hd` row: the widget's name in `.kicker`
-   type on the left; on the right a structural annotation (`.st` — the tile's fixed
-   context, like `24H` or `8 CORES`), which lights to `.st.on` in the data hue for a
-   live state, with a breathing `.dot` where the state deserves a pulse (`● PLAYING`).
-   Exceptions still ride a `.pill` (`.ok` / `.warn` / `.err` / `.muted`) — now flat
-   etched uppercase text in the state's hue, no chip chrome.
-
-   ```html
-   <header class="hd">
-     <span class="kicker">CPU</span>
-     <span class="st">8 cores</span>
-   </header>
-   ```
+1. **No header.** A tile does not title itself. The owner's call on beta.21: the corner
+   text read as tiny noise, and the room is worth more to the data. A tile's identity is
+   its content: a clock is obviously a clock. What a header used to carry moves:
+   - **The widget's name:** gone. A user-given title (a countdown's event, a REST
+     endpoint's label) is data and goes in the body, at a readable size.
+   - **Structural context** (`8 CORES`, a GPU's name, a location): into the body, next to
+     what it describes, or gone when the data already says it.
+   - **Exceptions** (Stale, Partial, a degraded count): a `.pill` in the body or the
+     footer, beside the data it qualifies. Setup, error and loading are the state layer's
+     job (below) and need no pill at all.
 
    **The pill reports exceptions, not health — it is hidden whenever the widget is
    working.** It appears only for something the reader would act on or would otherwise be
@@ -237,9 +234,7 @@ each one that exists uses the standard classes so widgets read as one family.
    the one place a widget has to speak up. Absence is the healthy signal, and that is
    what makes an appearance worth a glance.
 
-   This rule replaced an earlier one that specified a `Live` pill in the nominal state.
-   A panel of eight tiles all reading LIVE was the result, and it read as noise from
-   across the room.
+   `.hd` and `.st` stay in the base stylesheet for widgets that still use them.
 2. **Body** — the data: `.value` (+ `.hero` for the headline number) with its `.unit` on
    the same baseline, `.card` for nested rows and sub-surfaces, `.meter` for compact
    horizontal gauges (`.ok` / `.warn` / `.err` variants recolor the fill).
@@ -260,8 +255,12 @@ each one that exists uses the standard classes so widgets read as one family.
      <div class="cur" style="left:42%"></div>
    </div>
    ```
-4. **Footer meta** — provenance and hints in `--text-dim`: last-updated, data source,
-   the elevation hint (see the stock CPU widget's PawnIO note).
+4. **Footer meta** — only when it says something: a Stale or Partial marker with its
+   age, rows it had no room to show, the elevation hint (see the stock CPU widget's PawnIO
+   note), a credit the data's licence asks for. Freshness belongs there only where the
+   age is part of reading the data — a poll minutes or hours apart (the REST value, the
+   GitHub queue). "Updated 0m ago" on a live tile is small print nobody needs; leave the
+   footer hidden then.
 5. **State layer** — a `.state-card` (or bare `.spinner`) that replaces the body while
    the widget is loading, unconfigured, or broken. See [§5](#5--required-states).
 6. **Touch affordances** — `.btn` (and `.btn.primary`) for anything tappable. See
@@ -271,12 +270,7 @@ Annotated skeleton:
 
 ```html
 <body>
-  <!-- 1 · Header: identity left, annotation/status right -->
-  <header class="hd">
-    <span class="kicker">Network</span>
-    <!-- Hidden while healthy; shown only to report stale/degraded/error. -->
-    <span class="pill" id="pill" hidden></span>
-  </header>
+  <!-- 1 · No header: the body starts at the top of the tile -->
 
   <!-- 2 · Body: the data -->
   <main id="data" hidden>
@@ -298,8 +292,10 @@ Annotated skeleton:
     <div class="cur" id="rttCur" style="left:12%"></div>
   </div>
 
-  <!-- 4 · Footer meta: provenance, dim -->
-  <footer id="meta" style="color: var(--text-dim)"></footer>
+  <!-- 4 · Footer meta: hidden while healthy; Stale / Partial and the age otherwise -->
+  <footer id="meta" style="color: var(--text-dim)" hidden>
+    <span class="pill muted">Stale</span> updated 12m ago
+  </footer>
 
   <!-- 5 · State layer: shown instead of #data while loading / empty / broken -->
   <div class="state-card" id="state">
@@ -326,7 +322,7 @@ error state should instead name the setting to fix).
 | **Loading** | Between first paint and first data | `.spinner` (centered in a `.state-card`). Freezes automatically under reduced motion. |
 | **Empty / setup** | Widget needs configuration (no API key, no sensor picked, no city set) | `.state-card` with `.state-icon`, `.state-title`, `.state-body` explaining *what to do*, plus a `.btn` CTA where an action exists |
 | **Error** | Fetch failed, device unreachable, API rejected | `.state-card.err` (the icon recolors to `--err`) with a plain-language `.state-body` and a **Retry** `.btn` |
-| **Stale** | Data was fine but stopped updating (source paused, network dropped) | **Keep the last data visible**, dimmed (reduce opacity), and swap the header pill to `.pill.muted` (e.g. "Stale") — old data beats no data on a glanceable panel |
+| **Stale** | Data was fine but stopped updating (source paused, network dropped) | **Keep the last data visible**, dimmed (reduce opacity), with a `.pill.muted` "Stale" beside the data or in the footer — old data beats no data on a glanceable panel |
 | **Healthy** | Data is current and nothing is degraded | **No pill.** This is the state the reader spends almost all of their time in, so it is the one that must add nothing. Hide the pill rather than filling it with "Live" |
 
 ```html
@@ -379,7 +375,32 @@ The base sets the family: **Outfit**, served from the shell origin alongside the
 stylesheet (`fonts/outfit-{300,400,500,700}.woff2` — no other weights exist, and
 `font-synthesis: none` means asking for one gets you the nearest real weight, not a
 smeared fake). Widgets that need a different face bundle it in their package — never
-assume a system font. Body size is 13.5px.
+assume a system font. Body size is 13.5px at the smallest tile.
+
+**Type scales with the tile.** The panels run at 170–185 pixels per inch with no display
+scaling, so a pixel size gives text about half the height it has on a desktop monitor.
+`widget-api.js` stamps `--ts` (the tile scale) on `:root` from the tile's size: 1.3 at the
+smallest tile (a 320×200 band), 1.97 at a full 1280×400 tile, capped at 2.5 (a full
+XENEON EDGE tile). It grows with the fifth root of the area, so a bigger tile shows more
+as well as larger. Every size below is the size at the smallest tile BEFORE scaling, and
+the base multiplies it by `--ts`. Write your own the same way:
+
+```css
+.row .name { font-size: calc(12px * var(--ts)); }
+.row { gap: calc(6px * var(--ts)); }   /* spacing that sits between text scales too */
+```
+
+- **One size per role, not one per slot.** A `clamp(12px, 3.9vh, 15px)` or a media query
+  that steps text down for a short tile is what `--ts` replaces: take the size the role
+  had at the widget's smallest tile and multiply it.
+- **Layout still answers to the tile.** Media queries on width or height, and `vh`/`vw`
+  for boxes and art (a portrait, an album cover), stay. A column that gets narrow as its
+  text grows is a container query's job (`container-type: inline-size`; `em` in the
+  condition is the container's text size, so the break point grows with the text).
+- **Fit maths measure; they don't assume.** A script that fits rows or text to the tile
+  reads the rendered sizes. A hard-coded header height or row pitch in it is wrong at
+  every scale but one.
+- **Canvas text** reads `WW.tileScale` (the same number) and multiplies its sizes by it.
 
 The instrument voice is uppercase micro-type with wide tracking for structure, and
 tabular numerals for data. The component classes carry the scale:
@@ -387,8 +408,8 @@ tabular numerals for data. The component classes carry the scale:
 | Role | Class | Size / weight |
 |---|---|---|
 | Ruler axis labels | `.scale .mj b` | 8px / 500, 0.12em tracking — structure, not body text |
-| Header, section label | `.hd`, `.kicker` | 9.5px / 600, uppercase, 0.24em tracking |
-| Status pill, annotation | `.pill`, `.st` | 9.5px / 600, uppercase, 0.2em tracking |
+| Section label | `.kicker` (`.hd`) | 9.5px / 600, uppercase, 0.24em tracking |
+| Status pill | `.pill` (`.st`) | 9.5px / 600, uppercase, 0.2em tracking |
 | State body text | `.state-body` | 11px, muted |
 | Unit | `.unit` | 13px / 600, muted |
 | State title | `.state-title` | 13px / 750 |
@@ -399,10 +420,9 @@ tabular numerals for data. The component classes carry the scale:
   `font-variant-numeric: tabular-nums` to any custom readout, as the stock clock does for
   its time and date). Proportional digits make an updating value jitter horizontally —
   on a panel that is glanced at, that reads as noise.
-- Body text never below 12px (~170 PPI panel); the 8–11px tiers are for uppercase
-  labels and ruler axis figures only — never sentences.
-- Size fluidly across slots with `clamp()` / `vh` (see WIDGET-SPEC's slot table); scale
-  *from* the standard sizes rather than inventing new ones.
+- Body text never below 12px before scaling (~170 PPI panel); the 8–11px tiers are for
+  uppercase labels and ruler axis figures only — never sentences.
+- Scale *from* the standard sizes rather than inventing new ones.
 
 ---
 
@@ -545,20 +565,21 @@ Copy this into your widget's PR / release notes and check every line:
 - [ ] Nested surfaces use `.card` / `var(--card-surface)` — no opaque cards on a glass tile
 
 ### Anatomy & states
-- [ ] Uses the standard classes (`.hd`/`.st`, `.kicker`, `.pill`, `.value`/`.unit`, `.card`, `.meter`, `.scale`, `.btn`)
+- [ ] No header row: what it carried that matters is in the body, at a readable size
+- [ ] Uses the standard classes (`.kicker`, `.pill`, `.value`/`.unit`, `.card`, `.meter`, `.scale`, `.btn`)
 - [ ] Every natural scalar/time axis renders as a `.scale` ruler at the tile's foot
 - [ ] Loading: `.spinner` until first data
 - [ ] Empty/setup: `.state-card` explaining what to do, with a CTA where possible
 - [ ] Error: `.state-card.err` with a Retry button
 - [ ] Stale: keeps last data visible, dimmed, with `.pill.muted`
-- [ ] Healthy: the header pill is **hidden** — it reports exceptions, never "Live"
+- [ ] Healthy: no pill, no footer — they report exceptions, never "Live"
 - [ ] `null` sensor values render a placeholder, with fallback sensors where applicable
 - [ ] No silent no-op: actions give pressed feedback, failures `.fail-flash` (with
       optimistic flips reverted), invisible successes `.confirm-flash`
 
 ### Typography, motion, touch
 - [ ] `tabular-nums` on every live number
-- [ ] Body text ≥ 12px; fluid sizing via `clamp()`/`vh` across all supported slots
+- [ ] Body text ≥ 12px before scaling; every type size is `calc(Npx * var(--ts))`
 - [ ] Animates `transform`/`opacity` only, using `--dur-*` / `--ease`
 - [ ] JS-driven animation gated on `prefers-reduced-motion`
 - [ ] All touch targets ≥ 40px with visible `:active` feedback; nothing hover-only

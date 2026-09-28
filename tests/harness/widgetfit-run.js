@@ -10,9 +10,15 @@
 //   F1 · the time fits every supported slot size, in both axes
 //   F2 · it fits with the longest string the settings can produce (12-hour + seconds)
 //   F3 · it fits the shortest one too, without leaving the tile mostly empty
-//   F4 · the date fits, and does not crowd the time out
+//   F4 · the date fits, and does not crowd the time out: however far its size grows with
+//        the tile, it keeps to its fifth of the height and to half the time's size (F4b)
 //   F5 · a resized slot re-fits without a settings change
 //   F6 · the size sliders can only shrink, so no setting can push text back out
+//   F7 · the date slider works where the date is capped, and the cap holds; the caps grow
+//        with the tile (WW.tileScale), so a full tile's date is larger than it was (F7c)
+//
+// The widget is mounted as the panel mounts it, with a #ww-slot fragment, so widget-api
+// stamps --ts and the ruler, spacing and caps are the sizes the panel really draws.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -47,6 +53,12 @@ const SLOTS = [
   // width-only one fails, so both are represented.
   { name: 'half-upper', width: 640, height: 200 },
   { name: 'quarter-lower', width: 320, height: 200 },
+  // The XENEON EDGE's tiles (2560x720 panel): the tile scale is at its largest there, so
+  // a cap that grows with it is tested where it grows most.
+  { name: 'xeneon quarter', width: 640, height: 720 },
+  { name: 'xeneon quarter band', width: 640, height: 360 },
+  { name: 'xeneon full', width: 2560, height: 720 },
+  { name: 'xeneon full band', width: 2560, height: 360 },
 ];
 
 (async () => {
@@ -93,7 +105,7 @@ const SLOTS = [
     });
     await page.route(/https?:\/\/(?!app\.plinth|widget\.test).*/, (route) => route.abort());
     await page.addInitScript(shim);
-    await page.goto('https://widget.test/index.html');
+    await page.goto('https://widget.test/index.html#ww-slot=p0s0');
     return page;
   }
 
@@ -118,6 +130,8 @@ const SLOTS = [
     }
     out.body = { w: box.clientWidth, h: box.clientHeight,
       scrollW: box.scrollWidth, scrollH: box.scrollHeight };
+    out.mid = { h: document.getElementById('mid').getBoundingClientRect().height };
+    out.ts = WW.tileScale;
     return out;
   });
 
@@ -147,6 +161,12 @@ const SLOTS = [
       check(`F4 clock ${slot.name} (${label}) — the date fits beside it`,
         m.date.w <= m.body.w + 1 && m.date.h > 0,
         `"${m.date.text}" ${Math.round(m.date.w)} wide in ${m.body.w}`);
+      // The date's size grows with the tile; its share of the height must not, and where
+      // width binds both lines it must still read as the smaller one.
+      check(`F4b clock ${slot.name} (${label}) — the date keeps to its fifth of the height and half the time`,
+        m.date.h <= m.mid.h * 0.2 + 1 && m.date.font <= m.time.font * 0.5 + 0.5,
+        `date ${Math.round(m.date.h)} of ${Math.round(m.mid.h)} tall @${m.date.font.toFixed(1)}px, `
+          + `time @${m.time.font.toFixed(1)}px`);
     }
     // F3 · fitting must not mean "tiny". A rule that shrank everything to 10px would
     // pass every overflow check above, so the time has to actually use the tile.
@@ -209,8 +229,14 @@ const SLOTS = [
   check('F7 the date size slider changes the date, even where the fit exceeds its cap',
     dateHalf.date.font < dateFull.date.font * 0.75,
     `${Math.round(dateFull.date.font)}px @100 -> ${Math.round(dateHalf.date.font)}px @50`);
+  // The cap is 22.5px times the tile scale (1.97 here, so 44px): the date grows with the
+  // tile like the rest of the type (beta.21, "everything is too TINY"). Before, it was a
+  // flat 26px on every tile. The fit above still exceeds it, so it still binds.
+  const dateCap = 22.5 * dateFull.ts;
   check('F7b and 100% still honours the cap rather than running away with the tile',
-    dateFull.date.font <= 26 + 0.5, `${dateFull.date.font}px`);
+    dateFull.date.font <= dateCap + 0.5, `${dateFull.date.font}px, cap ${dateCap.toFixed(1)}px`);
+  check('F7c the cap grows with the tile: a full tile\'s date is larger than the old flat 26px',
+    dateFull.ts > 1.9 && dateFull.date.font > 26 + 0.5, `${dateFull.date.font}px at scale ${dateFull.ts}`);
   await dp.close();
 
   await browser.close();

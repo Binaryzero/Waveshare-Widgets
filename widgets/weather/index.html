@@ -6,7 +6,11 @@
 <link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
   /* Widget-specific layout; tokens, background/bgStyle and typography base come
-   * from widget-base.css. */
+   * from widget-base.css.
+   * No header: the place, the temperature and the forecast strip are the tile, and the
+   * strip's own labels (hours or days) say which forecast it is. Type is its size on the
+   * smallest tile (a 640x200 band) times the tile scale (--ts), times the per-text size
+   * settings; the condition icon is art and keeps sizing to the tile's height. */
   body { display: flex; flex-direction: column; padding: 12px 16px 10px; }
   #wrap {
     display: flex;
@@ -16,11 +20,20 @@
     justify-content: space-evenly;
     gap: 3%;
   }
-  #now { display: flex; align-items: center; gap: 5%; flex: none; }
-  #icon { font-size: clamp(40px, 24vh, 100px); line-height: 1; }
-  #main { display: flex; flex-direction: column; gap: 0.8vh; }
+  /* The conditions give way before the strip does: the strip never goes under its
+   * content's width (its columns would overlap), and the conditions wrap their longer
+   * lines to make the room. The gap is a length, not a percentage: a percentage gap
+   * resolves against the width it is part of, and squeezed the text into wrapping. */
+  #now { display: flex; align-items: center; gap: calc(8px * var(--ts)); flex: 0 1 auto; min-width: 0; }
+  /* 100px was the cap for a 400px-tall tile; a XENEON EDGE tile, 720px tall, may go past
+   * it as far as its text has grown. */
+  #icon { font-size: clamp(40px, 24vh, max(100px, calc(51px * var(--ts)))); line-height: 1; flex: none; }
+  #main { display: flex; flex-direction: column; gap: calc(2px * var(--ts)); min-width: 0; line-height: 1.15; }
+  /* The headline number: a 200px band held it at 17vh (34px) and a 400px tile at 68px,
+   * so the smallest tile's size times the scale would shrink the tall tiles; 40px keeps
+   * them where they were. */
   #temp {
-    font-size: calc(clamp(30px, 17vh, 70px) * var(--temp-scale, 1));
+    font-size: calc(40px * var(--ts) * var(--temp-scale, 1));
     color: var(--text);
     font-weight: 700;
     line-height: 1;
@@ -28,24 +41,41 @@
   }
   #temp small { font-size: 45%; color: var(--accent-fg); font-weight: 400; }
   #desc {
-    font-size: calc(clamp(10px, 4vh, 16px) * var(--condition-scale, 1));
+    font-size: calc(10px * var(--ts) * var(--condition-scale, 1));
     color: var(--text-muted); font-weight: 600;
     letter-spacing: 0.18em; text-transform: uppercase;
   }
-  #meta { font-size: calc(clamp(10px, 3.8vh, 15px) * var(--meta-scale, 1)); color: var(--text-muted); font-variant-numeric: tabular-nums; }
-  #place { font-size: calc(clamp(10px, 3.8vh, 15px) * var(--location-scale, 1)); color: var(--accent-fg); letter-spacing: 0.08em; text-transform: uppercase; }
+  #meta { font-size: calc(12px * var(--ts) * var(--meta-scale, 1)); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  /* A place picked in Settings reads "City, Region, Country": up to two lines, and the
+   * tail is what gives way. */
+  #place {
+    font-size: calc(11px * var(--ts) * var(--location-scale, 1)); color: var(--accent-fg); letter-spacing: 0.08em; text-transform: uppercase;
+    overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  }
 
-  #forecast { display: flex; flex: 1; max-width: 58%; justify-content: space-evenly; gap: 4px; }
-  .fc { display: flex; flex-direction: column; align-items: center; gap: 1vh; min-width: 0; }
+  #forecast {
+    display: flex; flex: 1 1 auto; max-width: 58%; min-width: min-content;
+    justify-content: space-evenly; gap: calc(3px * var(--ts));
+  }
+  /* Forecast set to off: no empty strip holding the conditions to one side. */
+  #forecast:empty { display: none; }
+  .fc { display: flex; flex-direction: column; align-items: center; gap: calc(2px * var(--ts)); min-width: 0; }
   .fc .t {
     color: var(--text-dim); font-weight: 600;
     letter-spacing: 0.2em; text-transform: uppercase;
-    font-size: calc(clamp(8px, 3vh, 11px) * var(--forecast-scale, 1)); white-space: nowrap;
+    font-size: calc(8px * var(--ts) * var(--forecast-scale, 1)); white-space: nowrap;
   }
-  .fc .e { font-size: clamp(16px, 8vh, 34px); line-height: 1; }
-  .fc .v { color: var(--text); font-size: calc(clamp(11px, 4.6vh, 19px) * var(--forecast-scale, 1)); font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .fc .s { color: var(--text-muted); font-size: calc(clamp(9px, 3.2vh, 13px) * var(--forecast-scale, 1)); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .fc .e { font-size: calc(18px * var(--ts)); line-height: 1; }
+  .fc .v { color: var(--text); font-size: calc(12px * var(--ts) * var(--forecast-scale, 1)); font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .fc .s { color: var(--text-muted); font-size: calc(10px * var(--ts) * var(--forecast-scale, 1)); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
+  /* A half-width tile at full height: the conditions over the strip, which gets the
+   * whole width. Side by side, the bigger type leaves the strip too little of it. */
+  @media (max-width: 800px) and (min-height: 300px) {
+    #wrap { flex-direction: column; justify-content: center; gap: calc(10px * var(--ts)); }
+    #now { flex: none; max-width: 100%; }
+    #forecast { flex: none; width: 100%; max-width: none; }
+  }
   /* Quarter slots are too narrow for the strip; keep just current conditions */
   @media (max-width: 470px) { #forecast, #tempScale { display: none; } }
   /* The day's temperature span: the tile's ruler. Hidden until data lands. */
@@ -60,10 +90,6 @@
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker">WX</span>
-    <span class="st" id="mode"></span>
-  </header>
   <div id="wrap">
     <div id="now">
       <div id="icon">…</div>
@@ -194,16 +220,13 @@
       const mode = s.forecast || 'hourly';
       renderForecast(data, mode);
       renderScale(data);
-      document.getElementById('mode').textContent =
-        mode === 'daily' ? '6-day' : mode === 'off' ? '' : '12h';
       document.getElementById('error').hidden = true;
     } catch (e) {
       WW.log('weather failed: ' + e.message);
       document.getElementById('errorBody').textContent =
         e.message + '. Check the location name in Settings.';
-      // On glass/transparent tiles the overlay is translucent — the mode and the
-      // temperature ruler must not present stale forecast data through it.
-      document.getElementById('mode').textContent = '';
+      // On glass/transparent tiles the overlay is translucent — the temperature ruler
+      // must not present stale forecast data through it.
       document.getElementById('tempScale').classList.add('pending');
       document.getElementById('error').hidden = false;
     }

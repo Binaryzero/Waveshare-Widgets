@@ -24,9 +24,11 @@
     border-radius: var(--radius-control);
     background: linear-gradient(165deg, var(--control-bg) 0%, var(--surface-alt) 55%, var(--surface) 100%);
     border: 1px solid var(--line);
+    /* The top light is the theme's text colour, faint (white vanished on a light theme);
+     * the drop shadow stays black, the one colour a shadow is in every theme. */
     box-shadow:
       0 3px 10px rgba(0, 0, 0, calc(var(--panel-shadow-alpha) * 2.4)),
-      inset 0 1px 0 rgba(255, 255, 255, calc(var(--panel-border-alpha) * 0.5));
+      inset 0 1px 0 color-mix(in srgb, var(--text) calc(var(--panel-border-alpha) * 50%), transparent);
     overflow: hidden;
     cursor: pointer;
     /* none, not manipulation: nothing here scrolls, and manipulation still PERMITS a
@@ -58,37 +60,41 @@
   /* When empty keys are hidden they still occupy the grid (so used-key positions and
      click coordinates stay correct) but render invisibly. */
   .key.empty.hidden { background: transparent; border-color: transparent; box-shadow: none; }
+  /* Type, and the spacing that sits with it, is its smallest-tile size times the tile
+   * scale (widget-base.css). The picker keeps 8px at its sides: the shell's page rail. */
   #picker {
     position: fixed; left: 0; right: 0; bottom: 0;
-    display: flex; gap: 6px; padding: 6px 8px; justify-content: center;
+    display: flex; gap: calc(5px * var(--ts)); padding: calc(5px * var(--ts)) 8px; justify-content: center;
     background: rgba(var(--surface-rgb), 0.85); flex-wrap: wrap;
   }
   #picker button {
     min-width: 0; max-width: 100%; overflow-wrap: anywhere;
-    font: inherit; font-size: clamp(9px, 3vh, 13px);
+    font: inherit; font-size: calc(9px * var(--ts));
     color: var(--text); background: var(--control-bg); border: 1px solid var(--line);
-    border-radius: var(--radius-control); padding: 4px 10px; cursor: pointer;
+    border-radius: var(--radius-control); padding: calc(3px * var(--ts)) calc(8px * var(--ts)); cursor: pointer;
     /* A drag here must not reach the shell's pager (#206, #214). #picker is a SIBLING of
        #live, so the rule on #live never covered these, and renderPicker() rebuilds them
        on every profile change — which is why this is a rule and not a class. Nothing
        inside scrolls, so `none` is the whole answer. */
     touch-action: none;
   }
-  #picker button.active { border-color: var(--accent); color: var(--accent); }
+  /* Accent TEXT is --accent-fg, the accent repaired for contrast; the raw pick may sit
+   * right on the surface. */
+  #picker button.active { border-color: var(--accent-fg); color: var(--accent-fg); }
   .key img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: var(--radius-control); }
   .key .title {
     position: absolute; left: 0; right: 0; bottom: 0;
     color: var(--text);
-    font-size: calc(clamp(8px, 2.6vh, 12px) * var(--title-scale, 1));
+    font-size: calc(8px * var(--ts) * var(--title-scale, 1));
     text-align: center;
-    padding: 2px 3px;
+    padding: calc(2px * var(--ts)) 3px;   /* the key's width is the title's, every pixel */
     /* Legibility scrim over the key image, in the theme's surface tone so the
      * default --text title stays readable on light themes too. */
     background: linear-gradient(transparent, rgba(var(--surface-rgb), 0.75));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .key .fallback {
-    font-size: calc(clamp(9px, 3.2vh, 14px) * var(--fallback-scale, 1));
+    font-size: calc(9px * var(--ts) * var(--fallback-scale, 1));
     color: var(--text-muted);
     text-align: center;
     padding: 4px;
@@ -124,11 +130,11 @@
   }
   #message {
     position: fixed; inset: 0;
-    display: none; flex-direction: column; gap: 1.4vh;
+    display: none; flex-direction: column; gap: calc(3px * var(--ts));
     align-items: center; justify-content: center;
     text-align: center; padding: 18px;
     color: var(--text-muted);
-    font-size: calc(clamp(12px, 4.5vh, 18px) * var(--message-scale, 1));
+    font-size: calc(12px * var(--ts) * var(--message-scale, 1));
   }
   #message small { color: var(--text-dim); font-size: 80%; max-width: 90%; }
 </style>
@@ -415,6 +421,30 @@
         grid.appendChild(cell);
       }
     }
+    fitTitles();
+  }
+
+  // A title wider than its key steps down to fit before it ellipsizes, but never below
+  // its size before the tile scale: a quarter tile had room for "Stream Start" then, and
+  // the bigger type must not be what cuts it.
+  function fitTitles() {
+    for (const t of document.querySelectorAll('#grid .title, #grid .fallback')) {
+      t.style.fontSize = '';
+      const cs = getComputedStyle(t);
+      const pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+      const over = (t.scrollWidth - pad) / (t.clientWidth - pad);
+      if (!(over > 1)) continue;
+      const size = parseFloat(cs.fontSize);
+      t.style.fontSize = Math.max(size / WW.tileScale, size / over * 0.97) + 'px';
+    }
+  }
+  // The titles measured are not final at the first grid: the tile scale is stamped on the
+  // root at DOMContentLoaded when the root did not exist yet at injection, and the web
+  // font lands later still.
+  document.addEventListener('DOMContentLoaded', fitTitles);
+  if (document.fonts) {
+    if (document.fonts.ready) document.fonts.ready.then(fitTitles);
+    document.fonts.addEventListener('loadingdone', fitTitles);
   }
 </script>
 </body>

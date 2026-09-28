@@ -19,23 +19,26 @@
     display: block;
     background: transparent;
   }
-  /* Empty/invalid setup state: .state-card anatomy, kept at the widget's fluid
-   * sizes so it scales across quarter/half/full slots. */
-  #overlay { position: fixed; inset: 0; gap: 1.6vh; }
+  /* Empty/invalid setup state: .state-card anatomy at the state card's own sizes —
+   * the title's 13px and the body's 11px at the smallest tile — times the tile scale
+   * (--ts) and the Message size setting. The glyph is the size it had at a 320x200
+   * band, scaled the same way. It is drawn in lines on the tile's surface, so it takes
+   * the accent repaired against that surface, not the raw pick. */
+  #overlay { position: fixed; inset: 0; gap: calc(4px * var(--ts)); }
   #glyph {
-    width: clamp(26px, 12vh, 48px);
-    height: clamp(26px, 12vh, 48px);
-    color: var(--accent);
+    width: calc(26px * var(--ts));
+    height: calc(26px * var(--ts));
+    color: var(--accent-fg);
     opacity: 0.9;
   }
   #message {
     color: var(--text-muted);
-    font-size: calc(clamp(13px, 5vh, 20px) * var(--msg-scale, 1));
+    font-size: calc(13px * var(--ts) * var(--msg-scale, 1));
   }
   #hint {
     color: var(--text-muted);
     opacity: 0.6;
-    font-size: calc(clamp(10px, 3.4vh, 14px) * var(--msg-scale, 1));
+    font-size: calc(11px * var(--ts) * var(--msg-scale, 1));
   }
 </style>
 </head>
@@ -79,9 +82,22 @@
   }
 
 
-  WW.onInit((state) => {
-    const s = state.settings;
-    const theme = s.theme === 'light' ? 'light' : 'dark';
+  // The chat's theme. Twitch's embed takes one switch, darkpopout, and is light without
+  // it. 'auto' (the default) follows the panel: the theme's --appearance, which the
+  // widget API also stamps on the document as data-appearance. 'dark' and 'light' pin
+  // one, for a chat that should differ from the panel around it.
+  function chatDark(s) {
+    if (s.theme === 'dark') return true;
+    if (s.theme === 'light') return false;
+    const appearance = (WW.theme && WW.theme['--appearance'])
+      || document.documentElement.dataset.appearance || 'dark';
+    return appearance !== 'light';
+  }
+
+  let settings = {};
+
+  function apply() {
+    const s = settings;
     // Message color comes from the theme tokens (global theme or the per-slot
     // style override) — legacy msgColor keys are ignored.
     document.body.style.setProperty('--msg-scale', (Number(s.msgSize) || 100) / 100);
@@ -95,7 +111,9 @@
       document.getElementById('hint').textContent = parsed.state === 'empty' ? HINT_EMPTY : HINT_INVALID;
       overlay.hidden = false;
       frame.style.display = 'none';
-      if (frame.getAttribute('src')) frame.src = 'about:blank'; // stop a previously loaded chat
+      // Stop a previously loaded chat — once: a theme push re-runs this.
+      const was = frame.getAttribute('src');
+      if (was && was !== 'about:blank') frame.src = 'about:blank';
       return;
     }
 
@@ -105,9 +123,18 @@
     // or Twitch refuses to render the embed. Computed at runtime — never hardcoded.
     const src = 'https://www.twitch.tv/embed/' + parsed.channel +
       '/chat?parent=' + encodeURIComponent(location.hostname) +
-      (theme === 'dark' ? '&darkpopout' : '');
+      (chatDark(s) ? '&darkpopout' : '');
     if (frame.getAttribute('src') !== src) frame.src = src;
+  }
+
+  WW.onInit((state) => {
+    settings = state.settings || {};
+    apply();
   });
+  // A theme push repaints the tokens with no help, but the chat is Twitch's page and
+  // only hears about the theme through its URL: an 'auto' chat reloads when the panel
+  // goes light or dark. The src check in apply() makes any other push a no-op.
+  WW.onTheme(() => apply());
 </script>
 </body>
 </html>

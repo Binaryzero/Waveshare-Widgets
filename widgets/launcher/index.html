@@ -22,14 +22,16 @@
     border-radius: var(--radius-control);
     background: linear-gradient(165deg, var(--control-bg) 0%, var(--surface-alt) 55%, var(--surface) 100%);
     border: 1px solid var(--line);
+    /* The top light is the theme's text colour, faint (white vanished on a light theme);
+     * the drop shadow stays black, the one colour a shadow is in every theme. */
     box-shadow:
       0 3px 10px rgba(0, 0, 0, calc(var(--panel-shadow-alpha) * 2.4)),
-      inset 0 1px 0 rgba(255, 255, 255, calc(var(--panel-border-alpha) * 0.5));
+      inset 0 1px 0 color-mix(in srgb, var(--text) calc(var(--panel-border-alpha) * 50%), transparent);
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 2px;
+    gap: calc(2px * var(--ts));
     min-width: 44px;
     min-height: 44px;
     overflow: hidden;
@@ -53,14 +55,21 @@
     font-size: var(--icon-size, clamp(18px, 14vh, 64px));
     line-height: 1.15;
   }
+  /* The label is its smallest-tile size times the tile scale (widget-base.css); layout()
+   * measures it and gives the emoji what is left of the tile. */
   .tile .label {
     color: var(--text);
-    font-size: calc(clamp(9px, 3.2vh, 14px) * var(--label-scale, 1));
+    font-size: calc(9px * var(--ts) * var(--label-scale, 1));
     max-width: 94%;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   #message { position: fixed; inset: 0; }
-  #message .state-body { font-size: clamp(11px, 3.6vh, 13px); }
+  /* A 200px band has no room for the icon above the setup text at its readable size,
+   * and the text is what says what to do. */
+  @media (max-height: 240px) {
+    #message { padding-block: var(--space-2); }
+    #message .state-icon { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -244,15 +253,41 @@
     const grid = document.getElementById('grid');
     grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
     grid.style.gridTemplateRows = 'repeat(' + rows + ', 1fr)';
-    // Emoji sized off the actual cell, so it stays big but never overflows.
+    // Emoji sized off the actual cell, so it stays big but never overflows: never more
+    // than the tile has left over its label, which grows with the tile scale and is
+    // measured rather than assumed (the icon's line box is 1.15 of its size; 2 is the
+    // tile's hairline border).
     const pad = 8, gap = 8;
     const cellW = (window.innerWidth - pad * 2 - gap * (cols - 1)) / cols;
     const cellH = (window.innerHeight - pad * 2 - gap * (rows - 1)) / rows;
-    const icon = Math.max(14, Math.min(cellH * 0.44, cellW * 0.6, 96));
+    const labels = grid.querySelectorAll('.tile .label');
+    for (const l of labels) l.style.fontSize = '';   // a resize re-fits from the CSS size
+    const tile = grid.querySelector('.tile');
+    const labelH = tile ? tile.querySelector('.label').getBoundingClientRect().height : 0;
+    const tileGap = tile ? parseFloat(getComputedStyle(tile).rowGap) || 0 : 0;
+    const room = (cellH - 2 - labelH - tileGap) / 1.15;
+    const icon = Math.max(14, Math.min(cellH * 0.44, cellW * 0.6, 96, room));
     document.body.style.setProperty('--icon-size', Math.round(icon) + 'px');
+    // A name wider than its tile steps down to fit before it ellipsizes, but never below
+    // its size before the tile scale: a crowded quarter tile had room for it then, and
+    // the bigger type must not be what cuts it.
+    for (const l of labels) {
+      const over = l.scrollWidth / l.clientWidth;
+      if (!(over > 1)) continue;
+      const size = parseFloat(getComputedStyle(l).fontSize);
+      l.style.fontSize = Math.max(size / WW.tileScale, size / over * 0.97) + 'px';
+    }
   }
 
   window.addEventListener('resize', layout);
+  // The labels layout() measures are not final at the first build: the tile scale is
+  // stamped on the root at DOMContentLoaded when the root did not exist yet at injection,
+  // and the web font lands later still. Either one re-fits the tiles already built.
+  document.addEventListener('DOMContentLoaded', layout);
+  if (document.fonts) {
+    if (document.fonts.ready) document.fonts.ready.then(layout);
+    document.fonts.addEventListener('loadingdone', layout);
+  }
 </script>
 </body>
 </html>

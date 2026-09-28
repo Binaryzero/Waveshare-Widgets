@@ -307,7 +307,7 @@ const TOKEN = 'Bearer super-secret-probe-token';
   s = await read();
   check('R6b after the endpoint fails, the last value stays on screen, dimmed',
     s.value === '42' && s.stale && !s.bodyHidden, `${s.value} stale=${s.stale}`);
-  check('R6c and the header pill says Stale rather than pretending it is live',
+  check('R6c and the pill says Stale rather than pretending it is live',
     s.pill === 'Stale', String(s.pill));
 
   // ---- R7 · null, pointer miss, non-scalar each name the fix -----------------------
@@ -1111,6 +1111,36 @@ const TOKEN = 'Bearer super-secret-probe-token';
   // an unconditional pass here let exactly that through.
   check('R9 populated screenshots captured for quarter / half / half-upper, each showing the value',
     shotValues.length === 3 && shotValues.every((v) => v.endsWith('=87.3')), shotValues.join(' '));
+
+  // ---- RL · the title is the reading's, in the body (beta.21: no header) --------------
+  // The header used to carry the user's title as corner micro-type, and "REST" when there
+  // was none. It is data, so it sits over the number now; with none set nothing stands in
+  // for it, and a card with no reading still names the reading it is about.
+  const titleOf = () => page.evaluate(() => {
+    const t = document.getElementById('title');
+    const r = t.getBoundingClientRect(), v = document.getElementById('value').getBoundingClientRect();
+    return { text: t.textContent, shown: !t.hidden && r.height > 0, above: r.bottom <= v.top + 1,
+      px: parseFloat(getComputedStyle(t).fontSize), inText: document.body.innerText,
+      header: !!document.querySelector('header') };
+  });
+  await page.setViewportSize({ width: 640, height: 400 });
+  const labelled = await titleOf();
+  check('RL1 the title shows over the value, at body size or larger, not as a header',
+    labelled.text === 'Reactor core' && labelled.shown && labelled.above && labelled.px >= 12
+      && !labelled.header, JSON.stringify({ text: labelled.text, shown: labelled.shown, above: labelled.above,
+      px: labelled.px, header: labelled.header }));
+  await init({ url: 'https://api.test/shot', jsonPointer: '/data/temperature', pollSeconds: 60, bgStyle: 'solid' });
+  await wait(400);
+  const unlabelled = await titleOf();
+  check('RL2 with no title set, nothing stands in for one (no "REST")',
+    !unlabelled.shown && !/\bREST\b/i.test(unlabelled.inText), unlabelled.inText.replace(/\s+/g, ' ').slice(0, 80));
+  respond = () => ({ status: 503, body: '' });
+  await init({ url: 'https://api.test/shot-down', jsonPointer: '/data/temperature', label: 'Reactor core', pollSeconds: 60, bgStyle: 'solid' });
+  await wait(400);
+  const card = await page.evaluate(() => ({ title: document.getElementById('stateTitle').textContent,
+    label: document.getElementById('stateLabel').hidden ? null : document.getElementById('stateLabel').textContent }));
+  check('RL3 an error card with no reading behind it still names the reading',
+    /503/.test(card.title) && card.label === 'Reactor core', JSON.stringify(card));
 
   await browser.close();
   console.log(failures ? `${failures} FAILURES` : 'ALL PASS');

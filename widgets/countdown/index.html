@@ -6,39 +6,54 @@
 <link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
   /* Widget-specific layout; tokens, background/bgStyle and the typography base
-   * come from widget-base.css. Designed for quarter (320px) first. */
+   * come from widget-base.css. Designed for quarter (320px) first.
+   * No header: the event's title is the first line of the body, at a size you can read
+   * across the room, and the value under it. Type is its size on a 320x200 band times
+   * the tile scale (--ts), so a bigger tile reads bigger. */
   body {
     display: flex;
     flex-direction: column;
     padding: clamp(8px, 4vh, 18px) clamp(12px, 5%, 28px) clamp(10px, 4.5vh, 20px);
-    gap: 0.5vh;
+    gap: calc(1px * var(--ts));
   }
-  header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
-  #title {
-    font-size: clamp(10px, 3.4vh, 14px);
-    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  #pill { flex: none; }
   main {
     flex: 1; min-height: 0;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 1.6vh;
+    gap: calc(3px * var(--ts));
   }
+  /* The user's own name for the moment: data, so it reads as text rather than as an
+   * uppercase label. Two lines before it gives up with an ellipsis. */
+  #title {
+    color: var(--text);
+    font-size: calc(14px * var(--ts));
+    font-weight: 600;
+    line-height: 1.25;
+    text-align: center;
+    max-width: 100%;
+    overflow: hidden;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    overflow-wrap: anywhere;
+  }
+  /* The one exception to "the size at the smallest tile": a 200px band held this at 16vh
+   * (32px) and a 400px tile at 64px, so 32px times the scale would SHRINK the tall tiles
+   * the countdown is mostly shown on. 44px is the size that keeps them where they were
+   * and gives the bands the room they always had. 21vw is a guard for a count with a
+   * four-digit day number in a quarter-width tile. */
   #value {
     color: var(--text);
-    font-size: clamp(26px, 16vh, 64px);
+    font-size: min(calc(44px * var(--ts)), 21vw);
     font-weight: 700;
     line-height: 1;
     letter-spacing: 0.01em;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  #value.reached { font-size: clamp(20px, 11vh, 44px); font-weight: 500; white-space: normal; text-align: center; }
+  #value.reached { font-size: calc(30px * var(--ts)); font-weight: 500; white-space: normal; text-align: center; }
   #value .u { font-size: 48%; font-weight: 500; color: var(--text-muted); }
   #value .gap { display: inline-block; width: 0.28em; }
   #sub {
     color: var(--text-muted);
-    font-size: clamp(11px, 4.2vh, 16px);
+    font-size: calc(12px * var(--ts));
     font-variant-numeric: tabular-nums;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
   }
@@ -53,11 +68,8 @@
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker" id="title">Countdown</span>
-    <span class="pill" id="pill" hidden></span>
-  </header>
   <main id="main" hidden>
+    <div id="title" hidden></div>
     <div class="value" id="value">--</div>
     <div id="sub"></div>
   </main>
@@ -77,7 +89,7 @@
   const $ = (id) => document.getElementById(id);
 
   // Rebuilt on every ww-init (settings edits arrive as re-inits).
-  const cfg = { title: 'Countdown', raw: '', targetMs: null, startMs: null, state: 'empty' };
+  const cfg = { title: '', raw: '', targetMs: null, startMs: null, state: 'empty' };
   let started = false;   // the 1 Hz loop starts once; later inits just reconfigure
   const last = {};       // last written DOM strings — skip no-op writes
 
@@ -150,20 +162,20 @@
   WW.onInit((state) => {
     const s = state.settings;
 
-    cfg.title = String(s.title == null ? '' : s.title).trim() || 'Countdown';
+    // No title, no title line: the tile does not name itself, and the value gets the room.
+    cfg.title = String(s.title == null ? '' : s.title).trim();
     cfg.raw = String(s.target == null ? '' : s.target).trim();
     cfg.targetMs = parseTarget(cfg.raw);
     cfg.state = !cfg.raw ? 'empty' : cfg.targetMs == null ? 'error' : 'run';
     cfg.startMs = cfg.state === 'run' ? origin(cfg.raw) : null;
     $('title').textContent = cfg.title;
+    $('title').hidden = !cfg.title;
     for (const k of Object.keys(last)) delete last[k];  // repaint with new config
 
     if (cfg.state === 'empty') {
-      $('pill').hidden = true;
       showState('empty', 'Set a countdown',
         'Pick a target date and time in the widget settings — for example 2026-12-24 18:00.');
     } else if (cfg.state === 'error') {
-      $('pill').hidden = true;
       showState('error', 'Can’t read the target date',
         '“' + cfg.raw.slice(0, 60) + '” is not a date. Try a format like 2026-12-24 18:00.');
     } else {
@@ -231,14 +243,6 @@
     });
   }
 
-  function setPill(text, cls) {
-    if (!put('pill', text + '|' + cls)) return;
-    const p = $('pill');
-    p.className = 'pill' + (cls ? ' ' + cls : '');
-    p.textContent = text;
-    p.hidden = false;
-  }
-
   function setSub(text) {
     if (put('sub', text)) $('sub').textContent = text;
   }
@@ -262,16 +266,15 @@
         v.textContent = '🎉 It’s time!';
       }
       setSub(agoFor(Math.floor(-diff / 1000)));
-      setPill('Done', 'ok');
       $('meter').classList.add('ok');
       if (put('meter', '100')) $('meterFill').style.width = '100%';
       return;
     }
 
     setPair(pairFor(Math.ceil(diff / 1000)));
+    // The corner pill that repeated the target's date (or "Today", or "Done") is gone:
+    // this line already says when, and the value how long.
     setSub('until ' + fmtTarget(cfg.targetMs));
-    setPill(diff < 86400000 ? 'Today'
-      : new Date(cfg.targetMs).toLocaleDateString([], { month: 'short', day: 'numeric' }), '');
 
     // Progress from when this target was configured; 0.1% steps keep DOM writes rare.
     const span = cfg.targetMs - cfg.startMs;

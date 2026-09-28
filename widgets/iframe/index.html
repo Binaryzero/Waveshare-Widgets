@@ -16,11 +16,11 @@
     transform-origin: top left;
     background: transparent;
   }
-  /* Empty/setup state: .state-card anatomy, kept at the widget's fluid sizes
-   * and subdued placeholder tones. */
-  #empty { position: fixed; inset: 0; gap: 1.5vh; }
-  #empty .head { color: var(--text-muted); font-size: clamp(13px, 5vh, 20px); }
-  #empty .sub { color: var(--text-dim); font-size: clamp(9px, 3.5vh, 14px); max-width: 640px; }
+  /* Empty/setup state: .state-card anatomy and its type, which scales with the tile
+   * (widget-base.css), in subdued placeholder tones. */
+  #empty { position: fixed; inset: 0; gap: calc(3px * var(--ts)); }
+  #empty .head { color: var(--text-muted); }
+  #empty .sub { color: var(--text-dim); }
 </style>
 </head>
 <body>

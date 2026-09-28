@@ -367,24 +367,46 @@ const ITEMS = Array.from({ length: 24 }, (_, i) => ({
     s3 > 300 && gs3.swipes.length === 1 && eyeBeforeS === eyeAfterS,
     `pages 0 -> ${s3}, swipes [${gs3.swipes}], aria-pressed ${eyeBeforeS} -> ${eyeAfterS}`);
 
-  // Where the browser still pans natively — the header, which has no scroller and no
-  // touch-action of its own — the pan chains to #pages and the widget's pointer is
-  // cancelled. The detector must stay out of it, or every such swipe pages twice. Started
-  // from the header's middle: its title sits at the far left, and a 160px stroke from
-  // there leaves the viewport, which ends the gesture rather than testing it.
+  // Where the browser still pans natively — a surface with no scroller and no touch-action
+  // of its own — the pan chains to #pages and the widget's pointer is cancelled. The
+  // detector must stay out of it, or every such swipe pages twice.
+  //
+  // This started from the header's middle. The widget has no header now (beta.21); the
+  // surface of the same kind is the mute bar — a plain strip above the list that only its
+  // chips act on — so two apps are muted to bring it up, and the stroke starts in the bar's
+  // blank stretch between the last chip and the eye. Asserted, not assumed: a start that
+  // landed on a chip, the eye or the list would test something else. (The tile's top
+  // padding is no substitute: it is a few pixels from the list, and Chromium takes a stroke
+  // there as the list's — so it pages once through the detector instead, which is right
+  // for the user but not what this check is about.) Unmuted again afterwards.
   await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
-  await page.waitForTimeout(300);
-  const hdBox = await frame.locator('header.hd').boundingBox();
-  const hdAt = await frame.evaluate(({ x, y }) => {
+  await frame.evaluate(() => { document.getElementById('list').scrollTop = 0; });
+  await frame.locator('.app-head').first().click();
+  await frame.locator('.app-head').first().click();
+  // Long enough for the new bar to settle before a finger lands on it: stroked 300 ms after
+  // it appeared, the page moved in only 3 runs of 10 (neither pan nor swipe), against 6 of
+  // 7 with this wait — about the rate the header start had.
+  await page.waitForTimeout(1500);
+  const barAt = await frame.evaluate(() => {
+    const bar = document.getElementById('muteBar').getBoundingClientRect();
+    const chipsEnd = Math.max(...[...document.querySelectorAll('#muteBar .chip')]
+      .map((c) => c.getBoundingClientRect().right));
+    const x = (chipsEnd + bar.right) / 2;
+    const y = bar.top + bar.height / 2;
     const el = document.elementFromPoint(x, y);
-    return el ? (el.id || el.className || el.tagName) : null;
-  }, { x: hdBox.width * 0.55, y: hdBox.height / 2 });
+    return { x, y, room: Math.round(bar.right - chipsEnd), at: el ? (el.id || el.tagName) : null };
+  });
   await armGesture();
-  await drag(hdBox.x + hdBox.width * 0.55, hdBox.y + hdBox.height / 2, -160, 0);
+  await drag(barAt.x, barAt.y, -160, 0);
   const s5 = await pagesLeft();
   const gs5 = await gestureLog();
   check('S5 where the browser pans natively, the page changes once and the detector stays out',
-    s5 > 300 && gs5.swipes.length === 0, `from ${hdAt}: pages 0 -> ${s5}, swipes [${gs5.swipes}]`);
+    barAt.at === 'muteBar' && barAt.room >= 40 && s5 > 300 && gs5.swipes.length === 0,
+    `from ${barAt.at} at (${Math.round(barAt.x)}, ${Math.round(barAt.y)}), ${barAt.room}px of blank bar: pages 0 -> ${s5}, swipes [${gs5.swipes}]`);
+  await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
+  await page.waitForTimeout(300);
+  for (let i = 0; i < 2; i++) await frame.locator('#muteBar .chip').first().click();
+  await page.waitForTimeout(200);
   await page.evaluate(() => { document.getElementById('pages').scrollLeft = 0; });
   await page.waitForTimeout(300);
 

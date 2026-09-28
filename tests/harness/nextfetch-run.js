@@ -11,6 +11,8 @@
 //        overwritten by "Nothing scheduled" (which hides the outage and removes Retry)
 //   N3 · a cadence change during a backoff must NOT fire an immediate fetch — the backoff is
 //        anchored on the last ATTEMPT, not the last success
+//   N4 · a Retry in progress reads as retrying — a spinner and the word — and nothing on the
+//        tile calls it Setup (the retry card once set the header pill to SETUP)
 //
 // Each case is falsified against the pre-fix widget (stash the change, or checkout the file)
 // before it is trusted: N1/N2/N3 all pass green there without the fix would be a hollow suite.
@@ -53,6 +55,7 @@ const settle = (p) => p.waitForTimeout(250);   // real time — lets a routed fe
   // What each ICS url answers, rescriptable per step, plus a request ledger.
   const responders = new Map();   // pathname -> () => ({ status, body })
   const hits = [];                // { url, at } for every calendar request the widget made
+  const held = [];                // routes a { hold: true } responder is keeping in flight
   const setCal = (name, fn) => responders.set('/' + name, fn);
   const hitsTo = (name) => hits.filter((h) => h.url.includes('/' + name));
 
@@ -72,6 +75,8 @@ const settle = (p) => p.waitForTimeout(250);   // real time — lets a routed fe
     const u = new URL(route.request().url());
     hits.push({ url: u.pathname, at: Date.now() });
     const r = (responders.get(u.pathname) || (() => ({ status: 200, body: EMPTY_ICS })))();
+    // A held request stays in flight until the test answers it (N4 looks at the tile then).
+    if (r.hold) { held.push(route); return undefined; }
     return route.fulfill({ status: r.status, contentType: r.contentType || 'text/calendar', body: r.body });
   });
   await page.route(/https?:\/\/(?!app\.plinth|widget\.test|cal\.test).*/, (route) => route.abort());
@@ -178,6 +183,29 @@ const settle = (p) => p.waitForTimeout(250);   // real time — lets a routed fe
   const recovered = await stateText();
   check('N2c a good refresh clears the error card back to "Nothing scheduled"',
     /Nothing scheduled/.test(recovered.title), recovered.title);
+
+  // ---- N4 · a Retry in progress says so, and says nothing about Setup ------------------
+  setCal('r.ics', () => ({ status: 503, body: 'down' }));
+  await init({ icsUrl: 'https://cal.test/r.ics', refreshMinutes: 5, bgStyle: 'solid' });
+  await settle(page);
+  const rErr = await stateText();
+  check('N4 setup: a calendar that is down shows the error card with Retry',
+    /unavailable/i.test(rErr.title) && rErr.hasRetry, `${rErr.title} retry=${rErr.hasRetry}`);
+  setCal('r.ics', () => ({ hold: true }));
+  await page.click('#state button');
+  await settle(page);
+  const retrying = await page.evaluate(() => ({
+    title: (document.querySelector('#state .state-title') || {}).textContent || '',
+    spinner: !!document.querySelector('#state .spinner'),
+    text: document.body.innerText,
+  }));
+  check('N4a while the retry is in flight the card reads Retrying, with a spinner',
+    retrying.title === 'Retrying' && retrying.spinner, JSON.stringify(retrying));
+  check('N4b ...and nothing on the tile labels it Setup',
+    !/setup/i.test(retrying.text), JSON.stringify(retrying.text));
+  // Answer it, so the request does not outlive the case.
+  while (held.length) await held.shift().fulfill({ status: 200, contentType: 'text/calendar', body: EMPTY_ICS });
+  await settle(page);
 
   // ---- N3 · a cadence change during a backoff does not fire an immediate fetch ----------
   // Reproduces the review's example: success, then a failure well after it, then a cadence
