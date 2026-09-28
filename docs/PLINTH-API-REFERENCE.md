@@ -351,79 +351,62 @@ Slots are placed first-fit in declaration order (e.g. `quarter-upper` then
 A page holds 8 half-height cells; anything beyond that is dropped with a log line.
 
 Layout lives in `%LocalAppData%\Plinth\layout.json` (pages → slots → widget id,
-size, per-instance settings) and is edited by the Settings window. Widgets should be
-fluid across their `supported_slots`.
+size, per-instance settings) and is edited by the Settings window — the only editor. The
+panel shows the tiles and nothing on it edits them; the settings window's live preview is
+where the layout is rearranged. Widgets should be fluid across their `supported_slots`.
 
-Removing a widget RETIRES its slot rather than discarding it — from all three ✕
-surfaces: the on-panel edit overlay, the settings form's slot list, and the settings
-window's live preview. The def moves verbatim into the layout's top-level `retained`
-array (with `retiredAt` and the origin page name), keeping its per-instance settings —
-sealed credentials included, as ciphertext — so a later restore can bring the tile back
-configured. The preview's ✕ does not retire in the replica: it NAMES the slot and the
-settings window retires it on the same path its own form uses, because only that side
-holds the unscrubbed def (the replica is handed every credential blanked). The attic is
-bounded (8 per
-widget id, oldest evicted; eviction also purges the instance's protected store) and is
-addressed only by `widgetId` + `instanceId`, never by grid position.
+Removing a widget RETIRES its slot rather than discarding it — from both ✕ surfaces: the
+settings form's slot list, and the settings window's live preview. The def moves verbatim
+into the layout's top-level `retained` array (with `retiredAt` and the origin page name),
+keeping its per-instance settings — sealed credentials included, as ciphertext — so a
+later restore can bring the tile back configured. The preview's ✕ does not retire in the
+replica: it NAMES the slot and the settings window retires it on the same path its own
+form uses, because only that side holds the unscrubbed def (the replica is handed every
+credential blanked). The attic is bounded (8 per widget id, oldest evicted; eviction also
+purges the instance's protected store) and is addressed only by `widgetId` + `instanceId`,
+never by grid position.
 
 **⧉ duplicates a tile** — same widget, same size, same settings, **credentials included** —
-on the same page, from the on-panel edit overlay and from the settings window's slot chip.
-The copy is a NEW instance: it gets its own `instanceId`, so it has its own widget-local
-storage and its own (empty) protected store — derived tokens (`WW.secure`) are not copied, and
-the copy buys its own with the copied credential. The panel holds credentials revealed, so its
-copy carries them and the host seals them for the new tile. The settings window never holds a
-stored credential, so its copy names its source in a transient `copiedFrom` marker and the host
-fills each untouched blank from the source's stored value on the copy's first save (see
-`docs/SECRET-ADDRESSING.md`). A pending Clear on the source travels with the copy, and a
-credential typed into the copy, or cleared on it, wins over the source's.
+on the same page, from the settings window's slot chip. The copy is a NEW instance: it gets
+its own `instanceId`, so it has its own widget-local storage and its own (empty) protected
+store — derived tokens (`WW.secure`) are not copied, and the copy buys its own with the
+copied credential. The settings window never holds a stored credential, so the copy names its
+source in a transient `copiedFrom` marker and the host fills each untouched blank from the
+source's stored value on the copy's first save (see `docs/SECRET-ADDRESSING.md`). A pending
+Clear on the source travels with the copy, and a credential typed into the copy, or cleared
+on it, wins over the source's.
 
-The fresh `instanceId` is load-bearing rather than tidy. A legacy tile that has never been
-edited on-panel has no id, and its credential is addressed positionally — an address that
-only exists while exactly one such tile of that widget does. A clone without an id would be
-the second, and the duplicate would destroy the credential of the tile it was copying.
+The fresh `instanceId` is load-bearing rather than tidy: two tiles sharing one would share
+widget-local storage and a protected store, each tile's state bleeding into the other's. (The
+host re-mints a repeated `instanceId` as it loads the layout, the first holder keeping it,
+so a hand-edited file with a slot pasted twice heals the same way.)
 
-Retired tiles are managed from the on-panel palette (edit mode → **Retired**, also reachable
-from any "+" add-zone) and from the settings window's widget shelf:
+Retired tiles are managed from the settings window's widget shelf:
 
 - **Restore** puts the tile back on the page you are looking at, keeping its `instanceId`,
-  so both its manifest secrets and its protected store reconnect. It is refused rather than
-  guessed at when the page named no longer exists — or when its name is shared by another
-  page, since a duplicate name cannot say which one you meant — and the button is disabled when the
-  tile's own size will not fit that page without displacing something already on it. The
-  column anchor comes back only on the page the tile was retired from; anywhere else it
-  flows. When the button is disabled for lack of room, the row says so on a line of its own.
-  On the panel a restore is performed by the host and answered with a fresh layout (the
-  panel reloads onto the page you were on, still editing), because the shell's copy of a
-  retired def holds ciphertext, not settings. In the settings window it is an edit like any
-  other, applied by **Save & apply**: the host hands back the def masked (`mask-retained`,
-  no disk write), the editor seats it on the page, and the save puts the stored credential
-  back by identity. A tile removed in the editor since it last loaded is put back as it
-  is, unsaved credential edits included. Unsaved edits never disable it.
-- **Delete** removes the entry and the instance's protected store for good — two taps, on
-  both surfaces. It never purges a store some surviving tile still references, and it
-  aborts without touching the layout if the protected store cannot be written. On the
-  panel it acts at once. In the settings window it is an edit applied by **Save & apply**:
-  the save names the deleted identities in a top-level `retainedDeleted` list, because the
-  host otherwise keeps every attic entry a payload merely omits. The host destroys their
-  protected stores before writing, and fails the save if it cannot. That includes a tile
-  removed and deleted before any save. If the layout file cannot be written, the editor
-  stays unsaved, to try again.
-
-Both surfaces hold their own copy of the list, so each destroy is mirrored to the other
-window: without that, the window that was not looking re-ships the entry on its next save
-and the tile comes back with credentials that still work.
+  so both its manifest secrets and its protected store reconnect. It is refused rather
+  than guessed at when that page is gone, or has filled, by the time the host's masked def
+  arrives, and the button is disabled when the tile's own size will not fit the page
+  without displacing something already on it. The column anchor comes back only on the page the tile was retired from;
+  anywhere else it flows. When the button is disabled for lack of room, the row says so on
+  a line of its own. A restore is an edit like any other, applied by **Save & apply**: the
+  host hands back the def masked (`mask-retained`, no disk write), the editor seats it on
+  the page, and the save puts the stored credential back by identity. A tile removed in
+  the editor since it last loaded is put back as it is, unsaved credential edits included.
+  Unsaved edits never disable it.
+- **Delete** removes the entry and the instance's protected store for good — two clicks.
+  It never purges a store some surviving tile still references, and it aborts without
+  touching the layout if the protected store cannot be written. It is an edit applied by
+  **Save & apply**: the save names the deleted identities in a top-level `retainedDeleted`
+  list, because the host otherwise keeps every attic entry a payload merely omits. The
+  host destroys their protected stores before writing, and fails the save if it cannot.
+  That includes a tile removed and deleted before any save. If the layout file cannot be
+  written, the editor stays unsaved, to try again.
 
 | Message | Direction | Payload |
 |---|---|---|
-| `restore-retained` | shell → host | `widgetId`, `instanceId`, `page`, `pageName` |
-| `clear-retained` | shell → host | `widgetId`, `instanceId` (backs the panel's **Delete** button) |
 | `mask-retained` | settings → host | `token`, `def` — mask a removed def for the editor to seat; no disk write |
 | `retained-masked` | host → settings | `token`, `def` (masked) |
-| `retained-restored` | host → settings | `page`, `pageName`, `widgetId`, `instanceId`, `def` (masked) — the PANEL restored it |
-| `retained-cleared` | host → shell | `widgetId`, `instanceId`, `saved` |
-| `retained-gone` | host → settings | `widgetId`, `instanceId` — the PANEL deleted it |
-| `evicted-ids` | host → shell | array of `{widgetId, instanceId}` gone in the background (the attic cap, or a settings-side delete) |
-| `retained-error` | host → shell | `reason` (`not-found` \| `bad-page` \| `failed`), `widgetId`, `instanceId` |
 
 ### The settings preview seam
 
@@ -437,7 +420,6 @@ are handed back rather than acted on locally. These are the messages it posts up
 | `save-layout` | shell (preview) → settings | `layout`, `gen` — the edit stream; structure only, merged over the working copy |
 | `slot-selected` | shell (preview) → settings | `page`, `index`, `instanceId`, `gen` |
 | `page-changed` | shell (preview) → settings | `index`, `gen` |
-| `style-widget` | shell (preview) → settings | `gen` — opens the settings-side inspector |
 | `add-widget` | shell (preview) → settings | `index`, `target` (`{col,row,w,h}` \| null), `gen` |
 | `remove-slot` | shell (preview) → settings | `page`, `index`, `instanceId` \| null, `gen` — the preview's ✕ |
 

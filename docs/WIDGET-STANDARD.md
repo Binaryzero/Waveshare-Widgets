@@ -101,7 +101,8 @@ radius tokens remain in the vocabulary for compatibility, at `0`.
 | `--card-surface` | Background of nested cards (`.card`, `.pill.muted`) | `rgba(--surface-alt-rgb, max(0, eff − 0.02))` |
 
 **Appearance is single-sourced.** The theme tokens — the global theme plus the per-slot
-style override (the 🎨 editor in edit mode / the slot's `style` in `layout.json`, see §2)
+style override (a widget's Appearance section in the settings window / the slot's `style`
+in `layout.json`, see §2)
 — are the *only* appearance system. Do **not** declare manifest `color` properties for
 chrome (text, labels, values, accents, backgrounds, state colors): they would duplicate
 the tokens, and three overlapping knobs for the same pixel is exactly the confusion the
@@ -142,11 +143,12 @@ palette:
 
 **When it applies.** Theme edits preview live — in the Theme panel's sample tile and in
 the settings window's full panel replica — and land on the panel when you hit
-**Save & apply**. On the panel itself, the per-widget style editor (the 🎨 button in
-edit mode) can re-specify any of the four seeds for a single widget; the palette is
-re-derived from the merged seeds (contrast repair included), pushed live via `ww-theme`,
-and persisted as the slot's `style`. Every stock widget consumes the tokens — a widget that hardcodes colors is
-out of compliance (§10), because it silently ignores the user's theme.
+**Save & apply**. A widget's Appearance section in the settings window can re-specify any
+of the four seeds for that widget alone; the palette is re-derived from the merged seeds
+(contrast repair included), pushed live via `ww-theme`, and saved as the slot's `style`.
+The panel only displays: nothing on it edits the theme or a tile. Every stock widget
+consumes the tokens — a widget that hardcodes colors is out of compliance (§10), because
+it silently ignores the user's theme.
 
 **Delivery.** The token map rides the shell init payload; the shell applies it to its own
 `:root` and forwards it to every widget iframe as the `theme` field of the `ww-init`

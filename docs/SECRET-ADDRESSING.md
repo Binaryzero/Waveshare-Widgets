@@ -174,7 +174,7 @@ a field must still be planned when the save arrives or the blank overwrites the 
 #68 is the sharp one, and PR #69 established why no lookup rule can fix it. These two
 sequences produce **byte-identical payloads**:
 
-1. the shell mints an id for a legacy slot on its first on-panel edit;
+1. a client mints an id for a legacy slot on its first unrelated edit;
 2. the user deletes the sole credentialed tile and adds a fresh instance of the same
    widget.
 
@@ -246,6 +246,8 @@ which is what the rest of Part B depends on.
 `DashboardWindow.save-layout` must hand `SecretSealResult.Minted` back to the shell, the
 way `SettingsWindow` already does, and `shell.js` must adopt the ids. That is #70, and it
 is the same channel — once identity flows both ways, both halves are the same feature.
+(Since overtaken: `LayoutStore.Load` stamps every slot before any client sees it, and the
+panel only displays, so it has no save for the host to answer.)
 
 ---
 
@@ -289,8 +291,8 @@ is the same channel — once identity flows both ways, both halves are the same 
      exists to police.
    - **Blanking needs two conditions, not one.** `CanUnprotect` (never
      `LooksLikeEnvelope` — a user can type `dpapi:v1:…`) AND a stably addressable slot.
-     An id-less slot gets an id minted by `shell.js` on its first unrelated on-panel edit
-     while the stored copy is still id-less, `SlotKey` refuses that mismatch (#68), the
+     An id-less slot gets an id minted by a client (the settings replica) on its first
+     unrelated edit while the stored copy is still id-less, `SlotKey` refuses that mismatch (#68), the
      restore misses, and the blank reaches disk. `Blankable` is both, and `Seal` consults
      the same predicate so the restore and the blank can never disagree.
    - **`Seal`'s empty case must be gated the same way.** A blank from a slot we did not
@@ -328,11 +330,11 @@ is the same channel — once identity flows both ways, both halves are the same 
      be any type, and each control's own reset emits an empty or absent value the host
      reads as untouched — so a Clear living in the `text` branch left every other type with
      an envelope it could not delete. It is keyed on the list now, in both editors.
-   - **`Reveal` did need a channel after all (#153).** I wrote that it did not, because the
-     editor can state what it cleared; but the panel cannot offer a Clear it does not know
-     to draw, and a blanked field is indistinguishable from an always-empty one. `Reveal`
-     reports the addresses it blanked and `DashboardWindow` stamps them where `Mask` puts
-     its own.
+   - **`Reveal` did need a channel after all (#153)** — while the panel had a settings
+     sheet of its own, it could not offer a Clear it did not know to draw, so `Reveal`
+     reported the addresses it blanked. That channel went with on-panel editing: the panel
+     only displays, the settings window is the only editor, and `Mask` is the only side
+     that names what it blanked.
 
    `LayoutSlot` still carries no extension data, so `ReadClearedMarkers` runs on the raw
    node before deserialization — and indexes over the slots that survive the placeholder
@@ -368,39 +370,40 @@ Learned at cost on #61, #65 and #69; they apply to every step above.
 
 ## The retained attic (#226): an identity-only address space
 
-A slot removed on-panel, from the settings form, or through the settings window's live
-preview is RETIRED, not discarded: its def moves verbatim into the top-level `retained[]`
+The panel shows the tiles and nothing on it edits them: every edit, removal included, is
+made in the settings window. A slot removed there — from its form or through its live
+preview — is RETIRED, not discarded: its def moves verbatim into the top-level `retained[]`
 array of `layout.json`, addressed solely by `widgetId|i:instanceId` — the same key
-`SlotKey` derives for an id-bearing live slot, and never by grid position. There are two
-retire paths, one per surface that holds a real def: `shell.js removeSlot` (panel-only by
-construction — it returns immediately under `?preview=1`) and `settings.js removeSlotAt`,
-which serves both the settings form and the preview. The preview NAMES a slot and never
-mints, so no client-invented identity crosses that boundary; the settings side corroborates
-the id against the one it holds and refuses a mismatch rather than guessing. Both paths
-mint an `instanceId` first when the def has none, so every attic entry is id-bearing; `Seal` and `BuildStoredIndex` visit retained slots (an on-panel-retired
-tile's revealed plaintext is re-sealed; an already-retired tile's ciphertext is findable
-across saves), while `Reveal`, `Mask`, and the `(page,slot)` cleared-marker channel
-deliberately do **not** — a retained tile never renders, so its secret travels to both
-editors and rests on disk as `dpapi:v1:` ciphertext only. Two consequences follow from
+`SlotKey` derives for an id-bearing live slot, and never by grid position. There is one
+retire path, `settings.js removeSlotAt`, which serves both the form and the preview. The
+preview NAMES a slot and never mints, so no client-invented identity crosses that boundary;
+the settings side corroborates the id against the one it holds and refuses a mismatch
+rather than guessing. `removeSlotAt` mints an `instanceId` first when the def has none, so
+every attic entry is id-bearing; `Seal` and `BuildStoredIndex` visit retained slots (a
+retired tile's plaintext — a credential typed this session — is re-sealed; an
+already-retired tile's ciphertext is findable across saves), while `Reveal`, `Mask`, and the
+`(page,slot)` cleared-marker channel deliberately do **not** — a retained tile never
+renders, so its secret travels to the settings editor and rests on disk as `dpapi:v1:`
+ciphertext only, and the panel is not sent the attic at all. Two consequences follow from
 identity-only addressing: the stored index's duplicate-key poison treats one instanceId
-seated in both pages and retained as ambiguity and blanks BOTH (the retire paths resolve
-the live tree before pushing, precisely so this state never arises in normal flow), and a
+seated in both pages and retained as ambiguity and blanks BOTH (the retire path resolves the
+live tree before pushing, precisely so this state never arises in normal flow), and a
 retired entry is reachable by identity alone — a widget with one live and one retired copy
 must not hand the retired credential to the live tile by position.
 
 The attic is bounded (`LayoutStore.MaxRetainedPerWidget` per widget id) and reconciled
-host-side on every save: the incoming attic is UNIONED with the disk's (a stale save from
-the other window cannot silently shrink it), then capped evict-oldest by `retiredAt`.
-Destroying an evicted entry removes its bytes from `layout.json` AND purges its derived
-ww-secure bucket (`WidgetSecrets.ForgetInstance`) — guarded by liveness, so an id a
-surviving tile still references is never purged, per #188's rule that the app purges only
-what it knowingly removed.
+host-side on every save: the incoming attic is UNIONED with the disk's (a stale payload
+cannot silently shrink it), then capped evict-oldest by `retiredAt`. Destroying an evicted
+entry removes its bytes from `layout.json` AND purges its derived ww-secure bucket
+(`WidgetSecrets.ForgetInstance`) — guarded by liveness, so an id a surviving tile still
+references is never purged, per #188's rule that the app purges only what it knowingly
+removed.
 
-**The legacy loss is closed, and the positional key is gone with it.** A tile never edited
-on-panel used to have no `instanceId` in the *stored* layout, so retiring it minted
+**The legacy loss is closed, and the positional key is gone with it.** A tile that had never
+been edited used to have no `instanceId` in the *stored* layout, so retiring it minted
 `widgetId|i:<new>` while the stored value sat under the positional `widgetId|w:0` — the
 carry-over missed and the manifest secret was dropped. The same shape cost a legacy tile
-its credential on its first on-panel edit, and no positional retry could recover it:
+its credential on its first edit, and no positional retry could recover it:
 stored-id-less + incoming-id-bearing is indistinguishable from "deleted the sole
 credentialed tile, added a fresh instance of the same widget", and recovering the first
 would hand the second a deleted instance's credential, which then transmits to whatever
@@ -408,10 +411,10 @@ endpoint the new tile points at. Lost is retypable; misdelivered is not.
 
 `LayoutStore.Load` now stamps every id-less slot — live and retired — and persists it,
 adopting the positional tag the widget is already running under so its stored state
-survives (#289). Every init payload, every save handler's `disk`, every restore, clear and
-migration reads through that one method, so an id-less slot cannot reach `SlotKey` from
-either side. That is what let the `|w:0` key and its publisher alias be **deleted**:
-`SlotKey` is identity or nothing.
+survives (#289). Every init payload, the save handler's `disk` and every migration read
+through that one method, so an id-less slot cannot reach `SlotKey` from either side. That is
+what let the `|w:0` key and its publisher alias be **deleted**: `SlotKey` is identity or
+nothing.
 
 Deleting it while the population was merely small would have reopened #272 and #275, both
 of which were mis-tuned claimant counts on that key. Deleting it once the population is
@@ -419,6 +422,18 @@ empty is what #68 had been asking for since the beginning. The probe series that
 those two bugs are kept and rebased onto frozen identities — same sequences, same
 user-visible outcomes, no count left to mis-tune — and the L series asserts the invariant
 directly, through the real `Load` and the real file.
+
+**Duplicate ids are healed in the same place.** Two live slots repeating one `instanceId` —
+a layout from an older build, or a hand-edited file with a slot pasted twice — share
+widget-local storage and a protected-store bucket, so settings and state on one bleed into
+the other. `LayoutStore.HealDuplicateIds` runs in `Load` beside the mint: the first holder
+in page order keeps the id and the storage it has been running under, and each later one
+gets the id with the first free `-N` suffix. It compares raw ids across every widget, the
+question `SecretPolicy.AmbiguousSlots` asks, so a healed layout gives that guard nothing to
+refuse. Retired ids are reserved, so a re-mint never lands on one, but a live slot is never
+re-keyed for sharing an id with an attic entry. The ids are derived, never random, for the
+mint's reason — `Load` hands back the healed model whether or not its write lands — and the
+result is persisted like a mint, so it is stable across boots. Probes L6–L6n.
 
 **A Clear that is followed by a Remove is honored, by identity.** The cleared-property
 channel is positional (`(page, slot)`), and a retired slot has no position — so when a
@@ -429,16 +444,15 @@ credential the user explicitly destroyed back into the attic, ready to reconnect
 restore. `ReadRetainedClearedMarkers` therefore reads the attic's markers off the raw node
 keyed by `widgetId|i:instanceId`, and `Seal` resolves them to slot references before
 walking, so one `Cleared()` answers for both address spaces. The check runs ahead of the
-value branches, so a clear drops a retired def's revealed plaintext (the on-panel path) and
-its ciphertext alike — exactly as it does for a live slot.
+value branches, so a clear drops a retired def's plaintext and its ciphertext alike —
+exactly as it does for a live slot.
 
 **Duplicate (#226) copies the credential, through one bounded second chance.** The owner's
-call on #226's open question was that a duplicate keeps its credentials. The panel copy
-carries the revealed values and needs nothing new. The settings window never holds a stored
-credential, so its copy names its source in `copiedFrom` — an inbound projection marker like
-`secretsCleared`, read off the raw node by `ReadCopiedFromMarkers` at (page, slot) in the
-filtered model, never reaching layout.json. `Seal` treats it as a second place to look for an
-UNTOUCHED blank only, never as a value, and only under these rules:
+call on #226's open question was that a duplicate keeps its credentials. The settings window
+never holds a stored credential, so a copy names its source in `copiedFrom` — an inbound
+projection marker like `secretsCleared`, read off the raw node by `ReadCopiedFromMarkers` at
+(page, slot) in the filtered model, never reaching layout.json. `Seal` treats it as a second
+place to look for an UNTOUCHED blank only, never as a value, and only under these rules:
 
 - The copy's own stored value comes first; a typed replacement or a named clear still wins.
 - It speaks only for a slot the disk has never held. Once the copy is saved it has an identity
@@ -462,110 +476,61 @@ save would strand anything the source could only have reached that way. Probes E
 both directions, E3 deliberately asserting the loss that an unminted clone would cause, so
 a later simplification of the duplicate path fails there rather than in the field.
 
-**Restore inherits three constraints from this model, and honors all three.** Restore
+**Restore is an edit**, applied by Save & apply and never greyed out by unsaved work. It
 keeps the retained `instanceId` (the derived ww-secure bucket reconnects through it) and
-must, in one mutation: (a) remove the entry from `retained[]` as it copies the def back
-into a page — else the pages∧retained twin arises and the poison blanks the just-restored
-credential; (b) mint a fresh id only on a genuine collision with a live tile; and
-(c) persist and re-init rather than render the moved def directly — `Reveal` is Pages-only,
-so a client-side restore would hand the widget sealed ciphertext as its setting.
-`LayoutStore.RestoreRetained` is that mutation. Two details are worth naming because they
-are not obvious from the constraints alone:
+inherits three constraints from this model: (a) the entry must leave `retained[]` as the def
+lands on a page — else the pages∧retained twin arises and the poison blanks the
+just-restored credential; (b) an identity already live on a page must not be seated a second
+time; and (c) the sealed def must never reach a page in a client — `Reveal` and `Mask` are
+Pages-only, so a sealed def on a page would load ciphertext into a revealable field, and a
+demoted envelope would ride the preview into a real widget iframe.
 
-- (a) is `RemoveAll` by identity, not "remove the matched entry". A duplicate-identity
-  attic is a corruption class this code already assumes it must survive — the stored
-  index shares one seen-set across the pages and retained walks precisely for it — so
-  restoring "the" entry and leaving its twin would manufacture the twin state the
-  constraint exists to avoid.
-- On the (b) re-mint path the ww-secure bucket stays with the live tile holding the old
-  id, which is correct under #188's rule: it is that tile's. So a re-minted restore
-  reconnects **Axis A only** — the DPAPI envelope is user-scoped, not instance-scoped, and
-  rides along — while the widget re-authenticates Axis B. Restoring an uncontested id (the
-  overwhelmingly common case) reconnects both.
-
-**In the settings window a restore is an edit**, applied by Save & apply and never greyed
-out by unsaved work. The editor holds the attic as it rests on disk, sealed, so it asks the
-host to mask the def (`mask-retained` → `retained-masked`, no disk write), then seats the
-masked def on the page in its own copy and drops the entry from its attic in the same step.
-The constraints still hold, at the save: (a) the union skips an identity live in the
-incoming pages, so the attic entry leaves disk as the slot arrives, and the slot's masked
-blank is the untouched kind, which `Seal` fills from the stored attic by identity
-(`BuildStoredIndex` walks it for exactly that; probe D4). (b) is a refusal on this side
-rather than a re-mint: an identity already live on a page means the tile is back, and the
-editor seats nothing. (c) needs no re-init, because the editor never holds the sealed def
-on a page. A tile the editor removed ITSELF since it last took the layout from disk is the
-exception: its attic entry is a copy of the editor's own tile, already masked, and may hold
-a credential typed since the last save. Masking it again would turn that into an untouched
-blank and the save would put the stored value back, so the editor seats it as it is. Until
-a save writes a restore, the panel still lists the entry as removed; a Delete there
-(`retained-gone`) takes the restored tile off the editor's page too, or the next save would
-write it back after its credentials were destroyed.
+The editor holds the attic as it rests on disk, sealed, so it asks the host to mask the def
+(`mask-retained` → `retained-masked`, no disk write), then seats the masked def on the page
+in its own copy and drops every entry under that identity from its attic in the same step.
+The constraints hold at the save: (a) the union skips an identity live in the incoming pages,
+so the attic entry leaves disk as the slot arrives, and the slot's masked blank is the
+untouched kind, which `Seal` fills from the stored attic by identity (`BuildStoredIndex`
+walks it for exactly that; probe D4). (b) is a refusal: an identity already live on a page
+means the tile is back, and the editor seats nothing. (c) holds because the editor never
+holds the sealed def on a page. A tile the editor removed ITSELF since it last took the
+layout from disk is the exception: its attic entry is a copy of the editor's own tile,
+already masked, and may hold a credential typed since the last save. Masking it again would
+turn that into an untouched blank and the save would put the stored value back, so the
+editor seats it as it is.
 
 The mask is over a wrapper that is literally `{"pages":[{"slots":[def]}]}` with the window's
-own `MaskedPlan()`, and so is the def the settings window hands the editor when the PANEL
-restores a tile. Both halves are load-bearing: `Mask` returns having done *nothing* unless
+own `MaskedPlan()`. Both halves are load-bearing: `Mask` returns having done *nothing* unless
 it finds `layoutNode["pages"]`, and a manifest-only plan walks straight past a **refused**
-widget's plaintext residue — either mistake posts a credential into the editor's model.
+widget's plaintext residue — either mistake posts a credential into the editor's model
+(probes M7d–M7f).
 
-**Clear destroys, and fails closed.** `ClearRetained` drops the entry (again `RemoveAll` by
-identity: a leftover twin would sit in the survivors' attic and talk the liveness guard out
-of the destroy, so the Clear would neither empty the row nor purge the bucket) and computes
-the forget set with `InstancesToForget` over the post-removal layout — eviction's rule
-exactly. Unlike eviction, a failure to write the secure store aborts the whole operation
-without saving: eviction tolerates catch-and-continue because blocking an ordinary save on
-secure-store trouble is the worse failure, but Clear is a dedicated destroy with its own
-ack, and saving a layout that no longer names the instance while its bucket survives would
-strand a *working* credential nothing references.
-
-**In the settings window, Delete is an edit too.** It drops the entry from the editor's copy,
+**Delete is an edit too, and it fails closed.** It drops the entry from the editor's copy,
 and the save NAMES the deleted identities in a top-level `retainedDeleted` list
 (`LayoutStore.ReadRetainedDeletes`; the model has no member for it, so it never reaches
-disk; more than 512 fails the save rather than being cut short). Omitting them would not do: the union puts back every disk entry a payload omits.
-`DropDeletedRetained` takes them out again after the union and returns what the save drops
-from disk under those identities: the attic entries, and a tile still on a disk page, which
-is what a tile removed and deleted in one session is. The save then does what Clear does, in
-the same order: it destroys their buckets under `InstancesToForget` before writing, failing
-the whole save if the secure store cannot be written, and once the write lands it tombstones
-what it destroyed and mirrors the drop to the panel. Liveness is judged by the payload
-alone, without eviction's disk-pages guard: that guard protects a tile a stale window
-dropped, and a save that passed the generation check is not stale, so a deleted identity on
-a disk page is one the user removed in this editor. A payload with no generation is never
-refused, so it keeps the guard. A write that does not land leaves the editor dirty with its
-Deletes still named, to retry. Probes D1–D3.
+disk; more than 512 fails the save rather than being cut short). Omitting them would not do:
+the union puts back every disk entry a payload omits. `DropDeletedRetained` takes them out
+again after the union — every entry under the identity, not the first match, since a
+leftover twin would sit in the survivors' attic and talk the liveness guard out of the
+destroy — and returns what the save drops from disk under those identities: the attic
+entries, and a tile still on a disk page, which is what a tile removed and deleted in one
+session is. The save destroys their buckets under `InstancesToForget` BEFORE writing, and
+fails the whole save if the secure store cannot be written. Eviction tolerates
+catch-and-continue, because blocking an ordinary save on secure-store trouble is the worse
+failure; a Delete is the user asking for the destroy, and saving a layout that no longer
+names the instance while its bucket survives would strand a *working* credential nothing
+references. Liveness is judged by the payload alone, without eviction's disk-pages guard:
+that guard protects a tile a stale payload dropped, and a save that passed the generation
+check is not stale, so a deleted identity on a disk page is one the user removed in this
+editor. A payload with no generation is never refused, so it keeps the guard. A write that
+does not land leaves the editor dirty with its Deletes still named, to retry. Probes D1–D3.
 
-**Cross-window convergence for Clear.** The union (`MergeRetainedFromDisk`) only ever ADDS
-disk entries the incoming payload omits — that asymmetry is what protects the attic from a
-stale window shrinking it — so an incoming entry the disk lacks is never questioned, and a
-still-open window re-ships a cleared entry from memory. `Seal` then keeps its still-openable
-ciphertext idempotently, and a later Restore would hand back a *working* credential the user
-explicitly destroyed. So each destroy is mirrored to the other window, both ways:
-settings→panel through `DashboardWindow.PostRetainedGone` (the shell's `evicted-ids`
-splice), panel→settings through the `DashboardWindow.RetainedGone` event that
-`SettingsWindow.Dashboard`'s setter subscribes to (the editor's `retained-gone` splice).
-The settings→panel direction is the one that would fail constantly without it — the panel
-re-ships its whole model on every drag and resize — but neither race is worth leaving open
-once the wiring exists.
-
-**A restore needs the same mirror, for the opposite reason.** The settings editor holds the
-pre-restore pages *and* still lists the entry as retired, and its next ordinary save writes
-that model back; the union cannot rescue the live slot, because it only ever adds disk attic
-entries. The tile would drop off its page and reappear in the removed list. So the panel
-also raises `RetainedRestored`, and the settings window answers it with exactly the masked
-def its own Restore would have produced — the editor adopts the slot rather than
-re-litigating it. Nothing is lost when it misses (a divergent page list declines the mirror
-and the restore simply reverts), but a restore that silently undoes itself is not a
-behaviour to ship.
-
-Both clients drop **every** entry under the identity, not the first match, exactly as the
-host does: a leftover twin is re-shipped on the next save, seating that identity in pages
-and retained at once — the poison state again.
-
-**One tombstone after all, and why the original objection does not apply to it.** The mirror
-converges the two editors, but it cannot reach a save that is already in flight: the panel
-serializes its whole model on every drag, so a payload built before a Delete can be
-*processed* after it, and the union cannot tell that copy from a legitimate one. The deleted
-def would land back on disk with bytes that still decrypt. So `LayoutStore` keeps the
-identities destroyed in this process run and drops them from any incoming attic.
+**One tombstone after all, and why the original objection does not apply to it.** A payload
+built before a Delete landed still carries the deleted def, and the union cannot tell that
+copy from a legitimate one — it only ever adds disk entries the incoming payload omits, and
+never questions what came in. The deleted def would land back on disk with bytes that still
+decrypt. So `LayoutStore` keeps the identities destroyed in this process run and drops them
+from any incoming attic (`SettingsWindow.SettleDeletes` records them; probe D5).
 
 The design rejected tombstones over the absence of an expiry story, and that objection is
 real for a persistent list. It does not apply here: the set is in memory, for one process,
@@ -575,92 +540,54 @@ correct. Nothing is written and nothing accumulates across runs. It is recorded 
 the layout write LANDS, because a failed write leaves the entry on disk for the user to
 retry and a tombstone would make the retry impossible.
 
-**What that set does NOT close, stated so nobody discovers it as a bug.** It filters the
-incoming ATTIC. A stale window can also carry the identity in its `pages` — a save after a
-Delete puts the tile back as a live slot with its sealed settings (the derived bucket stays
-destroyed, so the widget re-authenticates). A panel save queued just before a settings-side
-Restore can likewise be processed after it and revert the restore. Both are the same shape as
-the race the set closes, one field or one direction over.
-
-**The pages half, from the panel, is now mirrored (#281).** `DashboardWindow.LayoutWritten`
-fires when an on-panel save LANDS, and `SettingsWindow` hands the editor the freshly masked
-file as `layout-written`. The editor decides, because only it knows whether there is work to
-lose: CLEAN, it adopts the layout silently — no re-init, so the catalog, the secret-name union
-and the typed-credential record all survive; DIRTY, it adopts nothing, raises a banner and
-HOLDS Save until the user reloads. Held, not merged: this window's copy is whole-file, so
-saving it would revert the panel's write entire, and merging two divergent whole-file copies
-is what the union, the liveness guard and the destroyed-set each attempt for one field.
-
-The mask for that notice MERGES the manifest baseline rather than replacing it, for the
-`widgets-changed` reason: a dirty editor keeps a layout masked with the manifests as they
-stood at ITS init, and a baseline describing a layout nobody holds is how `Seal` stops walking
-a widget's secret fields and writes the editor's masked blank over the stored ciphertext.
-
-**The payload already IN FLIGHT is closed by the generation (#281).** The notice above
-converges the two clients' *future* state; it cannot reach a `save-layout` the host has
-already been handed. `LayoutStore` therefore keeps a monotonic `Generation` and the
-`LastWriter` that produced it — in memory, not persisted, for the same reason the
-destroyed-set is: a client only ever compares against a number this process handed it, and
-every window re-inits after a restart. Both inits carry it, both clients echo it on every
-save, and both adopt it back from the ack.
+**A payload built before a host write is refused (#281).** The settings window is the only
+client that writes `layout.json`, and it writes its whole copy back whole. The host writes
+the file on its own too — the identity heal in `Load`, a stock migration — so a copy built
+before such a write would revert it on its next save. `LayoutStore` therefore keeps a
+monotonic `Generation` and the `LastWriter` that produced it — in memory, not persisted, for
+the same reason the destroyed-set is: a client only ever compares against a number this
+process handed it, and the editor re-inits after a restart. The settings init carries it,
+the editor echoes it on every save, and adopts it back from the ack.
 
 **The rule is BEHIND *and* moved by somebody ELSE**, and both halves are load-bearing.
-Behind-ness alone would make the panel uneditable: it posts its whole model on every drag,
-so its next payload is out long before the previous ack lands and it is routinely behind
-itself — while not being stale about anything, because its own memory already holds what it
-just saved. `IsStale` is the single place that decides this, and the G-series in
-`tools/SecretRoundTrip` asserts both halves, because dropping either one breaks something
-the other cannot catch.
+Behind-ness alone would refuse ordinary editing: a second Save can leave before the first
+one's ack lands, so the editor's payload is behind itself — while not being stale about
+anything, because its own copy already holds what it just saved. `IsStale` is the single
+place that decides this, and the G-series in `tools/SecretRoundTrip` asserts both halves,
+because dropping either one breaks something the other cannot catch.
 
-**The writer is the payload SOURCE, never the requesting window.** An accepted client
-`save-layout` sets it to that window. Every write the host performs on a window's behalf —
-both restores, both clears, `RemoveWidgets`, the first-run materialize — is attributed to
-`LayoutStore.HostWriter`, so the requester is stale against its own request. Getting this
-wrong is subtle and expensive: on a panel-side Delete the panel would be the last writer,
-and the panel's own debounced save composed before the `retained-cleared` ack still carries
-the entry the Delete destroyed, so the exemption would wave it straight back in with bytes
-that still decrypt. The Delete path now also FLUSHES the armed style/prop debounces the way
-Restore already did, which puts most of that payload ahead of the clear instead of behind
-it.
+**The writer is the payload SOURCE.** An accepted client `save-layout` sets it to that
+window. Every write the host performs on its own — the identity heal, `RemoveWidgets`, the
+first-run materialize — is attributed to `LayoutStore.HostWriter`, which no client can be,
+so the editor is stale against any of them it has not seen.
 
 **The bump lives inside `Save`, past the write.** No caller can bump without writing, and a
 swallowed write failure leaves the generation where it was — the file still holds what the
-other window last saw, and bumping would lock that window out of content it matches exactly.
+settings window last saw, and bumping would lock it out of content it matches exactly.
 Every other writer in the codebase inherits the right behaviour by default.
 
-**A host write converged by SPLICE hands over its generation on the splice.** `evicted-ids`,
-`retained-gone`, `retained-restored` and both `retained-cleared` acks carry it, and the
-client adopts it only once it has applied the change. Restore and Clear deliberately avoid a
-full reload — they change no page — so without this the window they just converged would be
-refused on its very next gesture: deterministically, not as a race, producing exactly the
-flicker the splice exists to avoid.
+**The destroyed-set covers what the rule exempts.** `DropDestroyed` filters every incoming
+attic at any generation, whereas the rule deliberately exempts the editor's own saves — and
+the editor is the window that deleted.
 
-**The destroyed-set survives all of it.** `DropDestroyed` filters every incoming attic from
-either window at any generation, whereas the rule deliberately exempts a window's own save —
-which on a panel-side Delete is the destroying window itself. The generation subsumes only
-the CROSS-window half of that race.
+**A refusal must not silently un-clear a credential.** `def.secretsCleared` lives only in
+the editor's working copy and travels only on the save that was refused, so a refusal drops
+it and the reload hands the widget its plaintext back. The host reads the cleared markers
+off the raw node *before* it decides, and puts the answer on the refusal as
+`clearedCredentials`; the editor says so in words, because it is the one part of a refusal
+the user cannot see. The refusal also carries `seq`, or `pendingSaves` strands an entry
+that later clears the dirty marker for work still unsaved.
 
-**A refusal must not silently un-clear a credential.** `def.secretsCleared` lives only in a
-shell's in-memory `layoutData` and travels only on the save that was refused, so a refusal
-drops it and the re-init hands the widget its plaintext back. The host reads the cleared
-markers off the raw node *before* it decides, and puts the answer on the refusal as
-`clearedCredentials`; both clients say so in words, because it is the one part of a refusal
-the user cannot see. The settings refusal also carries `seq`, or `pendingSaves` strands an
-entry that later clears the dirty marker for work still unsaved.
-
-**Recovery differs by window, because what they stand to lose does.** The panel re-inits:
-its edits are a whole-layout snapshot built on a file that no longer exists, not operations
-that could be replayed, and "re-init" there is a full navigation, so there is nothing to
-preserve. The settings editor never re-inits over unsaved work — it raises the same banner
-the panel-write notice does and holds Save until the user reloads. A save that raced the
-notice lands in the same state, so it gets the same UI rather than a second one.
+**Recovery is the user's to choose.** The settings editor never re-inits over unsaved work:
+a refusal raises the stale banner and holds Save until the user reloads — two intact copies
+that disagree, and the user picks. Merging them is what the union, the liveness guard and
+the destroyed-set each attempt for one field.
 
 **The ack claims something about disk, so it waits for disk.** `LayoutStore.Save` swallows
-its write failures — a save is triggered by ordinary editing on both surfaces, and throwing
-out of those paths would take something visible down with it — but it now REPORTS whether
-the write landed, and Clear and Restore both check. Clear has already destroyed the bucket
-by then (destroy-before-Save, so the surviving state is a retained tile that
-re-authenticates, never a destroyed tile with a live credential), so its ack carries
-`saved` and the clients keep the row when it is false: telling the user "deleted for good"
-while the entry sits on disk with a still-openable envelope is the one lie this operation
-cannot afford.
+its write failures — a save is triggered by ordinary editing, and throwing out of those
+paths would take something visible down with it — but it REPORTS whether the write landed,
+and the settings save acks with it (`landed`). A Delete has already destroyed the bucket by
+then (destroy-before-Save, so the surviving state is a retained tile that re-authenticates,
+never a destroyed tile with a live credential), so the editor stays unsaved with the Delete
+still named when the write did not land: telling the user "deleted for good" while the entry
+sits on disk with a still-openable envelope is the one lie this operation cannot afford.
