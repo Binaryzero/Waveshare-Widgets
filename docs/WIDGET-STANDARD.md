@@ -46,34 +46,35 @@ during development); at runtime the theme push replaces them.
 | Token | Purpose | Stock value |
 |---|---|---|
 | `--bg` | Theme background seed (the wallpaper-level color) | `#070b12` |
-| `--surface` | Widget tile background (`body` paints this via the panel-alpha system) | `#13171e` |
-| `--surface-rgb` | `--surface` as `r, g, b` for `rgba()` composition | `19, 23, 30` |
-| `--surface-alt` | Raised surface one step above the tile | `#1c2127` |
-| `--surface-alt-rgb` | `--surface-alt` as `r, g, b` | `28, 33, 39` |
-| `--control-bg` | Interactive control fill (buttons, meter tracks, ring tracks) | `#272b32` |
+| `--surface` | Widget tile background (`body` paints this via the panel-alpha system) | `#070b12` |
+| `--surface-rgb` | `--surface` as `r, g, b` for `rgba()` composition | `7, 11, 18` |
+| `--surface-alt` | Raised surface one step above the tile | `#13171e` |
+| `--surface-alt-rgb` | `--surface-alt` as `r, g, b` | `19, 23, 30` |
+| `--control-bg` | Interactive control fill (buttons, meter tracks, ring tracks) | `#1c2127` |
 | `--text` | Primary text and values | `#dde2e8` |
-| `--text-muted` | Secondary text: labels, kickers, units | `#888d93` |
-| `--text-dim` | Tertiary text: hints, footer meta | `#64686f` |
-| `--line` | Hairline borders and separators | `#3f444a` |
+| `--text-muted` | Secondary text: labels, kickers, units | `#83888e` |
+| `--text-dim` | Tertiary text: hints, footer meta | `#5d6168` |
+| `--line` | Hairline borders and separators | `#363a41` |
 | `--accent` | The user's accent — the one data hue: highlights, active fills, ruler fills, focus rings | `#4dd4e8` |
 | `--accent-rgb` | `--accent` as `r, g, b` for tints like `rgba(var(--accent-rgb), 0.14)` | `77, 212, 232` |
 | `--accent-fg` | The accent as a *foreground*: repaired to 4.5:1 on the surfaces, for accent-colored text and outlines (`.btn.primary`). The raw `--accent` is the user's exact pick and is never repaired | `#4dd4e8` |
 | `--on-accent` | Text/icon color on accent-filled surfaces | `#0a0a0a` |
-| `--hover-bg` | Hover/pressed row background | `#23272e` |
+| `--hover-bg` | Hover/pressed row background | `#181c23` |
 | `--panel-alpha` | The theme's glass opacity level (see [§3](#3--transparency-system)) | `0.92` |
 | `--appearance` | `dark` \| `light`; also stamped as `data-appearance` on `<html>` | `dark` |
 
 ### State colors
 
-Fixed hues, contrast-repaired per theme by the host (see §2). Use the `-bg` tints for
-fills behind state-colored text.
+Each keeps its hue and takes the accent's saturation and lightness, then is
+contrast-repaired per theme by the host (see §2). Use the `-bg` tints for fills behind
+state-colored text.
 
 | Token | Purpose | Stock value |
 |---|---|---|
-| `--ok` / `--ok-bg` | Healthy, connected, in-range | `#45d483` / `rgba(69, 212, 131, 0.14)` |
-| `--warn` / `--warn-bg` | Degraded, near a limit — the one alert hue (the instrument amber) | `#ffae52` / `rgba(255, 174, 82, 0.14)` |
-| `--err` / `--err-bg` | Failed, unreachable, over limit | `#ff6268` / `rgba(255, 98, 104, 0.14)` |
-| `--info` / `--info-bg` | Neutral information | `#62cbea` / `rgba(98, 203, 234, 0.14)` |
+| `--ok` / `--ok-bg` | Healthy, connected, in-range | `#4de890` / `rgba(77, 232, 144, 0.14)` |
+| `--warn` / `--warn-bg` | Degraded, near a limit — the one alert hue (the instrument amber) | `#e89f4d` / `rgba(232, 159, 77, 0.14)` |
+| `--err` / `--err-bg` | Failed, unreachable, over limit | `#ea5c61` / `rgba(234, 92, 97, 0.14)` |
+| `--info` / `--info-bg` | Neutral information | `#4dc5e8` / `rgba(77, 197, 232, 0.14)` |
 
 ### Geometry & motion
 

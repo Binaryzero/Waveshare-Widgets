@@ -78,5 +78,16 @@
     return OWNED.has(name);
   }
 
-  window.WWAppearance = { universalProperties, withUniversal, normalizeCatalog, isOwned };
+  /// Stored values a shell-owned property has since renamed. A tile saved before bgStyle's
+  /// `glass` became `theme` still holds `glass`; widget-api.js renders it as `theme`, and
+  /// the editors must show it so — compared raw against the new options, no choice lit.
+  const RENAMED = { bgStyle: { glass: 'theme' } };
+
+  /// The value an editor should show for `prop`, given what is stored.
+  function shownValue(prop, value) {
+    const map = prop && Object.prototype.hasOwnProperty.call(RENAMED, prop.name) ? RENAMED[prop.name] : null;
+    return map && typeof value === 'string' && Object.prototype.hasOwnProperty.call(map, value) ? map[value] : value;
+  }
+
+  window.WWAppearance = { universalProperties, withUniversal, normalizeCatalog, isOwned, shownValue };
 })();

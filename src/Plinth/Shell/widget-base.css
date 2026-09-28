@@ -20,28 +20,28 @@
    * Stock values are PaletteEngine.Derive over the instrument seeds:
    * accent #4dd4e8 · background #070b12 · text #dde2e8 · panelAlpha 0.92 */
   --bg: #070b12;
-  --surface: #13171e;
-  --surface-rgb: 19, 23, 30;
-  --surface-alt: #1c2127;
-  --surface-alt-rgb: 28, 33, 39;
-  --control-bg: #272b32;
+  --surface: #070b12;
+  --surface-rgb: 7, 11, 18;
+  --surface-alt: #13171e;
+  --surface-alt-rgb: 19, 23, 30;
+  --control-bg: #1c2127;
   --text: #dde2e8;
-  --text-muted: #888d93;
-  --text-dim: #64686f;
-  --line: #3f444a;
+  --text-muted: #83888e;
+  --text-dim: #5d6168;
+  --line: #363a41;
   --accent: #4dd4e8;
   --accent-rgb: 77, 212, 232;
   --accent-fg: #4dd4e8;
   --on-accent: #0a0a0a;
-  --ok: #45d483;
-  --warn: #ffae52;
-  --err: #ff6268;
-  --info: #62cbea;
-  --ok-bg: rgba(69, 212, 131, 0.14);
-  --warn-bg: rgba(255, 174, 82, 0.14);
-  --err-bg: rgba(255, 98, 104, 0.14);
-  --info-bg: rgba(98, 203, 234, 0.14);
-  --hover-bg: #23272e;
+  --ok: #4de890;
+  --warn: #e89f4d;
+  --err: #ea5c61;
+  --info: #4dc5e8;
+  --ok-bg: rgba(77, 232, 144, 0.14);
+  --warn-bg: rgba(232, 159, 77, 0.14);
+  --err-bg: rgba(234, 92, 97, 0.14);
+  --info-bg: rgba(77, 197, 232, 0.14);
+  --hover-bg: #181c23;
   --panel-alpha: 0.92;
 
   /* Geometry & motion. The instrument look is machined: hairlines and square

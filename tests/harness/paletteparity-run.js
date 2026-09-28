@@ -10,6 +10,8 @@
 //   T3 · state colours follow the theme: two accents that differ in saturation give
 //        different state colours, each state keeps its own hue family, and a grey accent
 //        still gives coloured states
+//   T4 · the stock fallbacks in widget-base.css and the token table in WIDGET-STANDARD.md
+//        are the stock theme as derived
 //
 // Run: dotnet run --project tools/PaletteParity -- palette-cs.json
 //      node tests/harness/paletteparity-run.js palette-cs.json
@@ -66,6 +68,34 @@ const sat = (hex) => {
 const grey = derive({ accent: '#808080', background: '#101418', text: '#e8e8e8' });
 check('T3c a grey accent still gives coloured states', ['--ok', '--warn', '--err', '--info'].every((k) => sat(grey[k]) >= 0.4),
   ['--ok', '--warn', '--err', '--info'].map((k) => `${k} ${grey[k]} s=${sat(grey[k]).toFixed(2)}`).join(' '));
+
+// T4 · the stock theme's tokens are baked into widget-base.css as fallbacks, so a widget
+// opened in a plain browser (or painting before the first theme push) looks as it will on
+// the panel, and listed in docs/WIDGET-STANDARD.md. Both are hand-written copies of the
+// derivation: this is what keeps them from describing the palette before the last change.
+const REPO = path.join(__dirname, '..', '..');
+const stock = derive({});
+const css = fs.readFileSync(path.join(REPO, 'src', 'Plinth', 'Shell', 'widget-base.css'), 'utf8');
+const rootBlock = css.slice(css.indexOf(':root {'), css.indexOf('}', css.indexOf(':root {')));
+const baked = {};
+for (const m of rootBlock.matchAll(/^\s*(--[a-z-]+):\s*([^;]+);/gm)) baked[m[1]] = m[2].trim();
+const cssOff = Object.keys(stock).filter((k) => k !== '--appearance' && baked[k] !== stock[k]);
+check('T4 widget-base.css falls back to the stock theme as derived', cssOff.length === 0,
+  cssOff.map((k) => `${k} css=${baked[k]} derived=${stock[k]}`).join(' | ') || undefined);
+const doc = fs.readFileSync(path.join(REPO, 'docs', 'WIDGET-STANDARD.md'), 'utf8');
+const docOff = [];
+let docRows = 0;
+for (const line of doc.split('\n')) {
+  if (!line.startsWith('| `--')) continue;
+  const cells = line.split(' | ');
+  const names = [...cells[0].matchAll(/`(--[a-z-]+)`/g)].map((m) => m[1]);
+  if (!names.length || !names.every((n) => n in stock) || names[0] === '--appearance') continue;
+  docRows++;
+  const vals = [...cells[cells.length - 1].matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+  names.forEach((n, i) => { if (vals[i] !== stock[n]) docOff.push(`${n} doc=${vals[i]} derived=${stock[n]}`); });
+}
+check('T4b WIDGET-STANDARD.md lists the stock theme as derived', docRows >= 15 && docOff.length === 0,
+  docOff.join(' | ') || `${docRows} rows`);
 
 console.log(failures ? `${failures} FAILURE(S)` : 'ALL PASS');
 process.exit(failures ? 1 : 0);
