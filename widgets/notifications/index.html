@@ -6,38 +6,56 @@
 <link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
   /* Widget-specific layout; tokens, background/bgStyle and the typography base
-   * come from widget-base.css. Designed for quarter (320px) first. */
+   * come from widget-base.css. Designed for quarter (320px) first. Type and the
+   * spacing between lines are the sizes they had at that smallest tile (a 320x200
+   * band) times the tile scale, so a bigger tile reads bigger. */
+  :root {
+    /* Tile padding, shared with the eye that sits in its corner. */
+    --pad-y: clamp(8px, 2.5vh, 14px);
+    --pad-x: clamp(10px, 3%, 18px);
+    /* A touch row: never under 40px, and it grows with the text beside it. */
+    --hit: max(40px, calc(30px * var(--ts)));
+  }
   body {
     display: flex;
     flex-direction: column;
-    gap: clamp(6px, 1.8vh, 10px);
-    padding: clamp(8px, 2.5vh, 14px) clamp(10px, 3%, 18px);
+    gap: calc(6px * var(--ts));
+    padding: var(--pad-y) var(--pad-x);
   }
-  header { flex: none; display: flex; align-items: center; gap: var(--space-2); }
-  #countPill { font-variant-numeric: tabular-nums; }
+  /* No header: the privacy eye floats in the tile's top-right corner, beside the first
+   * row (the mute bar, or the first app's name), which leaves it room. It stays put
+   * while the list scrolls under it, so it is always one tap away. Opaque (.btn's
+   * --control-bg, or .primary's surface) so rows passing beneath cannot show through.
+   * no-pan in the markup: it sits outside the list, where a drift would page (#206). */
   #eyeBtn {
-    margin-left: auto;
-    width: 40px;
-    min-width: 40px;
+    position: fixed;
+    top: var(--pad-y);
+    right: var(--pad-x);
+    z-index: 1;
+    width: var(--hit);
+    min-width: var(--hit);
+    height: var(--hit);
     padding: 0;
     display: grid;
     place-items: center;
   }
-  #eyeBtn svg { display: block; }
+  #eyeBtn svg { display: block; width: calc(15px * var(--ts)); height: calc(15px * var(--ts)); }
 
   /* Muted-app chips: tap to unmute. */
-  #muteBar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  #muteBar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: calc(6px * var(--ts));
+    padding-right: calc(var(--hit) + var(--space-2)); }
   #muteBar .kicker { color: var(--text-dim); }
   .chip {
-    font-size: 11px;
+    font-size: calc(11px * var(--ts));
     font-weight: 700;
-    padding: 0 10px;
+    min-height: var(--hit);   /* the eye's height, so the row beside it lines up */
+    padding: 0 calc(10px * var(--ts));
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6px * var(--ts));
     max-width: 100%;
   }
-  .chip .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+  .chip .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: calc(140px * var(--ts)); }
   .chip .x { color: var(--text-muted); }
 
   #list {
@@ -51,21 +69,21 @@
     touch-action: pan-y;
     display: flex;
     flex-direction: column;
-    gap: clamp(8px, 2vh, 12px);
+    gap: calc(8px * var(--ts));
     scrollbar-width: none;
   }
   #list::-webkit-scrollbar { display: none; }
   #list > .state-card { flex: 1; }
 
-  .cluster { display: flex; flex-direction: column; gap: 6px; }
+  .cluster { display: flex; flex-direction: column; gap: calc(6px * var(--ts)); container-type: inline-size; }
   /* App header: the whole row is the mute toggle (≥40px touch target). */
   .app-head {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
-    min-height: 40px;
+    gap: calc(8px * var(--ts));
+    min-height: var(--hit);
     margin: 0;
-    padding: 0 var(--space-1);
+    padding: 0 calc(4px * var(--ts));
     background: none;
     border: none;
     font: inherit;
@@ -74,42 +92,44 @@
     cursor: pointer;
     transition: opacity var(--dur-fast) var(--ease);
   }
+  /* The first row shares its line with the eye in the corner. */
+  #list > .cluster:first-child > .app-head { padding-right: calc(var(--hit) + var(--space-2)); }
   .app-head:active { opacity: 0.55; }
   .app-name {
-    font-size: 11px;
+    font-size: calc(11px * var(--ts));
     font-weight: 700;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--accent);
+    color: var(--accent-fg);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .app-count { font-size: 11px; font-weight: 700; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .app-count { font-size: calc(11px * var(--ts)); font-weight: 700; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
   .item {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
+    gap: calc(8px * var(--ts));
+    padding: calc(8px * var(--ts)) calc(12px * var(--ts));
   }
   .item.masked { cursor: pointer; transition: transform var(--dur-fast) var(--ease); }
   .item.masked:active { transform: scale(0.98); }
-  .item .txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  .t-row { display: flex; align-items: baseline; gap: var(--space-2); }
+  .item .txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: calc(2px * var(--ts)); }
+  .t-row { display: flex; align-items: baseline; gap: calc(8px * var(--ts)); }
   .title {
     flex: 1;
     min-width: 0;
-    font-size: 13px;
+    font-size: calc(13px * var(--ts));
     font-weight: 600;
     color: var(--text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .time { flex: none; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .time { flex: none; font-size: calc(11px * var(--ts)); color: var(--text-dim); font-variant-numeric: tabular-nums; }
   .body {
-    font-size: 12px;
+    font-size: calc(12px * var(--ts));
     color: var(--text-muted);
     line-height: 1.35;
     display: -webkit-box;
@@ -117,13 +137,33 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  .dismiss { width: 40px; min-width: 40px; padding: 0; color: var(--text-muted); }
+  .dismiss { width: var(--hit); min-width: var(--hit); min-height: var(--hit); padding: 0; color: var(--text-muted); }
+  /* A narrow card (a quarter tile, or a column of a wide one): title, time and the
+   * dismiss button beside the body leave the text too little width at this size, so the
+   * time drops under the title, the button stands beside the two, and the body takes
+   * the card's whole width and one more line. em is the card's text size, so the break
+   * moves with the tile's scale. */
+  @container (max-width: 20em) {
+    .item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas: "title x" "time x" "body body";
+      column-gap: calc(8px * var(--ts));
+      row-gap: calc(2px * var(--ts));
+      align-items: center;
+    }
+    .item .txt, .t-row { display: contents; }
+    .title { grid-area: title; }
+    .time { grid-area: time; }
+    .body { grid-area: body; -webkit-line-clamp: 3; }
+    .dismiss { grid-area: x; }
+  }
 
   /* Wide slots (three-quarter offered automatically with half): two columns,
    * clusters kept whole. */
   @media (min-width: 800px) {
-    #list { display: block; column-count: 2; column-gap: clamp(8px, 2vh, 12px); }
-    .cluster { break-inside: avoid; margin-bottom: clamp(8px, 2vh, 12px); }
+    #list { display: block; column-count: 2; column-gap: calc(8px * var(--ts)); }
+    .cluster { break-inside: avoid; margin-bottom: calc(8px * var(--ts)); }
     #list > .state-card { height: 100%; }
   }
 
@@ -137,18 +177,14 @@
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker">Notifications</span>
-    <span class="pill" id="countPill" hidden>0</span>
-    <button class="btn no-pan" id="eyeBtn" aria-label="Hide notification text" aria-pressed="false" hidden>
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/>
-        <circle cx="12" cy="12" r="2.6"/>
-        <line id="eyeSlash" x1="4.5" y1="4.5" x2="19.5" y2="19.5" hidden/>
-      </svg>
-    </button>
-  </header>
+  <button class="btn no-pan" id="eyeBtn" aria-label="Hide notification text" aria-pressed="false" hidden>
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/>
+      <circle cx="12" cy="12" r="2.6"/>
+      <line id="eyeSlash" x1="4.5" y1="4.5" x2="19.5" y2="19.5" hidden/>
+    </svg>
+  </button>
   <div id="muteBar" hidden></div>
   <main id="list"></main>
   <div class="state-card" id="state">
@@ -301,7 +337,6 @@
     }
     $('list').hidden = true;
     $('muteBar').hidden = true;
-    $('countPill').hidden = true;
     $('eyeBtn').hidden = true;
   }
 
@@ -444,11 +479,9 @@
     updateEye();
     renderMuteBar();
 
+    // No total count: the list is the count, and each app's row numbers its own run.
     const items = currentItems();
     const visible = items.filter((it) => !muted.has(it.key));
-    const pill = $('countPill');
-    pill.hidden = visible.length === 0;
-    pill.textContent = String(visible.length);
 
     // Batch: build the whole list off-DOM, then swap in one write.
     timeEls.length = 0;

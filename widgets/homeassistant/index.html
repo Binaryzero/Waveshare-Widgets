@@ -6,13 +6,17 @@
 <link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
   /* Layout only — colors, background, bgStyle and the typography base come from
-   * widget-base.css. */
-  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
-  #grid { flex: 1 1 auto; display: grid; gap: 8px; min-height: 0; }
+   * widget-base.css. Type, and the spacing that sits with it, is the size it had at the
+   * smallest tile this widget takes (a 640x200 band) times the tile scale, so a bigger
+   * tile reads bigger; fit() measures the result rather than assuming it. */
+  body { display: flex; flex-direction: column; gap: calc(6px * var(--ts)); padding: 10px; }
+  #grid { flex: 1 1 auto; display: grid; gap: calc(8px * var(--ts)); min-height: 0; }
+  /* The tile's own padding does not scale — it is the card's edge, not text spacing — and
+   * its sides are 2px tighter than they were, so a 200px band still holds two rows of
+   * tiles, four across at 640px, with the names whole at the larger type. */
   .ent {
-    display: flex; flex-direction: column; justify-content: center; gap: 2px;
-    padding: 6px 10px;
+    display: flex; flex-direction: column; justify-content: center; gap: calc(2px * var(--ts));
+    padding: 6px 8px;
     border-radius: var(--radius-control);
     background: var(--card-surface);
     border: 1px solid transparent;
@@ -29,31 +33,39 @@
    * tile clips and the grid only ever shows what fits, so it has no axis to give. */
   .ent.pressable { touch-action: none; }
   .ent.on { border-color: rgba(var(--accent-rgb), 0.45); }
+  /* The name's line also carries the tap/hold hint, which takes its own width and leaves
+   * the name the rest: pinned in the corner instead, it sat on top of a longer name once
+   * both grew with the tile. */
+  .ent .top { display: flex; align-items: baseline; gap: calc(4px * var(--ts)); min-width: 0; }
   .ent .name {
+    flex: 1 1 auto; min-width: 0;
     color: var(--text-muted);
-    font-size: clamp(10px, 2.8vh, 12px);
-    letter-spacing: 0.05em;
+    font-size: calc(10px * var(--ts)); line-height: 1.15;
+    letter-spacing: 0.02em;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .ent .val {
     color: var(--text); font-weight: 700;
-    font-size: clamp(13px, 4.2vh, 20px);
+    font-size: calc(13px * var(--ts)); line-height: 1.15;
     font-variant-numeric: tabular-nums;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .ent.on .val { color: var(--accent); }
+  /* Text in the data hue: the repaired --accent-fg, not the raw pick, which may sit
+   * right on the surface. The border above keeps the raw accent; it is decoration. */
+  .ent.on .val { color: var(--accent-fg); }
   .ent .val small { font-size: 60%; font-weight: 500; color: var(--text-muted); }
   /* A tile the user can act on says so at rest — there is no hover on this panel. */
   .ent .hint {
-    position: absolute; top: 5px; right: 8px;
-    font-size: 9px; font-weight: 700; letter-spacing: 0.06em;
+    flex: none;
+    font-size: calc(9px * var(--ts)); font-weight: 700; letter-spacing: 0.06em; line-height: 1.15;
     color: var(--text-dim); text-transform: uppercase;
   }
+  .ent .hint:empty { display: none; }
   .ent.armed .hint { color: var(--warn); }
   /* The long-press fill: a bar that grows across the tile so the user can see the
    * press being counted rather than guessing whether it registered. */
   .ent .press {
-    position: absolute; inset: auto 0 0 0; height: 2px; width: 0;
+    position: absolute; inset: auto 0 0 0; height: calc(2px * var(--ts)); width: 0;
     background: var(--warn);
     transition: width 700ms linear;
   }
@@ -62,20 +74,19 @@
    * the panel does not yet know whether the house acted on it. */
   @keyframes ha-pending { 0%, 100% { border-color: transparent; } 50% { border-color: var(--warn); } }
   .ent.pending-flash { animation: ha-pending 900ms ease-in-out 2; }
-  footer { color: var(--text-dim); font-size: 11px; flex: none; }
+  /* One line, ellipsized: fit() budgets ONE footer line for it. */
+  footer { color: var(--text-dim); font-size: calc(11px * var(--ts)); flex: none;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The exception (Stale, N unknown) leads the footer's line, at its size. */
+  footer .pill { font-size: inherit; margin-right: 0.6em; }
   #state { position: fixed; inset: 0; }
   body.stale #grid { opacity: 0.6; }
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker">Home</span>
-    <span class="pill muted" id="pill">Loading</span>
-  </header>
-
   <div id="grid" hidden></div>
 
-  <footer id="meta"></footer>
+  <footer id="meta" hidden><span class="pill" id="pill" hidden></span><span id="metaText"></span></footer>
 
   <div class="state-card" id="state">
     <div class="spinner"></div>
@@ -327,13 +338,64 @@
   // How many tiles the slot can actually hold. Columns followed the entity COUNT alone,
   // so a supported 200px band asked for four rows of 44px tiles in about 120px of room
   // and the grid simply overflowed — the tiles past the fold were still polled and still
-  // counted, but nothing on screen could be them. Both dimensions decide it now.
+  // counted, but nothing on screen could be them. Both dimensions decide it now, and
+  // both are measured rather than budgeted: the type grows with the tile's scale, so a
+  // fixed chrome height and tile pitch were right at one scale only.
+  //   Columns: a tile is about 145px wide at the smallest tile's scale (a 640x200 band,
+  //   four across), and its text grows with the scale, so its width does too: 7.5 times
+  //   the rendered value font, which is what a column is measured in here.
+  //   Rows: the room is the tile less its padding, the footer's one line and the gap
+  //   above it; a row's pitch is a rendered tile's own height plus the grid's gap.
   function fit() {
     const w = document.documentElement.clientWidth || window.innerWidth || 640;
     const h = document.documentElement.clientHeight || window.innerHeight || 400;
-    const cols = Math.max(1, Math.min(Math.floor(w / 150) || 1, 5));
-    const rows = Math.max(1, Math.floor((h - 62) / 52));
+    const body = getComputedStyle(document.body);
+    const grid = getComputedStyle(el('grid'));
+    const probe = measureTile();
+    const inner = w - (parseFloat(body.paddingLeft) || 0) - (parseFloat(body.paddingRight) || 0);
+    const colW = 7.5 * probe.valFont;
+    const colGap = parseFloat(grid.columnGap) || 0;
+    const cols = Math.max(1, Math.min(Math.floor((inner + colGap) / (colW + colGap)) || 1, 5));
+    const room = h - (parseFloat(body.paddingTop) || 0) - (parseFloat(body.paddingBottom) || 0)
+      - probe.foot - (parseFloat(body.rowGap) || 0);
+    const rowGap = parseFloat(grid.rowGap) || 0;
+    const rows = Math.max(1, Math.floor((room + rowGap) / (probe.tile + rowGap)));
     return { cols, max: cols * rows };
+  }
+
+  // A tile and a footer line as they render, off-screen: when the tiles are fitted the grid
+  // may still be hidden behind a state card and the footer empty or hidden, so neither can
+  // be read off the page itself. The probe tile carries a name with its hint and a value,
+  // the two lines that set its height; the probe footer carries the pill it leads with.
+  function measureTile() {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;left:0;top:0;width:200px;visibility:hidden';
+    const tile = document.createElement('div');
+    tile.className = 'ent';
+    const top = document.createElement('div');
+    top.className = 'top';
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.textContent = 'Name';
+    const hint = document.createElement('span');
+    hint.className = 'hint';
+    hint.textContent = 'hold';
+    top.append(name, hint);
+    const val = document.createElement('div');
+    val.className = 'val';
+    val.textContent = '21.4';
+    tile.append(top, val);
+    const foot = document.createElement('footer');
+    const fp = document.createElement('span');
+    fp.className = 'pill';
+    fp.textContent = 'stale';
+    foot.append(fp, document.createTextNode('updated'));
+    probe.append(tile, foot);
+    document.body.appendChild(probe);
+    const sizes = { tile: tile.offsetHeight, foot: foot.offsetHeight,
+      valFont: parseFloat(getComputedStyle(val).fontSize) || 13 };
+    probe.remove();
+    return sizes;
   }
 
   // Which entities get a tile when they cannot all have one: the ones whose state is
@@ -378,17 +440,20 @@
     for (const e of shown) {
       const root = document.createElement('div');
       root.className = 'ent';
+      const top = document.createElement('div');
+      top.className = 'top';
       const name = document.createElement('div');
       name.className = 'name';
       name.textContent = e.label || e.entity.split('.')[1].replace(/_/g, ' ');
+      const hint = document.createElement('span');
+      hint.className = 'hint';
+      top.append(name, hint);
       const val = document.createElement('div');
       val.className = 'val';
       val.textContent = '--';
-      const hint = document.createElement('span');
-      hint.className = 'hint';
       const press = document.createElement('i');
       press.className = 'press';
-      root.append(name, val, hint, press);
+      root.append(top, val, press);
 
       const domain = domainOf(e.entity);
       const security = SECURITY.includes(domain);
@@ -411,9 +476,14 @@
 
   let resizeTimer = null;
   let lastFit = '';
-  window.addEventListener('resize', () => {
-    // The on-panel editor resizes this widget's frame in place without sending another
-    // init, so a widget grown from a band to a full slot would keep the band's tile count.
+  // Fit again whenever the room or the type under the measurement changes. The on-panel
+  // editor resizes this widget's frame in place without sending another init, so a widget
+  // grown from a band to a full slot would keep the band's tile count. And the type is not
+  // final at the first fit: onInit builds the grid at once, the tile scale is stamped at
+  // DOMContentLoaded (the shim's listener, registered first, runs before this one) and an
+  // init can land before that, and tiles measured in the fallback font change height when
+  // the web font arrives.
+  function refit() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       const f = fit();
@@ -424,7 +494,13 @@
       build();
       if (states.size) render();
     }, 150);
-  });
+  }
+  window.addEventListener('resize', refit);
+  document.addEventListener('DOMContentLoaded', refit);
+  if (document.fonts) {
+    if (document.fonts.ready) document.fonts.ready.then(refit);
+    document.fonts.addEventListener('loadingdone', refit);
+  }
 
   // A security-domain tile only fires after the finger has been down for PRESS_MS,
   // and lifting early cancels with no action and no error — an accidental brush is
@@ -713,7 +789,7 @@
   function render() {
     // Counted over EVERY configured entity; only the TILES are limited to what fits.
     // Scoping the count to the visible ones would have the pill contradict the footer
-    // line directly beneath it.
+    // note right beside it.
     let unknown = 0;
     for (const e of cfg.entities) if (!states.get(e.entity)) unknown++;
     for (const e of visibleEntities()) {
@@ -739,11 +815,12 @@
     const stale = document.body.classList.contains('stale');
     const pill = el('pill');
     // Set explicitly on every branch: a pill hidden by the last healthy render has to come
-    // back the moment an entity drops out.
+    // back the moment an entity drops out. It leads the footer, beside the tiles and the
+    // note it sums up.
     pill.hidden = false;
     if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
     else if (unknown) { pill.textContent = unknown + ' unknown'; pill.className = 'pill warn'; }
-    else pill.hidden = true;   // healthy: the pill reports exceptions, not health
+    else { pill.hidden = true; pill.textContent = ''; }   // healthy: the pill reports exceptions, not health
 
     const notes = [];
     if (cfg.hidden) notes.push(cfg.hidden + ' more checked but no room to show in this slot');
@@ -752,18 +829,25 @@
     notes.push(unknown
       ? unknown + ' entity id' + (unknown === 1 ? '' : 's') + ' not found in Home Assistant'
       : (lastOk ? 'updated ' + new Date(lastOk).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : ''));
-    el('meta').textContent = notes.filter(Boolean).join(' · ');
+    el('metaText').textContent = notes.filter(Boolean).join(' · ');
 
     el('state').hidden = true;
     el('grid').hidden = false;
+    el('meta').hidden = false;
+  }
+
+  // The footer speaks for the tiles. A state card replaces them, and says what is going on
+  // itself — loading, setup, error — so the footer goes with the tiles rather than showing
+  // a line about entities nobody can see beneath the card.
+  function hideMeta() {
+    el('meta').hidden = true;
+    el('pill').hidden = true;
+    el('pill').textContent = '';
+    el('metaText').textContent = '';
   }
 
   function stateCard(cls, icon, title, body, onRetry) {
-    const pill = el('pill');
-    // Explicitly shown: a healthy render may have hidden it (#205).
-    pill.hidden = false;
-    pill.textContent = cls === 'err' ? 'Error' : 'Setup';
-    pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
+    hideMeta();
     const s = el('state');
     s.className = 'state-card' + (cls ? ' ' + cls : '');
     s.textContent = '';
@@ -802,9 +886,26 @@
       : rejected);
   }
 
+  // The spinner, titled: a retry is a wait, not a setup card (which is what a blank
+  // stateCard here used to read as).
+  function showRetrying() {
+    hideMeta();
+    const s = el('state');
+    s.className = 'state-card';
+    s.textContent = '';
+    const sp = document.createElement('div');
+    sp.className = 'spinner';
+    const t = document.createElement('div');
+    t.className = 'state-title';
+    t.textContent = 'Retrying';
+    s.append(sp, t);
+    s.hidden = false;
+    el('grid').hidden = true;
+  }
+
   function showError(message) {
     stateCard('err', '!', 'Home Assistant unavailable', message, () => {
-      stateCard('', '', 'Retrying', '');
+      showRetrying();
       // An explicit retry spends the backoff rather than charging it to the person who
       // pressed the button.
       fails = 0;

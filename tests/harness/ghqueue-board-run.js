@@ -9,10 +9,20 @@
 //   G1 · every stubbed PR gets a row (the slot fits them all here)
 //   G2 · the verdict column reads worst-first, exactly: failing, conflict, ready,
 //        running, draft
-//   G3 · the header pill reports the exception count ("1 failing"), err-styled
+//   G3 · the exception pill reports the count ("2 failing"), err-styled, and it leads
+//        the footer — the widget has no header (beta.21) — (G3b) and the board starts
+//        at the top of the tile, with no header row above it
 //   G4 · a row names its PR (repo#number + title) and shows an age
 //   G5 · the review-chatter marker appears on the PR that has comments
 //   G6 · the footer reports freshness ("updated ...")
+//   G14 · a shorter tile shows the rows it has room for, measured: worst-first, none cut
+//         off, and the footer counts the rest — at 640x400 and on a 640x200 band, which
+//         keeps its three
+//
+// The board runs on a 1280x720 tile (a half slot on the XENEON EDGE). Its type grows with
+// the tile's scale (--ts), so the 640x400 tile these checks used to run on no longer holds
+// all nine rows; G1, G2 and G10e need all nine, and this is a supported tile that does.
+// What 640x400 shows now is G14's to check.
 // Find (#210), asked the way the shell asks — a ww-discover message to the frame:
 //   G7 · the Repositories field lists every repository the token can see, all pages, in
 //        GitHub's order, with the saved token on the request
@@ -125,7 +135,8 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
 
 (async () => {
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
-  const page = await browser.newPage({ viewport: { width: 640, height: 400 } });
+  const BOARD_TILE = { width: 1280, height: 720 };   // see the note above G1: tall enough for all nine
+  const page = await browser.newPage({ viewport: BOARD_TILE });
   page.on('pageerror', (e) => { failures++; console.log('[pageerror]', String(e).slice(0, 300)); });
   page.on('console', (m) => { if (/ww-log|ghqueue/.test(m.text())) console.log('[console]', m.text().slice(0, 220)); });
 
@@ -247,22 +258,74 @@ const SHELL_PAGE = '<!doctype html><meta charset="utf-8"><title>ww shell</title>
     })),
     pill: { text: document.getElementById('pill').textContent,
             cls: document.getElementById('pill').className,
-            hidden: document.getElementById('pill').hidden },
+            hidden: document.getElementById('pill').hidden,
+            // Where it is and whether it is on screen, not only what it says.
+            inFooter: !!document.getElementById('pill').closest('footer#meta'),
+            leads: document.getElementById('meta').firstElementChild === document.getElementById('pill'),
+            shown: document.getElementById('pill').getClientRects().length > 0 },
     meta: document.getElementById('meta').textContent,
+    header: !!document.querySelector('header'),
+    boardTop: Math.round(document.getElementById('board').getBoundingClientRect().top),
+    padTop: parseFloat(getComputedStyle(document.body).paddingTop),
   }));
 
   check('G1 every stubbed PR gets a row', board.rows.length === PRS.length,
     `${board.rows.length} of ${PRS.length}`);
   check('G2 the board reads worst-first', JSON.stringify(board.rows.map((r) => r.verdict)) === JSON.stringify(WANT_ORDER),
     board.rows.map((r) => r.verdict).join(' > '));
-  check('G3 the header pill reports the exception', board.pill.text === '2 failing' && /\berr\b/.test(board.pill.cls),
-    `"${board.pill.text}" [${board.pill.cls}]`);
+  // Was "the header pill": the header is gone (beta.21) and the pill leads the footer now.
+  // Same assertion on what it says, plus where it is and that it is actually showing.
+  check('G3 the exception pill reports the count and leads the footer',
+    board.pill.text === '2 failing' && /\berr\b/.test(board.pill.cls)
+      && board.pill.inFooter && board.pill.leads && board.pill.shown && !board.pill.hidden,
+    `"${board.pill.text}" [${board.pill.cls}] ${JSON.stringify({ inFooter: board.pill.inFooter,
+      leads: board.pill.leads, shown: board.pill.shown })}`);
+  check('G3b no header row: the board starts at the top of the tile',
+    !board.header && board.boardTop <= board.padTop + 1,
+    `header ${board.header}, board top ${board.boardTop}px, padding ${board.padTop}px`);
   const top = board.rows[0] || { name: '', age: '' };
   check('G4 a row names its PR and shows an age',
     top.name.includes('alpha#1') && top.name.includes('Fix the flux capacitor') && /\d+[mhd]/.test(top.age),
     `"${top.name}" age="${top.age}"`);
   check('G5 review chatter shows where it exists', top.msgs === '💬5', `"${top.msgs}"`);
   check('G6 the footer reports freshness', /updated .+ago/.test(board.meta), `"${board.meta}"`);
+
+  // ---- G14 · a shorter tile shows what fits, measured ---------------------------------
+  // The rows are fitted by measuring a rendered row and footer, not by a fixed budget. The
+  // same board on a 640x400 tile and on a 640x200 band: a worst-first prefix, every row
+  // wholly inside the board, the footer on screen, and the footer's count of the rest
+  // matching exactly what was left off. A band keeps the three rows it always had.
+  const fitAt = async (size) => {
+    await page.setViewportSize(size);
+    // The widget re-fits 150 ms after a resize; wait for the rows to match the new room.
+    await page.waitForTimeout(700);
+    return frame.evaluate(() => {
+      const board = document.getElementById('board').getBoundingClientRect();
+      const meta = document.getElementById('meta').getBoundingClientRect();
+      const rows = [...document.querySelectorAll('#board .pr')];
+      return {
+        verdicts: rows.map((r) => r.querySelector('.ci').textContent),
+        clipped: rows.filter((r) => r.getBoundingClientRect().bottom > board.bottom + 0.5).length,
+        boardBottom: Math.round(board.bottom), footTop: Math.round(meta.top), footBottom: Math.round(meta.bottom),
+        vh: window.innerHeight,
+        meta: document.getElementById('meta').textContent,
+      };
+    });
+  };
+  for (const [size, least] of [[{ width: 640, height: 400 }, 6], [{ width: 640, height: 200 }, 3]]) {
+    const f = await fitAt(size);
+    const n = f.verdicts.length;
+    const more = PRS.length - n;
+    check(`G14 ${size.width}x${size.height} shows the rows it has room for: worst-first, none cut off, the rest counted`,
+      n >= least && n < PRS.length
+        && JSON.stringify(f.verdicts) === JSON.stringify(WANT_ORDER.slice(0, n))
+        && f.clipped === 0 && f.boardBottom <= f.footTop + 0.5 && f.footBottom <= f.vh
+        && f.meta.includes(more + ' more tracked but no room'),
+      `${n} rows (${f.verdicts.join(' > ')}), clipped ${f.clipped}, board ends ${f.boardBottom} / footer ${f.footTop}-${f.footBottom} of ${f.vh}: "${f.meta}"`);
+  }
+  const back = await fitAt(BOARD_TILE);
+  check('G14b ...and back on the tall tile, all nine return', back.verdicts.length === PRS.length,
+    `${back.verdicts.length} rows`);
 
   // ---- Find (#210) ----------------------------------------------------------------------
   const ask = async (id, property, field) => {
