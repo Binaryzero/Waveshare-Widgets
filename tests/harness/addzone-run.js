@@ -10,6 +10,7 @@
 // settings.js does, and reads what it posts up.
 //
 //   A0 · the panel offers no way into edit mode at all, and ignores `edit-mode`
+//   A0e · a panel whose pages hold no tile shows the hint pointing at the settings window
 //   A1 · every free region gets an add affordance, not just the biggest
 //   A2 · the zones tile the free space: no overlap with each other or with a slot
 //   A3 · tapping a zone hands the add to the settings window naming THAT region
@@ -189,12 +190,43 @@ const overlaps = (a, b) =>
       zones: [...document.querySelectorAll('.add-zone')].filter((e) => getComputedStyle(e).display !== 'none').length,
       controls: ['editBtn', 'editBar', 'palette', 'stylePanel', 'propSheet'].filter((id) => document.getElementById(id)),
       saves: window.__sent.filter((m) => m && m.type === 'save-layout').length,
+      empty: !document.getElementById('empty').hidden,
     }));
     check('A0 the panel has no edit entry point, palette or editor sheet in its DOM',
       state.controls.length === 0, JSON.stringify(state.controls));
     check('A0b ...and an edit-mode message does not put it into edit mode',
       !state.editing && state.zones === 0, JSON.stringify(state));
     check('A0c ...and it never posts a save', state.saves === 0, `${state.saves} save(s)`);
+    check('A0d ...and with a tile on screen it shows no "nothing here" hint', state.empty === false,
+      JSON.stringify(state));
+    await panel.close();
+  }
+
+  // ---- A0e · a panel left with an empty page still says where to go ------------------
+  // Removing the last tile in Settings can leave a page with no slots. The panel has no way
+  // to add one, so a blank screen there must point at the settings window, as a panel with
+  // no pages at all does.
+  {
+    const panel = await browser.newPage({ viewport: { width: 1280, height: 400 } });
+    await mapHosts(panel);
+    await panel.addInitScript((init) => {
+      const L = new Set();
+      window.chrome = { webview: {
+        addEventListener: (t, c) => { if (t === 'message') L.add(c); },
+        postMessage: (m) => {
+          if (m && m.type === 'ready') setTimeout(() => L.forEach((c) => c({ data: { type: 'init', data: init } })), 0);
+        },
+      } };
+    }, { layout: { pages: [{ name: 'Empty', slots: [] }] }, widgets: [clock], sensors: [],
+      status: { elevated: false, version: 'probe' } });
+    await panel.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/index.html`);
+    await panel.waitForTimeout(800);
+    const hint = await panel.evaluate(() => {
+      const e = document.getElementById('empty');
+      return { shown: !!e && !e.hidden && getComputedStyle(e).display !== 'none', text: e ? e.textContent.trim() : '' };
+    });
+    check('A0e a panel whose only page is empty shows the hint pointing at the settings window',
+      hint.shown && /settings window/i.test(hint.text), JSON.stringify(hint));
     await panel.close();
   }
 

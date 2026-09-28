@@ -738,7 +738,7 @@
     syncPageOrder();
     rebuildDots();
 
-    emptyEl.hidden = editing || slots.length > 0 || layoutData.pages.length > 0;
+    showEmpty();
     pagesEl.scrollLeft = Math.min(keepPage, Math.max(0, layoutData.pages.length - 1)) * pagesEl.clientWidth;
     updateDots();
     bg.applyForPage(currentPage()); // paint the initial page's background at once (updateDots only debounces)
@@ -1418,6 +1418,16 @@
   }
   function makeSize(width, band) { return width + (band === 'full' ? '' : '-' + band); }
 
+  // The "nothing here" hint. On the panel it shows whenever no tile is on screen, pages or
+  // not: the panel has no way to add one, so a blank screen must say where to go (the
+  // settings window). In the preview an empty page is the settings window's own canvas,
+  // edited in place, so the hint is for a layout with no pages at all, outside edit mode.
+  function showEmpty() {
+    emptyEl.hidden = PREVIEW
+      ? editing || slots.length > 0 || layoutData.pages.length > 0
+      : slots.length > 0;
+  }
+
   function setEditing(on) {
     editing = on;
     document.body.classList.toggle('editing', on);
@@ -1427,7 +1437,7 @@
       emptyEl.hidden = true;
       for (const page of layoutData.pages) positionAddZone(page);
     } else {
-      emptyEl.hidden = slots.length > 0 || layoutData.pages.length > 0;
+      showEmpty();
       cancelDrag();
       if (PREVIEW) selectRecord(null, false); // highlight off; the host keeps its own selection
       // Armed confirms must not survive the session: re-entering edit within the

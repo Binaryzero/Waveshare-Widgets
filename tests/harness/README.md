@@ -484,7 +484,8 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   the only place the layout is edited: the shell booted as the replica
   (`index.html?preview=1`) and switched on by `edit-mode`, the way `settings.js` drives it.
   The panel itself has no edit entry point, palette or editor sheet, ignores `edit-mode`
-  and never saves (A0). Every free region gets a zone, not just the largest (A1, #84), the
+  and never saves (A0), and a panel whose pages hold no tile points at the settings window
+  instead of sitting blank (A0e). Every free region gets a zone, not just the largest (A1, #84), the
   zones tile the free space (A2), a full page offers none (A4), and a region nothing fits
   says so (A5, #77). Tapping a zone hands the add to the settings window naming THAT
   region, never adding anything itself (A3, A6, #86 — the settings side sizes it). A stored
