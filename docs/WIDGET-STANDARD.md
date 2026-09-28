@@ -46,34 +46,35 @@ during development); at runtime the theme push replaces them.
 | Token | Purpose | Stock value |
 |---|---|---|
 | `--bg` | Theme background seed (the wallpaper-level color) | `#070b12` |
-| `--surface` | Widget tile background (`body` paints this via the panel-alpha system) | `#13171e` |
-| `--surface-rgb` | `--surface` as `r, g, b` for `rgba()` composition | `19, 23, 30` |
-| `--surface-alt` | Raised surface one step above the tile | `#1c2127` |
-| `--surface-alt-rgb` | `--surface-alt` as `r, g, b` | `28, 33, 39` |
-| `--control-bg` | Interactive control fill (buttons, meter tracks, ring tracks) | `#272b32` |
+| `--surface` | Widget tile background (`body` paints this via the panel-alpha system) | `#070b12` |
+| `--surface-rgb` | `--surface` as `r, g, b` for `rgba()` composition | `7, 11, 18` |
+| `--surface-alt` | Raised surface one step above the tile | `#13171e` |
+| `--surface-alt-rgb` | `--surface-alt` as `r, g, b` | `19, 23, 30` |
+| `--control-bg` | Interactive control fill (buttons, meter tracks, ring tracks) | `#1c2127` |
 | `--text` | Primary text and values | `#dde2e8` |
-| `--text-muted` | Secondary text: labels, kickers, units | `#888d93` |
-| `--text-dim` | Tertiary text: hints, footer meta | `#64686f` |
-| `--line` | Hairline borders and separators | `#3f444a` |
+| `--text-muted` | Secondary text: labels, kickers, units | `#83888e` |
+| `--text-dim` | Tertiary text: hints, footer meta | `#5d6168` |
+| `--line` | Hairline borders and separators | `#363a41` |
 | `--accent` | The user's accent — the one data hue: highlights, active fills, ruler fills, focus rings | `#4dd4e8` |
 | `--accent-rgb` | `--accent` as `r, g, b` for tints like `rgba(var(--accent-rgb), 0.14)` | `77, 212, 232` |
 | `--accent-fg` | The accent as a *foreground*: repaired to 4.5:1 on the surfaces, for accent-colored text and outlines (`.btn.primary`). The raw `--accent` is the user's exact pick and is never repaired | `#4dd4e8` |
 | `--on-accent` | Text/icon color on accent-filled surfaces | `#0a0a0a` |
-| `--hover-bg` | Hover/pressed row background | `#23272e` |
+| `--hover-bg` | Hover/pressed row background | `#181c23` |
 | `--panel-alpha` | The theme's glass opacity level (see [§3](#3--transparency-system)) | `0.92` |
 | `--appearance` | `dark` \| `light`; also stamped as `data-appearance` on `<html>` | `dark` |
 
 ### State colors
 
-Fixed hues, contrast-repaired per theme by the host (see §2). Use the `-bg` tints for
-fills behind state-colored text.
+Each keeps its hue and takes the accent's saturation and lightness, then is
+contrast-repaired per theme by the host (see §2). Use the `-bg` tints for fills behind
+state-colored text.
 
 | Token | Purpose | Stock value |
 |---|---|---|
-| `--ok` / `--ok-bg` | Healthy, connected, in-range | `#45d483` / `rgba(69, 212, 131, 0.14)` |
-| `--warn` / `--warn-bg` | Degraded, near a limit — the one alert hue (the instrument amber) | `#ffae52` / `rgba(255, 174, 82, 0.14)` |
-| `--err` / `--err-bg` | Failed, unreachable, over limit | `#ff6268` / `rgba(255, 98, 104, 0.14)` |
-| `--info` / `--info-bg` | Neutral information | `#62cbea` / `rgba(98, 203, 234, 0.14)` |
+| `--ok` / `--ok-bg` | Healthy, connected, in-range | `#4de890` / `rgba(77, 232, 144, 0.14)` |
+| `--warn` / `--warn-bg` | Degraded, near a limit — the one alert hue (the instrument amber) | `#e89f4d` / `rgba(232, 159, 77, 0.14)` |
+| `--err` / `--err-bg` | Failed, unreachable, over limit | `#ea5c61` / `rgba(234, 92, 97, 0.14)` |
+| `--info` / `--info-bg` | Neutral information | `#4dc5e8` / `rgba(77, 197, 232, 0.14)` |
 
 ### Geometry & motion
 
@@ -119,18 +120,21 @@ The user picks exactly three colors and one opacity — accent, background, text
 stock dark). `PaletteEngine.Derive` on the host turns those seeds into the full token
 palette:
 
-1. **Tone detection.** Dark vs. light is decided by the *derived surface's* luminance
+1. **Tone detection.** Dark vs. light is decided by the background's luminance
    (`< 0.35` = dark), not by any label — an imported light theme automatically gets
    light-appropriate mixing ratios.
-2. **Surfaces** are the background pulled slightly toward the text color (`--surface`,
-   `--surface-alt`, `--control-bg` at increasing mix ratios). Mixing toward text lightens
-   dark themes and darkens light ones with the same formula.
+2. **Surfaces.** The tile (`--surface`) is the Background colour itself. `--surface-alt`
+   and `--control-bg` are the background pulled toward the text color at increasing mix
+   ratios, which lightens dark themes and darkens light ones with the same formula.
 3. **Text tiers and hairlines** are the text pulled toward the surface: `--text-muted`
    (42%), `--text-dim` (60%), `--line` (78%).
 4. **WCAG contrast repair.** Every role is checked against the surfaces it renders on and
    repaired if it fails: `--text` to 7.0:1, `--text-muted` to 4.5:1 (against both
    `--surface` and `--surface-alt`), `--text-dim` to 3.0:1, and the four state hues to
-   4.5:1 — on both surfaces *and* on their own 14% tints composited over each, since
+   4.5:1. The state hues follow the theme: each keeps its own hue (OK green, warning amber,
+   error red, info blue) and takes the accent's saturation and lightness, clamped to
+   45–95% and 42–70% so the four stay recognisable. They are repaired on both surfaces
+   *and* on their own 14% tints composited over each, since
    that is what `.pill` and state icons actually render on. Repair binary-searches a mix
    toward black or white — whichever direction helps — so any theme the user invents
    stays legible in every widget. Colors that already pass are untouched.
@@ -184,15 +188,17 @@ validator rejects a widget that does either by hand.
 
 | Class | `--panel-alpha-eff` | Meaning |
 |---|---|---|
-| `body.bg-solid` | `1` | Opaque tile; the wallpaper stops at the widget edge |
-| `body.bg-glass` | `var(--panel-alpha)` | Translucent tint at the theme's chosen level |
+| `body.bg-glass` | `var(--panel-alpha)` | The default (`theme`): the tile at the theme's Panel opacity. Below 0.6 the base adds the transparent tile's text-shadow in proportion (none at 0.6, all of it at 0), since the text was repaired against the opaque surface |
+| `body.bg-solid` | `1` | Opaque tile whatever the theme says; the wallpaper stops at the widget edge |
 | `body.bg-transparent` | `0` | No tile at all — content floats directly on the wallpaper; the base adds a text-shadow for legibility |
 
 You still need to know the classes exist, because they change what your CSS sits on. The
 derived values are re-declared on `body` in the base, and the `bg-*` classes land on
 `<body>` — so values left only on `:root` would ignore the override. If you re-derive any
-of them yourself, do it at `body` scope or below. Unset and out-of-spec both render solid,
-so a widget that has never heard of any of this is an ordinary opaque tile.
+of them yourself, do it at `body` scope or below. Unset and out-of-spec both render at the
+theme's opacity, so a widget that has never heard of any of this is an ordinary tile that
+follows the Theme's Panel opacity. The setting's values are `theme`, `solid` and
+`transparent`; a layout saved with the older `glass` is read as `theme`.
 
 > **Why this changed.** This section used to require the opposite: every widget declared
 > the property and toggled the classes itself. Thirty-one stock widgets ended up carrying

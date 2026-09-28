@@ -3167,7 +3167,8 @@
   }
 
   function propEditor(prop, slot) {
-    const current = slot.settings[prop.name] !== undefined ? slot.settings[prop.name] : prop.default;
+    const current = window.WWAppearance.shownValue(prop,
+      slot.settings[prop.name] !== undefined ? slot.settings[prop.name] : prop.default);
     // Writing a value CANCELS a pending removal. The field-level Clear names the address,
     // and without this the name latched: the user cleared a demoted property, picked a
     // replacement in the same session, and the save deleted the property instead of

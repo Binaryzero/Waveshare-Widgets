@@ -2360,7 +2360,7 @@
     const stored = () => (record.def.settings = record.def.settings || {});
     const cur = (prop) => {
       const s = record.def.settings || {};
-      return s[prop.name] !== undefined ? s[prop.name] : prop.default;
+      return window.WWAppearance.shownValue(prop, s[prop.name] !== undefined ? s[prop.name] : prop.default);
     };
     // The third argument states INTENT, not value: pass true when the user asked to
     // remove this property. psControl runs outside this closure, so it cannot reach the

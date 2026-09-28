@@ -336,7 +336,10 @@
 
   function applyBackground(settings) {
     const raw = settings && settings.bgStyle;
-    backgroundClass = (raw === 'glass' || raw === 'transparent') ? raw : 'solid';
+    // `solid` and `transparent` only when chosen. Anything else is the theme's Panel
+    // opacity: `theme`, the old `glass` that meant the same, and a tile that never chose,
+    // so the Theme's slider reaches it (the class keeps its old name).
+    backgroundClass = (raw === 'solid' || raw === 'transparent') ? raw : 'glass';
     // The classes land on <body>, which may not exist yet: ww-init can arrive DURING
     // document parse — the shell answers ww-ready while the widget-api script tag is still
     // blocking the parser — so `document.body` is genuinely null on a first init often
