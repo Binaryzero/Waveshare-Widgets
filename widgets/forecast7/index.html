@@ -6,20 +6,15 @@
 <link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
   /* Widget-specific layout only; tokens, background/bgStyle handling and the
-   * typography base come from widget-base.css. */
+   * typography base come from widget-base.css.
+   * No header: the week starts at the top of the tile. The place sits at the foot, with
+   * the Stale mark beside it when the last refresh failed. Type is its size on the
+   * smallest tile (a 640x200 band) times the tile scale (--ts). */
   body {
     display: flex;
     flex-direction: column;
-    gap: clamp(4px, 1.6vh, 12px);
+    gap: calc(3px * var(--ts));
     padding: clamp(8px, 3vh, 16px) clamp(12px, 1.4vw, 20px);
-  }
-  header { min-width: 0; }
-  #hdr { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  #place {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
   }
 
   #days {
@@ -29,62 +24,94 @@
     grid-template-columns: repeat(7, minmax(0, 1fr));
     gap: clamp(4px, 0.8vw, 10px);
     transition: opacity var(--dur-mid) var(--ease);
+    /* The week is the container, so every day takes the same layout: what fits is
+     * measured against the week's width in its text size (em in a condition is that
+     * size, and it grows with the tile). A seventh of it is one day's column. */
+    container-type: inline-size;
   }
   .day {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: clamp(2px, 1.4vh, 8px);
-    padding: clamp(4px, 1.6vh, 10px) 2px;
+    gap: calc(2px * var(--ts));
+    padding: calc(3px * var(--ts)) 2px;
     min-width: 0;
     overflow: hidden;
   }
   .day + .day { border-left: 1px solid var(--line); }
   .day.today .d { color: var(--accent-fg); }
-  .d { font-size: clamp(10px, 3.6vh, 13px); white-space: nowrap; }
-  .g { font-size: clamp(16px, 10vh, 40px); line-height: 1; }
+  .d { font-size: calc(10px * var(--ts)); white-space: nowrap; }
+  /* The glyph and the high are the column's headline: a 200px band held them at 10vh
+   * and 6.5vh (20px, 13px) but a 400px tile at 40px and 26px, so the smallest tile's
+   * size times the scale would shrink the tall tiles. These keep those where they were. */
+  .g { font-size: calc(24px * var(--ts)); line-height: 1; }
+  /* The condition's name: only on a wide tile tall enough for it (below). It may take
+   * two lines, and every day reserves both, so the rows below stay level across the
+   * week; a column too narrow for "Thunderstorm" at full size gets the size that fits. */
   .c {
     display: none;
     color: var(--text-muted);
-    font-size: clamp(12px, 4vh, 13px);
-    white-space: nowrap;
+    font-size: min(calc(12px * var(--ts)), 2cqi);
+    line-height: 1.2;
+    min-height: 2.4em;
+    text-align: center;
     overflow: hidden;
-    text-overflow: ellipsis;
     max-width: 100%;
   }
-  .hi { font-size: clamp(14px, 6.5vh, 26px); font-weight: 700; white-space: nowrap; }
+  .c span {
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+  .hl { display: flex; flex-direction: column; align-items: center; gap: calc(2px * var(--ts)); }
+  .hi { font-size: calc(15px * var(--ts)); font-weight: 700; white-space: nowrap; }
   .lo {
     color: var(--text-muted);
-    font-size: clamp(12px, 4.8vh, 18px);
+    font-size: calc(12px * var(--ts));
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
   .pp {
     color: var(--text-muted);
-    font-size: clamp(12px, 4.2vh, 14px);
+    font-size: calc(12px * var(--ts));
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  /* Full slot has room for the condition label under the glyph. */
-  @media (min-width: 900px) { .c { display: block; } }
+  /* Wide days (three-quarter and full tiles) put the low beside the high: one row
+   * fewer, which is what lets the bigger type fit a 200px band. 41em is seven columns of
+   * 5.5em and the gaps between them. */
+  @container (min-width: 41em) {
+    .hl { flex-direction: row; align-items: baseline; gap: 0.45em; }
+  }
+  /* A full or three-quarter tile, 400px tall, has room for the condition's name. */
+  @media (min-width: 900px) and (min-height: 241px) { .c { display: block; } }
+  /* ...and in columns wide enough for any of them on one line (10em a day), one line. */
+  @container (min-width: 72em) { .c { min-height: 1.2em; } }
 
+  /* The place, and Stale beside it when the last refresh failed. */
   footer {
     flex: none;
-    color: var(--text-dim);
-    font-size: 12px;
+    display: flex;
+    align-items: baseline;
+    gap: calc(8px * var(--ts));
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: calc(12px * var(--ts));
     font-variant-numeric: tabular-nums;
-    transition: opacity var(--dur-mid) var(--ease);
   }
-  /* Half-height bands: drop the footer, tighten the stack. */
-  @media (max-height: 240px) {
-    footer { display: none; }
-    body { gap: clamp(3px, 1.2vh, 8px); }
+  #place {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 600;
   }
+  #staleNote { flex: none; display: flex; align-items: baseline; gap: 0.5em; white-space: nowrap; color: var(--text-dim); }
+  #staleNote .pill { font-size: calc(10px * var(--ts)); }
 
   /* Stale: keep the last data visible, dimmed (opacity only — compositor-cheap). */
-  body.stale #days, body.stale footer { opacity: 0.55; }
+  body.stale #days { opacity: 0.55; }
 
   /* State overlays cover the layout, painting the surface at the effective panel
    * opacity so they match the tile's bgStyle. */
@@ -96,25 +123,20 @@
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker">Forecast</span>
-    <span id="hdr">
-      <span class="st" id="place"></span>
-      <span class="pill" id="pill" hidden></span>
-    </span>
-  </header>
-
   <main id="days" hidden>
-    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
-    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
-    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
-    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
-    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
-    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
-    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"></div><div class="hi value">--</div><div class="lo">--</div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"><span></span></div><div class="hl"><div class="hi value">--</div><div class="lo">--</div></div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"><span></span></div><div class="hl"><div class="hi value">--</div><div class="lo">--</div></div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"><span></span></div><div class="hl"><div class="hi value">--</div><div class="lo">--</div></div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"><span></span></div><div class="hl"><div class="hi value">--</div><div class="lo">--</div></div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"><span></span></div><div class="hl"><div class="hi value">--</div><div class="lo">--</div></div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"><span></span></div><div class="hl"><div class="hi value">--</div><div class="lo">--</div></div><div class="pp">--</div></div>
+    <div class="day"><div class="d kicker">--</div><div class="g">·</div><div class="c"><span></span></div><div class="hl"><div class="hi value">--</div><div class="lo">--</div></div><div class="pp">--</div></div>
   </main>
 
-  <footer id="updated" hidden></footer>
+  <footer id="meta" hidden>
+    <span id="place"></span>
+    <span id="staleNote" hidden><span class="pill muted">Stale</span><span id="updated"></span></span>
+  </footer>
 
   <div id="loading" class="overlay state-card">
     <div class="spinner"></div>
@@ -152,9 +174,10 @@
 
   const els = {
     place: document.getElementById('place'),
-    pill: document.getElementById('pill'),
     grid: document.getElementById('days'),
     days: [...document.querySelectorAll('.day')],
+    meta: document.getElementById('meta'),
+    staleNote: document.getElementById('staleNote'),
     updated: document.getElementById('updated'),
     loading: document.getElementById('loading'),
     setup: document.getElementById('setup'),
@@ -183,13 +206,14 @@
     els.setup.hidden = which !== 'setup';
     els.error.hidden = which !== 'error';
     els.grid.hidden = which != null;
-    els.updated.hidden = which != null || !els.updated.textContent;
+    els.meta.hidden = which != null;
   }
 
-  function setPill(cls, text) {
-    els.pill.hidden = false;
-    els.pill.className = 'pill ' + cls;
-    els.pill.textContent = text;
+  // Stale reports an exception, so it shows only then: beside the place, with the time of
+  // the reading the tile is still showing. A healthy tile says nothing about freshness.
+  function setStale(on) {
+    document.body.classList.toggle('stale', on);
+    els.staleNote.hidden = !on;
   }
 
   // The location setting is either a picked place object {label, latitude,
@@ -243,7 +267,7 @@
       if (!t) {
         for (const cls of ['.d', '.hi', '.lo', '.pp']) cell(cls).textContent = '--';
         cell('.g').textContent = '·';
-        cell('.c').textContent = '';
+        cell('.c span').textContent = '';
         continue;
       }
       const [label, glyph] = wmo(num(daily.weather_code && daily.weather_code[i]));
@@ -253,7 +277,7 @@
       cell('.d').textContent = i === 0 ? 'Today'
         : new Date(t + 'T12:00').toLocaleDateString([], { weekday: 'short' });
       cell('.g').textContent = glyph;
-      cell('.c').textContent = label;
+      cell('.c span').textContent = label;
       cell('.hi').textContent = hi == null ? '--' : hi + '°';
       cell('.lo').textContent = lo == null ? '--' : lo + '°';
       cell('.pp').textContent = '💧' + (pp == null ? '--' : pp) + '%';
@@ -270,7 +294,7 @@
     const loc = s.location != null ? s.location : 'Madrid';
     const hasLoc = (loc && typeof loc === 'object' && loc.latitude != null) ||
       (typeof loc === 'string' && loc.trim() !== '');
-    if (!hasLoc) { showState('setup'); els.pill.hidden = true; return; }
+    if (!hasLoc) { showState('setup'); return; }
 
     refreshing = true;
     if (!hasData) showState('loading');
@@ -279,27 +303,24 @@
       const data = await fetchForecast(place, s.units);
       renderDays(data);
       els.place.textContent = place.label;
-      els.updated.textContent = 'Updated ' +
-        new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' · Open-Meteo';
+      els.updated.textContent = 'updated ' +
+        new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       hasData = true;
       failStreak = 0;
-      document.body.classList.remove('stale');
       // Healthy: no pill. It reports exceptions, and a seven-day forecast that is simply
       // working has none — LIVE on a forecast tile said nothing the forecast did not.
-      els.pill.hidden = true;
+      setStale(false);
       showState(null);
     } catch (e) {
       WW.log('forecast7 refresh failed: ' + e.message);
       failStreak++;
       if (hasData) {
         // Stale: old data beats no data — keep it visible, dimmed.
-        document.body.classList.add('stale');
-        setPill('muted', 'Stale');
+        setStale(true);
         showState(null);
       } else {
         els.errorBody.textContent = e.message +
           '. Check the location in Settings and the network connection.';
-        els.pill.hidden = true;
         showState('error');
       }
     } finally {

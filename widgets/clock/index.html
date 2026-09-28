@@ -12,12 +12,14 @@
     flex-direction: column;
     padding: 12px 16px 10px;
   }
+  /* No header: the time and date are the tile, and the room a corner label took is
+   * the time's. Spacing between the lines scales with the tile like the text does. */
   #mid {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 2vh;
+    gap: calc(4px * var(--ts));
     flex: 1 1 auto;
     min-height: 0;
   }
@@ -27,7 +29,7 @@
    * much width eight tabular digits need. */
   #time {
     color: var(--text);
-    font-size: 40px;
+    font-size: calc(40px * var(--ts));
     font-weight: 700;
     line-height: 0.92;
     font-variant-numeric: tabular-nums;
@@ -43,7 +45,7 @@
   #time small { font-size: 40%; color: var(--text-muted); font-weight: 500; }
   #date {
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: calc(12px * var(--ts));
     font-weight: 500;
     letter-spacing: 0.34em;
     text-transform: uppercase;
@@ -54,10 +56,6 @@
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker">Chrono</span>
-    <span class="st" id="mode">24H</span>
-  </header>
   <div id="mid">
     <div id="time">--:--</div>
     <div id="date"></div>
@@ -87,6 +85,10 @@
   let timeScale = 1;
   let dateScale = 1;
   const asFraction = (v) => Math.max(0.1, Math.min(1, (Number(v) || 100) / 100));
+  // Size caps in px before the tile scale: the date's size on a 320x200 band, and the
+  // time's 220px on a full 1280x400 tile divided by that tile's scale (1.97).
+  const DATE_MAX = 22.5;
+  const TIME_MAX = 112;
 
   WW.onInit((state) => {
     const s = state.settings;
@@ -96,7 +98,6 @@
     dateScale = asFraction(s.dateSize);
     hour12 = s.hour12 === 'on';
     showSeconds = s.showSeconds !== 'off';
-    document.getElementById('mode').textContent = hour12 ? '12H' : '24H';
     render();
   });
 
@@ -154,14 +155,29 @@
     const availH = Math.max(0, box.height);
     // The date gets at most a fifth of the height, so the time keeps the tile even in
     // a short slot; on a wide one it is width that binds and this never applies.
-    WW.fitText(dateEl, { width: availW, height: availH * 0.2, scale: dateScale, max: 26 });
+    // Both caps grow with the tile (WW.tileScale, the --ts the CSS scales by): the date's
+    // is the size it fitted to on the smallest tile, and the time's the one it had on a
+    // full 1280x400 tile, so a XENEON EDGE tile shows a bigger clock rather than the
+    // Waveshare's in a wider frame. The fifth of the height still bounds the date, so a
+    // larger date can never take the time's room.
+    const ts = WW.tileScale || 1;
+    const dateFit = { width: availW, height: availH * 0.2, scale: dateScale, max: DATE_MAX * ts };
+    WW.fitText(dateEl, dateFit);
     const dateH = dateEl.textContent ? dateEl.getBoundingClientRect().height : 0;
-    WW.fitText(timeEl, {
+    const timePx = WW.fitText(timeEl, {
       width: availW,
       height: Math.max(0, availH - dateH - (dateH ? gap : 0)),
       scale: timeScale,
-      max: 220,
+      max: TIME_MAX * ts,
     });
+    // Where width binds both (a narrow tile, the 12-hour string), the date could come out
+    // more than half the time's size and read as its equal. It stays at most half of the
+    // time's FITTED size, before either slider, so each slider still moves only its own
+    // line. Shrinking the date only gives the time room, so the time needs no second fit.
+    const timeFull = timePx / (timeScale || 1);
+    if (timeFull && timeFull * 0.5 < dateFit.max) {
+      WW.fitText(dateEl, Object.assign(dateFit, { max: timeFull * 0.5 }));
+    }
   }
 
   render();

@@ -107,7 +107,9 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   reproduces the review's own example — a success, a later failure, then a cadence edit — and
   asserts the edit does NOT fire an immediate fetch, because the backoff anchors on the last
   ATTEMPT, not the last success. Each of N1b/N2b/N3b fails against the pre-fix widget, which
-  the file notes is the check that keeps the suite from passing hollow.
+  the file notes is the check that keeps the suite from passing hollow. N4 taps Retry on the
+  error card and holds the request in flight: the card must read Retrying, with a spinner,
+  and nothing on the tile may call it Setup (the header pill once did).
 - `widgetfit-run.js` — that widget text fits the SLOT rather than one axis of it
   (issue #76). A widget's iframe is sized to its slot, so `vh`/`vw` do measure the
   tile — but a rule written against one axis says nothing about the other, and the
@@ -116,8 +118,11 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   bands, with the longest and shortest strings its own settings can produce (12-hour
   plus seconds versus 24-hour without), and checks the opposite failure too: text
   that fits by being tiny is not a fit. Also covers re-fitting when the slot resizes
-  with no settings change, and that the size sliders can only shrink. Routes are
-  fulfilled in-process — no ports.
+  with no settings change, and that the size sliders can only shrink. Mounted with a
+  `#ww-slot` fragment so `--ts` is stamped as on the panel, it also takes the XENEON
+  EDGE's tiles, holds the date to a fifth of the height and half the time's size (F4b),
+  and checks the date's cap grows with the tile (F7b/F7c). Routes are fulfilled
+  in-process — no ports.
 - `bridgeorigin-run.js` — sender authorization on the widget bridge. `postMessage`
   reaches `window.top` from ANY descendant, so a page framed INSIDE a widget could
   drive the native host: `ww-action` reaching `Process.Start`, `ww-fetch` used as an
