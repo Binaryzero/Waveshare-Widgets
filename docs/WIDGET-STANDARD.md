@@ -188,7 +188,7 @@ validator rejects a widget that does either by hand.
 
 | Class | `--panel-alpha-eff` | Meaning |
 |---|---|---|
-| `body.bg-glass` | `var(--panel-alpha)` | The default (`theme`): the tile at the theme's Panel opacity |
+| `body.bg-glass` | `var(--panel-alpha)` | The default (`theme`): the tile at the theme's Panel opacity. Below 0.6 the base adds the transparent tile's text-shadow in proportion (none at 0.6, all of it at 0), since the text was repaired against the opaque surface |
 | `body.bg-solid` | `1` | Opaque tile whatever the theme says; the wallpaper stops at the widget edge |
 | `body.bg-transparent` | `0` | No tile at all — content floats directly on the wallpaper; the base adds a text-shadow for legibility |
 
