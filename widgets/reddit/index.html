@@ -72,7 +72,7 @@
   const cfg = { subreddit: 'landscapephotography', sort: 'hot', dwell: 12, showTitle: true, fit: 'cover' };
   const layers = [document.getElementById('layerA'), document.getElementById('layerB')];
   let front = 0;               // which layer is currently visible
-  let posts = [];              // [{imageUrl, title, author, score}]
+  let posts = [];              // [{images, title, author, score}] — images: see copiesOf
   let index = -1;
   let paused = false;
   let advanceTimer = null;
@@ -83,12 +83,12 @@
   // Ceilings of this widget's own, well under the 5 MiB WW.fetch applies to everything.
   //
   // The shared one stops a widget exhausting the renderer; it is not a statement about what
-  // THIS widget should be loading. The panel is 1280x400, and extractImagePosts already picks
-  // the smallest rendition at least 1280 wide — so anything actually displayable here is a
-  // few hundred KB of JPEG. The paths that run to megabytes are the ones this widget wants
-  // least: a gallery's largest rendition, the preview `source` for a 6000x4000 upload, or a
-  // direct i.redd.it link to the original file, any of which can be tens of megabytes of
-  // pixels to paint into a 400px strip.
+  // THIS widget should be loading. pickImage takes the smallest resized copy that fills the
+  // tile at its real pixel size, so what is displayable here is usually a few hundred KB of
+  // JPEG. The paths that run to megabytes are the ones this widget wants least: the original
+  // of a 6000x4000 upload, which is all there is for a tile wider than Reddit's largest
+  // resized copy, or a direct i.redd.it link to the original file, any of which can be tens
+  // of megabytes of pixels to paint into a strip.
   //
   // Refusing one is cheap in a way it would not be in another widget: advance() already
   // walks several posts looking for one that loads, so a refusal costs a skipped image
@@ -184,38 +184,75 @@
   // in case a proxy hop re-encodes.
   function cleanUrl(u) { return String(u || '').replace(/&amp;/g, '&'); }
 
+  // Every copy of one image Reddit offers, as {url, width, height}: the resized ones
+  // smallest first, then the original last. The choice between them waits for pickImage,
+  // when the tile's size is what it is now. A copy without a usable url is dropped, and
+  // one without dimensions can only ever be the original.
+  function copiesOf(resized, original) {
+    const ok = (c) => c && typeof c.url === 'string' && c.url.length > 0;
+    const sized = (resized || []).filter((c) => ok(c) && c.width > 0 && c.height > 0)
+      .sort((a, b) => a.width - b.width);
+    return ok(original) ? sized.concat([original]) : sized;
+  }
+
   function extractImagePosts(json) {
     const out = [];
     const children = (json && json.data && json.data.children) || [];
     for (const child of children) {
       const d = child && child.data;
       if (!d || d.stickied || d.over_18) continue;
-      let img = null;
+      let images = [];
 
-      // Galleries: take the first item's largest rendition.
+      // Galleries: the first item, its resized copies (`p`) and its original (`s`). An
+      // animated one keeps only the original: its resized copies are still frames.
       if (d.is_gallery && d.media_metadata && d.gallery_data && d.gallery_data.items) {
         const first = d.gallery_data.items[0];
         const meta = first && d.media_metadata[first.media_id];
-        if (meta && meta.s) img = cleanUrl(meta.s.u || meta.s.gif);
+        if (meta && meta.s) {
+          const s = meta.s;
+          images = s.gif
+            ? copiesOf([], { url: cleanUrl(s.gif), width: s.x || 0, height: s.y || 0 })
+            : copiesOf((meta.p || []).map((r) => ({ url: cleanUrl(r.u), width: r.x, height: r.y })),
+              s.u ? { url: cleanUrl(s.u), width: s.x || 0, height: s.y || 0 } : null);
+        }
       }
 
-      // Preview: pick the smallest rendition that still covers the panel width,
-      // falling back to the full-size source.
-      if (!img && d.preview && d.preview.images && d.preview.images[0]) {
+      // Preview: its resized copies and the full-size source.
+      if (!images.length && d.preview && d.preview.images && d.preview.images[0]) {
         const p = d.preview.images[0];
-        const fits = (p.resolutions || []).filter((r) => r.width >= 1280);
-        const pick = fits.length ? fits[0] : p.source;
-        if (pick) img = cleanUrl(pick.url);
+        images = copiesOf((p.resolutions || []).map((r) => ({ url: cleanUrl(r.url), width: r.width, height: r.height })),
+          p.source ? { url: cleanUrl(p.source.url), width: p.source.width || 0, height: p.source.height || 0 } : null);
       }
 
-      // Direct image links (i.redd.it, i.imgur.com, ...).
-      if (!img && /\.(jpe?g|png|gif|webp)(\?|$)/i.test(d.url_overridden_by_dest || '')) {
-        img = cleanUrl(d.url_overridden_by_dest);
+      // Direct image links (i.redd.it, i.imgur.com, ...): the one file, size unknown.
+      if (!images.length && /\.(jpe?g|png|gif|webp)(\?|$)/i.test(d.url_overridden_by_dest || '')) {
+        images = copiesOf([], { url: cleanUrl(d.url_overridden_by_dest), width: 0, height: 0 });
       }
 
-      if (img) out.push({ imageUrl: img, title: d.title || '', author: d.author || '', score: d.score || 0 });
+      if (images.length) out.push({ images, title: d.title || '', author: d.author || '', score: d.score || 0 });
     }
     return out;
+  }
+
+  // The smallest copy that fills this tile at its real pixel size, else the original.
+  // The tile is the iframe's viewport; devicePixelRatio turns it into device pixels, so a
+  // tile at 150% display scaling asks for half as many pixels again. A panel's width is not
+  // the measure: a quarter tile on the XENEON EDGE is 640 wide, a full one 2560.
+  //
+  // Cover (the default) crops, so a photo wider than the tile is drawn at the tile's
+  // HEIGHT: a 3:2 photo filling a 320x400 tile is 600 pixels wide, not 320. Contain draws
+  // it whole, so it is drawn at whichever of the two is smaller.
+  function pickImage(post) {
+    const images = post.images;
+    const last = images[images.length - 1];
+    const shape = images.find((c) => c.width > 0 && c.height > 0);
+    const aspect = shape ? shape.width / shape.height : 0;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const drawn = !aspect ? w : cfg.fit === 'contain' ? Math.min(w, h * aspect) : Math.max(w, h * aspect);
+    const need = Math.ceil(drawn * (window.devicePixelRatio || 1));
+    for (const c of images) if (c.width >= need) return c.url;
+    return last.url;
   }
 
   // --- slideshow ---------------------------------------------------------------
@@ -233,14 +270,15 @@
     for (let attempts = 0; attempts < Math.min(5, posts.length); attempts++) {
       index = (index + (direction || 1) + posts.length) % posts.length;
       const post = posts[index];
+      const url = pickImage(post);
       try {
-        const blobUrl = await loadImage(post.imageUrl);
+        const blobUrl = await loadImage(url);
         show(post, blobUrl);
         advancing = false;
         return;
       } catch (e) {
         if (isTooLarge(e)) refusedForSize++;
-        WW.log('reddit: image failed (' + e.message + '): ' + post.imageUrl);
+        WW.log('reddit: image failed (' + e.message + '): ' + url);
       }
     }
     advancing = false;
