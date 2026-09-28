@@ -56,9 +56,12 @@ public static class WindowPlacement
 
     /// <summary>
     /// Where to open. A saved placement is kept when its centre is still on a display
-    /// that is not the panel, fitted to that display. Otherwise a first-open size on the
-    /// display under the cursor, unless that is the panel: then the primary, then any
-    /// other. The display it chose comes back with it, for the minimum size.
+    /// that is not the panel, fitted to that display. A display that got smaller (a lower
+    /// resolution, or rotated) can leave the centre off every screen while the window
+    /// still overlaps it, so then the non-panel display it overlaps most is the one. Only
+    /// a window on no display at all opens as a first open: a share of the display under
+    /// the cursor, unless that is the panel, then the primary, then any other. The
+    /// display it chose comes back with it, for the minimum size.
     /// </summary>
     public static (Placement Placement, Display Display) Choose(
         IReadOnlyList<Display> displays, int cursorDisplay, Placement? saved)
@@ -77,6 +80,17 @@ public static class WindowPlacement
                 if (!d.IsPanel && d.WorkingArea.Contains(centre))
                     return (new Placement(Fit(s.Bounds, d), s.Maximized), d);
             }
+            Display? overlapped = null;
+            long most = 0;
+            foreach (var d in displays)
+            {
+                if (d.IsPanel) continue;
+                var shared = Rectangle.Intersect(d.WorkingArea, s.Bounds);
+                var area = (long)shared.Width * shared.Height;
+                if (area > most) { most = area; overlapped = d; }
+            }
+            if (overlapped is { } o)
+                return (new Placement(Fit(s.Bounds, o), s.Maximized), o);
         }
 
         var home = Home(displays, cursorDisplay);

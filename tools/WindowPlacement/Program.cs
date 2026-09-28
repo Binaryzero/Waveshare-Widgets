@@ -107,6 +107,22 @@ var (w10, _) = Choose([qhd150], 0, small);
 Check("W10 a saved size under the display's minimum is raised to it",
     w10.Bounds.Size == new Size(1170, 720), $"{w10.Bounds}");
 
+// W13 · the display it was left on got SMALLER (a lower resolution, or rotated): the saved
+// centre can now be off every screen while the window still overlaps that display. It is
+// fitted back onto the display it overlaps most, maximized included, not treated as gone.
+var shrunk = fhd100 with { WorkingArea = new Rectangle(2560, 0, 1280, 984) };
+var offCentre = new Placement(new Rectangle(3000, 100, 1800, 900), true); // centre x 3900: off the shrunk display
+var (w13, w13d) = Choose([qhd150, shrunk, panel], 0, offCentre);
+Check("W13 a saved window whose display shrank is fitted onto it, maximized kept",
+    w13d == shrunk && w13.Maximized && w13.Bounds == new Rectangle(2560, 984 - 900, 1280, 900), $"{w13.Bounds} max={w13.Maximized} on {w13d.WorkingArea}");
+// Centre x 2600, in the gap between two displays: 500 px of it on the one listed first,
+// 560 on the other. The cursor is on the first, so a first open, or taking the first
+// display it touches, would both go there.
+var straddle = new Placement(new Rectangle(2000, 100, 1200, 800), false);
+var (w13b, w13bd) = Choose([fhd100 with { WorkingArea = new Rectangle(2700, 0, 1920, 1032) }, qhd150, panel], 0, straddle);
+Check("W13b ...and with its centre off every screen, the display it overlaps MOST is the one, size kept",
+    w13bd == qhd150 && w13b.Bounds == new Rectangle(1360, 100, 1200, 800), $"{w13b.Bounds} on {w13bd.WorkingArea}");
+
 Console.WriteLine("Stored form");
 
 // W11 · the file round-trips, and anything else costs the position, never the window.
