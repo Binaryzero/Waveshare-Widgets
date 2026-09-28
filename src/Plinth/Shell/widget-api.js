@@ -807,8 +807,8 @@
     // but DOMContentLoaded has not fired — and because init already arrived, this callback
     // runs synchronously, right now, before the deferred stamp would have. Stamping first
     // means the callback's first paint and any measurement it takes are inside the right
-    // tile. No-ops when the class already landed.
-    onInit(cb) { listeners.init.push(cb); if (state.ready) { stampBackground(); cb(state); } },
+    // tile, at the right text scale. Both no-op when they already landed.
+    onInit(cb) { listeners.init.push(cb); if (state.ready) { stampBackground(); stampTileScale(); cb(state); } },
     /** cb(sensors) — fires on every poll tick (~2 s). */
     onSensors(cb) { listeners.sensors.push(cb); },
     /** cb(media) — fires when now-playing info changes. */
