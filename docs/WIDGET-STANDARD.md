@@ -119,18 +119,21 @@ The user picks exactly three colors and one opacity — accent, background, text
 stock dark). `PaletteEngine.Derive` on the host turns those seeds into the full token
 palette:
 
-1. **Tone detection.** Dark vs. light is decided by the *derived surface's* luminance
+1. **Tone detection.** Dark vs. light is decided by the background's luminance
    (`< 0.35` = dark), not by any label — an imported light theme automatically gets
    light-appropriate mixing ratios.
-2. **Surfaces** are the background pulled slightly toward the text color (`--surface`,
-   `--surface-alt`, `--control-bg` at increasing mix ratios). Mixing toward text lightens
-   dark themes and darkens light ones with the same formula.
+2. **Surfaces.** The tile (`--surface`) is the Background colour itself. `--surface-alt`
+   and `--control-bg` are the background pulled toward the text color at increasing mix
+   ratios, which lightens dark themes and darkens light ones with the same formula.
 3. **Text tiers and hairlines** are the text pulled toward the surface: `--text-muted`
    (42%), `--text-dim` (60%), `--line` (78%).
 4. **WCAG contrast repair.** Every role is checked against the surfaces it renders on and
    repaired if it fails: `--text` to 7.0:1, `--text-muted` to 4.5:1 (against both
    `--surface` and `--surface-alt`), `--text-dim` to 3.0:1, and the four state hues to
-   4.5:1 — on both surfaces *and* on their own 14% tints composited over each, since
+   4.5:1. The state hues follow the theme: each keeps its own hue (OK green, warning amber,
+   error red, info blue) and takes the accent's saturation and lightness, clamped to
+   45–95% and 42–70% so the four stay recognisable. They are repaired on both surfaces
+   *and* on their own 14% tints composited over each, since
    that is what `.pill` and state icons actually render on. Repair binary-searches a mix
    toward black or white — whichever direction helps — so any theme the user invents
    stays legible in every widget. Colors that already pass are untouched.
@@ -184,15 +187,17 @@ validator rejects a widget that does either by hand.
 
 | Class | `--panel-alpha-eff` | Meaning |
 |---|---|---|
-| `body.bg-solid` | `1` | Opaque tile; the wallpaper stops at the widget edge |
-| `body.bg-glass` | `var(--panel-alpha)` | Translucent tint at the theme's chosen level |
+| `body.bg-glass` | `var(--panel-alpha)` | The default (`theme`): the tile at the theme's Panel opacity |
+| `body.bg-solid` | `1` | Opaque tile whatever the theme says; the wallpaper stops at the widget edge |
 | `body.bg-transparent` | `0` | No tile at all — content floats directly on the wallpaper; the base adds a text-shadow for legibility |
 
 You still need to know the classes exist, because they change what your CSS sits on. The
 derived values are re-declared on `body` in the base, and the `bg-*` classes land on
 `<body>` — so values left only on `:root` would ignore the override. If you re-derive any
-of them yourself, do it at `body` scope or below. Unset and out-of-spec both render solid,
-so a widget that has never heard of any of this is an ordinary opaque tile.
+of them yourself, do it at `body` scope or below. Unset and out-of-spec both render at the
+theme's opacity, so a widget that has never heard of any of this is an ordinary tile that
+follows the Theme's Panel opacity. The setting's values are `theme`, `solid` and
+`transparent`; a layout saved with the older `glass` is read as `theme`.
 
 > **Why this changed.** This section used to require the opposite: every widget declared
 > the property and toggled the classes itself. Thirty-one stock widgets ended up carrying

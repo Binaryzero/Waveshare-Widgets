@@ -35,13 +35,17 @@
   /// panel-owned Background control would have been filed as a Text setting on most of the
   /// catalog. Giving it its own group is also the honest label: it is not the widget's
   /// setting, and it should not sit inside the widget's own sections.
+  /// bgStyle: `theme` (the default) paints the tile at the theme's Panel opacity, so the
+  /// Theme's slider reaches every tile nobody set otherwise; `solid` is always opaque and
+  /// `transparent` never. A tile saved with the old `glass` meant the same as `theme` and is
+  /// read as it (widget-api.js applyBackground).
   const UNIVERSAL = [
     {
       name: 'bgStyle',
       label: 'Background',
       type: 'select',
-      default: 'solid',
-      options: ['solid', 'glass', 'transparent'],
+      default: 'theme',
+      options: ['theme', 'solid', 'transparent'],
       group: 'Appearance',
     },
   ];

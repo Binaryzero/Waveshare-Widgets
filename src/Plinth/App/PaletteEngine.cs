@@ -34,11 +34,12 @@ public static class PaletteEngine
         // an imported light theme still gets light-appropriate mixing ratios.
         var dark = Luminance(background) < 0.35;
 
-        // Surfaces: pull the background toward the text color a little (dark themes
-        // lighten, light themes darken — mixing toward text does both correctly).
-        var surface = Mix(background, text, dark ? 0.055 : 0.035);
-        var surfaceAlt = Mix(background, text, dark ? 0.10 : 0.07);
-        var control = Mix(background, text, dark ? 0.15 : 0.11);
+        // Surfaces: the tile IS the Background colour the user picked. Nested cards and
+        // controls sit a step toward the text colour from it (dark themes lighten, light
+        // themes darken — mixing toward text does both correctly).
+        var surface = background;
+        var surfaceAlt = Mix(background, text, dark ? 0.055 : 0.035);
+        var control = Mix(background, text, dark ? 0.10 : 0.07);
 
         // Text tiers and hairlines are text pulled toward the background.
         var muted = Mix(text, surface, 0.42);
@@ -64,12 +65,18 @@ public static class PaletteEngine
         muted = OpaqueMin(mutedGlass) >= OpaqueMin(mutedOpaque) ? mutedGlass : mutedOpaque;
         dim = EnsureContrast(dim, surface, DimContrast);
 
-        // State colors: fixed hues repaired for the theme's surfaces — including the
-        // 14% tints of themselves that pills and state icons composite on top.
-        var ok = EnsureStateContrast((0x45, 0xd4, 0x83), surface, surfaceAlt);
-        var warn = EnsureStateContrast((0xff, 0xae, 0x52), surface, surfaceAlt);
-        var err = EnsureStateContrast((0xff, 0x62, 0x68), surface, surfaceAlt);
-        var info = EnsureStateContrast((0x62, 0xcb, 0xea), surface, surfaceAlt);
+        // State colors in the theme's character: each keeps its own hue, so OK stays green
+        // and an error red, and takes the accent's saturation and lightness, clamped so the
+        // four stay recognisable and apart. Then repaired for the theme's surfaces —
+        // including the 14% tints of themselves that pills and state icons composite on top.
+        var (_, accentS, accentL) = ToHsl(accent);
+        var stateS = Math.Min(0.95, Math.Max(0.45, accentS));
+        var stateL = Math.Min(0.70, Math.Max(0.42, accentL));
+        (byte r, byte g, byte b) InAccent((byte r, byte g, byte b) seed) => FromHsl(ToHsl(seed).h, stateS, stateL);
+        var ok = EnsureStateContrast(InAccent((0x45, 0xd4, 0x83)), surface, surfaceAlt);
+        var warn = EnsureStateContrast(InAccent((0xff, 0xae, 0x52)), surface, surfaceAlt);
+        var err = EnsureStateContrast(InAccent((0xff, 0x62, 0x68)), surface, surfaceAlt);
+        var info = EnsureStateContrast(InAccent((0x62, 0xcb, 0xea)), surface, surfaceAlt);
 
         // Readable foreground on accent: compare the candidates actually emitted — on a
         // mid-tone accent pure black can edge out white while the near-black loses to it.
@@ -126,6 +133,44 @@ public static class PaletteEngine
         if (h.Length != 6 || !int.TryParse(h, System.Globalization.NumberStyles.HexNumber, null, out var v))
             return (dr, dg, db);
         return ((byte)(v >> 16), (byte)(v >> 8 & 0xff), (byte)(v & 0xff));
+    }
+
+    // HSL, for the state colours. Written as palette.js writes it, operation for operation,
+    // so both round to the same bytes (tools/PaletteParity).
+    private static (double h, double s, double l) ToHsl((byte r, byte g, byte b) c)
+    {
+        double r = c.r / 255.0, g = c.g / 255.0, b = c.b / 255.0;
+        var max = Math.Max(Math.Max(r, g), b);
+        var min = Math.Min(Math.Min(r, g), b);
+        var l = (max + min) / 2;
+        if (max == min) return (0, 0, l);
+        var d = max - min;
+        var s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        double h;
+        if (max == r) h = (g - b) / d + (g < b ? 6 : 0);
+        else if (max == g) h = (b - r) / d + 2;
+        else h = (r - g) / d + 4;
+        return (h / 6, s, l);
+    }
+
+    private static double HueToRgb(double p, double q, double t)
+    {
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1.0 / 6) return p + (q - p) * 6 * t;
+        if (t < 1.0 / 2) return q;
+        if (t < 2.0 / 3) return p + (q - p) * (2.0 / 3 - t) * 6;
+        return p;
+    }
+
+    private static byte ToByte(double unit) => (byte)Math.Round(unit * 255, MidpointRounding.AwayFromZero);
+
+    private static (byte r, byte g, byte b) FromHsl(double h, double s, double l)
+    {
+        if (s == 0) { var v = ToByte(l); return (v, v, v); }
+        var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        var p = 2 * l - q;
+        return (ToByte(HueToRgb(p, q, h + 1.0 / 3)), ToByte(HueToRgb(p, q, h)), ToByte(HueToRgb(p, q, h - 1.0 / 3)));
     }
 
     private static string Hex((byte r, byte g, byte b) c) => $"#{c.r:x2}{c.g:x2}{c.b:x2}";

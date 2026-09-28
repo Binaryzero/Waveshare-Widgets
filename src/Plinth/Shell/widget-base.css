@@ -109,7 +109,8 @@ body.bg-transparent {
 /* Nested surface: rows, sub-cards, list items. Machined: hairline, square. */
 .card {
   background: var(--card-surface);
-  border: 1px solid rgba(255, 255, 255, calc(var(--panel-border-alpha) * 0.6));
+  /* The hairline is the theme's text colour, faint: white vanished on a light theme. */
+  border: 1px solid color-mix(in srgb, var(--text) calc(var(--panel-border-alpha) * 60%), transparent);
   border-radius: var(--radius-card);
   padding: var(--space-3);
 }

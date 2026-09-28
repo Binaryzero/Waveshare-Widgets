@@ -90,7 +90,7 @@ const declBg = outDecl.properties.filter((p) => p.name === 'bgStyle');
 check('A3 a declared bgStyle is replaced, not kept alongside', declBg.length === 1,
   `${declBg.length} bgStyle propert(ies)`);
 check('A3b ...and it is the SHELL\'s definition that survives',
-  declBg[0].default === 'solid' && declBg[0].options.join(',') === 'solid,glass,transparent'
+  declBg[0].default === 'theme' && declBg[0].options.join(',') === 'theme,solid,transparent'
     && declBg[0].label === 'Background',
   `default=${declBg[0].default} options=${declBg[0].options.join('|')} label=${declBg[0].label}`);
 check('A3c ...and the widget\'s unrelated property is untouched',
@@ -104,12 +104,12 @@ const bg2 = w2.properties.find((p) => p.name === 'bgStyle');
 bg1.options.push('MUTATED');
 bg1.default = 'MUTATED';
 check('A5 one widget\'s declaration is not shared with another',
-  bg2.default === 'solid' && !bg2.options.includes('MUTATED'),
+  bg2.default === 'theme' && !bg2.options.includes('MUTATED'),
   `second widget: default=${bg2.default} options=${bg2.options.join('|')}`);
 // ...and a fresh call is still clean, so the module-level constant was not written through.
 const bg3 = A.normalizeCatalog([{ id: 'c', properties: [] }])[0].properties.find((p) => p.name === 'bgStyle');
 check('A5b ...nor with any widget normalised afterwards',
-  bg3.default === 'solid' && !bg3.options.includes('MUTATED'),
+  bg3.default === 'theme' && !bg3.options.includes('MUTATED'),
   `third widget: default=${bg3.default} options=${bg3.options.join('|')}`);
 
 // ---- A6 · the real shipped manifests --------------------------------------------------
