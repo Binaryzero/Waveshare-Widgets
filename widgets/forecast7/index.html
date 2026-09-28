@@ -8,7 +8,8 @@
   /* Widget-specific layout only; tokens, background/bgStyle handling and the
    * typography base come from widget-base.css.
    * No header: the week starts at the top of the tile. The place sits at the foot, with
-   * the Stale mark beside it when the last refresh failed. Type is its size on the
+   * the Stale mark beside it when the last refresh failed and the data's credit at the
+   * far end. Type is its size on the
    * smallest tile (a 640x200 band) times the tile scale (--ts). */
   body {
     display: flex;
@@ -89,7 +90,7 @@
   /* ...and in columns wide enough for any of them on one line (10em a day), one line. */
   @container (min-width: 72em) { .c { min-height: 1.2em; } }
 
-  /* The place, and Stale beside it when the last refresh failed. */
+  /* The place, Stale beside it when the last refresh failed, and the data's credit. */
   footer {
     flex: none;
     display: flex;
@@ -108,6 +109,9 @@
     font-weight: 600;
   }
   #staleNote { flex: none; display: flex; align-items: baseline; gap: 0.5em; white-space: nowrap; color: var(--text-dim); }
+  /* The data's credit, which Open-Meteo's licence (CC BY 4.0) asks for: at the far end,
+   * dim, as the radar credits its map. */
+  #credit { flex: none; margin-left: auto; color: var(--text-dim); font-size: calc(10px * var(--ts)); white-space: nowrap; }
   #staleNote .pill { font-size: calc(10px * var(--ts)); }
 
   /* Stale: keep the last data visible, dimmed (opacity only — compositor-cheap). */
@@ -136,6 +140,7 @@
   <footer id="meta" hidden>
     <span id="place"></span>
     <span id="staleNote" hidden><span class="pill muted">Stale</span><span id="updated"></span></span>
+    <span id="credit">Open-Meteo</span>
   </footer>
 
   <div id="loading" class="overlay state-card">
