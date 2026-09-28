@@ -389,6 +389,15 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   messages, and a server that never answers is reported by the widget at about 15 s,
   inside the shell's 20 s wait (F6). A search (Find by query) is answered with the
   entities whose id or friendly name contains it (F7).
+- `retiredit-run.js` — removed widgets in the settings window (#226): Restore and Delete are
+  edits applied by Save & apply, usable with unsaved changes (R1). Restore asks the host
+  only to mask the def (R2), and the masked def lands on the page with its credential
+  blank and marked saved (R3). A Delete takes the row out and is named in the save's
+  `retainedDeleted`, once (R4, R5), and both light Save from a clean editor (R4d, R10). On
+  a full page the reason Restore is greyed out is a visible sentence, in the settings
+  window (R6) and on the panel (R11). Stale holds both (R7). An answer for a live
+  identity (R8), or for a page that filled meanwhile (R9), seats nothing. The host half
+  is `tools/SecretRoundTrip` D1-D4 (CI).
 - `settingslayout-run.js` — the settings window's frame. The stale-layout banner is hidden
   when nothing is stale (L1); its `display:flex` used to outrank `[hidden]`, leaving an
   empty orange bar under the header. On a tall window the dock and its columns reach the

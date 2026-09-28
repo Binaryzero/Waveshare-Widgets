@@ -483,12 +483,29 @@ are not obvious from the constraints alone:
   rides along — while the widget re-authenticates Axis B. Restoring an uncontested id (the
   overwhelmingly common case) reconnects both.
 
-The def a settings-side restore hands back to the editor is masked over a wrapper that is
-literally `{"pages":[{"slots":[def]}]}` with the window's own `MaskedPlan()`. Both halves
-are load-bearing: `Mask` returns having done *nothing* unless it finds `layoutNode["pages"]`,
-and a manifest-only plan walks straight past a **refused** widget's plaintext residue —
-either mistake posts a credential into the editor's model, which is the state the
-host-performed restore exists to prevent.
+**In the settings window a restore is an edit**, applied by Save & apply and never greyed
+out by unsaved work. The editor holds the attic as it rests on disk, sealed, so it asks the
+host to mask the def (`mask-retained` → `retained-masked`, no disk write), then seats the
+masked def on the page in its own copy and drops the entry from its attic in the same step.
+The constraints still hold, at the save: (a) the union skips an identity live in the
+incoming pages, so the attic entry leaves disk as the slot arrives, and the slot's masked
+blank is the untouched kind, which `Seal` fills from the stored attic by identity
+(`BuildStoredIndex` walks it for exactly that; probe D4). (b) is a refusal on this side
+rather than a re-mint: an identity already live on a page means the tile is back, and the
+editor seats nothing. (c) needs no re-init, because the editor never holds the sealed def
+on a page. A tile the editor removed ITSELF since it last took the layout from disk is the
+exception: its attic entry is a copy of the editor's own tile, already masked, and may hold
+a credential typed since the last save. Masking it again would turn that into an untouched
+blank and the save would put the stored value back, so the editor seats it as it is. Until
+a save writes a restore, the panel still lists the entry as removed; a Delete there
+(`retained-gone`) takes the restored tile off the editor's page too, or the next save would
+write it back after its credentials were destroyed.
+
+The mask is over a wrapper that is literally `{"pages":[{"slots":[def]}]}` with the window's
+own `MaskedPlan()`, and so is the def the settings window hands the editor when the PANEL
+restores a tile. Both halves are load-bearing: `Mask` returns having done *nothing* unless
+it finds `layoutNode["pages"]`, and a manifest-only plan walks straight past a **refused**
+widget's plaintext residue — either mistake posts a credential into the editor's model.
 
 **Clear destroys, and fails closed.** `ClearRetained` drops the entry (again `RemoveAll` by
 identity: a leftover twin would sit in the survivors' attic and talk the liveness guard out
@@ -499,6 +516,22 @@ without saving: eviction tolerates catch-and-continue because blocking an ordina
 secure-store trouble is the worse failure, but Clear is a dedicated destroy with its own
 ack, and saving a layout that no longer names the instance while its bucket survives would
 strand a *working* credential nothing references.
+
+**In the settings window, Delete is an edit too.** It drops the entry from the editor's copy,
+and the save NAMES the deleted identities in a top-level `retainedDeleted` list
+(`LayoutStore.ReadRetainedDeletes`; the model has no member for it, so it never reaches
+disk; more than 512 fails the save rather than being cut short). Omitting them would not do: the union puts back every disk entry a payload omits.
+`DropDeletedRetained` takes them out again after the union and returns what the save drops
+from disk under those identities: the attic entries, and a tile still on a disk page, which
+is what a tile removed and deleted in one session is. The save then does what Clear does, in
+the same order: it destroys their buckets under `InstancesToForget` before writing, failing
+the whole save if the secure store cannot be written, and once the write lands it tombstones
+what it destroyed and mirrors the drop to the panel. Liveness is judged by the payload
+alone, without eviction's disk-pages guard: that guard protects a tile a stale window
+dropped, and a save that passed the generation check is not stale, so a deleted identity on
+a disk page is one the user removed in this editor. A payload with no generation is never
+refused, so it keeps the guard. A write that does not land leaves the editor dirty with its
+Deletes still named, to retry. Probes D1–D3.
 
 **Cross-window convergence for Clear.** The union (`MergeRetainedFromDisk`) only ever ADDS
 disk entries the incoming payload omits — that asymmetry is what protects the attic from a

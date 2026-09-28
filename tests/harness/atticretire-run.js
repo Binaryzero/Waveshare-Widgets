@@ -56,6 +56,7 @@ function loadPair() {
     initGen: 7,
     instanceSeq: 0,
     selectedSlot: null,
+    localRetired: new Set(),
     renderEditor: () => { ctx.renderEditorCalls++; },
     renderPageList: () => { ctx.renderPageListCalls++; },
     renderEditorCalls: 0,

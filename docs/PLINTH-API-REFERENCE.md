@@ -391,12 +391,23 @@ from any "+" add-zone) and from the settings window's widget shelf:
   page, since a duplicate name cannot say which one you meant — and the button is disabled when the
   tile's own size will not fit that page without displacing something already on it. The
   column anchor comes back only on the page the tile was retired from; anywhere else it
-  flows. A restore is performed by the host and answered with a fresh layout (the panel
-  reloads onto the page you were on, still editing), because the shell's copy of a retired
-  def holds ciphertext, not settings.
+  flows. When the button is disabled for lack of room, the row says so on a line of its own.
+  On the panel a restore is performed by the host and answered with a fresh layout (the
+  panel reloads onto the page you were on, still editing), because the shell's copy of a
+  retired def holds ciphertext, not settings. In the settings window it is an edit like any
+  other, applied by **Save & apply**: the host hands back the def masked (`mask-retained`,
+  no disk write), the editor seats it on the page, and the save puts the stored credential
+  back by identity. A tile removed in the editor since it last loaded is put back as it
+  is, unsaved credential edits included. Unsaved edits never disable it.
 - **Delete** removes the entry and the instance's protected store for good — two taps, on
   both surfaces. It never purges a store some surviving tile still references, and it
-  aborts without touching the layout if the protected store cannot be written.
+  aborts without touching the layout if the protected store cannot be written. On the
+  panel it acts at once. In the settings window it is an edit applied by **Save & apply**:
+  the save names the deleted identities in a top-level `retainedDeleted` list, because the
+  host otherwise keeps every attic entry a payload merely omits. The host destroys their
+  protected stores before writing, and fails the save if it cannot. That includes a tile
+  removed and deleted before any save. If the layout file cannot be written, the editor
+  stays unsaved, to try again.
 
 Both surfaces hold their own copy of the list, so each destroy is mirrored to the other
 window: without that, the window that was not looking re-ships the entry on its next save
@@ -404,13 +415,15 @@ and the tile comes back with credentials that still work.
 
 | Message | Direction | Payload |
 |---|---|---|
-| `restore-retained` | shell/settings → host | `widgetId`, `instanceId`, `page`, `pageName` |
-| `clear-retained` | shell/settings → host | `widgetId`, `instanceId` (backs the **Delete** button) |
-| `retained-restored` | host → settings | `page`, `pageName`, `widgetId`, `instanceId`, `def` (masked) |
-| `retained-cleared` | host → the window that asked | `widgetId`, `instanceId`, `saved` |
+| `restore-retained` | shell → host | `widgetId`, `instanceId`, `page`, `pageName` |
+| `clear-retained` | shell → host | `widgetId`, `instanceId` (backs the panel's **Delete** button) |
+| `mask-retained` | settings → host | `token`, `def` — mask a removed def for the editor to seat; no disk write |
+| `retained-masked` | host → settings | `token`, `def` (masked) |
+| `retained-restored` | host → settings | `page`, `pageName`, `widgetId`, `instanceId`, `def` (masked) — the PANEL restored it |
+| `retained-cleared` | host → shell | `widgetId`, `instanceId`, `saved` |
 | `retained-gone` | host → settings | `widgetId`, `instanceId` — the PANEL deleted it |
 | `evicted-ids` | host → shell | array of `{widgetId, instanceId}` gone in the background (the attic cap, or a settings-side delete) |
-| `retained-error` | host → shell/settings | `reason` (`not-found` \| `bad-page` \| `failed`), `widgetId`, `instanceId` |
+| `retained-error` | host → shell | `reason` (`not-found` \| `bad-page` \| `failed`), `widgetId`, `instanceId` |
 
 ### The settings preview seam
 
