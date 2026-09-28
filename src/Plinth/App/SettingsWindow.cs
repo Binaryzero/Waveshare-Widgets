@@ -900,6 +900,22 @@ public sealed class SettingsWindow : Form
     private static string? AsText(JsonNode? node) =>
         node is JsonValue v && v.TryGetValue<string>(out var text) ? text : null;
 
+    /// <summary>What a save that deleted removed widgets does once its write has landed,
+    /// as the panel's Delete does (#226). Called before <see cref="LayoutSaved"/> reloads
+    /// the panel. The tombstone keeps a panel payload built before this save from shipping
+    /// a deleted entry straight back, and the notice drops it from the panel's model now
+    /// rather than at its reload. Tombstoned only where something was destroyed: an empty
+    /// forget means a live tile still owns the identity, and tombstoning it would strip
+    /// that tile's own attic entry if it is ever removed.</summary>
+    private void SettleDeletes(
+        IReadOnlyList<(string WidgetId, string InstanceId)> destroyed, IReadOnlyList<RetainedSlot> deleted)
+    {
+        foreach (var (widgetId, instanceId) in destroyed)
+            LayoutStore.MarkDestroyed(widgetId, instanceId);
+        foreach (var d in deleted)
+            Dashboard?.PostRetainedGone(d.Def.WidgetId, d.Def.InstanceId);
+    }
+
     /// <summary>Hands the editor a restored slot it can hold: the def MASKED, addressed by
     /// the identity it was retired under (the def itself may carry a re-minted one).
     ///
@@ -1047,18 +1063,7 @@ public sealed class SettingsWindow : Form
             }
             var landed = LayoutStore.Save(layout, LayoutStore.SettingsWriter);
             if (landed)
-            {
-                // As the Delete button did (#226): the tombstone keeps a panel payload built
-                // before this save from shipping a deleted entry straight back, and the
-                // notice drops it from the panel's model now rather than at its reload.
-                // Tombstoned only where something was destroyed — an empty forget means a
-                // live tile still owns the identity, and tombstoning it would strip that
-                // tile's own attic entry if it is ever removed.
-                foreach (var (widgetId, instanceId) in destroyed)
-                    LayoutStore.MarkDestroyed(widgetId, instanceId);
-                foreach (var d in deleted)
-                    Dashboard?.PostRetainedGone(d.Def.WidgetId, d.Def.InstanceId);
-            }
+                SettleDeletes(destroyed, deleted);
             LayoutSaved?.Invoke();
             // Placing a widget ends its "New" badge (#227) — once the placement is on disk.
             // A swallowed write failure placed nothing, and the badge would be gone for good.
