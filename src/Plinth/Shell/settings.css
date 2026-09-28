@@ -623,6 +623,11 @@ header h1 #appVersion {
    * unreachable pages/widgets (the inspector clamp keeps its card usable). */
   max-height: 38vh;
   overflow-y: auto;
+  /* Its own height, never less: the dock is given a fixed height (fitReplica), and as
+   * a shrinkable flex item the toolbar was squeezed under its one row of chips, cutting
+   * their bottom edges off behind a scrollbar. The columns below give up the height
+   * instead; they scroll already. */
+  flex: none;
 }
 /* Chips WRAP (both lists): the document is overflow:hidden, so a long row
  * must grow downward — clipped chips would be unreachable pages/widgets.

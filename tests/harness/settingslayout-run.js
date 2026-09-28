@@ -17,6 +17,8 @@
 //   L13 · a tall narrow window (columns wrapped into rows): the rows share the filled
 //         height down to the edge, with or without a widget open, Appearance across the
 //         width at 3:2, and a long form does not squeeze the canvas
+//   L14 · the toolbar row keeps its own height: the dock's fixed height used to squeeze it,
+//         cutting the chips' bottom edges off behind a scrollbar
 //   L11 · with nothing selected the dock's empty column says what goes there, and gives
 //         way once a widget is open
 //
@@ -236,6 +238,27 @@ const layout = { pages: [{ name: 'System', slots: [
   check('L13d ...and a long form open does not squeeze the canvas: the dock is measured under its caps',
     Math.abs(n.stage.bottom - n.stage.top - shortFormStage) <= 2 && Math.abs(n.style.bottom - n.inner) <= 2,
     `stage ${n.stage.bottom - n.stage.top} vs ${shortFormStage} with the short form; style bottom ${n.style && n.style.bottom} of ${n.inner}`);
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await wait(400);
+
+  // L14 · the toolbar row (page chips, widget chips, Theme, Wallpaper) keeps its own height.
+  // With a long form open, the dock's fixed height squeezed it as a shrinkable flex item:
+  // the chips lost their bottom edges behind a scrollbar.
+  for (const [w, h] of [[2048, 1110], [1600, 900], [1280, 1000]]) {
+    await page.setViewportSize({ width: w, height: h });
+    await wait(400);
+    // The long form: the squeeze is a share of how far the open form overflows the dock.
+    await page.evaluate(() => { const c = document.querySelectorAll('#slotList .slot-chip .chip-main')[1]; if (c) c.click(); });
+    await wait(500);
+    const tb = await page.evaluate(() => {
+      const t = document.getElementById('toolbar');
+      const chips = [...t.querySelectorAll('#pageList li, .slot-chip, #themeBtn')].map((c) => c.getBoundingClientRect());
+      const box = t.getBoundingClientRect();
+      return { scroll: t.scrollHeight, client: t.clientHeight, cut: chips.filter((c) => c.bottom > box.bottom + 0.5).length };
+    });
+    check(`L14 at ${w}x${h} with a long form open, the toolbar is not squeezed: no chip is cut off`,
+      tb.scroll <= tb.client + 1 && tb.cut === 0, JSON.stringify(tb));
+  }
   await page.setViewportSize({ width: 1280, height: 1000 });
   await wait(400);
 
