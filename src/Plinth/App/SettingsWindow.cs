@@ -158,6 +158,7 @@ public sealed class SettingsWindow : Form
         _webView.Dock = DockStyle.Fill;
         _webView.DefaultBackgroundColor = Color.FromArgb(11, 14, 20);
         Controls.Add(_webView);
+        Icon = AppIcon.Window;
 
         Load += async (_, _) => await InitializeAsync();
     }

@@ -9,6 +9,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- The Plinth mark, drawn by tools/plinth-icon.js (CI checks the file matches it). -->
+    <ApplicationIcon>Assets\plinth.ico</ApplicationIcon>
     <!-- Allows compiling the Windows-targeted project from non-Windows build hosts (CI, dev containers). -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <Version>0.2.0</Version>
@@ -40,6 +42,12 @@
                       CopyToOutputDirectory="PreserveNewest" />
     <!-- Compiled into both, so the sign-in entry Plinth writes is the one the helper reads. -->
     <Compile Include="..\PlinthRecover\SwapRestore.cs" Link="App\SwapRestore.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Embedded as well, so the tray and the settings window can take the sizes they
+         need from it (AppIcon). -->
+    <EmbeddedResource Include="Assets\plinth.ico" LogicalName="Plinth.plinth.ico" />
   </ItemGroup>
 
   <ItemGroup>
