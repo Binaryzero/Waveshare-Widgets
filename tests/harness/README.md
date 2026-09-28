@@ -390,6 +390,16 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   and the shell's gates (past the bridge's identity-and-origin check, never in edit mode,
   only from a widget on the page shown) are pinned as source guards. F1 runs the pre-fix
   behaviour and requires it to fail.
+- `headerless-run.js` — where two widgets' header duties went once the header did
+  (beta.21). GPU: a card with sensors shows its readouts and device name, a card whose only
+  GPU reading is its memory load still shows it, and only a machine with no GPU sensor gets
+  the empty state (G1-G3). Notifications: the privacy eye, now in the tile's corner, covers
+  no app name, count, notification text, dismiss button or mute chip at 320, 640, 960 and
+  1280 wide, with and without the mute bar (N1, N2). The app names are long on purpose: in
+  two columns the right column's first header starts at the top beside the eye, and only a
+  name long enough to reach it shows whether the list keeps its gutter (N1 at 960 fails
+  without it). Mounted as the panel mounts a widget, with the sensor frame and the
+  notifications following the init a beat later, as the host's pushes do.
 - `tilescale-run.js` — text scales with the tile (beta.21: "everything is too TINY").
   `widget-api.js` stamps `--ts` on a widget document's root from the tile's size and
   `widget-base.css` multiplies its type by it. S1 runs the curve (sliced out between
@@ -467,7 +477,9 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   (beta.21), against the stub server in `tests/fixtures/widgets/jellyfin.json`, at every
   size it is offered, the XENEON EDGE's included: no header, label or healthy pill (L1);
   stream titles at 13.5px times the tile scale (L2); every stream row and the whole shelf
-  inside the body, and no shelf beside streams on a 200px band (L3); no dead band — the
+  inside the body, and no shelf beside streams on a 200px band (L3); streams the tile had
+  no room for named as "+N more streaming", on a band too, where the footer otherwise
+  shows only for an exception, with the rows laid out above it (L3b); no dead band — the
   shelf takes the height the rows leave, and the rows the rest once the posters are as
   tall as their art (L4); and laying the tile out again changes nothing (L5) — a first
   answer that beat DOMContentLoaded, where the tile scale lands, once sized a 1280x400

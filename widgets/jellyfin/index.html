@@ -909,7 +909,9 @@
     if (stale && lastOk) notes.push('updated ' + clock(lastOk));
     el('meta').textContent = notes.join(' · ');
     el('flag').hidden = !stale;
-    document.querySelector('footer').classList.toggle('exc', stale || shelfStale);
+    // Streams the tile had no room for are an exception too: on a short tile that line is
+    // the only sign they exist.
+    document.querySelector('footer').classList.toggle('exc', stale || shelfStale || extra > 0);
   }
 
   // One stream's card. Registers its clocks with the interpolation timer.
@@ -1021,7 +1023,14 @@
     wrap.hidden = !sessions.length;
     const wanted = new Set();
     if (sessions.length) wrap.appendChild(sessionRow(sessions[0], wanted));
-    const lay = layout(wrap.firstElementChild);
+    let lay = layout(wrap.firstElementChild);
+    // A short tile shows its footer only for an exception, and the budget above was taken
+    // without it. When streams do not all fit, "+N more streaming" is one: bring the footer
+    // up and lay out again in the room it leaves (which can only fit fewer, never more).
+    if (sessions.length > lay.maxSessions && !document.querySelector('footer').classList.contains('exc')) {
+      paintFooter(stale, shelfStale, sessions.length - lay.maxSessions);
+      lay = layout(wrap.firstElementChild);
+    }
     const shown = sessions.slice(0, lay.maxSessions);
     extraSessions = sessions.length - shown.length;
     for (const s of shown.slice(1)) wrap.appendChild(sessionRow(s, wanted));

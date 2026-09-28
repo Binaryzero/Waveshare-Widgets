@@ -163,6 +163,11 @@
    * clusters kept whole. */
   @media (min-width: 800px) {
     #list { display: block; column-count: 2; column-gap: calc(8px * var(--ts)); }
+    /* With no mute bar the list starts at the top, and the right column's first header
+     * would sit under the eye: the list keeps a gutter the eye's width down its right
+     * side instead, so nothing in either column ever lies beneath it. */
+    #muteBar[hidden] ~ #list { padding-right: calc(var(--hit) + var(--space-2)); }
+    #muteBar[hidden] ~ #list > .cluster:first-child > .app-head { padding-right: calc(4px * var(--ts)); }
     .cluster { break-inside: avoid; margin-bottom: calc(8px * var(--ts)); }
     #list > .state-card { height: 100%; }
   }

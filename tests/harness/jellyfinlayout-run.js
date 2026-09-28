@@ -8,6 +8,9 @@
 //   L2 · the stream titles are 13.5px times the tile scale (WW.tileScale)
 //   L3 · nothing is cut off: every stream row and the whole shelf, captions included,
 //        sit inside the body, and in a 200px band the shelf gives way to the streams
+//   L3b · streams the tile had no room for are named: "+N more streaming" in the footer,
+//        on a 200px band too (where the footer shows only for an exception), with the
+//        rows laid out above it
 //   L4 · no dead band: the shelf takes the height the rows leave, and once its posters
 //        are as tall as the art fetched for them (330px) the rows take the rest
 //   L5 · the layout is settled: laying the tile out again changes nothing. (A first
@@ -157,6 +160,10 @@ const overview = () => {
     pills: [...document.querySelectorAll('.pill')].filter((p) => p.getClientRects().length > 0).map((p) => p.textContent),
     axis: !document.getElementById('axis').hidden,
     sig: rows.length + '|' + strip.style.getPropertyValue('--ph') + '|' + tiles.length,
+    playing: sessions.length,
+    foot: (() => { const f = document.querySelector('footer');
+      return { shown: !f.hidden && getComputedStyle(f).display !== 'none', top: f.getBoundingClientRect().top,
+        text: document.getElementById('meta').textContent }; })(),
   };
 };
 
@@ -178,6 +185,13 @@ const overview = () => {
       + (band ? ', and no shelf while streaming on a band' : ''),
       rowsFit && shelfFits && (!band || !o.shelf),
       JSON.stringify({ main: o.main, rows: o.rows.map((r) => Math.round(r.bottom)), shelf: o.shelf }));
+    if (o.rows.length < o.playing) {
+      const more = o.playing - o.rows.length;
+      check(`L3b ${size} streams left out are named: the footer shows "+${more} more streaming" and the rows stay above it`,
+        o.foot.shown && o.foot.text.includes('+' + more + ' more streaming')
+          && o.rows.every((r) => r.bottom <= o.foot.top + 0.5),
+        JSON.stringify({ foot: o.foot, rows: o.rows.map((r) => Math.round(r.bottom)) }));
+    }
     if (o.shelf) {
       const gap = o.main.bottom - o.shelf.bottom;
       check(`L4 ${size} no dead band: the shelf and the rows take the whole height`,

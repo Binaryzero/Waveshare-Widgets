@@ -153,7 +153,7 @@
 
     // Nothing to show is a state, not a row of dashes under a corner note: the card
     // says so and the readouts come back with the first sensor.
-    const any = load || temp || clock;
+    const any = load || temp || clock || vram;
     document.getElementById('device').textContent = any ? any.device || '' : '';
     document.getElementById('state').hidden = !!any;
     document.getElementById('main').hidden = !any;
