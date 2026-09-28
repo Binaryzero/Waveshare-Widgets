@@ -19,6 +19,8 @@
 //         width at 3:2, and a long form does not squeeze the canvas
 //   L14 · the toolbar row keeps its own height: the dock's fixed height used to squeeze it,
 //         cutting the chips' bottom edges off behind a scrollbar
+//   L15 · ...but never more than half the dock: at 780x480, crowded, the columns keep the
+//         other half inside the window
 //   L11 · with nothing selected the dock's empty column says what goes there, and gives
 //         way once a widget is open
 //
@@ -270,6 +272,35 @@ const layout = { pages: [{ name: 'System', slots: [
   const refusedShown = await page.evaluate(() => !document.getElementById('rejectedWidgets').hidden);
   check('L12 a refused-widget banner appearing also refits the dock to the bottom edge',
     refusedShown && Math.abs(f.dock.bottom - f.inner) <= 1, `banner shown ${refusedShown}, dock bottom ${f.dock.bottom} of ${f.inner}`);
+
+  // L15 · the other side of L14: at the 780x480 minimum, with a banner above the canvas
+  // and chips enough for several rows, the toolbar at its own height took the whole dock
+  // and pushed the columns below the window. It stops at half the dock and scrolls.
+  const many = Array.from({ length: 10 }, (_, i) => ({ id: 'test.w' + i, name: 'Widget number ' + i, author: 'WW',
+    url: `http://127.0.0.1:${PORT}/widgets/clock/index.html`, supportedSlots: ['quarter'],
+    properties: Array.from({ length: 12 }, (_, j) => ({ name: 'f' + j, label: 'Field ' + j, type: 'text' })) }));
+  const crowded = { pages: Array.from({ length: 12 }, (_, i) => ({ name: 'Page with a long name ' + i,
+    slots: i === 0 ? many.slice(0, 8).map((w, j) => ({ widgetId: w.id, size: 'quarter-upper', instanceId: 'k' + j, settings: {} })) : [] })) };
+  await page.setViewportSize({ width: 780, height: 480 });
+  await page.evaluate((d) => window.__hostPush(JSON.stringify({ type: 'settings-init', data: d })),
+    { layout: crowded, widgets: many, sensors: [], media: null, generation: 5, backgroundHost: 'backgrounds.plinth',
+      status: { elevated: false, apiVersion: 1, version: 'probe' } });
+  await wait(600);
+  await page.evaluate((w) => window.__hostPush(JSON.stringify({ type: 'widgets-changed', widgets: w,
+    rejectedWidgets: [{ id: 'bad.widget', name: 'Bad widget', folder: 'C:\\widgets\\bad', reason: 'declares a credential as plain text' }] })), many);
+  await wait(400);
+  await page.evaluate(() => { const c = document.querySelector('#slotList .slot-chip .chip-main'); if (c) c.click(); });
+  await wait(600);
+  const cr = await page.evaluate(() => {
+    const r = (id) => document.getElementById(id).getBoundingClientRect();
+    const t = document.getElementById('toolbar');
+    return { inner: innerHeight, dock: r('dock').height, toolbar: r('toolbar').height, bodyTop: r('dockBody').top,
+      bodyH: r('dockBody').height, rows: t.scrollHeight > t.clientHeight };
+  });
+  check('L15 at 780x480, crowded, the toolbar takes at most half the dock and scrolls its rows',
+    cr.rows && cr.toolbar <= cr.dock / 2 + 1, JSON.stringify(cr));
+  check('L15b ...so the columns keep the other half, inside the window',
+    cr.bodyH >= cr.dock / 2 - 2 && cr.bodyTop + cr.bodyH <= cr.inner + 1, JSON.stringify(cr));
 
   await browser.close();
   srv.close();
