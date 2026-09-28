@@ -995,6 +995,22 @@
   // clipped until some unrelated resize happened to refit.
   if (typeof ResizeObserver !== 'undefined' && el('dock'))
     new ResizeObserver(fitReplica).observe(el('dock'));
+  // Since the dock was given the height left under the canvas (#327) its box no longer
+  // changes when its content does: the columns scroll inside a fixed height, so the
+  // observer above stays quiet while the height the fit reads (what the content WANTS,
+  // measured with the fill lifted) moves under it. Filling the palette, switching the
+  // inspector to a widget with a longer form, showing Appearance: each is a change to the
+  // dock's DOM, so that is what is watched, coalesced to one refit a frame. fitReplica
+  // writes only the dock's and the stage's own styles, none of which is watched here.
+  if (typeof MutationObserver !== 'undefined' && el('dockBody')) {
+    let queued = false;
+    new MutationObserver(() => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => { queued = false; fitReplica(); });
+    }).observe(el('dockBody'), { subtree: true, childList: true, characterData: true,
+      attributes: true, attributeFilter: ['hidden', 'class', 'open'] });
+  }
   // And everything ABOVE the canvas. The dock is given exactly the height left under the
   // canvas, so a banner appearing (the layout changed on disk, a widget was refused) or
   // the preview bar's hint wrapping moves the canvas and the dock down without resizing

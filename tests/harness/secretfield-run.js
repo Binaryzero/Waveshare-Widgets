@@ -687,11 +687,13 @@ const layout = {
   // ---- E17 · the DOCK's height is an input to the fit, so it has to be watched ------
   // The dock changes height with no window, toolbar or stage change at all: the palette
   // fills on settings-init, and switching widgets swaps inspector content of a different
-  // height. Both regions are flex:none inside an overflow:hidden body, so a stale dock
-  // height in the calculation leaves the dock's lower controls clipped until some
-  // unrelated resize happens to refit. Driven here by moving the dock body's own cap —
-  // #dockPalette is overflow:auto, so adding content to it scrolls the column instead of
-  // resizing the dock and would prove nothing.
+  // height. A stale dock height in the calculation keeps the old split between the canvas
+  // and the dock until some unrelated resize happens to refit. Driven here the way the app
+  // drives it, by a change to the dock's CONTENT: the palette's gallery and the
+  // inspector's open pane are hidden, as swapping to a short form would. Since the dock
+  // fills the height under the canvas (#327) its own box does not change with its
+  // content, so this passed before only because a shrinkable toolbar happened to move a
+  // pixel and its own observer refitted; a CSS cap on #dockBody reproduces neither.
   // Wide and short ON PURPOSE. The stage takes the smaller of the width fit and the
   // height fit, and at the harness's default 1100×820 the WIDTH is what binds — the
   // dock could change freely and the stage would not move, so the probe would be
@@ -703,10 +705,9 @@ const layout = {
     stageH: Math.round(document.getElementById('previewStage').getBoundingClientRect().height),
   }));
   await page.evaluate(() => {
-    const s = document.createElement('style');
-    s.id = 'wwProbeDockCap';
-    s.textContent = '#dockBody { max-height: 170px !important; }';
-    document.head.appendChild(s);
+    window.__wwProbeHidden = [document.getElementById('widgetGallery'),
+      ...document.querySelectorAll('#contextBody > :not([hidden])')];
+    for (const n of window.__wwProbeHidden) n.hidden = true;
   });
   await page.waitForTimeout(500);
   const grew1 = await page.evaluate(() => ({
@@ -721,7 +722,7 @@ const layout = {
   check('E17b the canvas refits when the DOCK changes, with no window resize',
     grew1.stageH - grew0.stageH > 20,
     `stage ${grew0.stageH} → ${grew1.stageH} for a ${dockDelta}px dock change`);
-  await page.evaluate(() => document.getElementById('wwProbeDockCap').remove());
+  await page.evaluate(() => { for (const n of window.__wwProbeHidden) n.hidden = false; });
   await page.waitForTimeout(400);
 
   // ---- E18 · the palette follows the page the "+" tap came from --------------------
