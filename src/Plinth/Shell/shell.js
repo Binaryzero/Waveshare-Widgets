@@ -3373,9 +3373,16 @@
         WIDTH_LABELS[sizeParts(entry.def.size).width] || '',
         entry.originPage ? 'from ' + entry.originPage : '',
         retiredAgo(entry.retiredAt),
-        fits ? '' : 'no room on this page',
       ].filter(Boolean).join(' · ');
       info.append(name, meta);
+      if (!fits) {
+        // Why Restore is greyed out, and what to do about it, as its own line rather than
+        // the last item of the meta line, where it read as one more fact about the tile.
+        const why = document.createElement('span');
+        why.className = 'p-why';
+        why.textContent = 'No room on this page — make room here, or restore from a page with space.';
+        info.appendChild(why);
+      }
 
       const restore = document.createElement('button');
       restore.textContent = 'Restore';

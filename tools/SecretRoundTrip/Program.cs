@@ -2215,6 +2215,101 @@ LayoutStore.MergeRetainedFromDisk(mSibling, EmptyPages());
 Check("M10d a sibling instance of the same widget is not swept up",
     mSibling.Retained is { Count: 1 });
 
+// ---- D · Restore and Delete as edits of the settings editor (#226) --------------------
+// The settings window no longer acts on disk for these. Restore seats the host-masked def
+// on a page in its own copy; Delete takes the entry out of its copy and NAMES it in the
+// save's `retainedDeleted` list, because the host keeps every attic entry a payload merely
+// omits (the union above, C4). The save then drops the named ones after the union and
+// destroys their derived credentials under the eviction liveness rule.
+
+// D1 · the list is read off the raw node, defensively.
+var dNode = JsonNode.Parse("""
+{ "pages": [], "retainedDeleted": [
+  { "widgetId": "test.widget", "instanceId": "iD1" },
+  { "widgetId": "test.widget" },
+  "not an object",
+  { "widgetId": "test.widget", "instanceId": "iD1" },
+  { "widgetId": 3, "instanceId": "iD2" },
+  { "widgetId": "test.widget", "instanceId": "" },
+  { "widgetId": "other.widget", "instanceId": "iD3" }
+] }
+""");
+var dRead = LayoutStore.ReadRetainedDeletes(dNode);
+Check("D1 the Deletes are read by identity, once each, skipping anything malformed",
+    dRead.Count == 2 && dRead[0] == ("test.widget", "iD1") && dRead[1] == ("other.widget", "iD3"),
+    string.Join(", ", dRead));
+Check("D1b a payload without the list names nothing",
+    LayoutStore.ReadRetainedDeletes(JsonNode.Parse("""{ "pages": [] }""")).Count == 0);
+var dMany = new JsonArray();
+for (var i = 0; i < LayoutStore.MaxRetainedDeletes + 100; i++)
+    dMany.Add(new JsonObject { ["widgetId"] = "test.widget", ["instanceId"] = "iM" + i });
+Check("D1c ...and reading stops at the bound",
+    LayoutStore.ReadRetainedDeletes(new JsonObject { ["retainedDeleted"] = dMany }).Count
+        == LayoutStore.MaxRetainedDeletes);
+Check("D1d the list is not a model member, so it never reaches layout.json",
+    !JsonSerializer.Serialize(JsonSerializer.Deserialize<DashboardLayout>(
+        """{ "pages": [], "retainedDeleted": [{ "widgetId": "test.widget", "instanceId": "iD1" }] }""")!)
+        .Contains("retainedDeleted"));
+
+// D2 · a Delete survives the union: the disk entry the union puts back is dropped again.
+var dSealed = SealOf("tok-deleted");
+var dDisk = WithRetained(EmptyPages(),
+    Retire(new JsonObject { ["apiToken"] = dSealed }, "iD1"), Retire(new JsonObject(), "iKeep"));
+var dEdited = WithRetained(EmptyPages(), Retire(new JsonObject(), "iKeep"));
+LayoutStore.MergeRetainedFromDisk(dEdited, dDisk);
+Check("D2 setup: the union alone puts the deleted entry back",
+    dEdited.Retained is { Count: 2 });
+var dDropped = LayoutStore.DropDeletedRetained(dEdited, dDisk, [("test.widget", "iD1")]);
+Check("D2b a named Delete is dropped after the union, and only it",
+    dEdited.Retained is { Count: 1 } && dEdited.Retained[0].Def.InstanceId == "iKeep",
+    string.Join(", ", (dEdited.Retained ?? []).Select(r => r.Def?.InstanceId)));
+Check("D2c ...with its sealed bytes, rather than riding the save back to disk",
+    !JsonSerializer.Serialize(dEdited).Contains(dSealed));
+Check("D2d the ON-DISK entry it drops is handed back, for its credentials to be destroyed",
+    dDropped.Count == 1 && dDropped[0].Def.InstanceId == "iD1");
+var dTwin = WithRetained(EmptyPages(), Retire(new JsonObject(), "iD1"), Retire(new JsonObject(), "iD1"));
+LayoutStore.DropDeletedRetained(dTwin, dDisk, [("test.widget", "iD1")]);
+Check("D2e every twin under the identity goes, not just the first",
+    dTwin.Retained is { Count: 0 });
+var dNone = WithRetained(EmptyPages(), Retire(new JsonObject(), "iKeep"));
+Check("D2f no Deletes, nothing dropped",
+    LayoutStore.DropDeletedRetained(dNone, dDisk, []).Count == 0 && dNone.Retained is { Count: 1 });
+
+// D3 · what gets destroyed: eviction's rule, so never an identity something still uses.
+Check("D3 a deleted entry nothing else names has its derived credentials destroyed",
+    LayoutStore.InstancesToForget(dDropped, dEdited, dDisk).Count == 1);
+// Retired and deleted in one session: on disk it is still a LIVE tile, not an attic entry,
+// so nothing is handed back to destroy (its bucket strands, the documented better failure).
+var dLiveDisk = LayoutWith(new JsonObject { ["apiToken"] = dSealed }, instanceId: "iD9");
+Check("D3b a Delete of a tile that never reached the attic on disk destroys nothing",
+    LayoutStore.DropDeletedRetained(EmptyPages(), dLiveDisk, [("test.widget", "iD9")]).Count == 0);
+
+// D4 · Restore as an edit: the stored attic entry, the payload's masked page slot, and
+// the save that writes it. The union must not seat it twice, and Seal must put the
+// credential back from the stored attic by identity.
+var rSealed = SealOf("tok-restored");
+var dRestoreDisk = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = rSealed, ["repo"] = "o/n" }, "iRs"));
+var dMaskWrapper = new JsonObject
+{
+    ["pages"] = new JsonArray { new JsonObject { ["name"] = "mask", ["slots"] = new JsonArray {
+        JsonSerializer.SerializeToNode(dRestoreDisk.Retained![0].Def) } } },
+};
+SecretPolicy.Mask(dMaskWrapper, SecretPlan.FromManifests(Lookup));
+var dMasked = dMaskWrapper["pages"]![0]!["slots"]![0]!;
+Check("D4 the host's mask blanks the sealed credential and marks it saved",
+    dMasked["settings"]?["apiToken"]?.GetValue<string>() == "" &&
+    dMasked[SecretPolicy.SetMarkerKey]?.AsArray().Select(n => n!.GetValue<string>()).SequenceEqual(["apiToken"]) == true,
+    dMasked.ToJsonString());
+Check("D4b ...and leaves the rest of the def as it was",
+    dMasked["settings"]?["repo"]?.GetValue<string>() == "o/n" && dMasked["instanceId"]?.GetValue<string>() == "iRs");
+var dRestored = new DashboardLayout { Pages = [new LayoutPage { Name = "P", Slots = [dMasked.Deserialize<LayoutSlot>()!] }] };
+LayoutStore.MergeRetainedFromDisk(dRestored, dRestoreDisk);
+Check("D4c the union does not put a restored identity back in the attic",
+    (dRestored.Retained ?? []).Count == 0);
+SecretPolicy.Seal(dRestored, dRestoreDisk, SecretPlan.FromManifests(Lookup));
+Check("D4d the save puts the stored credential back on the restored tile",
+    Value(dRestored, "apiToken") == rSealed, Value(dRestored, "apiToken"));
+
 // ---- E · duplicating a configured tile (#226) ---------------------------------------
 // A duplicate is a client-side add with a FRESH instanceId. It copies the credential too,
 // and asks for that explicitly with the copiedFrom marker (E5 on). WITHOUT the marker

@@ -199,6 +199,61 @@ public static class LayoutStore
         }
     }
 
+    /// <summary>The payload key the settings editor names its Deletes under (#226): a
+    /// top-level list of <c>{ widgetId, instanceId }</c>. Read off the raw node like the
+    /// secret markers; <see cref="DashboardLayout"/> has no member for it, so it never
+    /// reaches layout.json.</summary>
+    public const string RetainedDeletedKey = "retainedDeleted";
+
+    /// <summary>At most this many Deletes are read from one payload. Far above any real
+    /// attic (<see cref="MaxRetainedPerWidget"/> per widget), and a bound on what a
+    /// malformed payload can make a save walk.</summary>
+    public const int MaxRetainedDeletes = 512;
+
+    /// <summary>The identities the settings editor deleted from its removed-widgets list
+    /// since its last save (#226). Entries that are not an object with two non-empty
+    /// strings are skipped rather than failing the save.</summary>
+    public static IReadOnlyList<(string WidgetId, string InstanceId)> ReadRetainedDeletes(JsonNode? layoutNode)
+    {
+        var result = new List<(string, string)>();
+        if (layoutNode?[RetainedDeletedKey] is not JsonArray list) return result;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in list)
+        {
+            if (result.Count >= MaxRetainedDeletes) break;
+            if (item is not JsonObject o) continue;
+            var w = o["widgetId"] is JsonValue wv && wv.TryGetValue<string>(out var ws) ? ws : null;
+            var i = o["instanceId"] is JsonValue iv && iv.TryGetValue<string>(out var id) ? id : null;
+            if (string.IsNullOrEmpty(w) || string.IsNullOrEmpty(i) || !seen.Add(w + "|i:" + i)) continue;
+            result.Add((w, i));
+        }
+        return result;
+    }
+
+    /// <summary>Applies the settings editor's Deletes to a save (#226), AFTER
+    /// <see cref="MergeRetainedFromDisk"/>: the merge keeps every on-disk entry a payload
+    /// omits, which is right for an entry the editor never knew about and exactly wrong
+    /// for one it deleted, so the deleted identities come back out here, twins included.
+    /// Returns the ON-DISK entries this save drops, for the caller to destroy their
+    /// derived credentials under <see cref="InstancesToForget"/>'s liveness rule. An
+    /// identity the editor removed before it ever reached disk (retired and deleted in one
+    /// session) returns nothing here: it is still a live tile on disk, and that rule would
+    /// decline to forget it anyway.</summary>
+    public static IReadOnlyList<RetainedSlot> DropDeletedRetained(
+        DashboardLayout edited, DashboardLayout? disk,
+        IReadOnlyCollection<(string WidgetId, string InstanceId)> deleted)
+    {
+        if (deleted.Count == 0) return [];
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (w, i) in deleted) keys.Add(w + "|i:" + i);
+        edited.Retained?.RemoveAll(r => Key(r?.Def) is { } k && keys.Contains(k));
+        var dropped = new List<RetainedSlot>();
+        foreach (var d in disk?.Retained ?? [])
+            if (d is not null && Key(d.Def) is { } k && keys.Contains(k))
+                dropped.Add(d);
+        return dropped;
+    }
+
     /// <summary>Trim the attic to <see cref="MaxRetainedPerWidget"/> per widget id,
     /// evicting OLDEST by <see cref="RetainedSlot.RetiredAt"/> (tiebreak InstanceId,
     /// ordinal — so re-running over the same list evicts the same entries). Returns the
