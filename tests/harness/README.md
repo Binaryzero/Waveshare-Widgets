@@ -200,6 +200,14 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   "could not load" stay distinguishable in both directions. Serves real decodable
   PNGs padded to exact byte counts, since the widget rejects anything that does not
   decode and a buffer of zeroes would fail for the wrong reason.
+- `redditpick-run.js` — which copy of an image Reddit Photos loads: the smallest resized
+  copy that fills the tile at its real pixel size, else the original. It used to take
+  the first copy at least 1280 wide, the Waveshare's width, which Reddit's copies (up to
+  1080) never are. Cover crops, so a 3:2 photo in a 320x400 quarter needs a 640 copy,
+  while contain needs only 320 (K1-K3); a tile wider than every copy takes the original
+  (K4); the XENEON EDGE's quarter takes the 1080 and its full tile the widest there is
+  (K5, K6); display scaling counts (K7); galleries pick the same way, an animated one
+  keeping its original (K8); copies without a size or url are skipped, in any order (K9).
 - `huemode-run.js` — the Hue tile's API-generation choice (issue #112). v1 is plain http
   and carries the bridge `username` in the path, and on this bridge that username IS the
   CLIP v2 application key — so any route from v2 to v1 discloses it. Both routes were
