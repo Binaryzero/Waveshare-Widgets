@@ -243,6 +243,7 @@ WW.sensors           // latest snapshot: [{id, name, device, deviceType, type, u
 WW.media             // {available, title, artist, album, status, thumbnail}
 WW.status            // {elevated, apiVersion}
 WW.withheld          // names of secret settings that have a value this document is not given
+WW.tileScale         // the tile's text scale (also --ts on :root); see WIDGET-STANDARD §6
 
 WW.sensorById('lhm:/gpu-nvidia/0/temperature/0')
 WW.findSensor({      // heuristic lookup
@@ -423,7 +424,8 @@ compliance checklist — is [WIDGET-STANDARD.md](WIDGET-STANDARD.md).
 ## Design guidance for the panel strip
 
 - The Waveshare is ~170 PPI and the XENEON EDGE ~183 PPI; keep touch targets ≥ 64 px and
-  body text ≥ 12 px.
+  body text ≥ 12 px before scaling. Type scales with the tile: write each size as
+  `calc(Npx * var(--ts))`, where N is its size at the smallest tile (WIDGET-STANDARD §6).
 - The shell owns the outermost 8px of each physical screen edge for page navigation and
   does not forward those touches into a widget iframe. Because a widget cannot know which
   slot it will occupy, keep controls, whole-surface hit areas, and nested interactive

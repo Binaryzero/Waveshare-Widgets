@@ -10,17 +10,22 @@
 // six profile endpoints on the direct tier, and asserts the card:
 //
 //   W1 · identity renders: name, level + spec + class line, race + realm, guild
-//   W2 · every profession shows, primaries then secondaries, with skill/max
+//   W2 · the professions show primaries then secondaries, with skill/max: at least three
+//        of them at the panel's size, and all five when the card is given the room (W2b)
 //   W3 · reputations (no movement recorded yet) fall back to the NEWEST factions first,
 //        not the decade-old ones a sliver short of their next tier (#258)
 //   W4 · item level, achievement points, and the mount and pet collection sizes
 //   W5 · the latest achievements, newest first, each with its recency
 //   W6 · the almost list leads with the fewest-steps-left achievement and shows n/m
+//   Row counts are the ones text scaled to the tile leaves room for (W10-W15 check no
+//   list is trimmed while there is room): at 1280x360 the text is about twice its size
+//   at the smallest tile, so a column holds fewer rows than it did before it scaled.
 //   W7 · the portrait image actually loaded (stubbed render host)
 //   W8 · none of the struck features appear anywhere in the card's text
 //   W9 · the meter fill is painted
-//   W10-W15 · at every size the widget is offered (half, three-quarter and full at 400px,
-//        the panel's 360px, and the 200px upper/lower bands): nothing is cut off, the
+//   W10-W18 · at every size the widget is offered (half, three-quarter and full at 400px,
+//        the panel's 360px, the 200px upper/lower bands, and the XENEON EDGE's 720px
+//        tiles and 360px bands): nothing is cut off, the
 //        sections sit at a fixed rhythm instead of spreading into gaps, and no list was
 //        trimmed — or dropped — while there was room for more (#258)
 //
@@ -280,11 +285,13 @@ const measure = (frame) => frame.evaluate(() => [...document.querySelectorAll('#
     && card.line === 'Level 80 · Restoration Druid' && card.from === 'Night Elf · Argent Dawn'
     && card.guild === '<The Harness>',
     `"${card.name}" / "${card.line}" / "${card.from}" / "${card.guild}"`);
-  check('W2 every profession shows, primaries then secondaries',
-    JSON.stringify(card.profs) === JSON.stringify([
-      { lbl: 'Alchemy', val: '87/100' }, { lbl: 'Herbalism', val: '42/100' },
-      { lbl: 'Cooking', val: '52/100' }, { lbl: 'Fishing', val: '30/100' },
-      { lbl: 'Archaeology', val: '150/950' }]),
+  const PROFS = [
+    { lbl: 'Alchemy', val: '87/100' }, { lbl: 'Herbalism', val: '42/100' },
+    { lbl: 'Cooking', val: '52/100' }, { lbl: 'Fishing', val: '30/100' },
+    { lbl: 'Archaeology', val: '150/950' }];
+  check('W2 professions show primaries then secondaries, with skill/max',
+    card.profs.length >= 3
+      && JSON.stringify(card.profs) === JSON.stringify(PROFS.slice(0, card.profs.length)),
     JSON.stringify(card.profs));
   check('W3 reputations fall back to the newest factions, not the stalled old ones (#258)',
     card.reps.length >= 3 && isPrefix(names(card.reps), EXPECT.reps)
@@ -298,7 +305,7 @@ const measure = (frame) => frame.evaluate(() => [...document.querySelectorAll('#
       && card.latest[0].val === '2d ago' && (!card.latest[1] || card.latest[1].val === '10d ago'),
     JSON.stringify(card.latest));
   check('W6 almost list leads with fewest steps left',
-    card.almost.length >= 3 && isPrefix(names(card.almost), EXPECT.almost)
+    card.almost.length >= 2 && isPrefix(names(card.almost), EXPECT.almost)
       && card.almost[0].val === '59/60',
     JSON.stringify(card.almost));
   check('W7 the portrait image loaded', card.portrait.visible && card.portrait.loaded,
@@ -343,6 +350,10 @@ const measure = (frame) => frame.evaluate(() => [...document.querySelectorAll('#
     ['W13', 'full 1280x360 (the panel)', { width: 1280, height: 360 }],
     ['W14', 'half band 640x200', { width: 640, height: 200 }],
     ['W15', 'full band 1280x200', { width: 1280, height: 200 }],
+    // The XENEON EDGE's half and full tiles (2560x720 panel).
+    ['W16', 'XENEON half 1280x720', { width: 1280, height: 720 }],
+    ['W17', 'XENEON full 2560x720', { width: 2560, height: 720 }],
+    ['W18', 'XENEON full band 2560x360', { width: 2560, height: 360 }],
   ];
   for (const [tag, label, viewport] of SIZES) {
     const m = await mount(browser, viewport);
@@ -367,6 +378,13 @@ const measure = (frame) => frame.evaluate(() => [...document.querySelectorAll('#
     check(`${tag} ${label}: lists fill the room they have`, cut.length === 0,
       cut.length ? cut.join('; ') : cols.map((c) => Object.entries(c.lists).map(([k, v]) => k + ' ' + v.length)
         .concat(c.dropped.map((d) => d + ' dropped')).join(', ')).join(' | '));
+    if (tag === 'W16') {
+      // W2b · given the room, the whole profession list shows, in order.
+      const profs = cols[0].lists.profs || [];
+      check('W2b all five professions show on a tall tile',
+        JSON.stringify(profs) === JSON.stringify(['Alchemy', 'Herbalism', 'Cooking', 'Fishing', 'Archaeology']),
+        JSON.stringify(profs));
+    }
     await m.page.screenshot({ path: path.join(shotDir, `wow-card-${viewport.width}x${viewport.height}.png`) });
     await m.page.close();
   }

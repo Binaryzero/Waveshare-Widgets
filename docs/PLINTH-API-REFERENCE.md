@@ -116,6 +116,9 @@ WW.media             // MediaState | null
 WW.status            // { elevated: boolean, apiVersion: number }
 WW.theme             // design-token map ({'--surface': '#111314', ...}) — applied to
                      // :root automatically before onInit; see WIDGET-STANDARD.md
+WW.tileScale         // the tile's text scale, also stamped on :root as --ts: 1.3 at a
+                     // 320x200 tile, 1.97 at 1280x400, at most 2.5; follows a resize.
+                     // Multiply type by it (CSS: calc(12px * var(--ts))); WIDGET-STANDARD §6
 
 // Sensor lookup
 WW.sensorById(id)                 // exact id -> SensorReading | null

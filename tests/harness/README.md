@@ -370,6 +370,14 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   and the shell's gates (past the bridge's identity-and-origin check, never in edit mode,
   only from a widget on the page shown) are pinned as source guards. F1 runs the pre-fix
   behaviour and requires it to fail.
+- `tilescale-run.js` — text scales with the tile (beta.21: "everything is too TINY").
+  `widget-api.js` stamps `--ts` on a widget document's root from the tile's size and
+  `widget-base.css` multiplies its type by it. S1 runs the curve (sliced out between
+  `ww-tile-scale` markers): 1.3 at 320x200, 1.97 at 1280x400, capped at 2.5, never shrinking
+  as the tile grows. It runs in CI with `--curve`. Without the flag, S2-S5 run in Chromium:
+  a widget frame gets the stamp and `WW.tileScale` agrees, body text is 13.5px times it, a
+  resized frame re-stamps, and a page that is not a widget (no `#ww-slot=`) is left alone.
+  Each of those fails when its line is removed.
 - `discover-run.js` — Find, a widget looking up its own setting values (#210 slice 2). Runs
   in CI on plain Node. The shell's `ww-discover-clean` block must reduce a widget's answer
   to bounded, plain `{value, label}` choices. The widget API's `ww-discover-answer` block

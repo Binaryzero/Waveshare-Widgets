@@ -15,6 +15,37 @@
     if (document.documentElement && !state.ready) document.documentElement.dataset.wwWaiting = '1';
   }, { once: true });
   const state = { settings: {}, sensors: [], media: null, status: null, theme: null, notifications: null, withheld: [], ready: false };
+
+  // >>> ww-tile-scale — extracted and RUN by tests/harness/tilescale-run.js. Free names: none.
+  // Text scales with the tile (owner, beta.21: "everything is too TINY"). The panels run at
+  // 170-185 pixels per inch with no display scaling, so 13.5px body text is about 2mm tall
+  // there, roughly half the size the same number gives on a desktop monitor. Every size in
+  // widget-base.css, and every stock widget's own type, is the size it had at the smallest
+  // tile (a quarter-width band, 320x200) multiplied by --ts. That tile gets 1.3 times its
+  // old text, and --ts grows with the fifth root of the area from there: a full 1280x400
+  // tile is eight quarter bands but gets 1.5 times their text (1.97), so a bigger tile
+  // still shows more, not just larger. Capped at 2.5 for the XENEON EDGE's full 2560x720.
+  function tileScale(w, h) {
+    if (!(w > 0 && h > 0)) return 1;
+    const s = 1.3 * Math.pow((w * h) / (320 * 200), 0.2);
+    return Math.round(Math.min(2.5, Math.max(1, s)) * 100) / 100;
+  }
+  // <<< ww-tile-scale
+  let tileScaleNow = 1;
+  // Widget documents only, like the swipe listeners below: the shim is injected into every
+  // document in the WebView, and a page a widget embeds may use --ts for its own purposes.
+  const isWidgetDocument = /ww-slot=/.test(location.hash);
+  function stampTileScale() {
+    tileScaleNow = tileScale(window.innerWidth, window.innerHeight);
+    if (isWidgetDocument && document.documentElement)
+      document.documentElement.style.setProperty('--ts', String(tileScaleNow));
+  }
+  // At document start the root can be missing (the shim is injected before parsing);
+  // the resize listener and DOMContentLoaded catch up. A slot resized in place (an edit on
+  // the panel, a size change in the preview) re-stamps without a reload.
+  stampTileScale();
+  document.addEventListener('DOMContentLoaded', stampTileScale, { once: true });
+  window.addEventListener('resize', stampTileScale);
   // The shell's origin, learned from the init it answered us with — the shim is
   // injected into every document in the WebView and has no script URL of its own to
   // read it from, and hardcoding a host would break both the harness fixtures and
@@ -756,6 +787,9 @@
     get withheld() { return state.withheld.slice(); },
     /** Design-token map ({'--surface': '#111314', ...}); applied to :root automatically. */
     get theme() { return state.theme; },
+    /** The tile's text scale, the --ts that widget-base.css multiplies its type by: 1 at
+     * the smallest tile, larger as the tile grows. For text drawn on a canvas. */
+    get tileScale() { return tileScaleNow; },
 
     /** Scale an element's font-size to fit a box: WW.fitText(el, {width, height,
      * scale, min, max}). Returns the px size applied. See the note above the
