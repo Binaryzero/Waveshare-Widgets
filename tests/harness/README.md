@@ -29,7 +29,7 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   required field on every secret and both editors painted it in a token neither document
   defines, so the CSS fallback was the real colour — 3.14:1 and 3.40:1, under the 4.5:1
   floor for 11px text, while every structural check on those elements passed. Used by
-  `secretfield-run.js` (E35d) and `panelsecret-run.js` (N13e).
+  `secretfield-run.js` (E35d).
 
 ## Suites
 
@@ -41,17 +41,19 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   warns instead of reading as success. The encryption pipeline itself is guarded in
   CI by `dotnet run --project tools/SecretRoundTrip`. Port used: 8951.
 - `secretedit-run.js` — two editor bugs from #56. Typing a credential over a saved one
-  marks the editor dirty, so a panel write is not adopted over the unsaved token. After
-  the widget picker swaps a slot's widget, a same-named secret the old widget saved this
-  session reads "not set". Port used: 8953.
+  marks the editor dirty, and a save the host refuses because layout.json changed under
+  the editor (#281) keeps the unsaved token and holds Save (S3). After the widget picker
+  swaps a slot's widget, a same-named secret the old widget saved this session reads
+  "not set". Port used: 8953.
 - `refusalbanner-run.js` — the settings window's refusal banner (#151). A refused widget
   with no working copy reads "not loaded". An older refused copy beside one that loaded
   gets its own block, naming the settings it withholds and the folder to remove. Which
   refusals the host sends is `tools/SecretRoundTrip` B1. Port used: 8958.
 - `widgetupdates-run.js` — update indicators in the settings window (#227). A widget the
   host marks new carries "New" on the shelf until one is added. A tile the host flags
-  reads "Updated" until opened, and opening it tells the host. Which widgets and tiles
-  qualify is `tools/WidgetCatalog`. Port used: 8963.
+  reads "Updated" until opened, and opening it tells the host — from the chip strip, or by
+  tapping the tile in the live preview (U5). Which widgets and tiles qualify is
+  `tools/WidgetCatalog`. Port used: 8963.
 - `themelayers-run.js` — which appearance layer a tile follows (#225). A tile that overrides
   the theme is marked in the strip. Its Appearance panel says per value whether it comes from
   the theme or the widget, and offers "Follow the theme again". The Theme editor lists the
@@ -59,22 +61,13 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   updates the revert and the strip mark at once (L6). Two copies of one widget get rows that
   say which tile (L7). A revert from the Theme editor after a live-preview edit still reaches
   the save (L8, driven through the real replica). Port used: 8962.
-- `panelsecret-run.js` — the ON-PANEL half of the same contract. The dashboard is
-  handed decrypted values, so the field really holds the credential and "the user
-  emptied it" is ambiguous unless the shell says which it meant: both the ✕ Clear and
-  hand-deleting the characters must reach the host as a removal, while a never-set
-  secret still sends `""`. Also covers the failed-protection banner, which is the
-  panel's only way to contradict its own optimistic re-render, and (N13f, #217) pushes a
-  floor-tuned CUSTOM palette through the same measurement — the case N13e's default theme
-  could not exercise. Port used: 8952.
 - `duplicate-run.js` — Duplicate copies the credential (#226). The host half, Seal
   filling a fresh copy's untouched blank from the tile named in `copiedFrom`, is
-  `tools/SecretRoundTrip` E5; this is what the two clients send. On the panel the copy
-  carries the revealed credential itself, names its source, and brings the source's
-  `secretsRestorable` and a pending Clear with it (P1-P5). In the settings window, which
-  never holds a stored credential, the copy names its source, reads "saved", carries a
-  value typed into the source this session and a pending Clear, keeps `copiedFrom` across
-  a preview capture, and drops it when swapped to another widget (S1-S6). Port used: 8965.
+  `tools/SecretRoundTrip` E5; this is what the settings window sends, the only place a tile
+  can be duplicated. It never holds a stored credential, so the copy names its source,
+  reads "saved", carries a value typed into the source this session and a pending Clear,
+  keeps `copiedFrom` across a preview capture, and drops it when swapped to another widget
+  (S1-S6). Port used: 8965.
 - `paletteparity-run.js` — the theme palette is derived twice, by `PaletteEngine.cs` for
   the panel and by `palette.js` for the settings preview. `tools/PaletteParity` writes the
   C# derivation of 411 themes (the stock one, hand-picked edges, and a fixed-seed battery);
@@ -87,13 +80,14 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   and one with an unknown value all paint at the theme's opacity; `solid` stays opaque and
   `transparent` has no tile (B1-B5).
 - `palettecontrast-run.js` — issue #217: muted text must stay legible on the GLASS
-  settings sheets, not only on the opaque surface. `#propSheet` / `#stylePanel` paint
-  `--surface` at 94% over the wallpaper, so `--text-muted` renders over surface
-  COMPOSITED with whatever is behind the glass — and a role tuned to 4.5:1 on the opaque
-  surface drops below it over a bright (or dark) wallpaper. Drives `WWPalette.derive`
-  over a theme battery and asserts muted clears 4.5:1 against `--surface` composited over
-  both pure white and pure black at the sheet alpha (the bracket the rendered page cannot
-  fall outside). Pure Node — no browser, no port. Fails against the pre-fix engine, which
+  settings sheets, not only on the opaque surface. The panel's old `#propSheet` /
+  `#stylePanel` painted `--surface` at 94% over the wallpaper, so `--text-muted` rendered
+  over surface COMPOSITED with whatever is behind the glass — and a role tuned to 4.5:1 on
+  the opaque surface drops below it over a bright (or dark) wallpaper. The sheets went
+  with on-panel editing; the repair stays, because it only ever strengthens muted text.
+  Drives `WWPalette.derive` over a theme battery and asserts muted clears 4.5:1 against
+  `--surface` composited over both pure white and pure black at the sheet alpha (the
+  bracket the rendered page cannot fall outside). Pure Node — no browser, no port. Fails against the pre-fix engine, which
   repaired muted against the opaque surface only.
 - `restvalue-run.js` — the REST Value widget's data path (issue #16), which the widget
   harness cannot reach because it aborts every network call. Drives the real widget
@@ -247,7 +241,7 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   all 31 stock manifests and applied by hand in all 31 widget scripts; the panel supplies it
   now (`Shell/appearance.js` splices the declaration into every widget's property list, and
   `widget-api.js` applies the class inside the frame). The failure this guards is silent:
-  both settings editors render whatever is in `widget.properties`, so if normalisation ever
+  the settings editor renders whatever is in `widget.properties`, so if normalisation ever
   stops running nothing throws — the Background control just disappears from every widget
   and every tile quietly renders solid. Loads the real module with `vm` rather than
   transcribing it, so a change to the shipped file cannot leave these assertions green. A3
@@ -385,22 +379,21 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   in CI on plain Node. The shell's `ww-discover-clean` block must reduce a widget's answer
   to bounded, plain `{value, label}` choices. The widget API's `ww-discover-answer` block
   must answer every question exactly once, in plain data, and say "unsupported" rather
-  than stay silent. The editors' `ww-discover-text` block (both copies) must leave every
-  dead end typeable. The wiring across the host is pinned as source guards. D5 runs a
+  than stay silent. The settings window's `ww-discover-text` block must leave every dead
+  end typeable. The wiring across the host is pinned as source guards. D5 runs a
   pass-through cleaner and requires D1 to fail. D6 is Find by query: the user's search
   reaches the widget as `query`, capped at 100 characters, a search with no match names
-  it, and both editors send one only when the first answer was cut short.
+  it, and the settings window sends one only when the first answer was cut short. Find is
+  offered in the settings window only: the panel only displays, and answers the host.
 - `discoverroute-run.js` — the same, for real, in a browser. In the dashboard shell with a
   fake host, a question reaches only the widget it names. Another widget quoting the live
-  id is ignored (R4). A question is answered once, and a silent widget becomes a timeout
-  after 20 s (so the run takes about 30 s). The panel's property sheet and the settings
-  window each offer Find on a text setting and a list field, list label over value, and
-  save the picked value. On the panel, Find straight after an edit waits for the tile's
-  reload and asks with the edited settings (P4). The settings window says so when there is
-  no panel. Find by query (P6, S5): with 600 choices, a search goes to the widget once
-  typing pauses and its matches past the first 500 are listed. An extension of a complete
-  answer and an emptied search ask nothing, a list that was not cut short never sends a
-  search, and a late answer for an older search does not replace the latest one.
+  id is ignored (R4). A question is answered once; one asked as the tile reloads is put to
+  the new document once it is ready (R8); and a silent widget becomes a timeout after 20 s
+  (so the run takes about 30 s). The settings window offers Find on a text setting and a
+  list field, lists label over value, saves the picked value, and says so when there is no
+  panel. Find by query (S5): with 600 choices, a search goes to the widget once typing
+  pauses and its matches past the first 500 are listed, and a late answer for an older
+  search does not replace the latest one.
 - `hafind-run.js` — Home Assistant's Find (#210), asked the way the shell asks, against a
   stub server. The Entity ID field lists every entity sorted by id with its friendly name
   (F1), and it answers while the widget is still on its setup card (F2). Other settings
@@ -413,17 +406,21 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   only to mask the def (R2), and the masked def lands on the page with its credential
   blank and marked saved (R3). A Delete takes the row out and is named in the save's
   `retainedDeleted`, once (R4, R5), and both light Save from a clean editor (R4d, R10). On
-  a full page the reason Restore is greyed out is a visible sentence, in the settings
-  window (R6) and on the panel (R11). Stale holds both (R7). An answer for a live
-  identity (R8), or for a page that filled meanwhile (R9), seats nothing. The host half
-  is `tools/SecretRoundTrip` D1-D4 (CI).
+  a full page the reason Restore is greyed out is a visible sentence (R6). Stale — a save
+  the host refused because layout.json changed under the editor — holds both (R7). An
+  answer for a live identity (R8), or for a page that filled meanwhile (R9), seats
+  nothing. A tile this editor removed comes back as it was, typed credential included
+  (R12); a Delete whose write did not land stays named (R13); after a reload the attic is
+  disk's and goes through the mask again (R14). The host half is `tools/SecretRoundTrip`
+  D1-D5 (CI).
 - `settingslayout-run.js` — the settings window's frame. The stale-layout banner is hidden
   when nothing is stale (L1); its `display:flex` used to outrank `[hidden]`, leaving an
   empty orange bar under the header. On a tall window the dock and its columns reach the
   bottom edge while the canvas keeps its fitted size (L2, L3), through a shorter window,
   a selected widget, a hidden preview and a form taller than the dock's cap (L4-L6, L9,
   L10), and at the 780x480 minimum the dock ends exactly at the edge (L7). The banner
-  still shows when the panel changes the layout under unsaved work (L8). Where the
+  still shows when a save is refused because the layout changed on disk under unsaved
+  work (L8). Where the
   window opens, and how big, is `tools/WindowPlacement` (CI).
 - `panelpage-run.js` — the settings preview is drawn at the panel's page size, which the
   host sends with the init. With no panel it is the Waveshare's 1280x400 (E1); a Corsair
@@ -453,13 +450,12 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   about 20 s), a list with no usable realms is an error (F8), and a realm typed by its name
   is looked up by Blizzard's slug, accents and brackets dropped (F9).
 - `apppick-run.js` — Store apps in the app picker (#219). Runs in CI on plain Node: the
-  pickers' `ww-app-pick` block (the "no match" line and the rule that a pick fills an EMPTY
-  Name and never a typed one) is sliced out of both `settings.js` and `shell.js` and run,
-  and the two copies must behave the same; Deck's and Launcher's `ww-store-label` block,
-  which gives a `shell:AppsFolder\<id>` target a readable fallback label, is run the same
-  way. The wiring is pinned as source guards, and P6 runs the pre-#219 behaviour and
-  requires it to fail. The browser half is E36f/E36g in `secretfield-run.js` and N14k in
-  `panelsecret-run.js`; the host half (which ids are kept, how one starts) is
+  settings window's `ww-app-pick` block (the "no match" line and the rule that a pick fills
+  an EMPTY Name and never a typed one) is sliced out of `settings.js` and run; Deck's and
+  Launcher's `ww-store-label` block, which gives a `shell:AppsFolder\<id>` target a
+  readable fallback label, is run the same way. The wiring is pinned as source guards, and
+  P6 runs the pre-#219 behaviour and requires it to fail. The browser half is E36f/E36g in
+  `secretfield-run.js`; the host half (which ids are kept, how one starts) is
   `tools/AppIds`.
 - `atticretire-run.js` — a removal made in the settings window's live PREVIEW retires the
   tile instead of discarding it (#226, and the scope cut withdrawn from PR #269). The
@@ -470,12 +466,12 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   copy. Runs in CI on plain Node: `onReplicaRemove` and `removeSlotAt` are sliced out of
   the real `settings.js` between `ww-replica-remove` markers and executed, so a regression
   in the shipped commit cannot leave it green, and the shell half is pinned by regex source
-  guards (removeSlot really does begin `if (PREVIEW) return;`, and `requestRemoveSlot`
-  contains no id generator at all). Covers the refusals as hard as the happy path — a stale
-  generation, an armed replica timer, an identity mismatch, a replica-minted id on an
-  id-less slot, and eight bad index shapes, of which `-1` matters most: `removeSlotAt`
-  splices unconditionally, so `splice(-1, 1)` would silently discard the LAST tile on the
-  page. A9 runs the pre-fix behaviour and asserts it fails.
+  guards (shell.js has no retire path of its own — no `removeSlot`, nothing that writes an
+  attic — its ✕ calls `requestRemoveSlot` alone, and that contains no id generator at
+  all). Covers the refusals as hard as the happy path — a stale generation, an armed
+  replica timer, an identity mismatch, a replica-minted id on an id-less slot, and eight
+  bad index shapes, of which `-1` matters most: `removeSlotAt` splices unconditionally, so
+  `splice(-1, 1)` would silently discard the LAST tile on the page. A9 runs the pre-fix behaviour and asserts it fails.
 - `previewretire-run.js` — the relay half of the same change, and browser-only for the
   reason `atticretire-run.js` is not: whether the ✕ tap actually crosses the postMessage
   seam needs two real documents. Boots the real `settings.html`, lets it drive the real
@@ -484,17 +480,27 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   save. E10 is the point: that typed value must be sitting in the attic entry. Two tiles,
   not one — with a single tile an off-by-one splice and a correct removal both leave the
   page empty, so the survivor's identity is the assertion.
-- `listprims-run.js` — list settings whose entries may be bare values (issue #167). Both
-  settings editors filtered a list down to objects before rendering, so a widget's
+- `addzone-run.js` — the add-zones and size chips of the settings window's live preview,
+  the only place the layout is edited: the shell booted as the replica
+  (`index.html?preview=1`) and switched on by `edit-mode`, the way `settings.js` drives it.
+  The panel itself has no edit entry point, palette or editor sheet, ignores `edit-mode`
+  and never saves (A0). Every free region gets a zone, not just the largest (A1, #84), the
+  zones tile the free space (A2), a full page offers none (A4), and a region nothing fits
+  says so (A5, #77). Tapping a zone hands the add to the settings window naming THAT
+  region, never adding anything itself (A3, A6, #86 — the settings side sizes it). A stored
+  size the widget no longer allows cycles to the next size up (N11, #77), and the notice a
+  size tap raises is visible but not hit-testable (N7b). Port used: 8955.
+- `listprims-run.js` — list settings whose entries may be bare values (issue #167). The
+  settings editor filtered a list down to objects before rendering, so a widget's
   primitive shorthand — endpoints accepts `"nas.lan"` and expands it itself — got no row:
-  invisible, uneditable, undeletable, and silently deleted on save because each editor
+  invisible, uneditable, undeletable, and silently deleted on save because the editor
   writes back only what it rendered. The entry is now preserved as the primitive it was,
   NOT expanded into the field shape, because what a bare string means differs per widget
   and no manifest states the rule: endpoints reads it as both label and URL, while the
   neighbouring comma-string branch reads a bare token as `fields[0]` alone, which for
   endpoints leaves the URL empty and the widget drops it. Guessing picks one widget's
-  meaning and corrupts the rest. Runs on plain Node against the real source text of both
-  files rather than a copy, so an editor that loses the handling fails here. Covers the
+  meaning and corrupts the rest. Runs on plain Node against the real source text of
+  `settings.js` rather than a copy, so an editor that loses the handling fails here. Covers the
   round trip, that the value keeps its TYPE (stringifying at read time made a numeric
   entry come back as its decimal spelling — the same silent rewrite, committed by the fix
   for it), editing, deleting, and that junk is still refused so no permanent blank row

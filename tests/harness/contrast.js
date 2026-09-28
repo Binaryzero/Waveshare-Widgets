@@ -16,8 +16,8 @@
 //
 // It reports a BOUND, not a measurement, wherever a translucent layer is involved. An
 // ancestor walk cannot see a fixed sibling painting between an element and its opaque
-// parent, and the panel does exactly that: #bgRoot holds the user's wallpaper and is a
-// sibling of #propSheet, whose own background is 94% opaque. The first version of this
+// parent, and the panel's old settings sheet did exactly that: #bgRoot holds the user's
+// wallpaper and was a sibling of #propSheet, whose own background was 94% opaque. The first version of this
 // file composited the sheet over <body> and called the answer a measurement — so a
 // palette tuned to exactly 4.50:1 would have passed here while rendering at 3.74:1 over
 // a bright wallpaper. Bracketing the unknown backdrop between black and white and taking
@@ -100,9 +100,9 @@ async function textContrast(locator) {
       return { ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05), bg };
     };
     // An opaque ANCESTOR is not proof of the backdrop. A fixed or absolutely-positioned
-    // sibling can paint between it and the element — which is exactly what #bgRoot does
-    // on the panel: it is a sibling of #propSheet, not a parent, so a wallpaper is
-    // visible through the sheet's 94% background while this walk sees only <body>.
+    // sibling can paint between it and the element — which is exactly what #bgRoot did
+    // under the panel's old settings sheet: a sibling of #propSheet, not a parent, so a
+    // wallpaper showed through the sheet's 94% background while this walk saw only <body>.
     // Nothing an ancestor walk can reach will tell us what is under a translucent run.
     // So when one exists, do not assume — BOUND. Compositing over black and over white
     // brackets every possible backdrop, and the worse of the two is a ratio the rendered

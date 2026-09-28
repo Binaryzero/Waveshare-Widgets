@@ -245,25 +245,30 @@ for (const [label, arm] of [['A3 a stale generation', (c) => { c.__gen = c.initG
 }
 
 // ---- L0b · shell.js source guards --------------------------------------------------------
-// The replica half has no seam worth extracting — it is DOM and postMessage — but its two
+// The replica half has no seam worth extracting — it is DOM and postMessage — but its
 // load-bearing properties are checkable as facts about the source rather than comments
-// hoping to be obeyed.
+// hoping to be obeyed. The shell has NO retire path of its own: the panel only displays,
+// and the replica's ✕ only names the slot.
 {
   const sh = fs.readFileSync(path.join(SHELL, 'shell.js'), 'utf8');
-  const rm = sh.indexOf('function removeSlot(record) {');
-  const head = rm < 0 ? '' : sh.slice(rm, rm + 900);
-  const gated = rm >= 0 && /^\s*if \(PREVIEW\) return;/m.test(head);
-  check('L0b removeSlot is panel-only by construction (if (PREVIEW) return;)',
-    gated, rm < 0 ? 'removeSlot not found' : gated ? 'gate present before any mutation'
-      : 'NO PREVIEW gate — the replica can author a phantom attic');
+  // Any way for shell.js to author an attic entry: a removeSlot of its own, or a push into
+  // layoutData.retained from anywhere at all.
+  const retires = [/function removeSlot\b/, /\.retained\s*=/, /\.retained\.push\(/, /retained\s*\|\|/]
+    .filter((re) => re.test(sh)).map(String);
+  check('L0b shell.js has no retire path of its own — no removeSlot, nothing writes an attic',
+    retires.length === 0, retires.length ? 'found: ' + retires.join(' ') : 'none');
 
   const rq = sh.indexOf('function requestRemoveSlot(record) {');
   const end = rq < 0 ? -1 : sh.indexOf('\n  function ', rq + 1);
   const body = rq < 0 ? '' : sh.slice(rq, end < 0 ? rq + 2000 : end);
-  const forked = rq >= 0 && /if \(PREVIEW\) requestRemoveSlot\(record\); else removeSlot\(record\);/.test(sh);
-  check('L0c the preview ✕ hands off to requestRemoveSlot', forked,
-    rq < 0 ? 'requestRemoveSlot not found' : forked ? 'fork present at the ✕'
-      : 'the ✕ still calls removeSlot directly');
+  // The ✕'s confirmed action is the handoff and nothing else.
+  const handoff = rq >= 0 && /confirmThen\(remove, '✕', true, \(\) => requestRemoveSlot\(record\)\);/.test(sh);
+  check('L0c the ✕ hands off to requestRemoveSlot, and only that', handoff,
+    rq < 0 ? 'requestRemoveSlot not found' : handoff ? 'the ✕ calls requestRemoveSlot alone'
+      : 'the ✕ does something other than hand the removal off');
+  const gated = rq >= 0 && /^\s*if \(!PREVIEW\) return;/m.test(body.slice(0, 200));
+  check('L0c2 ...which does nothing outside the settings replica', gated,
+    gated ? 'PREVIEW gate first' : 'no PREVIEW gate at the top of requestRemoveSlot');
   // The object the withdrawn union died on. A comment saying "we never mint here" is
   // worth less than a check that no minting expression exists in the function at all.
   const mints = /instanceSeq/.test(body) || /Date\.now\(\)\.toString\(36\)/.test(body);

@@ -375,8 +375,8 @@ public static class SecretPolicy
     ///
     /// A name in a list cannot be confused with a value, so nothing escapes anything and
     /// every setting means exactly itself. It also makes the affordance property-type
-    /// agnostic (#154) and gives the on-panel editor the channel it never had (#153): the
-    /// editor states what it cleared, and does not have to infer it from what it was sent.
+    /// agnostic (#154), and the editor states what it cleared rather than leaving the host
+    /// to infer it from what it was sent (#153).
     ///
     /// <see cref="LayoutSlot"/> has no matching member, so this cannot reach layout.json —
     /// and <see cref="ReadClearedMarkers"/> is the only thing that reads it, before the
@@ -387,8 +387,7 @@ public static class SecretPolicy
     /// instanceId of the tile it was copied from (#226). Duplicate copies the credential,
     /// and this is how the settings editor asks for that. It never holds a stored secret —
     /// only a blank and <see cref="SetMarkerKey"/> — so the value cannot travel with the
-    /// copy. The panel does hold it, and sends it, but a field the host blanked for the
-    /// panel (<see cref="RestorableMarkerKey"/>) has nothing to send either.
+    /// copy.
     ///
     /// Seal treats it as a second place to look for an UNTOUCHED blank, never as a value:
     /// the copy's own stored value comes first, a typed replacement or a named clear still
@@ -403,35 +402,13 @@ public static class SecretPolicy
     /// <see cref="ReadCopiedFromMarkers"/> is the only thing that reads it.</summary>
     public const string CopiedFromMarkerKey = "copiedFrom";
 
-    /// <summary>Writes a (page, slot) → names map onto a serialized layout as a per-slot
-    /// projection. Used for the reveal-side <see cref="RestorableMarkerKey"/>, so the panel
-    /// receives the same shape the settings editor already gets from <c>Mask</c>.</summary>
-    public static void StampMarkers(
-        JsonNode? layoutNode, string key,
-        IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>> markers)
-    {
-        if (markers.Count == 0 || layoutNode?["pages"] is not JsonArray pages)
-            return;
-        foreach (var ((p, i), names) in markers)
-        {
-            if (p < 0 || p >= pages.Count || pages[p]?["slots"] is not JsonArray slots)
-                continue;
-            if (i < 0 || i >= slots.Count || slots[i] is not JsonObject slot)
-                continue;
-            var list = new JsonArray();
-            foreach (var name in names)
-                list.Add(name);
-            slot[key] = list;
-        }
-    }
-
     /// <summary>Pulls the cleared-property lists out of a submitted layout, addressed by
     /// (page, slot) in the FILTERED model — see the note at the counter below.
     ///
     /// It must run on the RAW JSON, before deserialization: the model deliberately carries
     /// no extension data, which is what keeps every projection out of layout.json, so by
-    /// the time there is a <see cref="DashboardLayout"/> this key is already gone. Both
-    /// windows call it on the node they are about to deserialize and hand the result to
+    /// the time there is a <see cref="DashboardLayout"/> this key is already gone. The
+    /// save handler calls it on the node it is about to deserialize and hands the result to
     /// <see cref="Seal"/>.</summary>
     public static IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>> ReadClearedMarkers(
         JsonNode? layoutNode)
@@ -443,7 +420,7 @@ public static class SecretPolicy
         {
             if (pages[p]?["slots"] is not JsonArray slots)
                 continue;
-            // Indexed over the slots that SURVIVE, because both save handlers drop
+            // Indexed over the slots that SURVIVE, because the save handler drops
             // placeholder slots from the model right after deserializing and these
             // coordinates have to point into that filtered model. Counting raw positions
             // here would
@@ -470,7 +447,7 @@ public static class SecretPolicy
 
     /// <summary>The <see cref="CopiedFromMarkerKey"/> source ids of a submitted layout,
     /// addressed exactly as <see cref="ReadClearedMarkers"/> addresses its lists: (page,
-    /// slot) in the FILTERED model, counting only slots that survive the handlers' drop of
+    /// slot) in the FILTERED model, counting only slots that survive the handler's drop of
     /// placeholders, and read off the RAW node for the same reason. Live pages only: a copy
     /// retired before its first save has no position to be named by, and keeps nothing.</summary>
     public static IReadOnlyDictionary<(int Page, int Slot), string> ReadCopiedFromMarkers(
@@ -549,24 +526,11 @@ public static class SecretPolicy
     }
 
 
-    /// <summary>Decrypts every secret in place — for the dashboard's init payload only.
-    ///
-    /// KNOWN GAP (issue #66): a property retyped `secret` → `text` still holds ciphertext,
-    /// and this walks only what the CURRENT manifest calls secret — so the widget receives
-    /// the literal "dpapi:v1:…" string. Blanking it here looks like a two-line fix and is
-    /// not: the shell round-trips this exact layout back through save-layout, so a blank
-    /// written here reaches disk unless the save path is taught to restore it, and teaching
-    /// it through the manifest classification also imposes secret WRITE semantics, which
-    /// makes the demoted field permanently uneditable. The real fix needs per-address
-    /// restore with slot identity — the same machinery #62 needs — and is tracked there
-    /// rather than guessed at here. Leaving it alone at least self-heals: the user retypes
-    /// the value and it saves as ordinary text, which is what the manifest now says.</summary>
     /// <summary>Shorthand for "protect exactly what these manifests declare" — the plan
     /// every caller wanted before intents existed. Kept because it is genuinely the common
     /// case, not to spare callers the migration: anything needing a non-default intent
     /// builds its own <see cref="SecretPlan"/>.</summary>
-    public static IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>> Reveal(
-        DashboardLayout layout, Func<string, WidgetManifest?> lookup) =>
+    public static void Reveal(DashboardLayout layout, Func<string, WidgetManifest?> lookup) =>
         Reveal(layout, SecretPlan.FromManifests(lookup));
 
     /// <inheritdoc cref="Reveal(DashboardLayout, Func{string, WidgetManifest})"/>
@@ -578,31 +542,13 @@ public static class SecretPolicy
         DashboardLayout layout, DashboardLayout? stored, Func<string, WidgetManifest?> lookup) =>
         Seal(layout, stored, SecretPlan.FromManifests(lookup));
 
-    /// <returns>The addresses this call BLANKED, by (page, slot) — the reveal-side twin of
-    /// the <see cref="RestorableMarkerKey"/> list <c>Mask</c> emits.
-    ///
-    /// Without it the on-panel editor cannot tell a field the host emptied from one that
-    /// was always empty, so it renders no Clear and a demoted credential is undeletable
-    /// there (#153). The model cannot carry a projection — that is what keeps every marker
-    /// out of layout.json — so it is reported back instead, and `DashboardWindow` stamps it
-    /// onto the JSON it is about to send, exactly where `Mask` puts its own.</returns>
-    public static IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>> Reveal(
-        DashboardLayout layout, SecretPlan plan)
+    /// <summary>Decrypts every secret in place — for the dashboard's init payload only,
+    /// which the dashboard never sends back: the panel only displays. So nothing written
+    /// here can reach disk, and the blanks below exist purely to keep a value out of widget
+    /// code.</summary>
+    public static void Reveal(DashboardLayout layout, SecretPlan plan)
     {
         var ambiguous = AmbiguousSlots(layout);
-        var blanked = new Dictionary<(int, int), IReadOnlyList<string>>();
-        var at = new Dictionary<LayoutSlot, (int Page, int Slot)>(ReferenceEqualityComparer.Instance);
-        for (var p = 0; p < (layout.Pages?.Count ?? 0); p++)
-            for (var i = 0; i < (layout.Pages![p].Slots?.Count ?? 0); i++)
-                at[layout.Pages[p].Slots![i]] = (p, i);
-        void Note(LayoutSlot slot, string name)
-        {
-            if (!at.TryGetValue(slot, out var where))
-                return;
-            if (!blanked.TryGetValue(where, out var names))
-                blanked[where] = names = new List<string>();
-            ((List<string>)names).Add(name);
-        }
         Walk(layout, plan, (slot, name, intent) =>
         {
             var stored = AsString(slot.Settings?[name]);
@@ -610,12 +556,10 @@ public static class SecretPolicy
             if (intent is SecretIntent.RestoreIfUntouched)
             {
                 // #105: a demoted property still holding an envelope hands `dpapi:v1:…` to
-                // the widget verbatim. Blank it where the restore is guaranteed.
+                // the widget verbatim. Blank it by the rule Mask blanks the preview's copy
+                // by, so the panel and the preview hand a widget the same thing.
                 if (Blankable(slot.InstanceId, stored, twinned))
-                {
                     slot.Settings![name] = "";
-                    Note(slot, name);
-                }
                 return;
             }
             if (!SecretIntents.Protects(intent))
@@ -637,7 +581,6 @@ public static class SecretPolicy
             // Legacy plaintext (a property that used to be `text`) already reads as
             // itself; it gets encrypted the next time the layout is saved.
         });
-        return blanked;
     }
 
     /// <summary>The <see cref="SecretIntent.ProtectWithoutReveal"/> half of Reveal.
@@ -653,32 +596,25 @@ public static class SecretPolicy
     ///
     /// <list type="bullet">
     /// <item>Ciphertext this machine produced is left alone. It is not a credential to
-    ///   anything without the user's DPAPI key, and leaving it means the round-trip below
-    ///   has nothing to depend on.</item>
+    ///   anything without the user's DPAPI key.</item>
     /// <item>Everything else is blanked — plaintext, junk, and a blob from another
     ///   machine. `CanUnprotect`, not `LooksLikeEnvelope`: `dpapi:v1:YWJj` is a string a
     ///   user can type, so shape does not answer "did WE write this?" and a credential
     ///   that happened to match the shape would be handed out.</item>
     /// </list>
     ///
-    /// The blank round-trips safely because the shell posts this exact layout back through
-    /// save-layout, and `Seal` restores the stored node for an address that came back
-    /// empty — then encrypts it, since it was plaintext. That restore is why Seal MUST
-    /// walk the same plan Reveal did; the two call sites in `DashboardWindow` build from
-    /// one snapshot for exactly that reason. The narrow residue: if the slot's identity is
-    /// ambiguous, Seal refuses the carry-over and the credential is lost rather than
-    /// misdelivered — the posture this pipeline already takes everywhere, and the user
-    /// retypes it into a widget they have to fix anyway.</summary>
+    /// The blank goes no further than the payload: the dashboard never posts its layout
+    /// back, so the stored value stays on disk as it was, and the next save from the
+    /// settings window encrypts it (Mask blanks the editor's copy, and Seal restores an
+    /// untouched blank from the stored node).</summary>
     private static void Withhold(LayoutSlot slot, string name, string? stored, bool ambiguous)
     {
         if (slot.Settings?[name] is null || SecretStore.CanUnprotect(stored))
             return;
-        // A twinned identity cannot be restored — BuildStoredIndex poisons the key so
-        // neither copy inherits — so blanking here would destroy the very credential the
-        // withholding is protecting. The plaintext keeps reaching the frame until the
-        // duplicate is healed, which is the pre-existing exposure rather than a new one.
-        // Trading a leak for a destroyed value is the trade this pipeline has refused
-        // three times; see AmbiguousSlots.
+        // A twinned identity is left alone, the posture Blankable takes for the same
+        // slots. Load heals twins before anything is revealed, so a layout read from disk
+        // has none and this only decides what a layout from elsewhere looks like; see
+        // AmbiguousSlots.
         if (ambiguous)
             return;
         slot.Settings[name] = "";
@@ -699,12 +635,13 @@ public static class SecretPolicy
     ///   different states, one still holding the envelope while the other has already been
     ///   retyped to ordinary text, and blanking on the intent alone withheld the second
     ///   one's perfectly displayable value from both the widget and the editor.</item>
-    /// <item><b>The slot is stably addressable.</b> Blanking is only safe because Seal can
-    ///   put the value back, and that lookup is keyed by slot. `shell.js` mints an
-    ///   instanceId for a legacy id-less slot on its first unrelated on-panel edit while
-    ///   the stored copy is still id-less, and `SlotKey` deliberately refuses that
-    ///   mismatch (#68) — so the restore would miss and the blank would reach disk. Before
-    ///   this intent existed the envelope simply survived that transition.</item>
+    /// <item><b>The slot is stably addressable.</b> Blanking the editor's copy is only
+    ///   safe because Seal can put the value back, and that lookup is keyed by slot. The
+    ///   settings replica mints an instanceId for a legacy id-less slot on its first
+    ///   unrelated edit while the stored copy is still id-less, and `SlotKey` deliberately
+    ///   refuses that mismatch (#68) — so the restore would miss and the blank would reach
+    ///   disk. Before this intent existed the envelope simply survived that
+    ///   transition.</item>
     /// </list>
     ///
     /// The cost of the second condition, stated rather than found later: an id-less legacy
@@ -717,23 +654,24 @@ public static class SecretPolicy
 
     /// <summary>Slots whose identity is not stable enough to blank against.
     ///
-    /// This mirrors `shell.js`'s duplicate-id healing EXACTLY, and it has to. That pass
-    /// builds one `seenIds` set of EFFECTIVE tags — an explicit `instanceId`, or the
-    /// derived `p{page}s{slot}` for a slot without one — re-mints any repeat, and calls
-    /// `persistLayout()` immediately. Anything it re-mints changes identity underneath a
-    /// value we blanked, so the restore looks under the new id, misses, and the empty
-    /// string reaches layout.json.
+    /// Two slots answering to one tag are twins: a value blanked on either could be
+    /// restored to the wrong tile, or to neither once the twin is healed. The tag is the
+    /// EFFECTIVE one — an explicit `instanceId`, or the derived `p{page}s{slot}` a slot
+    /// without one runs under — and it is compared RAW, as
+    /// <c>LayoutStore.HealDuplicateIds</c> compares it. Load heals twins and stamps id-less
+    /// slots before any consumer sees a layout, so on a layout read from disk this finds
+    /// nothing; it guards whatever did not come through Load.
     ///
     /// Two ways to get that wrong, both of which I did:
     ///
     /// <list type="bullet">
-    /// <item>Keying on widget id as well. The shell's set does NOT — two different widgets
+    /// <item>Keying on widget id as well. The heal does NOT — two different widgets
     ///   sharing one explicit `instanceId` collide there and the second is re-minted, while
     ///   a per-widget key calls both unique. `BuildStoredIndex` does not even poison that
     ///   case, because its keys DO carry the widget id, so nothing downstream catches it
     ///   either.</item>
     /// <item>Ignoring the positional tags. An explicit id of literally "p0s0" collides with
-    ///   the first id-less slot, and the shell re-mints on that too.</item>
+    ///   the first id-less slot's tag.</item>
     /// </list>
     ///
     /// Reference identity, not a key: the caller has the slot, not its indices.</summary>
@@ -913,8 +851,8 @@ public static class SecretPolicy
                 address[layout.Pages[p].Slots![i]] = (p, i);
         // For a duplicate's copy (#226): every identity the disk already holds, live or
         // retired — a copy is only a copy until its first save — and every identity this
-        // payload holds more than once, which is corruption the shell heals, and must not
-        // hand one source's credential to two claimants meanwhile.
+        // payload holds more than once, which is corruption Load heals on the stored side,
+        // and must not hand one source's credential to two claimants meanwhile.
         var storedKeys = new HashSet<string>(StringComparer.Ordinal);
         var incomingTwice = new HashSet<string>(StringComparer.Ordinal);
         // A copy's own marker, by identity, so a copy of a copy made before either was saved
@@ -1106,8 +1044,8 @@ public static class SecretPolicy
         };
 
         Walk(layout, plan, visitor);
-        // The attic (#226). Mandatory, not optional: on the on-panel path a freshly
-        // retired def carries the live-REVEALED plaintext the shell was holding, and
+        // The attic (#226). Mandatory, not optional: a freshly retired def carries any
+        // credential the user typed into that tile this session, in plaintext, and
         // skipping it here would write that plaintext to disk verbatim.
         WalkRetained(layout, plan, visitor);
 
@@ -1118,10 +1056,10 @@ public static class SecretPolicy
         // of this comment, because two review rounds argued otherwise and both were right.
         // (The one positional key that DID exist, `|w:0`, is gone: see SlotKey.)
         //
-        // The tempting case is real (#68). shell.js's persistLayout mints an instanceId for
-        // any id-less slot on its first on-panel edit, so a legacy slot's next save arrives
-        // id-BEARING while layout.json still holds the value id-LESS. The lookup misses and
-        // an edit that had nothing to do with the credential deletes it.
+        // The tempting case is real (#68). The settings replica's persistLayout mints an
+        // instanceId for any id-less slot on its first edit, so a legacy slot's next save
+        // arrives id-BEARING while layout.json still holds the value id-LESS. The lookup
+        // misses and an edit that had nothing to do with the credential deletes it.
         //
         // The reason a retry cannot fix it: the payload contains no evidence that would
         // separate that case from its dangerous twin. Open a legacy layout holding one
@@ -1135,8 +1073,8 @@ public static class SecretPolicy
         //
         // Closing #68 properly needs the client to say which slot it minted an id FOR,
         // which is the same host/client identity channel #70 needs. Until that exists,
-        // a legacy slot loses its secret on first on-panel edit and the user re-enters it
-        // — the answer SlotKey already gives wherever identity cannot be established.
+        // a legacy slot loses its secret on its first edit and the user re-enters it —
+        // the answer SlotKey already gives wherever identity cannot be established.
         bool TryPrevious(string? key, LayoutSlot slot, string name, out JsonNode? found)
         {
             found = null;
@@ -1244,8 +1182,9 @@ public static class SecretPolicy
         if (stored is null)
             return index;
         // Two stored slots resolving the same key means the layout has duplicate
-        // instanceIds (shell.js detects and heals those, but the editor can save before
-        // the repair lands). Silently keeping the last would hand BOTH colliding
+        // instanceIds (LayoutStore.Load heals those before any reader sees them, but a
+        // stored layout handed in from elsewhere can still carry them). Silently keeping
+        // the last would hand BOTH colliding
         // incoming slots the same credential, so the key is poisoned instead: nobody
         // inherits, and the user re-enters — the same refusal ambiguous positions get.
         var poisoned = new HashSet<(string, string)>();
@@ -1379,7 +1318,8 @@ public static class SecretPolicy
     /// def's plaintext is re-sealed and a masked blank restores by identity) and by
     /// BuildStoredIndex (so an already-retired secret is findable across saves) — and
     /// deliberately NOT by Reveal or Mask: a retained tile never renders, so its secret
-    /// travels to both editors and rests on disk as ciphertext only.</summary>
+    /// travels to the settings editor and rests on disk as ciphertext only. The panel is
+    /// not sent the attic at all.</summary>
     private static void WalkRetained(DashboardLayout layout, SecretPlan plan,
         Action<LayoutSlot, string, SecretIntent> visit)
     {

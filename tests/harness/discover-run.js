@@ -4,7 +4,8 @@
 //
 //   D1 · the shell keeps only plain, bounded choices from a widget's answer
 //   D2 · the widget API answers every question exactly once, in plain data
-//   D3 · the editors say what happened, and every dead end leaves the field typeable
+//   D3 · the settings window's chooser says what happened, and every dead end leaves the
+//        field typeable (Find is offered there only: the panel only displays)
 //   D4 · the plumbing is wired end to end (text, and says so — it runs across a browser
 //        and two WebViews; tests/harness/discoverroute-run.js drives it for real)
 //   D5 · falsification — D1 must FAIL against a shell that passes the answer through
@@ -167,9 +168,9 @@ async function ask(handler, msg) {
     }
   }
 
-  // ---- D3 · status text, both copies -----------------------------------------------------
+  // ---- D3 · status text -------------------------------------------------------------------
   const copies = {};
-  for (const name of ['settings.js', 'shell.js']) {
+  for (const name of ['settings.js']) {
     const api = load(path.join(SHELL, name), 'ww-discover-text', ['discoverStatusText']);
     check(`D0 ${name} carries the ww-discover-text block`, !!api);
     if (api) copies[name] = api.discoverStatusText;
@@ -199,10 +200,6 @@ async function ask(handler, msg) {
     check(`D6 ${name}: a search the widget found nothing for names the search and leaves the field typeable`,
       /kitchen/.test(noMatch) && /type the value/i.test(noMatch) && noMatch !== text(CASES[2]), noMatch);
   }
-  if (copies['settings.js'] && copies['shell.js'])
-    check('D3 the desktop chooser and the panel sheet say the same things',
-      CASES.every((r) => copies['settings.js'](r) === copies['shell.js'](r)
-        && copies['settings.js'](r, 'kitchen') === copies['shell.js'](r, 'kitchen')));
 
   // ---- D4 · wiring ---------------------------------------------------------------------------
   const shell = read(path.join(SHELL, 'shell.js'));
@@ -221,8 +218,6 @@ async function ask(handler, msg) {
   check('D4 a tile mid-reload is asked once its new document is ready, not refused',
     /if \(slot\.initialized\) sendToSlot\(slot, question\);/.test(shell)
       && /sendToSlot\(sender, initMessage\(sender\)\);[\s\S]{0,500}for \(const route of discoverRoutes\.values\(\)\)\s*if \(route\.slot === sender\) sendToSlot\(sender, route\.question\);/.test(shell));
-  check('D4 the panel sheet asks the slot being edited, after applying pending edits',
-    /discoverSlot\(record, property, field,/.test(shell) && /function psDiscoverBtn[\s\S]{0,1200}applyPropNow\(record\);[\s\S]{0,2600}discoverSlot\(record/.test(shell));
   check('D4 settings asks the host with the slot\'s instanceId, and the search',
     /post\(\{ type: 'discover', id, instanceId, property, field: field \|\| null, query \}\)/.test(settings));
   check('D4 the settings window relays to the dashboard, or refuses at once without one',
@@ -233,7 +228,7 @@ async function ask(handler, msg) {
   check('D6 the shell passes the host\'s search to the widget, bounded',
     /typeof d\.query === 'string' \? d\.query\.slice\(0, DISCOVER_QUERY_MAX\) : ''\);/.test(shell)
       && /const question = \{ type: 'ww-discover', id, property, field: field \|\| null, query: query \|\| '' \};/.test(shell));
-  for (const [name, src] of [['settings.js', settings], ['shell.js', shell]])
+  for (const [name, src] of [['settings.js', settings]])
     check(`D6 ${name} sends a search only when the first answer was cut short`,
       /if \(first && first\.ok && first\.truncated\) \{/.test(src) && /seq !== askSeq\) return;/.test(src));
   check('D4 the dashboard hands the shell\'s answer back by id',
@@ -241,8 +236,7 @@ async function ask(handler, msg) {
   // settings.js has a third top-level site: a text setting that was once secret renders on
   // its own branch (a hidden value kept to restore) and offers Find there too.
   for (const [name, src, btn, fieldVar, sites] of [
-    ['settings.js', settings, 'makeDiscoverBtn(input, slot, ', 'field', 3],
-    ['shell.js', shell, 'psDiscoverBtn(input, ', 'f', 2]]) {
+    ['settings.js', settings, 'makeDiscoverBtn(input, slot, ', 'field', 3]]) {
     const top = src.split(btn + 'prop.name, null)').length - 1;
     check(`D4 ${name} offers Find on select and text settings`, top === sites, `${top} site(s)`);
     check(`D4 ${name} offers Find on a list row's field, naming the field`,

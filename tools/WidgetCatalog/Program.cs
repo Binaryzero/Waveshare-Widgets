@@ -6,7 +6,7 @@
 // W5-W6   opening a flagged tile clears it; a flag for a removed tile goes
 // W7      a damaged state file is a baseline, not "everything is new"
 // W8      ...and so is valid JSON holding nulls, which used to throw on every start
-// W9      a placement made on the panel ends "New" too (source guard: DashboardWindow)
+// W9      the settings save is the one place a placement is marked; the panel only displays
 // W10     property names holding the old delimiters cannot make two shapes compare equal
 // W11     a second comparison in the same run (an in-app install) is not a baseline
 // W12     a settings-window save marks placed only when it lands; an install compares again
@@ -106,12 +106,22 @@ foreach (var (label, json) in new[]
 var s8b = new WidgetCatalogState(path);
 Check("W8b ...and the rewritten file reads back cleanly", s8b.Review.Count == 0 && !s8b.IsNew("ws.stock.clock", t0.AddDays(6)));
 
-// ---- W9 · the panel's save path --------------------------------------------------------
+// ---- W9 · where placements are marked -----------------------------------------------------
+// A widget is placed by a layout write, and the settings window's save is the only client
+// write there is: the panel only displays. So that save marks placements (W12 pins how),
+// and nothing else may — a second call site would be a write path nobody guards.
 var dash = FindUpwards("src/Plinth/App/DashboardWindow.cs");
 var dashCode = dash is null ? "" : File.ReadAllText(dash);
-Check("W9 a save from the on-panel editor marks its widgets placed",
-    System.Text.RegularExpressions.Regex.IsMatch(dashCode,
-        @"var landed = LayoutStore\.Save\(edited, LayoutStore\.PanelWriter\);[\s\S]{0,900}if \(landed\)\s*WidgetCatalogState\.Shared\?\.MarkPlaced\("));
+var srcRoot = dash is null ? null : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(dash)!, ".."));
+var markers = srcRoot is null ? [] : Directory.EnumerateFiles(srcRoot, "*.cs", SearchOption.AllDirectories)
+    .Where(f => !f.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar)
+        && !f.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar)
+        && File.ReadAllText(f).Contains(".MarkPlaced("))
+    .Select(Path.GetFileName).ToList();
+Check("W9 the settings save is the one place a placement is marked",
+    markers.Count == 1 && markers[0] == "SettingsWindow.cs", string.Join(", ", markers));
+Check("W9b ...and the dashboard has no save handler to mark one from",
+    dash is not null && !dashCode.Contains("case \"save-layout\":"));
 
 // ---- W10 · shapes are structural -------------------------------------------------------
 var joinedA = M("x", ("alpha:text|beta", "text"));

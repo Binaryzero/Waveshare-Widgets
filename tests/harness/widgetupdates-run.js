@@ -120,7 +120,7 @@ const layout = { pages: [{ name: 'Main', slots: [
     JSON.stringify({ chips: await page.locator('#slotList .slot-chip', { hasText: 'Hue' }).count(),
       badge: await item('Hue').locator('.g-new').count() }));
 
-  // U5 · the preview is the main way in. A fresh init flags c2; the 🎨 on its tile in the
+  // U5 · the preview is the main way in. A fresh init flags c2; a tap on its tile in the
   // replica selects it through the real slot-selected handoff.
   await push({ type: 'settings-init', data: {
     layout: JSON.parse(JSON.stringify(layout)), widgets, sensors: [], backgroundHost: 'backgrounds.plinth',
@@ -130,12 +130,12 @@ const layout = { pages: [{ name: 'Main', slots: [
   await page.waitForTimeout(2500);   // settings re-renders; the replica re-inits
   const replica = page.frames().find((f) => /Shell\/index\.html/.test(f.url()));
   const flaggedBefore = await chips.nth(1).locator('.chip-updated').count();
-  const tapped = replica ? await replica.evaluate(() => {
-    const btn = document.querySelectorAll('.slot .edit-overlay .style')[1];
-    if (!btn) return 'no style button on the second tile';
-    btn.click();
-    return 'tapped';
-  }) : 'no replica';
+  // The tile body, not a corner control: a tap that never crosses the drag threshold is
+  // the replica's select gesture.
+  const tapped = replica
+    ? await replica.locator('.slot').nth(1).locator('.edit-overlay').click({ timeout: 3000 })
+      .then(() => 'tapped', (e) => 'could not tap the second tile: ' + String(e).slice(0, 120))
+    : 'no replica';
   await page.waitForTimeout(500);
   const told5 = received.filter((m) => m.type === 'tile-reviewed' && m.instanceId === 'c2');
   check('U5 opening a flagged tile from the live preview tells the host and clears the mark',

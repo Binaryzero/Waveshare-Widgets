@@ -2,10 +2,10 @@
 // List settings whose entries may be bare values (issue #167).
 //
 // Several widgets accept a primitive as shorthand in a list — endpoints takes "nas.lan"
-// and expands it to a label and a URL itself. Both settings editors filtered the array
+// and expands it to a label and a URL itself. The settings editor filtered the array
 // down to objects before rendering, so a bare entry got no row: it could not be seen,
-// edited or deleted, and because each editor writes back only the rows it rendered,
-// opening the panel and saving silently deleted every one of them.
+// edited or deleted, and because the editor writes back only the rows it rendered,
+// opening it and saving silently deleted every one of them.
 //
 // Silent DELETION is the defect, so every check here is about what comes back out:
 //
@@ -21,9 +21,8 @@
 //        a string marker made that row render as a single input and write back as the
 //        bare value, dropping its other fields — this bug, caused by its own fix.
 //
-// Both editors are driven, because the same defect was in both and a fix to one proves
-// nothing about the other. The panel editor lives in shell.js (psList) and the settings
-// window's in settings.js; each is loaded as its real file rather than reimplemented.
+// The editor is the settings window's, in settings.js (the panel only displays), and is
+// loaded as its real file rather than reimplemented.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -42,7 +41,7 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 // transcribed here. An earlier version of this harness kept its own copy of the read and
 // write halves and checked the file only for two substrings, so a regression in either
 // editor's real commit would have left every behavioural assertion below green. The
-// editors now carry the pair as named functions between marker comments for exactly this
+// editor now carries the pair as named functions between marker comments for exactly this
 // reason, and if those markers or names go away this fails at L0 rather than quietly
 // testing nothing.
 function loadMapping(file) {
@@ -74,7 +73,7 @@ const LEGACY = {
   LIST_RAW: Symbol('legacy'),
 };
 
-for (const file of ['shell.js', 'settings.js']) {
+for (const file of ['settings.js']) {
   console.log(`\n== ${file}`);
   const real = loadMapping(file);
   check('L0 setup: this editor exposes a runnable list mapping that keeps primitives',

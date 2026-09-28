@@ -21,7 +21,8 @@ public static class PaletteEngine
 
     /// <summary>Opacity of the settings sheets (#propSheet / #stylePanel in shell.css) that
     /// carry muted body text over the wallpaper. Kept in lockstep with palette.js's
-    /// SHEET_ALPHA — see <see cref="GlassSurfaces"/> and issue #217.</summary>
+    /// SHEET_ALPHA — see <see cref="GlassSurfaces"/> and issue #217. Those sheets went with
+    /// on-panel editing; the repair stays because it only ever strengthens muted text.</summary>
     private const double SheetAlpha = 0.94;
 
     public static Dictionary<string, string> Derive(ThemeSpec? theme)

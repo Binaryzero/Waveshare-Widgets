@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 // Store apps in the app picker (#219), the parts that are not the host's COM enumeration.
 //
-//   P1 · the "no match" line tells the truth about Store apps, on both pickers
+//   P1 · the "no match" line tells the truth about Store apps
 //   P2 · a pick names an EMPTY Name field, and never replaces one the user typed
-//   P3 · both pickers carry the same block, with the same behaviour
-//   P4 · the pickers are wired to it (text, and says so: the wiring runs in a browser)
+//   P4 · the settings window's picker is wired to it (text, and says so: the wiring runs
+//        in a browser)
 //   P5 · a Store app target gets a readable fallback label in Deck and Launcher
 //   P6 · falsification — P2 and P5 must FAIL against the pre-#219 behaviour
 //
 // Every function under test is loaded OUT OF the shipped file between markers and
 // executed, never transcribed, so a regression in the real commit cannot leave this green.
 // The browser half — the picked name landing in the row's Name input and the saved
-// layout — is E36f/E36g in secretfield-run.js and N14k in panelsecret-run.js.
+// layout — is E36f/E36g in secretfield-run.js. The picker lives in the settings window
+// only: the panel only displays.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -39,7 +40,6 @@ function load(file, marker, names) {
 
 const pickers = {
   'settings.js': path.join(SHELL, 'settings.js'),
-  'shell.js': path.join(SHELL, 'shell.js'),
 };
 const widgets = {
   deck: path.join(ROOT, 'widgets', 'deck', 'index.html'),
@@ -92,18 +92,6 @@ for (const [label, file] of Object.entries(pickers)) {
   if (!api) continue;
   loaded[label] = api;
   runPickChecks(label, api);
-}
-
-// ---- P3 · the two copies cannot drift apart. Behaviour, not text: the comment on each
-// names the other file.
-if (loaded['settings.js'] && loaded['shell.js']) {
-  const [a, b] = [loaded['settings.js'], loaded['shell.js']];
-  const same = [true, false].every((v) => a.noMatchText(v) === b.noMatchText(v))
-    && [['', 'A'], ['B', 'A'], [undefined, ' A '], ['  ', '']].every(([l, n]) => {
-      const x = { label: l }, y = { label: l };
-      return a.nameFromPick(x, FIELDS, n) === b.nameFromPick(y, FIELDS, n) && x.label === y.label;
-    });
-  check('P3 the desktop picker and the panel sheet behave the same', same);
 }
 
 // ---- P4 · wiring

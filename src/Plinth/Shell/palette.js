@@ -138,6 +138,8 @@
     // muted below 4.5 on an opaque surface — an accessibility loss everywhere, to fix one
     // sheet. Keep the glass repair only when it holds the opaque contrast at least as high
     // as the opaque-only repair; otherwise fall back to the opaque guarantee.
+    // Those sheets went with on-panel editing; the repair stays because it only ever
+    // strengthens muted text.
     const SHEET_ALPHA = 0.94;
     const opaqueSurf = [surface, surfaceAlt];
     const glassSurf = [surface, surfaceAlt,

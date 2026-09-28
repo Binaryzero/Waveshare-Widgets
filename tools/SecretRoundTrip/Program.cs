@@ -537,8 +537,9 @@ Check("P21c while a NAMED clear still means remove",
     Slot(r4StillClears).Settings?["apiToken"] is null);
 
 // ---- P22 · Codex r4: duplicate instanceIds refuse carry-over ------------------------
-// shell.js heals duplicates, but the editor can save before the repair lands. Handing
-// both colliding slots the same credential is worse than handing neither one.
+// LayoutStore.Load heals duplicates before any reader sees them, but a stored layout
+// handed to Seal from anywhere else can still carry them. Handing both colliding slots
+// the same credential is worse than handing neither one.
 var r4DupStored = new DashboardLayout
 {
     Pages = [new LayoutPage { Name = "P", Slots = [
@@ -772,7 +773,7 @@ Check("P28b2 and nothing envelope-shaped is left anywhere in the payload",
 Check("P28c the stored value is intact — this blanked a copy, not the credential",
     SecretStore.Unprotect(Value(demotedStored, "apiToken")) == Token,
     Value(demotedStored, "apiToken"));
-// ...and the round trip proves it: the shell posts the blank back and Seal puts it back.
+// ...and the round trip proves it: a blank posted back is put back by Seal.
 var demotedSaved = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(revealed28))!;
 SecretPolicy.Seal(demotedSaved, demotedStored, DemotedLookup);
 Check("P28c2 the blank round-trips: an untouched demoted field keeps its stored value",
@@ -820,8 +821,8 @@ Check("P28h2 and a later reinstall still reveals the original credential",
     Value(recovered, "apiToken") == Token, Value(recovered, "apiToken"));
 
 // ---- P31 · #68: an id-less slot does NOT carry over once the client mints an id -------
-// This documents a REFUSAL and the cost of it, not a fix. shell.js's persistLayout mints
-// an instanceId for any legacy slot on its first on-panel edit, so the next save arrives
+// This documents a REFUSAL and the cost of it, not a fix. The settings replica's
+// persistLayout mints an instanceId for any legacy slot on its first edit, so the next save arrives
 // id-BEARING while layout.json still holds the value id-LESS, the id-keyed lookup misses,
 // and an edit unrelated to the credential deletes it. That is #68, and it is real.
 //
@@ -1065,8 +1066,8 @@ SecretPolicy.Reveal(p35Legacy, RefusedPlan());
 Check("P35b legacy plaintext is BLANKED on the way to the shell, not merely left undecrypted",
     Value(p35Legacy, "apiToken") == "", Value(p35Legacy, "apiToken"));
 
-// Withholding must not cost the value: the shell round-trips this exact layout back
-// through save-layout, so the blank has to restore — and, being plaintext, encrypt.
+// Withholding must not cost the value: a blank that comes back through a save has to
+// restore — and, being plaintext, encrypt.
 var p35Saved = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(p35Legacy))!;
 SecretPolicy.Seal(p35Saved, LayoutWith(new JsonObject { ["apiToken"] = Token }), RefusedPlan());
 var p35Restored = Value(p35Saved, "apiToken");
@@ -1264,8 +1265,8 @@ Check("P36b2 a list property is not planned at all",
         .For(Slot(LayoutWith(new JsonObject()))).Count == 0);
 
 // ---- P36c · an id-LESS slot is never blanked -----------------------------------------
-// shell.js mints an instanceId on the first unrelated on-panel edit while the stored copy
-// is still id-less, and SlotKey deliberately refuses that mismatch (#68). Blanking such a
+// The settings replica mints an instanceId on the first unrelated edit while the stored
+// copy is still id-less, and SlotKey deliberately refuses that mismatch (#68). Blanking such a
 // slot would turn a documented identity change into a destructive one: the restore misses
 // and the blank reaches disk. Before this intent existed the envelope simply survived.
 // Built from an already-sealed value rather than by sealing here: sealing would need a
@@ -1279,11 +1280,11 @@ var idlessRevealed = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.
 SecretPolicy.Reveal(idlessRevealed, DemotedLookup);
 Check("P36c2 an id-less slot's demoted envelope is NOT blanked — it could not be restored",
     Value(idlessRevealed, "apiToken") == idlessCipher, Value(idlessRevealed, "apiToken"));
-// The whole sequence: the shell mints an id on the copy it holds and saves it back.
+// The whole sequence: a client mints an id on the copy it holds and saves it back.
 var idlessMinted = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(idlessRevealed))!;
 Slot(idlessMinted).InstanceId = "s-minted-by-shell";
 SecretPolicy.Seal(idlessMinted, idless, DemotedLookup);
-Check("P36c3 ...so a shell-minted id does not destroy it",
+Check("P36c3 ...so a client-minted id does not destroy it",
     Value(idlessMinted, "apiToken") == idlessCipher, Value(idlessMinted, "apiToken"));
 
 // ---- P36d · two instances of one widget can be in different states -------------------
@@ -1371,8 +1372,8 @@ Check("P36j3 and an absent one is not conjured back into existence",
 // BuildStoredIndex POISONS a key two stored slots both resolve to: handing one credential
 // to both twins is worse than losing it, so nobody inherits. Blanking on the strength of
 // the id alone therefore blanks both copies and then finds nothing to restore, and the
-// empty strings reach layout.json. Reachable rather than theoretical — shell.js detects
-// duplicate instance ids and heals them, and the heal is itself a save.
+// empty strings reach layout.json. Reachable rather than theoretical — a layout can carry
+// duplicate instance ids until LayoutStore.Load heals them, and a client can re-key one.
 var twins = TwoInstances(
     new JsonObject { ["apiToken"] = demotedCipher },
     new JsonObject { ["apiToken"] = demotedCipher },
@@ -1381,7 +1382,7 @@ SecretPolicy.Reveal(twins, DemotedLookup);
 Check("P37 neither twin is blanked, because neither could be restored",
     ValueAt(twins, 0, "apiToken") == demotedCipher && ValueAt(twins, 1, "apiToken") == demotedCipher,
     ValueAt(twins, 0, "apiToken") + " | " + ValueAt(twins, 1, "apiToken"));
-// The full sequence: the shell heals one id and saves. Nothing was blanked, so there is
+// The full sequence: one twin is re-keyed and saved. Nothing was blanked, so there is
 // nothing the poisoned index has to give back.
 var healed = JsonSerializer.Deserialize<DashboardLayout>(JsonSerializer.Serialize(twins))!;
 healed.Pages[0].Slots[1].InstanceId = "healed";
@@ -1406,11 +1407,10 @@ SecretPolicy.Mask(twinNode, SecretPlan.FromManifests(DemotedLookup));
 Check("P37d Mask agrees with Reveal about which slots are addressable",
     !twinNode!.ToJsonString().Contains("secretsRestorable"), twinNode.ToJsonString());
 
-// ---- P37k · the shell's heal is GLOBAL, so ambiguity must be too ----------------------
-// shell.js builds ONE `seenIds` set of effective tags and re-mints any repeat, then calls
-// persistLayout(). It does not consider widgetId, so two DIFFERENT widgets sharing an
-// explicit instanceId collide there — while a widget-scoped check here calls both unique
-// and blanks them. BuildStoredIndex does not catch it either: its keys DO carry the widget
+// ---- P37k · the duplicate heal is GLOBAL, so ambiguity must be too -------------------
+// LayoutStore.HealDuplicateIds re-mints any repeated instanceId across every page. It
+// does not consider widgetId, so two DIFFERENT widgets sharing an explicit instanceId
+// collide there — while a widget-scoped check here calls both unique and blanks them. BuildStoredIndex does not catch it either: its keys DO carry the widget
 // id, so nothing is poisoned and the restore simply looks under an id that no longer
 // exists. Same automatic credential loss, one layer out from the duplicate-key case.
 var crossWidget = new DashboardLayout
@@ -1429,15 +1429,14 @@ var otherDemoted = new WidgetManifest
 };
 SecretPolicy.Reveal(crossWidget, SecretPlan.FromManifests(
     id => id == "test.widget" ? demotedManifest : id == "other.widget" ? otherDemoted : null));
-Check("P37k two widgets sharing one instanceId are both left alone — the shell re-mints "
+Check("P37k two widgets sharing one instanceId are both left alone — the heal re-mints "
     + "one of them and the restore would look under an id that never stored anything",
     ValueAt(crossWidget, 0, "apiToken") == demotedCipher
         && ValueAt(crossWidget, 1, "apiToken") == demotedCipher,
     ValueAt(crossWidget, 0, "apiToken") + " | " + ValueAt(crossWidget, 1, "apiToken"));
 
-// The other half of the shell's rule: an explicit id can collide with a POSITIONAL tag.
-// A slot with no instanceId runs as "p0s0", so an explicit "p0s0" elsewhere collides and
-// the shell re-mints on that too.
+// The other half of the rule: an explicit id can collide with a POSITIONAL tag. A slot
+// with no instanceId runs as "p0s0", so an explicit "p0s0" elsewhere collides with it.
 var positionalClash = new DashboardLayout
 {
     Pages = [new LayoutPage { Name = "P", Slots = [
@@ -1499,35 +1498,6 @@ SecretPolicy.Seal(boolean, demotedStored, DemotedLookup);
 Check("P37f and so is a boolean — `false` is a value, not an absence",
     Slot(boolean).Settings?["apiToken"]?.ToJsonString() == "false",
     Slot(boolean).Settings?["apiToken"]?.ToJsonString() ?? "(absent)");
-
-// ---- P37f2 · Reveal REPORTS what it blanked, or the panel cannot offer a Clear --------
-// Mask names its blanked addresses in the payload; Reveal could not, because the model
-// carries no projection. So the on-panel editor saw a demoted field arrive empty and had
-// no way to tell it from one that was always empty — no Clear, and an emptied field read
-// back as untouched (#153). Reveal returns the addresses now and DashboardWindow stamps
-// them onto the node it sends.
-var reportLayout = LayoutWith(new JsonObject { ["apiToken"] = demotedCipher, ["repo"] = "owner/name" });
-var revealReport = SecretPolicy.Reveal(reportLayout, SecretPlan.FromManifests(DemotedLookup));
-Check("P37f2 Reveal reports the address it blanked",
-    revealReport.TryGetValue((0, 0), out var revealBlanked) && revealBlanked.Contains("apiToken"),
-    string.Join(", ", revealReport.SelectMany(kv => kv.Value)));
-Check("P37f3 and reports nothing for a property it left alone",
-    !revealReport.SelectMany(kv => kv.Value).Contains("repo"));
-// Nothing blanked, nothing revealReport — the panel must not grow affordances for fields the
-// host never touched.
-var nothingBlanked = LayoutWith(new JsonObject { ["repo"] = "owner/name" });
-Check("P37f4 a reveal that blanked nothing reports nothing",
-    SecretPolicy.Reveal(nothingBlanked, SecretPlan.FromManifests(DemotedLookup)).Count == 0);
-// The stamp puts it where Mask puts its own, and the model still cannot carry it.
-var stampNode = JsonSerializer.SerializeToNode(reportLayout)!;
-SecretPolicy.StampMarkers(stampNode, SecretPolicy.RestorableMarkerKey, revealReport);
-Check("P37f5 stamping writes the marker onto the node the panel receives",
-    stampNode["pages"]![0]!["slots"]![0]![SecretPolicy.RestorableMarkerKey] is JsonArray st
-        && st.Count == 1 && st[0]!.GetValue<string>() == "apiToken",
-    stampNode["pages"]![0]!["slots"]![0]![SecretPolicy.RestorableMarkerKey]?.ToJsonString() ?? "(absent)");
-Check("P37f6 and the model still drops it, so it cannot reach layout.json",
-    !JsonSerializer.Serialize(JsonSerializer.Deserialize<DashboardLayout>(stampNode.ToJsonString()))
-        .Contains(SecretPolicy.RestorableMarkerKey));
 
 // ---- P37g · the pathologies the sentinel had, asserted GONE --------------------------
 // Every case below cost a review round on PR #152, and each one existed only because the
@@ -1742,7 +1712,7 @@ Check("N5d …and an id-less NEWCOMER beside it inherits nothing (#68)",
 
 // ---- R · the retained attic (#226) ---------------------------------------------------
 // A removed slot's def moves to layout.retained, addressed ONLY by widgetId|i:instanceId.
-// Seal must re-seal a freshly retired plaintext (the shell held it revealed), restore a
+// Seal must re-seal a freshly retired plaintext (a credential typed this session), restore a
 // masked blank by identity — from the stored PAGES twin on the first save and from the
 // stored ATTIC on every save after — keep ciphertext idempotently, and never let a
 // retired value travel positionally. The legacy loss is asserted as the accepted outcome.
@@ -1772,8 +1742,8 @@ string SealOf(string plain)
     return Value(l, "apiToken")!;
 }
 
-// R1 · on-panel retire: the shell held the value REVEALED, so the attic entry arrives
-// with plaintext — Seal must re-seal it or that plaintext hits disk verbatim.
+// R1 · a retire carrying a credential the user typed this session: the attic entry
+// arrives with plaintext — Seal must re-seal it or that plaintext hits disk verbatim.
 var rFresh = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = Token }, "iA"));
 SecretPolicy.Seal(rFresh, null, Lookup);
 Check("R1 a freshly retired def's plaintext is re-sealed in the attic",
@@ -1808,7 +1778,7 @@ Check("R4 a masked retained secret restores from the stored ATTIC across saves",
     RetainedValue(rBlankAgain, 0, "apiToken") == rSealedB, RetainedValue(rBlankAgain, 0, "apiToken"));
 
 // R5 · the accepted legacy loss (#68), pinned so a "fix" cannot land silently: the
-// stored tile is id-less (never edited on-panel), the retire minted a fresh id, and no
+// stored tile is id-less (never edited), the retire minted a fresh id, and no
 // carry-over may bridge them — a positional retry that recovered this case would also
 // hand a DELETED instance's credential to a look-alike fresh tile.
 var rLegacyStored = LayoutWith(new JsonObject { ["apiToken"] = rSealedB! }, instanceId: null);
@@ -1869,7 +1839,7 @@ SecretPolicy.Seal(rClearRetire, rClearStored, SecretPlan.FromManifests(Lookup), 
 Check("R8b a Clear followed by a Remove DESTROYS the credential rather than resurrecting it",
     RetainedValue(rClearRetire, 0, "apiToken") is null, RetainedValue(rClearRetire, 0, "apiToken"));
 
-// On the on-panel path the retired def carries revealed PLAINTEXT, and a clear must drop
+// A retired def can carry PLAINTEXT (typed this session), and a clear must drop
 // that too — the pages path does, and re-sealing it into the attic would be the same
 // resurrection wearing a different value.
 var rClearPlain = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = Token }, "iD"));
@@ -1924,10 +1894,10 @@ var capForget = LayoutStore.InstancesToForget(capForgetEvicted, EmptyPages());
 Check("C3b ...and names exactly the evicted instance when nothing references it",
     capForget.Count == 1 && capForget[0] == ("test.widget", "iX"));
 
-// A save carries only the window that sent it, and a window can be STALE: its pages may
-// have dropped a tile the other window still shows and will save straight back. Judging
-// liveness from the incoming layout alone destroys that tile's derived credentials while
-// it is still on the panel — so the layout being overwritten counts as live too.
+// A save carries only the copy that sent it, and a copy can be STALE: its pages may have
+// dropped a tile the disk still holds (a payload with no generation is never refused).
+// Judging liveness from the incoming layout alone destroys that tile's derived credentials
+// while it is still on the panel — so the layout being overwritten counts as live too.
 Check("C3c evict never forgets an instance the DISK still has live",
     LayoutStore.InstancesToForget(
         capForgetEvicted, EmptyPages(), LayoutWith(new JsonObject(), instanceId: "iX")).Count == 0);
@@ -1953,230 +1923,56 @@ LayoutStore.MergeRetainedFromDisk(uEdited, uDisk);
 Check("C4c the union is idempotent",
     uEdited.Retained is { Count: 1 });
 
-// ---- M · managing the attic: Restore and Clear (#226) --------------------------------
-// Restore is HOST-performed because Reveal never walks retained: a client-side move would
-// hand the widget dpapi:v1 ciphertext as its credential. It must be ONE mutation (a
-// pages-and-retained twin poisons the key, per R6), must keep the instanceId (that is
-// what reconnects the derived bucket), and must not let a stale column anchor outrank a
-// tile the user can see. Clear destroys for real, under eviction's own liveness rule.
+// ---- M · the attic under the settings path (#226) -----------------------------------
+// Restore is a settings-editor edit (the D series below) seated from a def the host masks
+// on request (mask-retained). What that mask and the saves around it must keep true:
 
-static DashboardLayout PagesNamed(params string[] names) => new()
-{
-    Pages = [.. names.Select(n => new LayoutPage { Name = n, Slots = [] })],
-};
-static LayoutSlot? SlotOn(DashboardLayout l, int page, int i) =>
-    l.Pages[page].Slots is { } s && s.Count > i ? s[i] : null;
-
-// M1 · the move itself: def onto the named page, entry out of the attic, id intact.
-var mSealed = SealOf("tok-restore");
-var mLayout = WithRetained(PagesNamed("P", "Q"),
-    Retire(new JsonObject { ["apiToken"] = mSealed }, "iM1"));
-var mOutcome = LayoutStore.RestoreRetained(mLayout, "test.widget", "iM1", 1, out var mDef);
-Check("M1 restore moves the def onto the named page and empties the attic in one call",
-    mOutcome == LayoutStore.RestoreOutcome.Ok && mLayout.Retained is { Count: 0 }
-    && mLayout.Pages[0].Slots.Count == 0 && mLayout.Pages[1].Slots.Count == 1
-    && SlotOn(mLayout, 1, 0)?.InstanceId == "iM1",
-    mOutcome.ToString());
-Check("M1b the sealed value rides across verbatim — the host never re-seals to move it",
-    SlotOn(mLayout, 1, 0)?.Settings?["apiToken"]?.GetValue<string>() == mSealed
-    && ReferenceEquals(mDef, SlotOn(mLayout, 1, 0)));
-
-// M2/M3 · refusals leave the layout exactly as it was. Out of range is refused rather
-// than clamped: the client names a page it is looking at.
-var mBad = WithRetained(PagesNamed("P"), Retire(new JsonObject(), "iM2"));
-Check("M2 an out-of-range page is refused, not clamped, and nothing moves",
-    LayoutStore.RestoreRetained(mBad, "test.widget", "iM2", 3, out _) == LayoutStore.RestoreOutcome.BadPage
-    && mBad.Retained is { Count: 1 } && mBad.Pages[0].Slots.Count == 0);
-Check("M2b ...and so is a negative index",
-    LayoutStore.RestoreRetained(mBad, "test.widget", "iM2", -1, out _) == LayoutStore.RestoreOutcome.BadPage
-    && mBad.Retained is { Count: 1 });
-// An index alone is not an identity: the settings editor can reorder its pages locally,
-// so an in-range index can name a DIFFERENT page on disk and the tile would land where
-// nobody was looking.
-Check("M2c an in-range index whose page is not the one the client named is refused too",
-    LayoutStore.RestoreRetained(mBad, "test.widget", "iM2", 0, out _, "Renamed")
-        == LayoutStore.RestoreOutcome.BadPage
-    && mBad.Retained is { Count: 1 } && mBad.Pages[0].Slots.Count == 0);
-Check("M2d ...and the matching name goes through",
-    LayoutStore.RestoreRetained(mBad, "test.widget", "iM2", 0, out _, "P")
-        == LayoutStore.RestoreOutcome.Ok && mBad.Pages[0].Slots.Count == 1);
-// Page names are free text with no uniqueness rule, so a name two pages share proves
-// nothing about which one the client meant — and a reorder is exactly the case this guard
-// is for. Ambiguity is refused rather than resolved by the index it was meant to check.
-var mDupName = WithRetained(PagesNamed("Home", "Home"), Retire(new JsonObject(), "iM2e"));
-Check("M2e a page name two pages share is not an identity, so it is refused",
-    LayoutStore.RestoreRetained(mDupName, "test.widget", "iM2e", 0, out _, "Home")
-        == LayoutStore.RestoreOutcome.BadPage
-    && mDupName.Retained is { Count: 1 } && mDupName.Pages[0].Slots.Count == 0);
-Check("M2f ...while the same layout restores fine when the client names no page",
-    LayoutStore.RestoreRetained(mDupName, "test.widget", "iM2e", 1, out _)
-        == LayoutStore.RestoreOutcome.Ok && mDupName.Pages[1].Slots.Count == 1);
-var mMiss = WithRetained(PagesNamed("P"), Retire(new JsonObject(), "iM3"));
-Check("M3 an identity the attic no longer holds is NotFound, and nothing moves",
-    LayoutStore.RestoreRetained(mMiss, "test.widget", "iGone", 0, out _) == LayoutStore.RestoreOutcome.NotFound
-    && mMiss.Retained is { Count: 1 } && mMiss.Pages[0].Slots.Count == 0);
-
-// M4 · a live tile already holding the id means two slots would share one identity —
-// the restored copy re-mints (and forfeits the bucket, which is the live tile's).
-var mCollide = LayoutWith(new JsonObject(), instanceId: "iM4");
-mCollide.Retained = [Retire(new JsonObject { ["apiToken"] = mSealed }, "iM4")];
-LayoutStore.RestoreRetained(mCollide, "test.widget", "iM4", 0, out var mCollided);
-Check("M4 a collision with a LIVE tile re-mints the restored id",
-    mCollided?.InstanceId is { Length: > 1 } && mCollided.InstanceId != "iM4"
-    && mCollide.Pages[0].Slots.Count == 2
-    && mCollide.Pages[0].Slots[0].InstanceId == "iM4",
-    mCollided?.InstanceId);
-Check("M4b ...and only then — an uncontested id is kept, or the bucket would be orphaned",
-    SlotOn(mLayout, 1, 0)?.InstanceId == "iM1");
-// Collision is a GLOBAL instanceId question. The shell's duplicate healing builds one
-// seenIds set over every page with no widget id in it, so a different widget holding the
-// same id collides there and the second is re-minted after the fact — detaching whichever
-// tile it picks from its widget-local storage and its bucket. Keying this by widget is the
-// same mistake SecretStore.AmbiguousSlots documents having made once already.
-var mOther = new DashboardLayout
-{
-    Pages = [new LayoutPage { Name = "P", Slots = [new LayoutSlot
-    {
-        WidgetId = "other.widget", InstanceId = "iM4x", Size = "half",
-    }] }],
-    Retained = [Retire(new JsonObject { ["apiToken"] = mSealed }, "iM4x")],
-};
-LayoutStore.RestoreRetained(mOther, "test.widget", "iM4x", 0, out var mOtherDef);
-Check("M4e a DIFFERENT widget holding the id is still a collision, and re-mints",
-    mOtherDef?.InstanceId is { Length: > 1 } && mOtherDef.InstanceId != "iM4x",
-    mOtherDef?.InstanceId);
-Check("M4f ...and the widget that already had the id keeps it",
-    mOther.Pages[0].Slots[0].InstanceId == "iM4x");
-
-// A duplicate-identity attic must not survive the restore: leaving a twin behind seats
-// the id in both pages and retained, which poisons the key and blanks the credential on
-// the very next masked save (R6).
-var mDup = WithRetained(PagesNamed("P"),
-    Retire(new JsonObject { ["apiToken"] = mSealed }, "iM5"),
-    Retire(new JsonObject { ["apiToken"] = mSealed }, "iM5"));
-LayoutStore.RestoreRetained(mDup, "test.widget", "iM5", 0, out _);
-Check("M4c a duplicate-identity attic leaves NO twin behind — the poison state is unreachable",
-    mDup.Retained is { Count: 0 } && mDup.Pages[0].Slots.Count == 1,
-    (mDup.Retained?.Count ?? -1) + "/" + mDup.Pages[0].Slots.Count);
-var mDupIncoming = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "iM5");
-SecretPolicy.Seal(mDupIncoming, mDup, Lookup);
-Check("M4d ...so the first masked save after that restore keeps the credential",
-    Value(mDupIncoming, "apiToken") == mSealed, Value(mDupIncoming, "apiToken"));
-
-// The column anchor is origin-page-local. Off that page it pins the tile at an arbitrary
-// column, and because the shell seats every anchor before any unanchored slot, a stale
-// one can take a column from a tile the user is looking at.
-var mCol = PagesNamed("P", "Q");
-mCol.Retained =
-[
-    new RetainedSlot
-    {
-        Def = new LayoutSlot { WidgetId = "test.widget", InstanceId = "iM6", Size = "half", Col = 3 },
-        RetiredAt = "2026-08-25T12:00:00Z",
-        OriginPage = "P",
-    },
-];
-LayoutStore.RestoreRetained(mCol, "test.widget", "iM6", 1, out var mColDef);
-Check("M5 a stale column anchor is dropped when the tile lands off its origin page",
-    mColDef?.Col is null, mColDef?.Col?.ToString());
-var mColHome = PagesNamed("P");
-mColHome.Retained =
-[
-    new RetainedSlot
-    {
-        Def = new LayoutSlot { WidgetId = "test.widget", InstanceId = "iM7", Size = "half", Col = 3 },
-        RetiredAt = "2026-08-25T12:00:00Z",
-        OriginPage = "P",
-    },
-];
-LayoutStore.RestoreRetained(mColHome, "test.widget", "iM7", 0, out var mColHomeDef);
-Check("M5b ...and kept on the page it was retired from, so it lands back where it was",
-    mColHomeDef?.Col == 3);
-
-// M6 · Clear, under eviction's liveness rule: a surviving reference blocks the forget.
-var mClearLive = LayoutWith(new JsonObject(), instanceId: "iM8");
-mClearLive.Retained = [Retire(new JsonObject(), "iM8")];
-Check("M6 clear never forgets a bucket a LIVE tile still uses",
-    LayoutStore.ClearRetained(mClearLive, "test.widget", "iM8", out var mLiveForget)
-    && mLiveForget.Count == 0 && mClearLive.Retained is { Count: 0 });
-var mClearAlone = WithRetained(EmptyPages(), Retire(new JsonObject(), "iM9"));
-Check("M6b ...and names exactly that instance when nothing references it",
-    LayoutStore.ClearRetained(mClearAlone, "test.widget", "iM9", out var mAloneForget)
-    && mAloneForget.Count == 1 && mAloneForget[0] == ("test.widget", "iM9")
-    && mClearAlone.Retained is { Count: 0 });
-// A duplicate the user cannot see would leave the row on screen AND, sitting in the
-// survivors' attic, talk the liveness guard out of the forget: the Clear would destroy
-// nothing at all.
-var mClearDup = WithRetained(EmptyPages(), Retire(new JsonObject(), "iMa"), Retire(new JsonObject(), "iMa"));
-Check("M6c a duplicate attic entry cannot silently suppress the destroy",
-    LayoutStore.ClearRetained(mClearDup, "test.widget", "iMa", out var mDupForget)
-    && mDupForget.Count == 1 && mClearDup.Retained is { Count: 0 });
-Check("M6d clearing an identity the attic does not hold changes nothing",
-    !LayoutStore.ClearRetained(mClearAlone, "test.widget", "iGone", out var mNoneForget)
-    && mNoneForget.Count == 0);
-
-// M7 · the ack the settings editor receives. Mask reads layoutNode["pages"], so the
-// wrapper must be pages-shaped or it silently returns having masked nothing — and the
-// ciphertext-bearing def would enter the editor's model, the exact state the
-// host-performed restore exists to prevent.
-var mAckNode = JsonSerializer.SerializeToNode(new DashboardLayout
-{
-    Pages = [new LayoutPage { Name = "ack", Slots = [SlotOn(mLayout, 1, 0)!] }],
-})!;
-SecretPolicy.Mask(mAckNode, SecretPlan.FromManifests(Lookup));
-var mAckSlot = mAckNode["pages"]![0]!["slots"]![0]!;
-Check("M7 the restore ack is masked over a pages-shaped wrapper, so no ciphertext reaches the editor",
-    mAckSlot["settings"]!["apiToken"]!.GetValue<string>() == ""
-    && !mAckNode.ToJsonString().Contains(mSealed),
-    mAckSlot["settings"]!["apiToken"]!.ToJsonString());
-Check("M7b ...and it reports the secret as saved, so the card reads 'encrypted (hidden)'",
-    mAckSlot[SecretPolicy.SetMarkerKey] is JsonArray mSet && mSet.Count == 1
-    && mSet[0]!.GetValue<string>() == "apiToken");
-// A one-slot wrapper can never look ambiguous — but only because RestoreRetained has
-// already re-minted any id that collided with a live tile, in the same handler call.
-Check("M7c the wrapper's lone slot is unambiguous, so the mask blanks rather than withholding",
-    mAckSlot[SecretPolicy.RestorableMarkerKey] is null);
-// The plan matters as much as the wrapper. A retained def of a REFUSED widget carries
+// M7 · the plan matters as much as the wrapper. A retained def of a REFUSED widget carries
 // plaintext whose only classification lives in the window's redaction snapshot; a
 // manifest-only plan walks straight past it and posts it to the editor — the refusal
-// creating the exposure it exists to prevent. The ack must use the window's MaskedPlan.
+// creating the exposure it exists to prevent. mask-retained must use the window's
+// MaskedPlan.
 static JsonNode AckWrapper(string widgetId, string value) => JsonNode.Parse(
-    "{\"pages\":[{\"name\":\"ack\",\"slots\":[{\"widgetId\":\"" + widgetId
+    "{\"pages\":[{\"name\":\"mask\",\"slots\":[{\"widgetId\":\"" + widgetId
     + "\",\"instanceId\":\"iMr\",\"settings\":{\"apiToken\":\"" + value + "\"}}]}]}")!;
 var mRefusedNaive = AckWrapper("refused.widget", Token);
 SecretPolicy.Mask(mRefusedNaive, SecretPlan.FromManifests(Lookup));
-Check("M7d a manifest-only plan leaves a refused widget's plaintext residue in the ack",
+Check("M7d a manifest-only plan leaves a refused widget's plaintext residue in the masked def",
     mRefusedNaive.ToJsonString().Contains(Token));
 var mRefusedPlan = AckWrapper("refused.widget", Token);
 SecretPolicy.Mask(mRefusedPlan, SecretPlan.FromManifests(
     Lookup, id => id == "refused.widget" ? new[] { "apiToken" } : null));
-Check("M7e ...and the window's redaction-carrying plan blanks it, which is why the ack must use that one",
+Check("M7e ...and the window's redaction-carrying plan blanks it, which is why mask-retained must use that one",
     !mRefusedPlan.ToJsonString().Contains(Token));
+var mMaskSrc = FindUpwards("src/Plinth/App/SettingsWindow.cs");
+Check("M7f ...and mask-retained does",
+    mMaskSrc is not null && System.Text.RegularExpressions.Regex.IsMatch(File.ReadAllText(mMaskSrc),
+        @"private void HandleMaskRetained\([\s\S]{0,900}SecretPolicy\.Mask\(wrapper, MaskedPlan\(\)\);"));
 
-// M8 · restore constraint (b) — a stale `secretsCleared` projection riding inside a
-// retained def would clear the secret on the slot's first save back on a page. It cannot:
-// LayoutSlot has no member for it, so the marker dies at deserialization and the host
-// restores from the MODEL, never from a client's node.
+// M8 · a stale `secretsCleared` projection riding inside a retained def would clear the
+// secret on the slot's first save back on a page. It cannot: LayoutSlot has no member for
+// it, so the marker dies at deserialization, and the stored attic the save restores from
+// is the MODEL, never a client's node.
+var mSealed = SealOf("tok-restore");
 var mProjNode = JsonNode.Parse(
     "{\"pages\":[{\"name\":\"P\",\"slots\":[]}],\"retained\":[{\"def\":{\"widgetId\":\"test.widget\","
     + "\"instanceId\":\"iMb\",\"secretsCleared\":[\"apiToken\"],\"settings\":{\"apiToken\":\""
     + mSealed + "\"}}}]}")!;
 var mProj = JsonSerializer.Deserialize<DashboardLayout>(mProjNode.ToJsonString())!;
-LayoutStore.RestoreRetained(mProj, "test.widget", "iMb", 0, out _);
 Check("M8 a secretsCleared projection smuggled into an attic def cannot survive to clear the restored secret",
     !JsonSerializer.Serialize(mProj).Contains(SecretPolicy.ClearedMarkerKey));
 var mProjIncoming = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "iMb");
 SecretPolicy.Seal(mProjIncoming, mProj, Lookup);
-Check("M8b ...so the first save after the restore restores the credential from stored PAGES",
+Check("M8b ...so the save that seats the restored tile puts its credential back from the stored attic",
     Value(mProjIncoming, "apiToken") == mSealed, Value(mProjIncoming, "apiToken"));
 
 // M9 · the restore/stale-save interleave, driven end to end rather than asserted. A
-// restore has just landed, so the DISK has the tile live in pages and nothing in the
-// attic. The other window is stale: its pages never had the tile, its attic still lists
-// the entry, and that widget is at the cap — so its save's CapRetained evicts the
-// just-restored entry, which carries its ORIGINAL retire timestamp and is the oldest.
-// Nothing in the payload names the tile, so only the layout being OVERWRITTEN can say it
-// is live — and it is, running in front of the user.
+// restore has landed, so the DISK has the tile live in pages and nothing in the attic. A
+// stale payload (one with no generation is never refused) never had the tile on a page,
+// its attic still lists the entry, and that widget is at the cap — so its save's
+// CapRetained evicts the restored entry, which carries its ORIGINAL retire timestamp and
+// is the oldest. Nothing in the payload names the tile, so only the layout being
+// OVERWRITTEN can say it is live — and it is, running in front of the user.
 var mRaceDisk = LayoutWith(new JsonObject { ["apiToken"] = mSealed }, instanceId: "iMc");
 var mRaceStale = EmptyPages();
 mRaceStale.Retained = [Retire(new JsonObject(), "iMc", "2026-08-25T00:00:00Z")];
@@ -2191,29 +1987,6 @@ Check("M9b ...and its bucket survives, because the disk it is overwriting has th
     LayoutStore.InstancesToForget(mRaceEvicted, mRaceStale, mRaceDisk).Count == 0);
 Check("M9c ...which is load-bearing: judged on the payload alone it WOULD have been destroyed",
     LayoutStore.InstancesToForget(mRaceEvicted, mRaceStale).Count == 1);
-
-// M10 · the in-flight save an explicit Delete cannot notify. The panel serializes its
-// whole model — attic included — on every drag, so a payload built BEFORE the Delete can
-// be processed after it; the cross-window notice reaches a client that has already sent.
-// The union cannot tell that copy from a legitimate one, and the def's sealed bytes still
-// decrypt, so without the destroyed-set Delete is undone by an unrelated drag.
-var mDeleted = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = mSealed }, "iMd"));
-LayoutStore.MergeRetainedFromDisk(mDeleted, EmptyPages());
-Check("M10 setup: an ordinary stale attic entry survives the union untouched",
-    mDeleted.Retained is { Count: 1 });
-LayoutStore.MarkDestroyed("test.widget", "iMd");
-var mStale = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = mSealed }, "iMd"));
-LayoutStore.MergeRetainedFromDisk(mStale, EmptyPages());
-Check("M10b ...but one an explicit Delete destroyed is dropped from the payload",
-    mStale.Retained is { Count: 0 },
-    string.Join(", ", (mStale.Retained ?? []).Select(r => r.Def?.InstanceId)));
-Check("M10c ...and its sealed bytes leave with it, rather than riding the save back to disk",
-    !JsonSerializer.Serialize(mStale).Contains(mSealed));
-// Scoped to the identity, not the widget: another tile of the same widget is untouched.
-var mSibling = WithRetained(EmptyPages(), Retire(new JsonObject(), "iMe"));
-LayoutStore.MergeRetainedFromDisk(mSibling, EmptyPages());
-Check("M10d a sibling instance of the same widget is not swept up",
-    mSibling.Retained is { Count: 1 });
 
 // ---- D · Restore and Delete as edits of the settings editor (#226) --------------------
 // The settings window no longer acts on disk for these. Restore seats the host-masked def
@@ -2336,13 +2109,39 @@ SecretPolicy.Seal(dRestored, dRestoreDisk, SecretPlan.FromManifests(Lookup));
 Check("D4d the save puts the stored credential back on the restored tile",
     Value(dRestored, "apiToken") == rSealed, Value(dRestored, "apiToken"));
 
+// D5 · the destroyed-set. A save that landed a Delete tombstones what it destroyed
+// (SettingsWindow.SettleDeletes), so a payload built before that save cannot put the
+// deleted def back through the union, sealed bytes and all — they still decrypt, because
+// DPAPI is user-scoped rather than instance-scoped.
+var d5Sealed = SealOf("tok-destroyed");
+var d5Ordinary = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = d5Sealed }, "iD5"));
+LayoutStore.MergeRetainedFromDisk(d5Ordinary, EmptyPages());
+Check("D5 setup: an ordinary attic entry survives the union untouched",
+    d5Ordinary.Retained is { Count: 1 });
+LayoutStore.MarkDestroyed("test.widget", "iD5");
+var d5Stale = WithRetained(EmptyPages(), Retire(new JsonObject { ["apiToken"] = d5Sealed }, "iD5"));
+LayoutStore.MergeRetainedFromDisk(d5Stale, EmptyPages());
+Check("D5b ...but one a landed Delete destroyed is dropped from a payload that still carries it",
+    d5Stale.Retained is { Count: 0 },
+    string.Join(", ", (d5Stale.Retained ?? []).Select(r => r.Def?.InstanceId)));
+Check("D5c ...and its sealed bytes leave with it, rather than riding the save back to disk",
+    !JsonSerializer.Serialize(d5Stale).Contains(d5Sealed));
+var d5Sibling = WithRetained(EmptyPages(), Retire(new JsonObject(), "iD5x"));
+LayoutStore.MergeRetainedFromDisk(d5Sibling, EmptyPages());
+Check("D5d a sibling instance of the same widget is not swept up",
+    d5Sibling.Retained is { Count: 1 });
+Check("D5e the settings save tombstones what it destroyed, once the write has landed",
+    dSaveSrc is not null && System.Text.RegularExpressions.Regex.IsMatch(File.ReadAllText(dSaveSrc),
+        @"if \(landed\)\s*SettleDeletes\(destroyed\);")
+    && File.ReadAllText(dSaveSrc).Contains("LayoutStore.MarkDestroyed(widgetId, instanceId);"));
+
 // ---- E · duplicating a configured tile (#226) ---------------------------------------
 // A duplicate is a client-side add with a FRESH instanceId. It copies the credential too,
 // and asks for that explicitly with the copiedFrom marker (E5 on). WITHOUT the marker
 // nothing carries over, and E1-E4 pin that baseline: it rests entirely on the clone being
 // id-BEARING. An id-less clone would carry no identity at all, and with the positional
 // |w:0 key retired there is nothing for it to fall back to: E3 below is that loss, kept as
-// the reason the mint in duplicateSlot is not optional.
+// the reason a duplicate's mint is not optional.
 
 var eSealed = SealOf("tok-source");
 
@@ -2644,25 +2443,114 @@ SecretPolicy.Seal(lLateEdit, lPersisted, Lookup);
 Check("L5 a save keyed by an unpersisted mint still finds its credential",
     ValueAt(lLateEdit, 0, "apiToken") == lSealed, ValueAt(lLateEdit, 0, "apiToken") ?? "(removed)");
 
+// L6 · DUPLICATE ids are healed here too. Two tiles sharing one instanceId share
+// widget-local storage and a protected-store bucket, so settings on one bleed into the
+// other. The heal used to run in the dashboard shell at every boot and persist through the
+// panel's own save; the panel only displays now, so it is the host's, next to the mint.
+// Against the real Load, through the real file: the first holder keeps its id, every
+// later repeat gets one of its own — across widgets, and never one a retired tile holds.
+Console.WriteLine("\n-- L6: Load heals duplicate instance ids");
+var lDupSealed = SealOf("tok-twin");
+Func<DashboardLayout> lDupFile = () => new DashboardLayout
+{
+    Pages =
+    [
+        new LayoutPage { Name = "P", Slots = [
+            new LayoutSlot { WidgetId = "test.widget", InstanceId = "dup", Size = "quarter",
+                Settings = new JsonObject { ["apiToken"] = lDupSealed } },
+            new LayoutSlot { WidgetId = "test.widget", InstanceId = "dup", Size = "quarter",
+                Settings = new JsonObject { ["apiToken"] = lDupSealed, ["repo"] = "second" } },
+            new LayoutSlot { WidgetId = "test.widget", InstanceId = "dup-2", Size = "quarter" },
+        ] },
+        new LayoutPage { Name = "Q", Slots = [
+            // A DIFFERENT widget under the same id collides too: the question is the raw
+            // id, as SecretPolicy.AmbiguousSlots asks it.
+            new LayoutSlot { WidgetId = "other.widget", InstanceId = "dup", Size = "half" },
+        ] },
+    ],
+    // "dup-3" is taken by a retired tile, so no re-mint may land on it.
+    Retained = [Retire(new JsonObject(), "dup-3")],
+};
+File.WriteAllText(lPath, JsonSerializer.Serialize(lDupFile()));
+var lDup = LayoutStore.Load();
+var lDupIds = lDup.Pages.SelectMany(p => p.Slots).Select(s => s.InstanceId).ToList();
+Check("L6 every live slot comes out of Load with an identity of its own",
+    lDupIds.Distinct().Count() == lDupIds.Count && lDupIds.All(i => !string.IsNullOrEmpty(i)),
+    string.Join(", ", lDupIds));
+Check("L6b the FIRST holder keeps its id, and the storage it has been running under",
+    lDup.Pages[0].Slots[0].InstanceId == "dup", lDup.Pages[0].Slots[0].InstanceId);
+Check("L6c a slot whose id was never repeated is untouched",
+    lDup.Pages[0].Slots[2].InstanceId == "dup-2", lDup.Pages[0].Slots[2].InstanceId);
+Check("L6d the re-mints collide with no live id and no retired one",
+    lDupIds.Count(i => i == "dup-2") == 1 && !lDupIds.Contains("dup-3")
+        && lDup.Retained?[0].Def?.InstanceId == "dup-3",
+    string.Join(", ", lDupIds));
+Check("L6e a different widget repeating the id is re-minted too",
+    lDup.Pages[1].Slots[0].InstanceId is { } lDupOther && lDupOther != "dup",
+    lDup.Pages[1].Slots[0].InstanceId);
+Check("L6f the re-minted tile keeps its own settings, sealed credential included",
+    ValueAt(lDup, 1, "apiToken") == lDupSealed
+        && lDup.Pages[0].Slots[1].Settings?["repo"]?.GetValue<string>() == "second",
+    ValueAt(lDup, 1, "apiToken"));
+// Stable across boots: the heal reached disk, so the next read — the next start — sees
+// the same identities rather than re-minting, which would detach the tile from its storage
+// on every boot.
+var lDupAgain = LayoutStore.Load();
+var lDupAgainIds = lDupAgain.Pages.SelectMany(p => p.Slots).Select(s => s.InstanceId).ToList();
+Check("L6g a second Load gives the same ids",
+    lDupAgainIds.SequenceEqual(lDupIds), string.Join(", ", lDupAgainIds));
+Check("L6h ...because the heal was written to layout.json",
+    File.ReadAllText(lPath).Contains("\"" + lDup.Pages[0].Slots[1].InstanceId + "\""));
+// And REPRODUCIBLE when the write does not land: Load hands back the healed model either
+// way, so two reads of the same bytes must heal to the same ids (the reason L4 exists).
+var lDupRun1 = lDupFile();
+var lDupRun2 = lDupFile();
+Check("L6i the heal reports that it changed something", LayoutStore.HealDuplicateIds(lDupRun1));
+LayoutStore.HealDuplicateIds(lDupRun2);
+Check("L6j the same bytes heal to the same ids, run after run",
+    lDupRun1.Pages.SelectMany(p => p.Slots).Select(s => s.InstanceId)
+        .SequenceEqual(lDupRun2.Pages.SelectMany(p => p.Slots).Select(s => s.InstanceId))
+    && lDupRun1.Pages.SelectMany(p => p.Slots).Select(s => s.InstanceId).SequenceEqual(lDupIds),
+    string.Join(", ", lDupRun1.Pages.SelectMany(p => p.Slots).Select(s => s.InstanceId)));
+Check("L6k a healed layout heals to nothing", !LayoutStore.HealDuplicateIds(lDupRun1));
+Check("L6l a null layout is handled", !LayoutStore.HealDuplicateIds(null));
+// A live slot sharing its id with an attic entry is NOT re-keyed: that would detach a
+// working tile to settle a question about one that does not render.
+var lLiveRetired = WithRetained(LayoutWith(new JsonObject(), instanceId: "iLR"), Retire(new JsonObject(), "iLR"));
+Check("L6m a live slot is never re-minted for an attic entry's id",
+    !LayoutStore.HealDuplicateIds(lLiveRetired) && Slot(lLiveRetired).InstanceId == "iLR");
+// Debris — a slot with no widget id, which the save handler drops — is not a tile, so it
+// must not cost the real tile after it its identity.
+var lDebris = new DashboardLayout
+{
+    Pages = [new LayoutPage { Name = "P", Slots = [
+        new LayoutSlot { WidgetId = "", InstanceId = "iDb", Size = "half" },
+        new LayoutSlot { WidgetId = "test.widget", InstanceId = "iDb", Size = "half" },
+    ] }],
+};
+Check("L6n a slot with no widget id never takes an id from a real tile",
+    !LayoutStore.HealDuplicateIds(lDebris) && lDebris.Pages[0].Slots[1].InstanceId == "iDb",
+    lDebris.Pages[0].Slots[1].InstanceId);
+
 // ---- I · the eager instance-id mint (#226, #68) ------------------------------------
-// A legacy slot predates instance ids. Left alone it acquires one from shell.js on its
-// first UNRELATED on-panel edit, from a layout whose credentials are blanked — and the
-// save carrying that new id cannot find what the old identity stored. The host stamps the
+// A legacy slot predates instance ids. Left alone it acquires one from the settings
+// replica on its first UNRELATED edit, from a layout whose credentials are blanked — and
+// the save carrying that new id cannot find what the old identity stored. The host stamps the
 // identity first, on the SEALED model, so the two copies never disagree about who a slot
 // is.
 Console.WriteLine("\n-- I: eager instance-id mint (#226, #68)");
 
 var iSealed = SealOf("tok-legacy");
 
-// I0 · the defect, reproduced. This is what happens TODAY when the shell mints first: the
-// stored copy is still id-less, the incoming copy carries the shell's fresh id, SlotKey
-// refuses the mismatch it is right to refuse (#68), and the masked blank the shell
+// I0 · the defect, reproduced. This is what happens when a client mints first: the
+// stored copy is still id-less, the incoming copy carries the client's fresh id, SlotKey
+// refuses the mismatch it is right to refuse (#68), and the masked blank the client
 // round-trips lands on disk as if the user had cleared the field. If this check ever
 // starts failing, the mint below has stopped being the thing that prevents it.
 var iStoredLegacy = LayoutWith(new JsonObject { ["apiToken"] = iSealed }, instanceId: null);
 var iShellMinted = LayoutWith(new JsonObject { ["apiToken"] = "" }, instanceId: "iShellMint");
 SecretPolicy.Seal(iShellMinted, iStoredLegacy, Lookup);
-Check("I0 a shell-side mint against an id-less STORED slot destroys the credential",
+Check("I0 a client-side mint against an id-less STORED slot destroys the credential",
     ValueAt(iShellMinted, 0, "apiToken") is null, ValueAt(iShellMinted, 0, "apiToken"));
 
 // I1 · the fix. Freeze the identity on the stored copy FIRST — sealed, in place — and the
@@ -2673,7 +2561,7 @@ var iFrozenId = Slot(iStoredMinted).InstanceId;
 // The tag its widget is ALREADY running under, not a fresh one. shell.js stamps an
 // id-less slot's iframe `#ww-slot=p{page}s{slot}`, and that tag backs the widget's
 // `uniqueId` global and therefore its storage namespace — so a random id would freeze
-// the identity and orphan the widget's stored state in the same stroke. The shell's own
+// the identity and orphan the widget's stored state in the same stroke. The replica's own
 // edit-time mint adopts rec.tag for exactly this reason.
 Check("I1b ...the POSITIONAL tag its widget already runs under, not a fresh one",
     iFrozenId == "p0s0", iFrozenId);
@@ -2696,7 +2584,7 @@ var iKeep = LayoutWith(new JsonObject { ["apiToken"] = iSealed }, instanceId: "i
 Check("I3 an id-bearing slot is not touched", !LayoutStore.MintMissingIds(iKeep));
 Check("I3b ...and keeps its id verbatim", Slot(iKeep).InstanceId == "iKeepMe");
 
-// I4 · a slot with no widget id is debris — both save handlers drop it — so giving it an
+// I4 · a slot with no widget id is debris — the save handler drops it — so giving it an
 // identity would only make the debris addressable.
 var iDebris = new DashboardLayout
 {
@@ -2716,9 +2604,10 @@ Check("I5b ...so it becomes addressable at all",
 Check("I5c ...with its sealed bytes still in the def",
     RetainedValue(iAttic, 0, "apiToken") == iSealed, RetainedValue(iAttic, 0, "apiToken"));
 
-// I6 · live and retired share ONE id namespace — RestoreRetained re-mints against exactly
-// this collision — so a pass that reserved only the pages could hand a live tile a retired
-// tile's key, and the restore would then find the live slot sitting on its identity.
+// I6 · live and retired share ONE id namespace — a restore seats the retired def back
+// among the live ones — so a pass that reserved only the pages could hand a live tile a
+// retired tile's key, and the restore would then find the live slot sitting on its
+// identity.
 var iBoth = WithRetained(
     TwoInstances(new JsonObject(), new JsonObject(), null, "iLive"),
     Retire(new JsonObject(), "iRetired"));
@@ -2761,11 +2650,12 @@ Check("I7b ...as their own positions, so they are told apart",
 Check("I8 a null layout is handled", !LayoutStore.MintMissingIds(null));
 
 // ---- G · the layout generation (#281) ---------------------------------------------
-// Two windows hold the whole of layout.json and each writes it back whole, so the host
-// needs to tell a fresh payload from one built before a write it has since committed.
-// The rule is "BEHIND *and* moved by somebody ELSE", and both halves are asserted here
-// because dropping either breaks something the other cannot catch: without behind-ness
-// nothing is ever refused, and without the writer ordinary panel editing is refused.
+// The settings window holds the whole of layout.json and writes it back whole, so the
+// host needs to tell a fresh payload from one built before a write it has since
+// committed — its own identity heal on load, or a stock migration. The rule is "BEHIND
+// *and* moved by somebody ELSE", and both halves are asserted here because dropping either
+// breaks something the other cannot catch: without behind-ness nothing is ever refused,
+// and without the writer a second Save sent before the first one's ack is refused.
 //
 // Absolute generation values are deliberately never asserted — earlier cases in this file
 // write layout.json too, and a probe that depended on the counter starting at a particular
@@ -2775,63 +2665,47 @@ Console.WriteLine("\n-- G: layout generation (#281)");
 var gLayout = new DashboardLayout { Pages = [new LayoutPage { Name = "P", Slots = [] }] };
 var gStart = LayoutStore.Generation;
 
-// G1 · a payload built from the CURRENT version is fresh, whoever sent it. This is also
-// the startup case: generation 0 against generation 0, so the first save always lands.
-Check("G1 a current payload is fresh (panel)",
-    !LayoutStore.IsStale(gStart, LayoutStore.PanelWriter));
-Check("G1b a current payload is fresh (settings)",
+// G1 · a payload built from the CURRENT version is fresh. This is also the startup case:
+// generation 0 against generation 0, so the first save always lands.
+Check("G1 a current payload is fresh",
     !LayoutStore.IsStale(gStart, LayoutStore.SettingsWriter));
 
-// G2 · the panel is routinely behind ITSELF — it posts its whole model on every drag and
-// resize, and the next payload is out long before the previous ack lands. That is not
-// staleness: its own in-memory state already holds what it just saved. Refusing here would
-// make the panel uneditable, which is why the writer clause exists at all.
-Check("G2 a panel save lands", LayoutStore.Save(gLayout, LayoutStore.PanelWriter));
+// G2 · the editor can be behind ITSELF: a second Save can leave before the first one's
+// ack lands. That is not staleness — its working copy already holds what it just saved —
+// and refusing it is why the writer clause exists at all.
+Check("G2 a settings save lands", LayoutStore.Save(gLayout, LayoutStore.SettingsWriter));
 Check("G2b ...and bumps the generation by exactly one",
     LayoutStore.Generation == gStart + 1, LayoutStore.Generation.ToString());
-Check("G2c the panel's own behind payload is NOT stale",
-    !LayoutStore.IsStale(gStart, LayoutStore.PanelWriter));
-
-// G3 · the OTHER window's write is what makes it stale. This is the cross-window half of
-// every member of the family in #281.
-Check("G3 a settings save lands", LayoutStore.Save(gLayout, LayoutStore.SettingsWriter));
-Check("G3b the panel's behind payload is now stale",
-    LayoutStore.IsStale(gStart, LayoutStore.PanelWriter));
-Check("G3c ...while the settings window's own is not",
+Check("G2c the editor's own behind payload is NOT stale",
     !LayoutStore.IsStale(gStart, LayoutStore.SettingsWriter));
 
-// G4 · the case the first draft of this design got wrong, and the reason the writer is
-// the PAYLOAD SOURCE rather than the requesting window. A Restore or a Clear is performed
-// by the HOST on a window's request. Attributing it to that window would exempt the
-// window's own in-flight payload — which still carries the attic entry the Clear just
-// destroyed, because the client drops the row only on the ack — and the entry would come
-// back with DPAPI bytes that still decrypt. Every host write is therefore attributed to
-// no window, so the requester is stale against its own request.
+// G4 · a HOST write is what makes it stale. Every write the host performs on its own is
+// attributed to no window, so a payload built before it — which would write the older
+// copy back over it — is refused.
 var gBeforeHost = LayoutStore.Generation;
-Check("G4 a host-performed write lands", LayoutStore.Save(gLayout));
-Check("G4b the requesting panel is stale against the host write it asked for",
-    LayoutStore.IsStale(gBeforeHost, LayoutStore.PanelWriter));
-Check("G4c ...and so is the settings window",
+Check("G4 a host write lands", LayoutStore.Save(gLayout));
+Check("G4b a settings payload built before it is stale",
     LayoutStore.IsStale(gBeforeHost, LayoutStore.SettingsWriter));
+Check("G4c ...and one built after it, echoing the new generation, is fresh",
+    !LayoutStore.IsStale(LayoutStore.Generation, LayoutStore.SettingsWriter));
 
 // G5 · a payload carrying NO generation is accepted. Host and clients ship in one binary
 // so it should not arise; if it does, the answer is the behaviour that predates this rule
 // (last writer wins), never a window that can no longer save at all.
 Check("G5 a payload with no generation is accepted",
-    !LayoutStore.IsStale(null, LayoutStore.PanelWriter));
+    !LayoutStore.IsStale(null, LayoutStore.SettingsWriter));
 
 // G6 · a FAILED write must not bump. LayoutStore.Save swallows its exception — ordinary
-// editing triggers it on both surfaces and throwing there would take something visible
-// down — so the bump lives inside the success branch. Bumping anyway would lock the other
-// window out of a file whose content it still matches byte for byte.
+// editing triggers it and throwing there would take something visible down — so the bump
+// lives inside the success branch. Bumping anyway would lock the editor out of a file
+// whose content it still matches byte for byte.
 var gBeforeFail = LayoutStore.Generation;
 Plinth.DurableStore.FailNextWrite = true;
-Check("G6 a failed write reports failure",
-    !LayoutStore.Save(gLayout, LayoutStore.SettingsWriter));
+Check("G6 a failed write reports failure", !LayoutStore.Save(gLayout));
 Check("G6b ...and does not bump the generation",
     LayoutStore.Generation == gBeforeFail, LayoutStore.Generation.ToString());
-Check("G6c ...so the other window's payload is still fresh",
-    !LayoutStore.IsStale(gBeforeFail, LayoutStore.PanelWriter));
+Check("G6c ...so the editor's payload is still fresh",
+    !LayoutStore.IsStale(gBeforeFail, LayoutStore.SettingsWriter));
 
 // ---- B1 · which refusals the settings banner shows (#151) ---------------------------
 // A shadowed refusal's names are planned ProtectWithoutReveal for the id, so a credential

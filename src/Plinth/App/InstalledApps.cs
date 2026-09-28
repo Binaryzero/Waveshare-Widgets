@@ -95,9 +95,7 @@ internal static class InstalledApps
             .ToList();
     }
 
-    /// <summary>The same payload for either WebView. Shared so the desktop editor and the
-    /// on-device sheet cannot drift into showing different applications — the panel is the
-    /// surface that needs this most, and it is the one nobody re-checks.
+    /// <summary>The settings window's application list, as the picker receives it.
     ///
     /// <para>It carries `truncated` because the cap is otherwise invisible to the person
     /// it affects: a log line reaches the developer, while the user searching for the

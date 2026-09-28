@@ -23,18 +23,17 @@
        symptom is a widget that stopped existing. Populated by renderRejectedWidgets. -->
   <section id="rejectedWidgets" hidden></section>
 
-  <!-- The panel wrote layout.json while this editor had unsaved changes (#281). Both
-       windows hold the whole file and write it back whole, so saving from here now would
-       revert whatever the panel just did — including a tile it retired, which would come
-       back on its page with its stored credentials. Save is held until the user picks a
-       copy. Populated by renderStaleBanner. -->
+  <!-- layout.json changed on disk while this editor had unsaved changes (#281): the host
+       refused a save built on the older version. This window writes the whole file back
+       whole, so saving from here now would revert that change. Save is held until the
+       user picks a copy. Populated by renderStaleBanner. -->
   <section id="staleLayout" hidden></section>
 
   <!-- WYSIWYG surface: the real dashboard shell at native 1280×400, scaled to fit.
-       With "Edit layout" on (the default) it runs the shell's own on-panel edit
-       mode — drag to rearrange, corner buttons to resize, ✕ to remove, + to add,
-       tap a tile to configure it in the detail panel below. Nothing touches the
-       panel until Save & apply. -->
+       The panel itself only displays; this is where the layout is edited. With "Edit
+       layout" on (the default) the shell runs its edit mode here — drag to rearrange,
+       corner buttons to resize, ✕ to remove, + to add, tap a tile to configure it in the
+       detail panel below. Nothing touches the panel until Save & apply. -->
   <section id="previewWrap">
     <div id="previewBar">
       <span class="panel-title">Live preview</span>

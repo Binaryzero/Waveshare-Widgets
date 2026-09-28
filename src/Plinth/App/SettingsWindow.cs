@@ -12,7 +12,8 @@ namespace Plinth.App;
 /// <summary>
 /// The desktop settings window (opened from the tray, shown on the main monitor):
 /// a web-based editor for pages, slots, and per-widget properties that reads and
-/// writes layout.json without the user touching JSON.
+/// writes layout.json without the user touching JSON. It is the only editor: the panel
+/// only displays, and this window's save reloads it.
 /// </summary>
 public sealed class SettingsWindow : Form
 {
@@ -36,88 +37,10 @@ public sealed class SettingsWindow : Form
     /// <summary>Raised after a layout is saved so the dashboard can reload.</summary>
     public event Action? LayoutSaved;
 
-    private DashboardWindow? _dashboard;
-
-    /// <summary>The live dashboard window; routes the preview replica's widget data
-    /// requests (fetch/ping/media-list/audio-get) through the real handlers.
-    ///
-    /// <para>Assigning it also subscribes to the panel's two attic notices (#226) and to
-    /// its whole-layout one (#281) — the panel→settings half of their convergence. This editor keeps its own copy of the
-    /// attic and its own copy of the pages, and re-ships both on every save, so an attic
-    /// change made ON THE PANEL is undone by this window's next ordinary Save unless it
-    /// hears about it: a destroyed tile comes back with sealed bytes that still decrypt
-    /// (DPAPI is user-scoped, not instance-scoped), and a restored tile drops off its page
-    /// and back into the removed list. Wired through the property rather than at the tray,
-    /// because the panel window is recreated on a display change and the tray re-assigns
-    /// this in exactly that case.</para></summary>
-    public DashboardWindow? Dashboard
-    {
-        get => _dashboard;
-        set
-        {
-            if (ReferenceEquals(_dashboard, value))
-                return;
-            if (_dashboard is not null)
-            {
-                _dashboard.RetainedGone -= OnPanelRetainedGone;
-                _dashboard.RetainedRestored -= OnPanelRetainedRestored;
-                _dashboard.LayoutWritten -= OnPanelLayoutWritten;
-            }
-            _dashboard = value;
-            if (_dashboard is not null)
-            {
-                _dashboard.RetainedGone += OnPanelRetainedGone;
-                _dashboard.RetainedRestored += OnPanelRetainedRestored;
-                _dashboard.LayoutWritten += OnPanelLayoutWritten;
-            }
-        }
-    }
-
-    private void OnPanelRetainedGone(string? widgetId, string? instanceId)
-    {
-        if (IsDisposed || !IsHandleCreated)
-            return;
-        try
-        {
-            BeginInvoke(() => Post(new JsonObject
-            {
-                ["type"] = "retained-gone",
-                ["widgetId"] = widgetId,
-                ["instanceId"] = instanceId,
-                // A splice, not a re-init: this editor's model is converged by applying
-                // the drop, so it must adopt the generation of the write that caused it
-                // (#281) — otherwise its very next save is judged stale DETERMINISTICALLY,
-                // not as a race, and the flicker the splice exists to avoid arrives anyway
-                // as a refusal.
-                ["generation"] = LayoutStore.Generation,
-            }));
-        }
-        catch (ObjectDisposedException) { /* window closed between the check and the invoke */ }
-    }
-
-    /// <summary>The panel restored a tile; hand this editor the same masked def its own
-    /// Restore would have produced, so its next save carries the slot instead of writing
-    /// the pre-restore model back over it.</summary>
-    private void OnPanelRetainedRestored(DashboardWindow.RestoredTile tile)
-    {
-        if (IsDisposed || !IsHandleCreated)
-            return;
-        try
-        {
-            BeginInvoke(() =>
-            {
-                // The editor's own handler checks the page name before adopting, so a
-                // diverged page list costs the mirror, not the restore.
-                try
-                {
-                    PostRestoredAck(tile.Page, tile.PageName,
-                        tile.WidgetId, tile.RetiredInstanceId, tile.Def);
-                }
-                catch (Exception ex) { Log.Warn($"Could not mirror a panel restore: {ex.Message}"); }
-            });
-        }
-        catch (ObjectDisposedException) { /* window closed between the check and the invoke */ }
-    }
+    /// <summary>The live dashboard window, when there is one. The preview replica's widget
+    /// data requests (fetch/ping/media-list/audio-get) go through its real handlers, and
+    /// Find asks the placed widget on it (#210).</summary>
+    public DashboardWindow? Dashboard { get; set; }
 
     /// <summary>The bounds the window was placed at, re-asserted once the handle exists
     /// in case creation rescaled them (see <see cref="OnLoad"/>).</summary>
@@ -211,7 +134,6 @@ public sealed class SettingsWindow : Form
                 _hub.SensorsUpdated -= OnSensorsUpdated;
                 _hub.MediaUpdated -= OnMediaUpdated;
                 _library.Changed -= OnLibraryChanged;
-                Dashboard = null;   // drops the panel-relay subscriptions with it
             };
             core.Navigate($"https://{ShellHost}/settings.html");
         }
@@ -769,69 +691,15 @@ public sealed class SettingsWindow : Form
     /// the stored ciphertext stays in layout.json (restored on save if left untouched).
     /// </para>
     ///
-    /// <para>The baseline is the CALLER'S to set, and the two callers need different
-    /// answers, so this deliberately does not touch it. <see cref="SnapshotManifests"/>
-    /// replaces it and is only legitimate when the editor is about to adopt what comes
-    /// back; <see cref="MergeManifestSnapshot"/> only adds, which is what a masking the
-    /// editor MIGHT refuse requires. Either way it has to happen BEFORE the mask, because
+    /// <para>The baseline is the CALLER'S to set, so this deliberately does not touch it:
+    /// <see cref="SnapshotManifests"/> replaces it, which is only legitimate because the
+    /// editor is about to adopt what comes back. It has to happen BEFORE the mask, because
     /// <c>MaskedPlan</c> reads it.</para></summary>
     private JsonNode? MaskedLayoutFromDisk()
     {
         var layoutNode = JsonSerializer.SerializeToNode(LayoutStore.Load());
         SecretPolicy.Mask(layoutNode, MaskedPlan());
         return layoutNode;
-    }
-
-    /// <summary>The panel wrote layout.json (#281). Hand this editor the file, and let IT
-    /// decide what to do with it — the host cannot: "dirty" is a module-local flag in
-    /// settings.js that never crosses the bridge, and re-initing over unsaved work is the
-    /// one thing this notice must not cause.
-    ///
-    /// <para>Sent whole rather than as a diff for the same reason <c>PostRestoredAck</c>
-    /// hands back a def instead of an instruction: the masking hinges on
-    /// <c>CanUnprotect</c>, a DPAPI predicate with no JavaScript mirror, so anything the
-    /// editor is to hold has to be masked HERE.</para></summary>
-    private void OnPanelLayoutWritten()
-    {
-        if (IsDisposed || !IsHandleCreated)
-            return;
-        try
-        {
-            BeginInvoke(() =>
-            {
-                try
-                {
-                    // Nothing to mirror to before the first init: a null baseline means
-                    // this editor is not holding a masked layout yet, and PostInit will
-                    // deliver the file itself in a moment. Checked BEFORE the merge, not
-                    // left to Post's no-op, so the baseline is never moved for a message
-                    // that never goes out.
-                    if (_maskedManifests is null)
-                        return;
-                    // MERGE, never replace. A dirty editor REFUSES this layout and keeps
-                    // the one it has, which was masked with the manifests as they stood at
-                    // its init. Replacing the baseline would describe a layout nobody is
-                    // holding: if a credentialed widget has since been removed or refused,
-                    // its manifest leaves the baseline, Seal stops walking that widget's
-                    // secret fields, and the editor's masked blank is written over the
-                    // stored ciphertext on its next save. Same hazard, same answer, as the
-                    // widgets-changed path.
-                    MergeManifestSnapshot();
-                    Post(new JsonObject
-                    {
-                        ["type"] = "layout-written",
-                        ["layout"] = MaskedLayoutFromDisk(),
-                        // Adopted with the layout, in the same message, and only by an
-                        // editor that actually took it (#281). A dirty editor keeps its
-                        // own copy AND its own generation, so its Save stays refusable —
-                        // which is what the banner is for.
-                        ["generation"] = LayoutStore.Generation,
-                    });
-                }
-                catch (Exception ex) { Log.Warn($"Could not mirror a panel save: {ex.Message}"); }
-            });
-        }
-        catch (ObjectDisposedException) { /* window closed between the check and the invoke */ }
     }
 
     private void PostInit()
@@ -945,64 +813,15 @@ public sealed class SettingsWindow : Form
     private static string? AsText(JsonNode? node) =>
         node is JsonValue v && v.TryGetValue<string>(out var text) ? text : null;
 
-    /// <summary>What a save that deleted removed widgets does once its write has landed,
-    /// as the panel's Delete does (#226). Called before <see cref="LayoutSaved"/> reloads
-    /// the panel. The tombstone keeps a panel payload built before this save from shipping
-    /// a deleted entry straight back, and the notice drops it from the panel's model now
-    /// rather than at its reload. Tombstoned only where something was destroyed: an empty
-    /// forget means a live tile still owns the identity, and tombstoning it would strip
-    /// that tile's own attic entry if it is ever removed.</summary>
-    private void SettleDeletes(
-        IReadOnlyList<(string WidgetId, string InstanceId)> destroyed, IReadOnlyList<RetainedSlot> deleted)
+    /// <summary>What a save that deleted removed widgets does once its write has landed
+    /// (#226): tombstone what it destroyed, so a payload built before this save cannot ship
+    /// a deleted entry straight back. Tombstoned only where something was destroyed: an
+    /// empty forget means a live tile still owns the identity, and tombstoning it would
+    /// strip that tile's own attic entry if it is ever removed.</summary>
+    private static void SettleDeletes(IReadOnlyList<(string WidgetId, string InstanceId)> destroyed)
     {
         foreach (var (widgetId, instanceId) in destroyed)
             LayoutStore.MarkDestroyed(widgetId, instanceId);
-        foreach (var d in deleted)
-            Dashboard?.PostRetainedGone(d.Def.WidgetId, d.Def.InstanceId);
-    }
-
-    /// <summary>Hands the editor a restored slot it can hold: the def MASKED, addressed by
-    /// the identity it was retired under (the def itself may carry a re-minted one).
-    ///
-    /// <para>The wrapper is literally pages-shaped because <c>Mask</c> returns having done
-    /// NOTHING unless it finds <c>layoutNode["pages"]</c>, and a silent no-op here would
-    /// post the ciphertext into the editor's model — the exact state the host-performed
-    /// restore exists to prevent. <c>MaskedPlan</c> rather than the manifests alone,
-    /// because a retained def of a REFUSED widget carries plaintext whose only
-    /// classification lives in the redaction snapshot.</para>
-    ///
-    /// <para>One slot, so it can never look ambiguous to the mask — sound only because
-    /// <c>RestoreRetained</c> has already re-minted any id that collided with a live
-    /// tile.</para>
-    ///
-    /// <para>The page NAME rides along with the index for the same reason the request
-    /// carries it: the index addresses the layout on DISK, and this editor's page list can
-    /// diverge from that without renaming anything, so an index that still resolves there
-    /// can resolve to a different page. The client checks the name before adopting.</para>
-    /// </summary>
-    private void PostRestoredAck(
-        int page, string? pageName, string? widgetId, string? instanceId, LayoutSlot restored)
-    {
-        var wrapper = JsonSerializer.SerializeToNode(new DashboardLayout
-        {
-            Pages = [new LayoutPage { Name = "ack", Slots = [restored] }],
-        });
-        MergeManifestSnapshot();
-        SecretPolicy.Mask(wrapper, MaskedPlan());
-        Post(new JsonObject
-        {
-            ["type"] = "retained-restored",
-            ["page"] = page,
-            ["pageName"] = pageName,
-            ["widgetId"] = widgetId,
-            ["instanceId"] = instanceId,
-            ["def"] = wrapper?["pages"]?[0]?["slots"]?[0]?.DeepClone(),
-            // Adopted with the def (#281). The restore was a HOST write, so it did not
-            // make this editor the last writer; without the generation riding the splice
-            // that converges it, the editor's next save is refused for a divergence it no
-            // longer has.
-            ["generation"] = LayoutStore.Generation,
-        });
     }
 
     /// <summary>Saves the posted layout. The optional <paramref name="seq"/> is a
@@ -1050,9 +869,9 @@ public sealed class SettingsWindow : Form
 
             var disk = LayoutStore.Load();
             // The attic reconcile (#226), before Seal so unioned-in entries ride the same
-            // pipeline: this editor's copy of the attic can be stale against removals the
-            // panel retired since, and taking its list verbatim would silently drop those
-            // retained tiles — their sealed credentials with them.
+            // pipeline: this editor's copy of the attic can be stale against disk, and
+            // taking its list verbatim would silently drop the retained tiles only the disk
+            // still knows about — their sealed credentials with them.
             LayoutStore.MergeRetainedFromDisk(layout, disk);
             // ...except the ones this editor DELETED, which the merge just put back. A
             // Delete is an edit like any other here, applied by this save, so the payload
@@ -1069,10 +888,9 @@ public sealed class SettingsWindow : Form
                 SecretPolicy.ReadRetainedClearedMarkers(layoutNode),
                 SecretPolicy.ReadCopiedFromMarkers(layoutNode));
             var secretFailures = secrets.Failures;
-            // Cap the attic and destroy what fell off (#226) — same order and reasoning
-            // as the dashboard's save handler: liveness-guarded (#188), and destroy-
-            // before-Save so a failed save can strand a re-authenticating tile but never
-            // a live credential for a destroyed one.
+            // Cap the attic and destroy what fell off (#226): liveness-guarded (#188), and
+            // destroy-before-Save so a failed save can strand a re-authenticating tile but
+            // never a live credential for a destroyed one.
             var evicted = LayoutStore.CapRetained(layout);
             var forget = LayoutStore.InstancesToForget(evicted, layout, disk);
             // A Delete's derived credentials go FIRST, and fail CLOSED, unlike eviction
@@ -1082,8 +900,8 @@ public sealed class SettingsWindow : Form
             // entry on disk and this editor dirty, to try again.
             //
             // Liveness is judged by this payload alone, not by the disk's pages as for
-            // eviction. That guard is for a stale window that dropped a tile the panel still
-            // shows, and this save got past the generation check, so its pages are the
+            // eviction. That guard is for a stale payload that dropped a tile the disk still
+            // holds, and this save got past the generation check, so its pages are the
             // disk's as of the last write it saw. A deleted identity still on a disk page is
             // one the user removed and then deleted in this editor, and the guard would keep
             // its credentials for good. A payload with no generation is never refused, so it
@@ -1116,7 +934,7 @@ public sealed class SettingsWindow : Form
             }
             var landed = LayoutStore.Save(layout, LayoutStore.SettingsWriter);
             if (landed)
-                SettleDeletes(destroyed, deleted);
+                SettleDeletes(destroyed);
             LayoutSaved?.Invoke();
             // Placing a widget ends its "New" badge (#227) — once the placement is on disk.
             // A swallowed write failure placed nothing, and the badge would be gone for good.
@@ -1403,12 +1221,6 @@ public sealed class SettingsWindow : Form
     {
         if (disposing)
         {
-            // Belt and braces over the FormClosed handler, which is installed part-way
-            // through InitializeAsync: a window closed during that await, or an init that
-            // threw before reaching it, would otherwise leave the panel holding this
-            // window — and its WebView — alive through the relay delegates for the rest of
-            // the process, once per early close.
-            Dashboard = null;
             // The tray's Exit disposes an open window without closing it, so FormClosed
             // never runs and the place it was left would be lost.
             SavePlacement();

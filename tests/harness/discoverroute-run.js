@@ -10,21 +10,10 @@
 //   R4  · an answer from ANOTHER widget, quoting the right id, is ignored
 //   R5  · a question is answered once — a second answer from the same frame is dropped
 //   R6  · no handler → unsupported; unknown instance → not-placed; a throw → its message
+//   R8  · a question asked as the tile reloads is put to the new document once it is ready
 //   R7  · a widget that never answers is reported as a timeout (≈20 s)
-// On-panel property sheet:
-//   P1  · a text setting and a list field each offer Find
-//   P2  · Find lists what the widget found, label over value
-//   P3  · picking one writes the VALUE into that field and it is saved
-//   P4  · Find straight after an edit waits for the tile's reload instead of failing
-//   P5  · a setting with a declared picker offers the picker AND Find, as a text setting
-//         and as a list field
-//   P6  · Find by query: a first answer cut short at 500 sends the search to the widget
-//         once typing pauses, and lists what it answers — past the first 500; a search
-//         extending a complete answer is filtered here; an emptied search goes back to the
-//         first answer; a list that was not cut short never sends one; an answer for an
-//         older search that arrives late does not replace the latest one (P6e); a search
-//         typed before the first answer arrives is sent once it does (P6f)
-// Settings window, with a fake host:
+// Settings window, with a fake host (the only place Find is offered: the panel only
+// displays):
 //   S1  · Find asks the host with the slot's instanceId, property and field
 //   S2  · the answer is listed; picking writes the value; Save carries it
 //   S3  · no dashboard → the chooser says so, and the field stays typeable
@@ -79,12 +68,12 @@ const FINDER_HTML = `<!DOCTYPE html><meta charset="utf-8">
     if (q.property === 'fail') throw new Error('Token rejected (401)');
     if (q.property === 'slow') return new Promise((r) => setTimeout(() => r(['real']), 1500));
     if (q.property === 'never') return new Promise(() => {});
-    // More than the chooser keeps, filtered by the search when there is one (P6).
+    // More than the chooser keeps, filtered by the search when there is one.
     if (q.property === 'many') {
       const m = MANY.filter((v) => !q.query || v.includes(q.query));
-      // The older search answers late, with a row the search box's filter would keep (P6e).
+      // The older search answers late, with a row the search box's filter would keep.
       if (q.query === 'v5') return new Promise((r) => setTimeout(() => r(m.concat('late-v55')), 1500));
-      // A slow first answer, so a search can be typed before it arrives (P6f).
+      // A slow first answer, so a search can be typed before it arrives.
       if (!q.query && window.__slowFirst) return new Promise((r) => setTimeout(() => r(m), 1200));
       return m;
     }
@@ -110,13 +99,13 @@ const FINDER_PROPS = [
   { name: 'realm', label: 'Realm', type: 'text', optionsSource: 'widget' },
   { name: 'repos', label: 'Repositories', type: 'list', itemLabel: 'repository',
     fields: [{ key: 'repo', label: 'Repository', optionsSource: 'widget' }] },
-  // A declared picker and Find on one setting (P5), as a text setting and a list field.
+  // A declared picker and Find on one setting, as a text setting and a list field.
   { name: 'icon', label: 'Icon', type: 'text', picker: 'emoji', optionsSource: 'widget' },
   { name: 'links', label: 'Links', type: 'list', itemLabel: 'link',
     fields: [{ key: 'target', label: 'Target', picker: 'file', optionsSource: 'widget' }] },
   // Once a secret; the settings window's slot keeps a hidden value to restore (S4).
   { name: 'server', label: 'Server', type: 'text', optionsSource: 'widget' },
-  // More choices than the chooser keeps (P6, S5).
+  // More choices than the chooser keeps (S5).
   { name: 'many', label: 'Many', type: 'text', optionsSource: 'widget' },
 ];
 const FIND_COUNT = 6;
@@ -126,7 +115,6 @@ async function dashboard(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 400 } });
   page.on('pageerror', (e) => { failures++; console.log('[pageerror]', String(e).slice(0, 300)); });
   const hostMessages = [];
-  const saves = [];
   const serve = (route, dir, name) => {
     const file = path.join(dir, name);
     if (!file.startsWith(dir) || !fs.existsSync(file) || !fs.statSync(file).isFile())
@@ -157,7 +145,6 @@ async function dashboard(browser) {
   await page.exposeFunction('__rec', async (j) => {
     const m = JSON.parse(j);
     hostMessages.push(m);
-    if (m.type === 'save-layout') saves.push(JSON.parse(JSON.stringify(m.layout)));
     if (m.type === 'ready') {
       page.evaluate((d) => window.__push(d), JSON.stringify({ type: 'init', data: {
         layout, widgets, sensors: [], status: { elevated: false, version: 'probe' },
@@ -214,122 +201,16 @@ async function dashboard(browser) {
   check('R6 a throw → the widget\'s message',
     answers('h5')[0] && answers('h5')[0].error === 'widget' && answers('h5')[0].message === 'Token rejected (401)', JSON.stringify(answers('h5')));
 
-  // ---- on-panel property sheet
-  // Two half tiles fill the page, so the edit button sits under a widget frame here; the
-  // click is dispatched on it rather than at its coordinates.
-  await page.evaluate(() => document.getElementById('editBtn').click());
-  await wait(250);
-  await page.locator('.slot').first().locator('.edit-overlay .gear').click();
-  await wait(300);
-  const finds = page.locator('#psRows .ps-find');
-  check('P1 every text setting and list field that declares it offers Find', await finds.count() === FIND_COUNT, String(await finds.count()));
-  const pickerAndFind = await page.evaluate(() => [...document.querySelectorAll('#psRows .ps-inline')]
-    .filter((w) => w.querySelector('.ps-find') && [...w.querySelectorAll('button')].some((b) => !b.classList.contains('ps-find')))
-    .map((w) => [...w.querySelectorAll('button')].map((b) => b.textContent).join(' ')));
-  check('P5 a declared picker is offered beside Find, not replaced by it (text setting and list field)',
-    pickerAndFind.length === 2 && /😀/.test(pickerAndFind.join('|')) && /🗂/.test(pickerAndFind.join('|')), JSON.stringify(pickerAndFind));
-  if (await finds.count() === FIND_COUNT) {
-    await finds.nth(1).click();   // the list field (Repositories comes after Realm)
-    await wait(500);
-    const sheet = page.locator('.ps-discover');
-    const rows = sheet.locator('.ps-apps-list button');
-    const texts = await rows.allTextContents();
-    check('P2 Find lists what the widget found, label over value',
-      texts.length === 2 && texts[0] === 'Oneocto/one' && texts[1] === 'octo/two', JSON.stringify(texts));
-    if (texts.length) await rows.first().click();
-    await wait(1200);
-    const rowInput = page.locator('#psRows .ps-item').first().locator('input').first();
-    const shown = await rowInput.inputValue();
-    const last = saves.length ? saves[saves.length - 1] : null;
-    const savedRepos = last ? last.pages[0].slots[0].settings.repos : null;
-    check('P3 picking writes the VALUE into that field, and it is saved',
-      shown === 'octo/one' && Array.isArray(savedRepos) && savedRepos[0] && savedRepos[0].repo === 'octo/one',
-      JSON.stringify({ shown, savedRepos, saves: saves.length }));
-    await finds.nth(0).click();
-    await wait(500);
-    const realms = await page.locator('.ps-discover .ps-apps-list button').allTextContents();
-    check('P3 ...and a top-level text setting gets its own answer', JSON.stringify(realms) === '["Silvermoon","Argent Dawn"]', JSON.stringify(realms));
-    await page.locator('.ps-discover .ps-apps-head .ps-pick').click().catch(() => {});
-
-    // P4 · Find straight after an edit. The sheet applies the edit first, which reloads
-    // the tile; the question has to wait for the new document, not be refused.
-    const realmInput = page.locator('#psRows .ps-inline').filter({ has: page.locator('.ps-find') }).first().locator('input');
-    await realmInput.fill('Draenor');
-    await finds.nth(0).click();          // inside the 400 ms apply debounce
-    await wait(2500);
-    const afterEdit = await page.locator('.ps-discover .ps-apps-list button').allTextContents();
-    const status4 = await page.locator('.ps-discover .ps-apps-status').textContent().catch(() => '');
-    const lastAsk = await finder.evaluate(() => window.__asked[window.__asked.length - 1] || null).catch(() => null);
-    check('P4 Find right after an edit waits for the reload and asks with the edited settings',
-      JSON.stringify(afterEdit) === '["Silvermoon","Argent Dawn"]' && lastAsk && lastAsk.realmSetting === 'Draenor',
-      JSON.stringify({ afterEdit, status4, lastAsk }));
-    await page.locator('.ps-discover .ps-apps-head .ps-pick').click().catch(() => {});
-
-    // P6 · Find by query on the panel.
-    await wait(600);
-    const askedCount = () => finder.evaluate(() => window.__asked.length);
-    const lastQuery = () => finder.evaluate(() => (window.__asked[window.__asked.length - 1] || {}).query);
-    await finds.nth(5).click();
-    await wait(600);
-    const sheetRows = page.locator('.ps-discover .ps-apps-list button');
-    const sheetSearch = page.locator('.ps-discover .ps-apps-head input');
-    const firstCount = await sheetRows.count();
-    const firstStatus = await page.locator('.ps-discover .ps-apps-status').textContent().catch(() => '');
-    check('P6 setup: the first answer is cut at 500 and says so',
-      firstCount === 500 && /first 500/.test(firstStatus || ''), JSON.stringify({ firstCount, firstStatus }));
-    const before = await askedCount();
-    await sheetSearch.fill('v55');
-    await wait(900);
-    const found = await sheetRows.allTextContents();
-    check('P6 a search is sent to the widget, and what it answers is listed — past the first 500',
-      await askedCount() === before + 1 && await lastQuery() === 'v55'
-        && found.length === 10 && found[0] === 'v550' && found.includes('v559'),
-      JSON.stringify({ asked: (await askedCount()) - before, query: await lastQuery(), found: found.length }));
-    await sheetSearch.fill('v559');
-    await wait(900);
-    const narrowed = await sheetRows.allTextContents();
-    check('P6b a search that extends a complete answer is filtered here, without asking again',
-      await askedCount() === before + 1 && JSON.stringify(narrowed) === '["v559"]',
-      JSON.stringify({ asked: (await askedCount()) - before, narrowed }));
-    await sheetSearch.fill('');
-    await wait(900);
-    check('P6c an emptied search goes back to the first answer, without asking again',
-      await askedCount() === before + 1 && await sheetRows.count() === 500,
-      JSON.stringify({ asked: (await askedCount()) - before, rows: await sheetRows.count() }));
-    await sheetSearch.fill('v5');
-    await wait(600);                     // the 'v5' search has gone out; its answer is slow
-    await sheetSearch.fill('v55');
-    await wait(700);                     // the 'v55' search has gone out and been answered
-    const latest = await sheetRows.allTextContents();
-    await wait(1500);                    // 'v5' answers now, late
-    const afterLate = await sheetRows.allTextContents();
-    check('P6e a late answer for an older search does not replace the latest one',
-      latest.length === 10 && JSON.stringify(afterLate) === JSON.stringify(latest) && !afterLate.includes('late-v55'),
-      JSON.stringify({ latest: latest.length, afterLate: afterLate.length }));
-    await page.locator('.ps-discover .ps-apps-head .ps-pick').click().catch(() => {});
-    await finds.nth(0).click();
-    await wait(600);
-    const realmAsks = await askedCount();
-    await page.locator('.ps-discover .ps-apps-head input').fill('Sil');
-    await wait(900);
-    check('P6d a list that was not cut short never sends a search',
-      await askedCount() === realmAsks && JSON.stringify(await sheetRows.allTextContents()) === '["Silvermoon"]',
-      JSON.stringify({ asked: (await askedCount()) - realmAsks }));
-    await page.locator('.ps-discover .ps-apps-head .ps-pick').click().catch(() => {});
-
-    // P6f · type the search while the first answer is still on its way.
-    await finder.evaluate(() => { window.__slowFirst = true; });
-    await finds.nth(5).click();
-    await wait(150);
-    await page.locator('.ps-discover .ps-apps-head input').fill('v55');
-    await wait(2600);
-    const early = await sheetRows.allTextContents();
-    check('P6f a search typed before the first answer arrives is sent once it does',
-      await lastQuery() === 'v55' && early.length === 10 && early.includes('v559'),
-      JSON.stringify({ query: await lastQuery(), rows: early.length }));
-    await finder.evaluate(() => { window.__slowFirst = false; });
-    await page.locator('.ps-discover .ps-apps-head .ps-pick').click().catch(() => {});
-  }
+  // R8 · the tile reloads while a question is open. The document that was asked is gone
+  // and cannot answer; the shell hands the open question to the new one on its ww-ready.
+  await ask({ id: 'h7', instanceId: 'f1', property: 'slow' });
+  await wait(200);
+  await finder.evaluate(() => location.reload());
+  await wait(3000);
+  const a7 = answers('h7');
+  check('R8 a question asked as the tile reloads is answered by the new document, once',
+    a7.length === 1 && a7[0].ok === true && JSON.stringify(a7[0].options) === JSON.stringify([{ value: 'real', label: 'real' }]),
+    JSON.stringify(a7));
 
   // R7 last: it waits out the shell's 20 s.
   await ask({ id: 'h6', instanceId: 'f1', property: 'never' });
