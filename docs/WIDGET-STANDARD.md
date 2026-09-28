@@ -250,8 +250,11 @@ each one that exists uses the standard classes so widgets read as one family.
    </div>
    ```
 4. **Footer meta** — only when it says something: a Stale or Partial marker with its
-   age, the elevation hint (see the stock CPU widget's PawnIO note). "Updated 0m ago" on
-   a healthy tile is small print nobody needs; leave the footer hidden then.
+   age, rows it had no room to show, the elevation hint (see the stock CPU widget's PawnIO
+   note), a credit the data's licence asks for. Freshness belongs there only where the
+   age is part of reading the data — a poll minutes or hours apart (the REST value, the
+   GitHub queue). "Updated 0m ago" on a live tile is small print nobody needs; leave the
+   footer hidden then.
 5. **State layer** — a `.state-card` (or bare `.spinner`) that replaces the body while
    the widget is loading, unconfigured, or broken. See [§5](#5--required-states).
 6. **Touch affordances** — `.btn` (and `.btn.primary`) for anything tappable. See
