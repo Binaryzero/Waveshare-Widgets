@@ -6,28 +6,31 @@
 <link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
   /* Layout only — colors, background, bgStyle and the typography base come from
-   * widget-base.css. State hues map to the --ok/--warn/--err tokens. */
+   * widget-base.css. State hues map to the --ok/--warn/--err tokens.
+   * No header: the cards start at the top of the tile, and the host count it carried is
+   * the number of cards. Type, and the spacing between lines of it, is its size at the
+   * smallest tile (a 320x200 band) times the tile scale (--ts, widget-base.css). */
   body { display: flex; flex-direction: column; padding: 12px 16px 10px; }
   #grid {
     display: grid;
-    gap: 8px;
-    padding-top: 8px;
+    gap: calc(5px * var(--ts));
     flex: 1 1 auto;
     min-height: 0;
   }
   .host {
     position: relative;
     border-radius: var(--radius-control);
-    padding: 6px 10px 4px;
+    padding: calc(4px * var(--ts)) calc(7px * var(--ts)) calc(3px * var(--ts));
     display: flex;
     flex-direction: column;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+    container-type: inline-size;
   }
-  .host .top { display: flex; align-items: baseline; gap: 8px; }
+  .host .top { display: flex; align-items: baseline; gap: calc(5px * var(--ts)); min-width: 0; }
   .host .dot {
-    width: 9px; height: 9px; border-radius: 50%;
+    width: calc(6px * var(--ts)); height: calc(6px * var(--ts)); border-radius: 50%;
     flex: none; align-self: center;
     background: var(--text-dim);
   }
@@ -36,17 +39,21 @@
   .host .dot.bad  { background: var(--err); box-shadow: 0 0 6px var(--err); }
   .host .name {
     color: var(--text-muted);
-    font-size: calc(clamp(8px, 3vh, 11px) * var(--label-scale, 1));
+    font-size: calc(8px * var(--ts) * var(--label-scale, 1));
     font-weight: 600;
     letter-spacing: 0.2em;
     text-transform: uppercase;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    flex: 1;
+    flex: 1; min-width: 0;
   }
+  /* 20px, not the 15px floor the old clamp had at the smallest tile: on a 400px-tall tile
+   * that clamp gave 26px, and 15px times the tile scale would have made the number
+   * SMALLER there than it was. */
   .host .rtt {
-    font-size: calc(clamp(15px, 6.5vh, 30px) * var(--value-scale, 1));
+    font-size: calc(20px * var(--ts) * var(--value-scale, 1));
     font-weight: 600;
     line-height: normal;
+    white-space: nowrap;
   }
   .host .rtt small { font-size: 55%; font-weight: 400; color: var(--text-muted); }
   /* Status colors come straight from the theme's state tokens. */
@@ -56,18 +63,23 @@
   .host .rtt.down { color: var(--text-dim); }
   .host .loss {
     color: var(--text-muted);
-    font-size: calc(clamp(8px, 2.4vh, 11px) * var(--label-scale, 1));
-    white-space: nowrap;
+    font-size: calc(9px * var(--ts) * var(--label-scale, 1));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* A narrow card (a quarter tile, or many hosts): the name and the number on one line
+   * leave the name two letters, so the number takes a line of its own under it. em here
+   * is the card's text size, so the break point grows with the text. */
+  @container (max-width: 9em) {
+    .host .top { flex-wrap: wrap; row-gap: 0; }
+    .host .name { flex: 1 1 calc(100% - 12px * var(--ts)); }
   }
   .host canvas { position: absolute; inset: auto 0 0 0; width: 100%; height: 38%; opacity: 0.85; }
+  /* The text over the sparkline, not under it: in a short card the bars reach the lines. */
+  .host .top, .host .loss { position: relative; z-index: 1; }
   #message { position: fixed; inset: 0; }
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker">Ping</span>
-    <span class="st" id="hostCount" hidden></span>
-  </header>
   <div id="grid"></div>
   <div class="state-card" id="message" hidden>
     <div class="state-icon">◎</div>
@@ -160,15 +172,9 @@
     grid.textContent = '';
     cards = new Map();
     msg.hidden = !!cfg.targets.length;
-    const count = document.getElementById('hostCount');
-    count.hidden = !cfg.targets.length;
-    count.textContent = cfg.targets.length + (cfg.targets.length === 1 ? ' host' : ' hosts');
     if (!cfg.targets.length) return;
 
-    // Column count that keeps cards usable at any slot size/aspect.
-    const n = cfg.targets.length;
-    const cols = n <= 2 ? n : n <= 4 ? 2 : n <= 9 ? 3 : 4;
-    grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+    applyColumns();
 
     for (const t of cfg.targets) {
       const card = document.createElement('div');
@@ -193,6 +199,28 @@
       cards.set(t.host, { dot, rtt, loss, canvas });
       if (!history.has(t.host)) history.set(t.host, []);
     }
+  }
+
+  // Column count that keeps cards usable at any slot size/aspect: from the host count AND
+  // the tile's shape, the arrangement whose cards come closest to 2:1, with empty cells
+  // counted against it. By count alone, three hosts were two-and-one everywhere — a
+  // card-sized hole across a full-width band, and cards too narrow for their name beside
+  // their number down a quarter tile — and the text now grows with the tile, which makes a
+  // narrow card narrower still. Re-applied on resize: the on-panel editor resizes a slot in
+  // place, with no second init.
+  function applyColumns() {
+    const n = cfg.targets.length;
+    if (!n) return;
+    const grid = document.getElementById('grid');
+    const w = grid.clientWidth || window.innerWidth;
+    const h = grid.clientHeight || window.innerHeight;
+    let cols = 1, best = Infinity;
+    for (let c = 1; c <= Math.min(n, 8); c++) {
+      const rows = Math.ceil(n / c);
+      const score = Math.abs(Math.log((w / c) / (h / rows) / 2)) + 1.5 * (c * rows - n) / (c * rows);
+      if (score < best - 1e-6) { best = score; cols = c; }
+    }
+    grid.style.gridTemplateColumns = 'repeat(' + cols + ', minmax(0, 1fr))';
   }
 
   async function poll() {
@@ -286,7 +314,7 @@
     ctx.globalAlpha = 1;
   }
 
-  window.addEventListener('resize', () => { for (const host of cards.keys()) renderCard(host); });
+  window.addEventListener('resize', () => { applyColumns(); for (const host of cards.keys()) renderCard(host); });
 
 </script>
 </body>

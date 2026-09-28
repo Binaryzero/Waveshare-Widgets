@@ -92,7 +92,9 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   no stacked pollers across repeated inits, and that a configured auth header reaches
   the request while appearing nowhere in the DOM. RP (#59): a private endpoint, stored as
   a secret, is fetched instead of the plain one when set, is part of the tile's source
-  identity, and falls back to the plain one when cleared. Also writes the populated
+  identity, and falls back to the plain one when cleared. RL (beta.21, no header): the
+  user's title sits over the value, nothing stands in for a missing one, and an error card
+  with no reading behind it still names the reading. Also writes the populated
   `restvalue-*.png` screenshots. Routes are fulfilled in-process — no ports.
 - `nextfetch-run.js` — three scheduling/rendering follow-ups on the Next Event widget
   (issue #180). All three are timing bugs the real-time probes on that PR could not place
@@ -342,28 +344,30 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   (G6b), so the check cannot pass by measuring a widget that never drew. Without this file the
   sweep's "all clear" could mean "measured nothing" and no test on this head would tell the
   difference.
-- `pillquiet-run.js` — the header pill reports exceptions, not health (issue #205). Every
+- `pillquiet-run.js` — the pill reports exceptions, not health (issue #205). Every
   stock tile carried a permanent corner badge reading LIVE, ALL UP, CLEAR, QUIET, LOADED
   or SCHEDULED: true from the moment the widget worked until the moment it stopped, on
   every tile at once. A badge that is always there is furniture, and it teaches the reader
   to skip the one corner a widget has to speak from. The rule is now hidden-while-healthy,
   which means the check has to run BOTH ways or it is satisfied by deleting the pill
-  outright — so two cases assert the nominal word is gone and two assert a degraded render
-  still shows one. It drives `widget-datapath.js` rather than Playwright directly, and
-  leans on `--reject` matching `innerText`, which omits hidden elements. `endpoints` and
-  `ollama` carry it because their stock fixtures reach both a healthy and a degraded render
-  without credentials; the other six widgets the rule changed are covered for rendering by
-  the stock sweep but are **not** asserted here, which the file says out loud rather than
+  outright — so two cases assert the nominal word (and, since beta.21, the exception words)
+  is gone and two assert a degraded render still shows one. It drives `widget-datapath.js`
+  rather than Playwright directly, and leans on `--reject` matching `innerText`, which
+  omits hidden elements — so the cases follow the pill wherever it lives, which since the
+  headers went (beta.21) is a footer shown only for an exception (endpoints' down count,
+  ollama's Stale) or beside the data (ollama's Idle). `endpoints` and `ollama` carry it
+  because their stock fixtures reach both a healthy and a degraded render without
+  credentials; the other six widgets the rule changed are covered for rendering by the
+  stock sweep but are **not** asserted here, which the file says out loud rather than
   implying coverage it does not have. Those four cases each launch their own
-  `widget-datapath.js`, so the degraded ones start from a pill that was never hidden — they
-  prove the hiding and nothing about recovery. R1-R3 add the half they cannot reach: one
-  mounted `ollama`, driven healthy (pill hidden) → address changed (pill must return) →
-  new address answering (pill quiet again), so R2 cannot be satisfied by a badge that is
-  simply stuck on. `reset()` calls `showLoading()` and then fails into `showError()`, which
-  makes those two `pill.hidden = false` assignments redundant with each other — deleting
-  either alone leaves R2 green and deleting both fails it with `{"hidden":true,
-  "text":"Error"}`, an error card with an empty corner. R2 falsifies the pair, not either
-  member, and the file says so because the obvious single-line revert does not turn it red.
+  `widget-datapath.js`, so the degraded ones never follow a healthy render — they prove the
+  hiding and nothing about recovery. R1-R5 add the half they cannot reach: one mounted
+  `ollama`, driven healthy (pill hidden) → address changed (R2: the state card replaces the
+  data, and no pill repeats it — Loading and Error have had no pill since the header went,
+  which is why R2 no longer asks for one) → new address answering (R3: data back, card
+  gone) → a failed poll (R4: Stale comes back from hidden) → answering again (R5: Stale
+  goes). R4 and R5 are what keep the pill-comes-back guarantee now that Stale is the only
+  pill left.
 - `widgetswipe-run.js` — a swipe that starts inside a widget pages the dashboard (#257), and
   a drift on the way to a tap still does not (#206). The two pull opposite ways and
   `touch-action` cannot serve both: #206 made scrolling lists `pan-y` and controls `.no-pan`
