@@ -5,7 +5,9 @@
 <title>GPU Monitor</title>
 <link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
-  /* Layout only — colors, background, typography basics come from widget-base.css. */
+  /* Layout only — colors, background, typography basics come from widget-base.css.
+   * Type is the size each role had at the smallest tile (a 320x200 band) times the
+   * tile scale (--ts, widget-base.css), so a bigger tile reads bigger. */
   body {
     display: flex;
     flex-direction: column;
@@ -15,48 +17,68 @@
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
-    /* Wrap, don't clip: a quarter slot at a 200% value scale cannot hold four
-     * readouts in one row, so they reflow onto a second. */
-    flex-wrap: wrap;
-    align-content: center;
-    align-items: center;
-    justify-content: space-evenly;
-    gap: 4% 6%;
-    margin-top: 2%;
+    flex-direction: column;
+    justify-content: center;
+    gap: calc(8px * var(--ts));
+    /* The readouts are sized in this em: the tile's scale times the user's size, held
+     * to 7.2vh so two rows of them fit a 200px band even at 200%. The container query
+     * below counts the room for four in the same unit. */
+    container-type: inline-size;
+    font-size: min(calc(10px * var(--ts) * var(--value-scale, 1)), 7.2vh);
   }
+  /* The four readouts: one line of four where they fit, otherwise two and two — load
+   * and temp, then clock and VRAM — rather than a free wrap that strands one on a line
+   * of its own. Four need about 22em with their gaps: a quarter tile has 19 to 22, a
+   * half tile 31 to 41, so the break comes on a quarter tile, and on a half tile at a
+   * 200% size. Wrap, don't clip: a pair too wide for its line still wraps. */
+  #stats {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: calc(3px * var(--ts)) calc(12px * var(--ts));
+  }
+  #stats .brk { display: none; flex-basis: 100%; height: 0; }
+  @container (max-width: 26em) { #stats .brk { display: block; } }
+  .stat { min-width: 0; }
   .stat .val {
-    font-size: calc(clamp(18px, 9vh, 44px) * var(--value-scale, 1));
+    font-size: 2.8em;
     color: var(--text);
     font-weight: 700;
     line-height: 1;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
   .stat .val .unit { font-size: 45%; font-weight: 500; color: var(--text-muted); }
   .stat .label {
-    margin-top: 4px;
-    font-size: calc(clamp(8px, 2.6vh, 10px) * var(--label-scale, 1));
+    margin-top: calc(3px * var(--ts));
+    font-size: calc(8px * var(--ts) * var(--label-scale, 1));
   }
   /* Secondary pair reads a step smaller than the load/temp pair. */
-  #cols { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-evenly; gap: 4% 6%; flex: 1 1 auto; }
-  .stat.minor .val { font-size: calc(clamp(14px, 6.5vh, 30px) * var(--value-scale, 1)); }
+  .stat.minor .val { font-size: 2em; }
+  /* Which GPU this is — the context the old header carried, kept because a machine can
+   * have two (an iGPU beside the card) and a tile for each. */
+  #device {
+    font-size: calc(12px * var(--ts)); font-weight: 500; color: var(--text-muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   #loadScale { margin-top: auto; }
+  /* No GPU reported anything: the state card replaces the readouts and the ruler. */
+  #state { position: fixed; inset: 0; }
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker">GPU</span>
-    <span class="st" id="device"></span>
-  </header>
   <div id="main">
-    <div class="stat">
-      <div class="val value" id="load">--</div>
-      <div class="label kicker">Load</div>
-    </div>
-    <div class="stat">
-      <div class="val value" id="temp">--</div>
-      <div class="label kicker">Temp</div>
-    </div>
-    <div id="cols">
+    <div id="stats">
+      <div class="stat">
+        <div class="val value" id="load">--</div>
+        <div class="label kicker">Load</div>
+      </div>
+      <div class="stat">
+        <div class="val value" id="temp">--</div>
+        <div class="label kicker">Temp</div>
+      </div>
+      <i class="brk"></i>
       <div class="stat minor">
         <div class="val value" id="clock">--</div>
         <div class="label kicker">Clock</div>
@@ -66,6 +88,7 @@
         <div class="label kicker">VRAM</div>
       </div>
     </div>
+    <div id="device"></div>
   </div>
   <!-- Load is the tile's natural axis: 0-100, fill and cursor at now. -->
   <div class="scale" id="loadScale" style="--pitch: 4%">
@@ -77,6 +100,12 @@
     <div class="mj e-r" style="left:100%"><b>100</b></div>
     <div class="fill" id="loadFill" style="width:0%"></div>
     <div class="cur" id="loadCur" style="left:0%"></div>
+  </div>
+  <div class="state-card" id="state" hidden>
+    <div class="state-icon">?</div>
+    <div class="state-title">No GPU sensors found</div>
+    <div class="state-body">No NVIDIA, AMD or Intel graphics driver reported a load, temperature
+      or clock. A sensor named differently can be picked in the widget's settings.</div>
   </div>
 
 <script src="https://app.plinth/widget-api.js"></script>
@@ -122,8 +151,13 @@
     setStat('clock', clock, 0, 'MHz');
     setStat('vram', vram, 0, '%');
 
+    // Nothing to show is a state, not a row of dashes under a corner note: the card
+    // says so and the readouts come back with the first sensor.
     const any = load || temp || clock;
-    document.getElementById('device').textContent = any ? any.device : 'No GPU sensors found';
+    document.getElementById('device').textContent = any ? any.device || '' : '';
+    document.getElementById('state').hidden = !!any;
+    document.getElementById('main').hidden = !any;
+    document.getElementById('loadScale').hidden = !any;
   });
 
   function setStat(id, sensor, decimals, unit) {

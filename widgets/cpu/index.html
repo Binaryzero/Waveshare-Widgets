@@ -5,7 +5,9 @@
 <title>CPU Monitor</title>
 <link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
-  /* Layout only — colors, background, typography basics come from widget-base.css. */
+  /* Layout only — colors, background, typography basics come from widget-base.css.
+   * Type is the size each role had at the smallest tile (a 320x200 band) times the
+   * tile scale (--ts, widget-base.css), so a bigger tile reads bigger. */
   body {
     display: flex;
     flex-direction: column;
@@ -18,11 +20,13 @@
     align-items: center;
     justify-content: space-between;
     gap: 6%;
-    margin-top: 2%;
   }
   #bigs { display: flex; flex-direction: column; gap: 7%; justify-content: center; }
+  /* The user's size multiplies the tile's. The 20vh cap is for the 200px bands, where
+   * two readouts stack in 150px: it holds the wider bands to 40px, and a 200% size
+   * inside the band. */
   .stat .val {
-    font-size: calc(clamp(18px, 9vh, 44px) * var(--value-scale, 1));
+    font-size: min(calc(28px * var(--ts) * var(--value-scale, 1)), 20vh);
     color: var(--text);
     font-weight: 700;
     line-height: 1;
@@ -30,22 +34,28 @@
   }
   .stat .val .unit { font-size: 45%; font-weight: 500; }
   .stat .label {
-    margin-top: 4px;
-    font-size: calc(clamp(8px, 2.6vh, 10px) * var(--label-scale, 1));
+    margin-top: calc(3px * var(--ts));
+    font-size: calc(8px * var(--ts) * var(--label-scale, 1));
   }
   /* Per-core bars: the demo's chart — a hairline frame, one bar per core, the
-   * hottest core carried in the alert amber. */
-  #coresWrap { flex: 1 1 auto; min-width: 0; height: 88%; display: flex; gap: 8px; }
+   * hottest core carried in the alert amber. The axis shares the bars' row, so its
+   * 100 and 0 sit level with the frame whatever the text size; the row under the
+   * bars holds the per-core values, or the core count when the bars are capped. */
+  #coresWrap {
+    flex: 1 1 auto; min-width: 0; height: 88%;
+    display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto;
+    column-gap: calc(6px * var(--ts));
+  }
   #axis {
+    grid-area: 1 / 1;
     display: flex; flex-direction: column; justify-content: space-between;
-    font-size: 8px; font-weight: 500; letter-spacing: 0.12em;
+    font-size: calc(8px * var(--ts)); font-weight: 500; letter-spacing: 0.12em; line-height: 1;
     color: var(--text-dim); text-align: right;
     font-variant-numeric: tabular-nums;
-    padding-bottom: 11px;
   }
-  #chart { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
   #bars {
-    flex: 1 1 auto; min-height: 0;
+    grid-area: 1 / 2;
+    min-height: 0;
     display: flex; align-items: flex-end; justify-content: space-around; gap: 4px;
     border-bottom: 1px solid var(--line);
     position: relative;
@@ -55,7 +65,7 @@
     border-top: 1px dashed var(--line); opacity: 0.5;
   }
   #bars b {
-    width: 13px; max-width: 9%;
+    width: calc(10px * var(--ts)); max-width: 9%;
     background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.85), rgba(var(--accent-rgb), 0.38));
     box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.22);
     transition: height 0.35s var(--ease);
@@ -65,12 +75,16 @@
     box-shadow: 0 0 8px color-mix(in srgb, var(--warn) 40%, transparent);
   }
   #coreVals {
+    grid-area: 2 / 2;
     display: flex; justify-content: space-around; gap: 4px;
-    font-size: 8px; font-weight: 500; letter-spacing: 0.08em;
+    font-size: calc(8px * var(--ts)); font-weight: 500; letter-spacing: 0.08em; line-height: 1;
     color: var(--text-dim); font-variant-numeric: tabular-nums;
-    padding-top: 3px; flex: none;
+    padding-top: calc(3px * var(--ts));
   }
-  #coreVals span { width: 13px; max-width: 9%; text-align: center; }
+  #coreVals span { width: calc(10px * var(--ts)); max-width: 9%; text-align: center; }
+  /* Only when the bars are capped: the chart shows the first sixteen, and this says
+   * how many there are, so a 24-core machine is not read as a 16-core one. */
+  #coreCount { grid-area: 2 / 2; justify-self: end; padding-top: calc(3px * var(--ts)); white-space: nowrap; }
   /* A 320px quarter cannot hold the bar chart beside the stats — sixteen bars
    * carry 60px of gaps alone, before the axis. There the stats and the load
    * ruler are the tile's whole story, as in the other quarter layouts. */
@@ -79,10 +93,6 @@
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker">CPU</span>
-    <span class="st" id="coreCount" hidden></span>
-  </header>
   <div id="main">
     <div id="bigs">
       <div class="stat">
@@ -96,10 +106,9 @@
     </div>
     <div id="coresWrap" hidden>
       <div id="axis"><span>100</span><span>50</span><span>0</span></div>
-      <div id="chart">
-        <div id="bars"></div>
-        <div id="coreVals"></div>
-      </div>
+      <div id="bars"></div>
+      <div id="coreVals"></div>
+      <div class="kicker" id="coreCount" hidden></div>
     </div>
   </div>
   <!-- Load is the tile's natural axis: 0-100, fill and cursor at now. -->
@@ -188,9 +197,8 @@
 
     // Per-core bars, hottest core in amber. Enumerated from the sensor list — on a
     // machine that exposes no per-core loads the whole chart stays hidden.
-    // The count and the hottest core come from the FULL list; only the bars are
-    // capped — a 24-core machine reports 24 cores and its true hottest even when
-    // just 16 bars fit.
+    // Only the bars are capped: a 24-core machine shows 16 bars, and the line under
+    // them says "16 of 24 cores" so the chart is not read as the whole CPU.
     const allCores = WW.sensors
       .filter((x) => x.type === 'Load' && /core #?\d+/i.test(x.name || '') && x.value != null)
       .sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true }));
@@ -199,17 +207,20 @@
     // has usable data, and one bar beats a blank pane.
     const wrap = document.getElementById('coresWrap');
     wrap.hidden = !cores.length;
+    // The count says only what the bars cannot. Uncapped, the bars ARE the count, and
+    // a line repeating it was the corner text the owner asked to lose.
     const count = document.getElementById('coreCount');
-    count.hidden = !cores.length;
+    const capped = allCores.length > cores.length;
+    count.hidden = !capped;
+    count.textContent = capped ? cores.length + ' of ' + allCores.length + ' cores' : '';
     if (cores.length) {
-      count.textContent = allCores.length + (allCores.length === 1 ? ' core' : ' cores');
       const bars = document.getElementById('bars');
       const vals = document.getElementById('coreVals');
       bars.textContent = '';
       vals.textContent = '';
       // The amber marks the hottest VISIBLE bar — marking a bar for an off-chart
       // core would point at the wrong column, and no mark at all reads as "none
-      // hot". The count above still tells the whole truth.
+      // hot". The count under the bars still tells the whole truth.
       const hottest = cores.reduce((m, c) => (c.value > m.value ? c : m), cores[0]);
       const showVals = cores.length <= 8;
       for (const core of cores) {

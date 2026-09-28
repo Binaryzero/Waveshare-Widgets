@@ -6,37 +6,48 @@
 <link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
   /* Layout only — tokens, background/bgStyle handling, typography base and the
-   * .card/.state-card/.meter anatomy come from widget-base.css. */
+   * .card/.state-card/.meter anatomy come from widget-base.css. Type is the size each
+   * role had at the smallest tile (a 320x200 band) times the tile scale (--ts,
+   * widget-base.css), so a bigger tile reads bigger. */
   body { display: flex; flex-direction: column; padding: 12px 16px 10px; }
   #grid {
     display: grid;
     gap: var(--space-2);
-    padding-top: 8px;
     flex: 1 1 auto;
     min-height: 0;
   }
   .cell {
     /* .card supplies the surface/border; keep the battery grid's tighter geometry. */
     border-radius: var(--radius-control);
-    padding: 8px 12px;
+    padding: calc(6px * var(--ts)) calc(7px * var(--ts));
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: clamp(2px, 1vh, 6px);
+    gap: calc(2px * var(--ts));
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+    container-type: inline-size;
   }
   .cell .name {
     color: var(--text-muted);
-    font-size: calc(clamp(8px, 3vh, 11px) * var(--name-scale, 1));
+    font-size: calc(8px * var(--ts) * var(--name-scale, 1));
     font-weight: 600;
-    letter-spacing: 0.2em;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  /* A card with height to spare gives a long name a second line rather than an
+   * ellipsis: every card on a 400px tile, and a single row of them on a band. */
+  @media (min-height: 241px) {
+    .cell .name { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  }
+  #grid.one-row .cell .name { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  #grid.solo .cell .name { -webkit-line-clamp: 1; }
+  /* Never wider than its card: 44cqi leaves "100%" and a bolt room in the narrowest
+   * one (six packs on a quarter tile) at a 200% size, and never binds at 100%. */
   .cell .pct {
-    font-size: calc(clamp(16px, 7.5vh, 34px) * var(--value-scale, 1));
+    font-size: min(calc(20px * var(--ts) * var(--value-scale, 1)), 44cqi);
     font-weight: 600;
     line-height: 1.1;
     white-space: nowrap;
@@ -47,22 +58,20 @@
   .cell.warn .pct { color: var(--warn); }
   .cell.bad  .pct { color: var(--err); }
   .cell .bolt { display: none; font-size: 60%; vertical-align: 15%; margin-left: 0.3em; }
-  /* One device fills the tile: centered, display-sized type, wide meter. */
-  #grid.solo .cell { align-items: center; text-align: center; gap: clamp(4px, 2.5vh, 12px); }
-  #grid.solo .cell .name {
-    font-size: min(calc(clamp(12px, 6vh, 24px) * var(--name-scale, 1)), 11vh);
-    letter-spacing: 0.12em;
-  }
-  /* User scale multiplies OUTSIDE the clamp — cap against tile height so a
-   * 200% setting still fits a half-height slot instead of clipping. */
-  #grid.solo .cell .pct { font-size: min(calc(clamp(30px, 26vh, 110px) * var(--value-scale, 1)), 40vh); }
+  /* One device fills the tile: centered, display-sized type, wide ruler. */
+  #grid.solo .cell { align-items: center; text-align: center; gap: calc(5px * var(--ts)); }
+  #grid.solo .cell .name { font-size: min(calc(14px * var(--ts) * var(--name-scale, 1)), 11vh); }
+  /* Display type, sized from the 400px tiles, where a lone pack reads at about 100px
+   * as it did before type followed the tile. On a 200px band the height cap is what
+   * sizes it, and it also keeps a 200% setting from clipping there. */
+  #grid.solo .cell .pct { font-size: min(calc(68px * var(--ts) * var(--value-scale, 1)), 36vh); }
   /* Solo mode carries the full ruler instead of a bar: 0-100 with the charge
    * fill, the now-cursor, and an amber diamond at the low threshold. */
-  #grid.solo .cell .scale { width: min(70%, 480px); }
+  #grid.solo .cell .scale { width: min(80%, calc(370px * var(--ts))); }
   .cell.charging .bolt { display: inline; }
   .cell .bar {
     /* .meter supplies track color + fill basics; battery keeps its chunkier bar. */
-    height: clamp(5px, 1.8vh, 9px);
+    height: calc(5px * var(--ts));
     border-radius: var(--radius-pill);
   }
   .cell .bar > i {
@@ -78,29 +87,28 @@
   .cell.good .scale .fill, .cell.good .scale .cur { background: var(--ok); box-shadow: 0 0 7px color-mix(in srgb, var(--ok) 45%, transparent); }
   .cell.warn .scale .fill, .cell.warn .scale .cur { background: var(--warn); box-shadow: 0 0 7px color-mix(in srgb, var(--warn) 45%, transparent); }
   .cell.bad  .scale .fill, .cell.bad  .scale .cur { background: var(--err); box-shadow: 0 0 7px color-mix(in srgb, var(--err) 45%, transparent); }
-  /* Empty state: .state-card anatomy, kept at the widget's fluid sizes/tones. */
+  /* Empty state: .state-card anatomy and sizes, in the widget's quieter tones. */
   #message {
     position: fixed; inset: 0;
     display: none;
-    gap: 10px;
+    gap: calc(8px * var(--ts));
     padding: 16px 8%;
   }
-  #message .head { color: var(--text-muted); font-size: clamp(12px, 4.5vh, 17px); }
-  #message .sub { color: var(--text-dim); font-size: clamp(9px, 3vh, 12px); max-width: 640px; }
+  #message .head { color: var(--text-muted); }
+  #message .sub { color: var(--text-dim); }
+  /* A quarter band has room for the title and the first sentence; the dongle aside
+   * would push the title off the top of the tile. */
+  @media (max-width: 469px) and (max-height: 240px) { #message .aside { display: none; } }
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker">Battery</span>
-    <span class="st" id="count" hidden></span>
-  </header>
   <div id="grid"></div>
   <div id="message" class="state-card">
     <div class="head state-title">No battery-reporting devices found</div>
     <div class="sub state-body">Laptop packs, UPS units, and Bluetooth devices (headsets, mice, keyboards,
-      controllers) report battery to Windows and show up here automatically. Devices on a
+      controllers) report battery to Windows and show up here automatically.<span class="aside"> Devices on a
       proprietary 2.4&nbsp;GHz dongle — Corsair Slipstream, Logitech Unifying — don't expose
-      battery levels to Windows.</div>
+      battery levels to Windows.</span></div>
   </div>
 
 <script src="https://app.plinth/widget-api.js"></script>
@@ -139,9 +147,6 @@
       build(packs);
       layoutKey = key;
     }
-    const count = document.getElementById('count');
-    count.hidden = !packs.length;
-    count.textContent = packs.length + (packs.length === 1 ? ' device' : ' devices');
     for (const p of packs) {
       const ui = cards.get(p.id);
       if (!ui) continue;
@@ -168,7 +173,7 @@
     msg.style.display = 'none';
     // A lone pack fills the tile at display size — not a giant card of tiny text.
     grid.classList.toggle('solo', packs.length === 1);
-    grid.style.gridTemplateColumns = 'repeat(' + columns(packs.length) + ', 1fr)';
+    setColumns(packs.length);
 
     for (const p of packs) {
       const cell = document.createElement('div');
@@ -228,10 +233,16 @@
     return n <= 2 ? n : n <= 4 ? 2 : n <= 9 ? 3 : 4;
   }
 
-  window.addEventListener('resize', () => {
+  // One row of cards leaves each the band's full height, room for a two-line name.
+  function setColumns(n) {
     const grid = document.getElementById('grid');
-    if (cards.size)
-      grid.style.gridTemplateColumns = 'repeat(' + columns(cards.size) + ', 1fr)';
+    const cols = columns(n);
+    grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+    grid.classList.toggle('one-row', n <= cols);
+  }
+
+  window.addEventListener('resize', () => {
+    if (cards.size) setColumns(cards.size);
   });
 </script>
 </body>
