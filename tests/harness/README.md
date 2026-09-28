@@ -97,7 +97,9 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   no stacked pollers across repeated inits, and that a configured auth header reaches
   the request while appearing nowhere in the DOM. RP (#59): a private endpoint, stored as
   a secret, is fetched instead of the plain one when set, is part of the tile's source
-  identity, and falls back to the plain one when cleared. Also writes the populated
+  identity, and falls back to the plain one when cleared. RL (beta.21, no header): the
+  user's title sits over the value, nothing stands in for a missing one, and an error card
+  with no reading behind it still names the reading. Also writes the populated
   `restvalue-*.png` screenshots. Routes are fulfilled in-process — no ports.
 - `nextfetch-run.js` — three scheduling/rendering follow-ups on the Next Event widget
   (issue #180). All three are timing bugs the real-time probes on that PR could not place
@@ -112,7 +114,9 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   reproduces the review's own example — a success, a later failure, then a cadence edit — and
   asserts the edit does NOT fire an immediate fetch, because the backoff anchors on the last
   ATTEMPT, not the last success. Each of N1b/N2b/N3b fails against the pre-fix widget, which
-  the file notes is the check that keeps the suite from passing hollow.
+  the file notes is the check that keeps the suite from passing hollow. N4 taps Retry on the
+  error card and holds the request in flight: the card must read Retrying, with a spinner,
+  and nothing on the tile may call it Setup (the header pill once did).
 - `widgetfit-run.js` — that widget text fits the SLOT rather than one axis of it
   (issue #76). A widget's iframe is sized to its slot, so `vh`/`vw` do measure the
   tile — but a rule written against one axis says nothing about the other, and the
@@ -121,8 +125,11 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   bands, with the longest and shortest strings its own settings can produce (12-hour
   plus seconds versus 24-hour without), and checks the opposite failure too: text
   that fits by being tiny is not a fit. Also covers re-fitting when the slot resizes
-  with no settings change, and that the size sliders can only shrink. Routes are
-  fulfilled in-process — no ports.
+  with no settings change, and that the size sliders can only shrink. Mounted with a
+  `#ww-slot` fragment so `--ts` is stamped as on the panel, it also takes the XENEON
+  EDGE's tiles, holds the date to a fifth of the height and half the time's size (F4b),
+  and checks the date's cap grows with the tile (F7b/F7c). Routes are fulfilled
+  in-process — no ports.
 - `bridgeorigin-run.js` — sender authorization on the widget bridge. `postMessage`
   reaches `window.top` from ANY descendant, so a page framed INSIDE a widget could
   drive the native host: `ww-action` reaching `Process.Start`, `ww-fetch` used as an
@@ -342,28 +349,30 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   (G6b), so the check cannot pass by measuring a widget that never drew. Without this file the
   sweep's "all clear" could mean "measured nothing" and no test on this head would tell the
   difference.
-- `pillquiet-run.js` — the header pill reports exceptions, not health (issue #205). Every
+- `pillquiet-run.js` — the pill reports exceptions, not health (issue #205). Every
   stock tile carried a permanent corner badge reading LIVE, ALL UP, CLEAR, QUIET, LOADED
   or SCHEDULED: true from the moment the widget worked until the moment it stopped, on
   every tile at once. A badge that is always there is furniture, and it teaches the reader
   to skip the one corner a widget has to speak from. The rule is now hidden-while-healthy,
   which means the check has to run BOTH ways or it is satisfied by deleting the pill
-  outright — so two cases assert the nominal word is gone and two assert a degraded render
-  still shows one. It drives `widget-datapath.js` rather than Playwright directly, and
-  leans on `--reject` matching `innerText`, which omits hidden elements. `endpoints` and
-  `ollama` carry it because their stock fixtures reach both a healthy and a degraded render
-  without credentials; the other six widgets the rule changed are covered for rendering by
-  the stock sweep but are **not** asserted here, which the file says out loud rather than
+  outright — so two cases assert the nominal word (and, since beta.21, the exception words)
+  is gone and two assert a degraded render still shows one. It drives `widget-datapath.js`
+  rather than Playwright directly, and leans on `--reject` matching `innerText`, which
+  omits hidden elements — so the cases follow the pill wherever it lives, which since the
+  headers went (beta.21) is a footer shown only for an exception (endpoints' down count,
+  ollama's Stale) or beside the data (ollama's Idle). `endpoints` and `ollama` carry it
+  because their stock fixtures reach both a healthy and a degraded render without
+  credentials; the other six widgets the rule changed are covered for rendering by the
+  stock sweep but are **not** asserted here, which the file says out loud rather than
   implying coverage it does not have. Those four cases each launch their own
-  `widget-datapath.js`, so the degraded ones start from a pill that was never hidden — they
-  prove the hiding and nothing about recovery. R1-R3 add the half they cannot reach: one
-  mounted `ollama`, driven healthy (pill hidden) → address changed (pill must return) →
-  new address answering (pill quiet again), so R2 cannot be satisfied by a badge that is
-  simply stuck on. `reset()` calls `showLoading()` and then fails into `showError()`, which
-  makes those two `pill.hidden = false` assignments redundant with each other — deleting
-  either alone leaves R2 green and deleting both fails it with `{"hidden":true,
-  "text":"Error"}`, an error card with an empty corner. R2 falsifies the pair, not either
-  member, and the file says so because the obvious single-line revert does not turn it red.
+  `widget-datapath.js`, so the degraded ones never follow a healthy render — they prove the
+  hiding and nothing about recovery. R1-R5 add the half they cannot reach: one mounted
+  `ollama`, driven healthy (pill hidden) → address changed (R2: the state card replaces the
+  data, and no pill repeats it — Loading and Error have had no pill since the header went,
+  which is why R2 no longer asks for one) → new address answering (R3: data back, card
+  gone) → a failed poll (R4: Stale comes back from hidden) → answering again (R5: Stale
+  goes). R4 and R5 are what keep the pill-comes-back guarantee now that Stale is the only
+  pill left.
 - `widgetswipe-run.js` — a swipe that starts inside a widget pages the dashboard (#257), and
   a drift on the way to a tap still does not (#206). The two pull opposite ways and
   `touch-action` cannot serve both: #206 made scrolling lists `pan-y` and controls `.no-pan`
@@ -375,6 +384,27 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   and the shell's gates (past the bridge's identity-and-origin check, never in edit mode,
   only from a widget on the page shown) are pinned as source guards. F1 runs the pre-fix
   behaviour and requires it to fail.
+- `headerless-run.js` — where two widgets' header duties went once the header did
+  (beta.21). GPU: a card with sensors shows its readouts and device name, a card whose only
+  GPU reading is its memory load still shows it, and only a machine with no GPU sensor gets
+  the empty state (G1-G3). Notifications: the privacy eye, now in the tile's corner, covers
+  no app name, count, notification text, dismiss button or mute chip at 320, 640, 960 and
+  1280 wide, with and without the mute bar (N1, N2). The app names are long on purpose: in
+  two columns the right column's first header starts at the top beside the eye, and only a
+  name long enough to reach it shows whether the list keeps its gutter (N1 at 960 fails
+  without it). Mounted as the panel mounts a widget, with the sensor frame and the
+  notifications following the init a beat later, as the host's pushes do.
+- `tilescale-run.js` — text scales with the tile (beta.21: "everything is too TINY").
+  `widget-api.js` stamps `--ts` on a widget document's root from the tile's size and
+  `widget-base.css` multiplies its type by it. S1 runs the curve (sliced out between
+  `ww-tile-scale` markers): 1.3 at 320x200, 1.97 at 1280x400, capped at 2.5, never shrinking
+  as the tile grows. It runs in CI with `--curve`. Without the flag, S2-S5 run in Chromium:
+  a widget frame gets the stamp and `WW.tileScale` agrees, body text is 13.5px times it, a
+  resized frame re-stamps, and a page that is not a widget (no `#ww-slot=`) is left alone.
+  S6 answers `ww-ready` with an init at once, as the panel does, so the init lands while the
+  widget is still parsing: a widget measuring in `onInit` must see the scaled text. The
+  injected shim runs before `<html>` exists, so only the init handler's stamp is in time.
+  Each of those fails when its line is removed.
 - `discover-run.js` — Find, a widget looking up its own setting values (#210 slice 2). Runs
   in CI on plain Node. The shell's `ww-discover-clean` block must reduce a widget's answer
   to bounded, plain `{value, label}` choices. The widget API's `ww-discover-answer` block
@@ -440,6 +470,28 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   so the run takes about 20 s). A list of 600 users, some 600 KiB as real user records
   are, is read whole, and a search (Find by query) is answered with the names or labels
   that contain it, past the 500th (J9).
+- `jellyfinlayout-run.js` — Jellyfin with no header and type that scales with the tile
+  (beta.21), against the stub server in `tests/fixtures/widgets/jellyfin.json`, at every
+  size it is offered, the XENEON EDGE's included: no header, label or healthy pill (L1);
+  stream titles at 13.5px times the tile scale (L2); every stream row and the whole shelf
+  inside the body, and no shelf beside streams on a 200px band (L3); streams the tile had
+  no room for named as "+N more streaming", on a band too, where the footer otherwise
+  shows only for an exception, with the rows laid out above it (L3b); no dead band — the
+  shelf takes the height the rows leave, and the rows the rest once the posters are as
+  tall as their art (L4); and laying the tile out again changes nothing (L5) — a first
+  answer that beat DOMContentLoaded, where the tile scale lands, once sized a 1280x400
+  tile for text half its height. Stale shows in the footer beside the data's age, on a
+  band too, and in the Player's browse bar (L6); Retry is a spinner and "Retrying…", not
+  a setup card (L7); the Player fetches the page its grid measures, once, and keeps the
+  tab you are on in the row (L8); in a light theme the genre sheet is the theme's surface
+  and its title and a poster's watched mark read at 4.5:1 or better (L9).
+- `twitchtheme-run.js` — Twitch Chat follows the panel's appearance (beta.21: "most
+  widgets do not respect the theme setting"). The embed's one switch, darkpopout, comes
+  from the theme's --appearance: 'auto', the default, loads the light chat on a light
+  panel (T1) and the dark one on a dark panel (T4), and a live theme push swaps it both
+  ways (T2, T3). 'dark' and 'light' stay pinned through a push (T5, T6), and an unusable
+  channel loads nothing, push or not (T7). Twitch itself is never fetched: the src the
+  widget sets is the contract.
 - `wowfind-run.js` — WoW Panel's Find (#210). The OAuth exchange is answered on the host-proxy
   tier as on the panel, and the realm index directly. The Realm setting lists the region's
   realms as slugs labelled with their names, sorted by name, from the dynamic namespace in

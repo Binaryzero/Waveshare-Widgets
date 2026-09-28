@@ -2,13 +2,14 @@
   "id": "ws.stock.twitch",
   "name": "Twitch Chat",
   "author": "Plinth",
-  "version": "1.1.3",
-  "description": "Live Twitch chat for any channel, via Twitch's official chat embed. Accepts a channel name or any twitch.tv link; dark or light chat theme.",
+  "version": "1.2.0",
+  "description": "Live Twitch chat for any channel, via Twitch's official chat embed. Accepts a channel name or any twitch.tv link; the chat follows the panel's light or dark theme, or keeps one of its own.",
   "min_api_version": 1,
   "supported_slots": ["quarter", "half", "full"],
   "properties": [
     { "name": "channel", "label": "Channel (name or twitch.tv URL)", "type": "text", "default": "" },
-    { "name": "theme", "label": "Chat theme", "type": "select", "options": ["dark", "light"], "default": "dark" },
+    { "name": "theme", "label": "Chat theme", "type": "select", "options": ["auto", "dark", "light"], "default": "auto",
+      "help": "auto follows the panel: a light theme gets Twitch's light chat and a dark one its dark chat, switching when the theme does. dark or light keeps that one whatever the panel shows." },
     { "name": "msgSize", "label": "Message size", "type": "slider", "min": 50, "max": 200, "step": 5, "default": 100, "group": "Text" }
   ]
 }

@@ -23,9 +23,11 @@
     object-fit: cover;
     display: block;
   }
+  /* Type, and the padding that sits with it, is its smallest-tile size times the tile
+   * scale (widget-base.css), so a bigger tile reads bigger. */
   #caption {
     position: absolute; left: 0; right: 0; bottom: 0;
-    padding: 10px 14px 8px;
+    padding: calc(8px * var(--ts)) calc(11px * var(--ts)) calc(6px * var(--ts));
     background: linear-gradient(transparent, rgba(var(--surface-rgb), 0.78));
     opacity: 0;
     transition: opacity 1.2s ease;
@@ -34,25 +36,24 @@
   #caption.visible { opacity: 1; }
   #caption .name {
     color: var(--text);
-    font-size: calc(clamp(11px, 4.2vh, 16px) * var(--caption-scale, 1));
+    font-size: calc(11px * var(--ts) * var(--caption-scale, 1));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     text-shadow: 0 1px 3px rgba(var(--surface-rgb), 0.9);
   }
   #paused {
     position: absolute; top: 8px; right: 10px;
-    font-size: clamp(10px, 3.6vh, 14px);
+    font-size: calc(10px * var(--ts));
     color: var(--text);
     background: rgba(var(--surface-rgb), 0.55);
     border-radius: 0;
-    padding: 3px 9px;
+    padding: calc(2px * var(--ts)) calc(7px * var(--ts));
     font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
     display: none;
   }
-  /* Loading / empty / error overlay: .state-card anatomy, shown via inline display,
-   * with the gallery's original fluid text sizes. */
-  #message { position: absolute; inset: 0; display: none; gap: 1.4vh; }
-  #message .state-title { font-size: clamp(12px, 4.5vh, 18px); }
-  #message .state-body { font-size: clamp(10px, 3.6vh, 14px); max-width: 90%; }
+  /* Loading / empty / error overlay: .state-card anatomy and its type, shown via
+   * inline display. */
+  #message { position: absolute; inset: 0; display: none; gap: calc(3px * var(--ts)); }
+  #message .state-body { max-width: 90%; }
   /* Visuals stay full bleed; this transparent interaction surface reserves the 8px
    * screen-edge rails that the shell owns for dashboard page navigation. */
   #touchSurface { position: fixed; inset: 0 8px; z-index: 1; touch-action: none; }

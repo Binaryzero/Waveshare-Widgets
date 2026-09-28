@@ -114,6 +114,13 @@ jobs:
       - name: Widget swipes page, drifts do not
         run: node tests/harness/widgetswipe-run.js
 
+      # Text scales with the tile (beta.21: "everything is too TINY"): the curve widget-api.js
+      # stamps as --ts, extracted between markers and run. The browser half (the stamp lands,
+      # the base type multiplies by it, a resize re-stamps, an embedded page is left alone)
+      # runs in the same file without --curve on the maintainer's machine.
+      - name: Widget text scales with the tile
+        run: node tests/harness/tilescale-run.js --curve
+
       # The WoW Panel's choices of what to show (#258): no three-row caps on a tile with room
       # for a dozen rows, and with no reputation movement seen yet, the newest factions lead
       # rather than decade-old ones a sliver short of their next tier. Plain Node against the

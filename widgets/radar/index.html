@@ -21,19 +21,21 @@
     transform: translate(-50%, -50%);
     pointer-events: none;
   }
+  /* The overlay type is its smallest-tile size (a 640x200 band) times the tile scale
+   * (widget-base.css), so a bigger tile reads bigger. */
   #stamp {
     position: absolute; top: 6px; right: 8px;
     color: var(--text);
-    font-size: calc(clamp(10px, 3.6vh, 14px) * var(--text-scale, 1));
+    font-size: calc(10px * var(--ts) * var(--text-scale, 1));
     background: rgba(var(--surface-rgb), 0.6);
-    border-radius: 0; padding: 2px 8px;
+    border-radius: 0; padding: calc(1px * var(--ts)) calc(6px * var(--ts));
     font-weight: 500; letter-spacing: 0.08em;
     font-variant-numeric: tabular-nums;
   }
   #attrib {
     position: absolute; bottom: 3px; right: 6px;
     color: var(--text-muted);
-    font-size: 9px;
+    font-size: calc(9px * var(--ts));
     text-shadow: 0 1px 2px rgba(var(--surface-rgb), 0.8);
   }
   /* Setup/error state: standard state-card covering the (absent) map. It paints

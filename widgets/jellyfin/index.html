@@ -6,49 +6,61 @@
 <link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
   /* Layout only — colors, background, bgStyle and the typography base come from
-   * widget-base.css. */
-  body { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; }
-  header { flex: none; }
+   * widget-base.css. No header: the streams start at the top of the tile.
+   *
+   * Type, and the spacing between lines of text, is the size it had at the smallest
+   * tile this widget takes (a half-width 640x200 band) times the tile scale --ts, so a
+   * bigger tile reads bigger. Tile padding, posters and touch targets do not scale, and
+   * the layout budget reads the rendered sizes rather than assuming any of them. */
+  body { display: flex; flex-direction: column; gap: calc(3px * var(--ts)); padding: 10px 12px; }
 
-  #main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+  #main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: calc(5px * var(--ts)); overflow: hidden; }
 
-  /* Active streams: one card per session. Height is fixed so the JS row budget and
-   * the rendered rows can never disagree about what fits. */
-  #sessions { flex: none; display: grid; gap: 6px; grid-template-columns: minmax(0, 1fr); }
-  .sess { display: flex; align-items: center; gap: 10px; height: 52px; padding: 4px 10px 4px 4px; min-width: 0; }
+  /* Active streams: one card per session. The height follows the type, and the layout
+   * budget measures a rendered row, so the two can never disagree about what fits.
+   * Where no shelf takes the spare height, the budget stretches the rows (--rowh). */
+  #sessions { flex: none; display: grid; gap: calc(3px * var(--ts)); grid-template-columns: minmax(0, 1fr); }
+  .sess { display: flex; align-items: center; gap: calc(7px * var(--ts));
+    height: var(--rowh, calc(38px * var(--ts) + 8px)); padding: 4px calc(7px * var(--ts)) 4px 4px; min-width: 0; }
   .sess .art { height: 100%; aspect-ratio: 2 / 3; flex: none; }
-  .sess .txt { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .sess .txt { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: calc(1px * var(--ts)); }
   .sess .t1 {
-    font-size: 13.5px; font-weight: 700; color: var(--text);
+    font-size: calc(13.5px * var(--ts)); font-weight: 700; color: var(--text); line-height: 1.2;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .sess .t2 {
-    font-size: 12px; color: var(--text-muted);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-size: calc(12px * var(--ts)); color: var(--text-muted); line-height: 1.2;
+    display: flex; align-items: baseline; gap: calc(4px * var(--ts)); min-width: 0; white-space: nowrap; overflow: hidden;
   }
-  /* Exception tags inside the sub-line: transcoding burns the server's CPU (amber),
-   * paused is merely quiet (muted). Healthy direct play says nothing. */
-  .sess .t2 .tag { font-size: 9.5px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; }
+  .sess .t2 .who { flex: none; }
+  .sess .t2 .sub { flex: 0 100000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* Exception tags after the sub-line: transcoding burns the server's CPU (amber),
+   * paused is merely quiet (muted). Healthy direct play says nothing. The episode
+   * gives way to them first — at the larger type a long episode name pushed TRANSCODE
+   * off the end of the card — and they shorten only once it is gone. */
+  .sess .t2 .tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: calc(9.5px * var(--ts)); font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; }
   .sess .t2 .tag.warn { color: var(--warn); }
-  .sess .t2 .tag.mute { color: var(--text-dim); }
+  .sess .t2 .tag.mute { color: var(--text-dim); flex-shrink: 1000; }
   .sess .meter { width: 100%; }
-  .sess .time { flex: none; text-align: right; display: flex; flex-direction: column; gap: 2px; font-variant-numeric: tabular-nums; }
-  .sess .time b { font-size: 13px; font-weight: 700; color: var(--accent-fg); }
-  .sess .time span { font-size: 11px; color: var(--text-dim); }
+  .sess .time { flex: none; text-align: right; display: flex; flex-direction: column; gap: calc(2px * var(--ts)); font-variant-numeric: tabular-nums; }
+  .sess .time b { font-size: calc(13px * var(--ts)); font-weight: 700; color: var(--accent-fg); }
+  .sess .time span { font-size: calc(11px * var(--ts)); color: var(--text-dim); }
 
   /* Recently added: a shelf of posters. --ph is set by the JS layout budget so the
    * shelf, the session rows and the footer always share the height honestly. */
-  #latestSec { flex: none; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  #latestSec { flex: none; min-width: 0; display: flex; flex-direction: column; gap: calc(3px * var(--ts)); }
   /* The shelf alone can go stale while the streams stay live — same treatment as the
    * whole-tile stale state: keep the data, dim it, say so in the footer. */
   #latestSec.stale-sec { opacity: 0.6; }
   #strip { display: flex; gap: 8px; overflow: hidden; }
-  .tile { flex: none; width: calc(var(--ph) * 2 / 3); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .tile { flex: none; width: calc(var(--ph) * 2 / 3); display: flex; flex-direction: column; gap: calc(2px * var(--ts)); min-width: 0; }
   .tile .art { height: var(--ph); width: 100%; }
   .tile .cap {
-    font-size: 12px; color: var(--text-muted);
+    font-size: calc(12px * var(--ts)); color: var(--text-muted);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  /* Posters too narrow to carry a caption (the budget decides): the art alone. */
+  #strip.bare .cap { display: none; }
 
   /* Shared poster/placeholder look. The letter sits under the image and is hidden
    * once real art paints over it. */
@@ -59,19 +71,22 @@
     overflow: hidden;
   }
   /* How far into a part-watched title, drawn on the poster: the caption cannot
-   * carry that fact without becoming a sentence. Its track is a scrim over the
-   * artwork, so it reads on any poster; the fill takes the repaired accent. */
-  .art .prog { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(0, 0, 0, 0.55); }
+   * carry that fact without becoming a sentence. Its track is a scrim of the tile's
+   * own surface, so it reads on any poster in either appearance; the fill takes the
+   * accent repaired against that surface. */
+  .art .prog { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(var(--surface-rgb), 0.7); }
   .art .prog i { display: block; height: 100%; background: var(--accent-fg); }
   /* Watch state and favourites, drawn ON the poster. The caption is already carrying
    * the identity of the title and a second line would cost a whole row of tiles, so
    * these go where the progress bar goes — over the artwork, each on its own scrim so
-   * it stays legible against a bright poster. */
+   * it stays legible against a bright poster. The scrim is the theme's surface and the
+   * glyphs take the colours repaired against it: a black disc under --text went dark
+   * on dark in a light theme. */
   .art .marks { position: absolute; top: 3px; right: 3px; display: flex; gap: 3px; }
   .art .marks span {
     display: flex; align-items: center; justify-content: center;
-    width: 15px; height: 15px; border-radius: 50%;
-    background: rgba(0, 0, 0, 0.62); font-size: 9px; line-height: 1;
+    width: calc(15px * var(--ts)); height: calc(15px * var(--ts)); border-radius: 50%;
+    background: rgba(var(--surface-rgb), 0.85); font-size: calc(9px * var(--ts)); line-height: 1;
   }
   .art .marks .fav { color: var(--accent-fg); }
   .art .marks .seen { color: var(--text); }
@@ -86,11 +101,11 @@
   .art .ph {
     position: absolute; inset: 0;
     display: flex; align-items: center; justify-content: center;
-    font-size: 16px; font-weight: 700; color: var(--text-dim);
+    font-size: calc(16px * var(--ts)); font-weight: 700; color: var(--text-dim);
   }
 
   /* Player view, browsing: the shelf again, but every poster is a play button. */
-  #player { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+  #player { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: calc(3px * var(--ts)); overflow: hidden; }
   /* The browse grid. It was one long row paged by tapping ‹ ›, which spent the whole
    * height of the tile on a single row of posters and made every move a tap. It wraps
    * now — two rows wherever the height affords them — and a finger moves through it.
@@ -117,64 +132,70 @@
   /* The browse bar: library tabs on the left, sort/genre on the right, and — when a
    * TV drill-down is open — the breadcrumb takes the tabs' place, because the path
    * back matters more than the siblings while you are inside a series. */
-  #pbar { display: flex; align-items: center; gap: 6px; flex: none; min-height: 40px; }
-  #ptabs, #pctl { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  #pbar { display: flex; align-items: center; gap: calc(4px * var(--ts)); flex: none; min-height: 40px; }
+  #ptabs, #pctl { display: flex; align-items: center; gap: calc(3px * var(--ts)); min-width: 0; }
   #ptabs { flex: 1 1 auto; overflow: hidden; }
   #pctl { flex: none; }
+  /* Stale sits beside the grid it qualifies. The bar keeps its height either way, so a
+   * page the grid fetched still fits when it appears. */
+  #pstale { padding: 0 calc(4px * var(--ts)); }
   /* 12px floor: these are mixed-case content strings (library names, genres), not
    * uppercase micro-labels — the 8–11px tiers are not for sentences. The buttons
-   * stand at .btn's 40px touch minimum; playerBudget charges the bar accordingly. */
-  #pbar .btn { padding: 3px 10px; font-size: 12px; line-height: 1.4; white-space: nowrap; }
+   * stand at .btn's 40px touch minimum; playerBudget measures the bar they make. */
+  /* flex: none — a tab that shrinks to fit clips its own name ("Contin", "Favori") and
+   * hides the overflow from renderBar, which collapses the tail behind ⋯ instead. */
+  #pbar .btn { flex: none; padding: calc(2px * var(--ts)) calc(7px * var(--ts)); font-size: calc(12px * var(--ts)); line-height: 1.4; white-space: nowrap; }
   /* The genre button carries the active genre's NAME — capped, or 'Science Fiction'
    * would spend the tab row's remaining width. */
-  #pctl .btn { max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
-  #pcrumb { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
+  #pctl .btn { max-width: calc(88px * var(--ts)); overflow: hidden; text-overflow: ellipsis; }
+  #pcrumb { display: flex; align-items: center; gap: calc(4px * var(--ts)); flex: 1 1 auto; min-width: 0; }
   #pcrumbtxt {
-    font-size: 12px; font-weight: 600; color: var(--text);
+    font-size: calc(12px * var(--ts)); font-weight: 600; color: var(--text);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
   }
   /* The strip flanked by its pagers: horizontal panning belongs to the panel's page
    * switcher, so moving through a library is a tap, not a swipe (#221). */
   #pstriprow { display: flex; align-items: stretch; gap: 4px; flex: 1 1 auto; min-height: 0; }
   /* 40px is .btn's min-width floor — declaring less would silently render 40 anyway,
-   * and playerBudget's pager allowance must charge what actually paints. */
-  #pstriprow .pager { flex: none; width: 40px; padding: 0; font-size: 16px; }
+   * and playerBudget's pager allowance reads what actually paints. */
+  #pstriprow .pager { flex: none; width: 40px; padding: 0; font-size: calc(16px * var(--ts)); }
   #pstriprow .pager[disabled] { opacity: 0.35; }
   /* Episode cards are landscape — the still is the recognisable thing, not a poster.
    * The WIDTH carries the ratio: .art already fills the tile at height --ph, so a
    * 16/9 tile makes a 16/9 still, and the page budget agrees with what renders. */
   #pstrip .tile.wide { width: calc(var(--ph) * 16 / 9); }
 
-  /* The genre chooser: a scrim sheet over the tile. The pills carry their own themed
-   * control surface, so their text behaves as anywhere else; only the scrim itself and
-   * bare notes sit on video-dark and take the theater's monochrome treatment. */
+  /* The genre chooser: a sheet over the browse view. It opens from the bar and from a
+   * held poster, never over the theater, so it is a themed surface like any other, at
+   * the sheet opacity the palette repairs muted text for, and its text takes the
+   * theme's colours. (A black scrim with white text was a black slab on a light tile.) */
   #chooser {
-    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.88);
-    display: flex; flex-direction: column; gap: 8px; padding: 10px 14px;
+    position: fixed; inset: 0; background: rgba(var(--surface-rgb), 0.94);
+    display: flex; flex-direction: column; gap: calc(5px * var(--ts)); padding: 10px 14px;
   }
-  #chHead { display: flex; align-items: center; gap: 8px; flex: none; }
-  #chTitle { font-size: 13px; font-weight: 700; color: rgba(255, 255, 255, 0.94); flex: 1; }
+  #chHead { display: flex; align-items: center; gap: calc(5px * var(--ts)); flex: none; }
+  #chTitle { font-size: calc(13px * var(--ts)); font-weight: 700; color: var(--text); flex: 1; }
   #chGrid {
-    display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start;
+    display: flex; flex-wrap: wrap; gap: calc(4px * var(--ts)); align-content: flex-start;
     overflow-y: auto; flex: 1 1 auto; min-height: 0;
   }
   /* The grid scrolls: its pills would inherit .no-pan's touch-action:none and eat the
    * scroll gesture, stranding every genre below the fold. pan-y keeps finger-scroll
    * alive while still holding horizontal drift away from the shell pager (#221). */
   #chGrid, #chGrid .no-pan { touch-action: pan-y; }
-  #chGrid .btn { padding: 6px 12px; font-size: 12px; }
+  #chGrid .btn { padding: calc(4px * var(--ts)) calc(8px * var(--ts)); font-size: calc(12px * var(--ts)); }
   /* Active pills draw in --accent-fg — the accent repaired against the control
    * surfaces — because the raw seed is the user's exact pick and may sit invisibly
    * on them (widget-base's .btn.primary makes the same choice). */
   #pbar .btn.on, #chGrid .btn.on { border-color: var(--accent-fg); color: var(--accent-fg); }
   /* In-strip notes (loading, empty, a fetch fault): the browse bar stays interactive
    * above them, so a dead genre or an unreachable page is never a dead END. */
-  .note { color: var(--text-dim); font-size: 12px; padding: 10px 4px; align-self: center; }
-  #chGrid .note { color: rgba(255, 255, 255, 0.75); align-self: flex-start; }
+  .note { color: var(--text-dim); font-size: calc(12px * var(--ts)); padding: calc(7px * var(--ts)) calc(3px * var(--ts)); align-self: center; }
+  #chGrid .note { color: var(--text-muted); align-self: flex-start; }
 
-  /* Player view, playing: the tile becomes a little theater. Fixed over everything —
-   * header included — with true-black letterbox bars (a scrim, not chrome; the one
-   * sanctioned monochrome). */
+  /* Player view, playing: the tile becomes a little theater. Fixed over everything,
+   * with true-black letterbox bars (a scrim, not chrome; the one sanctioned
+   * monochrome). */
   #theater { position: fixed; inset: 0; background: rgba(0, 0, 0, 1); }
   #pv { width: 100%; height: 100%; object-fit: contain; }
   /* Audio items have no picture: the poster stands in behind the overlay. */
@@ -191,7 +212,7 @@
    * surface — the theme's --text can be near-black, which would vanish here. Monochrome
    * white/black alphas are the sanctioned palette for a scrim layer. */
   #ovTitle {
-    font-size: clamp(15px, 7vh, 26px); font-weight: 700; color: rgba(255, 255, 255, 0.94);
+    font-size: calc(15px * var(--ts)); font-weight: 700; color: rgba(255, 255, 255, 0.94);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     text-shadow: 0 1px 4px rgba(0, 0, 0, 1);
   }
@@ -202,8 +223,8 @@
     display: flex; align-items: center; justify-content: center;
   }
   #ovMid .btn svg { width: 42%; height: 42%; fill: currentColor; }
-  #ovBottom { display: flex; align-items: center; gap: 10px; }
-  #ovBottom time { font-size: 12px; color: rgba(255, 255, 255, 0.9); font-variant-numeric: tabular-nums; flex: none; text-shadow: 0 1px 3px rgba(0, 0, 0, 1); }
+  #ovBottom { display: flex; align-items: center; gap: calc(7px * var(--ts)); }
+  #ovBottom time { font-size: calc(12px * var(--ts)); color: rgba(255, 255, 255, 0.9); font-variant-numeric: tabular-nums; flex: none; text-shadow: 0 1px 3px rgba(0, 0, 0, 1); }
   #ovScale { flex: 1; }
   #ovScale .rail { background: rgba(255, 255, 255, 0.3); }
   #ovScale .fill, #ovScale .cur { transition: none; }
@@ -215,24 +236,25 @@
   #tError .state-body { color: rgba(255, 255, 255, 0.75); }
 
   #axis { flex: none; }
-  footer { flex: none; color: var(--text-dim); font-size: 11px; display: flex; gap: 12px; justify-content: space-between; min-width: 0; }
-  footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #counts { letter-spacing: 0.08em; text-transform: uppercase; font-variant-numeric: tabular-nums; }
-  @media (max-height: 259px) { footer { display: none; } }
+  /* The library's size on the left; on the right what the tile left out (+N more
+   * streaming) and, only when something is wrong, Stale and the data's age. Always a
+   * whole line, empty or not, so the Player's page budget cannot shift under a fetch
+   * as the footer fills in. */
+  footer { flex: none; color: var(--text-dim); font-size: calc(11px * var(--ts)); display: flex; align-items: baseline;
+    gap: calc(8px * var(--ts)); min-width: 0; line-height: 1.35; min-height: 1.35em; }
+  footer > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The library's size gives way first: what the tile left out, and Stale, matter more. */
+  #counts { flex: 1 100000 auto; min-width: 0; letter-spacing: 0.08em; text-transform: uppercase; font-variant-numeric: tabular-nums; }
+  footer .pill { flex: none; font-size: inherit; }
+  /* A 200px band has no line to spare for the library's size: the footer shows only
+   * to report an exception (.exc: Stale, or a shelf that stopped refreshing). */
+  @media (max-height: 259px) { footer:not(.exc), #counts { display: none; } }
 
   #state { position: fixed; inset: 0; }
   body.stale #main, body.stale #player, body.stale #axis { opacity: 0.6; }
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker">Jellyfin</span>
-    <span style="display:flex; align-items:center; gap:10px">
-      <span class="pill muted" id="pill">Loading</span>
-      <span class="st" id="st"></span>
-    </span>
-  </header>
-
   <div id="main" hidden>
     <div id="sessions"></div>
     <section id="latestSec" hidden>
@@ -249,6 +271,7 @@
         <span id="pcrumbtxt"></span>
       </div>
       <div id="pctl">
+        <span class="pill muted" id="pstale" hidden>Stale</span>
         <button id="psort" class="btn no-pan" aria-label="Change sort order">A–Z</button>
         <button id="pgenre" class="btn no-pan" aria-label="Filter by genre">Genre</button>
       </div>
@@ -320,6 +343,7 @@
 
   <footer hidden>
     <span id="counts"></span>
+    <span class="pill muted" id="flag" hidden>Stale</span>
     <span id="meta"></span>
   </footer>
 
@@ -642,7 +666,7 @@
         // unreachable this minute — must not quietly widen the Player's shelf back to
         // the whole server: showing MORE than was asked for is the wrong direction to
         // degrade in, and it would do it exactly when the scoping cannot be checked.
-        // The shelf keeps what it already has, which the staleness pill states, and
+        // The shelf keeps what it already has, which its staleness note states, and
         // the catch below marks the lane due again so the next poll retries.
         if (wantUser && !uid) throw fault('user', 'the player shelf has no resolved user');
         const tail = '&SortOrder=Descending&Recursive=true&IncludeItemTypes='
@@ -767,35 +791,99 @@
 
   // ---- layout budget ---------------------------------------------------------------
 
-  // Fixed numbers instead of measuring: the row height and poster height are set here
-  // AND in the CSS, so the budget and the rendering cannot disagree about what fits.
-  // The chrome allowances are deliberately a few px generous — a row that would only
-  // just fit is a row one font metric away from being clipped.
-  function layout() {
+  // The shelf shows when it has something and there is room for it: on a 200px band,
+  // only while nothing is streaming.
+  const shelfShown = (band) => !!cfg.types && latest.length > 0 && (!band || !sessions.length);
+
+  // Measured, not assumed. Type scales with the tile (--ts), so a header allowance or a
+  // row pitch written down here would be right at one tile size and wrong at every
+  // other. The budget reads the rendered tile instead: the room #main is left once the
+  // axis and the footer have theirs, a stream row as it renders, and what the shelf
+  // spends around its posters. The caller lays the tile out as it will paint first —
+  // #main showing, the axis and the footer as they will be — with the first stream row
+  // in place as the probe.
+  function layout(probeRow) {
     const W = document.documentElement.clientWidth || 640;
     const H = document.documentElement.clientHeight || 400;
     const band = H < 260;
     const active = sessions.length;
-    const latestWanted = !!cfg.types && latest.length > 0;
-    const latestShown = latestWanted && (!band || !active);
-    // padding + header (+gap) + axis (+gap) + footer (+gap), generous.
-    const avail = H - 20 - 28 - (active ? 30 : 0) - (band ? 0 : 24);
+    const latestShown = shelfShown(band);
+    const gapOf = (node, axis) => parseFloat(getComputedStyle(node)[axis || 'rowGap']) || 0;
+    const avail = el('main').clientHeight;
+    const mainGap = gapOf(el('main'));
+    const rowGap = gapOf(el('sessions'));
+    const rowH = probeRow ? probeRow.offsetHeight : 0;
+    const pitch = rowH + rowGap;
+    // Columns by the type, not by the pixel: a card needs about seventeen of its own
+    // letter-widths for the title between its poster and its clock. A half tile gets
+    // one, a full one two or three, a XENEON EDGE strip four or five.
+    const em = parseFloat(getComputedStyle(document.body).fontSize) || 13.5;
+    const cols = Math.max(1, Math.min(active, Math.floor(W / (17 * em))));
+    // The rows the streams can actually use. Budgeting every row that fits handed three
+    // streams eight rows on a tall tile, and the shelf only what rows nobody drew left.
+    const need = Math.ceil(active / cols);
+    // A poster is never taller than the art fetched for it (fillHeight=330), never
+    // shorter than 64, and beside the streams the shelf needs 88 to be worth its room.
+    const POSTER_MAX = 330;
+    const POSTER_MIN = 64;
+    const SHELF_MIN = 88;
+    const shelf = latestShown ? shelfChrome() : { chrome: 0, capCost: 0, capFont: 0 };
     let posterH = 0;
     let rows = 0;
-    if (latestShown && active) {
+    let rowFill = 0;
+    let bare = false;
+    if (latestShown) {
       // Rows are budgeted against a minimum shelf, then the shelf absorbs whatever
-      // height the rows didn't use — no dead band above the axis.
-      rows = Math.max(1, Math.floor((avail - (88 + 45) + 6) / 58));
-      posterH = Math.max(64, Math.min(150, avail - (rows * 58 - 6) - 45));
-    } else if (latestShown) {
-      posterH = Math.max(64, Math.min(220, avail - 45));
+      // height the rows didn't use — no dead band above the axis. The streams come
+      // first: the minimum is posters without their captions, which a shelf that
+      // small drops anyway (below).
+      if (active) rows = Math.min(need, Math.max(1, Math.floor(
+        (avail - mainGap - (shelf.chrome - shelf.capCost) - SHELF_MIN + rowGap) / pitch)));
+      let room = active ? avail - (rows * pitch - rowGap) - mainGap - shelf.chrome : avail - shelf.chrome;
+      // A poster narrower than three or four letters of its caption drops the caption
+      // and takes its line back: a row of "T…", "S…" under the art says less than the
+      // art does.
+      if (room * 2 / 3 < shelf.capFont * 3.5) { bare = true; room += shelf.capCost; }
+      posterH = Math.max(POSTER_MIN, Math.min(POSTER_MAX, Math.floor(room)));
+      // Posters already as tall as their art on a tall tile: the rows take what is left.
+      if (active && room > posterH) rowFill = Math.min(rowH * 2, rowH + Math.floor((room - posterH) / rows));
     } else if (active) {
-      rows = Math.max(1, Math.floor((avail + 6) / 58));
+      rows = Math.min(need, Math.max(1, Math.floor((avail + rowGap) / pitch)));
+      // No shelf to take the spare height, so the rows share it, up to twice their own
+      // height: one stream on a band fills the band instead of floating over a gap.
+      rowFill = Math.max(rowH, Math.min(rowH * 2, Math.floor((avail - (rows - 1) * rowGap) / rows)));
     }
-    const cols = W >= 900 && active > 1 ? 2 : 1;
-    const posterW = Math.round(posterH * 2 / 3);
-    const posters = posterH ? Math.max(1, Math.floor((W - 24 + 8) / (posterW + 8))) : 0;
-    return { band, latestShown, posterH, posters, maxSessions: rows * cols, cols };
+    let posters = 0;
+    if (posterH) {
+      const strip = el('strip');
+      const gap = gapOf(strip, 'columnGap');
+      posters = Math.max(1, Math.floor((strip.clientWidth + gap) / (posterH * 2 / 3 + gap)));
+    }
+    return { band, latestShown, posterH, posters, bare, maxSessions: rows * cols, cols, rowH, rowFill };
+  }
+
+  // What the shelf spends besides its posters: its label, a caption line and the gaps
+  // between them — read off a probe tile whose poster is zero tall. Also what the
+  // caption alone costs, and its type size, for the posters too narrow to carry one.
+  function shelfChrome() {
+    const strip = el('strip');
+    strip.textContent = '';
+    strip.classList.remove('bare');
+    strip.style.setProperty('--ph', '0px');
+    const tile = document.createElement('div');
+    tile.className = 'tile';
+    const box = document.createElement('div');
+    box.className = 'art';
+    const cap = document.createElement('div');
+    cap.className = 'cap';
+    cap.textContent = 'M';
+    tile.append(box, cap);
+    strip.appendChild(tile);
+    const chrome = el('latestSec').offsetHeight - box.offsetHeight;
+    const capCost = tile.offsetHeight - box.offsetHeight;
+    const capFont = parseFloat(getComputedStyle(cap).fontSize) || 12;
+    strip.textContent = '';
+    return { chrome, capCost, capFont };
   }
 
   // ---- rendering -------------------------------------------------------------------
@@ -805,90 +893,156 @@
     else renderOverview();
   }
 
+  const clock = (t) => new Date(t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
+  // The overview's footer: the library's size on the left; on the right what the tile
+  // left out and, only when the data is old, Stale with its age. A healthy tile's right
+  // side says nothing — "updated 20:14" on every tile, forever, was small print.
+  function paintFooter(stale, shelfStale, extra) {
+    el('counts').textContent = counts
+      ? ['Movies ' + counts.movies.toLocaleString(), 'Series ' + counts.series.toLocaleString(),
+         'Episodes ' + counts.episodes.toLocaleString()].join(' · ')
+      : '';
+    const notes = [];
+    if (extra > 0) notes.push('+' + extra + ' more streaming');
+    if (shelfStale) notes.push('shelf from ' + clock(latestAt));
+    if (stale && lastOk) notes.push('updated ' + clock(lastOk));
+    el('meta').textContent = notes.join(' · ');
+    el('flag').hidden = !stale;
+    // Streams the tile had no room for are an exception too: on a short tile that line is
+    // the only sign they exist.
+    document.querySelector('footer').classList.toggle('exc', stale || shelfStale || extra > 0);
+  }
+
+  // One stream's card. Registers its clocks with the interpolation timer.
+  function sessionRow(s, wanted) {
+    const d = describe(s.NowPlayingItem);
+    const ps = s.PlayState || {};
+    const isPaused = !!ps.IsPaused;
+    const pos = ticksToSec(ps.PositionTicks);
+    const dur = ticksToSec(s.NowPlayingItem.RunTimeTicks);
+
+    const row = document.createElement('div');
+    row.className = 'card sess';
+    row.appendChild(art(d, wanted));
+
+    const txt = document.createElement('div');
+    txt.className = 'txt';
+    const t1 = document.createElement('div');
+    t1.className = 't1';
+    t1.textContent = d.title;
+    const t2 = document.createElement('div');
+    t2.className = 't2';
+    // Who is watching keeps its name; the episode after it is what gives way.
+    const what = d.sub.filter(Boolean).join(' · ');
+    const whoName = String(s.UserName || s.Client || '');
+    if (whoName) {
+      const who = document.createElement('span');
+      who.className = 'who';
+      who.textContent = whoName + (what ? ' ·' : '');
+      t2.appendChild(who);
+    }
+    if (what) {
+      const sub = document.createElement('span');
+      sub.className = 'sub';
+      sub.textContent = what;
+      t2.appendChild(sub);
+    }
+    const method = ps.PlayMethod === 'Transcode' ? 'Transcode' : '';
+    for (const [text, cls] of [[method, 'warn'], [isPaused ? 'Paused' : '', 'mute']]) {
+      if (!text) continue;
+      const tag = document.createElement('span');
+      tag.className = 'tag ' + cls;
+      tag.textContent = text;
+      t2.appendChild(tag);
+    }
+    const meter = document.createElement('div');
+    meter.className = 'meter';
+    const fill = document.createElement('i');
+    meter.appendChild(fill);
+    txt.append(t1, t2, meter);
+
+    const time = document.createElement('div');
+    time.className = 'time';
+    const elapsed = document.createElement('b');
+    const total = document.createElement('span');
+    total.textContent = dur != null ? fmt(dur) : '';
+    time.append(elapsed, total);
+
+    row.append(txt, time);
+    // Anchored to when the POSITION was fetched, not when this render ran — a stale
+    // or resize re-render mid-window must not rewind the interpolated playhead.
+    rowRefs.push({ elapsed, fill, pos0: pos, dur, paused: isPaused, at: lastOk });
+    return row;
+  }
+
   function renderOverview() {
     el('player').hidden = true;
-    const lay = layout();
-    const shown = sessions.slice(0, lay.maxSessions);
-    extraSessions = sessions.length - shown.length;
+    const H = document.documentElement.clientHeight || 400;
+    const stale = document.body.classList.contains('stale');
+    rowRefs = [];
 
-    // Header annotation: the live state when streaming, the server's name at rest.
-    const st = el('st');
-    st.textContent = '';
-    st.className = 'st' + (sessions.length ? ' on' : '');
-    if (sessions.length) {
-      const dot = document.createElement('i');
-      dot.className = 'dot';
-      st.appendChild(dot);
-      st.appendChild(document.createTextNode(sessions.length === 1 ? 'Streaming' : sessions.length + ' streaming'));
-    } else if (server && server.name) {
-      st.textContent = server.name;
+    // Idle with the shelf hidden (by setting, or nothing fetched yet): a designed
+    // quiet card rather than an empty tile. There is no footer under a state card, so
+    // Stale, when the quiet is old news, rides the card itself.
+    if (!sessions.length && !shelfShown(H < 260)) {
+      extraSessions = 0;
+      axisRef = null;
+      stateCard('', '▷', 'Nothing playing',
+        'No one is streaming from ' + ((server && server.name) || 'Jellyfin') + ' right now.');
+      if (stale) {
+        const flag = document.createElement('span');
+        flag.className = 'pill muted';
+        flag.textContent = 'Stale';
+        el('state').appendChild(flag);
+      }
+      return;
     }
 
-    // Streams.
+    // Lay the tile out as it will paint, so the budget can measure it: the body in
+    // place of the state card, the axis under a stream that has a runtime, the shelf
+    // when it shows, and the footer (whose one line is there empty or full).
+    const dur0 = sessions.length ? ticksToSec(sessions[0].NowPlayingItem.RunTimeTicks) : null;
+    el('state').hidden = true;
+    el('main').hidden = false;
+    el('axis').hidden = !dur0;
+    const sec = el('latestSec');
+    sec.hidden = !shelfShown(H < 260);
+    // A shelf whose refresh has been failing for a while must not ride the session
+    // poll's healthy glow — old titles rendered bright read as new.
+    const shelfStale = !sec.hidden && latestAt > 0 && Date.now() - latestAt > SLOW_MS * 2 + 60000;
+    sec.classList.toggle('stale-sec', shelfStale);
+    document.querySelector('footer').hidden = false;
+    paintFooter(stale, shelfStale, 0);
+
+    // Streams. The first row is built before the budget: it is always shown, and it is
+    // the row the budget measures.
     const wrap = el('sessions');
     wrap.textContent = '';
-    wrap.style.gridTemplateColumns = 'repeat(' + Math.max(1, Math.min(lay.cols, shown.length)) + ', minmax(0, 1fr))';
-    rowRefs = [];
+    wrap.style.removeProperty('--rowh');
+    wrap.hidden = !sessions.length;
     const wanted = new Set();
-    for (const s of shown) {
-      const d = describe(s.NowPlayingItem);
-      const ps = s.PlayState || {};
-      const isPaused = !!ps.IsPaused;
-      const pos = ticksToSec(ps.PositionTicks);
-      const dur = ticksToSec(s.NowPlayingItem.RunTimeTicks);
-
-      const row = document.createElement('div');
-      row.className = 'card sess';
-      row.appendChild(art(d, wanted));
-
-      const txt = document.createElement('div');
-      txt.className = 'txt';
-      const t1 = document.createElement('div');
-      t1.className = 't1';
-      t1.textContent = d.title;
-      const t2 = document.createElement('div');
-      t2.className = 't2';
-      const subBits = [String(s.UserName || s.Client || '')].concat(d.sub).filter(Boolean);
-      t2.appendChild(document.createTextNode(subBits.join(' · ')));
-      const method = ps.PlayMethod === 'Transcode' ? 'Transcode' : '';
-      for (const [text, cls] of [[method, 'warn'], [isPaused ? 'Paused' : '', 'mute']]) {
-        if (!text) continue;
-        t2.appendChild(document.createTextNode('  '));
-        const tag = document.createElement('span');
-        tag.className = 'tag ' + cls;
-        tag.textContent = text;
-        t2.appendChild(tag);
-      }
-      const meter = document.createElement('div');
-      meter.className = 'meter';
-      const fill = document.createElement('i');
-      meter.appendChild(fill);
-      txt.append(t1, t2, meter);
-
-      const time = document.createElement('div');
-      time.className = 'time';
-      const elapsed = document.createElement('b');
-      const total = document.createElement('span');
-      total.textContent = dur != null ? fmt(dur) : '';
-      time.append(elapsed, total);
-
-      row.append(txt, time);
-      wrap.appendChild(row);
-      // Anchored to when the POSITION was fetched, not when this render ran — a stale
-      // or resize re-render mid-window must not rewind the interpolated playhead.
-      rowRefs.push({ elapsed, fill, pos0: pos, dur, paused: isPaused, at: lastOk });
+    if (sessions.length) wrap.appendChild(sessionRow(sessions[0], wanted));
+    let lay = layout(wrap.firstElementChild);
+    // A short tile shows its footer only for an exception, and the budget above was taken
+    // without it. When streams do not all fit, "+N more streaming" is one: bring the footer
+    // up and lay out again in the room it leaves (which can only fit fewer, never more).
+    if (sessions.length > lay.maxSessions && !document.querySelector('footer').classList.contains('exc')) {
+      paintFooter(stale, shelfStale, sessions.length - lay.maxSessions);
+      lay = layout(wrap.firstElementChild);
     }
+    const shown = sessions.slice(0, lay.maxSessions);
+    extraSessions = sessions.length - shown.length;
+    for (const s of shown.slice(1)) wrap.appendChild(sessionRow(s, wanted));
+    wrap.style.gridTemplateColumns = 'repeat(' + Math.max(1, Math.min(lay.cols, shown.length)) + ', minmax(0, 1fr))';
+    if (lay.rowFill > lay.rowH) wrap.style.setProperty('--rowh', lay.rowFill + 'px');
 
-    // Recently added. A shelf whose refresh has been failing for a while must not
-    // ride the session poll's healthy glow — old titles rendered bright read as new.
-    const shelfStale = lay.latestShown && latestAt > 0 && Date.now() - latestAt > SLOW_MS * 2 + 60000;
-    const sec = el('latestSec');
-    sec.hidden = !lay.latestShown;
-    sec.classList.toggle('stale-sec', shelfStale);
+    // Recently added.
     if (lay.latestShown) {
       const strip = el('strip');
       strip.textContent = '';
       strip.style.setProperty('--ph', lay.posterH + 'px');
+      strip.classList.toggle('bare', lay.bare);
       for (const item of latest.slice(0, lay.posters)) {
         const d = describe(item);
         const tile = document.createElement('div');
@@ -905,42 +1059,9 @@
     // The axis: the primary stream's position in its runtime.
     const primary = rowRefs[0];
     axisRef = primary && primary.dur ? primary : null;
-    el('axis').hidden = !axisRef;
     if (axisRef) el('axisEnd').textContent = fmt(axisRef.dur).toUpperCase();
 
-    // Footer.
-    el('counts').textContent = counts
-      ? ['Movies ' + counts.movies.toLocaleString(), 'Series ' + counts.series.toLocaleString(),
-         'Episodes ' + counts.episodes.toLocaleString()].join(' · ')
-      : '';
-    const notes = [];
-    if (extraSessions > 0) notes.push('+' + extraSessions + ' more streaming');
-    if (shelfStale) notes.push('shelf from ' + new Date(latestAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
-    if (lastOk) notes.push('updated ' + new Date(lastOk).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
-    el('meta').textContent = notes.join(' · ');
-
-    // Pill: exceptions only — hidden while everything is working.
-    const pill = el('pill');
-    const stale = document.body.classList.contains('stale');
-    pill.hidden = !stale;
-    if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
-
-    // Idle with the shelf hidden (by setting, or nothing fetched yet): a designed
-    // quiet card rather than an empty tile.
-    if (!shown.length && !lay.latestShown) {
-      stateCard('', '▷', 'Nothing playing',
-        'No one is streaming from ' + ((server && server.name) || 'Jellyfin') + ' right now.');
-      // The quiet card is informational, not a setup problem: undo stateCard's pill and
-      // keep the exception-only rule — Stale shows, health stays silent.
-      if (stale) { pill.hidden = false; pill.textContent = 'Stale'; pill.className = 'pill muted'; }
-      else pill.hidden = true;
-      applyTimes();
-      return;
-    }
-
-    el('state').hidden = true;
-    el('main').hidden = false;
-    document.querySelector('footer').hidden = false;
+    paintFooter(stale, shelfStale, extraSessions);
     applyTimes();
     ensureImages(wanted);
   }
@@ -1131,22 +1252,70 @@
   const activeTab = () => (browse.tabs || []).find((t) => t.id === browse.tab) || null;
   const level = () => (browse.path.length ? browse.path[browse.path.length - 1].kind : 'top');
 
+  // The room the browse grid has, measured rather than assumed: type scales with the
+  // tile (--ts), so the bar, the captions and the footer are a different height on
+  // every tile. Read with the Player laid out as it paints — #main and the axis away,
+  // the footer's one line in place (it holds that line empty or full, and in a 200px
+  // band it is not there at all) — then put back exactly as it was, so a fetch sized
+  // while a state card is up gets the same answer the grid will get when it draws.
+  function playerRoom() {
+    const foot = document.querySelector('footer');
+    const flip = [[el('player'), false], [el('main'), true], [el('axis'), true], [foot, false]];
+    const was = flip.map(([node]) => node.hidden);
+    const exc = foot.classList.contains('exc');
+    for (const [node, hide] of flip) node.hidden = hide;
+    foot.classList.remove('exc');
+    const strip = el('pstrip');
+    const row = el('pstriprow');
+    const cs = getComputedStyle(strip);
+    // A card with a zero-tall picture is what a card costs besides its picture: the
+    // caption line and the gap above it. Absolute and invisible, so the grid (and its
+    // scroll position) never feels it.
+    const tile = document.createElement('div');
+    tile.className = 'tile';
+    tile.style.cssText = 'position:absolute;visibility:hidden;--ph:0px';
+    const box = document.createElement('div');
+    box.className = 'art';
+    const cap = document.createElement('div');
+    cap.className = 'cap';
+    cap.textContent = 'M';
+    tile.append(box, cap);
+    strip.appendChild(tile);
+    const room = {
+      h: strip.clientHeight,
+      w: row.clientWidth,
+      extra: tile.offsetHeight - box.offsetHeight,
+      rowGap: parseFloat(cs.rowGap) || 0,
+      colGap: parseFloat(cs.columnGap) || 0,
+      // Each pager and the gap beside it. Read off the computed style, which a hidden
+      // pager still has: the allowance is charged whether or not they show right now.
+      pager: (parseFloat(getComputedStyle(el('pprev')).width) || 0) + (parseFloat(getComputedStyle(row).columnGap) || 0),
+    };
+    strip.removeChild(tile);
+    flip.forEach(([node], i) => { node.hidden = was[i]; });
+    foot.classList.toggle('exc', exc);
+    return room;
+  }
+
   // The card budget, shared by fetching and drawing: how many fit IS the page size,
   // so the layout is measured before the server is asked for a page.
   function playerBudget(wide, pagers, showing) {
-    const W = document.documentElement.clientWidth || 640;
-    const H = document.documentElement.clientHeight || 400;
-    const band = H < 260;
-    // Header, footer, browse bar (its buttons stand at .btn's 40px touch floor),
-    // strip pagers: the posters absorb what remains.
-    const avail = H - 20 - 28 - 40 - (band ? 0 : 4);
+    const room = playerRoom();
+    // The strip's own box: what the padding, the browse bar (its buttons stand at .btn's
+    // 40px touch floor) and the footer leave. The posters absorb it.
+    const avail = room.h;
     // What a row costs on top of its poster — the caption line and the tile's own gap
     // above it — and what separates one row from the next.
-    const ROW_EXTRA = 24;
-    const ROW_GAP = 8;
+    const ROW_EXTRA = room.extra;
+    const ROW_GAP = room.rowGap;
     // A second row is only worth having if BOTH still hold a poster worth looking at;
-    // below that it is a wall of thumbnails.
-    const MIN_POSTER = 110;
+    // below that it is a wall of thumbnails. (96, not the 110 it was: the captions under
+    // the posters grew with the type, and at 110 no 400px tile had room for two rows —
+    // the grid fell back to one tall row and a page of four.)
+    const MIN_POSTER = 96;
+    // Never taller than the art fetched for it (fillHeight=330): a tall tile otherwise
+    // stranded a short row of posters over a band of nothing.
+    const MAX_POSTER = 330;
     // ...and the rows stop just short of filling the height, so a sliver of the next one
     // shows under the fold. Two rows sized to fit EXACTLY says nothing about the twelve
     // more behind them; a cut-off row is the whole affordance, and cheaper than a
@@ -1154,20 +1323,20 @@
     const PEEK = 20;
     // The pager allowance is only charged on levels that HAVE pagers — the New
     // shelf has none, and billing it a phantom cost a whole poster at 1280. Where
-    // they exist they are 40px each (.btn's min-width floor), plus their two gaps.
+    // they exist it is both pagers and their gaps, as measured.
     const widthOf = (h) => Math.round(wide ? h * 16 / 9 : h * 2 / 3);
     const colsFor = (h) => Math.max(1, Math.floor(
-      (W - 24 - (pagers === false ? 0 : 88) + 8) / (widthOf(h) + 8)));
+      (room.w - (pagers === false ? 0 : 2 * room.pager) + room.colGap) / (widthOf(h) + room.colGap)));
     // One row as tall as the space allows — what the shelf has always been — and the
     // two-row grid that replaces it wherever the height can carry both.
-    const tallH = Math.max(64, Math.min(220, avail - ROW_EXTRA));
-    const twoH = Math.min(220, Math.floor((avail - ROW_GAP - PEEK) / 2) - ROW_EXTRA);
+    const tallH = Math.max(64, Math.min(MAX_POSTER, avail - ROW_EXTRA));
+    const twoH = Math.min(MAX_POSTER, Math.floor((avail - ROW_GAP - PEEK) / 2) - ROW_EXTRA);
     const twoUp = twoH >= MIN_POSTER;
     const gridH = twoUp ? twoH : tallH;
     const rowsUp = twoUp ? 2 : 1;
     // The biggest poster at which everything on this page still fits the rows that height
     // allows, found by stepping DOWN from the tall single row. Four movies keep the full
-    // 220; a season's three stills, which are 16/9 and so only fit two per tall row, give
+    // height; a season's three stills, which are 16/9 and so only fit two per tall row, give
     // up a few pixels instead of half their height; a full page of a library lands on the
     // two-row grid because nothing above it holds them. Sizing on the count matters most
     // for the shelves with least in them — a short season, Continue on a quiet week, a
@@ -1963,8 +2132,13 @@
         more.setAttribute('aria-label', 'All libraries');
         more.addEventListener('click', openLibraryChooser);
         tabsEl.appendChild(more);
-        while (tabsEl.scrollWidth > tabsEl.clientWidth + 1 && tabsEl.children.length > 2) {
-          tabsEl.removeChild(more.previousSibling);
+        // The tab you are on stays in the row, whichever tabs make room for it: at the
+        // larger type a half tile has room for three, and the library being browsed
+        // gone behind ⋯ left the row saying nothing about where you are.
+        const spare = () => Array.from(tabsEl.children).reverse()
+          .find((b) => b !== more && !b.classList.contains('on'));
+        while (tabsEl.scrollWidth > tabsEl.clientWidth + 1 && tabsEl.children.length > 2 && spare()) {
+          tabsEl.removeChild(spare());
         }
       }
     }
@@ -2092,10 +2266,6 @@
     if (cfg.view !== 'player' || !cfg.base || !cfg.key) return;
     el('main').hidden = true;
     const stale = document.body.classList.contains('stale');
-    const pill = el('pill');
-    const st = el('st');
-    st.className = 'st';
-    st.textContent = (server && server.name) || '';
 
     rowRefs = [];
     axisRef = null;
@@ -2112,21 +2282,24 @@
     }
 
     // Unhide BEFORE the bar renders: the tab-overflow pass measures real widths,
-    // and a hidden element measures zero.
+    // and a hidden element measures zero. Stale goes in the bar, beside the grid it
+    // qualifies, before that pass too: it takes room from the tabs. The footer here
+    // counts pages and titles; it never carries the overview's exceptions.
     el('state').hidden = true;
     el('player').hidden = false;
-    document.querySelector('footer').hidden = false;
+    el('pstale').hidden = !stale;
+    el('flag').hidden = true;
+    document.querySelector('footer').classList.remove('exc');
     renderBar();
 
     if (browse.tab === 'new') {
       el('pprev').hidden = true;
       el('pnext').hidden = true;
-      renderNewShelf(stale, pill);
+      renderNewShelf(stale);
+      showPlayerFooter();
       return;
     }
 
-    pill.hidden = !stale;
-    if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
     el('player').classList.remove('stale-sec');
 
     const lv = level();
@@ -2180,6 +2353,7 @@
         : lv === 'season' ? ' episodes' : lv === 'series' ? ' seasons'
         : activeTab() && activeTab().tv ? ' series' : ' movies')
       : '';
+    showPlayerFooter();
 
     if (browse.loading) { stripNote('Loading…'); return; }
     if (browse.error) { stripNote(browse.error + ' Tap to retry.', () => loadBrowse()); return; }
@@ -2215,8 +2389,17 @@
     ensureImages(built.wanted);
   }
 
+  // The Player's footer shows only when it has something to count. The page budget
+  // charges its line either way (playerRoom), so hiding it never changes a page size;
+  // the grid just gets that line back.
+  function showPlayerFooter() {
+    document.querySelector('footer').hidden = !el('counts').textContent && !el('meta').textContent;
+  }
+
   // The "New" tab: the recently-added shelf, fed by the poll loop rather than taps.
-  function renderNewShelf(stale, pill) {
+  // Whole-tile Stale is the bar's (renderPlayer); what this footer adds is the shelf's
+  // own age once it stops refreshing, and the tile's with it when both are old.
+  function renderNewShelf(stale) {
     if (!latest.length) {
       // An unfetched shelf is not an empty library: only a shelf that has actually
       // answered gets to claim there is nothing in it. Either way the note lives IN
@@ -2231,8 +2414,6 @@
       el('counts').textContent = '';
       el('meta').textContent = '';
       el('player').classList.remove('stale-sec');
-      if (stale) { pill.hidden = false; pill.textContent = 'Stale'; pill.className = 'pill muted'; }
-      else pill.hidden = true;
       return;
     }
 
@@ -2252,12 +2433,9 @@
 
     el('counts').textContent = '';
     const notes = [];
-    if (shelfStale) notes.push('shelf from ' + new Date(latestAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
-    if (lastOk) notes.push('updated ' + new Date(lastOk).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
+    if (shelfStale) notes.push('shelf from ' + clock(latestAt));
+    if (stale && lastOk) notes.push('updated ' + clock(lastOk));
     el('meta').textContent = notes.join(' · ');
-
-    pill.hidden = !stale;
-    if (stale) { pill.textContent = 'Stale'; pill.className = 'pill muted'; }
 
     ensureImages(built.wanted);
   }
@@ -3038,12 +3216,18 @@
   });
 
   // ---- states ----------------------------------------------------------------------
+  //
+  // The state card says what is going on — loading, setup, error — by itself; there is
+  // no header pill to mirror it any more.
+
+  function hideBody() {
+    el('main').hidden = true;
+    el('player').hidden = true;
+    el('axis').hidden = true;
+    document.querySelector('footer').hidden = true;
+  }
 
   function stateCard(cls, icon, title, body, onRetry) {
-    const pill = el('pill');
-    pill.hidden = false;
-    pill.textContent = cls === 'err' ? 'Error' : 'Setup';
-    pill.className = 'pill ' + (cls === 'err' ? 'err' : 'muted');
     const s = el('state');
     s.className = 'state-card' + (cls ? ' ' + cls : '');
     s.textContent = '';
@@ -3065,31 +3249,27 @@
       s.append(btn);
     }
     s.hidden = false;
-    el('main').hidden = true;
-    el('player').hidden = true;
-    el('axis').hidden = true;
-    document.querySelector('footer').hidden = true;
+    hideBody();
   }
 
-  function showLoading() {
+  // The spinner, and under it what it is waiting for when that is worth saying: a
+  // retry the user asked for reads as one. (It used to borrow the setup card — an
+  // empty icon, the title 'Retrying', and the header calling it SETUP.)
+  function showLoading(label) {
     const s = el('state');
     s.className = 'state-card';
     s.textContent = '';
     const sp = document.createElement('div');
     sp.className = 'spinner';
     s.append(sp);
+    if (label) {
+      const t = document.createElement('div');
+      t.className = 'state-title';
+      t.textContent = label;
+      s.append(t);
+    }
     s.hidden = false;
-    el('main').hidden = true;
-    el('player').hidden = true;
-    el('axis').hidden = true;
-    document.querySelector('footer').hidden = true;
-    const pill = el('pill');
-    pill.hidden = false;
-    pill.textContent = 'Loading';
-    pill.className = 'pill muted';
-    const st = el('st');
-    st.className = 'st';
-    st.textContent = '';
+    hideBody();
   }
 
   function showSetup() {
@@ -3100,7 +3280,7 @@
 
   function showError(message) {
     stateCard('err', '!', 'Jellyfin unavailable', message, () => {
-      stateCard('', '', 'Retrying', '');
+      showLoading('Retrying…');
       fails = 0;
       pollAnchor = 0;
       clearTimeout(timer);
@@ -3169,11 +3349,20 @@
   });
 
   let resizeTimer = null;
-  window.addEventListener('resize', () => {
-    // The on-panel editor resizes the frame in place without another init.
+  function relayout() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => { if (started && lastOk) render(); }, 150);
-  });
+  }
+  // The on-panel editor resizes the frame in place without another init.
+  window.addEventListener('resize', relayout);
+  // The budgets measure rendered text, so they are only as good as the text they
+  // measured. The tile scale (--ts) lands on the document at DOMContentLoaded, and
+  // Outfit arrives after first paint; a first answer can beat both, and the rows and
+  // posters it sized were then sized for text that has since grown (a 1280x400 tile
+  // drew three rows and cut the shelf in half). Either one settling lays the tile out
+  // again.
+  document.addEventListener('DOMContentLoaded', relayout);
+  if (document.fonts) document.fonts.addEventListener('loadingdone', relayout);
 
   document.addEventListener('visibilitychange', () => {
     // A hidden panel must not keep decoding video into the void.

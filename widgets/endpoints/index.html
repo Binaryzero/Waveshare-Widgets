@@ -6,17 +6,20 @@
 <link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
   /* Layout only — colors, background, bgStyle and the typography base come from
-   * widget-base.css. State hues map to the --ok/--warn/--err tokens. */
-  body { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+   * widget-base.css. State hues map to the --ok/--warn/--err tokens.
+   * No header: the grid starts at the top of the tile. Type, and the spacing between
+   * lines of it, is the size the grid had at its smallest tile (a 640x200 band) times
+   * the tile scale (--ts, widget-base.css), so a bigger tile reads bigger rather than
+   * spreading the same small cards over more room. */
+  body { display: flex; flex-direction: column; gap: calc(4px * var(--ts)); padding: 10px; }
   /* The row block is CENTRED rather than stretched, so a short list reads as a row of
    * status tiles instead of columns of mostly empty card — three targets in a full-width
    * slot were stretching to 340px tall to hold two lines of text. A full grid still fills
    * the tile, because more rows means more content to centre. */
-  #grid { flex: 1 1 auto; display: grid; gap: 8px; min-height: 0; align-content: center; }
+  #grid { flex: 1 1 auto; display: grid; gap: calc(5px * var(--ts)); min-height: 0; align-content: center; }
   .target {
-    display: flex; flex-direction: column; justify-content: center; gap: 3px;
-    padding: 6px 10px;
+    display: flex; flex-direction: column; justify-content: center; gap: calc(2px * var(--ts));
+    padding: calc(4px * var(--ts)) calc(8px * var(--ts)) calc(4px * var(--ts)) calc(9px * var(--ts));
     border-radius: var(--radius-control);
     background: var(--card-surface);
     min-width: 0; min-height: 0; overflow: hidden;
@@ -25,22 +28,22 @@
   /* The state stripe is the glance: a wall of green with one red edge reads from
    * across the room, where the text does not. */
   .target::before {
-    content: ''; position: absolute; inset: 0 auto 0 0; width: 3px;
+    content: ''; position: absolute; inset: 0 auto 0 0; width: calc(2px * var(--ts));
     border-radius: var(--radius-control) 0 0 var(--radius-control);
     background: var(--text-dim);
   }
   .target.up::before { background: var(--ok); }
   .target.slow::before { background: var(--warn); }
   .target.down::before { background: var(--err); }
-  .target .top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .target .top { display: flex; align-items: baseline; gap: calc(6px * var(--ts)); min-width: 0; }
   .target .name {
     color: var(--text); font-weight: 600;
-    font-size: clamp(11px, 3.2vh, 14px);
+    font-size: calc(11px * var(--ts));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     flex: 1 1 auto; min-width: 0;
   }
   .target .code {
-    font-size: clamp(11px, 3vh, 13px); font-weight: 700; flex: none;
+    font-size: calc(11px * var(--ts)); font-weight: 700; flex: none;
     font-variant-numeric: tabular-nums;
     color: var(--text-muted);
   }
@@ -48,23 +51,24 @@
   .target.slow .code { color: var(--warn); }
   .target.down .code { color: var(--err); }
   .target .rtt {
-    color: var(--text-muted); font-size: 11px;
+    color: var(--text-muted); font-size: calc(11px * var(--ts));
     font-variant-numeric: tabular-nums; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis;
   }
-  footer { color: var(--text-dim); font-size: 11px; flex: none; }
+  /* Only when the grid has something to own up to: how many targets are down or slow
+   * (counting any the slot has no card for), and any it checks without showing or does
+   * not check at all. A healthy grid has no footer; its green stripes say so. One line,
+   * because fit() budgets one line for it. */
+  footer { color: var(--text-dim); font-size: calc(11px * var(--ts)); flex: none;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  footer .pill { font-size: inherit; margin-right: 0.6em; }
   #state { position: fixed; inset: 0; }
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker">Endpoints</span>
-    <span class="pill muted" id="pill">Checking</span>
-  </header>
-
   <div id="grid"></div>
 
-  <footer id="meta"></footer>
+  <footer id="meta" hidden><span class="pill" id="pill" hidden></span><span id="metaText"></span></footer>
 
   <div class="state-card" id="state">
     <div class="state-icon">◎</div>
@@ -86,6 +90,7 @@
   const results = new Map();   // key -> {state, code, ms, at}
   const fails = new Map();     // key -> consecutive failures, for this target's backoff
   let generation = 0;          // invalidates the chains a previous settings load started
+  let lastFit = '';            // "cols x max" the cards on screen were laid out for
 
   // One probe's whole budget, covering the HEAD and the GET retry together. Neither tier
   // of WW.fetch bounds a direct browser request — the shim's timer is on the host-proxy
@@ -158,43 +163,52 @@
     cards.clear();
     // Outcomes belong to the target list that produced them. renderSummary counts every
     // value in this map, so a removed target kept contributing its old down/slow status
-    // to the pill for a grid it is no longer part of.
+    // to the count for a grid it is no longer part of.
     results.clear();
 
     const n = cfg.targets.length;
-    // Probed either way — a target the panel has no room for is still worth knowing about,
-    // and its result reaches the summary pill. Only the CARD is withheld.
-    cfg.hidden = Math.max(0, n - fit().max);
     el('state').hidden = !!n;
+    // Shown BEFORE fit() runs: it measures a card inside the grid, and a hidden grid has
+    // no layout to measure.
     grid.hidden = !n;
-    // 'Idle' stays: nothing is configured, which is a thing the reader has to be told
-    // rather than a healthy state to keep quiet about.
-    if (!n) { el('pill').hidden = false; el('pill').textContent = 'Idle'; el('pill').className = 'pill muted'; el('meta').textContent = ''; return; }
+    // Nothing configured: the state card says so and says what to do. No pill — it would
+    // only repeat the card.
+    if (!n) { cfg.hidden = 0; renderSummary(); return; }
 
+    // Probed either way — a target the panel has no room for is still worth knowing about,
+    // and its result reaches the footer's count. Only the CARD is withheld.
+    const f = fit();
+    lastFit = fitKey(f);
+    cfg.hidden = Math.max(0, n - f.max);
     applyColumns();
 
-    for (const t of visibleTargets()) {
-      const root = document.createElement('div');
-      root.className = 'target';
-      const top = document.createElement('div');
-      top.className = 'top';
-      const name = document.createElement('span');
-      name.className = 'name';
-      name.textContent = t.label;
-      const code = document.createElement('span');
-      code.className = 'code';
-      code.textContent = '···';
-      top.append(name, code);
-      const rtt = document.createElement('div');
-      rtt.className = 'rtt';
-      rtt.textContent = 'checking…';
-      root.append(top, rtt);
-      grid.appendChild(root);
-      cards.set(t.url, { root, code, rtt });
+    for (const t of visibleTargets(f.max)) {
+      const ui = makeCard(t.label);
+      grid.appendChild(ui.root);
+      cards.set(t.url, ui);
     }
 
     for (const t of cfg.targets) probe(t, generation);
     renderSummary();
+  }
+
+  function makeCard(label) {
+    const root = document.createElement('div');
+    root.className = 'target';
+    const top = document.createElement('div');
+    top.className = 'top';
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = label;
+    const code = document.createElement('span');
+    code.className = 'code';
+    code.textContent = '···';
+    const rtt = document.createElement('div');
+    rtt.className = 'rtt';
+    rtt.textContent = 'checking…';
+    top.append(name, code);
+    root.append(top, rtt);
+    return { root, code, rtt };
   }
 
   // Columns follow the WIDTH as well as the count. Going by count alone put three targets
@@ -213,37 +227,98 @@
   // against a tile that has 12px of padding and two lines of text. Every name and status
   // in the band was clipped to nothing.
   //
-  // 300px is about where a name and its status code stop being comfortable side by side;
-  // 52px is a row plus its gap. Whatever does not fit is not rendered, and renderSummary
-  // says so — a tile clipped to invisibility is worse than one the widget admits it has no
-  // room for.
-  function fit() {
+  // 300px is about where a name and its status code stop being comfortable side by side.
+  // Whatever does not fit is not rendered, and renderSummary says so — a tile clipped to
+  // invisibility is worse than one the widget admits it has no room for.
+  //
+  // The rows are MEASURED: a card's rendered height plus the grid's gap, against the
+  // tile's height less its padding and, when the footer has something to say, its line.
+  // This used to be (height - 70) / 52: a header budget and a row pitch that were right
+  // for one text size, and the text now scales with the tile (--ts), so they were wrong
+  // at every size but one — and there is no header any more.
+  function columns() {
     const w = document.documentElement.clientWidth || 640;
-    const h = document.documentElement.clientHeight || 400;
-    const cols = Math.max(1, Math.min(Math.floor(w / 300) || 1, 4));
-    const rows = Math.max(1, Math.floor((h - 70) / 52));
+    return Math.max(1, Math.min(Math.floor(w / 300) || 1, 4));
+  }
+
+  function fit() {
+    const cols = columns();
+    const grid = el('grid');
+    const gap = parseFloat(getComputedStyle(grid).rowGap) || 0;
+    const pitch = cardHeight() + gap;
+    const bs = getComputedStyle(document.body);
+    const room = (document.documentElement.clientHeight || 400)
+      - (parseFloat(bs.paddingTop) || 0) - (parseFloat(bs.paddingBottom) || 0);
+    const rowsIn = (h) => (pitch > gap ? Math.max(1, Math.floor((h + gap) / pitch)) : 1);
+    let rows = rowsIn(room);
+    // The footer takes its line whenever it has something to say, and one of the things
+    // it says is that a target did not fit. So it is decided before the rows are counted
+    // against it, from the same inputs renderSummary reads.
+    if (footerNeeded(cols * rows))
+      rows = rowsIn(room - footerHeight() - (parseFloat(bs.rowGap) || 0));
     return { cols, max: cols * rows };
   }
 
+  // A card's height, from a card: one built the way build() builds them, measured in the
+  // grid (so it takes the grid's type and the tile scale) and taken straight out again.
+  // Absolutely positioned, so it is out of the grid's rows: a crowded grid shares its
+  // height among them, and a card measured in there reads as short as the squeeze.
+  function cardHeight() {
+    const grid = el('grid');
+    if (grid.hidden) return 0;
+    const ui = makeCard('Xg');
+    ui.code.textContent = '200';
+    ui.rtt.textContent = '~00 ms';
+    ui.root.style.cssText = 'position:absolute;visibility:hidden;left:0;top:0;width:200px';
+    grid.appendChild(ui.root);
+    const h = ui.root.getBoundingClientRect().height;
+    ui.root.remove();
+    return h;
+  }
+
+  // The footer's one line, measured the same way: shown for the read if it is hidden.
+  function footerHeight() {
+    const meta = el('meta');
+    const text = el('metaText');
+    const was = { hidden: meta.hidden, text: text.textContent };
+    meta.hidden = false;
+    if (!text.textContent) text.textContent = 'X';
+    const h = meta.getBoundingClientRect().height;
+    meta.hidden = was.hidden;
+    text.textContent = was.text;
+    return h;
+  }
+
+  // Everything renderSummary shows the footer for, given room for `max` cards.
+  function footerNeeded(max) {
+    if (cfg.dropped || cfg.targets.length > max) return true;
+    for (const r of results.values()) if (r.state === 'down' || r.state === 'slow') return true;
+    return false;
+  }
+
+  // A declaration, not a const: build() can run inside WW.onInit's registration, before
+  // the script has reached a const declared down here.
+  function fitKey(f) { return f.cols + 'x' + f.max; }
+
   function applyColumns() {
     if (!cfg.targets.length) return;
-    el('grid').style.gridTemplateColumns = 'repeat(' + Math.min(cfg.targets.length, fit().cols) + ', minmax(0, 1fr))';
+    el('grid').style.gridTemplateColumns = 'repeat(' + Math.min(cfg.targets.length, columns()) + ', minmax(0, 1fr))';
   }
 
   // Which targets get a card when the slot cannot show them all: the ones in TROUBLE
   // first, worst first. A grid whose entire job is to surface a red box was hiding red
   // boxes behind healthy ones purely because they were configured later — leaving a
-  // "1 down" pill with no way to learn which one. Stable within each group, so a steady
+  // "1 down" count with no way to learn which one. Stable within each group, so a steady
   // grid does not shuffle, and an unknown target outranks a healthy one rather than being
   // buried by it.
-  function visibleTargets() {
-    const max = fit().max;
+  function visibleTargets(max) {
+    if (max === undefined) max = fit().max;
     if (cfg.targets.length <= max) return cfg.targets;
     const rank = (t) => {
       const r = results.get(t.url);
       if (!r) return 2;
       // Down outranks slow: they are not the same news. Four slow boxes configured before
-      // one dead one would otherwise fill every card in yellow while the pill said "1 down"
+      // one dead one would otherwise fill every card in yellow while the footer said "1 down"
       // and still named nothing, which is the exact hole this ordering exists to close.
       return r.state === 'down' ? 0 : r.state === 'slow' ? 1 : 3;
     };
@@ -257,18 +332,23 @@
   const visibleKey = () => visibleTargets().map((t) => t.url).join('\n');
 
   let resizeTimer = null;
-  let lastFit = '';
   window.addEventListener('resize', () => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       // A resize can change how many tiles FIT, not only how they are arranged, so the
       // grid is rebuilt when that number moves and merely re-columned when it does not.
       // The rebuild reuses the results already in hand; it does not restart the probes.
-      const f = fit();
-      const key = f.cols + 'x' + f.max;
-      if (key !== lastFit) { lastFit = key; relayout(); } else applyColumns();
+      if (!cfg.targets.length) return;
+      if (fitKey(fit()) !== lastFit) relayout(); else applyColumns();
     }, 120);
   });
+
+  // What fit() measures can also move with no resize to say so, twice at start-up: the
+  // tile scale is stamped at DOMContentLoaded (widget-api.js), which can come after the
+  // first init has laid the cards out, and the web font swaps in when it arrives.
+  function refit() { if (cfg.targets.length && !el('grid').hidden && fitKey(fit()) !== lastFit) relayout(); }
+  document.addEventListener('DOMContentLoaded', refit);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(refit);
 
   // Cards only, from what is already known. build() owns the probe chains; this does not
   // touch them, so resizing a slot never re-probes anyone's network.
@@ -277,25 +357,13 @@
     const grid = el('grid');
     grid.textContent = '';
     cards.clear();
-    cfg.hidden = Math.max(0, cfg.targets.length - fit().max);
-    for (const t of visibleTargets()) {
-      const root = document.createElement('div');
-      root.className = 'target';
-      const top = document.createElement('div');
-      top.className = 'top';
-      const name = document.createElement('span');
-      name.className = 'name';
-      name.textContent = t.label;
-      const code = document.createElement('span');
-      code.className = 'code';
-      code.textContent = '···';
-      const rtt = document.createElement('div');
-      rtt.className = 'rtt';
-      rtt.textContent = 'checking…';
-      top.append(name, code);
-      root.append(top, rtt);
-      grid.appendChild(root);
-      cards.set(t.url, { root, code, rtt });
+    const f = fit();
+    lastFit = fitKey(f);
+    cfg.hidden = Math.max(0, cfg.targets.length - f.max);
+    for (const t of visibleTargets(f.max)) {
+      const ui = makeCard(t.label);
+      grid.appendChild(ui.root);
+      cards.set(t.url, ui);
       const known = results.get(t.url);
       if (known) renderTarget(t, known);
     }
@@ -389,8 +457,11 @@
           results.set(target.url, outcome);
           // A result can change WHICH targets deserve a card, not just what one says, so a
           // membership change relays out rather than updating a tile that may no longer be
-          // on screen — or failing to create one for a target that just went red.
-          if (cfg.hidden && visibleKey() !== [...cards.keys()].join('\n')) relayout();
+          // on screen — or failing to create one for a target that just went red. It can
+          // also change how many cards there is room for, by bringing the footer's line
+          // up or taking it away.
+          if (fitKey(fit()) !== lastFit
+              || (cfg.hidden && visibleKey() !== [...cards.keys()].join('\n'))) relayout();
           else { renderTarget(target, outcome); renderSummary(); }
         }
         // Per TARGET, because that is the unit that is failing. A box that is switched off
@@ -429,6 +500,13 @@
       : 'unreachable';
   }
 
+  // The footer reports exceptions, not health: the down (or else slow) count — which
+  // includes targets the slot has no card for — in the pill, and any targets checked
+  // without a card or not checked at all beside it. Everything up, nothing hidden: no
+  // footer. There is no "Checking" either; each card says "checking…" for itself.
+  //
+  // It no longer carries a standing note that the times are relative. That was on every
+  // tile, all the time; the "~" on each time says it (renderTarget).
   function renderSummary() {
     const seen = [...results.values()];
     const down = seen.filter((r) => r.state === 'down').length;
@@ -437,16 +515,15 @@
     // Set explicitly on every branch: this runs on each sweep, so a pill hidden by the
     // last healthy one has to come back the moment something goes wrong.
     pill.hidden = false;
-    if (seen.length < cfg.targets.length) { pill.textContent = 'Checking'; pill.className = 'pill muted'; }
-    else if (down) { pill.textContent = down + ' down'; pill.className = 'pill err'; }
+    if (down) { pill.textContent = down + ' down'; pill.className = 'pill err'; }
     else if (slow) { pill.textContent = slow + ' slow'; pill.className = 'pill warn'; }
     else pill.hidden = true;   // healthy: the pill reports exceptions, not health
     const notes = [];
     if (cfg.dropped) notes.push(cfg.dropped + ' more target' + (cfg.dropped === 1 ? '' : 's')
       + ' configured than this widget checks (' + MAX_TARGETS + ' max)');
     if (cfg.hidden) notes.push(cfg.hidden + ' checked but no room to show ' + (cfg.hidden === 1 ? 'it' : 'them') + ' in this slot');
-    notes.push('times are relative — a blocked call is retried through the host and counts that hop');
-    el('meta').textContent = notes.join(' · ');
+    el('metaText').textContent = notes.join(' · ');
+    el('meta').hidden = pill.hidden && !notes.length;
   }
 
   document.addEventListener('visibilitychange', () => {

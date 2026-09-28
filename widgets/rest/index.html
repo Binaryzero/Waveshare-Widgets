@@ -6,32 +6,40 @@
 <link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
   /* Layout only — every color is a token from widget-base.css, so the tile follows
-   * the global theme and any per-slot style override with no code of its own. */
-  body { display: flex; flex-direction: column; padding: 10px 12px; gap: 4px; }
-  header { display: flex; align-items: center; gap: 8px; flex: none; }
-  header .kicker {
-    flex: 1; min-width: 0;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    font-size: calc(clamp(9px, 3vh, 13px) * var(--label-scale, 1));
-  }
+   * the global theme and any per-slot style override with no code of its own.
+   * No header. The title the user gave the value is data, so it sits over the number it
+   * names, readable, and only when there is one; the widget's own name is gone. Text is
+   * its size at the smallest tile (a 320x200 band) times the tile scale (--ts,
+   * widget-base.css); the number itself is sized to the tile, below. */
+  body { display: flex; flex-direction: column; padding: 10px 12px; gap: calc(3px * var(--ts)); }
   /* One value, centred: on a wide slot a left-aligned number strands two thirds of
    * the tile in empty black. The whole tile IS the readout. */
   #body {
     flex: 1;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
+    gap: calc(2px * var(--ts));
     min-height: 0;
   }
+  #title, #stateLabel {
+    max-width: 100%;
+    color: var(--text-muted); font-weight: 600; letter-spacing: 0.02em;
+    font-size: calc(12px * var(--ts) * var(--label-scale, 1));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   /* Baseline-aligned number + unit: the unit must never ride above the digits. */
-  .readout { display: flex; align-items: baseline; gap: 6px; max-width: 100%; }
+  .readout { display: flex; align-items: baseline; gap: calc(3px * var(--ts)); max-width: 100%; }
   #value {
-    /* Bounded by BOTH axes: height keeps it inside a 200px band, width keeps it from
-     * looking lost on a 640/960px slot. `--value-fit` is the measure-and-shrink factor
+    /* Bounded by BOTH axes: height keeps it inside a 200px band, width keeps it inside a
+     * quarter tile. `--value-fit` is the measure-and-shrink factor
      * (#173): the clamp sizes the number from the viewport, then script shrinks the font
      * when a merely LONG value would overflow the tile's width, so the digits that carry
      * the magnitude are not clipped away. Default 1 keeps the clamp's size when it fits;
-     * the ellipsis below is the last resort once the fit floor is reached. */
-    font-size: calc(clamp(26px, min(24vh, 20vw), 132px) * var(--value-scale, 1) * var(--value-fit, 1));
+     * the ellipsis below is the last resort once the fit floor is reached.
+     * The number is sized to the tile, not by the tile scale: it is the tile, and it
+     * already grew with it. The room the header had goes to it (28vh, from 24vh), and
+     * the floor scales like all text. */
+    font-size: calc(clamp(calc(26px * var(--ts)), min(28vh, 26vw), 160px) * var(--value-scale, 1) * var(--value-fit, 1));
     line-height: 1.05;
     min-width: 0;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -40,38 +48,41 @@
    * on a wall of tiles, "fine" should be quiet and only warn/crit should pull the eye. */
   #value.warn { color: var(--warn); }
   #value.crit { color: var(--err); }
-  #unit { font-size: calc(clamp(11px, min(6vh, 5vw), 34px) * var(--label-scale, 1)); }
+  /* Keeps its proportion to the number it qualifies, with a floor that scales. */
+  #unit { font-size: calc(clamp(calc(12px * var(--ts)), min(7vh, 6.5vw), 40px) * var(--label-scale, 1)); }
   footer {
     flex: none;
     text-align: center;
     color: var(--text-dim);
-    font-size: calc(clamp(8px, 2.4vh, 11px) * var(--label-scale, 1));
+    font-size: calc(9px * var(--ts) * var(--label-scale, 1));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  footer .pill { font-size: inherit; margin-right: 0.6em; }
   /* Stale: the last good number stays readable but visibly demoted — on a glanceable
    * panel old data beats no data, as long as it admits to being old. */
   #body.stale { opacity: 0.55; }
   #state { position: absolute; inset: 0; }
-  /* The quarter slot is the hard case: drop the footer rather than crush the number. */
-  @media (max-width: 360px) { footer { display: none; } }
+  /* The quarter slot is the hard case: drop the age rather than crush the number. The
+   * Stale pill stays — it is the one thing the tile must not stop saying. */
+  @media (max-width: 360px) { #meta { display: none; } }
+  /* A 200px band has no height to spare over a card with a Retry button in it. */
+  @media (max-height: 240px) { #stateLabel { display: none; } }
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker" id="title">REST</span>
-    <span class="pill muted" id="pill" hidden>Stale</span>
-  </header>
-
   <main id="body" hidden>
+    <div id="title" hidden></div>
     <div class="readout">
       <span class="value hero" id="value">--</span>
       <span class="unit" id="unit"></span>
     </div>
   </main>
 
-  <footer id="meta"></footer>
+  <footer><span class="pill muted" id="pill" hidden>Stale</span><span id="meta"></span></footer>
 
   <div class="state-card" id="state">
+    <!-- The title again, so a card with no reading still says which reading it is. -->
+    <div id="stateLabel" hidden></div>
     <div class="spinner" id="spin"></div>
     <div class="state-icon" id="stateIcon" hidden>◎</div>
     <div class="state-title" id="stateTitle" hidden></div>
@@ -86,7 +97,7 @@
   const el = (id) => document.getElementById(id);
   const isHttps = (u) => /^https:\/\//i.test(String(u || ''));
   const cfg = {
-    url: '', pointer: '', unit: '', decimals: 0,
+    url: '', pointer: '', unit: '', decimals: 0, label: '',
     pollSeconds: 60, warn: null, crit: null,
     headerName: '', headerValue: '', selfSigned: false,
     authMode: 'none', tokenEndpoint: '', clientId: '', clientSecret: '', scope: '',
@@ -196,6 +207,10 @@
     }
     el('retry').hidden = !retry;
     el('pill').hidden = true;
+    // Which reading this card is about: with the header gone, the title is the only
+    // thing that tells one failing REST tile from its neighbours.
+    el('stateLabel').textContent = cfg.label;
+    el('stateLabel').hidden = !cfg.label;
   }
 
   function showLoading() {
@@ -203,7 +218,7 @@
     el('state').hidden = false;
     el('state').classList.remove('err');
     el('spin').hidden = false;
-    for (const id of ['stateIcon', 'stateTitle', 'stateBody', 'retry']) el(id).hidden = true;
+    for (const id of ['stateLabel', 'stateIcon', 'stateTitle', 'stateBody', 'retry']) el(id).hidden = true;
   }
 
   /** Paints the number and nothing else. Split out from showValue because a repeated
@@ -898,7 +913,15 @@
       halted = false;
     }
 
-    el('title').textContent = String(s.label || '').trim() || 'REST';
+    // The user's title for the value, over the number. None given, none shown: the tile no
+    // longer names itself ("REST" was the widget's name, not the reading's).
+    cfg.label = String(s.label || '').trim();
+    el('title').textContent = cfg.label;
+    el('title').hidden = !cfg.label;
+    if (!el('state').hidden && !el('stateIcon').hidden) {
+      el('stateLabel').textContent = cfg.label;
+      el('stateLabel').hidden = !cfg.label;
+    }
     el('unit').textContent = cfg.unit;
 
     // A repeated init (settings edit, theme push) must not stack timers or throw the

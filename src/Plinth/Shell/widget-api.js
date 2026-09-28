@@ -15,6 +15,40 @@
     if (document.documentElement && !state.ready) document.documentElement.dataset.wwWaiting = '1';
   }, { once: true });
   const state = { settings: {}, sensors: [], media: null, status: null, theme: null, notifications: null, withheld: [], ready: false };
+
+  // >>> ww-tile-scale — extracted and RUN by tests/harness/tilescale-run.js. Free names: none.
+  // Text scales with the tile (owner, beta.21: "everything is too TINY"). The panels run at
+  // 170-185 pixels per inch with no display scaling, so 13.5px body text is about 2mm tall
+  // there, roughly half the size the same number gives on a desktop monitor. Every size in
+  // widget-base.css, and every stock widget's own type, is the size it had at the smallest
+  // tile (a quarter-width band, 320x200) multiplied by --ts. That tile gets 1.3 times its
+  // old text, and --ts grows with the fifth root of the area from there: a full 1280x400
+  // tile is eight quarter bands but gets 1.5 times their text (1.97), so a bigger tile
+  // still shows more, not just larger. Capped at 2.5 for the XENEON EDGE's full 2560x720.
+  function tileScale(w, h) {
+    if (!(w > 0 && h > 0)) return 1;
+    const s = 1.3 * Math.pow((w * h) / (320 * 200), 0.2);
+    return Math.round(Math.min(2.5, Math.max(1, s)) * 100) / 100;
+  }
+  // <<< ww-tile-scale
+  let tileScaleNow = 1;
+  // Widget documents only, like the swipe listeners below: the shim is injected into every
+  // document in the WebView, and a page a widget embeds may use --ts for its own purposes.
+  const isWidgetDocument = /ww-slot=/.test(location.hash);
+  function stampTileScale() {
+    tileScaleNow = tileScale(window.innerWidth, window.innerHeight);
+    if (isWidgetDocument && document.documentElement)
+      document.documentElement.style.setProperty('--ts', String(tileScaleNow));
+  }
+  // At document start the root is missing (the shim is injected before parsing), so this
+  // first stamp lands only for a document that loads the file itself. The ww-init handler
+  // stamps again before any onInit runs: the shell answers ww-ready at once, so the init
+  // can arrive while the document is still parsing, and a widget that measures in its
+  // onInit must measure the scaled text, not the 1 of the stylesheet. DOMContentLoaded
+  // catches a document that gets no init; a slot resized in place re-stamps on resize.
+  stampTileScale();
+  document.addEventListener('DOMContentLoaded', stampTileScale, { once: true });
+  window.addEventListener('resize', stampTileScale);
   // The shell's origin, learned from the init it answered us with — the shim is
   // injected into every document in the WebView and has no script URL of its own to
   // read it from, and hardcoding a host would break both the harness fixtures and
@@ -445,8 +479,10 @@
       // has exactly one legitimate reader — the URL builder below.
       if (typeof msg.relayToken === 'string') relayToken = msg.relayToken;
       if (msg.notifications !== undefined) state.notifications = msg.notifications;
-      // Design tokens land on :root before init callbacks so first paint is themed.
+      // Design tokens land on :root before init callbacks so first paint is themed, and the
+      // tile scale with them, so the first measurement is of the scaled text.
       applyThemeTokens(msg.theme);
+      stampTileScale();
       // Same reason, same moment: a widget that measures or paints in its own onInit must
       // already be inside the right background, or a transparent tile paints one frame as
       // an opaque one. Re-runs on every init, which is also how a settings edit arrives.
@@ -759,6 +795,9 @@
     get withheld() { return state.withheld.slice(); },
     /** Design-token map ({'--surface': '#111314', ...}); applied to :root automatically. */
     get theme() { return state.theme; },
+    /** The tile's text scale, the --ts that widget-base.css multiplies its type by: 1 at
+     * the smallest tile, larger as the tile grows. For text drawn on a canvas. */
+    get tileScale() { return tileScaleNow; },
 
     /** Scale an element's font-size to fit a box: WW.fitText(el, {width, height,
      * scale, min, max}). Returns the px size applied. See the note above the
@@ -771,8 +810,8 @@
     // but DOMContentLoaded has not fired — and because init already arrived, this callback
     // runs synchronously, right now, before the deferred stamp would have. Stamping first
     // means the callback's first paint and any measurement it takes are inside the right
-    // tile. No-ops when the class already landed.
-    onInit(cb) { listeners.init.push(cb); if (state.ready) { stampBackground(); cb(state); } },
+    // tile, at the right text scale. Both no-op when they already landed.
+    onInit(cb) { listeners.init.push(cb); if (state.ready) { stampBackground(); stampTileScale(); cb(state); } },
     /** cb(sensors) — fires on every poll tick (~2 s). */
     onSensors(cb) { listeners.sensors.push(cb); },
     /** cb(media) — fires when now-playing info changes. */

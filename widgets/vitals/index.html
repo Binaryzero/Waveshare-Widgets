@@ -6,15 +6,15 @@
 <link rel="stylesheet" href="https://app.plinth/widget-base.css" />
 <style>
   /* Widget-specific layout; tokens, background/bgStyle and the typography base
-   * come from widget-base.css. Designed for quarter (320px) first. */
+   * come from widget-base.css. Designed for quarter (320px) first. Type is the size
+   * each role had at the smallest tile (a 320x200 band) times the tile scale (--ts,
+   * widget-base.css), so a bigger tile reads bigger. */
   body {
     display: flex;
     flex-direction: column;
     padding: clamp(8px, 2.5vh, 14px) clamp(10px, 3%, 18px);
-    gap: clamp(4px, 1.2vh, 8px);
+    gap: calc(4px * var(--ts));
   }
-  header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
-  #streakPill { flex: none; font-variant-numeric: tabular-nums; }
 
   #main {
     flex: 1; min-height: 0;
@@ -28,15 +28,19 @@
   #pet rect { shape-rendering: crispEdges; }
   /* Mood recolors the whole creature through currentColor — state tokens only. */
   #pet.bright { color: var(--ok); }
-  #pet.neutral { color: var(--accent); }
+  /* The creature is a figure on the surface, read like text: the accent as a
+   * foreground, repaired against the surface like the state hues beside it. */
+  #pet.neutral { color: var(--accent-fg); }
   #pet.droopy { color: var(--warn); }
   #pet.critical { color: var(--err); }
   .px-b { fill: currentColor; }
   .px-s { fill: currentColor; opacity: 0.45; }
-  /* Ink and glint detail pixels over the state-hued body: the sanctioned
-   * monochrome rgba() alphas — they stay legible on every theme's state hues. */
-  .px-e { fill: rgba(0, 0, 0, 0.72); }
-  .px-h { fill: rgba(255, 255, 255, 0.85); }
+  /* Ink pixels (eyes, mouth) sit on the state-hued body, which the theme repairs
+   * against the surface, so the surface color is the ink that always reads on it.
+   * Glints (a sparkle, a sweat drop) sit beside the body on the tile itself: text
+   * color, which the theme guarantees there. */
+  .px-e { fill: rgba(var(--surface-rgb), 0.85); }
+  .px-h { fill: var(--text); fill-opacity: 0.85; }
   /* Slow blink + a gentle bob — opacity/transform only. JS never re-enables motion
    * under reduced motion; the base only guards its own classes, so we guard ours. */
   #pet .eyes { animation: vt-blink 4.4s step-end infinite; }
@@ -49,27 +53,28 @@
   @keyframes vt-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(2.5%); } }
   @media (prefers-reduced-motion: reduce) { #pet, #pet .eyes { animation: none; } }
   #petName {
-    font-size: 12px; font-weight: 700; color: var(--text-muted);
-    max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: calc(12px * var(--ts)); font-weight: 700; color: var(--text-muted);
+    max-width: 11em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
   /* ---- meters ---------------------------------------------------------------- */
-  #meters { flex: none; display: flex; flex-direction: column; gap: clamp(4px, 1.2vh, 8px); }
+  #meters { flex: none; display: flex; flex-direction: column; gap: calc(4px * var(--ts)); }
   .meter-row {
-    display: flex; align-items: center; gap: var(--space-2);
+    display: flex; align-items: center; gap: calc(6px * var(--ts));
     width: 100%; min-height: 44px;
-    padding: 4px clamp(8px, 2vh, 12px);
+    padding: calc(3px * var(--ts)) calc(7px * var(--ts));
     font: inherit; color: inherit; text-align: left; cursor: pointer;
     /* Here rather than as a .no-pan class: renderMeters() reassigns className wholesale on
      * every severity change, which stripped the class and left the rows pannable again.
      * These sit in #meters, outside the #cardBox scroller, so nothing here needs to pan. */
     touch-action: none;
   }
-  .m-label { flex: none; width: 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* em, so the column grows with its label's text: POSTURE and STRETCH fit whole. */
+  .m-label { flex: none; width: 7.2em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .segs {
     flex: 1; min-width: 0;
     display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px;
-    height: clamp(10px, 2.6vh, 14px);
+    height: calc(8px * var(--ts));
   }
   .segs i { background: var(--control-bg); }
   .meter-row.ok .segs i.f { background: var(--ok); }
@@ -77,24 +82,32 @@
   .meter-row.err .segs i.f { background: var(--err); }
   .m-val {
     flex: none; min-width: 4ch; text-align: right;
-    font-size: 11px; font-weight: 700; color: var(--text-dim);
+    font-size: calc(11px * var(--ts)); font-weight: 700; color: var(--text-dim);
     font-variant-numeric: tabular-nums;
   }
 
-  /* ---- XP / streak footer ----------------------------------------------------- */
-  #xpRow { flex: none; display: flex; align-items: center; gap: var(--space-2); }
+  /* ---- XP / streak footer -----------------------------------------------------
+   * The streak lives here, with the level and XP it is the other half of; the
+   * corner it used to sit in is gone. Absent while there is no streak. */
+  #xpRow {
+    flex: none; display: flex; flex-wrap: wrap; align-items: center;
+    gap: calc(2px * var(--ts)) calc(6px * var(--ts));
+  }
   #lvl { flex: none; color: var(--text-muted); }
-  #lvlMeter { flex: 1; min-width: 0; max-width: 160px; }
-  #xpText { flex: none; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  /* The level bar keeps a readable length: on a quarter tile the streak goes to a
+   * line of its own rather than squeezing the bar to a stub. */
+  #lvlMeter { flex: 1 1 calc(40px * var(--ts)); min-width: calc(40px * var(--ts)); max-width: calc(120px * var(--ts)); }
+  #xpText { flex: none; font-size: calc(11px * var(--ts)); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  #streakPill { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
   /* ---- speech bubble ---------------------------------------------------------- */
   #bubble {
     position: fixed; top: clamp(6px, 2vh, 12px); left: 50%;
     transform: translateX(-50%);
     z-index: 5;
-    max-width: min(380px, 88%);
-    padding: 6px 12px;
-    font-size: 12px; line-height: 1.4; color: var(--text);
+    max-width: min(calc(290px * var(--ts)), 88%);
+    padding: calc(5px * var(--ts)) calc(9px * var(--ts));
+    font-size: calc(12px * var(--ts)); line-height: 1.4; color: var(--text);
     border-color: rgba(var(--accent-rgb), 0.5);
     animation: vt-pop var(--dur-mid) var(--ease);
   }
@@ -110,7 +123,9 @@
     position: fixed; inset: 0; z-index: 10;
     display: flex; align-items: center; justify-content: center;
     padding: clamp(8px, 3vh, 20px);
-    background: rgba(0, 0, 0, 0.55);
+    /* A scrim of the tile's own surface, not black, so a light theme dims toward its
+     * own tone instead of to a dark grey behind the card. */
+    background: rgba(var(--surface-rgb), 0.72);
   }
   /* Keep the full-bleed backdrop visual, but reserve the shell's 8px page rails from
    * the whole-surface dismiss action. This is a sibling of the pan-y card so it cannot
@@ -118,19 +133,19 @@
   #overlayDismiss { position: absolute; inset: 0 8px; z-index: 0; touch-action: none; }
   #cardBox {
     position: relative; z-index: 1;
-    width: min(440px, 94%); max-height: 100%;
+    width: min(calc(340px * var(--ts)), 94%); max-height: 100%;
     overflow-y: auto; scrollbar-width: none;
     /* pan-y, not auto: a HORIZONTAL drag starting on a control inside this list has
      * this element as its nearest scrolling ancestor, so a document-level rule never
      * sees it — and with the default the pan chains out to the shell's #pages and
      * changes page (measured: scrollLeft 0 -> 612). Vertical scrolling is unaffected. */
     touch-action: pan-y;
-    display: flex; flex-direction: column; gap: clamp(4px, 1.4vh, 8px);
-    padding: clamp(10px, 3vh, 18px);
+    display: flex; flex-direction: column; gap: calc(4px * var(--ts));
+    padding: calc(8px * var(--ts));
   }
   #cardBox::-webkit-scrollbar { display: none; }
-  #cardTitle { font-size: clamp(14px, 4vh, 17px); font-weight: 700; color: var(--text); padding-right: 44px; }
-  #cardBody { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
+  #cardTitle { font-size: calc(14px * var(--ts)); font-weight: 700; color: var(--text); padding-right: 44px; }
+  #cardBody { font-size: calc(12px * var(--ts)); color: var(--text-muted); line-height: 1.45; }
   #cardActions { display: flex; gap: var(--space-2); margin-top: 2px; }
   #cardDone { flex: 1; min-height: 44px; }
   #cardClose { position: absolute; top: 6px; right: 6px; width: 40px; padding: 0; color: var(--text-muted); }
@@ -138,29 +153,28 @@
   /* ---- wide slots -------------------------------------------------------------- */
   @media (min-width: 520px) {
     #main { flex-direction: row; align-items: center; justify-content: center; gap: clamp(10px, 3vw, 28px); }
-    #meters { flex: 1; min-width: 0; max-width: 560px; }
+    #meters { flex: 1; min-width: 0; max-width: calc(430px * var(--ts)); }
   }
   @media (min-width: 900px) {
     #meters {
-      max-width: 980px;
+      max-width: calc(750px * var(--ts));
       display: grid; grid-template-columns: 1fr 1fr; align-content: center;
-      gap: clamp(6px, 1.6vh, 10px) clamp(10px, 2vw, 18px);
+      gap: calc(5px * var(--ts)) clamp(10px, 2vw, 18px);
     }
   }
 
-  /* ---- 200px bands: thin bars, small pet, no XP row. The header is dropped so
-   * all four meter rows keep the 40px touch floor inside 200px. ---------------- */
+  /* ---- 200px bands: small pet, and no XP row below 900px wide, so all four meter
+   * rows keep the 40px touch floor inside 200px. From 900px the meters pair up in
+   * two rows, and the XP row (with the streak) fits under them. ----------------- */
   @media (max-height: 240px) {
-    body { padding: 6px 10px; gap: 4px; }
-    /* header.hd, not header: the grammar class carries (0,1,0) specificity
-     * and a bare element selector no longer outranks it. */
-    header.hd, #xpRow, #petName { display: none; }
+    body { padding: 6px 10px; }
+    #petName { display: none; }
     #main { flex-direction: row; align-items: center; justify-content: center; gap: clamp(8px, 2vw, 18px); }
     #meters { flex: 1; min-width: 0; }
     #pet { width: clamp(40px, 24vh, 56px); }
     .meter-row { min-height: 40px; padding: 2px 8px; }
-    .segs { height: 8px; }
   }
+  @media (max-height: 240px) and (max-width: 899px) { #xpRow { display: none; } }
 
   /* State layer covers the whole tile; it paints the surface at the effective
    * panel opacity so it matches the tile's bgStyle (stock countdown pattern). */
@@ -171,10 +185,6 @@
 </style>
 </head>
 <body>
-  <header class="hd">
-    <span class="kicker">Vitals</span>
-    <span class="pill ok" id="streakPill" hidden></span>
-  </header>
   <main id="main" hidden>
     <section id="petBox" aria-hidden="true">
       <svg id="pet" viewBox="0 0 13 12"></svg>
@@ -186,6 +196,7 @@
     <span class="kicker" id="lvl">Lv 0</span>
     <div class="meter" id="lvlMeter"><i id="lvlFill" style="width: 0%"></i></div>
     <span id="xpText">0 XP</span>
+    <span class="pill ok" id="streakPill" hidden></span>
   </footer>
   <div class="state-card" id="state">
     <div class="spinner" id="stateSpinner"></div>

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The header pill reports EXCEPTIONS, not health (issue #205).
+// The pill reports EXCEPTIONS, not health (issue #205).
 //
 // Every stock tile carried a permanent badge in its top-right corner reading LIVE, ALL UP,
 // CLEAR, QUIET, LOADED or SCHEDULED — a word that was true from the moment the widget
@@ -16,6 +16,12 @@
 //
 // --reject matches document.innerText, which omits hidden elements, and widget-base
 // uppercases pill text — so the nominal word appearing at all means the pill is showing.
+//
+// Widgets have no header now (beta.21: the corner text went), so the pill is no longer in
+// a corner: endpoints' down/slow count is in a footer shown only then, ollama's Idle sits
+// beside the zero it explains and its Stale is in a footer. The cases match the document's
+// text, so they follow the pill wherever it lives; P1 and P3 also reject the exception
+// words themselves now, so a healthy render that left the footer up would fail them.
 //
 // endpoints and ollama carry it because their stock fixtures reach a genuinely healthy
 // render and a genuinely degraded one without needing credentials. The other six widgets
@@ -45,13 +51,13 @@ const DOWN_TARGETS = JSON.stringify({
 
 const CASES = [
   { id: 'P1', widget: 'endpoints', stubs: 'endpoints.json',
-    args: ['--expect', 'Router', '--reject', 'ALL UP'],
+    args: ['--expect', 'Router', '--reject', 'ALL UP', '--reject', 'DOWN', '--reject', 'SLOW'],
     what: 'every endpoint up leaves the corner empty' },
   { id: 'P2', widget: 'endpoints', stubs: 'endpoints.json',
     args: ['--settings', DOWN_TARGETS, '--expect', 'DOWN'],
     what: '...and an endpoint that is down still says so' },
   { id: 'P3', widget: 'ollama', stubs: 'ollama.json',
-    args: ['--expect', 'llama3.1:8b', '--reject', 'LOADED'],
+    args: ['--expect', 'llama3.1:8b', '--reject', 'LOADED', '--reject', 'STALE', '--reject', 'IDLE'],
     what: 'models loaded and listed leaves the corner empty' },
   { id: 'P4', widget: 'ollama', stubs: 'ollama-idle.json',
     args: ['--expect', 'IDLE'],
@@ -81,34 +87,27 @@ for (const c of CASES) {
 }
 
 // ===== Part B · recovery INSIDE one mounted instance ==================================
-// The four cases above each launch their own process, so the degraded ones start from a
-// pill that is still visible from boot ('Loading'/'Checking') and never follow a healthy
-// render. That means they pass whether or not anything re-shows a pill the healthy render
-// hid — which is the whole risk this change introduces, and it went untested until review
-// pointed at it.
+// The four cases above each launch their own process, so the degraded ones never follow a
+// healthy render. That means they pass whether or not anything re-shows a pill the healthy
+// render hid — which is the whole risk the exceptions-only rule introduces, and it went
+// untested until review pointed at it.
 //
 // So: one widget, one mount, driven healthy → hidden → changed. `ollama` carries it because
-// an address change is the fastest post-healthy path back to a visible pill (no poll to wait
-// for), and because its reset() → showLoading() is one of the eight assignments added here.
+// an address change is the fastest post-healthy path to a different state (no poll to wait
+// for), and a failing poll is the path to its one remaining pill, Stale.
 //
-// Reading the source, I expected this to land in showLoading() and wrote the check to
-// assert the word 'Loading'. It lands in showError(): an address change resets `answered`
-// to false, so the first refusal from the new address is "nothing has answered" rather
-// than "stale". The assertion is therefore on what the change actually guarantees — the
-// pill is VISIBLE again — not on which word it recovers with, which is a race between the
-// reset and how fast the new address refuses.
+// R2 CHANGED WITH THE HEADER (beta.21). It used to assert that the address change brought
+// the pill back — as 'Loading' or 'Error' — because the risk was an error card with an empty
+// header corner. There is no header now, and Loading and Error have no pill by design: the
+// state card is what says them (WIDGET-STANDARD §4). So R2 asserts what the change
+// guarantees now: the state card is up in place of the data, and no pill repeats it.
+// Deleting showLoading()'s or showError()'s card still fails it — the tile would go on
+// showing the previous server's models, which is what R2 was always about.
 //
-// WHAT THIS CHECK CAN AND CANNOT DISTINGUISH, measured rather than assumed. reset() calls
-// showLoading() and then tick(), which fails into showError() — so the two added
-// assignments are redundant WITH EACH OTHER on this path, and deleting either one alone
-// leaves R2 green. Deleting BOTH fails it, with the tile in exactly the state the change
-// exists to prevent:
-//
-//     FAIL R2 ... - {"hidden":true,"text":"Error"}
-//
-// an error card whose header corner is empty. So R2 falsifies the pair, not either member.
-// Worth stating because the obvious single-line revert does NOT turn it red, and a future
-// reader deleting one of them would otherwise take a green run as permission.
+// R4/R5 carry the pill-comes-back half at the pill's new location: after that healthy
+// render hid it, a failed poll must bring Stale up in the footer, and the next good one
+// must take it away again. Neither is satisfied by a pill that is simply always shown or
+// never shown.
 const { chromium } = require('playwright');
 const fs = require('fs');
 
@@ -186,38 +185,55 @@ const initFor = (baseUrl) => ({ type: 'ww-init',
   await frame.waitForLoadState('domcontentloaded').catch(() => {});
   await page.waitForTimeout(2000);
 
+  // Visible means laid out: the pill's own `hidden`, or a hidden footer around it, both
+  // leave it with no box. The state card and the data pane are read the same way.
   const pill = () => frame.evaluate(() => {
+    const shown = (el) => !!(el && !el.hidden && el.getClientRects().length > 0);
     const p = document.getElementById('pill');
-    return { hidden: !!(p && (p.hidden || getComputedStyle(p).display === 'none')),
-      text: (p && p.textContent) || '' };
+    return { hidden: !shown(p), text: (p && p.textContent) || '',
+      card: shown(document.getElementById('state')), data: shown(document.getElementById('data')) };
   });
 
   // R1 is the PRECONDITION, asserted rather than assumed: if the healthy render never hid
-  // the pill, R2 below is testing nothing at all — it would pass against a widget that
+  // the pill, R4 below is testing nothing at all — it would pass against a widget that
   // simply left the pill up from boot.
   const healthy = await pill();
   check('R1 setup: a healthy render hid the pill, so there is something to recover from',
-    healthy.hidden, JSON.stringify(healthy));
+    healthy.hidden && healthy.data && !healthy.card, JSON.stringify(healthy));
 
   // The user retypes the server address, and the new one is not answering yet. Whichever
-  // card that produces, the pill has to come back from hidden — that is the assignment
-  // under test, and without it the tile shows an error with an empty corner.
+  // card that produces (loading, then the error), it has to replace the data — the previous
+  // server's models — and it is the card that says so, not a pill (see R2 above).
   await page.evaluate((init) => window.__wwPush(init), initFor(BASE_B));
   await page.waitForTimeout(1500);
   const afterSwitch = await pill();
-  check('R2 a state change after that healthy render brings the pill back',
-    !afterSwitch.hidden && afterSwitch.text.trim() !== '', JSON.stringify(afterSwitch));
+  check('R2 a state change after that healthy render puts the state card up, and no pill repeats it',
+    afterSwitch.card && !afterSwitch.data && afterSwitch.hidden, JSON.stringify(afterSwitch));
 
-  // ...and it is a recovery, not a badge that is simply stuck on now: point the fake server
-  // at the new address and the pill goes away again on the next healthy render. Without
-  // this, R2 is satisfied by a widget that shows the pill from here on forever.
+  // ...and it is a recovery, not a card that is simply stuck on now: point the fake server
+  // at the new address and the data comes back, with no pill, on the next healthy render.
   await page.evaluate((b) => { window.__serving = b; }, BASE_B);
   // One failure has already stretched the interval (refreshMs * 2^failures), so this waits
   // out the backed-off retry rather than the nominal 5s.
   await page.waitForTimeout(16000);
   const recovered = await pill();
   check('R3 ...and it goes quiet again once the new address answers',
-    recovered.hidden, JSON.stringify(recovered));
+    recovered.hidden && recovered.data && !recovered.card, JSON.stringify(recovered));
+
+  // R4 · the pill that remains. The server that just answered stops answering: the models
+  // stay up, dimmed, and Stale comes back from hidden — in the footer now.
+  await page.evaluate(() => { window.__serving = 'http://nowhere.test'; });
+  await page.waitForTimeout(7000);   // the next 5s poll, and its refusal
+  const wentStale = await pill();
+  check('R4 a failed poll after a healthy render brings the Stale pill back',
+    !wentStale.hidden && wentStale.text.trim() === 'Stale' && wentStale.data, JSON.stringify(wentStale));
+
+  // R5 · ...and takes it away again when the server answers.
+  await page.evaluate((b) => { window.__serving = b; }, BASE_B);
+  await page.waitForTimeout(12000);  // one failure: the retry is 10s out
+  const back = await pill();
+  check('R5 ...and the next good answer hides it again',
+    back.hidden && back.data, JSON.stringify(back));
 
   await browser.close();
   console.log(failures > 0 ? `\n${failures} FAILURES` : '\nALL PASS');
