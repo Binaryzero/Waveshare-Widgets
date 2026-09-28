@@ -16,6 +16,8 @@ public static class PaletteEngine
     private const double MutedContrast = 4.5;
     private const double DimContrast = 3.0;
     private const double StateContrast = 4.5;
+    /// <summary>Primary text's floor on the fills above the tile (cards, buttons).</summary>
+    private const double RaisedTextContrast = 4.5;
 
     /// <summary>Opacity of the settings sheets (#propSheet / #stylePanel in shell.css) that
     /// carry muted body text over the wallpaper. Kept in lockstep with palette.js's
@@ -50,6 +52,12 @@ public static class PaletteEngine
         // repaired against both of its surfaces in one pass — sequential repairs can
         // flip direction between mid-tone surfaces and undo the first guarantee.
         text = EnsureContrast(text, surface, TextContrast);
+        // Primary text also sits on nested cards and buttons. On a mid-tone Background the
+        // tile-only repair can pick the pole that clears the tile and falls below 4.5:1 on
+        // the fills a step toward the text colour; then all three are repaired to 4.5 at
+        // once. Only then: a theme whose text already clears them is left as it was.
+        if (Math.Min(Contrast(text, surfaceAlt), Contrast(text, control)) < RaisedTextContrast)
+            text = EnsureContrast(text, [surface, surfaceAlt, control], RaisedTextContrast);
         // Muted also renders on the GLASS settings sheets, which composite the surface with
         // the wallpaper (#217), so it is repaired against those float composites too (see
         // GlassSurfaces) — otherwise a role that clears 4.5:1 on the opaque surface drops

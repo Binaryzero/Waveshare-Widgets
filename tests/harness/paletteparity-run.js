@@ -10,6 +10,7 @@
 //   T3 · state colours follow the theme: two accents that differ in saturation give
 //        different state colours, each state keeps its own hue family, and a grey accent
 //        still gives coloured states
+//   T5 · primary text clears 4.5:1 on the tile, cards and buttons wherever a colour can
 //   T4 · the stock fallbacks in widget-base.css and the token table in WIDGET-STANDARD.md
 //        are the stock theme as derived
 //
@@ -68,6 +69,32 @@ const sat = (hex) => {
 const grey = derive({ accent: '#808080', background: '#101418', text: '#e8e8e8' });
 check('T3c a grey accent still gives coloured states', ['--ok', '--warn', '--err', '--info'].every((k) => sat(grey[k]) >= 0.4),
   ['--ok', '--warn', '--err', '--info'].map((k) => `${k} ${grey[k]} s=${sat(grey[k]).toFixed(2)}`).join(' '));
+
+// T5 · primary text sits on the tile, on nested cards (--surface-alt) and on buttons
+// (--control-bg). On a mid-tone Background, repairing it against the tile alone picked
+// white for #508126 / #ddf878: 4.66:1 on the tile, 4.22 on cards, 3.94 on buttons. It must
+// clear 4.5 on all three wherever a colour can (a pole reaching 4.5 on all three).
+const hexRgb = (x) => [1, 3, 5].map((i) => parseInt(x.slice(i, i + 2), 16));
+const lumOf = (c) => { const ch = (v) => { const q = v / 255; return q <= 0.03928 ? q / 12.92 : Math.pow((q + 0.055) / 1.055, 2.4); };
+  return 0.2126 * ch(c[0]) + 0.7152 * ch(c[1]) + 0.0722 * ch(c[2]); };
+const ratio = (a, b) => { const la = lumOf(a), lb = lumOf(b); return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05); };
+const onRaised = (tk) => Math.min(...['--surface', '--surface-alt', '--control-bg'].map((k) => ratio(hexRgb(tk['--text']), hexRgb(tk[k]))));
+const reachable = (tk) => Math.max(...[[255, 255, 255], [0, 0, 0]].map((pole) =>
+  Math.min(...['--surface', '--surface-alt', '--control-bg'].map((k) => ratio(pole, hexRgb(tk[k])))))) >= 4.5;
+const ex = derive({ background: '#508126', text: '#ddf878' });
+check('T5 text clears 4.5 on the tile, cards and buttons of a mid-tone theme', onRaised(ex) >= 4.5,
+  `${ex['--text']} ${onRaised(ex).toFixed(2)}`);
+const lcg = (() => { let x = 0x2545F491; return () => (x = (Math.imul(x, 1103515245) + 12345) >>> 0) / 4294967296; })();
+const hx = () => '#' + [0, 0, 0].map(() => Math.floor(lcg() * 256).toString(16).padStart(2, '0')).join('');
+const under = [];
+for (let i = 0; i < 3000; i++) {
+  const tk = derive({ background: hx(), text: hx(), accent: hx() });
+  if (reachable(tk) && onRaised(tk) < 4.5) under.push(`${tk['--bg']}/${tk['--text']} ${onRaised(tk).toFixed(2)}`);
+}
+for (const { tokens } of battery)
+  if (reachable(tokens) && onRaised(tokens) < 4.5) under.push(`${tokens['--bg']}/${tokens['--text']} ${onRaised(tokens).toFixed(2)}`);
+check('T5b ...and over 3000 random themes and the battery, wherever a colour can', under.length === 0,
+  under.length ? `${under.length} under, e.g. ${under.slice(0, 3).join(' | ')}` : undefined);
 
 // T4 · the stock theme's tokens are baked into widget-base.css as fallbacks, so a widget
 // opened in a plain browser (or painting before the first theme push) looks as it will on

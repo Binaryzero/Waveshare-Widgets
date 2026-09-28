@@ -117,6 +117,11 @@
     let dim = mixc(text, surface, 0.60);
     const line = mixc(text, surface, 0.78);
     text = ensure(text, [surface], 7.0);
+    // Primary text also sits on nested cards and buttons. On a mid-tone Background the
+    // tile-only repair can pick the pole that clears the tile and falls below 4.5:1 on the
+    // fills a step toward the text colour; then all three are repaired to 4.5 at once.
+    // Only then: a theme whose text already clears them is left as it was.
+    if (minCon(text, [surfaceAlt, control]) < 4.5) text = ensure(text, [surface, surfaceAlt, control], 4.5);
     // #217 — the settings sheets (#propSheet / #stylePanel in shell.css) paint --surface at
     // ~94% opacity over the user's wallpaper, a SIBLING behind the glass, not an ancestor.
     // So muted text there renders over surface COMPOSITED with the wallpaper, not the opaque
