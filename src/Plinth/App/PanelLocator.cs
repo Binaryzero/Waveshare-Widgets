@@ -32,8 +32,12 @@ internal static class PanelLocator
             }
         }
 
-        return screens.FirstOrDefault(s =>
-            (s.Bounds.Width == 1280 && s.Bounds.Height == 400) ||
-            (s.Bounds.Width == 400 && s.Bounds.Height == 1280));
+        return screens.FirstOrDefault(s => LooksLikePanel(s.Bounds));
     }
+
+    /// <summary>The panel's pixel signature: 1280x400, or 400x1280 while Windows still has
+    /// it in its native portrait orientation.</summary>
+    public static bool LooksLikePanel(Rectangle bounds) =>
+        (bounds.Width == 1280 && bounds.Height == 400) ||
+        (bounds.Width == 400 && bounds.Height == 1280);
 }

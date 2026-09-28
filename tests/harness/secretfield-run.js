@@ -1173,13 +1173,20 @@ const layout = {
   const packed = await page.evaluate(() => {
     const g = (id) => document.getElementById(id);
     const d = g('dock');
+    const body = g('dockBody');
     // What the dock WANTS, measured with the cap lifted. Without this the assertion
     // below could pass on a dock that was never too tall in the first place — the
-    // hollow-probe failure mode this suite has hit six times.
-    const prev = d.style.maxHeight;
+    // hollow-probe failure mode this suite has hit six times. The fill fitReplica sets
+    // comes off too (a fixed height, and the dock body's cap lifted for it), or this
+    // would measure the fill rather than what the dock's content asks for.
+    const prev = { max: d.style.maxHeight, height: d.style.height, bodyMax: body.style.maxHeight };
     d.style.maxHeight = 'none';
+    d.style.height = '';
+    body.style.maxHeight = '';
     const natural = Math.round(d.getBoundingClientRect().height);
-    d.style.maxHeight = prev;
+    d.style.maxHeight = prev.max;
+    d.style.height = prev.height;
+    body.style.maxHeight = prev.bodyMax;
     return {
       natural,
       dockBottom: Math.round(d.getBoundingClientRect().bottom),

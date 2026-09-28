@@ -118,6 +118,10 @@
         </section>
       </div>
       </section>
+      <!-- Stands in for column 2 while nothing is selected, so the dock's widest column
+           says what goes there instead of being an empty field. Shown by CSS alone:
+           #contextPanel:not(.open) + #dockEmpty. -->
+      <p id="dockEmpty">Tap a widget in the preview, or its name above, to change its settings.</p>
 
       <!-- Column 3: how the selected widget LOOKS. Configuring a widget and
            personalising it are different jobs, so they are separate panels side by

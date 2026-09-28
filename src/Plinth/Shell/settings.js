@@ -1010,6 +1010,12 @@
     // plus the whole dock is subtracted; the floor keeps the strip usable if the
     // dock ever grows past the window.
     const dockEl = el('dock');
+    const dockBody = el('dockBody');
+    // The dock's OWN height is measured below, so the fill from the last fit comes off
+    // first. Left on, it would be read back as what the dock needs, and the canvas
+    // could then only ever shrink.
+    if (dockEl) dockEl.style.height = '';
+    if (dockBody) dockBody.style.maxHeight = '';
     // Everything the canvas and the dock have to share. stageTop is the header, the
     // rejected-widgets banner and the preview bar — none of which move when either of
     // those two heights changes, so this is a stable input rather than a term that
@@ -1043,6 +1049,28 @@
     previewFrame.style.transform = 'scale(' + scale + ')';
     previewFrame.style.marginLeft = Math.max(0, Math.round((width - 1280 * scale) / 2)) + 'px';
     previewStage.style.height = Math.round(400 * scale) + 'px';
+    // The canvas stops at native size (and at its strip ceiling), so on a tall window
+    // there is height left under the dock. The dock takes exactly what is left, down to
+    // the bottom edge: left alone it was an empty band under the columns. Set after the
+    // canvas has its height, so the canvas's own fit is unchanged. The resize this
+    // causes refits once more and lands on the same numbers, so it settles.
+    // A HEIGHT, not a minimum: with the cap lifted a long form would otherwise size the
+    // dock itself and carry it past the bottom edge. At a fixed height its columns
+    // scroll, as they already do under the cap, and on a window too short for even the
+    // capped dock it is the same height that keeps it inside the window. The dock's own
+    // ceiling is lifted with it: it is there to keep the dock inside the window, which
+    // the fill does by definition, and left on it stopped a small window's dock a few
+    // pixels short of the edge.
+    if (dockEl) {
+      const fill = Math.max(0, Math.floor(window.innerHeight - dockEl.getBoundingClientRect().top));
+      dockEl.style.maxHeight = 'none';
+      dockEl.style.height = fill + 'px';
+      // .filled lets a narrow window's wrapped rows share this height (settings.css).
+      // It can stay on while the dock is measured above: the dock body's own cap, back
+      // in force there, bounds the rows as the viewport caps did.
+      dockEl.classList.add('filled');
+      if (dockBody) dockBody.style.maxHeight = 'none';
+    }
   }
   new ResizeObserver(fitReplica).observe(previewStage);
   window.addEventListener('resize', fitReplica); // stage width alone misses height-only resizes
@@ -1054,6 +1082,16 @@
   // clipped until some unrelated resize happened to refit.
   if (typeof ResizeObserver !== 'undefined' && el('dock'))
     new ResizeObserver(fitReplica).observe(el('dock'));
+  // And everything ABOVE the canvas. The dock is given exactly the height left under the
+  // canvas, so a banner appearing (the panel changed the layout, a widget was refused) or
+  // the preview bar's hint wrapping moves the canvas and the dock down without resizing
+  // either, and the dock's bottom went past the edge of a document that cannot scroll.
+  // A hidden banner reports a size when it is shown, so observing it catches the reveal.
+  if (typeof ResizeObserver !== 'undefined') {
+    const above = new ResizeObserver(fitReplica);
+    for (const node of [document.querySelector('body > header'), el('rejectedWidgets'), el('staleLayout'), el('previewBar')])
+      if (node) above.observe(node);
+  }
 
   // A dead preview must say so, not sit there as a black slab: if the shell never
   // reports ready, surface it where the user is looking (#27 companion diagnostic).
