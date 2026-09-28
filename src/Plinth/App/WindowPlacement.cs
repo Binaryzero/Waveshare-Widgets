@@ -42,11 +42,16 @@ public static class WindowPlacement
     }
 
     /// <summary>The window's minimum size on a display: the logical minimum at that
-    /// display's DPI, but never more than the display can show.</summary>
-    public static Size MinimumFor(Display display)
+    /// display's DPI, plus the window's frame (title bar and borders), but never more than
+    /// the display can show. The minimum is for the PAGE, which gets the client area, and
+    /// a form's MinimumSize is its outer size: without the frame the page got less than
+    /// 780x480 at the smallest size the window allowed.</summary>
+    public static Size MinimumFor(Display display, Size frame = default)
     {
         var min = Scale(LogicalMinimum, display.Dpi);
-        return new Size(Math.Min(min.Width, display.WorkingArea.Width), Math.Min(min.Height, display.WorkingArea.Height));
+        return new Size(
+            Math.Min(min.Width + Math.Max(0, frame.Width), display.WorkingArea.Width),
+            Math.Min(min.Height + Math.Max(0, frame.Height), display.WorkingArea.Height));
     }
 
     /// <summary>

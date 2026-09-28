@@ -1078,6 +1078,16 @@
   // clipped until some unrelated resize happened to refit.
   if (typeof ResizeObserver !== 'undefined' && el('dock'))
     new ResizeObserver(fitReplica).observe(el('dock'));
+  // And everything ABOVE the canvas. The dock is given exactly the height left under the
+  // canvas, so a banner appearing (the panel changed the layout, a widget was refused) or
+  // the preview bar's hint wrapping moves the canvas and the dock down without resizing
+  // either, and the dock's bottom went past the edge of a document that cannot scroll.
+  // A hidden banner reports a size when it is shown, so observing it catches the reveal.
+  if (typeof ResizeObserver !== 'undefined') {
+    const above = new ResizeObserver(fitReplica);
+    for (const node of [document.querySelector('body > header'), el('rejectedWidgets'), el('staleLayout'), el('previewBar')])
+      if (node) above.observe(node);
+  }
 
   // A dead preview must say so, not sit there as a black slab: if the shell never
   // reports ready, surface it where the user is looking (#27 companion diagnostic).

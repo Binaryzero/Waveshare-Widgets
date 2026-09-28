@@ -65,6 +65,14 @@ Check("W5 with the cursor on the panel it opens on the primary", w5d == qhd150, 
 var (_, w5bd) = Choose([panel with { IsPrimary = true }, fhd100], 0, null);
 Check("W5b ...and with the panel as primary, on another display", w5bd == fhd100, $"{w5bd.WorkingArea}");
 
+// W12 · the minimum is the PAGE's: a form's MinimumSize is its outer size, so the title
+// bar and borders go on top of the scaled 780x480, or the page gets less than that.
+var frame150 = new Size(24, 47);
+Check("W12 the minimum adds the window's frame to the page's 780x480 at the display's scale",
+    MinimumFor(qhd150, frame150) == new Size(1170 + 24, 720 + 47), $"{MinimumFor(qhd150, frame150)}");
+Check("W12b ...still never more than the display can show",
+    MinimumFor(tiny, frame150) == new Size(800, 560), $"{MinimumFor(tiny, frame150)}");
+
 Console.WriteLine("Saved placement");
 
 // W6 · where it was left, maximized or not.

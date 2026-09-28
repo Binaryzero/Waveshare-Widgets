@@ -11,7 +11,9 @@
 //   L9 · a very tall window with a long form open: the columns reach the edge too
 //   L10 · ...and a shorter window afterwards is not squeezed by the height the form had
 //   L7 · at the 780x480 minimum, long form open, the dock ends exactly at the bottom edge
-//   L8 · the banner still shows when the panel changes the layout under unsaved work
+//   L8 · the banner still shows when the panel changes the layout under unsaved work, and
+//        the dock it pushes down refits to end at the bottom edge, not past it (L8b)
+//   L12 · a refused-widget banner appearing refits the dock the same way
 //   L11 · with nothing selected the dock's empty column says what goes there, and gives
 //         way once a widget is open
 //
@@ -192,6 +194,17 @@ const layout = { pages: [{ name: 'System', slots: [
   check('L8 the banner still shows when the panel changes the layout under unsaved work',
     !f.banner.hidden && f.banner.display === 'flex' && f.banner.height > 20 && /changed the layout/.test(f.banner.text),
     JSON.stringify(f.banner));
+  check('L8b ...and the dock it pushed down still ends at the bottom edge, not past it',
+    Math.abs(f.dock.bottom - f.inner) <= 1, `dock bottom ${f.dock.bottom} of ${f.inner}`);
+
+  // L12 · the other banner above the canvas: a widget refused while the window is open.
+  await page.evaluate((w) => window.__hostPush(JSON.stringify({ type: 'widgets-changed', widgets: w,
+    rejectedWidgets: [{ id: 'bad.widget', name: 'Bad widget', folder: 'C:\\widgets\\bad', reason: 'declares a credential as plain text' }] })), widgets);
+  await wait(500);
+  f = await frame();
+  const refusedShown = await page.evaluate(() => !document.getElementById('rejectedWidgets').hidden);
+  check('L12 a refused-widget banner appearing also refits the dock to the bottom edge',
+    refusedShown && Math.abs(f.dock.bottom - f.inner) <= 1, `banner shown ${refusedShown}, dock bottom ${f.dock.bottom} of ${f.inner}`);
 
   await browser.close();
   srv.close();
