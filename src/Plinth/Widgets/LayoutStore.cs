@@ -205,14 +205,17 @@ public static class LayoutStore
     /// reaches layout.json.</summary>
     public const string RetainedDeletedKey = "retainedDeleted";
 
-    /// <summary>At most this many Deletes are read from one payload. Far above any real
-    /// attic (<see cref="MaxRetainedPerWidget"/> per widget), and a bound on what a
-    /// malformed payload can make a save walk.</summary>
+    /// <summary>At most this many Deletes in one payload. Far above any real attic
+    /// (<see cref="MaxRetainedPerWidget"/> per widget), and a bound on what a malformed
+    /// payload can make a save walk.</summary>
     public const int MaxRetainedDeletes = 512;
 
     /// <summary>The identities the settings editor deleted from its removed-widgets list
     /// since its last save (#226). Entries that are not an object with two non-empty
-    /// strings are skipped rather than failing the save.</summary>
+    /// strings are skipped rather than failing the save. More than
+    /// <see cref="MaxRetainedDeletes"/> distinct ones throws, failing the save before
+    /// anything is destroyed or written: reading only the first few would have the merge
+    /// put the rest back while the editor, told the save worked, forgot them.</summary>
     public static IReadOnlyList<(string WidgetId, string InstanceId)> ReadRetainedDeletes(JsonNode? layoutNode)
     {
         var result = new List<(string, string)>();
@@ -220,11 +223,13 @@ public static class LayoutStore
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in list)
         {
-            if (result.Count >= MaxRetainedDeletes) break;
             if (item is not JsonObject o) continue;
             var w = o["widgetId"] is JsonValue wv && wv.TryGetValue<string>(out var ws) ? ws : null;
             var i = o["instanceId"] is JsonValue iv && iv.TryGetValue<string>(out var id) ? id : null;
             if (string.IsNullOrEmpty(w) || string.IsNullOrEmpty(i) || !seen.Add(w + "|i:" + i)) continue;
+            if (result.Count >= MaxRetainedDeletes)
+                throw new InvalidDataException(
+                    $"More than {MaxRetainedDeletes} removed widgets were deleted in one save, so nothing was saved. Reload, and delete them in smaller batches.");
             result.Add((w, i));
         }
         return result;

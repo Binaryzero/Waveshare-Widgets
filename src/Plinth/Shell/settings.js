@@ -66,6 +66,10 @@
   // Their defs are copies of this editor's own tiles, not sealed disk entries, so a
   // Restore puts them back as they are (see requestRestore).
   const localRetired = new Set();
+  // Identities this copy put back on a page from the removed list, since it last took the
+  // layout from disk. Until a save writes them, the panel still lists them as removed and
+  // can delete them there (see retained-gone).
+  const seatedRestores = new Set();
   // Restores waiting for the host's masked def, by request token (see requestRestore).
   const pendingRestores = new Map();
   let restoreSeq = 0;
@@ -222,6 +226,7 @@
       stale = false;
       deletedRetained.clear();   // a copy of disk has nothing of its own deleted
       localRetired.clear();      // ...nor of its own retired: the attic is disk's, sealed
+      seatedRestores.clear();
       pendingRestores.clear();   // answers to a previous model's requests
       renderStaleBanner();
       clearDirty(); // freshly loaded state IS the saved state
@@ -430,6 +435,7 @@
           lastWorkingLayout = editLayoutJson(); // a host fact, not an edit
           deletedRetained.clear();      // clean, so nothing was pending anyway
           localRetired.clear();         // the attic is now disk's, sealed
+          seatedRestores.clear();
           pendingRestores.clear();      // their rows belong to the replaced model
           initializing = true;
           renderAll();
@@ -449,6 +455,30 @@
       // The PANEL destroyed this one. Drop it here too, or this window's next Save
       // re-ships it from memory and the tile returns with its still-decryptable bytes.
       dropRetained(msg.widgetId, msg.instanceId);
+      // ...and off the page, if this copy restored it and has not saved that yet. The
+      // generation adopted below makes the next Save acceptable, and it would write the
+      // tile back after the panel deleted it and its credentials for good. Only a restore
+      // of this copy's: any other tile under the identity is on disk too, and stays.
+      const goneKey = msg.widgetId + '|i:' + msg.instanceId;
+      if (seatedRestores.delete(goneKey)) {
+        let taken = false;
+        for (const p of ((state.layout || {}).pages) || []) {
+          if (!p || !Array.isArray(p.slots)) continue;
+          for (let i = p.slots.length - 1; i >= 0; i--) {
+            const sl = p.slots[i];
+            if (sl && sl.widgetId === msg.widgetId && sl.instanceId === msg.instanceId) {
+              p.slots.splice(i, 1);
+              taken = true;
+            }
+          }
+        }
+        if (taken) {
+          selectedSlot = null;
+          renderPageList();
+          renderEditor();
+          toast('Deleted on the panel, so it is off the page here too.', true);
+        }
+      }
       // After the drop, so the generation and the model it describes move together (#281).
       if (typeof msg.generation === 'number') layoutGeneration = msg.generation;
       refreshRetiredUi();
@@ -1984,6 +2014,7 @@
     dropRetained(req.widgetId, req.instanceId);
     req.page.slots = req.page.slots || [];
     req.page.slots.push(def);
+    seatedRestores.add(req.widgetId + '|i:' + req.instanceId);
     renderPageList();            // the strip's widget count changed
     renderEditor();              // refreshes the preview, which marks the editor dirty
     toast('Restored to "' + (req.page.name || 'this page') + '" — Save & apply to keep it');

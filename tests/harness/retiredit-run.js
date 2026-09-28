@@ -25,6 +25,8 @@
 //   R13 · a save whose write did not land leaves the editor unsaved with its Delete named
 //   R14 · once the editor takes the layout from disk (reload, or adopting the panel's
 //        write), the same identity is disk's sealed entry and goes through the mask
+//   R15 · a Delete on the panel takes this editor's unsaved restore of that entry off the
+//        page, so the next save cannot write it back; any other tile under it stays
 //
 // Run: CHROMIUM=/path/to/chrome node tests/harness/retiredit-run.js
 'use strict';
@@ -485,6 +487,54 @@ const layout = { pages: [
   check('R14b ...and after a clean editor adopts the panel\'s write',
     postedB.some((m) => m.type === 'mask-retained') && !JSON.stringify((await layoutOf()).pages).includes(SEALED),
     JSON.stringify(postedB.map((m) => m.type)));
+
+  // R15 · the panel deletes the entry this editor has just restored but not saved.
+  check('R15 setup: g1 is back on the page, unsaved',
+    ((await layoutOf()).pages[0].slots || []).some((s) => s.instanceId === 'g1') && (await dirtyB()));
+  await pushB({ type: 'retained-gone', widgetId: 'test.gh', instanceId: 'g1', generation: 30 });
+  await wait(500);
+  const goneToast = await ed.evaluate(() => document.getElementById('toast').textContent);
+  check('R15 a Delete on the panel takes this editor\'s unsaved restore off the page, and says so',
+    !((await layoutOf()).pages[0].slots || []).some((s) => s.instanceId === 'g1') && /Deleted on the panel/.test(goneToast),
+    JSON.stringify({ slots: ((await layoutOf()).pages[0].slots || []).map((s) => s.instanceId), toast: goneToast }));
+  await ed.click('#save');
+  await wait(500);
+  check('R15b ...so the next save does not write it back',
+    !JSON.stringify(savesB[savesB.length - 1].pages).includes('"g1"'),
+    JSON.stringify(savesB[savesB.length - 1].pages));
+  // R15d/e · the record of what this copy restored goes when the layout comes from disk:
+  // after that, a tile on a page under the identity is disk's.
+  const initWith = (l, gen) => pushB({ type: 'settings-init', data: { layout: l, widgets, sensors: [], media: null,
+    generation: gen, backgroundHost: 'backgrounds.plinth', status: { elevated: false, apiVersion: 1, version: 'probe' } } });
+  const g1Live = async () => ((await layoutOf()).pages[0].slots || []).some((s) => s.instanceId === 'g1');
+  await initWith(fromDisk, 40);
+  await wait(800);
+  await restoreFirst();
+  await wait(600);
+  check('R15d setup: g1 restored by this copy', await g1Live());
+  await initWith(layoutB, 41);
+  await wait(800);
+  await pushB({ type: 'retained-gone', widgetId: 'test.gh', instanceId: 'g1', generation: 42 });
+  await wait(400);
+  check('R15d after a reload, the tile on the page is disk\'s, and a panel Delete leaves it', await g1Live());
+  await initWith(fromDisk, 43);
+  await wait(800);
+  await restoreFirst();
+  await wait(600);
+  await ed.click('#save');
+  await wait(500);
+  check('R15e setup: g1 restored by this copy, saved, clean', (await g1Live()) && !(await dirtyB()));
+  await pushB({ type: 'layout-written', layout: layoutB, generation: 44 });
+  await wait(600);
+  await pushB({ type: 'retained-gone', widgetId: 'test.gh', instanceId: 'g1', generation: 45 });
+  await wait(400);
+  check('R15e ...and the same after a clean editor adopts the panel\'s write', await g1Live());
+  // The first editor holds c1 live AND in its list (the corrupt twin R8 used). It never
+  // restored c1, so the page tile is disk's and stays.
+  await page.evaluate(() => window.__hostPush(JSON.stringify({ type: 'retained-gone', widgetId: 'test.clock', instanceId: 'c1', generation: 31 })));
+  await wait(400);
+  check('R15c a tile this editor did not restore stays on its page',
+    ((await page.evaluate(() => window.__wwReplicaLayout(true))).pages[0].slots || []).some((s) => s.instanceId === 'c1'));
 
   await browser.close();
   srv.close();

@@ -2243,8 +2243,18 @@ Check("D1b a payload without the list names nothing",
 var dMany = new JsonArray();
 for (var i = 0; i < LayoutStore.MaxRetainedDeletes + 100; i++)
     dMany.Add(new JsonObject { ["widgetId"] = "test.widget", ["instanceId"] = "iM" + i });
-Check("D1c ...and reading stops at the bound",
-    LayoutStore.ReadRetainedDeletes(new JsonObject { ["retainedDeleted"] = dMany }).Count
+string? dTooMany = null;
+try { LayoutStore.ReadRetainedDeletes(new JsonObject { ["retainedDeleted"] = dMany }); }
+catch (InvalidDataException ex) { dTooMany = ex.Message; }
+Check("D1c ...and a list past the bound fails the save rather than being cut short",
+    dTooMany is not null && dTooMany.Contains("nothing was saved"), dTooMany);
+var dAtBound = new JsonArray();
+for (var i = 0; i < LayoutStore.MaxRetainedDeletes; i++)
+    dAtBound.Add(new JsonObject { ["widgetId"] = "test.widget", ["instanceId"] = "iB" + i });
+dAtBound.Add(new JsonObject { ["widgetId"] = "test.widget", ["instanceId"] = "iB0" });
+dAtBound.Add(new JsonObject { ["widgetId"] = "test.widget" });
+Check("D1e ...while one AT the bound, with repeats and malformed entries past it, reads whole",
+    LayoutStore.ReadRetainedDeletes(new JsonObject { ["retainedDeleted"] = dAtBound }).Count
         == LayoutStore.MaxRetainedDeletes);
 Check("D1d the list is not a model member, so it never reaches layout.json",
     !JsonSerializer.Serialize(JsonSerializer.Deserialize<DashboardLayout>(

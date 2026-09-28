@@ -496,7 +496,10 @@ editor seats nothing. (c) needs no re-init, because the editor never holds the s
 on a page. A tile the editor removed ITSELF since it last took the layout from disk is the
 exception: its attic entry is a copy of the editor's own tile, already masked, and may hold
 a credential typed since the last save. Masking it again would turn that into an untouched
-blank and the save would put the stored value back, so the editor seats it as it is.
+blank and the save would put the stored value back, so the editor seats it as it is. Until
+a save writes a restore, the panel still lists the entry as removed; a Delete there
+(`retained-gone`) takes the restored tile off the editor's page too, or the next save would
+write it back after its credentials were destroyed.
 
 The mask is over a wrapper that is literally `{"pages":[{"slots":[def]}]}` with the window's
 own `MaskedPlan()`, and so is the def the settings window hands the editor when the PANEL
@@ -517,7 +520,7 @@ strand a *working* credential nothing references.
 **In the settings window, Delete is an edit too.** It drops the entry from the editor's copy,
 and the save NAMES the deleted identities in a top-level `retainedDeleted` list
 (`LayoutStore.ReadRetainedDeletes`; the model has no member for it, so it never reaches
-disk). Omitting them would not do: the union puts back every disk entry a payload omits.
+disk; more than 512 fails the save rather than being cut short). Omitting them would not do: the union puts back every disk entry a payload omits.
 `DropDeletedRetained` takes them out again after the union and returns what the save drops
 from disk under those identities: the attic entries, and a tile still on a disk page, which
 is what a tile removed and deleted in one session is. The save then does what Clear does, in
