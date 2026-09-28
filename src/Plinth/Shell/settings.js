@@ -60,8 +60,9 @@
   let selectedSlot = null;     // slot index (within the selected page) the detail panel shows
   let editMode = true;         // replica is the interactive WYSIWYG surface (default on)
   let dirty = false;           // unsaved edits pending Save & apply
-  let stale = false;           // the panel wrote layout.json while this copy was dirty
-                               // (#281). Save is held: this copy would revert that write.
+  let stale = false;           // layout.json changed under this copy (#281): the host
+                               // refused its save. Save is held: this copy would revert
+                               // that change.
   // Removed widgets this copy has deleted since its last save, by identity (#226). A
   // Delete is an edit applied by Save & apply, so the save has to NAME them: the host
   // keeps every attic entry a payload merely omits (its answer to a stale second window).
@@ -70,10 +71,6 @@
   // Their defs are copies of this editor's own tiles, not sealed disk entries, so a
   // Restore puts them back as they are (see requestRestore).
   const localRetired = new Set();
-  // Identities this copy put back on a page from the removed list, since it last took the
-  // layout from disk. Until a save writes them, the panel still lists them as removed and
-  // can delete them there (see retained-gone).
-  const seatedRestores = new Set();
   // Restores waiting for the host's masked def, by request token (see requestRestore).
   const pendingRestores = new Map();
   let restoreSeq = 0;
@@ -94,13 +91,13 @@
   let discoverSeq = 0;
   let galleryOpen = false;     // settings-side add-widget gallery (Widget tab)
   let instanceSeq = 0;         // suffix for minted instanceIds (gallery adds)
-  // The free region a replica "+" tap named, if any (#84). The panel's add zones are
-  // per-hole now, so the tap says WHERE — and the pick that follows has to honour it,
+  // The free region a replica "+" tap named, if any (#84). The replica's add zones are
+  // per-hole, so the tap says WHERE — and the pick that follows has to honour it,
   // or the settings side quietly fills a different hole from the one touched.
   //
   // Bound to the PAGE it was tapped on, not just the coordinates. The replica can
-  // navigate between the tap and the pick (page-changed follows an edge drop or the
-  // capsule arrows), and coordinates alone would then anchor into a cell chosen on a
+  // navigate between the tap and the pick (page-changed follows an edge drop or a tap
+  // on the dots), and coordinates alone would then anchor into a cell chosen on a
   // different page — landing in an occupied spot, or flowing into an unrelated hole.
   let pendingAddTarget = null;   // { region, page } | null
 
@@ -231,7 +228,6 @@
       stale = false;
       deletedRetained.clear();   // a copy of disk has nothing of its own deleted
       localRetired.clear();      // ...nor of its own retired: the attic is disk's, sealed
-      seatedRestores.clear();
       pendingRestores.clear();   // answers to a previous model's requests
       renderStaleBanner();
       clearDirty(); // freshly loaded state IS the saved state
@@ -321,22 +317,20 @@
         toast('Saved — dashboard updated');
       }
     } else if (msg.type === 'save-refused') {
-      // The host declined this save: it was built from a version of layout.json the panel
-      // has since written over (#281). Nothing was written, so the panel's work is intact
-      // — the failure this replaces is the opposite one, where this payload reverted it
-      // silently.
+      // The host declined this save: it was built from a version of layout.json the host
+      // has since written over (#281) — the identity heal as it loaded the file, or a stock
+      // migration. Nothing was written, so that change is intact; the failure this replaces
+      // is the opposite one, where this payload reverted it silently.
       //
       // The seq must be resolved or pendingSaves strands an entry that a later ack picks
       // up through its no-seq fallback and clears the dirty marker for work still unsaved.
       if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
       // Deliberately NOT adopting msg.generation. The whole point is that this copy is
       // still the old one; taking the new number would make the next Save acceptable and
-      // it would revert the panel — which is the bug, not the recovery. The generation
+      // it would revert that change — which is the bug, not the recovery. The generation
       // arrives with a layout, or not at all.
       //
-      // Recovery is the layout-written banner, unchanged: two intact copies that disagree,
-      // and the user picks. A save that raced the notice lands here instead of there, and
-      // it is the same situation, so it gets the same UI rather than a second one.
+      // Recovery is the stale banner: two intact copies that disagree, and the user picks.
       stale = true;
       renderStaleBanner();
       refreshRetiredUi();
@@ -344,72 +338,11 @@
       // only in this working copy and travels only on the save that was just refused, so
       // it did not happen — and after the reload the field will read as set, because it is.
       toast(msg.clearedCredentials
-        ? 'Not saved — the panel changed the layout. The credential you removed is still stored; reload and remove it again.'
-        : 'Not saved — the panel changed the layout. Reload to continue.', true);
+        ? 'Not saved — the layout changed on disk. The credential you removed is still stored; reload and remove it again.'
+        : 'Not saved — the layout changed on disk. Reload to continue.', true);
     } else if (msg.type === 'save-failed') {
       if (msg.seq != null) pendingSaves.delete(msg.seq); else pendingSaves.clear();
       toast('Save failed: ' + msg.message, true);
-    } else if (msg.type === 'retained-restored') {
-      // The host performed the move and is handing back the def already MASKED — this
-      // editor must never hold the sealed one (its secret control would load ciphertext
-      // into a revealable password field, and a demoted envelope would ride the replica
-      // into a real widget iframe, #120). Appended, matching where the host put it.
-      //
-      // Adopting the def is load-bearing beyond the UI: without it this editor's next
-      // save would drop the slot from disk while re-shipping the attic entry, undoing
-      // the restore.
-      // The index addresses the layout ON DISK. This editor's copy can have diverged
-      // without renaming anything — a local reorder or page delete — so an index that
-      // still resolves here can resolve to a DIFFERENT page, and adopting there would
-      // move the tile somewhere nobody chose. The name has to agree, and agree uniquely:
-      // a name two pages share proves nothing, exactly as the host's own guard has it.
-      const pages = ((state.layout || {}).pages) || [];
-      const page = pages[msg.page];
-      const named = pages.filter((p) => p && p.name === msg.pageName).length;
-      const sure = msg.pageName == null || (page && page.name === msg.pageName && named === 1);
-      if (!page || !msg.def || !sure) {
-        // Leave BOTH copies alone: the next save then simply reverts the restore — the
-        // tile goes back to the attic with its sealed bytes intact — whereas dropping the
-        // entry without adopting the slot would take the tile off disk and out of the
-        // attic in one save.
-        toast('Restored on the panel. Reopen Settings first — saving now would undo it.', true);
-      } else {
-        // Adopt means adopt, so drop any copy of this identity first. Panel retirement is
-        // NOT mirrored to this editor, so one opened before the retire still holds the
-        // slot live — and appending on top of that seats one instanceId twice. The shell's
-        // duplicate healing then re-mints one of them into a tile the user never asked
-        // for, with its widget-local storage detached from the widget that was using it.
-        // Only the identity actually being seated. When the host RE-MINTED — the retired
-        // id collided with a live tile — that live tile is the legitimate holder of the
-        // old id and stays on disk, keeping the protected-store bucket that deliberately
-        // remained with it; dropping it here would have the next save delete it. When
-        // there was no re-mint the two ids are the same one anyway. Spliced in place:
-        // `page.slots` is the same array the push below appends to.
-        const seated = msg.def.instanceId || msg.instanceId;
-        for (const p of pages) {
-          if (!p || !Array.isArray(p.slots)) continue;
-          for (let i = p.slots.length - 1; i >= 0; i--) {
-            const s = p.slots[i];
-            if (s && s.widgetId === msg.widgetId && s.instanceId === seated) p.slots.splice(i, 1);
-          }
-        }
-        page.slots = page.slots || [];
-        page.slots.push(msg.def);
-        dropRetained(msg.widgetId, msg.instanceId);
-        // A host FACT, not an edit: it is already on disk. Advancing the baseline first
-        // keeps refreshReplica from marking the editor dirty for it — which would both
-        // invite a save that only rewrites what is there and bump editSeq under an
-        // in-flight save's ack, which then refuses to clear the marker. Same posture as
-        // the evicted-ids adoption above.
-        lastWorkingLayout = editLayoutJson();
-        // The restore was a HOST write, so it did not make this editor the last writer.
-        // Adopting its generation with the def is what keeps the next save acceptable —
-        // otherwise the splice converges the model and the rule refuses it anyway (#281).
-        if (typeof msg.generation === 'number') layoutGeneration = msg.generation;
-        renderPageList();   // the strip's widget count changed
-        renderEditor();
-        toast('Restored to "' + (page.name || 'this page') + '"');
-      }
     } else if (msg.type === 'retained-masked') {
       // The host's answer to requestRestore: the removed def with its credentials masked,
       // no disk write. Seating it is this editor's own edit, applied by Save & apply.
@@ -417,80 +350,10 @@
       pendingRestores.delete(msg.token);
       if (req && msg.def) seatRestored(req, msg.def);
       refreshRetiredUi();
-    } else if (msg.type === 'layout-written') {
-      // The PANEL wrote layout.json (#281). Both windows hold the whole file and write it
-      // back whole, so from this instant this copy is a revert waiting to happen: its
-      // pages still carry a tile the panel retired, and Save would put it back with its
-      // stored credentials. #280's two notices carry the attic only — this is the pages.
-      const written = msg.layout;
-      if (written && Array.isArray(written.pages)) {
-        if (!dirty) {
-          // Nothing to lose: this copy WAS disk, and now disk moved. Adopt it silently.
-          // Only the layout — the catalog did not change, so widgetsById, the secret-name
-          // union and the typed-credential record all stay as they are. (settings-init
-          // resets those, which is exactly why this is not a settings-init.)
-          state.layout = written;
-          // With the layout, in the same step (#281). The dirty branch below deliberately
-          // does NOT adopt: that editor keeps its own copy, so it must keep the generation
-          // that copy was built from, or its Save would be accepted and revert the panel.
-          if (typeof msg.generation === 'number') layoutGeneration = msg.generation;
-          selectedPage = Math.max(0, Math.min(selectedPage, state.layout.pages.length - 1));
-          selectedSlot = null;          // the slot OBJECTS are new; an index into the old
-                                        // page means nothing against this list
-          lastWorkingLayout = editLayoutJson(); // a host fact, not an edit
-          deletedRetained.clear();      // clean, so nothing was pending anyway
-          localRetired.clear();         // the attic is now disk's, sealed
-          seatedRestores.clear();
-          pendingRestores.clear();      // their rows belong to the replaced model
-          initializing = true;
-          renderAll();
-          initializing = false;
-          clearDirty();                 // …and it repaints the retired gallery
-        } else {
-          // Unsaved work. Never re-seed over it — that is the one thing this notice must
-          // not cause. Hold Save instead and let the user pick a copy: the alternative is
-          // an editor that looks fine and silently reverts the panel on its next Save,
-          // which is the bug (#281 member 2), not the inconvenience.
-          stale = true;
-          renderStaleBanner();
-          refreshRetiredUi();           // Restore/Delete need the new reason for going dead
-        }
-      }
     } else if (msg.type === 'panel-changed') {
       // The dashboard moved to another display, or its scaling changed. The preview is
       // resized above; the editor is redrawn for the size labels.
       if (adoptPanelPage(msg.panel)) renderEditor();
-    } else if (msg.type === 'retained-gone') {
-      // The PANEL destroyed this one. Drop it here too, or this window's next Save
-      // re-ships it from memory and the tile returns with its still-decryptable bytes.
-      dropRetained(msg.widgetId, msg.instanceId);
-      // ...and off the page, if this copy restored it and has not saved that yet. The
-      // generation adopted below makes the next Save acceptable, and it would write the
-      // tile back after the panel deleted it and its credentials for good. Only a restore
-      // of this copy's: any other tile under the identity is on disk too, and stays.
-      const goneKey = msg.widgetId + '|i:' + msg.instanceId;
-      if (seatedRestores.delete(goneKey)) {
-        let taken = false;
-        for (const p of ((state.layout || {}).pages) || []) {
-          if (!p || !Array.isArray(p.slots)) continue;
-          for (let i = p.slots.length - 1; i >= 0; i--) {
-            const sl = p.slots[i];
-            if (sl && sl.widgetId === msg.widgetId && sl.instanceId === msg.instanceId) {
-              p.slots.splice(i, 1);
-              taken = true;
-            }
-          }
-        }
-        if (taken) {
-          selectedSlot = null;
-          renderPageList();
-          renderEditor();
-          toast('Deleted on the panel, so it is off the page here too.', true);
-        }
-      }
-      // After the drop, so the generation and the model it describes move together (#281).
-      if (typeof msg.generation === 'number') layoutGeneration = msg.generation;
-      refreshRetiredUi();
     } else if (msg.type === 'widget-installed') {
       // `pending` means it IS installed but has no origin yet (the host map could not be
       // read; the library is already retrying). Saying only "Installed" would have the
@@ -684,7 +547,7 @@
         // this side can make: the replica does not know which tile it copied.
         if (prior.copiedFrom) merged.copiedFrom = prior.copiedFrom;
         // A pending removal is different: it is a statement the REPLICA can contradict.
-        // replicaLayout passes secretsCleared through, so the panel receives the marker
+        // replicaLayout passes secretsCleared through, so the replica receives the marker
         // and cancels it by setting a value — but cancelling deletes the key, which looks
         // identical to a capture that never carried one. The value is the only signal
         // that separates them, and it is the same rule the editors use: a removal
@@ -710,12 +573,12 @@
     // the authoritative working copy here, or the first capture after a removal would erase
     // every retired tile.
     //
-    // Dropping the capture's attic is now discarding a state that CANNOT OCCUR rather
-    // than a rule fighting a live one: the replica no longer authors an attic at all.
-    // shell.js removeSlot returns immediately under PREVIEW, so layoutData.retained
-    // stays undefined for that document's life, and the preview's ✕ hands the removal
-    // over as `remove-slot` instead (onReplicaRemove -> removeSlotAt). That is the ONE
-    // retire path, and it runs here, on the unscrubbed working copy.
+    // Dropping the capture's attic is discarding a state that CANNOT OCCUR rather than a
+    // rule fighting a live one: the replica never authors an attic. shell.js has no retire
+    // path, so layoutData.retained stays undefined for that document's life, and the
+    // preview's ✕ hands the removal over as `remove-slot` instead (onReplicaRemove ->
+    // removeSlotAt). That is the ONE retire path, and it runs here, on the unscrubbed
+    // working copy.
     //
     // Why it is a handoff and not a merge rule — the epitaph of the withdrawn union,
     // kept because it is the only thing standing between a future reader and a fourth
@@ -877,10 +740,6 @@
       // Click-to-configure: the replica says which tile the user tapped (or where a
       // mutation moved the already-selected one, or -1/-1 when it went away).
       onReplicaSelection(m.page | 0, m.index | 0, m.instanceId || null, m.gen);
-    } else if (m.type === 'style-widget') {
-      // 🎨 on a preview tile: the slot-selected handoff (posted first) already
-      // adopted the tile — just make sure its inspector is open.
-      if ((m.gen | 0) === initGen && !replicaTimer) openPanel('widget');
     } else if (m.type === 'add-widget') {
       // The replica's "+" zone hands the add over to us (#45): a modal palette
       // inside the scaled strip covered the very layout being edited. Follow the
@@ -1016,7 +875,7 @@
   function refreshSaveHint() {
     const save = el('save');
     save.classList.toggle('dirty', dirty);
-    save.title = stale ? 'Reload first — the panel changed the layout'
+    save.title = stale ? 'Reload first — the layout changed on disk'
       : dirty ? 'You have unsaved changes' : '';
   }
 
@@ -1153,7 +1012,7 @@
       attributes: true, attributeFilter: ['hidden', 'class', 'open'] });
   }
   // And everything ABOVE the canvas. The dock is given exactly the height left under the
-  // canvas, so a banner appearing (the panel changed the layout, a widget was refused) or
+  // canvas, so a banner appearing (the layout changed on disk, a widget was refused) or
   // the preview bar's hint wrapping moves the canvas and the dock down without resizing
   // either, and the dock's bottom went past the edge of a document that cannot scroll.
   // A hidden banner reports a size when it is shown, so observing it catches the reveal.
@@ -1223,12 +1082,11 @@
   // ---- top bar ----------------------------------------------------------------
 
   el('save').addEventListener('click', () => {
-    // Held, not merged (#281). This copy predates the panel's write, and saving it whole
-    // would revert that write — including a tile the panel retired, which comes back on
-    // its page with credentials that still decrypt. The banner says so and offers the
-    // only way out; clicking a held Save just points at it.
+    // Held, not merged (#281). This copy predates a write the host made to layout.json,
+    // and saving it whole would revert that write. The banner says so and offers the only
+    // way out; clicking a held Save just points at it.
     if (stale) {
-      toast('The panel changed the layout — reload before saving.', true);
+      toast('The layout changed on disk — reload before saving.', true);
       el('staleLayout').scrollIntoView({ block: 'nearest' });
       return;
     }
@@ -1346,7 +1204,8 @@
     }
   }
 
-  /** The panel changed layout.json under unsaved work (#281).
+  /** layout.json changed under unsaved work (#281): the host refused a save built on the
+   * older version.
    *
    * Two intact copies that disagree — not an error, and not something the editor may
    * resolve on its own: merging them is what the host's union, its liveness guard and
@@ -1367,10 +1226,10 @@
     const text = document.createElement('div');
     text.className = 's-text';
     const title = document.createElement('h2');
-    title.textContent = 'The panel changed the layout';
+    title.textContent = 'The layout changed on disk';
     const body = document.createElement('p');
     body.textContent = 'Your unsaved changes here would undo it, so Save is on hold. '
-      + 'Reload to take the panel\u2019s version \u2014 your changes in this window are lost.';
+      + 'Reload to take the saved version \u2014 your changes in this window are lost.';
     text.append(title, body);
 
     const reload = document.createElement('button');
@@ -1691,11 +1550,6 @@
     renderEditorPanel();
   }
 
-  // Mirror of the shell's defaultSizeFor: widest size that fits WITHOUT costing
-  // any currently-placing slot its spot. Legacy layouts can carry slots that
-  // already fail to place (over-full pages hide them) — they must not veto adds
-  // into the free space that IS visible (field bug: every gallery entry said
-  // "No room" while half the page sat empty).
   /** The tapped region, but only for the page it was tapped on. Both the shelf's
    *  enabled state and the add itself go through this — reading the target in one
    *  place and page-wide sizing in the other is what left half-width widgets enabled
@@ -1745,6 +1599,10 @@
     return null;
   }
 
+  // Widest size that fits WITHOUT costing any currently-placing slot its spot. Legacy
+  // layouts can carry slots that already fail to place (over-full pages hide them) —
+  // they must not veto adds into the free space that IS visible (field bug: every
+  // gallery entry said "No room" while half the page sat empty).
   function defaultSizeFor(page, widget) {
     const widths = offeredWidths(widget).slice().reverse(); // widest first, shrink into the hole
     const slots = (page.slots = page.slots || []);
@@ -1865,8 +1723,7 @@
     const slots = (page.slots = page.slots || []);
     const base = occupancyOf(slots);
     // Probe with every placed occupant PINNED where it currently renders — the same
-    // predicate shell.js's pageFits applies, so the two surfaces enable the same button
-    // for the same tile.
+    // predicate shell.js's pageFits applies to a tile dropped on another page.
     const probe = slots.map((s, i) => base.placed[i]
       ? { size: s.size, col: base.at[i] + 1 }
       : { size: s.size, col: s.col });
@@ -1921,7 +1778,7 @@
     if (stale) {
       const hint = document.createElement('p');
       hint.className = 'r-hint';
-      hint.textContent = 'The panel changed the layout — reload to restore or delete these.';
+      hint.textContent = 'The layout changed on disk — reload to restore or delete these.';
       wrap.appendChild(hint);
     }
 
@@ -1970,7 +1827,7 @@
       restore.className = 'ghost';
       restore.textContent = 'Restore';
       restore.disabled = stale || !fits || waiting;
-      restore.title = stale ? 'Reload first — the panel changed the layout'
+      restore.title = stale ? 'Reload first — the layout changed on disk'
         : fits ? 'Put it back on ' + (page.name || 'this page') : 'No room on this page';
       restore.onclick = () => requestRestore(page, entry);
 
@@ -1983,7 +1840,7 @@
       clear.className = 'ghost danger';
       clear.textContent = 'Delete';
       clear.disabled = stale || waiting;
-      clear.title = stale ? 'Reload first — the panel changed the layout'
+      clear.title = stale ? 'Reload first — the layout changed on disk'
         : 'Delete it and its saved credentials for good, on Save & apply';
       clear.onclick = () => {
         if (!clear.dataset.armed) {
@@ -2031,7 +1888,7 @@
     const pages = ((state.layout || {}).pages) || [];
     const entry = retainedEntries().find((r) => r && r.def
       && r.def.widgetId === req.widgetId && r.def.instanceId === req.instanceId);
-    // Deleted, or restored by the panel, while the answer was on its way.
+    // Deleted while the answer was on its way.
     if (!entry) return;
     if (pages.indexOf(req.page) < 0) {
       toast('That page is gone — pick another and restore again.', true);
@@ -2054,7 +1911,6 @@
     dropRetained(req.widgetId, req.instanceId);
     req.page.slots = req.page.slots || [];
     req.page.slots.push(def);
-    seatedRestores.add(req.widgetId + '|i:' + req.instanceId);
     renderPageList();            // the strip's widget count changed
     renderEditor();              // refreshes the preview, which marks the editor dirty
     toast('Restored to "' + (req.page.name || 'this page') + '" — Save & apply to keep it');
@@ -2349,11 +2205,10 @@
   }
 
   function removeSlotAt(page, i) {
-    // Same invariant guard as the panel's removeSlot: retire only a def that is live in
-    // the CURRENT tree. A stale closure over a page object a settings-init has since
-    // replaced must not push into the current attic — one instanceId seated in both
-    // pages and retained is the twin state the host's stored-index poison punishes by
-    // blanking the live credential.
+    // Retire only a def that is live in the CURRENT tree. A stale closure over a page
+    // object a settings-init has since replaced must not push into the current attic —
+    // one instanceId seated in both pages and retained is the twin state the host's
+    // stored-index poison punishes by blanking the live credential.
     if (!state.layout || (state.layout.pages || []).indexOf(page) < 0) { renderEditor(); return; }
     const slot = (page.slots || [])[i];
     if (slot) {
@@ -2581,8 +2436,8 @@
     body.appendChild(renderSlotStyle(slot));
   }
 
-  // Per-slot appearance overrides — THE appearance control for a widget (#42), the
-  // same seeds the on-panel 🎨 editor writes into def.style: checked keys re-derive
+  // Per-slot appearance overrides — THE appearance control for a widget (#42), written
+  // into def.style as theme seeds (shell.js slotTheme reads them): checked keys re-derive
   // this one widget's palette (contrast repair included); everything unchecked
   // keeps following the global theme (Theme tab).
   function renderSlotStyle(slot) {
@@ -2596,8 +2451,8 @@
       + 'anything unchecked keeps following the global theme.';
     wrap.appendChild(hint);
 
-    // #225: one step back to the theme, matching the on-panel editor's button. Shown
-    // only while something is overridden, so its presence is itself the signal.
+    // #225: one step back to the theme. Shown only while something is overridden, so its
+    // presence is itself the signal.
     const back = document.createElement('button');
     back.type = 'button';
     back.className = 'ghost style-revert';
@@ -2701,7 +2556,7 @@
     // ◀/▶ is an ORDER gesture: column pins on the swapped pair would override
     // the reorder (placement claims anchors before consulting order) and the
     // move would persist invisibly. Both pins dissolve — same rule as dropping
-    // one tile onto another on the panel.
+    // one tile onto another in the preview.
     delete slot.col;
     if (page.slots[index]) delete page.slots[index].col;
     if (selectedSlot === index) selectedSlot = target;       // selection follows its slot
@@ -2789,8 +2644,7 @@
   // host reads the Start Menu instead. Free text and Browse both stay: this is the
   // shortest path, not the only one.
 
-  // >>> ww-app-pick — extracted and RUN by tests/harness/apppick-run.js (the same block
-  // lives in shell.js, for the panel's sheet; the harness runs both copies).
+  // >>> ww-app-pick — extracted and RUN by tests/harness/apppick-run.js.
   /** What the app picker says when a search matches nothing. The list now holds Store apps
    * too (#219), so "it may be a Store app" is only true when that half could not be read. */
   function noMatchText(storeListed) {
@@ -2950,8 +2804,7 @@
   }
   // <<< ww-list-mapping
 
-  // >>> ww-discover-text — extracted and RUN by tests/harness/discover-run.js (the same
-  // block lives in shell.js, for the panel's sheet; the harness runs both copies).
+  // >>> ww-discover-text — extracted and RUN by tests/harness/discover-run.js.
   /** What the Find chooser says about an answer (#210). Finding is a shortcut, never the
    * only way in, so every dead end says the value can still be typed. Empty when the list
    * speaks for itself. */
@@ -2986,7 +2839,7 @@
    * time out sooner and say why; this only covers an answer that never arrives at all. */
   const DISCOVER_WAIT_MS = 30000;
   // Find by query: the longest search sent to a widget, and the pause in typing before the
-  // search is sent. Mirrored in shell.js.
+  // search is sent. The length is mirrored in shell.js, which passes the search on.
   const DISCOVER_QUERY_MAX = 100;
   const DISCOVER_QUERY_PAUSE_MS = 400;
 
@@ -3024,10 +2877,10 @@
 
       let options = [];
       let note = '';
-      // Find by query — the same rules as the panel's sheet (shell.js psDiscoverBtn): a first
-      // answer cut short sends the search to the widget once typing pauses; only the latest
-      // search's answer is shown; an emptied search goes back to the first answer, and a
-      // search that only extends one already answered in full is filtered here.
+      // Find by query: a first answer cut short sends the search to the widget once typing
+      // pauses; only the latest search's answer is shown; an emptied search goes back to
+      // the first answer, and a search that only extends one already answered in full is
+      // filtered here.
       let first = null;       // the first answer
       let answered = '';      // the search the listed options answer ('' for the first)
       let complete = false;   // whether that answer was the widget's whole list

@@ -113,10 +113,11 @@ docs/                        this file + the widget spec
 
 ## v2 candidates (explicitly out of v1 scope)
 
-Touch-driven layout editor on the panel itself, software night-dimming overlay, widget
-marketplace/gallery, a `plinthwidget` scaffold/pack CLI, an AI "skill file" for LLM-generated
+Software night-dimming overlay, widget marketplace/gallery, a `plinthwidget` scaffold/pack CLI, an AI "skill file" for LLM-generated
 widgets, manifest-declared capability permissions, WebView2 nightly recycle for
 multi-week uptime. (Shipped shortly after v1: the desktop settings UI — `SettingsWindow`
 + `Shell/settings.*` — the iCUE compatibility layer — `Shell/icue-compat.js` +
 `IcueManifestReader` — and dashboard/per-page wallpaper backgrounds, static or animated,
 crossfading between pages — `BackgroundSpec` + the `#bgRoot` layers in `Shell/shell.*`.)
+A layout editor on the panel itself is not a candidate: the panel only displays, and all
+editing happens in the settings window, whose live preview is the dashboard shell itself.

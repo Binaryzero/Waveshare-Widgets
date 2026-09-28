@@ -1,18 +1,28 @@
 #!/usr/bin/env node
-// Issue #84 — in on-panel edit mode a visibly empty region offered no way to add a
-// widget. `positionAddZone` searched for the single largest free rectangle and placed
-// ONE zone there, so a page with two disjoint holes showed "Add widget" in one and
-// left the other dead.
+// Issue #84 — in edit mode a visibly empty region offered no way to add a widget.
+// `positionAddZone` searched for the single largest free rectangle and placed ONE zone
+// there, so a page with two disjoint holes showed "Add widget" in one and left the other
+// dead.
 //
-// This is also the first coverage the on-panel editor has had. Every other suite
-// drives the dashboard or the settings window; none of them enters edit mode, which
-// is why a control that simply was not drawn went unnoticed until a field screenshot.
+// Edit mode lives in the settings window's live preview: the shell booted as a replica
+// (index.html?preview=1) and switched on by the settings window's `edit-mode` message.
+// The panel itself only displays. So this boots the replica, drives it the way
+// settings.js does, and reads what it posts up.
 //
+//   A0 · the panel offers no way into edit mode at all, and ignores `edit-mode`
+//   A0e · a panel whose pages hold no tile shows the hint pointing at the settings window
 //   A1 · every free region gets an add affordance, not just the biggest
 //   A2 · the zones tile the free space: no overlap with each other or with a slot
-//   A3 · adding from a zone lands in THAT region — the tap and the result agree
+//   A3 · tapping a zone hands the add to the settings window naming THAT region
 //   A4 · a full page offers none
 //   A5 · a region nothing fits says so rather than going silent (#77)
+//   A6 · a fit that spans two partition rectangles is offered (#86)
+//
+// And two checks on the replica's size chips, which lived in panelsecret-run.js while the
+// panel had an editor of its own:
+//
+//   N11 · a stored size the widget no longer allows cycles to the NEXT size up (#77)
+//   N7b · the notice a size tap raises is visible but not hit-testable
 'use strict';
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -72,32 +82,53 @@ function mapHosts(page) {
   ]);
 }
 
-/** Boot the real shell (not the preview replica) with a layout, and enter edit mode. */
+const GEN = 7;   // the settings window's init generation, echoed on every handoff
+
+/** Boot the shell as the settings window's replica (index.html?preview=1) with a layout,
+ *  and switch edit mode on the way settings.js does. The page is its own parent here, so
+ *  the replica's ww-shell posts land on this window and are recorded in `__up`, and
+ *  ww-host messages posted to it pass the replica's `ev.source === window.parent` check. */
 async function boot(browser, layout, widgets) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 400 } });
   await mapHosts(page);
-  await page.addInitScript(() => {
-    const L = new Set();
-    window.chrome = { webview: {
-      addEventListener: (t, c) => { if (t === 'message') L.add(c); },
-      postMessage: (m) => window.__rec(JSON.stringify(m)),
-    } };
-    window.__push = (j) => { const data = JSON.parse(j); L.forEach((c) => { try { c({ data }); } catch (e) {} }); };
-  });
-  await page.exposeFunction('__rec', async (j) => {
-    const m = JSON.parse(j);
-    if (m.type === 'ready') {
-      page.evaluate((d) => window.__push(d), JSON.stringify({ type: 'init', data: {
-        layout, widgets, sensors: [], status: { elevated: false, version: 'probe' },
-      } })).catch(() => {});
-    }
-  });
-  await page.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/index.html`);
+  await page.addInitScript((init) => {
+    window.__up = [];
+    const host = (message) => window.postMessage({ type: 'ww-host', message }, '*');
+    window.addEventListener('message', (ev) => {
+      const msg = ev.data || {};
+      if (msg.type !== 'ww-shell') return;
+      const m = msg.message || {};
+      window.__up.push(m);
+      if (m.type === 'ready') {
+        host({ type: 'init', data: init });
+        host({ type: 'edit-mode', on: true });
+      }
+    });
+  }, { gen: GEN, layout, widgets, sensors: [], status: { elevated: false, version: 'probe' } });
+  await page.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/index.html?preview=1`);
   await page.waitForTimeout(1200);
-  await page.evaluate(() => document.getElementById('editBtn').click());
-  await page.waitForTimeout(600);
   return page;
 }
+
+/** Taps the zone whose computed grid placement matches, and returns the add-widget
+ *  handoff it produced (or null). */
+async function tapZone(page, colStart, row) {
+  const before = await page.evaluate(() => window.__up.length);
+  await page.evaluate(([c, r]) => {
+    const z = [...document.querySelectorAll('.add-zone')].find((e) => {
+      const cs = getComputedStyle(e);
+      return !e.disabled && new RegExp('^' + c + '(\\s*\\/|$)').test(cs.gridColumn)
+        && (r == null || new RegExp('^' + r + '(\\s*\\/|$)').test(cs.gridRow));
+    });
+    if (z) z.click();
+  }, [colStart, row]);
+  await page.waitForTimeout(300);
+  const sent = await page.evaluate((n) => window.__up.slice(n), before);
+  return sent.find((m) => m.type === 'add-widget') || null;
+}
+
+const sameRegion = (t, want) => !!t && t.col === want.col && t.row === want.row
+  && t.w === want.w && t.h === want.h;
 
 /** Zones and slots as CELL RECTANGLES, read from the resolved grid placement. Reading
  *  the grid rather than pixels keeps the assertions in the same units the layout code
@@ -130,6 +161,75 @@ const overlaps = (a, b) =>
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
   const clock = catalogEntry('clock');
 
+  // ---- A0 · the panel only displays ---------------------------------------------------
+  // The same shell as the dashboard (no ?preview), handed an edit-mode message anyway. It
+  // must not enter edit mode: nothing on the panel can add, move or remove a tile.
+  {
+    const panel = await browser.newPage({ viewport: { width: 1280, height: 400 } });
+    await mapHosts(panel);
+    await panel.addInitScript((init) => {
+      const L = new Set();
+      window.__sent = [];
+      window.chrome = { webview: {
+        addEventListener: (t, c) => { if (t === 'message') L.add(c); },
+        postMessage: (m) => {
+          window.__sent.push(m);
+          if (m && m.type === 'ready') setTimeout(() => {
+            L.forEach((c) => c({ data: { type: 'init', data: init } }));
+            L.forEach((c) => c({ data: { type: 'edit-mode', on: true } }));
+          }, 0);
+        },
+      } };
+    }, { layout: { pages: [{ name: 'Holes', slots: [
+      { widgetId: clock.id, size: 'half-upper', instanceId: 'a' },
+    ] }] }, widgets: [clock], sensors: [], status: { elevated: false, version: 'probe' } });
+    await panel.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/index.html`);
+    await panel.waitForTimeout(1200);
+    const state = await panel.evaluate(() => ({
+      editing: document.body.classList.contains('editing'),
+      zones: [...document.querySelectorAll('.add-zone')].filter((e) => getComputedStyle(e).display !== 'none').length,
+      controls: ['editBtn', 'editBar', 'palette', 'stylePanel', 'propSheet'].filter((id) => document.getElementById(id)),
+      saves: window.__sent.filter((m) => m && m.type === 'save-layout').length,
+      empty: !document.getElementById('empty').hidden,
+    }));
+    check('A0 the panel has no edit entry point, palette or editor sheet in its DOM',
+      state.controls.length === 0, JSON.stringify(state.controls));
+    check('A0b ...and an edit-mode message does not put it into edit mode',
+      !state.editing && state.zones === 0, JSON.stringify(state));
+    check('A0c ...and it never posts a save', state.saves === 0, `${state.saves} save(s)`);
+    check('A0d ...and with a tile on screen it shows no "nothing here" hint', state.empty === false,
+      JSON.stringify(state));
+    await panel.close();
+  }
+
+  // ---- A0e · a panel left with an empty page still says where to go ------------------
+  // Removing the last tile in Settings can leave a page with no slots. The panel has no way
+  // to add one, so a blank screen there must point at the settings window, as a panel with
+  // no pages at all does.
+  {
+    const panel = await browser.newPage({ viewport: { width: 1280, height: 400 } });
+    await mapHosts(panel);
+    await panel.addInitScript((init) => {
+      const L = new Set();
+      window.chrome = { webview: {
+        addEventListener: (t, c) => { if (t === 'message') L.add(c); },
+        postMessage: (m) => {
+          if (m && m.type === 'ready') setTimeout(() => L.forEach((c) => c({ data: { type: 'init', data: init } })), 0);
+        },
+      } };
+    }, { layout: { pages: [{ name: 'Empty', slots: [] }] }, widgets: [clock], sensors: [],
+      status: { elevated: false, version: 'probe' } });
+    await panel.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/index.html`);
+    await panel.waitForTimeout(800);
+    const hint = await panel.evaluate(() => {
+      const e = document.getElementById('empty');
+      return { shown: !!e && !e.hidden && getComputedStyle(e).display !== 'none', text: e ? e.textContent.trim() : '' };
+    });
+    check('A0e a panel whose only page is empty shows the hint pointing at the settings window',
+      hint.shown && /settings window/i.test(hint.text), JSON.stringify(hint));
+    await panel.close();
+  }
+
   // ---- A1/A2/A3 · two disjoint holes ------------------------------------------------
   // half-upper at cols 0-1, quarter-lower at col 0. Free: the 2x2 block at cols 2-3,
   // and the lone quarter at row 1 col 1. That second one is the region the field
@@ -155,30 +255,18 @@ const overlaps = (a, b) =>
   check('A2 the zones tile the free space — no overlap with each other or a slot',
     clash.length === 0, clash.join(' '));
 
-  // A3c · sizing must come from the REGION, not the page. This fixture has a big hole
-  // and a small one, which is what makes the difference visible: sized against the
-  // page the widest fit is a half, the small zone's anchor cannot hold a half, and the
-  // add falls back to flow — filling the 2x2 block the user did not tap. Sized against
-  // the region it is a quarter and it stays put. (The other fixture cannot see this:
-  // there both paths choose a quarter.)
-  await page.evaluate(() => {
-    const z = [...document.querySelectorAll('.add-zone')].find((e) => {
-      const cs = getComputedStyle(e);
-      return /^2\s*\//.test(cs.gridColumn) && cs.gridRow === '2';
-    });
-    if (z) z.click();
-  });
-  await page.waitForTimeout(400);
-  await page.evaluate(() => {
-    const b = document.querySelector('#palette button:not([disabled])');
-    if (b) b.click();
-  });
-  await page.waitForTimeout(900);
+  // A3c · the add is sized on the settings side, from the REGION the tap names — not
+  // from the page. This fixture has a big hole and a small one, which is what makes the
+  // difference visible: sized against the page the widest fit is a half, which the small
+  // hole cannot hold. So the handoff has to name the small hole itself.
+  let sent = await tapZone(page, 2, 2);
+  check('A3c tapping the small hole hands the add over naming THAT region',
+    !!sent && sameRegion(sent.target, { col: 1, row: 1, w: 1, h: 1 }) && sent.index === 0 && sent.gen === GEN,
+    JSON.stringify(sent));
   view = await cells(page);
-  const inSmall = view.slots.find((s) => s.c === 1 && s.r === 1 && s.w === 1 && s.h === 1);
-  check('A3c the widget is sized for the region tapped, so it stays in the small hole',
-    !!inSmall && view.slots.length === 3,
-    `${view.slots.length} slots: ${JSON.stringify(view.slots.map((s) => [s.c, s.r, s.w, s.h]))}`);
+  const palette = await page.evaluate(() => !!document.getElementById('palette'));
+  check('A3d the replica adds nothing itself — the gallery is the settings window\'s',
+    view.slots.length === 2 && !palette, `${view.slots.length} slots, palette=${palette}`);
 
   await page.close();
 
@@ -189,8 +277,8 @@ const overlaps = (a, b) =>
   // against a broken implementation — caught by falsifying, not by reading.
   //
   // Here the free cells are row 0 col 1 and row 0 col 3. Tapping the col 3 zone must
-  // put the widget at col 3; unanchored first-fit scans left to right and would drop
-  // it at col 1 instead.
+  // name col 3; unanchored first-fit scans left to right and would drop the widget at
+  // col 1 instead, so a handoff that named no region would land it there.
   page = await boot(browser, { pages: [{ name: 'Flow', slots: [
     { widgetId: clock.id, size: 'quarter-upper', col: 1, instanceId: 'p' },
     { widgetId: clock.id, size: 'quarter-upper', col: 3, instanceId: 'q' },
@@ -202,22 +290,10 @@ const overlaps = (a, b) =>
       && view.zones.some((z) => z.c === 1 && z.r === 0)
       && view.zones.some((z) => z.c === 3 && z.r === 0),
     JSON.stringify(view.zones.map((z) => [z.c, z.r, z.w, z.h])));
-  await page.evaluate(() => {
-    const z = [...document.querySelectorAll('.add-zone')]
-      .find((e) => /^4\s*\//.test(getComputedStyle(e).gridColumn));   // the LATER cell
-    if (z) z.click();
-  });
-  await page.waitForTimeout(400);
-  await page.evaluate(() => {
-    const b = document.querySelector('#palette button:not([disabled])');
-    if (b) b.click();
-  });
-  await page.waitForTimeout(900);
-  view = await cells(page);
-  const landed = view.slots.find((s) => s.c === 3 && s.r === 0);
-  check('A3b adding from a zone lands in THAT region, not where first-fit would flow',
-    !!landed && view.slots.length === 4,
-    `${view.slots.length} slots: ${JSON.stringify(view.slots.map((s) => [s.c, s.r, s.w, s.h]))}`);
+  sent = await tapZone(page, 4, 1);   // the LATER cell
+  check('A3b tapping a zone names THAT region, not where first-fit would flow',
+    !!sent && sameRegion(sent.target, { col: 3, row: 0, w: 1, h: 1 }),
+    JSON.stringify(sent && sent.target));
   await page.close();
 
   // ---- A4 · a full page offers nothing ---------------------------------------------
@@ -269,23 +345,75 @@ const overlaps = (a, b) =>
   check('A6 the three-quarter-upper fit that spans both rectangles is offered, not hidden',
     view.zones.some((z) => !z.disabled),
     JSON.stringify(view.zones.map((z) => ({ cell: [z.c, z.r, z.w, z.h], disabled: z.disabled }))));
-  // Tap the 2x2 zone (grid-column "1 / span 2") and add the one installed widget.
-  await page.evaluate(() => {
-    const z = [...document.querySelectorAll('.add-zone')]
-      .find((e) => !e.disabled && /^1\s*\//.test(getComputedStyle(e).gridColumn));
-    if (z) z.click();
+  // Tap the 2x2 zone (grid-column "1 / span 2"). The settings side sizes the add against
+  // free space anchored there, which is where the three-quarter-upper comes from.
+  sent = await tapZone(page, 1, null);
+  check('A6b tapping the 2x2 zone hands over that region, for the settings side to size',
+    !!sent && sameRegion(sent.target, { col: 0, row: 0, w: 2, h: 2 }),
+    JSON.stringify(sent && sent.target));
+  await page.close();
+
+  // ---- N11 · cycling from a size the widget no longer allows (#77) -------------------
+  // `test.narrow` allows [half, full] — so allowedWidths gives [half, three-quarter,
+  // full] — while its slot is STORED as quarter. indexOf returns -1 for that, and
+  // clamping it to 0 made the first candidate whatever sat at index 0: three-quarter,
+  // vaulting past the adjacent half. Every size stayed reachable by cycling, so this is
+  // an ordering defect rather than the unreachability it first looked like.
+  //
+  // The page is a quarter plus this quarter, so BOTH half and three-quarter fit. That
+  // is what makes the probe discriminate: if only one fitted, either order would land
+  // on it and the check would pass regardless.
+  const narrow = Object.assign({}, clock, { id: 'test.narrow', name: 'Narrow Only', supportedSlots: ['half', 'full'] });
+  page = await boot(browser, { pages: [{ name: 'Cycle', slots: [
+    { widgetId: clock.id, size: 'quarter', instanceId: 'c1' },
+    { widgetId: narrow.id, size: 'quarter', instanceId: 'nar1' },
+  ] }] }, [clock, narrow]);
+  const savedSizes = () => page.evaluate(() => {
+    const saves = window.__up.filter((m) => m.type === 'save-layout');
+    const last = saves[saves.length - 1];
+    return last ? last.layout.pages[0].slots.map((s) => s.size) : null;
   });
-  await page.waitForTimeout(400);
-  await page.evaluate(() => {
-    const b = document.querySelector('#palette button:not([disabled])');
-    if (b) b.click();
-  });
+  const beforeSizes = await savedSizes();
+  await page.locator('.slot').nth(1).locator('.edit-overlay .size').click();
   await page.waitForTimeout(900);
-  view = await cells(page);
-  const spanned = view.slots.find((s) => s.r === 0 && s.c === 0 && s.w === 3);
-  check('A6b it lands as a three-quarter-upper across c0-c2, past the tapped zone',
-    !!spanned && view.slots.length === 3,
-    `${view.slots.length} slots: ${JSON.stringify(view.slots.map((s) => [s.c, s.r, s.w, s.h]))}`);
+  const afterSizes = await savedSizes();
+  check('N11 the tap changed the stored size, so there is something to judge',
+    !!afterSizes && JSON.stringify(beforeSizes) !== JSON.stringify(afterSizes),
+    `${JSON.stringify(beforeSizes)} -> ${JSON.stringify(afterSizes)}`);
+  check('N11b an unsupported stored size cycles to the NEXT size up, not past it',
+    !!afterSizes && afterSizes[1] === 'half', JSON.stringify(afterSizes));
+  await page.close();
+
+  // ---- N7b · the notice must not eat the taps it is telling the user to make ---------
+  // A size tap that cannot change anything says why (#77), in a notice that rides at
+  // z-index 90 for six seconds, bottom-centre — right where a tile's size and band chips
+  // are — over an edit overlay at z-index 3. It carries no controls, so it is inert;
+  // without that, the one banner that says "move or remove a widget first" is also the
+  // thing blocking you from doing it.
+  const single = Object.assign({}, clock, { id: 'test.single', name: 'Single Size', supportedSlots: ['quarter'] });
+  page = await boot(browser, { pages: [{ name: 'Notice', slots: [
+    { widgetId: single.id, size: 'quarter', instanceId: 's1' },
+  ] }] }, [single]);
+  await page.locator('.slot').nth(0).locator('.edit-overlay .size').click();
+  await page.waitForTimeout(300);
+  const notice = page.locator('#panelNotice');
+  check('N7 a size tap that changes nothing says why',
+    await notice.count() === 1 && await notice.isVisible()
+      && /only one size/i.test(await notice.textContent() || ''),
+    await notice.textContent().catch(() => '(absent)'));
+  const hitTest = await page.evaluate(() => {
+    const el = document.getElementById('panelNotice');
+    if (!el) return { ok: false, why: 'no notice' };
+    const r = el.getBoundingClientRect();
+    const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return {
+      ok: at !== el && !el.contains(at),
+      why: at ? (at.id || at.className || at.tagName) : 'nothing',
+      visible: r.width > 0 && r.height > 0,
+    };
+  });
+  check('N7b the notice is visible but not hit-testable, so it cannot swallow the next tap',
+    hitTest.ok && hitTest.visible, `point resolves to: ${hitTest.why}`);
   await page.close();
 
   await browser.close();

@@ -5,6 +5,8 @@
 // field labels and the hints render over `--surface` COMPOSITED with whatever the
 // wallpaper is — and a `--text-muted` tuned to exactly 4.5:1 on the opaque surface drops
 // below it once a bright (or dark) wallpaper bleeds through the 6% that is not surface.
+// Those sheets went with on-panel editing; the repair stays, because it only ever
+// strengthens muted text, and this suite keeps it honest.
 //
 // This drives WWPalette.derive (the JS port; PaletteEngine.cs is its C# twin, kept in
 // lockstep) over a battery of themes and measures muted where it is actually painted:
@@ -46,8 +48,8 @@ const lin = (c) => { const s = c / 255; return s <= 0.03928 ? s / 12.92 : Math.p
 const lum = (c) => 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
 const contrast = (a, b) => { const la = lum(a), lb = lum(b); return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05); };
 
-// The sheet is `--surface` at this opacity over the wallpaper (shell.css #propSheet /
-// #stylePanel). The browser composites source-over in float, so match that — no rounding
+// The sheet was `--surface` at this opacity over the wallpaper (#217), and derive still
+// repairs against it (palette.js SHEET_ALPHA). The browser composites source-over in float, so match that — no rounding
 // of the composite, unlike the 8-bit muted colour itself.
 const SHEET_ALPHA = 0.94;
 const overWallpaper = (surface, wallpaper) => [0, 1, 2].map((i) => surface[i] * SHEET_ALPHA + wallpaper[i] * (1 - SHEET_ALPHA));

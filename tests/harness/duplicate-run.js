@@ -1,15 +1,9 @@
 #!/usr/bin/env node
 // Duplicate copies the credential (#226). The host half — Seal filling a fresh copy's
 // untouched blank from the tile it names in `copiedFrom` — is tools/SecretRoundTrip E5.
-// These are the two client halves, asked what they actually send.
+// This is the client half, asked what it actually sends. The settings window is the only
+// place a tile can be duplicated: the panel only displays.
 //
-// On the PANEL, which is handed the credentials revealed:
-//   P1 · the copy is a new tile with its own instanceId, naming its source in copiedFrom
-//   P2 · it carries the revealed credential itself, for the host to seal for the copy
-//   P3 · a credential the host blanked for the panel (secretsRestorable) travels as a
-//        marker, so the host can fill it from the source
-//   P4 · a pending Clear on the source travels too, so the copy does not keep it alive
-//   P5 · the button says what it does
 // In the SETTINGS window, which never holds a stored credential:
 //   S1 · the copy names its source, and its stored credential reads "saved", not "not set"
 //   S2 · the saved copy sends a blank (the host fills it) and copiedFrom
@@ -58,7 +52,6 @@ const check = (name, ok, detail) => {
 };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const REVEALED = 'ghp_REVEALED_ON_PANEL';
 const widgets = [{
   id: 'test.gh', name: 'GitHub Queue', author: 'WW',
   url: `http://127.0.0.1:${PORT}/widgets/clock/index.html`,
@@ -108,58 +101,6 @@ async function hostPage(browser, url, initType, layout, saves, viewport) {
 (async () => {
   const srv = await staticServer(REPO, PORT);
   const browser = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
-
-  // ---- the panel -----------------------------------------------------------------------
-  const panelSaves = [];
-  const panelLayout = { pages: [{ name: 'P', slots: [{
-    widgetId: 'test.gh', size: 'quarter', instanceId: 'src1',
-    settings: { token: REVEALED, repo: 'owner/name', legacyToken: '' },
-    secretsRestorable: ['legacyToken'],
-  }] }] };
-  const panel = await hostPage(browser, `http://127.0.0.1:${PORT}/src/Plinth/Shell/index.html`,
-    'init', panelLayout, panelSaves, { width: 1280, height: 400 });
-  await panel.locator('#editBtn').click();
-  await wait(250);
-  const dupe = panel.locator('.slot').first().locator('.edit-overlay .dupe');
-  const dupeTitle = await dupe.getAttribute('title');
-  await dupe.click();
-  await wait(600);
-  const lastPanel = () => panelSaves[panelSaves.length - 1] || { pages: [{ slots: [] }] };
-  let slotsNow = lastPanel().pages[0].slots;
-  const source = slotsNow.find((s) => s.instanceId === 'src1') || {};
-  const copy = slotsNow.find((s) => s.widgetId === 'test.gh' && s.instanceId !== 'src1') || {};
-  check('P1 the copy is a new tile with its own identity, naming its source',
-    slotsNow.length === 2 && !!copy.instanceId && copy.copiedFrom === 'src1',
-    JSON.stringify(slotsNow.map((s) => [s.instanceId, s.copiedFrom])));
-  check('P2 ...and carries the revealed credential for the host to seal for it',
-    copy.settings && copy.settings.token === REVEALED && copy.settings.repo === 'owner/name'
-      && source.settings && source.settings.token === REVEALED,
-    JSON.stringify(copy.settings));
-  check('P3 a credential the host blanked for the panel travels as a marker',
-    JSON.stringify(copy.secretsRestorable) === JSON.stringify(['legacyToken']),
-    JSON.stringify(copy.secretsRestorable));
-
-  // P4 · Clear the source's token on the sheet, then duplicate again.
-  await panel.locator('.slot').first().locator('.edit-overlay .gear').click();
-  await wait(250);
-  const tokenRow = panel.locator('#psRows .ps-secret').first();
-  await tokenRow.locator('.ps-clear').click();
-  await wait(900);   // edits persist on a debounce
-  await panel.evaluate(() => document.getElementById('psClose').click());
-  await wait(300);
-  await panel.locator('.slot').first().locator('.edit-overlay .dupe').click();
-  await wait(600);
-  slotsNow = lastPanel().pages[0].slots;
-  const sourceNow = slotsNow.find((s) => s.instanceId === 'src1') || {};
-  const second = slotsNow.find((s) => s.widgetId === 'test.gh' && s.instanceId !== 'src1'
-    && s.instanceId !== copy.instanceId) || {};
-  check('P4 a pending Clear on the source travels with the copy',
-    (sourceNow.secretsCleared || []).includes('token') && (second.secretsCleared || []).includes('token')
-      && second.copiedFrom === 'src1' && !second.settings.token,
-    JSON.stringify({ source: sourceNow.secretsCleared, copy: second.secretsCleared, token: second.settings && second.settings.token }));
-  check('P5 the button says the credentials come along',
-    /credentials included/i.test(dupeTitle || ''), dupeTitle);
-  await panel.close();
 
   // ---- the settings window ---------------------------------------------------------------
   const setSaves = [];

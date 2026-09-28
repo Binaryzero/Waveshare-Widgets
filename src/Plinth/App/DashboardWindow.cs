@@ -10,6 +10,8 @@ namespace Plinth.App;
 /// <summary>
 /// The borderless full-screen window pinned to the panel. Hosts a single WebView2 that
 /// renders the dashboard shell page; widgets run inside per-origin iframes within it.
+/// The panel only displays: nothing the shell sends changes the layout. Every edit is
+/// made in the settings window, and its Save &amp; apply reloads this one.
 /// The window never activates (WS_EX_NOACTIVATE) so touch taps on the panel don't steal
 /// keyboard focus from whatever is running on the main display.
 /// </summary>
@@ -213,8 +215,8 @@ public sealed class DashboardWindow : Form
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         // Who sent this, before what it says (#72). Everything below acts on the payload:
-        // save-layout writes layout.json, open-url launches a browser, action runs a
-        // configured action.
+        // open-url launches a browser, action runs a configured action, secure-set writes
+        // a widget's credential.
         if (!MessageOrigin.IsShell(e.Source, ShellHost))
         {
             var origin = SafeUrl.Describe(e.Source);
@@ -260,151 +262,6 @@ public sealed class DashboardWindow : Form
                     var action = message["action"]?.GetValue<string>();
                     if (!string.IsNullOrEmpty(action))
                         _ = _hub.ControlMediaAsync(action);
-                    break;
-
-                case "save-layout":
-                    // On-panel editor persistence: the shell has already re-rendered
-                    // itself, so save quietly — no dashboard reload.
-                    try
-                    {
-                        // Refuse a payload built before a write this shell has not seen
-                        // (#281). BEFORE anything is deserialized, sealed or written —
-                        // refusal means the file is untouched, not rolled back.
-                        //
-                        // The cleared markers are read here rather than left to Seal
-                        // below, because they exist ONLY in this payload: def.secretsCleared
-                        // lives in the shell's in-memory layoutData and rides no other
-                        // message. A refusal drops them, and the re-init that follows hands
-                        // the widget its plaintext back — the user cleared a credential and
-                        // the widget kept using it. The shell must not have to infer that,
-                        // so the refusal says it.
-                        if (LayoutStore.IsStale(
-                                message["generation"]?.GetValue<long>(), LayoutStore.PanelWriter))
-                        {
-                            var lostClears =
-                                SecretPolicy.ReadClearedMarkers(message["layout"]).Count > 0
-                                || SecretPolicy.ReadRetainedClearedMarkers(message["layout"]).Count > 0;
-                            PostToShell("save-refused", new JsonObject
-                            {
-                                ["reason"] = "stale",
-                                ["generation"] = LayoutStore.Generation,
-                                ["clearedCredentials"] = lostClears,
-                            });
-                            Log.Info("On-panel save refused: built from a superseded layout");
-                            break;
-                        }
-                        var edited = message["layout"].Deserialize<DashboardLayout>();
-                        if (edited?.Pages is null)
-                            throw new InvalidDataException("Layout has no pages.");
-                        foreach (var page in edited.Pages)
-                            page.Slots.RemoveAll(s => string.IsNullOrWhiteSpace(s.WidgetId));
-                        var disk = LayoutStore.Load();
-                        // The attic reconcile (#226), before Seal so unioned-in entries
-                        // ride the same pipeline: a save from the OTHER window carries the
-                        // attic as it last saw it, and taking that list verbatim would
-                        // silently drop retained tiles (their sealed credentials with
-                        // them) that only the disk still knows about.
-                        LayoutStore.MergeRetainedFromDisk(edited, disk);
-                        // The shell round-trips the DECRYPTED layout it was given, so
-                        // seal before writing: plaintext credentials never hit disk.
-                        // Seal with the manifests that REVEALED this shell's layout. The
-                        // shell is holding decrypted values; if a manifest went missing or
-                        // unparsable since then, a live lookup would stop calling the
-                        // property a secret, Seal would skip it, and the plaintext the
-                        // shell is round-tripping would be written straight to disk.
-                        // Read off the RAW node — the model carries no extension data.
-                        // This is also the channel the on-panel editor never had: it can
-                        // now say what the user cleared instead of having to infer it from
-                        // a value, which is what Reveal could not express (#153).
-                        var secrets = SecretPolicy.Seal(edited, disk, RevealPlan(),
-                            SecretPolicy.ReadClearedMarkers(message["layout"]),
-                            SecretPolicy.ReadRetainedClearedMarkers(message["layout"]),
-                            SecretPolicy.ReadCopiedFromMarkers(message["layout"]));
-                        var secretFailures = secrets.Failures;
-                        // Cap the attic and destroy what fell off (#226): the evicted
-                        // entries' bytes leave layout.json with this save, and their
-                        // derived ww-secure buckets go with them — guarded by liveness,
-                        // so an id a surviving tile still uses is never purged (#188).
-                        // Destroy-before-Save on purpose: a failed save then leaves a
-                        // retained tile without a bucket (it re-authenticates), never a
-                        // destroyed tile with a live credential.
-                        var evicted = LayoutStore.CapRetained(edited);
-                        var forget = LayoutStore.InstancesToForget(evicted, edited, disk);
-                        if (forget.Count > 0)
-                        {
-                            try
-                            {
-                                SecureStoreHost.ForgetInstances(forget);
-                                Log.Info($"Purged derived credentials for {forget.Count} evicted retained tile(s)");
-                            }
-                            catch (Exception ex)
-                            {
-                                // Never the ids: they scope credentials.
-                                Log.Warn($"Could not purge evicted retained credentials: {ex.GetType().Name}");
-                            }
-                        }
-                        var landed = LayoutStore.Save(edited, LayoutStore.PanelWriter);
-                        Log.Info("layout saved from on-panel editor");
-                        // Before the acks below, and outside them: those are all "about
-                        // the payload you sent" and go to THIS shell. This one is about
-                        // the file, and goes to the other window.
-                        if (landed)
-                            LayoutWritten?.Invoke();
-                        // Placing a widget from the panel ends its "New" badge as surely
-                        // as placing it from the settings window (#227).
-                        if (landed)
-                            WidgetCatalogState.Shared?.MarkPlaced((edited.Pages ?? [])
-                                .SelectMany(pg => pg.Slots ?? []).Select(sl => sl.WidgetId ?? "").Where(id => id.Length > 0));
-                        // The panel had no success ack at all — it re-renders itself, so
-                        // there was nothing to tell it. Now there is exactly one thing:
-                        // the generation its NEXT payload should echo. Not a reload.
-                        if (landed)
-                            PostToShell("layout-saved", new JsonObject
-                            {
-                                ["generation"] = LayoutStore.Generation,
-                            });
-                        if (evicted.Count > 0)
-                        {
-                            // Tell the shell which attic entries the cap dropped, or its
-                            // in-memory copy re-ships them on every subsequent save and
-                            // the attic never converges. Correctness doesn't depend on
-                            // this — the union+cap above make the disk authoritative —
-                            // it stops the re-shipping loop.
-                            var gone = new JsonArray();
-                            foreach (var ev in evicted)
-                                gone.Add(new JsonObject
-                                {
-                                    ["widgetId"] = ev.Def?.WidgetId,
-                                    ["instanceId"] = ev.Def?.InstanceId,
-                                });
-                            PostToShell("evicted-ids", EvictedNode(gone));
-                        }
-                        if (secretFailures.Count > 0)
-                        {
-                            // The panel re-rendered itself as if the save were clean. Tell
-                            // it otherwise, or the user walks away believing a credential
-                            // is stored when protection refused it.
-                            var names = new JsonArray();
-                            foreach (var f in secretFailures)
-                            {
-                                names.Add($"{f.WidgetId}.{f.Property}");
-                                Log.Warn($"Secret not saved (protection unavailable): {f.WidgetId}.{f.Property}");
-                            }
-                            PostToShell("secrets-failed", names);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Warn($"On-panel layout save failed: {ex.Message}");
-                    }
-                    break;
-
-                case "restore-retained":
-                    HandleRestoreRetained(message);
-                    break;
-
-                case "clear-retained":
-                    HandleClearRetained(message);
                     break;
 
                 case "log":
@@ -517,23 +374,6 @@ public sealed class DashboardWindow : Form
                 case "secure-set":
                 case "secure-delete":
                     HandleSecureStore(message);
-                    break;
-
-                case "sd-profiles":
-                    // The on-device settings sheet (#48) needs the same discovered
-                    // Virtual Stream Deck profile list the desktop editor gets.
-                    PostToShell("sd-profiles-result", new JsonObject
-                    {
-                        ["profiles"] = JsonSerializer.SerializeToNode(StreamDeckBridge.ListProfileNames()),
-                    });
-                    break;
-
-                case "list-apps":
-                    // The on-device sheet's half of #210. It matters more here than on the
-                    // desktop: the file dialog needs a Win32 owner window, so picker:'file'
-                    // had no picker at all on the panel and the path had to be typed on a
-                    // touch strip.
-                    _ = PostInstalledAppsAsync();
                     break;
 
                 case "notifications-watch":
@@ -672,207 +512,6 @@ public sealed class DashboardWindow : Form
             catch (ObjectDisposedException) { }
         });
     }
-
-    /// <summary>Raised when the panel destroys an attic entry (#226), so an open settings
-    /// window can drop it from its own copy before its next save re-ships it. The mirror of
-    /// <see cref="PostRetainedGone"/>, which carries the settings→panel direction.</summary>
-    public event Action<string?, string?>? RetainedGone;
-
-    /// <summary>Raised after an ordinary on-panel save LANDS on disk (#281). The settings
-    /// window keeps its own whole copy of layout.json and writes it back whole, so every
-    /// panel edit puts that copy one step further behind — and its next Save reverts the
-    /// lot. #280 added the two attic notices, but they only carry the attic; a tile RETIRED
-    /// on the panel is still on a page in the editor's copy, and saving from there puts it
-    /// back with its sealed settings (member 2 of #281).
-    ///
-    /// <para>Deliberately raised only when <see cref="LayoutStore.Save"/> returns true. A
-    /// swallowed write failure leaves disk exactly as the editor last saw it, and telling
-    /// the editor otherwise would make it discard a working copy to re-read a file that
-    /// never changed.</para>
-    ///
-    /// <para>Carries nothing. The subscriber re-reads and re-MASKS from disk, which is the
-    /// only way the editor may ever receive a layout — this window holds the decrypted
-    /// one.</para></summary>
-    public event Action? LayoutWritten;
-
-    /// <summary>What the panel just restored, for an open settings window to adopt.</summary>
-    /// <param name="WidgetId">Half of the attic identity the editor keys its own copy by.</param>
-    /// <param name="RetiredInstanceId">The other half — the id it was RETIRED under, which
-    /// <paramref name="Def"/> may no longer carry (a live collision re-mints it).</param>
-    /// <param name="Def">The slot as the host wrote it. The subscriber masks it; nothing
-    /// here may reach the editor unmasked.</param>
-    /// <param name="Page">Index into the layout ON DISK.</param>
-    /// <param name="PageName">…and the name at that index, because the index alone is not
-    /// an identity: the editor's page list can diverge from disk without renaming anything,
-    /// and an index that still resolves there resolves to the WRONG page.</param>
-    internal readonly record struct RestoredTile(
-        string? WidgetId, string? RetiredInstanceId, LayoutSlot Def, int Page, string? PageName);
-
-    /// <summary>Raised when the panel RESTORES an attic entry, for the same reason as
-    /// <see cref="RetainedGone"/> and with the same urgency. An open settings window holds
-    /// the pre-restore pages and still lists the entry as retired; its next ordinary save
-    /// writes that model back, and the union cannot rescue the live slot — it only ever
-    /// adds disk attic entries — so the tile drops off the page and reappears in the
-    /// removed list.</summary>
-    internal event Action<RestoredTile>? RetainedRestored;
-
-    /// <summary>Where a just-performed restore put the tile, for the ONE init payload the
-    /// reload below produces. The shell's page is pure DOM scroll state and its edit mode
-    /// is document-local, so a plain reload would drop the user on page 0 with the chrome
-    /// idle — the restored tile off-screen, the operation reading as "nothing happened".
-    /// One-shot and host-held: no persistent client state, and a reload for any OTHER
-    /// reason (rescan, hot reload) still starts where it always did.</summary>
-    private int? _restoredToPage;
-
-    /// <summary>Panel-side restore (#226). Host-performed and answered with a full
-    /// re-init, because <c>Reveal</c> never walks the attic: this shell is holding the
-    /// retained def's dpapi:v1 CIPHERTEXT, so a client-side move would hand the widget
-    /// that text as its credential (the #104/#105 exposure class). The reload is the ack.
-    /// </summary>
-    private void HandleRestoreRetained(JsonNode? message)
-    {
-        var widgetId = message?["widgetId"]?.GetValue<string>();
-        var instanceId = message?["instanceId"]?.GetValue<string>();
-        var page = message?["page"]?.GetValue<int>() ?? -1;
-        try
-        {
-            var layout = LayoutStore.Load();
-            // The page name travels with the index from both surfaces. The panel's index
-            // is normally fresh (its own edits save immediately), but "normally" is not a
-            // guard, and restoring onto a page the user was not looking at is the failure
-            // this refuses rather than guesses at.
-            var outcome = LayoutStore.RestoreRetained(
-                layout, widgetId, instanceId, page, out var restored,
-                message?["pageName"]?.GetValue<string>());
-            if (outcome is not LayoutStore.RestoreOutcome.Ok)
-            {
-                PostRetainedError(
-                    outcome is LayoutStore.RestoreOutcome.NotFound ? "not-found" : "bad-page",
-                    widgetId, instanceId);
-                return;
-            }
-            if (!LayoutStore.Save(layout))
-            {
-                // Nothing happened on disk, so reloading would repaint the unchanged
-                // layout and read as a restore that silently did nothing.
-                PostRetainedError("failed", widgetId, instanceId);
-                return;
-            }
-            _restoredToPage = page;
-            ReloadDashboard();
-            if (restored is not null)
-                RetainedRestored?.Invoke(new RestoredTile(
-                    widgetId, instanceId, restored, page, layout.Pages[page].Name));
-            Log.Info("Restored a retained tile from the on-panel palette");
-        }
-        catch (Exception ex)
-        {
-            Log.Warn($"Could not restore a retained tile: {ex.Message}");
-            PostRetainedError("failed", widgetId, instanceId);
-        }
-    }
-
-    /// <summary>Panel-side Clear (#226): the attic bytes and the instance's derived
-    /// credential bucket, for real.
-    ///
-    /// <para>Fails CLOSED, unlike the eviction path in the save handler. Eviction tolerates
-    /// catch-and-continue because blocking an ordinary save on secure-store trouble would
-    /// be the worse failure; Clear is a dedicated destroy with its own ack, and saving a
-    /// layout that no longer names the instance while its bucket survives would strand a
-    /// WORKING credential nothing references — collectable only by uninstalling the widget.
-    /// Aborting costs nothing: only the in-memory copy was mutated.</para></summary>
-    private void HandleClearRetained(JsonNode? message)
-    {
-        var widgetId = message?["widgetId"]?.GetValue<string>();
-        var instanceId = message?["instanceId"]?.GetValue<string>();
-        try
-        {
-            var layout = LayoutStore.Load();
-            if (!LayoutStore.ClearRetained(layout, widgetId, instanceId, out var forget))
-            {
-                PostRetainedError("not-found", widgetId, instanceId);
-                return;
-            }
-            SecureStoreHost.ForgetInstances(forget);   // throws → nothing is saved
-            var saved = LayoutStore.Save(layout);
-            // Only once the write landed AND the destroy actually happened. A failed write
-            // leaves the entry on disk to retry, and tombstoning it would make the retry
-            // impossible. An empty forget set means the liveness guard declined — a live
-            // tile or another attic twin still owns this identity — so nothing was
-            // destroyed, and recording it would strip that survivor's own retained entry
-            // if it is ever retired, losing the tile outright.
-            if (saved && forget.Count > 0)
-                LayoutStore.MarkDestroyed(widgetId, instanceId);
-            PostToShell("retained-cleared", new JsonObject
-            {
-                ["widgetId"] = widgetId,
-                ["instanceId"] = instanceId,
-                // Whether anything was actually forgotten. An empty forget set means a live
-                // tile still owns this identity, so only the retired ROW went — telling the
-                // user their credentials were destroyed would be false in the direction
-                // that matters, leaving them believing a live credential is gone.
-                ["credentials"] = forget.Count > 0,
-                // The bucket is gone either way (destroy-before-Save, so a failed write
-                // leaves a retained tile that re-authenticates — never a destroyed tile
-                // with a live credential). But the entry is still on disk, and telling the
-                // panel "done" would have it drop a row that comes back at the next init.
-                ["saved"] = saved,
-                // Clear is a HOST write, so it did not make this panel the last writer —
-                // deliberately, because the panel's own debounced save composed before
-                // this ack still carries the destroyed entry and must be refused (#281).
-                // Adopting here is what makes the save AFTER that one fresh again. Correct
-                // when the write failed too: nothing was bumped, so this is the number the
-                // panel already holds.
-                ["generation"] = LayoutStore.Generation,
-            });
-            // Only on a landed write, matching the settings-side handler: the entry is
-            // still on disk otherwise, and an open editor told it is gone would drop the
-            // row — hiding the retry, and re-merging the entry on its next save.
-            if (saved)
-                RetainedGone?.Invoke(widgetId, instanceId);
-            Log.Info("Cleared a retained tile from the on-panel palette");
-        }
-        catch (Exception ex)
-        {
-            // Never the ids: they scope credentials.
-            Log.Warn($"Could not clear a retained tile: {ex.GetType().Name}");
-            PostRetainedError("failed", widgetId, instanceId);
-        }
-    }
-
-    /// <summary>The `evicted-ids` body: the identities that left disk, plus the generation
-    /// of the write that removed them (#281).
-    ///
-    /// <para>An object rather than the bare array it used to be, so the generation has
-    /// somewhere to ride. Both producers use it — the cap inside this window's own save,
-    /// and the settings-side Clear below — because one shape with one meaning ("the
-    /// version this drop produced") beats two that differ by who sent them.</para></summary>
-    private static JsonObject EvictedNode(JsonArray ids) =>
-        new() { ["ids"] = ids, ["generation"] = LayoutStore.Generation };
-
-    private static JsonArray RetainedGoneNode(string? widgetId, string? instanceId) =>
-        new(new JsonObject { ["widgetId"] = widgetId, ["instanceId"] = instanceId });
-
-    /// <summary>Tells the RUNNING panel that an attic identity is gone from disk, so its
-    /// in-memory copy stops re-shipping it on every save (#226).
-    ///
-    /// <para>This is the settings→panel half of Clear's convergence, and it matters more
-    /// than the reverse: the panel re-ships its whole model — attic included — on every
-    /// drag, resize and style edit, so without this a settings-side Clear is undone almost
-    /// at once, and the resurrected entry's DPAPI ciphertext still decrypts (that cipher is
-    /// user-scoped, not instance-scoped) — a later Restore would hand back a WORKING
-    /// credential the user explicitly destroyed. Cheaper than a full panel reload, which
-    /// Clear does not otherwise need: it changes no page.</para></summary>
-    internal void PostRetainedGone(string? widgetId, string? instanceId) =>
-        PostToShellThreadSafe("evicted-ids", EvictedNode(RetainedGoneNode(widgetId, instanceId)));
-
-    private void PostRetainedError(string reason, string? widgetId, string? instanceId) =>
-        PostToShell("retained-error", new JsonObject
-        {
-            ["reason"] = reason,
-            ["widgetId"] = widgetId,
-            ["instanceId"] = instanceId,
-        });
 
     /// <summary>Lookups the settings window is waiting on (#210), by id. UI thread only.</summary>
     private readonly Dictionary<string, Action<JsonObject>> _discoveries = new();
@@ -1499,11 +1138,13 @@ public sealed class DashboardWindow : Form
         var layout = LayoutStore.Load();
         // The dashboard's widget iframes need real credentials, so secrets are decrypted
         // for THIS payload only — layout.json keeps the DPAPI ciphertext.
-        SnapshotManifests();
-        var blanked = SecretPolicy.Reveal(layout, RevealPlan());
+        SecretPolicy.Reveal(layout, RevealPlan());
+        // The attic is the settings window's: a retired tile never renders, so the panel
+        // is not handed its sealed bytes at all.
+        layout.Retained = null;
         // Two widgets may legitimately share a name (an imported iCUE "StreamDeck" beside
-        // the stock "Stream Deck"), and every picker on the panel prints the name. The
-        // label is decided once, here and in SettingsWindow.WidgetCatalog, from the whole
+        // the stock "Stream Deck"), and the shell prints the name wherever it labels a tile.
+        // The label is decided once, here and in SettingsWindow.WidgetCatalog, from the whole
         // installed set — a widget cannot know on its own whether it is contested.
         var labels = WidgetIdentity.DisplayNames(
             _library.Widgets.Select(w => (w.Manifest.Id, (string?)w.Manifest.Name, (string?)w.Manifest.Author)));
@@ -1521,14 +1162,9 @@ public sealed class DashboardWindow : Form
         foreach (var (name, value) in PaletteEngine.Derive(layout.Theme))
             tokens[name] = value;
 
-        var payload = new JsonObject
+        return new JsonObject
         {
-            ["layout"] = RevealedLayoutNode(layout, blanked),
-            // The version of layout.json the line above came from (#281), echoed on every
-            // save. Distinct from `genBase` below, which is the DOCUMENT sequence for the
-            // notification-demand gate (#132) — same word, different subject, so the two
-            // are deliberately never spelled the same way on this wire.
-            ["generation"] = LayoutStore.Generation,
+            ["layout"] = JsonSerializer.SerializeToNode(layout),
             ["widgets"] = JsonSerializer.SerializeToNode(widgets, BridgeJson),
             ["sensors"] = JsonSerializer.SerializeToNode(_hub.LatestSensors, BridgeJson),
             ["media"] = JsonSerializer.SerializeToNode(_hub.LatestMedia, BridgeJson),
@@ -1545,16 +1181,6 @@ public sealed class DashboardWindow : Form
             // one can equal what the new one will produce.
             ["genBase"] = _documentSeq,
         };
-        // The restore hint (#226), consumed here so it applies to exactly one document:
-        // the reload a restore triggers lands the user back on the page they were looking
-        // at, still editing, with the tile they just brought back in front of them.
-        if (_restoredToPage is { } restoredPage)
-        {
-            _restoredToPage = null;
-            payload["page"] = restoredPage;
-            payload["editing"] = true;
-        }
-        return payload;
     }
 
     private long _lastCaptureTicks;
@@ -1674,66 +1300,15 @@ public sealed class DashboardWindow : Form
     private void OnMediaUpdated(MediaState media) =>
         PostToShellThreadSafe("media", JsonSerializer.SerializeToNode(media, BridgeJson));
 
-    /// <summary>The manifests that produced the shell's REVEALED layout. That shell holds
-    /// decrypted credentials, so its saves must be classified by the same manifests that
-    /// decided what to decrypt — not by a library that may have changed since.</summary>
-    private Dictionary<string, WidgetManifest>? _revealedManifests;
-
-    private WidgetManifest? ManifestRevealedWith(string widgetId)
+    /// <summary>The plan the shell's layout is revealed under: the library's manifests, plus
+    /// the credential names of every widget it REFUSED, which are withheld rather than
+    /// decrypted (<see cref="SecretIntent.ProtectWithoutReveal"/>). Built per reveal — a
+    /// plan caches, so holding one across reveals would answer the second with the first
+    /// one's library.</summary>
+    private SecretPlan RevealPlan()
     {
-        if (_revealedManifests is not null && _revealedManifests.TryGetValue(widgetId, out var snapshot))
-            return snapshot;
-        return ManifestFor(widgetId);
-    }
-
-    /// <summary>The credential names of every widget the library REFUSED, as of the same
-    /// reveal. Ordinal, and paired with <see cref="_revealedManifests"/> — the two are
-    /// snapshotted together and consumed together by <see cref="RevealPlan"/>, because a
-    /// value this plan WITHHELD is a blank in the shell's copy, and only the same plan
-    /// makes the next save restore it instead of writing that blank to disk.</summary>
-    private Dictionary<string, List<string>>? _revealedRedactions;
-
-    private IReadOnlyList<string>? RedactionsRevealedWith(string widgetId) =>
-        _revealedRedactions is not null && _revealedRedactions.TryGetValue(widgetId, out var names)
-            ? names
-            : null;
-
-    /// <summary>The plan that produced the shell's layout, and therefore the only plan its
-    /// saves may be sealed against. Rebuilt per call — a plan caches, so holding one
-    /// across operations would answer the second with the first one's library.</summary>
-    private SecretPlan RevealPlan() =>
-        SecretPlan.FromManifests(ManifestRevealedWith, RedactionsRevealedWith);
-
-    /// <summary>The revealed layout as JSON, carrying the reveal-side restorable marker.
-    ///
-    /// The model cannot hold a projection — that is what keeps every marker out of
-    /// layout.json — so the names are stamped here, on the node about to be sent, exactly
-    /// where `Mask` puts its own for the settings editor. Without it the panel cannot tell
-    /// a field the host emptied from one that was always empty, renders no Clear, and a
-    /// demoted credential is undeletable there (#153).</summary>
-    private static JsonNode? RevealedLayoutNode(
-        DashboardLayout layout,
-        IReadOnlyDictionary<(int Page, int Slot), IReadOnlyList<string>> blanked)
-    {
-        var node = JsonSerializer.SerializeToNode(layout);
-        SecretPolicy.StampMarkers(node, SecretPolicy.RestorableMarkerKey, blanked);
-        return node;
-    }
-
-    private void SnapshotManifests()
-    {
-        // Ordinal — see ManifestFor. Collapsing case here would let one widget's manifest
-        // decide what to decrypt for another.
-        var snapshot = new Dictionary<string, WidgetManifest>(StringComparer.Ordinal);
-        foreach (var w in _library.Widgets)
-            snapshot[w.Manifest.Id] = w.Manifest;
-        _revealedManifests = snapshot;
-
-        // Refusals are snapshotted in the same breath and, unlike the settings window's,
-        // are simply rebuilt: this runs once per reveal and nothing consults the snapshot
-        // before the layout it describes exists. There is no rescan path that replaces it
-        // underneath a shell already holding withheld blanks — BuildInitPayload is the
-        // only caller, and it re-reveals from disk.
+        // Ordinal — see ManifestFor. Collapsing case here would let one widget's refusal
+        // decide what to withhold from another.
         var redactions = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         foreach (var r in _library.AllRefusals)
         {
@@ -1745,13 +1320,9 @@ public sealed class DashboardWindow : Form
                 if (!string.IsNullOrEmpty(n) && !names.Contains(n, StringComparer.Ordinal))
                     names.Add(n);
         }
-        _revealedRedactions = redactions;
+        return SecretPlan.FromManifests(ManifestFor,
+            id => redactions.TryGetValue(id, out var names) ? names : null);
     }
-
-    /// <summary>The installed-app list, built off the UI thread (it reads a shell COM
-    /// namespace) and posted back when ready (#219).</summary>
-    private async Task PostInstalledAppsAsync() =>
-        PostToShellThreadSafe("apps-result", await InstalledApps.ToJsonAsync());
 
     private void PostToShellThreadSafe(string type, JsonNode? data, string? gen = null)
     {

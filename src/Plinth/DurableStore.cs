@@ -6,8 +6,8 @@ namespace Plinth;
 /// Durable file persistence: write to a temp file in the same directory, flush it to
 /// disk, then atomically swap it into place — a crash or power cut mid-save leaves the
 /// previous file intact instead of a truncated one. Writes to the same path are
-/// serialized by a per-path lock (the settings window and the on-panel editor can both
-/// save layout.json), and the final rename retries briefly because antivirus and
+/// serialized by a per-path lock (the settings window's save and the host's own writes
+/// can both reach layout.json), and the final rename retries briefly because antivirus and
 /// indexer handles routinely hold just-written files on Windows.
 /// </summary>
 public static class DurableStore

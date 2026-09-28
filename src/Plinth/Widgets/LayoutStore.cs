@@ -16,13 +16,13 @@ public sealed class DashboardLayout
     /// <summary>Global theme seeds; null means the stock dark look.</summary>
     [JsonPropertyName("theme")] public ThemeSpec? Theme { get; set; }
 
-    /// <summary>Retained "attic" (#226): verbatim deep-copies of slots removed on-panel or
-    /// from the settings form, kept so a later change can restore them. Bounded
+    /// <summary>Retained "attic" (#226): verbatim deep-copies of slots removed in the settings
+    /// window, kept so a later change can restore them. Bounded
     /// (<see cref="LayoutStore.MaxRetainedPerWidget"/> per widget id, oldest evicted
     /// host-side on save). Nullable with NO initializer so a layout that never retired
     /// anything round-trips byte-identically (the serializer omits null members).
-    /// Populated by shell.js removeSlot / settings.js removeSlotAt; unioned with disk and
-    /// capped host-side in both save handlers.</summary>
+    /// Populated by settings.js removeSlotAt; unioned with disk and capped host-side in the
+    /// settings window's save handler.</summary>
     [JsonPropertyName("retained")] public List<RetainedSlot>? Retained { get; set; }
 }
 
@@ -101,8 +101,9 @@ public sealed class LayoutSlot
     ///
     /// <para>ALWAYS present on a layout this process has read: <see cref="Load"/> stamps
     /// any slot that lacks one, adopting the positional tag the instance is already running
-    /// under so stored widget state survives the freeze (#289). It was previously null on
-    /// layouts never edited on-panel, and identity then fell back to grid position — the
+    /// under so stored widget state survives the freeze (#289), and gives a slot that
+    /// repeats an earlier slot's id one of its own. It was previously null on layouts never
+    /// edited, and identity then fell back to grid position — the
     /// last way a credential could be addressed positionally, which #68 forbids and which
     /// this field's guarantee is what removed.</para>
     ///
@@ -114,7 +115,7 @@ public sealed class LayoutSlot
     /// <summary>Hide this widget while a fullscreen game is in the foreground —
     /// its grid cell is preserved, so it returns exactly where it was.</summary>
 
-    /// <summary>Per-instance theme-seed overrides from the on-panel style editor.
+    /// <summary>Per-instance theme-seed overrides from the settings window's Appearance section.
     /// Non-null keys replace the dashboard theme's seeds for this widget only; the
     /// full palette is re-derived from the merged seeds (contrast repair included).</summary>
     [JsonPropertyName("style")] public SlotStyle? Style { get; set; }
@@ -135,19 +136,16 @@ public sealed class LayoutSlot
 }
 
 /// <summary>One retired slot in the attic (#226). <c>Def</c> is a verbatim deep-copy of
-/// the removed <see cref="LayoutSlot"/> (id-bearing: the shell mints an instanceId before
-/// retiring), so every SecretStore function operates on it unchanged and a later restore
-/// can deep-copy it back into a page. Addressed ONLY by identity
-/// (<c>widgetId|i:instanceId</c>, the same form SlotKey derives for an id-bearing live
-/// slot) — never by grid position (#68). A never-edited legacy tile (no instanceId in the
-/// STORED layout) loses its manifest secret when retired on the masked path, by the same
-/// #68 proof as the first-on-panel-edit loss — accepted and documented, not worked around
-/// (see docs/SECRET-ADDRESSING.md).</summary>
+/// the removed <see cref="LayoutSlot"/> (id-bearing: <see cref="LayoutStore.Load"/> stamps
+/// every stored slot, and the settings editor stamps any it added before retiring it), so
+/// every SecretStore function operates on it unchanged and a later restore can deep-copy it
+/// back into a page. Addressed ONLY by identity (<c>widgetId|i:instanceId</c>, the same
+/// form SlotKey derives for an id-bearing live slot) — never by grid position (#68).</summary>
 public sealed class RetainedSlot
 {
     [JsonPropertyName("def")] public LayoutSlot Def { get; set; } = new();
 
-    /// <summary>ISO-8601 UTC, shell-minted. A string rather than DateTimeOffset so a
+    /// <summary>ISO-8601 UTC, editor-minted. A string rather than DateTimeOffset so a
     /// malformed value cannot throw on Load and cost the whole file (Load's catch
     /// regenerates the default layout). Sorts lexically == chronologically for
     /// evict-oldest absent clock skew; a backward clock set can mis-order — which is a
@@ -298,11 +296,11 @@ public static class LayoutStore
     /// what the app itself removed, never on inference.
     ///
     /// <para>The layout being OVERWRITTEN counts as live too, which is why
-    /// <paramref name="disk"/> exists. A save carries only the window that sent it, and a
-    /// window can be stale: its pages may have dropped a tile the OTHER window still shows
-    /// and will save straight back. Judging liveness from the incoming layout alone
-    /// destroys that tile's derived credentials while it is, in every sense the user can
-    /// see, still on the panel. Only the disk's PAGES are consulted — folding in its attic
+    /// <paramref name="disk"/> exists. A save carries only the copy that sent it, and a
+    /// copy can be stale: its pages may have dropped a tile the disk still holds (a payload
+    /// with no generation is never refused). Judging liveness from the incoming layout
+    /// alone destroys that tile's derived credentials while it is, in every sense the user
+    /// can see, still on the panel. Only the disk's PAGES are consulted — folding in its attic
     /// would protect the very entries eviction exists to remove.
     ///
     /// <para>The cost is a STRANDED bucket, and it can be permanent: a stale save that both
@@ -336,152 +334,13 @@ public static class LayoutStore
         return result;
     }
 
-    /// <summary>What <see cref="RestoreRetained"/> did.</summary>
-    public enum RestoreOutcome
-    {
-        /// <summary>The def left the attic and landed on the named page.</summary>
-        Ok,
-
-        /// <summary>No attic entry carries that identity — already restored, cleared, or
-        /// evicted, plausibly by the other window. The client's list is stale.</summary>
-        NotFound,
-
-        /// <summary>The index names no page on disk. Refused, never clamped: the client
-        /// names a page it is looking at, and silently restoring onto some OTHER page is
-        /// worse than a refusal the user can see and retry.</summary>
-        BadPage,
-    }
-
-    /// <summary>Moves one retained def back onto a live page (#226) — the whole restore,
-    /// as a single mutation of <paramref name="layout"/>, so no intermediate state ever
-    /// reaches disk.
-    ///
-    /// <para>Why one mutation: an identity seated in BOTH pages and retained poisons its
-    /// own key in the stored index (SecretStore.BuildStoredIndex shares one seen-set
-    /// across the pages and retained walks), and the next masked save would then read the
-    /// restored slot's blank as "untouched" and REMOVE the credential the restore just
-    /// reconnected. Hence the <see cref="List{T}.RemoveAll"/> rather than removing "the"
-    /// match: a duplicate-identity attic (corruption, or two windows minting
-    /// independently) would otherwise leave a twin behind and produce exactly that
-    /// state.</para>
-    ///
-    /// <para>The instanceId is KEPT — it is what reconnects the derived ww-secure bucket —
-    /// and re-minted only on a genuine collision with a live tile, where two slots would
-    /// otherwise share one identity. On that path the bucket stays with the collision
-    /// holder (it is that tile's, by #188's rule) and the restored tile re-authenticates;
-    /// its Axis-A manifest secret still rides along, DPAPI being user-scoped rather than
-    /// instance-scoped.</para>
-    ///
-    /// <para>The column anchor survives only onto the page it was retired from: off its
-    /// origin page a stale <see cref="LayoutSlot.Col"/> pins the tile at an arbitrary
-    /// column, and because the shell places every anchor before any unanchored slot, it
-    /// could take a column out from under a tile the user can currently see. Both editors
-    /// mirror this rule in their own fit check, so the button they enable and the
-    /// placement the host performs agree.</para></summary>
-    /// <param name="restored">The def now living on the page (id possibly re-minted), for
-    /// the caller to mask and ack; null unless the outcome is <see cref="RestoreOutcome.Ok"/>.</param>
-    /// <param name="expectPageName">What the client believes page <paramref name="page"/>
-    /// is called. An index alone is not an identity: the settings editor is an
-    /// explicit-save editor, so its page list can be reordered locally, and an index that
-    /// is still in range then names a DIFFERENT page on disk — the tile lands somewhere
-    /// the user was not looking, silently. Null skips the check.</param>
-    public static RestoreOutcome RestoreRetained(
-        DashboardLayout layout, string? widgetId, string? instanceId, int page,
-        out LayoutSlot? restored, string? expectPageName = null)
-    {
-        restored = null;
-        if (string.IsNullOrEmpty(widgetId) || string.IsNullOrEmpty(instanceId))
-            return RestoreOutcome.NotFound;
-        var key = widgetId + "|i:" + instanceId;
-        var entry = layout.Retained?.FirstOrDefault(r => Key(r?.Def) == key);
-        if (entry is null) return RestoreOutcome.NotFound;
-        if (page < 0 || layout.Pages is null || page >= layout.Pages.Count)
-            return RestoreOutcome.BadPage;
-        if (expectPageName is not null)
-        {
-            // The name must match AND be the only one of its kind. Page names are free
-            // text with no uniqueness rule, so a name two pages share proves nothing about
-            // which of them the client meant — and the case this guard exists for (another
-            // window reordered the pages) is exactly the case where the duplicate lands on
-            // the wrong one. Ambiguity is a refusal, like the range check beside it.
-            var named = 0;
-            foreach (var p in layout.Pages)
-                if (string.Equals(p.Name, expectPageName, StringComparison.Ordinal))
-                    named++;
-            if (named != 1
-                || !string.Equals(layout.Pages[page].Name, expectPageName, StringComparison.Ordinal))
-                return RestoreOutcome.BadPage;
-        }
-
-        var target = layout.Pages[page];
-        target.Slots ??= [];
-        var def = entry.Def;
-
-        // Every entry under this identity, not just the matched one (see the twin note).
-        layout.Retained!.RemoveAll(r => Key(r?.Def) == key);
-
-        if (!string.Equals(entry.OriginPage, target.Name, StringComparison.Ordinal))
-            def.Col = null;
-
-        // Collision is a question about the RAW instanceId, not about this widget's copy of
-        // it. The shell's duplicate healing builds one seenIds set across every page with no
-        // widget id in it, so two different widgets sharing an id collide there and the
-        // second is re-minted — under our nose, after this restore, detaching whichever tile
-        // it picks from its widget-local storage and its protected-store bucket. Keying this
-        // by widget was the same mistake SecretStore.AmbiguousSlots documents having made.
-        var live = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var p in layout.Pages)
-            foreach (var s in p.Slots ?? [])
-                if (!string.IsNullOrEmpty(s?.InstanceId)) live.Add(s.InstanceId!);
-        if (live.Contains(instanceId!)) def.InstanceId = NewInstanceId();
-
-        target.Slots.Add(def);
-        restored = def;
-        return RestoreOutcome.Ok;
-    }
-
-    /// <summary>Destroys one retained entry for real (#226): drops it from the attic and
-    /// reports which instance's derived ww-secure bucket the caller should forget.
-    ///
-    /// <para>The forget set comes from <see cref="InstancesToForget"/> over this single
-    /// entry and the POST-removal layout, so Clear obeys exactly the rule eviction does —
-    /// never an id a surviving live or retained slot still references (#188). Removing
-    /// every entry under the identity rather than the first match matters here for a
-    /// second reason: a leftover twin would sit in the survivors' attic, the liveness
-    /// guard would correctly decline the forget, and the user's Clear would neither
-    /// destroy the bucket nor empty the row they were looking at.</para>
-    ///
-    /// <para>Callers must treat the forget as the FIRST step and fail closed: if the
-    /// secure store cannot be written, do NOT save the layout. Aborting costs nothing
-    /// (only this in-memory copy was mutated) and leaves the entry restorable, whereas
-    /// saving anyway would strand a working credential bucket that nothing references and
-    /// only a whole-widget uninstall would ever collect.</para></summary>
-    /// <returns>True when an entry was removed; false leaves <paramref name="layout"/>
-    /// untouched.</returns>
-    public static bool ClearRetained(
-        DashboardLayout layout, string? widgetId, string? instanceId,
-        out IReadOnlyList<(string WidgetId, string InstanceId)> toForget)
-    {
-        toForget = [];
-        if (string.IsNullOrEmpty(widgetId) || string.IsNullOrEmpty(instanceId)) return false;
-        var key = widgetId + "|i:" + instanceId;
-        var entry = layout.Retained?.FirstOrDefault(r => Key(r?.Def) == key);
-        if (entry is null) return false;
-        layout.Retained!.RemoveAll(r => Key(r?.Def) == key);
-        toForget = InstancesToForget([entry], layout);
-        return true;
-    }
-
     /// <summary>Identities an explicit Delete destroyed during THIS process run (#226).
     ///
-    /// <para>The cross-window notice converges the two editors' copies, but it cannot
-    /// reach a save that is already in flight: the panel serializes its whole model —
-    /// attic included — on every drag and resize, and a payload built before the Delete
-    /// can be PROCESSED after it. The union cannot tell that copy from a legitimate one
-    /// (it only ever adds from disk, and never questions what came in), so the deleted def
-    /// would land back on disk with its sealed bytes, which still decrypt because DPAPI is
-    /// user-scoped rather than instance-scoped. Delete's whole promise is false for exactly
-    /// that window.</para>
+    /// <para>A payload built before the Delete landed still carries the deleted def, and
+    /// the union cannot tell that copy from a legitimate one (it only ever adds from disk,
+    /// and never questions what came in), so the def would land back on disk with its
+    /// sealed bytes, which still decrypt because DPAPI is user-scoped rather than
+    /// instance-scoped. Delete's whole promise would be false for any such payload.</para>
     ///
     /// <para>This is the tombstone the design rejected, in the one form the objection does
     /// not apply to. That objection was the absence of an expiry story: in memory, for this
@@ -513,22 +372,23 @@ public static class LayoutStore
         }
     }
 
-    /// <summary>A fresh instance identity, in the shell's own shape — the collision
-    /// re-mint above cannot borrow Seal's stamper, which is a local function that
-    /// deliberately no-ops on the id-bearing slots an attic def always is.</summary>
+    /// <summary>A fresh random instance identity, for the slots of the stock first-run
+    /// layout (<see cref="CreateDefault"/>). Anything that re-keys an EXISTING slot derives
+    /// its id instead; see <see cref="MintMissingIds"/>.</summary>
     private static string NewInstanceId() => "s" + Guid.NewGuid().ToString("n")[..12];
 
     /// <summary>Stamps a stable identity onto every slot that has not got one, live and
     /// retired alike, and reports whether anything changed (#226, #68).
     ///
-    /// <para><b>Why the host does this and the shell must not.</b> A legacy slot predates
-    /// instance ids. Today it acquires one from `shell.js` on its first unrelated on-panel
-    /// edit — a drag, a resize — while the copy on disk is still id-less. `SlotKey` then
-    /// sees `|i:<new>` coming in against a stored slot that publishes no key at all, the
-    /// carry-over misses as it is right to (#68), and the masked blank the shell
-    /// round-trips reaches layout.json as the user's own edit. Moving a tile destroyed
-    /// its credential. The shell cannot fix this itself: the layout it holds
-    /// is blanked, so a mint there is a mint against a copy with nothing to preserve.</para>
+    /// <para><b>Why the host does this and the client must not.</b> A legacy slot predates
+    /// instance ids. Left alone it acquires one from the settings replica on its first
+    /// unrelated edit — a drag, a resize: the replica's persist freezes every id-less def
+    /// it holds — while the copy on disk is still id-less. `SlotKey` then sees `|i:<new>`
+    /// coming in against a stored slot that publishes no key at all, the carry-over misses
+    /// as it is right to (#68), and the masked blank the editor round-trips reaches
+    /// layout.json as the user's own edit. Moving a tile destroyed its credential. The
+    /// client cannot fix this itself: the layout it holds is blanked, so a mint there is a
+    /// mint against a copy with nothing to preserve.</para>
     ///
     /// <para><b>Why it is safe, on both credential axes.</b> A manifest secret is sealed
     /// INLINE in the slot's own settings, so stamping an id on the same object leaves the
@@ -552,7 +412,7 @@ public static class LayoutStore
     {
         if (layout is null) return false;
         // Reserve BEFORE minting, across both address spaces. A live id and a retired id
-        // share one namespace — RestoreRetained re-mints against exactly this collision —
+        // share one namespace — a restore seats the retired def back among the live ones —
         // so a pass that only looked at pages could hand a new tile a retired tile's key.
         var taken = new HashSet<string>(StringComparer.Ordinal);
         foreach (var page in layout.Pages ?? [])
@@ -580,7 +440,7 @@ public static class LayoutStore
         // this is the whole difference between freezing an identity and changing one.
         // shell.js renders an id-less slot into an iframe fragment stamped
         // `#ww-slot=p{page}s{slot}` — the tag that backs the widget's `uniqueId` global and
-        // therefore its storage namespace. Its own edit-time mint adopts `rec.tag` for
+        // therefore its storage namespace. The replica's own persist adopts `rec.tag` for
         // exactly this reason ("stored widget state carries over seamlessly"). A random id
         // here would freeze the identity and orphan the widget's state in the same stroke:
         // every never-edited legacy tile would come back blank.
@@ -595,7 +455,7 @@ public static class LayoutStore
             for (var si = 0; si < (slots?.Count ?? 0); si++)
             {
                 var slot = slots![si];
-                // A slot with no widget id is not a tile — both save handlers drop it — and
+                // A slot with no widget id is not a tile — the save handler drops it — and
                 // giving it an identity would only make the debris addressable.
                 if (slot is null || string.IsNullOrWhiteSpace(slot.WidgetId)
                     || !string.IsNullOrEmpty(slot.InstanceId))
@@ -634,6 +494,58 @@ public static class LayoutStore
         var material = widgetId + "\n" + (retiredAt ?? "") + "\n" + (originPage ?? "");
         return "r" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material)))[..12]
             .ToLowerInvariant();
+    }
+
+    /// <summary>Gives every live slot that repeats an instanceId an earlier slot already
+    /// holds an identity of its own, and reports whether anything changed.
+    ///
+    /// <para>Two tiles sharing one id share widget-local storage and a protected-store
+    /// bucket, so settings and state on one visibly bleed into the other (field report:
+    /// "editing settings on the top one directly impacts the one below it"). Layouts from
+    /// older builds can carry such twins, and so can a hand-edited file with a slot pasted
+    /// twice. The FIRST holder in page order keeps the id, and with it the storage it has
+    /// been running under; each later one is re-minted.</para>
+    ///
+    /// <para>Raw ids, across every widget: the question <c>SecretPolicy.AmbiguousSlots</c>
+    /// asks, so a healed layout gives it nothing to refuse. Retired ids are reserved, so a
+    /// re-mint can never land on one, but a live slot is never re-keyed for sharing an id
+    /// with an attic entry — that would detach a working tile to settle a question about one
+    /// that does not render.</para>
+    ///
+    /// <para>DERIVED, never random, for the reason <see cref="MintMissingIds"/> gives: Load
+    /// hands back the healed model whether or not its write lands, so the same bytes on disk
+    /// must always heal to the same identities. A twin becomes its id with the first free
+    /// <c>-N</c> suffix.</para></summary>
+    public static bool HealDuplicateIds(DashboardLayout? layout)
+    {
+        if (layout is null) return false;
+        var taken = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var page in layout.Pages ?? [])
+            foreach (var slot in page?.Slots ?? [])
+                if (!string.IsNullOrEmpty(slot?.InstanceId)) taken.Add(slot.InstanceId!);
+        foreach (var entry in layout.Retained ?? [])
+            if (entry?.Def?.InstanceId is { Length: > 0 } retiredId) taken.Add(retiredId);
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var healed = 0;
+        foreach (var page in layout.Pages ?? [])
+            foreach (var slot in page?.Slots ?? [])
+            {
+                // Debris (no widget id) is not a tile — the save handler drops it — so it
+                // never holds an id against a real one.
+                if (slot is null || string.IsNullOrWhiteSpace(slot.WidgetId)
+                    || string.IsNullOrEmpty(slot.InstanceId) || seen.Add(slot.InstanceId))
+                    continue;
+                for (var n = 2; ; n++)
+                    if (taken.Add(slot.InstanceId + "-" + n))
+                    {
+                        slot.InstanceId += "-" + n;
+                        break;
+                    }
+                seen.Add(slot.InstanceId);
+                healed++;
+            }
+        return healed > 0;
     }
 
     /// <summary>The attic's identity key — widgetId + "|i:" + instanceId, the same id
@@ -687,18 +599,22 @@ public static class LayoutStore
     /// hand-edited through the tray's "Edit layout (JSON)" reintroduces an id-less slot
     /// mid-session, and that slot reaches `SlotKey` with no identity, no carry-over, and a
     /// masked blank that reads as "the user emptied it". Healing HERE instead makes the
-    /// invariant hold by construction rather than by timing: every init payload, every save
-    /// handler's `disk`, every restore, clear and migration reads through this method, so
-    /// no id-less slot can reach the credential pipeline from either side. That is what
-    /// lets the positional key go.</para>
+    /// invariant hold by construction rather than by timing: every init payload, the save
+    /// handler's `disk` and every migration read through this method, so no id-less slot
+    /// can reach the credential pipeline from either side. That is what lets the positional
+    /// key go.</para>
+    ///
+    /// <para>Duplicates are healed here for the same reason (<see cref="HealDuplicateIds"/>):
+    /// the panel only displays, so this is the one place every reader passes through before
+    /// a repeated identity could reach a widget.</para>
     ///
     /// <para>Writing inside a read is not new here — the fallback below has always
     /// persisted the default it regenerates — and it is bounded: healing is a no-op scan
     /// once done. A failed write does NOT withhold the healed model: consumers still need
     /// addressable slots, and handing them id-less ones puts back the very hole this
     /// closes. It costs nothing because the mint is reproducible — see
-    /// <see cref="MintMissingIds"/> — so the next read that does persist freezes the same
-    /// identities the client is already holding.</para></summary>
+    /// <see cref="MintMissingIds"/> and <see cref="HealDuplicateIds"/> — so the next read that
+    /// does persist freezes the same identities the client is already holding.</para></summary>
     public static DashboardLayout Load()
     {
         try
@@ -710,10 +626,15 @@ public static class LayoutStore
                 {
                     // Attributed to the host like every write this process performs on its
                     // own initiative (#281). The caller gets the healed model either way —
-                    // a failed write must not hand back id-less slots it has just promised
-                    // are addressable.
-                    if (MintMissingIds(layout) && Save(layout))
-                        Log.Info("Stamped stable instance ids onto slots that predated them");
+                    // a failed write must not hand back id-less or twinned slots it has just
+                    // promised are addressable. Both passes run: `|` does not short-circuit.
+                    var minted = MintMissingIds(layout);
+                    var healed = HealDuplicateIds(layout);
+                    if ((minted | healed) && Save(layout))
+                    {
+                        if (minted) Log.Info("Stamped stable instance ids onto slots that predated them");
+                        if (healed) Log.Info("Gave widgets that shared an instance id one each");
+                    }
                     return layout;
                 }
             }
@@ -729,18 +650,17 @@ public static class LayoutStore
         return fallback;
     }
 
-    /// <summary>The writer id for a write this HOST performed — a restore, a clear, a
-    /// stock migration, the first-run materialize. Not a window, and not a value any
-    /// client can produce: the writer is chosen by whichever HANDLER accepted the message,
-    /// never read off the payload. See <see cref="IsStale"/>.</summary>
+    /// <summary>The writer id for a write this HOST performed on its own initiative — the
+    /// identity heal in <see cref="Load"/>, a stock migration, the first-run materialize.
+    /// Not a window, and not a value any client can produce: the writer is chosen by
+    /// whichever HANDLER accepted the message, never read off the payload. See
+    /// <see cref="IsStale"/>.</summary>
     public const string HostWriter = "host";
 
-    /// <summary>The two window writers, so the handlers and the rule cannot disagree by
-    /// typo. They name the SURFACE, not the document — see <see cref="IsStale"/> for why
-    /// per-document granularity buys nothing here.</summary>
-    public const string PanelWriter = "panel";
-
-    /// <inheritdoc cref="PanelWriter"/>
+    /// <summary>The writer id for a save the settings window's payload made — the one
+    /// client that writes layout.json; the panel only displays. It names the SURFACE, not
+    /// the document — see <see cref="IsStale"/> for why per-document granularity buys
+    /// nothing here.</summary>
     public const string SettingsWriter = "settings";
 
     private static readonly object GenerationGate = new();
@@ -754,26 +674,23 @@ public static class LayoutStore
     /// re-inits after a restart. Nothing to expire, nothing to migrate, no layout.json
     /// format change.</para>
     ///
-    /// <para>Starts at 0 with the host as writer, so the first save from either window is
+    /// <para>Starts at 0 with the host as writer, so the settings window's first save is
     /// accepted: 0 is not behind 0.</para></summary>
     public static long Generation { get { lock (GenerationGate) return _generation; } }
 
     /// <summary>Is this payload built from a version the file has since moved past, by
     /// somebody other than the sender?
     ///
-    /// <para>Both halves are load-bearing. Behind-ness alone would break ordinary panel
-    /// editing: the panel posts its whole model on every drag and its next payload is out
-    /// long before the previous ack lands, so it is routinely behind ITSELF — and it is
-    /// not stale about anything, because its own in-memory state already contains what it
-    /// just saved.</para>
+    /// <para>Both halves are load-bearing. Behind-ness alone would refuse ordinary editing:
+    /// a second Save can leave the settings window before the first one's ack lands, so its
+    /// payload is behind ITSELF — and it is not stale about anything, because its own
+    /// working copy already contains what it just saved.</para>
     ///
     /// <para>The writer is therefore set ONLY by an accepted client save. Every write the
-    /// host performs on a client's behalf — Restore, Clear, a stock migration — is
-    /// <see cref="HostWriter"/>, which no client can be. Without that, a Delete requested
-    /// by the panel would make the PANEL the last writer, and the panel's own debounced
-    /// save composed before the ack — carrying the attic entry the Delete just destroyed —
-    /// would be exempted and resurrect it. (The destroyed-set covers that one from the
-    /// other side; this is why it is still needed and why it is not enough alone.)</para>
+    /// host performs on its own — the identity heal in <see cref="Load"/>, a stock
+    /// migration — is <see cref="HostWriter"/>, which no client can be. So a host write the
+    /// editor never saw makes its next payload stale, and it is told to reload rather than
+    /// write its older copy back over that change.</para>
     ///
     /// <para>A payload with no generation at all is ACCEPTED. Host and clients ship in one
     /// binary so it should not happen; if it does, the answer is the behaviour that
@@ -786,22 +703,22 @@ public static class LayoutStore
     }
 
     /// <summary>Writes layout.json, swallowing the failure — a save is triggered by
-    /// ordinary editing on both surfaces, and throwing out of those paths would take
-    /// something visible down with it.
+    /// ordinary editing, and throwing out of those paths would take something visible down
+    /// with it.
     ///
-    /// <para>Returns whether the write actually landed, for the one caller that has to
-    /// know: a destructive op (#226's Clear) acks the client, and a client told "done"
-    /// after a silently failed write drops a row that reappears at the next init. Every
-    /// other caller ignores it, deliberately — reporting a failed layout save into an
-    /// ordinary edit is a notification with nothing behind it.</para>
+    /// <para>Returns whether the write actually landed, for the callers that act on it: the
+    /// settings save acks the editor with it, and only a landed write tombstones its
+    /// Deletes (#226) or ends a "New" badge (#227) — a client told "done" after a silently
+    /// failed write drops a row that reappears at the next init. The host's own writes
+    /// ignore it, deliberately: a failed migration write is retried by the next read.</para>
     ///
     /// <para>The generation bump lives HERE, past the write and inside the success branch,
     /// so no caller can bump without writing (#281). A failed write leaves the file at the
-    /// content the other window last saw; bumping anyway would lock that window out of a
-    /// file that never changed. It also means every writer in the codebase — the
-    /// migrations, the materialize, both restores, both clears — inherits the right
-    /// behaviour by default, since <paramref name="writer"/> is the host unless a save
-    /// handler names the window whose payload it just accepted.</para></summary>
+    /// content the settings window last saw; bumping anyway would lock it out of a file
+    /// that never changed. It also means every writer in the codebase — the
+    /// migrations, the materialize, the identity heal — inherits the right behaviour by
+    /// default, since <paramref name="writer"/> is the host unless the save handler names
+    /// the window whose payload it just accepted.</para></summary>
     public static bool Save(DashboardLayout layout, string? writer = null)
     {
         try

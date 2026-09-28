@@ -6,8 +6,9 @@
 //   S2 · after the widget picker swaps a slot's widget, a same-named secret the OLD
 //        widget stored this session does not read as saved for the new one. The
 //        session record was keyed by instance id alone, and the picker keeps that id.
-//   S3 · with a typed credential unsaved, a panel write is not adopted over it (#281):
-//        only a clean editor adopts, and the typed token made it look clean.
+//   S3 · with a typed credential unsaved, a save the host refuses because layout.json
+//        changed under the editor (#281) holds Save and keeps the token: the typed token is
+//        unsaved work, and the stale banner is the only way past it.
 // Run in the order S1, S3, S2: S2's swap works the same on a held (stale) copy.
 'use strict';
 const { chromium } = require('playwright');
@@ -121,17 +122,16 @@ const layout = {
   // anyway, which hid this bug from any check that started from an empty slot.
   await secret().locator('input').fill('ghp_TYPED_NOT_SAVED');
   await page.waitForTimeout(150);
-  const panelLayout = JSON.parse(JSON.stringify(layout));
-  panelLayout.pages[0].name = 'Renamed on the panel';
-  await push({ type: 'layout-written', layout: panelLayout, generation: 99 });
+  await push({ type: 'save-refused', reason: 'stale', generation: 99 });
   await page.waitForTimeout(300);
-  // Adopting the panel's layout closes the inspector (its slot objects are new), so a
-  // missing row is the failure itself, not a reason to wait.
+  // A re-seed would close the inspector (its slot objects are new), so a missing row is
+  // the failure itself, not a reason to wait.
   const typedStill = await page.locator('#slotDetail .secret-wrap input').count()
-    ? await secret().locator('input').inputValue() : '(inspector closed: the panel layout was adopted)';
-  check('S3 a panel write does not replace a copy holding an unsaved token',
-    typedStill === 'ghp_TYPED_NOT_SAVED' && await isDirty(),
-    JSON.stringify({ field: typedStill, dirty: await isDirty() }));
+    ? await secret().locator('input').inputValue() : '(inspector closed: the copy was replaced)';
+  const staleShown = await page.locator('#staleLayout').isVisible();
+  check('S3 a refused save does not replace a copy holding an unsaved token, and holds Save',
+    typedStill === 'ghp_TYPED_NOT_SAVED' && await isDirty() && staleShown,
+    JSON.stringify({ field: typedStill, dirty: await isDirty(), stale: staleShown }));
   if (!(await page.locator('#slotDetail select').count())) {
     await page.locator('#slotList .slot-chip .chip-main').first().click();
     await page.waitForTimeout(200);

@@ -11,8 +11,9 @@
 //   L9 · a very tall window with a long form open: the columns reach the edge too
 //   L10 · ...and a shorter window afterwards is not squeezed by the height the form had
 //   L7 · at the 780x480 minimum, long form open, the dock ends exactly at the bottom edge
-//   L8 · the banner still shows when the panel changes the layout under unsaved work, and
-//        the dock it pushes down refits to end at the bottom edge, not past it (L8b)
+//   L8 · the stale banner still shows when layout.json changes under unsaved work (the host
+//        refuses the save), and the dock it pushes down refits to end at the bottom edge,
+//        not past it (L8b)
 //   L12 · a refused-widget banner appearing refits the dock the same way
 //   L13 · a tall narrow window (columns wrapped into rows): the rows share the filled
 //         height down to the edge, with or without a widget open, Appearance across the
@@ -195,11 +196,11 @@ const layout = { pages: [{ name: 'System', slots: [
   await wait(400);
   await page.click('#addPage');
   await wait(300);
-  await page.evaluate((l) => window.__hostPush(JSON.stringify({ type: 'layout-written', layout: l, generation: 2 })), layout);
+  await page.evaluate(() => window.__hostPush(JSON.stringify({ type: 'save-refused', reason: 'stale', generation: 2 })));
   await wait(400);
   f = await frame();
-  check('L8 the banner still shows when the panel changes the layout under unsaved work',
-    !f.banner.hidden && f.banner.display === 'flex' && f.banner.height > 20 && /changed the layout/.test(f.banner.text),
+  check('L8 the banner still shows when the layout changes on disk under unsaved work',
+    !f.banner.hidden && f.banner.display === 'flex' && f.banner.height > 20 && /layout changed on disk/.test(f.banner.text),
     JSON.stringify(f.banner));
   check('L8b ...and the dock it pushed down still ends at the bottom edge, not past it',
     Math.abs(f.dock.bottom - f.inner) <= 1, `dock bottom ${f.dock.bottom} of ${f.inner}`);

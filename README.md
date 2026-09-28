@@ -43,17 +43,18 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
 - **Widget packages**: a `.plinthwidget` file is a zip of `manifest.json` + `index.html`.
   Install via the tray menu, or drop a folder into the widgets directory —
   changes hot-reload. Each widget runs in a sandboxed iframe on its own origin.
-- **Edit on the screen itself**: tap the pencil in the panel's corner to rearrange
-  the dashboard in place — drag tiles to reorder, tap the width/band buttons to
-  resize through sizes that fit, drop a tile on a glowing edge to move it to the
-  next page, tap the dashed **+** to add widgets from a palette, and manage pages
-  from the floating bar. While a tile is in flight, every place it could land
-  stays lit — free cells, swap targets, page edges — and a widget that has no
-  room to render is named on an "Off screen" shelf (tap it to flow it back in).
-  Everything saves as you go; **Done** just exits.
+- **The panel only displays**: it shows your tiles, and nothing on it edits them. All
+  editing happens in the settings window.
 - **Settings UI**: tray → **Settings…** opens a visual editor for pages, slots, and
   every widget's declared properties (colors, sliders, sensor pickers, structured
-  lists) — no JSON editing required — plus the Theme panel with a live preview.
+  lists) — no JSON editing required — plus the Theme panel. Its live preview is the
+  dashboard itself, and you edit the layout right there: drag tiles to reorder, tap the
+  width/band buttons to resize through sizes that fit, drop a tile on a glowing edge to
+  move it to the next page, and tap the dashed **+** to add a widget from the gallery.
+  While a tile is in flight, every place it could land stays lit — free cells, swap
+  targets, page edges — and a widget that has no room to render is named on an "Off
+  screen" shelf (tap it to flow it back in). **Save & apply** writes the layout and
+  reloads the panel.
 - **Thirty-two stock widgets**: CPU, GPU, Clock, Countdown, Now Playing, Weather,
   7-Day Forecast, Weather Radar, Reddit Photos, Ping Monitor, iFrame, Stream Deck
   mirror (live Virtual Stream Deck with clickable keys), Control Deck (a touch
@@ -254,10 +255,9 @@ Example `layout.json`:
 }
 ```
 
-The Settings window edits this file for you (and reloads the dashboard on save), and
-the on-panel edit mode writes it continuously as you rearrange things on the screen;
-the JSON stays hand-editable for scripting or syncing between machines. The dashboard
-also hot-reloads whenever widget files change on disk.
+The Settings window edits this file for you and reloads the dashboard on save; the
+panel itself only displays it. The JSON stays hand-editable for scripting or syncing
+between machines. The dashboard also hot-reloads whenever widget files change on disk.
 
 **Credentials are encrypted, not synced.** A widget setting declared `type: "secret"`
 (API tokens, PATs, client secrets, private calendar URLs) is encrypted with Windows

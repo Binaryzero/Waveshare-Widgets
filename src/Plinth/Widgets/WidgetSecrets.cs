@@ -33,10 +33,11 @@ namespace Plinth.Widgets;
 /// <para>BOTH ids are supplied by the SHELL from the slot that sent the message, never by
 /// the message itself; a widget naming its own scope — widget OR instance — would be no
 /// scope at all. A freshly added tile carries an instance id from the moment it is placed,
-/// so a widget that stores a token can read it back. A slot from an older layout that was
-/// never edited on-panel has no id yet: rather than fall back to a shared or positional
-/// bucket, the write is refused (<see cref="WriteResult.BadScope"/>) and the widget keeps
-/// its token in memory — the same fallback it takes when sealing is unavailable. A
+/// so a widget that stores a token can read it back, and LayoutStore.Load stamps one on
+/// every stored slot. A slot that still has no id gets no bucket: rather than fall back to
+/// a shared or positional one, the write is refused (<see cref="WriteResult.BadScope"/>)
+/// and the widget keeps its token in memory — the same fallback it takes when sealing is
+/// unavailable. A
 /// credential is thus never addressed by grid position (#68), and an id-less tile shares
 /// no bucket with anything.</para>
 ///

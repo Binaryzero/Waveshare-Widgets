@@ -7,35 +7,6 @@
   const dotsEl = document.getElementById('dots');
   const emptyEl = document.getElementById('empty');
 
-  // Host protocol: "the user cleared this secret", as distinct from "" which means the
-  // masked field came back untouched and the stored credential must survive the save.
-  // Must match SecretStore.ClearMarker.
-  /** Names the properties the user asked to REMOVE, per slot, as a projection the host
-   * reads off the raw save payload (SecretPolicy.ClearedMarkerKey). Replaced a sentinel
-   * written into the value: "the user cleared this" is a statement ABOUT a value, and an
-   * untouched field echoing that exact text was indistinguishable from a real clear.
-   *
-   * This is also the channel the on-panel editor never had. Reveal cannot carry a
-   * projection into the model, so before this the panel could not say a demoted
-   * credential had been cleared at all (#153). */
-  // Whether a value the user just set CONTRADICTS a pending removal. "" does not: it is
-  // the exact shape the host reads as untouched, so a control with a legitimately empty
-  // choice would otherwise cancel a clear and have Seal restore the envelope the user
-  // asked to delete. `false` and `0` ARE values — a switch turned off and a number set to
-  // zero are choices, not absences. Mirrors settings.js.
-  function contradictsRemoval(value) {
-    return !(value === '' || value === null || value === undefined);
-  }
-
-  function markCleared(def, name, on) {
-    const list = Array.isArray(def.secretsCleared) ? def.secretsCleared.slice() : [];
-    const at = list.indexOf(name);
-    if (on && at < 0) list.push(name);
-    else if (!on && at >= 0) list.splice(at, 1);
-    if (list.length) def.secretsCleared = list;
-    else delete def.secretsCleared;
-  }
-
   /** @type {{frame: HTMLIFrameElement, el: HTMLElement, settings: object, initialized: boolean, retries: number}[]} */
   let slots = [];
   let latestSensors = [];
@@ -68,17 +39,17 @@
   const discoverRoutes = new Map(); // discovery id -> { slot, done, timer }
   let discoverSeq = 0;
   const DISCOVER_TIMEOUT_MS = 20000;
-  // Find by query: the longest search sent to a widget, and the pause in typing before the
-  // search is sent. Mirrored in settings.js.
+  // Find by query: the longest search passed on to a widget. Mirrored in settings.js, which
+  // asks, and in SettingsWindow.HandleDiscover, which relays.
   const DISCOVER_QUERY_MAX = 100;
-  const DISCOVER_QUERY_PAUSE_MS = 400;
 
   let backgroundHost = 'backgrounds.plinth';
   let bgGlobal = null;         // dashboard-wide background spec
   let bgPages = [];            // per-page background specs (null = inherit global)
   const bg = createBackgroundController();
 
-  // Live layout model (mutated by the on-panel editor, persisted via save-layout).
+  // Live layout model. Only the settings replica mutates it: its editor persists through
+  // save-layout to the settings window, never to the host. On the panel it is read-only.
   let layoutData = { pages: [] };
   let widgetLib = [];
   let widgetsById = new Map();
@@ -93,14 +64,9 @@
   // window.postMessage — ww-shell wraps outgoing messages, ww-host wraps incoming.
   const PREVIEW = new URLSearchParams(location.search).has('preview');
   let previewPage = null; // page the settings window wants the replica to show
-  let initPage = null;    // one-shot page the host asks this NEW document to open on (#226)
   let previewGen = 0;     // init generation this document state was built under;
                           // echoed on every persist so the settings window can drop
                           // captures that raced a newer init (posting is async)
-  let layoutGeneration = null;  // which version of layout.json layoutData came from (#281),
-                                // echoed on every save so the host can refuse a payload
-                                // built before a write this document never saw
-  let layoutRefused = false;    // a refusal is terminal for this document — see onSaveRefused
 
   if (!PREVIEW && window.chrome && window.chrome.webview) {
     window.chrome.webview.addEventListener('message', (ev) => handleHostMessage(ev.data || {}));
@@ -137,87 +103,6 @@
       // Settings-side selection (its slot list / a re-init restore) mirrored into
       // the replica's highlight. Never announced back — the host already knows.
       if (PREVIEW && editing) selectSlotAt(msg.page | 0, msg.index | 0, false);
-    }
-    else if (msg.type === 'open-palette') {
-      // Settings "+ Add widget" fallback: open the shell's own add-widget palette.
-      if (PREVIEW && editing && layoutData.pages.length) {
-        const p = layoutData.pages[Math.max(0, Math.min(layoutData.pages.length - 1, msg.index | 0))];
-        if (p) openPalette(p);
-      }
-    }
-    else if (msg.type === 'evicted-ids') {
-      // These attic entries are gone from disk (#226) — dropped by the cap, or cleared
-      // by the user in either window — and their derived credentials with them. Drop
-      // them from the in-memory copy too, or every subsequent save re-ships them: the
-      // cap would undo itself, and a Clear would come straight back, sealed bytes and
-      // all, on the panel's very next drag or resize. Matched by identity, never index —
-      // this copy and the host's can be ordered differently.
-      const ev = msg.data || {};
-      for (const e of (Array.isArray(ev.ids) ? ev.ids : [])) dropRetained(e.widgetId, e.instanceId);
-      // Adopted only here, AFTER the drops, so the generation and the model it describes
-      // move together (#281). The settings-side Clear that produces this is a host write:
-      // it converges this panel by splice instead of a reload, so without adopting, the
-      // very next drag would be refused for a divergence that no longer exists.
-      if (typeof ev.generation === 'number') layoutGeneration = ev.generation;
-      refreshRetiredUi();
-    }
-    else if (msg.type === 'retained-cleared') {
-      // The user destroyed this one from THIS panel. On a failed write the host says so:
-      // the bucket is gone (destroy-before-Save) but the entry is still on disk, so
-      // dropping the row would hide something the next init brings back.
-      const e = msg.data || {};
-      if (e.saved !== false) {
-        dropRetained(e.widgetId, e.instanceId);
-        // `credentials` is false when a live tile still owns this identity: the liveness
-        // guard declined the destroy, so only the retired ROW went. Saying otherwise
-        // leaves the user believing a credential that is still live has been destroyed.
-        showPanelNotice(e.credentials === false
-          ? 'Removed from the list. Its credentials stay with the copy still on a page.'
-          : 'Deleted, with its saved credentials.');
-      } else {
-        // NOT "its credentials are gone": destroy-before-Save took the derived bucket,
-        // but the def's own sealed secrets are still in layout.json, and a Restore would
-        // reconnect them. Saying they were destroyed is both false and the version that
-        // makes the user stop retrying — which is the one thing they must do.
-        showPanelNotice('Not deleted — the layout could not be written. Try again.');
-      }
-      // See evicted-ids: a host write converged by ack hands over its generation, and this
-      // copy adopts it once it has applied the drop. On a failed write it is unchanged, so
-      // this is a no-op rather than a wrong number.
-      if (typeof e.generation === 'number') layoutGeneration = e.generation;
-      refreshRetiredUi();
-    }
-    else if (msg.type === 'layout-saved') {
-      // The panel's only success ack (#281), and it carries exactly one thing: the version
-      // the next payload should echo. Deliberately NOT a reload — this shell already
-      // re-rendered itself, which is why it had no success ack until now.
-      const d = msg.data || {};
-      if (typeof d.generation === 'number') layoutGeneration = d.generation;
-    }
-    else if (msg.type === 'save-refused') onSaveRefused(msg.data || {});
-    else if (msg.type === 'retained-error') {
-      // Restore/Clear refused. The row is NOT dropped on 'not-found': that result only
-      // says the attic no longer holds the identity, which is equally true when the other
-      // window has already RESTORED it — and dropping the entry then, while this copy's
-      // pages still lack the slot, has the next save take the tile off disk without
-      // putting it back in the attic. A stale row that refuses twice is a nuisance; a
-      // lost tile is not. It clears itself on the next init.
-      const e = msg.data || {};
-      refreshRetiredUi();
-      showPanelNotice(e.reason === 'not-found'
-        ? 'That widget is no longer in the removed list.'
-        : e.reason === 'bad-page'
-          ? 'That page has changed — open the removed list again.'
-          : 'Could not do that. Try again.');
-    }
-    else if (msg.type === 'secrets-failed') {
-      // The panel already re-rendered as if the save were clean, but the host could not
-      // protect a credential and refuses to write one in the clear. Say so on glass —
-      // silence here means the user walks away thinking the token is stored.
-      const items = Array.isArray(msg.data) ? msg.data : [];
-      showPanelNotice(items.length === 1
-        ? 'Could not save the credential — Windows protection unavailable. Try again.'
-        : `Could not save ${items.length} credentials — Windows protection unavailable.`);
     }
     else if (msg.type === 'sensors') { latestSensors = msg.data || []; broadcast({ type: 'ww-sensors', sensors: latestSensors }); }
     else if (msg.type === 'media') { latestMedia = msg.data; broadcast({ type: 'ww-media', media: latestMedia }); }
@@ -260,11 +145,6 @@
     }
     else if (msg.type === 'fetch-result') {
       routeReply(fetchRoutes, msg, 'ww-fetch-result');
-    } else if (msg.type === 'sd-profiles-result') {
-      // Discovered VSD profile list for the settings sheet's host-backed selects.
-      const waiters = psProfileWaiters.splice(0);
-      const profiles = ((msg.data && msg.data.profiles) || []).filter((p) => typeof p === 'string');
-      waiters.forEach((cb) => { try { cb(profiles); } catch (e) { /* row rebuilt */ } });
     } else if (msg.type === 'discover') {
       // The settings window asks a placed widget for a setting's choices (#210). The
       // answer goes back to the host, which hands it to the settings window.
@@ -275,14 +155,6 @@
         d.field ? String(d.field) : null,
         (result) => postToHost(Object.assign({ type: 'discover-result', id: hostId }, result)),
         typeof d.query === 'string' ? d.query.slice(0, DISCOVER_QUERY_MAX) : '');
-    } else if (msg.type === 'apps-result') {
-      // Installed applications for the sheet's path pickers (#210).
-      const waiters = psAppWaiters.splice(0);
-      const apps = (((msg.data && msg.data.apps) || [])
-        .filter((a) => a && typeof a.name === 'string' && typeof a.path === 'string'));
-      const cut = !!(msg.data && msg.data.truncated);
-      const storeListed = !(msg.data && msg.data.storeListed === false);
-      waiters.forEach((cb) => { try { cb(apps, cut, storeListed); } catch (e) { /* row rebuilt */ } });
     } else if (msg.type === 'sd-profile-result') {
       routeSd(msg, (data) => ({ type: 'ww-sd-profile', profile: data }));
     } else if (msg.type === 'sd-capture-result') {
@@ -580,19 +452,15 @@
   function discoverFrom(instanceId, property, field, done, query) {
     const slot = instanceId && slots.find((s) => s.def && s.def.instanceId === instanceId && s.frame);
     if (!slot) { done({ ok: false, error: 'not-placed' }); return; }
-    discoverSlot(slot, property, field, done, query);
-  }
-
-  function discoverSlot(slot, property, field, done, query) {
-    if (!slot.frame || !slot.origin) { done({ ok: false, error: 'not-ready' }); return; }
+    if (!slot.origin) { done({ ok: false, error: 'not-ready' }); return; }
     const id = 'dq' + (++discoverSeq) + '-' + Math.random().toString(36).slice(2);
     const timer = setTimeout(() => {
       if (discoverRoutes.delete(id)) done({ ok: false, error: 'timeout' });
     }, DISCOVER_TIMEOUT_MS);
     const question = { type: 'ww-discover', id, property, field: field || null, query: query || '' };
     discoverRoutes.set(id, { slot, done, timer, question });
-    // A tile mid-reload has no document to ask yet — the panel's Find applies pending
-    // edits first, and that reloads it. Its ww-ready sends every open question on.
+    // A tile mid-reload has no document to ask yet. Its ww-ready sends every open
+    // question on.
     if (slot.initialized) sendToSlot(slot, question);
   }
 
@@ -714,36 +582,9 @@
 
   let panelNoticeTimer = null;
 
-  /** Transient banner for host-side failures the panel can't otherwise show. The strip
-   * has no dialogs and no room for one, so this rides above everything and clears
-   * itself; it is deliberately the only such surface. */
-  /** The host refused this document's save: it was built from a version of layout.json
-   * that the settings window has since written over (#281).
-   *
-   * Nothing was written, so disk still holds the other window's work — the failure mode
-   * this replaces is the opposite one, where this payload silently reverted it.
-   *
-   * Recovery is a reload, because there is nothing here worth keeping: this document's
-   * edits are expressed as a whole-layout snapshot built on a file that no longer exists,
-   * not as operations that could be replayed onto the new one. The reload is DELAYED so
-   * the notice is readable first — a panel that simply blinked and rearranged itself would
-   * read as a fault.
-   *
-   * `clearedCredentials` is the one thing the user has to be told rather than shown.
-   * def.secretsCleared lives only in this document's layoutData and travels only on the
-   * save that was just refused, so the clear did not happen and the widget is still
-   * running on the credential they removed. The reload will show it as set, because it is.
-   */
-  function onSaveRefused(info) {
-    if (layoutRefused) return;   // one notice, one reload, however many payloads were in flight
-    layoutRefused = true;
-    if (typeof info.generation === 'number') layoutGeneration = info.generation;
-    showPanelNotice(info.clearedCredentials
-      ? 'The settings window changed the layout, so this change was not saved \u2014 including the credential you removed. Reloading; remove it again.'
-      : 'The settings window changed the layout, so this change was not saved. Reloading.');
-    setTimeout(() => location.reload(), 4000);
-  }
-
+  /** Transient banner for what a tap cannot show on its own — a size change that did
+   * nothing, and why (#77). The strip has no dialogs and no room for one, so this rides
+   * above everything and clears itself; it is deliberately the only such surface. */
   function showPanelNotice(text) {
     let node = document.getElementById('panelNotice');
     if (!node) {
@@ -856,20 +697,8 @@
     // Adopted before anything can declare demand, so the first watch already carries this
     // document's base.
     if (data.genBase !== undefined && data.genBase !== null) genBase = String(data.genBase);
-    // The LAYOUT generation (#281) — a different subject from genBase above, which is this
-    // DOCUMENT's sequence for the notification-demand gate (#132). Never conflated: one
-    // says which layout.json this model came from, the other which document is asking.
-    // A fresh document is never refused, so the refusal latch lifts with the init.
-    if (typeof data.generation === 'number') layoutGeneration = data.generation;
-    layoutRefused = false;
     if (PREVIEW) previewGen = data.gen | 0;
     if (PREVIEW && typeof data.page === 'number') previewPage = data.page;
-    // A restore reloads the whole document (the attic def is ciphertext here, so only the
-    // host can move it) — and a reload otherwise drops the user on page 0 with the chrome
-    // idle, the restored tile off-screen, the operation reading as "nothing happened".
-    // The host stamps this hint on exactly the one payload that reload produces.
-    if (!PREVIEW && typeof data.page === 'number') initPage = data.page;
-    const resumeEditing = !PREVIEW && data.editing === true;
     latestSensors = data.sensors || [];
     latestMedia = data.media;
     if (typeof data.mediaRelayToken === 'string') mediaRelayToken = data.mediaRelayToken;
@@ -880,59 +709,23 @@
 
     layoutData = (data.layout && Array.isArray(data.layout.pages)) ? data.layout : { pages: [] };
     // Normalised at the one door the catalog comes through — see Shell/appearance.js.
-    // Downstream (mergedSettings, buildPropRows, the palette) reads an already-correct
+    // Downstream (mergedSettings, the add-zones' fit checks) reads an already-correct
     // property list and needs no idea that some properties are the panel's, not the
     // widget author's.
     widgetLib = window.WWAppearance.normalizeCatalog(data.widgets);
     widgetsById = new Map(widgetLib.map((w) => [w.id, w]));
     backgroundHost = data.backgroundHost || backgroundHost;
 
-    // Instance identity must be unique: layouts from older builds can carry
-    // DUPLICATE instanceIds (positional freezes colliding with earlier
-    // adoptions), and two look-alike widgets sharing one id share widget-local
-    // storage — settings and state on one tile visibly bleed into the other
-    // (field report: "editing settings on the top one directly impacts the one
-    // below it"). Collisions are checked against each slot's EFFECTIVE tag —
-    // a slot with no instanceId runs under its derived positional tag
-    // ("p0s0"), which an explicit id elsewhere can collide with just as hard.
-    // Re-mint duplicates here; the panel persists the healed ids.
-    const seenIds = new Set();
-    let reMinted = 0;
-    layoutData.pages.forEach((page, pi) => {
-      (page.slots || []).forEach((def, si) => {
-        let effective = def.instanceId || ('p' + pi + 's' + si);
-        if (seenIds.has(effective)) {
-          def.instanceId = 'i' + Date.now().toString(36) + '-' + (++instanceSeq) + 'd';
-          effective = def.instanceId;
-          reMinted++;
-        }
-        seenIds.add(effective);
-      });
-    });
-
+    // Instance identity is unique by the time a layout gets here: the host re-mints a
+    // repeated instanceId as it loads layout.json (LayoutStore.HealDuplicateIds), so two
+    // look-alike tiles never share widget-local storage.
     renderAll();
-    // After the render, so the edit chrome measures a page that exists.
-    if (resumeEditing && !editing) setEditing(true);
-
-    if (reMinted && !PREVIEW) {
-      // Heal the stored layout so the dupes never come back. The replica skips
-      // this: its capture stream must never dirty a freshly opened editor.
-      postToHost({ type: 'log', message: 'healed ' + reMinted + ' duplicate widget instanceId(s)' });
-      persistLayout();
-    }
   }
 
   function renderAll() {
     cancelDrag();   // a re-init mid-drag must not orphan the ghost / dragging state
-    closePalette(); // palette entries capture page objects this rebuild replaces
-    closeStyleEditor(false); // its record is about to be replaced
-    closePropSheet(false);   // ditto for the settings sheet
-    // A re-init (hot reload, replica refresh) keeps the page — and a document that was
-    // just reloaded FOR a restore has no page to keep, so the host's one-shot hint stands
-    // in. Consumed here: a later renderAll in the same document is an ordinary re-render.
-    const keepPage = (PREVIEW && previewPage != null) ? previewPage
-      : (initPage != null ? initPage : currentPage());
-    initPage = null;
+    // A re-init (hot reload, replica refresh) keeps the page.
+    const keepPage = (PREVIEW && previewPage != null) ? previewPage : currentPage();
     refreshBgSpecs();
     bg.reset();
 
@@ -945,7 +738,7 @@
     syncPageOrder();
     rebuildDots();
 
-    emptyEl.hidden = editing || slots.length > 0 || layoutData.pages.length > 0;
+    showEmpty();
     pagesEl.scrollLeft = Math.min(keepPage, Math.max(0, layoutData.pages.length - 1)) * pagesEl.clientWidth;
     updateDots();
     bg.applyForPage(currentPage()); // paint the initial page's background at once (updateDots only debounces)
@@ -953,7 +746,6 @@
     generation++;
     armWatchdog(generation);
     syncNotificationDemand(); // fresh records carry no demand; rebuilt widgets re-watch
-    if (editing) updateEditBar();
   }
 
   function buildPage(page) {
@@ -993,8 +785,9 @@
       // Fragment carries a stable per-slot tag (backs the iCUE `uniqueId` global)
       // plus this slot's merged settings, so the shim can inject property globals
       // BEFORE widget scripts run — matching iCUE's documented injection timing.
-      // A persisted instanceId (assigned on first on-panel edit) is the permanent
-      // identity; never-edited layouts keep the positional tag, exactly as before.
+      // The persisted instanceId is the permanent identity. The host stamps one on every
+      // slot as it loads layout.json (LayoutStore.MintMissingIds), adopting the positional
+      // tag below, so the fallback only covers a def the replica has not persisted yet.
       const settings = mergedSettings(widget, slotDef);
       const tag = slotDef.instanceId ||
         ('p' + Math.max(0, layoutData.pages.indexOf(page)) + 's' + Math.max(0, (page.slots || []).indexOf(slotDef)));
@@ -1240,7 +1033,7 @@
       z.querySelector('.az-plus').textContent = fits ? '+' : '·';
       z.querySelector('.az-label').textContent = fits ? 'Add widget' : 'Nothing fits here';
       z.title = fits ? 'Add a widget here' : 'No installed widget fits this space';
-      z.onclick = fits ? () => openPalette(page, region) : null;
+      z.onclick = fits ? () => requestAddWidget(page, region) : null;
     });
   }
 
@@ -1335,9 +1128,8 @@
     const clamped = Math.max(0, Math.min(count - 1, index));
     const left = clamped * pagesEl.clientWidth;
     navTarget = Math.abs(pagesEl.scrollLeft - left) < 2 ? null : clamped; // no scroll -> no scrollend
-    if (editing) disarmPageDelete(); // an armed delete must not carry over to another page
-    // WYSIWYG: page moves initiated inside the editing replica (add page, edge-drop,
-    // capsule arrows) must steer the settings window too, or its rail/detail panel
+    // WYSIWYG: page moves initiated inside the editing replica (an edge drop, a tap on
+    // the dots or an edge) must steer the settings window too, or its rail/detail panel
     // keeps operating on the page the preview no longer shows. HOST-steered moves
     // are silent: echoing them back turns the settings' own stale-navigation
     // re-steer into a message ping-pong until its debounce clears.
@@ -1347,11 +1139,11 @@
   }
 
   function wakeChrome() {
-    for (const el of [dotsEl, edgeLeft, edgeRight, editBtn]) el.classList.remove('idle');
+    for (const el of [dotsEl, edgeLeft, edgeRight]) el.classList.remove('idle');
     clearTimeout(dotsIdleTimer);
     if (editing) return; // chrome stays awake for the whole edit session
     dotsIdleTimer = setTimeout(() => {
-      for (const el of [dotsEl, edgeLeft, edgeRight, editBtn]) el.classList.add('idle');
+      for (const el of [dotsEl, edgeLeft, edgeRight]) el.classList.add('idle');
     }, 2500);
   }
 
@@ -1366,7 +1158,6 @@
     clearTimeout(bgSettleTimer);
     bgSettleTimer = setTimeout(() => bg.applyForPage(currentPage()), 140);
     wakeChrome();
-    if (editing) updateEditBar();
   }
 
   // ---- wallpaper (dashboard/page background) ---------------------------------------
@@ -1496,30 +1287,14 @@
   pagesEl.addEventListener('scroll', updateDots, { passive: true });
   pagesEl.addEventListener('scrollend', () => { navTarget = null; });
 
-  // ---- on-panel edit mode ----------------------------------------------------------
-  // Everything is edited in place on the live dashboard: transparent overlays above the
-  // widget iframes capture gestures (widgets never see them), every mutation re-lays the
-  // affected page out and persists immediately, and "Done" only exits.
+  // ---- edit mode (the settings replica) ---------------------------------------------
+  // The panel only displays. Editing happens in the settings window, whose live preview is
+  // this same shell embedded as a replica (index.html?preview) and switched into edit mode
+  // by an `edit-mode` message: transparent overlays above the widget iframes capture
+  // gestures (widgets never see them), and every mutation re-lays the affected page out
+  // and persists to the settings window's working copy, which Save & apply writes.
 
-  const editBtn = document.getElementById('editBtn');
-  const editBar = document.getElementById('editBar');
-  if (PREVIEW) {
-    // In the settings replica the HOST owns edit mode (its "Edit layout" toggle):
-    // hide the pencil and Done so the replica can't fall out of sync with it.
-    editBtn.style.display = 'none';
-    // Nothing floats over the canvas in the replica (field report: the capsule
-    // and style panel covered — and BLOCKED — the very tiles being edited). The
-    // settings window around this frame owns page management, navigation (pages
-    // strip + the dots) and appearance; the preview shows only widgets.
-    editBar.style.display = 'none';
-    document.body.classList.add('preview'); // CSS scoping for replica-only styling
-  }
-  const paletteEl = document.getElementById('palette');
-  const paletteGrid = document.getElementById('paletteGrid');
-  const paletteTitle = document.getElementById('paletteTitle');
-  const paletteRetired = document.getElementById('paletteRetired');
-  const pageDeleteBtn = document.getElementById('pageDelete');
-  const retiredBtn = document.getElementById('retiredBtn');
+  if (PREVIEW) document.body.classList.add('preview'); // CSS scoping for replica-only styling
 
   const WIDTH_ORDER = ['quarter', 'half', 'three-quarter', 'full'];
   const WIDTH_LABELS = { quarter: '¼', half: '½', 'three-quarter': '¾', full: 'Full' };
@@ -1565,12 +1340,10 @@
   function requestRemoveSlot(record) {
     if (!PREVIEW) return;
     // Resolve against the LIVE tree, never record.page — an init may have reassigned
-    // layoutData while the two-tap confirm was armed. Same reason removeSlot does it.
+    // layoutData while the two-tap confirm was armed.
     const page = layoutData.pages.find((p) => (p.slots || []).indexOf(record.def) >= 0);
     if (!page) {
-      // Orphaned record: nothing left to name, but the tile is still on glass. This is
-      // removeSlot's own orphan cleanup, which no longer runs in PREVIEW, so it lives
-      // with the caller that can still reach the case.
+      // Orphaned record: nothing left to name, but the tile is still on glass.
       record.el.remove();
       slots = slots.filter((s) => s !== record);
       return;
@@ -1603,12 +1376,9 @@
   }
 
   function persistLayout() {
-    // Refused once means refused until this document is replaced: layoutData is built on a
-    // version of the file that no longer exists, so every further payload from it would be
-    // refused too. Posting them anyway would spam the host with saves that cannot land and
-    // notices the user is already reading. The reload onSaveRefused schedules is what ends
-    // this state.
-    if (layoutRefused) return;
+    // The panel never saves: it only displays what the host loaded. Only the settings
+    // replica edits, and its persists go to the settings window's working copy.
+    if (!PREVIEW) return;
     // Editing makes positional identity unstable, so the first persist freezes every
     // instance's identity: each def adopts the tag its iframe is ALREADY running under
     // (stored widget state carries over seamlessly); defs without a live record (e.g.
@@ -1621,17 +1391,11 @@
           ('i' + Date.now().toString(36) + '-' + (++instanceSeq));
       }
     }
-    const save = { type: 'save-layout', layout: layoutData };
-    if (PREVIEW) save.gen = previewGen; // stale-capture detection in the settings window
-    // Which version this model was built from (#281). Only on a REAL panel: the replica's
-    // saves are captured by the settings window and never reach the host, so a layout
-    // generation on them would name a number nothing compares against — and `gen` above is
-    // already a different quantity on this same message.
-    else if (layoutGeneration !== null) save.generation = layoutGeneration;
-    postToHost(save);
+    // `gen` is for stale-capture detection in the settings window.
+    postToHost({ type: 'save-layout', layout: layoutData, gen: previewGen });
     // Mutations shift indices; keep the settings window's detail panel pointed at
     // the same slot it was showing (it captures the layout above, then this).
-    if (PREVIEW && selected) postSelection();
+    if (selected) postSelection();
   }
 
   // Wraps a mutation in a View Transition when available so tiles glide instead of jump.
@@ -1654,57 +1418,36 @@
   }
   function makeSize(width, band) { return width + (band === 'full' ? '' : '-' + band); }
 
+  // The "nothing here" hint. On the panel it shows whenever no tile is on screen, pages or
+  // not: the panel has no way to add one, so a blank screen must say where to go (the
+  // settings window). In the preview an empty page is the settings window's own canvas,
+  // edited in place, so the hint is for a layout with no pages at all, outside edit mode.
+  function showEmpty() {
+    emptyEl.hidden = PREVIEW
+      ? editing || slots.length > 0 || layoutData.pages.length > 0
+      : slots.length > 0;
+  }
+
   function setEditing(on) {
     editing = on;
     document.body.classList.toggle('editing', on);
-    editBar.hidden = !on;
-    // On-device, entering edit on an empty panel needs a page to drop widgets on.
-    // NEVER in the replica: the settings window owns page management there, and
-    // auto-creating one after the user deleted their last page silently undid the
-    // deletion (the capture stream adopted the unsolicited page right back).
-    if (on && !PREVIEW && layoutData.pages.length === 0) {
-      const page = { name: 'Page 1', slots: [] };
-      layoutData.pages.push(page);
-      buildPage(page);
-      syncPageOrder(); rebuildDots(); refreshBgSpecs();
-      persistLayout();
-    }
+    // No page is created here: the settings window owns page management, and a page
+    // made by the preview would undo a deletion the user just made there.
     if (on) {
       emptyEl.hidden = true;
       for (const page of layoutData.pages) positionAddZone(page);
-      updateEditBar();
     } else {
-      emptyEl.hidden = slots.length > 0 || layoutData.pages.length > 0;
-      closePalette();
+      showEmpty();
       cancelDrag();
-      closeStyleEditor(); // flushes any trailing style edit
-      closePropSheet();   // same flush-on-close contract for settings edits
       if (PREVIEW) selectRecord(null, false); // highlight off; the host keeps its own selection
       // Armed confirms must not survive the session: re-entering edit within the
       // 2.5s window would otherwise turn the first tap into an instant delete.
-      disarmPageDelete();
       for (const btn of document.querySelectorAll('.edit-overlay .remove.confirm')) resetConfirm(btn, '✕');
     }
     wakeChrome();
   }
-  editBtn.addEventListener('click', () => setEditing(true));
-  document.getElementById('editDone').addEventListener('click', () => setEditing(false));
 
-  function updateEditBar() {
-    const i = editIndex();
-    document.getElementById('pageMoveLeft').disabled = i <= 0;
-    document.getElementById('pageMoveRight').disabled = i >= layoutData.pages.length - 1;
-    pageDeleteBtn.disabled = layoutData.pages.length <= 1;
-    // Hidden rather than disabled when the attic is empty: an always-visible button for a
-    // feature most users never trigger is clutter on a 1280×400 capsule.
-    retiredBtn.hidden = retainedEntries().length === 0;
-  }
-  retiredBtn.addEventListener('click', () => {
-    const page = layoutData.pages[editIndex()];
-    if (page) openPalette(page, null, true);
-  });
-
-  // Two-tap confirm for destructive buttons (no native dialogs on the panel).
+  // Two-tap confirm for destructive buttons (no native dialogs inside the preview).
   function confirmThen(btn, restoreText, needsConfirm, action) {
     if (!needsConfirm || btn.classList.contains('confirm')) {
       resetConfirm(btn, restoreText);
@@ -1721,52 +1464,6 @@
     btn.textContent = restoreText;
     clearTimeout(btn._confirmTimer);
   }
-
-  function disarmPageDelete() {
-    resetConfirm(pageDeleteBtn, '✕ Page');
-  }
-
-  // ---- page management -------------------------------------------------------------
-
-  document.getElementById('pageAdd').addEventListener('click', () => {
-    const page = { name: 'Page ' + (layoutData.pages.length + 1), slots: [] };
-    layoutData.pages.push(page);
-    buildPage(page);
-    syncPageOrder(); rebuildDots(); refreshBgSpecs();
-    persistLayout();
-    goToPage(layoutData.pages.length - 1);
-    updateEditBar();
-  });
-
-  pageDeleteBtn.addEventListener('click', () => {
-    const i = editIndex();
-    const page = layoutData.pages[i];
-    if (!page || layoutData.pages.length <= 1) return;
-    confirmThen(pageDeleteBtn, '✕ Page', (page.slots || []).length > 0, () => {
-      if (styleTarget && styleTarget.page === page) closeStyleEditor(false); // its tile goes away with the page
-      if (propTarget && propTarget.page === page) closePropSheet(false);
-      if (selected && selected.page === page) selectRecord(null); // the detail target's page is going away
-      for (const rec of slots.filter((s) => s.page === page)) rec.el.remove();
-      slots = slots.filter((s) => s.page !== page);
-      syncNotificationDemand();
-      const el = pageEls.get(page);
-      if (el) el.remove();
-      pageEls.delete(page);
-      layoutData.pages.splice(i, 1);
-      syncPageOrder(); rebuildDots(); refreshBgSpecs();
-      persistLayout();
-      goToPage(Math.min(i, layoutData.pages.length - 1));
-      bg.applyForPage(currentPage());
-      updateEditBar();
-    });
-  });
-
-  // The capsule arrows NAVIGATE. They used to reorder the current page — which
-  // moved the dot indicator without changing the visible content (the viewed page
-  // travels with the reorder), reading as a dead control and silently rearranging
-  // the page order (#39). Reordering lives in the settings window's pages strip.
-  document.getElementById('pageMoveLeft').addEventListener('click', () => goToPage(editIndex() - 1));
-  document.getElementById('pageMoveRight').addEventListener('click', () => goToPage(editIndex() + 1));
 
   // ---- per-slot controls -----------------------------------------------------------
 
@@ -1785,12 +1482,9 @@
     remove.title = 'Remove this widget (tap twice)';
     remove.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      // One retire path (#226): on glass we retire locally; in the settings replica we
-      // hand off, because only the settings side holds the unscrubbed def. Same shape as
-      // the 🎨 handoff below and openPalette's.
-      confirmThen(remove, '✕', true, () => {
-        if (PREVIEW) requestRemoveSlot(record); else removeSlot(record);
-      });
+      // One retire path (#226): the replica hands the removal to the settings window,
+      // the only side holding the unscrubbed def. Same shape as requestAddWidget's.
+      confirmThen(remove, '✕', true, () => requestRemoveSlot(record));
     });
     ov.appendChild(remove);
 
@@ -1799,8 +1493,8 @@
     const band = document.createElement('button');
     band.className = 'band';
     // Field report: the bottom-right chips were unexplained glyphs. The tooltip
-    // names the CURRENT value and what tapping does (hover on the desktop
-    // replica; on-glass they at least read right to assistive tech).
+    // names the CURRENT value and what tapping does, and the same words reach
+    // assistive tech.
     const WIDTH_NAMES = { quarter: 'quarter', half: 'half', 'three-quarter': 'three-quarter', full: 'full' };
     const BAND_NAMES = { full: 'full height', upper: 'top half', lower: 'bottom half' };
     const syncLabels = () => {
@@ -1819,155 +1513,8 @@
     ov.appendChild(size);
     ov.appendChild(band);
 
-    // 🎨 on every surface — but ONE editor per surface: on-device it opens the
-    // on-panel style editor; in the settings replica it hands off to the
-    // settings inspector (field report: "the palette button is still missing").
-    // The ⚙ sheet stays device-only: the inspector owns properties on desktop.
-    if (widget) {
-      const style = document.createElement('button');
-      style.className = 'style';
-      style.textContent = '🎨';
-      style.title = PREVIEW ? 'Style this widget (opens the inspector)' : 'Style this widget';
-      style.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        if (PREVIEW) {
-          selectRecord(record); // selection + inspector open ride the same handoff
-          postToHost({ type: 'style-widget', gen: previewGen });
-        } else {
-          openStyleEditor(record);
-        }
-      });
-      ov.appendChild(style);
-    }
-    if (widget && !PREVIEW) {
-      // Duplicate (#226). Device-only, like the ⚙ below: the settings window has its own
-      // ⧉ on the slot chip, and one gesture per surface beats a handoff. Gated on `widget`:
-      // a tile whose widget never loaded (refused, uninstalled) is not one to multiply.
-      const dupe = document.createElement('button');
-      dupe.className = 'dupe';
-      dupe.textContent = '⧉';
-      dupe.title = 'Add another one like this, credentials included';
-      dupe.addEventListener('click', (ev) => { ev.stopPropagation(); duplicateSlot(record); });
-      ov.appendChild(dupe);
-
-      // On-device access to the widget's OWN settings (#48): the pencil could
-      // move and restyle tiles but never configure them.
-      if ((widget.properties || []).length) {
-        const gear = document.createElement('button');
-        gear.className = 'gear';
-        gear.textContent = '⚙';
-        gear.title = 'Widget settings';
-        gear.addEventListener('click', (ev) => { ev.stopPropagation(); openPropSheet(record); });
-        ov.appendChild(gear);
-      }
-    }
-
     bindDrag(ov, record);
     return ov;
-  }
-
-  // Duplicate (#226): another tile of the same widget, same size, same settings — its
-  // credentials included, which is the owner's call — and an identity of its own.
-  //
-  // The panel holds the credentials revealed, so the copy simply carries them and the
-  // host seals them for the new tile on save. What the panel was NOT given — a demoted
-  // credential the host blanked for it (secretsRestorable) — the copy asks for by naming
-  // its source in `copiedFrom`: on the copy's first save the host fills an untouched blank
-  // from the source's stored value (SecretPolicy.CopiedFromMarkerKey). A pending Clear on
-  // the source travels too, so a credential the user is removing does not live on in the
-  // copy.
-  //
-  // The fresh instanceId is not cosmetic. A clone without one becomes a second id-less
-  // claimant for this widget, and the positional key a LEGACY source's credential is
-  // addressed by only survives while there is exactly one — so an id-less clone would
-  // destroy the credential of the very tile being duplicated. Probes E2-E3 pin it.
-  function duplicateSlot(record) {
-    mutate(() => {
-      // Resolved INSIDE the mutation, as removeSlot does. `mutate` hands the callback to
-      // startViewTransition where that exists, so it runs a turn later — long enough for a
-      // host init to have replaced layoutData and rebuilt pageEls underneath a page
-      // captured outside, and buildSlot would then have no element to append to.
-      const page = layoutData.pages.find((p) => (p.slots || []).indexOf(record.def) >= 0);
-      if (!page) return;   // the source went away with an init since the overlay was built
-      const def = {
-        widgetId: record.def.widgetId,
-        size: record.def.size,
-        instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
-        settings: JSON.parse(JSON.stringify(record.def.settings || {})),
-      };
-      if (record.def.instanceId) def.copiedFrom = record.def.instanceId;
-      for (const key of ['secretsRestorable', 'secretsCleared'])
-        if (Array.isArray(record.def[key]) && record.def[key].length) def[key] = record.def[key].slice();
-      if (record.def.style) def.style = JSON.parse(JSON.stringify(record.def.style));
-      // No `col`: the source's anchor is where the SOURCE sits. The clone flows into the
-      // first free spot instead of fighting it for the same column.
-      if (!pageFits(page, { size: def.size, col: null })) {
-        showPanelNotice('No room on this page — make something smaller, or add a page.');
-        return;
-      }
-      (page.slots = page.slots || []).push(def);
-      buildSlot(page, def);
-      relayoutPage(page);
-      armWatchdog(generation);
-    });
-  }
-
-  function removeSlot(record) {
-    // Panel-only, structurally. In the settings replica `layoutData.retained` is
-    // undefined for the document's life — replicaLayout deletes `retained` on the way
-    // down — so a retire here would author a PHANTOM attic: an entry the settings side
-    // never sees, holding a def whose credential was blanked before it arrived. Worse,
-    // if such a capture ever did land it would seat one instanceId in both pages and
-    // retained, the twin state the host's stored-index poison punishes by blanking the
-    // LIVE credential. The preview's ✕ routes through requestRemoveSlot instead.
-    if (PREVIEW) return;
-    if (drag && drag.record === record) cancelDrag(); // removed out from under a drag
-    if (styleTarget === record) closeStyleEditor(false);
-    if (propTarget === record) closePropSheet(false);
-    if (selected === record) selectRecord(null); // tell the host its detail target is gone
-    mutate(() => {
-      // Retire only a def that is still LIVE in the current tree. A stale record — its
-      // page/def orphaned by an init that reassigned layoutData while the confirm was
-      // armed, or a double invoke on an already-spliced def — must NOT push into the
-      // current attic: that would seat one instanceId in both pages and retained, the
-      // twin state the host's stored-index poison then punishes by blanking the LIVE
-      // credential. Resolve from layoutData, not record.page.
-      const page = layoutData.pages.find((p) => (p.slots || []).indexOf(record.def) >= 0);
-      if (!page) {
-        record.el.remove();
-        slots = slots.filter((s) => s !== record);
-        return;
-      }
-      const defs = page.slots;
-      const i = defs.indexOf(record.def);
-      // Removal RETIRES, not discards (#226): the def moves to the attic so its config —
-      // sealed credentials included — can come back. Mint identity first: the attic is
-      // addressed only by widgetId|i:instanceId (never by grid position, #68), so an
-      // id-less def gets one now, under the same generator persistLayout and addWidget
-      // use. A def that was id-less in the STORED layout still loses its manifest secret
-      // on the masked retire path — the accepted #68 "legacy loss", identical to the
-      // first-on-panel-edit loss; see docs/SECRET-ADDRESSING.md.
-      if (!record.def.instanceId)
-        record.def.instanceId = 'i' + Date.now().toString(36) + '-' + (++instanceSeq);
-      // A JSON deep-copy, so later page edits cannot reach the retired bytes. No cap
-      // here: the cap is host-authoritative (the host alone can destroy the evicted
-      // instance's derived credentials); an over-full in-memory attic is not rendered
-      // and is trimmed by the host on this very save.
-      layoutData.retained = layoutData.retained || [];
-      layoutData.retained.push({
-        def: JSON.parse(JSON.stringify(record.def)),
-        retiredAt: new Date().toISOString(),
-        originPage: page.name,
-      });
-      defs.splice(i, 1);
-      record.el.remove();
-      slots = slots.filter((s) => s !== record);
-      relayoutPage(page);
-      syncNotificationDemand();
-      // The attic just went from empty to not — reveal the way back to it, or the very
-      // removal that created the entry leaves its only entry point hidden.
-      if (editing) updateEditBar();
-    });
   }
 
   function allowedWidths(widget) {
@@ -2075,17 +1622,13 @@
     syncLabels();
   }
 
-  // ---- per-widget style editor -----------------------------------------------------
-  // A right-docked panel over the live tile: checked rows re-specify theme seeds for
-  // this instance only; the full palette is re-derived (contrast repair included) and
-  // pushed live via ww-theme, then persisted debounced.
+  // ---- per-slot theme -------------------------------------------------------------
+  // A slot's saved style overrides (def.style, set in the settings window's Appearance
+  // section) re-specify theme seeds for that instance only; the full palette is re-derived
+  // from the merged seeds (contrast repair included) and handed to the tile with ww-init
+  // and every ww-theme.
 
-  const stylePanel = document.getElementById('stylePanel');
-  const spRows = document.getElementById('spRows');
-  const spTitle = document.getElementById('spTitle');
   const STOCK_SEEDS = { accent: '#4dd4e8', background: '#070b12', text: '#dde2e8', panelAlpha: 0.92 };
-  let styleTarget = null;
-  let stylePersistTimer = null;
 
   function themeSeeds() {
     return Object.assign({}, STOCK_SEEDS, layoutData.theme || {});
@@ -2099,1367 +1642,18 @@
     return window.WWPalette.derive(Object.assign(themeSeeds(), style));
   }
 
-  function pushSlotTheme(record) {
-    sendToSlot(record, { type: 'ww-theme', theme: slotTheme(record) || window.WWPalette.derive(themeSeeds()) });
-  }
+  // ---- add widget ------------------------------------------------------------------
 
-  function openStyleEditor(record) {
-    if (PREVIEW) return; // the settings window's Appearance section owns styling there
-    closePropSheet();    // one right-docked editor at a time
-    styleTarget = record;
-    const widget = widgetsById.get(record.def.widgetId);
-    spTitle.textContent = widget ? (widget.displayName || widget.name) : record.def.widgetId;
-    for (const s of slots) s.el.classList.toggle('style-editing', s === record);
-    buildStyleRows();
-    stylePanel.hidden = false;
-  }
-
-  function closeStyleEditor(flush) {
-    if (flush !== false && stylePersistTimer) {
-      clearTimeout(stylePersistTimer);
-      stylePersistTimer = null;
-      persistLayout(); // flush-on-close: never lose a trailing edit
-    }
-    styleTarget = null;
-    stylePanel.hidden = true;
-    for (const s of slots) s.el.classList.remove('style-editing');
-  }
-
-  function styleChanged() {
-    if (!styleTarget) return;
-    const style = styleTarget.def.style;
-    if (style && !Object.keys(style).length) delete styleTarget.def.style;
-    pushSlotTheme(styleTarget);
-    clearTimeout(stylePersistTimer);
-    stylePersistTimer = setTimeout(() => { stylePersistTimer = null; persistLayout(); }, 300);
-  }
-
-  function buildStyleRows() {
-    spRows.textContent = '';
-    const def = styleTarget.def;
-    const seeds = themeSeeds();
-    const hex = (v, fallback) => (/^#[0-9a-f]{6}$/i.test(v || '') ? v : fallback);
-
-    for (const r of [{ key: 'accent', label: 'Accent' }, { key: 'background', label: 'Background' }, { key: 'text', label: 'Text' }]) {
-      const row = document.createElement('div');
-      row.className = 'sp-row';
-      const check = document.createElement('input');
-      check.type = 'checkbox';
-      const label = document.createElement('label');
-      label.textContent = r.label;
-      const color = document.createElement('input');
-      color.type = 'color';
-      const cur = def.style && def.style[r.key];
-      check.checked = cur != null;
-      color.disabled = !check.checked;
-      color.value = hex(cur, hex(seeds[r.key], '#4dd4e8'));
-      check.addEventListener('change', () => {
-        color.disabled = !check.checked;
-        const style = def.style || (def.style = {});
-        if (check.checked) style[r.key] = color.value; else delete style[r.key];
-        styleChanged();
-      });
-      color.addEventListener('input', () => {
-        (def.style || (def.style = {}))[r.key] = color.value;
-        styleChanged();
-      });
-      row.append(check, label, color);
-      spRows.appendChild(row);
-    }
-
-    const row = document.createElement('div');
-    row.className = 'sp-row';
-    const check = document.createElement('input');
-    check.type = 'checkbox';
-    const label = document.createElement('label');
-    label.textContent = 'Panel opacity';
-    const range = document.createElement('input');
-    range.type = 'range';
-    range.min = 15; range.max = 100; range.step = 1;
-    const out = document.createElement('output');
-    const cur = def.style && def.style.panelAlpha;
-    check.checked = cur != null;
-    range.disabled = !check.checked;
-    range.value = String(Math.round((cur != null ? cur : seeds.panelAlpha) * 100));
-    out.value = range.value + '%';
-    check.addEventListener('change', () => {
-      range.disabled = !check.checked;
-      const style = def.style || (def.style = {});
-      if (check.checked) style.panelAlpha = Number(range.value) / 100; else delete style.panelAlpha;
-      styleChanged();
-    });
-    range.addEventListener('input', () => {
-      out.value = range.value + '%';
-      (def.style || (def.style = {})).panelAlpha = Number(range.value) / 100;
-      styleChanged();
-    });
-    row.append(check, label, range, out);
-    spRows.appendChild(row);
-  }
-
-  document.getElementById('spClose').addEventListener('click', () => closeStyleEditor());
-  document.getElementById('spReset').addEventListener('click', () => {
-    if (!styleTarget) return;
-    delete styleTarget.def.style;
-    pushSlotTheme(styleTarget);
-    buildStyleRows();
-    persistLayout();
-  });
-
-  // ---- per-widget settings editor (#48) ---------------------------------------------
-  // On-device counterpart of the settings window's Widget tab: a right-docked sheet
-  // of touch-first controls generated from the widget's manifest properties. Every
-  // change applies to the live tile immediately (the tile IS the preview) and
-  // persists debounced, flushing on close — same contract as the style editor.
-
-  const propSheet = document.getElementById('propSheet');
-  const psRows = document.getElementById('psRows');
-  const psTitle = document.getElementById('psTitle');
-  let propTarget = null;
-  let propPersistTimer = null;
-  let psProfileWaiters = []; // callbacks awaiting an sd-profiles-result
-  let psAppWaiters = [];     // callbacks awaiting an apps-result (#210)
-  let propReloadSeq = 0;     // cache-busting nonce: fragment-only src changes don't navigate
-
-  const PS_EMOJI = [
-    '🧮', '🌐', '📁', '📷', '🎨', '📝', '📊', '💻', '🖥️', '⌨️', '🖱️', '🎧',
-    '🎮', '🕹️', '🎬', '🎵', '📺', '📻', '🔊', '🔇', '⏯️', '⏭️', '⏮️', '⏹️',
-    '🚀', '⚡', '🔥', '⭐', '❤️', '🏠', '🔧', '⚙️', '🔒', '🔑', '🛡️', '📦',
-    '💬', '📧', '📅', '⏰', '🌙', '☀️', '☁️', '💡', '🔋', '📶', '🧭', '🗺️',
-  ];
-
-  // Leading emoji plus trailing whitespace — what a picker:'emoji-prefix' pick
-  // swaps out so the text after the icon survives (launcher labels: "🎮 Steam"
-  // → "🚀 Steam"). Covers regional-indicator flags (🇺🇸) and keycaps (1️⃣) as
-  // well as pictographic VS16/skin-tone/ZWJ/tag sequences — mirror of the
-  // launcher widget's own leading-icon matcher.
-  const PS_LEAD_EMOJI = /^(?:[\u{1F1E6}-\u{1F1FF}]{2}|[0-9#*]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}\uFE0F?|\p{Emoji_Modifier}|[\u{E0020}-\u{E007F}])*)\s*/u;
-
-  function closeEmojiPop() {
-    const pop = document.querySelector('.emoji-pop');
-    if (pop) pop.remove();
-    document.removeEventListener('pointerdown', onEmojiOutside, true);
-  }
-  function onEmojiOutside(ev) {
-    if (!ev.target.closest('.emoji-pop')) closeEmojiPop();
-  }
-  function openEmojiPop(anchor, onPick) {
-    if (document.querySelector('.emoji-pop')) { closeEmojiPop(); return; }
-    const pop = document.createElement('div');
-    pop.className = 'emoji-pop';
-    for (const e of PS_EMOJI) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = e;
-      b.addEventListener('click', () => { onPick(e); closeEmojiPop(); });
-      pop.appendChild(b);
-    }
-    document.body.appendChild(pop);
-    const r = anchor.getBoundingClientRect();
-    pop.style.left = Math.max(8, Math.min(r.left - pop.offsetWidth + r.width, window.innerWidth - pop.offsetWidth - 8)) + 'px';
-    pop.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - pop.offsetHeight - 8)) + 'px';
-    document.addEventListener('pointerdown', onEmojiOutside, true);
-  }
-
-  function openPropSheet(record) {
-    if (PREVIEW) return; // the settings window's Widget tab owns properties there
-    closePropSheet();    // flush the PREVIOUS target's pending apply/persist first —
-                         // retargeting mid-debounce must not strand its edit or
-                         // apply it to the newly opened widget
-    closeStyleEditor();  // one right-docked editor at a time
-    propTarget = record;
-    const widget = widgetsById.get(record.def.widgetId);
-    psTitle.textContent = widget ? (widget.displayName || widget.name) : record.def.widgetId;
-    for (const s of slots) s.el.classList.toggle('style-editing', s === record);
-    buildPropRows(record, widget);
-    propSheet.hidden = false;
-  }
-
-  function closePropSheet(flush) {
-    if (!propTarget) return; // never wipe the style editor's highlight
-    if (flush !== false) {
-      // Flush-on-close: the live tile must show the trailing edit and the
-      // layout must carry it — never lose either to a still-armed debounce.
-      if (propApplyTimer) {
-        clearTimeout(propApplyTimer);
-        propApplyTimer = null;
-        applyPropNow(propTarget);
-      }
-      if (propPersistTimer) {
-        clearTimeout(propPersistTimer);
-        propPersistTimer = null;
-        persistLayout();
-      }
-    }
-    closeEmojiPop();
-    // The app chooser is appended to <body>, so nothing about hiding the sheet removes
-    // it. Left behind, it survives leaving edit mode, deleting the page, a layout reload
-    // or switching to another tile's editor — still holding a reference to the old
-    // input, so a later pick writes into and persists a slot whose editor is gone. Same
-    // defect the desktop closePanel() had; fixing one and not the other is how it stayed.
-    const appSheet = document.querySelector('.ps-apps');
-    if (appSheet) appSheet.remove();
-    propTarget = null;
-    propSheet.hidden = true;
-    for (const s of slots) s.el.classList.remove('style-editing');
-  }
-
-  /** Apply the edited stored settings by RELOADING the tile, never by re-initing
-   * the live document: widgets treat ww-init as boot, and a second one can stack
-   * what boot started (the stock Reddit widget's refresh interval, for one).
-   * A fresh document is the one path every widget already handles. The record's
-   * settings snapshot is re-merged (defaults + stored) so the reload boots
-   * exactly like a cold load would. */
-  function applyPropNow(record) {
-    const widget = widgetsById.get(record.def.widgetId);
-    record.settings = mergedSettings(widget, record.def);
-    if (!record.frame) return;
-    let hash = '#ww-slot=' + record.tag;
-    try {
-      hash += '&ww-settings=' + encodeURIComponent(JSON.stringify(record.settings));
-    } catch (e) { /* unserializable settings: init delivery still applies them */ }
-    record.hash = hash;
-    record.initialized = false; // the fresh document's ww-ready gets a full init
-
-    // The document that registered any notification demand is being destroyed —
-    // carrying its flag forward would keep the host polling toasts forever if
-    // the fresh document (new settings) never re-opts or the reload fails. The same
-    // reasoning covers every subscription: the demand belonged to that document, and
-    // the one replacing it has asked for nothing yet.
-    record.notifWatch = false;
-    record.notifSeen = null;
-    // No Stream Deck state to reset: a route is per REQUEST and expires on its own, so a
-    // destroyed document leaves nothing behind that a later one could inherit.
-    syncNotificationDemand();
-    record.frame.src = record.url + '?r=' + (++propReloadSeq) + hash;
-    // This navigation can flake exactly like an initial load (virtual-host races,
-    // heavy first paints) — and the boot watchdog chain has long since finished.
-    // Fresh retry budget, fresh watchdog, or a failed reload would sit silent
-    // forever: no ww-ready, no retries, no failure overlay.
-    record.retries = 0;
-    armWatchdog(generation);
-  }
-
-  let propApplyTimer = null;
-  function applyPropChange() {
-    if (!propTarget) return;
-    // Debounced: a keystroke stream must not reload the iframe per key.
-    const target = propTarget;
-    clearTimeout(propApplyTimer);
-    propApplyTimer = setTimeout(() => {
-      propApplyTimer = null;
-      if (propTarget === target) applyPropNow(target);
-    }, 400);
-    clearTimeout(propPersistTimer);
-    propPersistTimer = setTimeout(() => { propPersistTimer = null; persistLayout(); }, 600);
-  }
-
-  function buildPropRows(record, widget) {
-    psRows.textContent = '';
-    if (!widget) return;
-    const stored = () => (record.def.settings = record.def.settings || {});
-    const cur = (prop) => {
-      const s = record.def.settings || {};
-      return window.WWAppearance.shownValue(prop, s[prop.name] !== undefined ? s[prop.name] : prop.default);
-    };
-    // The third argument states INTENT, not value: pass true when the user asked to
-    // remove this property. psControl runs outside this closure, so it cannot reach the
-    // slot def to name the address itself.
-    // The third argument states INTENT; omitting it means "the user set a value", which
-    // CANCELS any pending removal. Without that default the name latched: clear a demoted
-    // property, pick a replacement in the same session, and the save deleted the property
-    // instead of storing what was just chosen.
-    // Only a real value cancels — see contradictsRemoval. Cancelling on "" put the latch
-    // back for any control whose empty choice is a legitimate selection.
-    const set = (prop, v, clearedFlag) => {
-      stored()[prop.name] = v;
-      if (clearedFlag === true) markCleared(record.def, prop.name, true);
-      else if (contradictsRemoval(v)) markCleared(record.def, prop.name, false);
-      applyPropChange();
-    };
-
-    // Names the host BLANKED on the way here — a demoted property whose stored value is
-    // still an envelope. Reveal reports them and DashboardWindow stamps them onto the init
-    // payload, which is the channel the panel never had: without it an emptied field and
-    // one the host emptied are the same bytes, so the panel could not offer a Clear and a
-    // demoted credential was undeletable here (#153).
-    const restorable = Array.isArray(record.def.secretsRestorable) ? record.def.secretsRestorable : [];
-
-    for (const prop of widget.properties || []) {
-      const field = document.createElement('div');
-      field.className = 'ps-field';
-      const label = document.createElement('label');
-      label.textContent = prop.label || prop.name;
-      field.appendChild(label);
-      field.appendChild(psControl(prop, cur, set));
-      // Same guidance as the settings window — the sheet is where a value is most likely
-      // to be typed on the device itself, with no second screen to read docs on (#207).
-      if (prop.help) {
-        const help = document.createElement('p');
-        help.className = 'ps-help';
-        help.textContent = String(prop.help);
-        field.appendChild(help);
-      }
-      // Keyed on the LIST, so it reaches every property type rather than only the one
-      // control that happens to render text. The secret control brings its own.
-      if (prop.type !== 'secret' && restorable.includes(prop.name)) {
-        const wipe = document.createElement('button');
-        wipe.type = 'button';
-        wipe.className = 'ps-eye ps-clear ps-field-clear';
-        wipe.textContent = '✕';
-        wipe.title = 'Remove the stored value on save';
-        wipe.addEventListener('click', () => {
-          set(prop, '', true);
-          // Rebuild so each control shows its own "no value" state — a colour input has
-          // no way to render empty, which is exactly why the affordance cannot live
-          // inside the controls.
-          buildPropRows(record, widget);
-        });
-        field.appendChild(wipe);
-      }
-      psRows.appendChild(field);
-    }
-  }
-
-  /** Segmented button group for short static option lists: every choice visible
-   * and tappable, the current one lit — same control the desktop editor renders. */
-  function psSegmented(options, current, commit) {
-    const seg = document.createElement('div');
-    seg.className = 'seg';
-    const valueOf = (o) => String((o && typeof o === 'object') ? o.value : o);
-    const textOf = (o) => (o && typeof o === 'object') ? (o.label || o.value) : o;
-    const light = (chosen) => {
-      for (const b of seg.querySelectorAll('button')) b.classList.toggle('active', b.dataset.v === chosen);
-    };
-    for (const o of options) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'seg-btn';
-      b.dataset.v = valueOf(o);
-      b.textContent = textOf(o);
-      b.addEventListener('click', () => { commit(valueOf(o)); light(valueOf(o)); });
-      seg.appendChild(b);
-    }
-    light(current != null ? String(current) : '');
-    return seg;
-  }
-
-  function psControl(prop, cur, set) {
-    const current = cur(prop);
-    switch (prop.type) {
-      case 'secret': {
-        // On-device the value IS the real credential (the host decrypts for the
-        // dashboard), so mask it on glass — shoulder-surfing a desk-height strip
-        // is trivial — with a tap-to-show for typo checking. The host re-encrypts
-        // on save; plaintext never reaches layout.json.
-        const wrap = document.createElement('div');
-        wrap.className = 'ps-secret';
-        const input = document.createElement('input');
-        input.type = 'password';
-        input.autocomplete = 'off';
-        input.spellcheck = false;
-        input.placeholder = prop.placeholder || 'Paste the token or key';
-        // Whatever is stored IS what the user typed — no transport form to undo.
-        const stored = typeof current === 'string' ? current : '';
-        input.value = stored;
-        // Whether a credential EXISTS on disk for this field — which changes while the
-        // sheet is open, since edits persist on a debounce. A snapshot taken at render
-        // time goes stale the moment the user types into an empty field: deleting it
-        // again would send "", the host would read that as "the masked desktop field
-        // came back untouched", and it would restore the credential it had just saved —
-        // leaving a field that looks empty over a token that is still live.
-        let exists = stored.length > 0;
-        const commit = () => {
-          const typed = input.value.length > 0;
-          if (typed) exists = true;   // this keystroke is on its way to disk
-          // A credential is arbitrary text and needs no escaping: the intent travels as a
-          // name, so any string at all round-trips as itself.
-          set(prop, input.value, !typed && exists);
-          clear.hidden = !exists;
-        };
-        input.addEventListener('input', commit);
-        const eye = document.createElement('button');
-        eye.type = 'button';
-        eye.className = 'ps-eye';
-        eye.textContent = '👁';
-        eye.title = 'Show/hide';
-        eye.addEventListener('click', () => {
-          input.type = input.type === 'password' ? 'text' : 'password';
-        });
-        // Removal needs to be one deliberate tap on glass, not "select all, delete".
-        // Built unconditionally and revealed by `commit`, so it appears as soon as a
-        // credential exists — including one typed during this same sheet session.
-        const clear = document.createElement('button');
-        clear.type = 'button';
-        clear.className = 'ps-eye ps-clear';
-        clear.textContent = '✕';
-        clear.title = 'Remove the stored credential on save';
-        clear.hidden = !exists;
-        clear.addEventListener('click', () => { input.value = ''; commit(); });
-        wrap.append(input, eye, clear);
-        return wrap;
-      }
-      case 'select': {
-        // Short static lists show every choice as a tappable segment (dropdowns
-        // are miserable on the strip anyway); dynamic lists keep the dropdown.
-        const staticOpts = prop.options || [];
-        if (prop.optionsSource === 'widget') {
-          // The choices exist only once the widget is asked (#210), so the value is text
-          // with a Find beside it — typing always works, finding is the shortcut.
-          const input = document.createElement('input');
-          input.type = 'text';
-          if (prop.placeholder) input.placeholder = String(prop.placeholder);
-          input.value = current != null ? String(current) : '';
-          input.oninput = () => set(prop, input.value);
-          const wrap = document.createElement('div');
-          wrap.className = 'ps-inline';
-          wrap.append(input, psDiscoverBtn(input, prop.name, null));
-          return wrap;
-        }
-        if (!prop.optionsSource && staticOpts.length >= 2 && staticOpts.length <= 5) {
-          return psSegmented(staticOpts, current, (v) => set(prop, v));
-        }
-        const select = document.createElement('select');
-        for (const o of prop.options || []) {
-          const value = (o && typeof o === 'object') ? o.value : o;
-          const text = (o && typeof o === 'object') ? (o.label || o.value) : o;
-          select.add(new Option(text, value, false, String(value) === String(current)));
-        }
-        if (prop.optionsSource === 'sd-profiles') {
-          // Host-backed options (discovered Virtual Stream Deck profiles) — same
-          // flow as the desktop editor; without it this dropdown would be empty.
-          select.add(new Option('First available (default)', '', false, !current));
-          if (current) select.add(new Option(current, current, false, true));
-          psProfileWaiters.push((profiles) => {
-            const chosen = select.value;
-            while (select.options.length) select.remove(0);
-            select.add(new Option('First available (default)', '', false, !chosen));
-            for (const p of profiles) select.add(new Option(p, p, false, p === chosen));
-            if (chosen && !profiles.includes(chosen)) {
-              select.add(new Option(chosen + '  (not found right now)', chosen, false, true));
-            }
-          });
-          postToHost({ type: 'sd-profiles' });
-        }
-        select.onchange = () => set(prop, select.value);
-        return select;
-      }
-      case 'location': {
-        // Location values are STRUCTURED (label + coordinates picked via the
-        // desktop search) — a text box would show "[object Object]" and one
-        // keystroke would replace precise coordinates with garbage. Show the
-        // label, keep the value untouched; picking needs the desktop's search.
-        const wrap = document.createElement('div');
-        wrap.className = 'ps-field';
-        const shown = document.createElement('input');
-        shown.type = 'text';
-        shown.readOnly = true;
-        shown.value = (current && typeof current === 'object')
-          ? String(current.label || current.name || 'Picked location')
-          : (current != null ? String(current) : '');
-        const hint = document.createElement('p');
-        hint.className = 'ps-cap';
-        hint.textContent = 'Pick the location in the desktop settings window (it has the city search).';
-        wrap.append(shown, hint);
-        return wrap;
-      }
-      case 'slider': {
-        const wrap = document.createElement('div');
-        wrap.className = 'ps-inline';
-        const range = document.createElement('input');
-        range.type = 'range';
-        range.min = prop.min != null ? prop.min : 0;
-        range.max = prop.max != null ? prop.max : 100;
-        range.step = prop.step != null ? prop.step : 1;
-        range.value = Number(current) || 0;
-        const out = document.createElement('output');
-        out.value = String(range.value);
-        // Track live, commit on release — a re-init per dragged pixel is thrash.
-        range.oninput = () => { out.value = String(range.value); };
-        range.onchange = () => set(prop, Number(range.value));
-        wrap.append(range, out);
-        return wrap;
-      }
-      case 'number': {
-        const input = document.createElement('input');
-        input.type = 'number';
-        if (prop.min != null) input.min = prop.min;
-        if (prop.max != null) input.max = prop.max;
-        // Without a declared step the HTML default of 1 would fail validity on
-        // fractional values the manifest never prohibited (e.g. 1.5).
-        input.step = prop.step != null ? prop.step : 'any';
-        input.value = current != null ? String(current) : '';
-        input.oninput = () => {
-          // A cleared/half-typed field commits nothing (Number('') is 0), and
-          // neither does a value outside the manifest's min/max/step — HTML
-          // constraint validation doesn't block input events, so validity is
-          // checked here before anything persists out-of-contract.
-          const parsed = parseFloat(input.value);
-          if (!Number.isNaN(parsed) && input.validity.valid) set(prop, parsed);
-        };
-        return input;
-      }
-      case 'media-selector': {
-        // iCUE background media picker: the value is a structured object the
-        // desktop editor already declares unsupported — never a text box, which
-        // would show "[object Object]" and corrupt it on the first keystroke.
-        const note = document.createElement('p');
-        note.className = 'ps-cap';
-        note.textContent = 'Background media is not supported yet.';
-        return note;
-      }
-      case 'switch': {
-        // Boolean toggle (iCUE + native), rendered as a real switch. Falling
-        // through to text would show "true" and store the string "false" —
-        // which is truthy downstream.
-        const input = document.createElement('input');
-        input.type = 'checkbox';
-        input.className = 'toggle-check';
-        input.checked = current === true || current === 'true';
-        input.onchange = () => set(prop, input.checked);
-        return input;
-      }
-      case 'color': {
-        const input = document.createElement('input');
-        input.type = 'color';
-        input.value = /^#[0-9a-f]{6}$/i.test(String(current)) ? current : '#4dd4e8';
-        input.oninput = () => set(prop, input.value);
-        return input;
-      }
-      case 'sensor': {
-        const select = document.createElement('select');
-        select.add(new Option('Auto (recommended)', '', false, !current));
-        const pool = (latestSensors || []).filter((s) =>
-          !prop.sensor_type || s.type === prop.sensor_type);
-        for (const s of pool) {
-          select.add(new Option(s.device + ' — ' + s.name, s.id, false, s.id === current));
-        }
-        if (current && !pool.some((s) => s.id === current)) {
-          select.add(new Option(current + '  (missing)', current, false, true));
-        }
-        select.onchange = () => set(prop, select.value);
-        return select;
-      }
-      case 'sensors-factory': return psSensorsFactory(prop, cur, set);
-      case 'list': return psList(prop, cur, set);
-      default: { // text
-        const input = document.createElement('input');
-        input.type = 'text';
-        if (prop.placeholder) input.placeholder = String(prop.placeholder);
-        input.value = current != null ? String(current) : '';
-        input.oninput = () => set(prop, input.value);
-        const extras = [];
-        if (prop.picker === 'emoji' || prop.picker === 'emoji-prefix') {
-          extras.push(psEmojiBtn(input, prop.picker === 'emoji-prefix'));
-        } else if (prop.picker === 'file') {
-          // The panel cannot show a file dialog — it needs a Win32 owner window — so this
-          // used to be the one place a full path had to be TYPED, on a touch strip, with
-          // no keyboard. The installed-app list needs no dialog, so the surface that had
-          // no picker at all now has the better one (#210). Free text stays for the
-          // targets that are a document or a script rather than a program.
-          extras.push(psAppBtn(input));
-        }
-        // A value the widget can look up itself (#210): WoW's realm and character. Beside
-        // a declared picker, not instead of it, as the desktop editor does.
-        if (prop.optionsSource === 'widget') extras.push(psDiscoverBtn(input, prop.name, null));
-        if (!extras.length) return input;
-        const wrap = document.createElement('div');
-        wrap.className = 'ps-inline';
-        wrap.append(input, ...extras);
-        return wrap;
-      }
-    }
-  }
-
-  function psEmojiBtn(input, prefix) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'ps-pick';
-    btn.textContent = '😀';
-    btn.title = 'Pick an icon';
-    btn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      openEmojiPop(btn, (e) => {
-        // prefix mode keeps the text and swaps only the leading icon.
-        input.value = prefix ? (e + ' ' + input.value.replace(PS_LEAD_EMOJI, '')).trimEnd() : e;
-        input.dispatchEvent(new Event('input'));
-      });
-    });
-    return btn;
-  }
-
-  // >>> ww-discover-text — extracted and RUN by tests/harness/discover-run.js (the same
-  // block lives in settings.js, for the desktop chooser; the harness runs both copies).
-  /** What the Find chooser says about an answer (#210). Finding is a shortcut, never the
-   * only way in, so every dead end says the value can still be typed. Empty when the list
-   * speaks for itself. */
-  function discoverStatusText(result, query) {
-    if (!result || typeof result !== 'object') return 'No answer came back. Type the value instead.';
-    if (result.ok) {
-      const n = Array.isArray(result.options) ? result.options.length : 0;
-      if (!n) return query
-        ? 'The widget found no match for “' + query + '”. Type the value instead.'
-        : 'The widget found nothing to offer. Type the value instead.';
-      return result.truncated ? 'Showing the first ' + n + ' the widget found — search to narrow them.' : '';
-    }
-    switch (result.error) {
-      case 'no-dashboard': return 'The panel is not running, so the widget cannot be asked. Type the value instead.';
-      case 'not-placed': return 'This widget is not on the panel yet. Save, then try again — or type the value.';
-      case 'not-ready': return 'The widget on the panel is still loading. Try again in a moment.';
-      case 'timeout': return 'The widget on the panel did not answer. Type the value instead.';
-      case 'unsupported': return 'This widget cannot look this setting up. Type the value instead.';
-      case 'widget': return 'The widget could not look this up: ' + String(result.message || 'no reason given');
-      default: return 'The widget sent an answer that could not be read. Type the value instead.';
-    }
-  }
-  // <<< ww-discover-text
-
-  /** "Find…" for a setting the widget can look up itself (#210). The panel holds the
-   * widget, so the question goes straight to its frame; the desktop editor asks the same
-   * question through the host. Same sheet as the app chooser, for the same reasons. */
-  function psDiscoverBtn(input, property, field) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'ps-pick ps-find no-pan';
-    btn.textContent = 'Find…';
-    btn.title = 'Ask this widget for the values it can use';
-    btn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      const record = propTarget;
-      if (document.querySelector('.ps-apps') || !record) return;
-      // Pending edits first. The widget answers from its live settings, so a token typed
-      // a moment ago has to reach it before the question does.
-      if (propApplyTimer) {
-        clearTimeout(propApplyTimer);
-        propApplyTimer = null;
-        applyPropNow(record);
-      }
-      const sheet = document.createElement('div');
-      sheet.className = 'ps-apps ps-discover';
-      const head = document.createElement('div');
-      head.className = 'ps-apps-head';
-      const search = document.createElement('input');
-      search.type = 'text';
-      search.placeholder = 'Search…';
-      const close = document.createElement('button');
-      close.type = 'button';
-      close.className = 'ps-pick no-pan';
-      close.textContent = '✕';
-      close.title = 'Close';
-      close.addEventListener('click', () => sheet.remove());
-      head.append(search, close);
-      const list = document.createElement('div');
-      list.className = 'ps-apps-list';
-      const status = document.createElement('p');
-      status.className = 'ps-apps-status';
-      status.textContent = 'Asking the widget…';
-      sheet.append(head, status, list);
-      document.body.appendChild(sheet);
-
-      let options = [];
-      let note = '';
-      // Find by query. A first answer cut short at the shell's limit is not everything the
-      // widget has, and this search box can only filter what arrived. So once typing
-      // pauses, the search goes to the widget: one that filters answers with the matches,
-      // and one that ignores the search is filtered here as before. Only the latest
-      // search's answer is shown; an emptied search goes back to the first answer, and a
-      // search that only extends one already answered in full is filtered here.
-      let first = null;       // the first answer
-      let answered = '';      // the search the listed options answer ('' for the first)
-      let complete = false;   // whether that answer was the widget's whole list
-      let searching = false;
-      let askSeq = 0;
-      let askTimer = null;
-      const show = (result, query) => {
-        options = result.ok ? result.options : [];
-        note = discoverStatusText(result, query);
-        answered = query;
-        complete = !!result.ok && !result.truncated;
-        searching = false;
-        render();
-      };
-      const ask = (query) => {
-        const seq = ++askSeq;
-        discoverSlot(record, property, field, (result) => {
-          if (!sheet.isConnected || seq !== askSeq) return;   // dismissed, or overtaken
-          if (!query) first = result;
-          show(result, query);
-          // A search typed while the first answer was on its way had nothing to go to yet.
-          if (!query && search.value.trim()) onSearch();
-        }, query);
-      };
-      const render = () => {
-        const q = search.value.trim().toLowerCase();
-        const shown = q
-          ? options.filter((o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q))
-          : options;
-        list.textContent = '';
-        for (const o of shown) {
-          const b = document.createElement('button');
-          b.type = 'button';
-          b.className = 'no-pan';
-          b.textContent = o.label;
-          if (o.label !== o.value) {
-            const sub = document.createElement('span');
-            sub.className = 'ps-find-value';
-            sub.textContent = o.value;
-            b.appendChild(sub);
-          }
-          b.addEventListener('click', () => {
-            input.value = o.value;
-            input.dispatchEvent(new Event('input'));
-            sheet.remove();
-          });
-          list.appendChild(b);
-        }
-        const text = searching ? 'Asking the widget for matches…'
-          : options.length && !shown.length ? 'No match.' : note;
-        status.hidden = !text;
-        status.textContent = text;
-      };
-      const onSearch = () => {
-        clearTimeout(askTimer);
-        if (first && first.ok && first.truncated) {
-          const query = search.value.trim().slice(0, DISCOVER_QUERY_MAX);
-          askSeq++;   // an answer still on its way is for an older search
-          searching = false;
-          if (!query) show(first, '');
-          else if (query !== answered
-              && !(complete && answered && query.toLowerCase().startsWith(answered.toLowerCase()))) {
-            searching = true;
-            askTimer = setTimeout(() => { if (sheet.isConnected) ask(query); }, DISCOVER_QUERY_PAUSE_MS);
-          }
-        }
-        render();
-      };
-      search.addEventListener('input', onSearch);
-      ask('');
-    });
-    return btn;
-  }
-
-  // >>> ww-app-pick — extracted and RUN by tests/harness/apppick-run.js (the same block
-  // lives in settings.js, for the desktop picker; the harness runs both copies).
-  /** What the app picker says when a search matches nothing. The list now holds Store apps
-   * too (#219), so "it may be a Store app" is only true when that half could not be read. */
-  function noMatchText(storeListed) {
-    return storeListed
-      ? 'No match among Start Menu programs and Store apps.'
-      : 'No match. Store apps could not be listed this time, so it may be one of those.';
-  }
-
-  /** A picked app names its row when the row's Name is empty (#219). A Store app's target
-   * is an app id, which makes a poor label, and a program's is a path; the picker holds the
-   * name the user actually searched for. A Name the user typed is never replaced.
-   * Returns true when it changed the item. */
-  function nameFromPick(item, fields, name) {
-    if (!item || typeof item !== 'object' || typeof name !== 'string' || !name.trim()) return false;
-    if (!Array.isArray(fields) || !fields.some((f) => f && f.key === 'label')) return false;
-    if (item.label != null && String(item.label).trim()) return false;
-    item.label = name.trim();
-    return true;
-  }
-  // <<< ww-app-pick
-
-  /** Installed-application chooser for a path field (#210). A full-height sheet rather
-   * than the emoji popover's grid: the list can run to hundreds of rows, it needs a
-   * filter, and 44px targets do not fit in a popover on a 400px-tall panel. */
-  function psAppBtn(input) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'ps-pick';
-    btn.textContent = '🗂';
-    btn.title = 'Choose an installed application';
-    btn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      if (document.querySelector('.ps-apps')) return;
-      const sheet = document.createElement('div');
-      sheet.className = 'ps-apps';
-      const head = document.createElement('div');
-      head.className = 'ps-apps-head';
-      const search = document.createElement('input');
-      search.type = 'text';
-      search.placeholder = 'Search apps…';
-      const close = document.createElement('button');
-      close.type = 'button';
-      close.className = 'ps-pick no-pan';
-      close.textContent = '✕';
-      close.title = 'Close';
-      close.addEventListener('click', () => sheet.remove());
-      head.append(search, close);
-      const list = document.createElement('div');
-      list.className = 'ps-apps-list';
-      const status = document.createElement('p');
-      status.className = 'ps-apps-status';
-      status.textContent = 'Looking for installed applications…';
-      sheet.append(head, status, list);
-      document.body.appendChild(sheet);
-
-      let apps = [];
-      let truncated = false;
-      let storeListed = true;
-      const render = () => {
-        const q = search.value.trim().toLowerCase();
-        const shown = q ? apps.filter((a) => a.name.toLowerCase().includes(q)) : apps;
-        list.textContent = '';
-        for (const app of shown.slice(0, 200)) {
-          const b = document.createElement('button');
-          b.type = 'button';
-          b.className = 'no-pan';
-          b.textContent = app.name;
-          b.addEventListener('click', () => {
-            input.value = app.path;
-            input.dispatchEvent(new Event('input'));
-            // Same hazard as the desktop picker: a migrated deck row carries a hidden
-            // `kind` that classify() consults for a scheme-less target.
-            input.dispatchEvent(new CustomEvent('ww-app-picked', { detail: { name: app.name } }));
-            sheet.remove();
-          });
-          list.appendChild(b);
-        }
-        // Same reasoning as the desktop picker: a silent cut reads as a missing app, and
-        // this is the surface where scrolling to find out is most expensive.
-        if (!shown.length) {
-          status.hidden = false;
-          status.textContent = apps.length
-            ? (truncated
-              ? 'No match — and the list was cut short, so it may simply not have been reached.'
-              : noMatchText(storeListed))
-            : 'No installed applications found.';
-        } else if (shown.length > 200) {
-          status.hidden = false;
-          status.textContent = `Showing 200 of ${shown.length} — type to narrow the list.`;
-        } else {
-          status.hidden = true;
-        }
-      };
-      search.addEventListener('input', render);
-      psAppWaiters.push((result, wasTruncated, wasStoreListed) => {
-        if (!sheet.isConnected) return;   // dismissed while the host was still walking
-        apps = result;
-        truncated = wasTruncated;
-        storeListed = wasStoreListed;
-        render();
-      });
-      postToHost({ type: 'list-apps' });
-    });
-    return btn;
-  }
-
-  /** Structured list (deck buttons, launcher shortcuts): one card per item with
-   * labeled fields; the same legacy migrations as the settings window (JSON-array
-   * string, "A=B" pairs) so old layouts edit cleanly here too. */
-  // >>> ww-list-mapping — extracted and RUN by tests/harness/listprims-run.js
-  // The two halves of a list setting's round trip live here as named functions on
-  // purpose. The probe loads this block out of the file and executes it, so it exercises
-  // the editor's own mapping instead of a copy in the test that can drift away from it —
-  // which is what the first version of that harness did, leaving every behavioural check
-  // green against a transcription while the real commit could have regressed freely.
-
-  /** The key marking a row that came in as a bare value. A SYMBOL, not a string: settings
-   * arrive as JSON and a manifest may legally declare a field called anything at all, so
-   * a string marker like "__raw" is a name a widget can collide with. An object row
-   * carrying that field would then be read as a wrapper, rendered as one input, and
-   * written back as the bare value — silently dropping its other fields, which is the
-   * very bug this file is fixing. A symbol cannot appear in parsed JSON, so the collision
-   * stops being unlikely and becomes impossible. */
-  const LIST_RAW = Symbol('ww-list-raw');
-
-  /** Is this list entry a bare value a widget accepts as shorthand? (#167)
-   *
-   * Strings and finite numbers only. null, undefined, booleans, NaN and blanks are NOT
-   * shorthand — they are junk in a settings file, and preserving junk as an editable row
-   * would put a permanent blank in front of the reader that does nothing and cannot be
-   * told apart from one they are midway through typing. */
-  function isListPrimitive(x) {
-    if (typeof x === 'string') return x.trim() !== '';
-    return typeof x === 'number' && Number.isFinite(x);
-  }
-
-  /** Stored array -> editor rows. Primitives are KEPT, marked rather than expanded. */
-  function listRowsFrom(arr) {
-    return (arr || [])
-      .filter((x) => (x && typeof x === 'object') || isListPrimitive(x))
-      .map((x) => {
-        if (!isListPrimitive(x)) return Object.assign({}, x);
-        const row = {};
-        row[LIST_RAW] = x;   // the value's own type is kept; String() is for display only
-        return row;
-      });
-  }
-
-  /** Editor rows -> stored array. A marked row goes back out as the value it arrived as. */
-  function listValueFrom(items) {
-    return (items || []).map((x) => (x && LIST_RAW in x) ? x[LIST_RAW] : Object.assign({}, x));
-  }
-  // <<< ww-list-mapping
-
-  function psList(prop, cur, set) {
-    const wrap = document.createElement('div');
-    wrap.className = 'ps-field';
-    const fields = (prop.fields && prop.fields.length) ? prop.fields
-      : [{ key: 'label', label: 'Label', type: 'text' }, { key: 'value', label: 'Value', type: 'text' }];
-    const current = cur(prop);
-    let items;
-    let legacyJson = null;
-    if (typeof current === 'string' && current.trim().startsWith('[')) {
-      try { legacyJson = JSON.parse(current); } catch (e) { legacyJson = null; }
-      if (!Array.isArray(legacyJson)) legacyJson = null;
-    }
-    if (Array.isArray(current) || legacyJson) {
-      // A PRIMITIVE entry is kept, not discarded (#167). Several widgets accept a bare
-      // string as shorthand in a list — endpoints takes "nas.lan" and expands it itself —
-      // and filtering those away meant they got no row, so the editor wrote back only
-      // what it had rendered and silently deleted every one of them the moment anyone
-      // opened the panel and saved.
-      //
-      // Kept AS a primitive rather than expanded into the field shape, deliberately. What
-      // a bare string means is the widget's business and differs between them: endpoints
-      // reads it as both the label and the URL, while the comma-string branch just below
-      // reads a bare token as fields[0] alone — which for endpoints would leave the URL
-      // empty and the entry would be dropped by the widget instead of by the editor. With
-      // no rule the manifest can state, guessing picks one widget's meaning and corrupts
-      // the rest, so this preserves the value verbatim and leaves the reading where it
-      // already works.
-      items = listRowsFrom(legacyJson || current);
-    } else if (typeof current === 'string' && current.trim()) {
-      items = current.split(',').map((pair) => {
-        const eq = pair.indexOf('=');
-        const item = {};
-        item[fields[0].key] = (eq < 0 ? pair : pair.slice(0, eq)).trim();
-        if (fields[1]) item[fields[1].key] = eq < 0 ? '' : pair.slice(eq + 1).trim();
-        return item;
-      }).filter((x) => Object.values(x).some((v) => v));
-    } else {
-      items = [];
-    }
-    // A marked row goes back out as the value it came in as, so a shorthand entry
-    // survives an edit unchanged instead of being rewritten into a shape its widget
-    // never asked for. See listValueFrom.
-    const commit = () => set(prop, listValueFrom(items));
-    const renderItems = () => {
-      wrap.textContent = '';
-      items.forEach((item, i) => {
-        const card = document.createElement('div');
-        card.className = 'ps-item';
-        const head = document.createElement('div');
-        head.className = 'ps-item-head';
-        const tag = document.createElement('span');
-        tag.textContent = (prop.itemLabel || 'item') + ' ' + (i + 1);
-        const del = document.createElement('button');
-        del.type = 'button';
-        del.className = 'ps-remove';
-        del.textContent = '✕';
-        del.title = 'Remove this ' + (prop.itemLabel || 'item');
-        del.addEventListener('click', () => { items.splice(i, 1); commit(); renderItems(); });
-        head.append(tag, del);
-        card.appendChild(head);
-        if (LIST_RAW in item) {
-          // One input, because the value genuinely is one value. Rendering the field pair
-          // here would ask which half of it to put where, which is the question this
-          // deliberately does not answer — and it stays editable and removable, which is
-          // the whole complaint: the entry was invisible, so it could not be corrected or
-          // deleted either.
-          const input = document.createElement('input');
-          input.type = 'text';
-          // String() for DISPLAY only. The stored value keeps the type it arrived with —
-          // a numeric entry that nobody touches must go back out as a number, not as its
-          // decimal spelling, which is the same silent rewriting this set out to stop.
-          input.value = String(item[LIST_RAW]);
-          input.setAttribute('aria-label', (prop.itemLabel || 'item') + ' ' + (i + 1));
-          input.oninput = () => { item[LIST_RAW] = input.value; commit(); };
-          card.appendChild(input);
-          wrap.appendChild(card);
-          return;
-        }
-        for (const f of fields) {
-          const input = document.createElement('input');
-          if (f.type === 'color') {
-            input.type = 'color';
-            input.value = /^#[0-9a-f]{6}$/i.test(item[f.key]) ? item[f.key] : '#4dd4e8';
-          } else {
-            input.type = 'text';
-            input.placeholder = f.placeholder || f.label || '';
-            input.value = item[f.key] != null ? String(item[f.key]) : '';
-          }
-          input.setAttribute('aria-label', f.label || f.key);
-          input.dataset.key = f.key;
-          input.oninput = () => { item[f.key] = input.value; commit(); };
-          input.addEventListener('ww-app-picked', (ev) => {
-            let changed = false;
-            if (item && typeof item === 'object' && 'kind' in item) { delete item.kind; changed = true; }
-            if (nameFromPick(item, fields, ev.detail && ev.detail.name)) {
-              changed = true;
-              const named = card.querySelector('input[data-key="label"]');
-              if (named) named.value = item.label;
-            }
-            if (changed) commit();
-          });
-          // LIST fields are where the pickers actually live: every shipped picker:'file'
-          // is one (launcher items.target, deck buttons.target), and there is no top-level
-          // one anywhere in the catalog. A picker wired only to psControl's text branch
-          // reaches nothing a user owns.
-          const extras = [];
-          if (f.picker === 'emoji' || f.picker === 'emoji-prefix' || f.picker === 'file') {
-            extras.push(f.picker === 'file'
-              ? psAppBtn(input)
-              : psEmojiBtn(input, f.picker === 'emoji-prefix'));
-          }
-          // A row value the widget can look up (#210): repositories, entities. Beside a
-          // declared picker, not instead of it.
-          if (f.optionsSource === 'widget') extras.push(psDiscoverBtn(input, prop.name, f.key));
-          if (extras.length) {
-            const row = document.createElement('div');
-            row.className = 'ps-inline';
-            row.append(input, ...extras);
-            card.appendChild(row);
-          } else {
-            card.appendChild(input);
-          }
-        }
-        wrap.appendChild(card);
-      });
-      const cap = Math.max(0, Math.round(Number(prop.maxItems) || 0));
-      if (cap && items.length >= cap) {
-        const full = document.createElement('p');
-        full.className = 'ps-cap';
-        full.textContent = 'Limit reached — this widget shows at most ' + cap + ' ' +
-          (prop.itemLabel || 'item') + 's.';
-        wrap.appendChild(full);
-      } else {
-        const add = document.createElement('button');
-        add.type = 'button';
-        add.className = 'ps-add';
-        add.textContent = '+ Add ' + (prop.itemLabel || 'item');
-        add.addEventListener('click', () => {
-          const item = {};
-          for (const f of fields) item[f.key] = f.type === 'color' ? '#4dd4e8' : '';
-          items.push(item);
-          commit();
-          renderItems();
-        });
-        wrap.appendChild(add);
-      }
-    };
-    renderItems();
-    return wrap;
-  }
-
-  /** Sensor picker rows (fans): sensor select + per-row color, add/remove; the
-   * pool honors the property's sensor_type filter, matching the settings window. */
-  function psSensorsFactory(prop, cur, set) {
-    const wrap = document.createElement('div');
-    wrap.className = 'ps-field';
-    const pool = (latestSensors || []).filter((s) =>
-      !prop.sensor_type || s.type === prop.sensor_type);
-    const current = cur(prop);
-    const items = (Array.isArray(current) ? current : [])
-      .filter((x) => x && typeof x === 'object').map((x) => Object.assign({}, x));
-    const commit = () => set(prop, items.map((x) => Object.assign({}, x)));
-    const renderItems = () => {
-      wrap.textContent = '';
-      items.forEach((item, i) => {
-        const row = document.createElement('div');
-        row.className = 'ps-inline';
-        const select = document.createElement('select');
-        for (const s of pool) {
-          select.add(new Option(s.device + ' — ' + s.name, s.id, false, s.id === item.sensorId));
-        }
-        if (item.sensorId && !pool.some((s) => s.id === item.sensorId)) {
-          select.add(new Option(item.sensorId + '  (missing)', item.sensorId, false, true));
-        }
-        select.onchange = () => { item.sensorId = select.value; commit(); };
-        const color = document.createElement('input');
-        color.type = 'color';
-        color.value = /^#[0-9a-f]{6}$/i.test(item.color) ? item.color : '#4dd4e8';
-        color.oninput = () => { item.color = color.value; commit(); };
-        const del = document.createElement('button');
-        del.type = 'button';
-        del.className = 'ps-remove';
-        del.textContent = '✕';
-        del.title = 'Remove sensor';
-        del.addEventListener('click', () => { items.splice(i, 1); commit(); renderItems(); });
-        row.append(select, color, del);
-        wrap.appendChild(row);
-      });
-      const add = document.createElement('button');
-      add.type = 'button';
-      add.className = 'ps-add';
-      add.textContent = '+ Add sensor';
-      add.disabled = !pool.length;
-      add.addEventListener('click', () => {
-        // Seed from the FILTERED pool — the first sensor of any type would be a
-        // temperature on most systems and could never resolve (Codex round 5).
-        items.push({ sensorId: pool[0].id, color: '#4dd4e8' });
-        commit();
-        renderItems();
-      });
-      wrap.appendChild(add);
-    };
-    renderItems();
-    return wrap;
-  }
-
-  document.getElementById('psClose').addEventListener('click', () => closePropSheet());
-
-  // ---- add widget (palette) --------------------------------------------------------
-
-  function defaultSizeFor(page, widget) {
-    const widths = allowedWidths(widget).slice().reverse(); // widest first, shrink into the hole
-    const probe = { widgetId: widget.id, size: 'quarter', settings: {} };
-    const defs = (page.slots = page.slots || []);
-    const before = unplacedCount(defs);
-    defs.push(probe);
-    let found = null;
-    outer:
-    for (const band of ['full', 'upper', 'lower']) {
-      for (const w of widths) {
-        probe.size = makeSize(w, band);
-        if (unplacedCount(defs) === before) { found = probe.size; break outer; }
-      }
-    }
-    defs.pop();
-    return found;
-  }
-
-  function openPalette(page, region, focusRetired) {
+  // The replica is a small scaled strip inside the settings window, and a modal palette
+  // here would cover the very layout being edited (#46). An add-zone tap hands off to the
+  // settings window's widget gallery instead. The region travels with the request so the
+  // settings side can fill the hole that was actually tapped.
+  function requestAddWidget(page, region) {
     cancelDrag(); // a second finger can reach the add-zone while a drag holds
-    // Toggle: pressing "+" again dismisses instead of stacking a re-open (#46).
-    if (!paletteEl.hidden) { closePalette(); return; }
-    if (PREVIEW && editing) {
-      // The replica is a small scaled strip inside the settings window — a modal
-      // palette here covers the very layout being edited (#46). Hand off to the
-      // settings window's widget gallery instead. The region travels with the
-      // request so the settings side can fill the hole that was actually tapped.
-      postToHost({ type: 'add-widget', index: Math.max(0, layoutData.pages.indexOf(page)),
-        target: region ? { col: region.c, row: region.r, w: region.w, h: region.h } : null,
-        gen: previewGen });
-      return;
-    }
-    paletteGrid.textContent = '';
-    const occupied = region ? occupancyGrid(page) : null;
-    for (const widget of widgetLib) {
-      const btn = document.createElement('button');
-      const name = document.createElement('span');
-      name.className = 'p-name';
-      // Disambiguated only when another installed widget shares the name; see
-      // WidgetIdentity.DisplayNames.
-      name.textContent = widget.displayName || widget.name;
-      const by = document.createElement('span');
-      by.className = 'p-by';
-      // Sized against the free space anchored at the REGION the user tapped, not the page.
-      // Answering "does this fit somewhere?" while the tap said "put it HERE" is how a zone
-      // over a small hole ends up filling a different one.
-      const size = region ? sizeInRegion(widget, region, occupied) : defaultSizeFor(page, widget);
-      by.textContent = size ? (widget.author || '')
-        : (region ? 'Does not fit here' : 'No room on this page');
-      btn.append(name, by);
-      btn.disabled = !size;
-      btn.addEventListener('click', () => addWidget(page, widget, region));
-      paletteGrid.appendChild(btn);
-    }
-    // A wall of disabled entries reads as "broken", not "full" — say it plainly.
-    if (![...paletteGrid.children].some((b) => !b.disabled)) {
-      const note = document.createElement('p');
-      note.className = 'p-full';
-      note.textContent = 'This page is full — remove a widget or add a page.';
-      paletteGrid.prepend(note);
-    }
-    palettePage = page;
-    renderRetired(page);
-    // One card, two jobs — so it says which one it was opened for. Coming from the
-    // Retired button the list is well below the widget grid, off the bottom of a 400px
-    // panel, and a card that opens on "Add a widget" reads as the wrong card entirely.
-    paletteTitle.textContent = focusRetired ? 'Removed widgets' : 'Add a widget';
-    paletteEl.hidden = false;
-    if (focusRetired && !paletteRetired.hidden) paletteRetired.scrollIntoView({ block: 'start' });
-  }
-  function closePalette() { paletteEl.hidden = true; palettePage = null; }
-
-  // The page the open palette is showing, so a host ack can re-render the retired list
-  // against the same page its Restore buttons were sized for.
-  let palettePage = null;
-
-  function refreshRetiredUi() {
-    if (editing) updateEditBar();
-    if (paletteEl.hidden || !palettePage) return;
-    if (layoutData.pages.indexOf(palettePage) < 0) { closePalette(); return; }
-    renderRetired(palettePage);
-  }
-
-  // ---- The retired attic (#226), on glass ------------------------------------------
-  // Entries the host holds for us: removed tiles, keyed by identity, whose settings the
-  // shell only ever sees as ciphertext. Restore and Clear are therefore HOST operations —
-  // this list posts a request and waits for the answer; it moves nothing itself.
-
-  function retainedEntries() {
-    const list = Array.isArray(layoutData.retained) ? layoutData.retained : [];
-    // An entry with no identity cannot be addressed, so it cannot be restored or cleared
-    // either — showing a row with two dead buttons is worse than showing nothing.
-    return list.filter((r) => r && r.def && r.def.widgetId && r.def.instanceId);
-  }
-
-  // EVERY entry under the identity, matching the host's own RemoveAll. Dropping only the
-  // first would leave a twin behind, and this copy is re-shipped on the next save — which
-  // seats that identity in pages AND retained, the state whose stored-index poison blanks
-  // the credential on the save after that.
-  function dropRetained(widgetId, instanceId) {
-    const list = layoutData.retained;
-    if (!Array.isArray(list) || !widgetId || !instanceId) return;
-    for (let i = list.length - 1; i >= 0; i--) {
-      const d = list[i] && list[i].def;
-      if (d && d.widgetId === widgetId && d.instanceId === instanceId) list.splice(i, 1);
-    }
-  }
-
-  // "3d ago", give or take. retiredAt is deliberately unvalidated on load (a malformed
-  // one must not cost the whole layout file), and the model's own note admits a backward
-  // clock set — so an unparseable or negative age says nothing rather than "NaNd ago".
-  function retiredAgo(iso) {
-    const t = Date.parse(iso || '');
-    if (!Number.isFinite(t)) return '';
-    const mins = Math.floor((Date.now() - t) / 60000);
-    if (mins < 0) return '';
-    if (mins < 1) return 'just now';
-    if (mins < 60) return mins + 'm ago';
-    if (mins < 1440) return Math.floor(mins / 60) + 'h ago';
-    return Math.floor(mins / 1440) + 'd ago';
-  }
-
-  // The column anchor is origin-page-local, matching what the host does on restore: off
-  // its origin page a stale `col` pins the tile at an arbitrary column, and because
-  // anchors are seated before any unanchored slot it could take a column from a tile the
-  // user can currently see. The two must agree, or the button says "fits" about a
-  // placement the host will not perform (or the reverse).
-  function retainedProbe(page, entry) {
-    return {
-      size: entry.def.size,
-      col: entry.originPage === page.name ? entry.def.col : null,
-    };
-  }
-
-  function renderRetired(page) {
-    paletteRetired.textContent = '';
-    const entries = retainedEntries()
-      .slice()
-      .sort((a, b) => String(b.retiredAt || '').localeCompare(String(a.retiredAt || '')));
-    paletteRetired.hidden = entries.length === 0;
-    if (!entries.length) return;
-
-    const head = document.createElement('div');
-    head.className = 'p-section';
-    head.textContent = 'Removed widgets';
-    paletteRetired.appendChild(head);
-
-    for (const entry of entries) {
-      const row = document.createElement('div');
-      row.className = 'p-row';
-      const info = document.createElement('div');
-      info.className = 'p-info';
-      const name = document.createElement('span');
-      name.className = 'p-name';
-      const widget = widgetsById.get(entry.def.widgetId);
-      // Falls back to the raw id, as every other name site does: a tile of a widget that
-      // has since been uninstalled is still restorable, and says so where its name goes.
-      name.textContent = widget ? (widget.displayName || widget.name) : entry.def.widgetId;
-      const meta = document.createElement('span');
-      meta.className = 'p-by';
-      const fits = pageFits(page, retainedProbe(page, entry));
-      // Every reason is INLINE text, never a `title`: a tooltip needs a hover, and this
-      // is a touch panel. The size is here to tell eight entries of one widget apart,
-      // which is otherwise only possible by their timestamps.
-      meta.textContent = [
-        widget ? '' : 'Not installed',
-        WIDTH_LABELS[sizeParts(entry.def.size).width] || '',
-        entry.originPage ? 'from ' + entry.originPage : '',
-        retiredAgo(entry.retiredAt),
-      ].filter(Boolean).join(' · ');
-      info.append(name, meta);
-      if (!fits) {
-        // Why Restore is greyed out, and what to do about it, as its own line rather than
-        // the last item of the meta line, where it read as one more fact about the tile.
-        const why = document.createElement('span');
-        why.className = 'p-why';
-        why.textContent = 'No room on this page — make room here, or restore from a page with space.';
-        info.appendChild(why);
-      }
-
-      const restore = document.createElement('button');
-      restore.textContent = 'Restore';
-      restore.disabled = !fits;
-      restore.addEventListener('click', () => {
-        closePalette();
-        // A restore reloads the whole document, so anything still open here would be
-        // thrown away mid-edit. Both closers FLUSH (no argument), and their save lands
-        // ahead of the restore in the host's message queue.
-        closeStyleEditor();
-        closePropSheet();
-        postToHost({
-          type: 'restore-retained',
-          widgetId: entry.def.widgetId,
-          instanceId: entry.def.instanceId,
-          page: layoutData.pages.indexOf(page),
-          pageName: page.name,
-        });
-      });
-
-      // "Delete", not "Clear": next to a ✕ that only retires, the destructive one has to
-      // say so in the label rather than in a tooltip nobody on a touch panel can open.
-      const clear = document.createElement('button');
-      clear.className = 'danger';
-      clear.textContent = 'Delete';
-      clear.addEventListener('click', () => confirmThen(clear, 'Delete', true, () => {
-        // FLUSH first, exactly as Restore above does — and here the reason is sharper than
-        // "don't lose an edit". Delete does NOT reload this document; it converges it by
-        // the retained-cleared ack, and until that ack lands layoutData.retained still
-        // holds the entry. An armed style/prop debounce firing inside that gap ships the
-        // destroyed entry straight back, and it is THIS document's own save, so the
-        // generation's same-writer exemption would let it through (#281). Flushing puts
-        // that save ahead of the clear in the host's queue, where it is harmless.
-        //
-        // It does not close the gap on its own — a gesture made after the flush still
-        // lands inside it, which is why the destroyed-set stays.
-        closeStyleEditor();
-        closePropSheet();
-        postToHost({
-          type: 'clear-retained',
-          widgetId: entry.def.widgetId,
-          instanceId: entry.def.instanceId,
-        });
-      }));
-
-      row.append(info, restore, clear);
-      paletteRetired.appendChild(row);
-    }
-  }
-  document.getElementById('paletteBackdrop').addEventListener('click', closePalette);
-
-  function addWidget(page, widget, region) {
-    closePalette();
-    mutate(() => {
-      // Region-targeted when the add came from a zone: the size is what fits the free space
-      // anchored at that column (it may reach past the tapped rectangle, #86), and `col`
-      // anchors it there, so the widget lands in the hole that was tapped rather than
-      // wherever first-fit would have flowed it. Without the anchor, tapping the small hole
-      // could fill the large one.
-      const size = region ? sizeInRegion(widget, region, occupancyGrid(page)) : defaultSizeFor(page, widget);
-      if (!size) return;
-      // instanceId minted upfront: a positional tag here could collide with an
-      // identity another slot froze earlier (e.g. a previously adopted "p0s1").
-      const def = {
-        widgetId: widget.id, size, settings: {},
-        instanceId: 'i' + Date.now().toString(36) + '-' + (++instanceSeq),
-      };
-      if (region) def.col = region.c + 1;   // 1-based anchor, as placeSlots reads it
-      (page.slots = page.slots || []).push(def);
-      const rec = buildSlot(page, def);
-      relayoutPage(page);
-      armWatchdog(generation);
-      // The just-added widget is what the user configures next: select it so the
-      // settings detail panel binds to it (#41). Announced by persistLayout right
-      // after this mutation — the layout lands before the selection referencing it.
-      if (PREVIEW) selectRecord(rec, false);
-    });
+    if (!PREVIEW || !editing) return;
+    postToHost({ type: 'add-widget', index: Math.max(0, layoutData.pages.indexOf(page)),
+      target: region ? { col: region.c, row: region.r, w: region.w, h: region.h } : null,
+      gen: previewGen });
   }
 
   // ---- drag to rearrange -----------------------------------------------------------
@@ -3507,12 +1701,8 @@
   // while free space sat visibly on screen. The bar for any edit is "nobody who
   // places today loses their spot", never "the whole page is perfect". That bar
   // is about IDENTITY, not counts: a count comparison would accept trading a
-  // visible widget for a previously hidden one (Codex, #38).
-  function unplacedCount(defs) {
-    return placeSlots(defs).reduce((n, p) => n + (p === null ? 1 : 0), 0);
-  }
-
-  // The defs (by object identity) that currently get a spot on the page.
+  // visible widget for a previously hidden one (Codex, #38). So this answers it
+  // by identity: the defs that currently get a spot on the page.
   function placedSet(defs) {
     const places = placeSlots(defs);
     const set = new Set();
@@ -3938,7 +2128,6 @@
         armWatchdog(generation);
         persistLayout();
         goToPage(toIdx);
-        updateEditBar();
       }
     }
   }

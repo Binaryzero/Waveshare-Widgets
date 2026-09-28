@@ -6,7 +6,7 @@
 // every widget's property list as the catalog arrives, and widget-api.js applies the class
 // inside the frame. Nothing a widget author writes is involved.
 //
-// The risk this guards is a SILENT one. Both settings editors render whatever is in
+// The risk this guards is a SILENT one. The settings editor renders whatever is in
 // `widget.properties`, so if normalisation ever stops running or stops appending, no error
 // is thrown anywhere — the Background control simply vanishes from every widget's settings
 // and the tiles all quietly render solid. That is invisible until someone goes looking for
@@ -22,8 +22,8 @@
 //        shared options array would let an edit to one tile rewrite every other tile's
 //        declaration
 //   A6 · against the REAL stock manifests: exactly one bgStyle each, none declared on disk
-//   A9 · a stored value since renamed (bgStyle glass -> theme) shows as the new name, in
-//        both editors
+//   A9 · a stored value since renamed (bgStyle glass -> theme) shows as the new name in
+//        the settings editor
 //
 // A6 is the one that would have caught this change going in half-done, and it reads the
 // shipped manifests rather than a fixture for that reason.
@@ -167,7 +167,7 @@ check('A8 the misgrouping this guards is reachable from the shipped catalog',
 
 // ---- A9 · a renamed stored value shows as its new name ---------------------------------
 // bgStyle's `glass` became `theme`. widget-api.js renders a stored `glass` as `theme`, and
-// both editors compare the stored value against the options to light one: shown raw, a
+// the editor compares the stored value against the options to light one: shown raw, a
 // tile saved before the rename had no choice lit at all.
 const bgProp = A.universalProperties().find((p) => p.name === 'bgStyle');
 check('A9 a stored glass shows as theme, one of the options',
@@ -177,14 +177,12 @@ check('A9b current values pass through unchanged',
   ['theme', 'solid', 'transparent', undefined, 'unknown'].every((v) => A.shownValue(bgProp, v) === v));
 check('A9c another property is never renamed',
   A.shownValue({ name: 'style' }, 'glass') === 'glass');
-// Both editors read the stored value through it. Source, because neither editor runs
-// outside a full window; the call is what matters, and it is one line in each.
+// The editor reads the stored value through it. Source, because the editor does not run
+// outside a full window; the call is what matters, and it is one line. (The settings
+// window is the only editor: the panel only displays.)
 const settingsSrc = fs.readFileSync(path.join(SHELL, 'settings.js'), 'utf8');
-const shellSrc = fs.readFileSync(path.join(SHELL, 'shell.js'), 'utf8');
 check('A9d the settings window\'s editor shows the renamed value',
   /function propEditor\(prop, slot\) \{\s*const current = window\.WWAppearance\.shownValue\(prop,/.test(settingsSrc));
-check('A9e the panel\'s property sheet shows the renamed value',
-  /const cur = \(prop\) => \{\s*const s = [^\n]*\n\s*return window\.WWAppearance\.shownValue\(prop,/.test(shellSrc));
 
 console.log(failures > 0 ? `\n${failures} FAILURES` : '\nALL PASS');
 process.exit(failures > 0 ? 1 : 0);

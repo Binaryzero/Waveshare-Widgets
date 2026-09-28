@@ -140,9 +140,8 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   shared per widget id before #226; a derived token is a credential, so a cloned or
   replaced tile now starts without the last tile's token rather than inheriting it.)
   Values are capped at 8 KiB and 16 keys per instance; keys are letters, digits, `.`, `-`
-  and `_`, up to 64 characters. A tile removed on-panel, from the settings form's slot
-  list, or through the settings window's live preview is *retired*, not destroyed: its config is
-  retained (bounded, oldest evicted — eviction purges the instance's bucket for real),
+  and `_`, up to 64 characters. A tile removed in the settings window — from its slot
+  list or its live preview — is *retired*, not destroyed: its config is retained (bounded, oldest evicted — eviction purges the instance's bucket for real),
   and a future restore of that tile is the same instance — same bucket — where a fresh
   add of the same widget is a new instance with an empty one. Either way the missing-value
   rule above already covers you: treat a miss as "re-authenticate".
@@ -157,7 +156,8 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   as a per-series line color, where two instances legitimately differ as data. Never
   declare color properties for appearance (text, labels, accents, backgrounds, state
   colors): appearance is single-sourced from the design tokens — the global theme plus
-  the per-slot style override (the 🎨 editor / the slot's `style` in `layout.json`) —
+  the per-slot style override (the Appearance section in the settings window / the
+  slot's `style` in `layout.json`) —
   so style with `var(--token)` and it follows automatically. See
   [WIDGET-STANDARD.md](WIDGET-STANDARD.md).
 
@@ -177,8 +177,8 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   Text properties support a `placeholder` — the sanctioned place to show an expected
   format (e.g. `"2026-12-24 18:00"`); labels must never teach syntax.
 
-  **Any property may declare `help`**: a sentence or two rendered under the control, in
-  both the settings window and the on-device sheet, that stays put once a value is typed.
+  **Any property may declare `help`**: a sentence or two rendered under the control in
+  the settings window, that stays put once a value is typed.
   Use it wherever the value has to come from somewhere else, or where getting it wrong
   fails in a way the user cannot diagnose from the tile — an address format, which
   permissions a token needs, which of two similar-looking URLs is wanted. Skip it where the
@@ -193,11 +193,10 @@ Install via tray → **Install widget…**, or unzip the folder directly into
   - `"picker": "emoji-prefix"` — the same grid for fields where a *leading* emoji is
     the icon and the rest is text (launcher shortcut names): the pick swaps only the
     leading emoji and keeps the text after it.
-  - `"picker": "file"` — a path target. Both editors offer a searchable list of the
-    applications installed on the PC, read from the Start Menu and the Store app list,
-    and fill the field with the chosen shortcut's path; the desktop settings window adds
-    a native file browser beside it for targets that are a document or a script rather
-    than a program. A Store app has no path, so its value is `shell:AppsFolder\<app id>`,
+  - `"picker": "file"` — a path target. The settings window offers a searchable list of
+    the applications installed on the PC, read from the Start Menu and the Store app
+    list, and fills the field with the chosen shortcut's path, with a native file browser
+    beside it for targets that are a document or a script rather than a program. A Store app has no path, so its value is `shell:AppsFolder\<app id>`,
     which the host's `launch` action starts by that id. When the row has an empty `label`
     field, the pick fills it with the app's name.
 
@@ -214,8 +213,8 @@ Install via tray → **Install widget…**, or unzip the folder directly into
 
   `"optionsSource": "widget"` is for values only the widget can look up, because they
   sit behind its own credential: repositories, entities, characters. It works on `text`
-  and `select` properties and on `text` fields inside a `list`. Both editors keep the
-  value as text and put a **Find…** button beside it. Find asks the placed widget on the
+  and `select` properties and on `text` fields inside a `list`. The settings window keeps
+  the value as text and puts a **Find…** button beside it. Find asks the placed widget on the
   panel, through `WW.onDiscover` (below), and lists what it returns; picking one fills
   the field. The settings window never holds a decrypted secret, so the question always
   goes to the panel, where the widget runs with its **saved** settings. It is asked only
