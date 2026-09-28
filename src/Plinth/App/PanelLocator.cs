@@ -1,15 +1,15 @@
 namespace Plinth.App;
 
-/// <summary>Finds the Waveshare panel among the connected displays.</summary>
+/// <summary>Finds the panel among the connected displays (<see cref="PanelModels"/>).</summary>
 internal static class PanelLocator
 {
     private static string? _warnedMissingDevice;
 
     /// <summary>
-    /// Preference order: the display the user pinned in config, else the display whose
-    /// pixel size matches the panel's unique 1280x400 / 400x1280 signature (400x1280 means
-    /// Windows is still in the panel's native portrait orientation — the dashboard will
-    /// render, but the README tells users to rotate to landscape).
+    /// Preference order: the display the user pinned in config, else the first display
+    /// whose pixel size is a supported panel's: the Waveshare's 1280x400 (or 400x1280 while
+    /// Windows still has it in its native portrait orientation — the dashboard will render,
+    /// but the README tells users to rotate to landscape), or the XENEON EDGE's 2560x720.
     /// </summary>
     public static Screen? Find(string? preferredDeviceName)
     {
@@ -35,9 +35,6 @@ internal static class PanelLocator
         return screens.FirstOrDefault(s => LooksLikePanel(s.Bounds));
     }
 
-    /// <summary>The panel's pixel signature: 1280x400, or 400x1280 while Windows still has
-    /// it in its native portrait orientation.</summary>
-    public static bool LooksLikePanel(Rectangle bounds) =>
-        (bounds.Width == 1280 && bounds.Height == 400) ||
-        (bounds.Width == 400 && bounds.Height == 1280);
+    /// <summary>Whether a display is a supported panel, by its exact pixel size.</summary>
+    public static bool LooksLikePanel(Rectangle bounds) => PanelModels.Match(bounds.Size) is not null;
 }

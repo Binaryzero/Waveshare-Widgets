@@ -132,12 +132,17 @@ public sealed class SettingsWindow : Form
 
     private bool _placementSaved;
 
+    /// <summary>The panel's display, when one was found as the window opened: its size is
+    /// what the preview is drawn at.</summary>
+    private readonly string? _panelDeviceName;
+
     /// <param name="panelDeviceName">The panel's display, when one is found. The window
-    /// never opens there: a 1280x400 screen cannot hold it.</param>
+    /// never opens there: it is the dashboard's, and a 1280x400 one cannot hold it.</param>
     public SettingsWindow(SensorHub hub, WidgetLibrary library, string? panelDeviceName = null)
     {
         _hub = hub;
         _library = library;
+        _panelDeviceName = panelDeviceName;
 
         Text = "Plinth — Settings";
         // Sized for the display it opens on, in that display's pixels, and where it was
@@ -858,8 +863,27 @@ public sealed class SettingsWindow : Form
                 // write it has since committed.
                 ["generation"] = LayoutStore.Generation,
                 ["status"] = new JsonObject { ["elevated"] = _hub.IsElevated, ["version"] = AppVersion.Describe },
+                // The page size the dashboard lays out at, so the preview shows the panel's
+                // own tiles. Null when no panel is connected; the editor assumes 1280x400.
+                ["panel"] = PanelPage(),
             },
         });
+    }
+
+    /// <summary>The panel's page size in CSS pixels (its pixels at its display scale) and
+    /// its model, or null when no panel is connected.</summary>
+    private JsonObject? PanelPage()
+    {
+        var screen = Screen.AllScreens.FirstOrDefault(s => s.DeviceName == _panelDeviceName)
+            ?? Screen.AllScreens.FirstOrDefault(s => PanelLocator.LooksLikePanel(s.Bounds));
+        if (screen is null) return null;
+        var page = PanelModels.CssSize(screen.Bounds.Size, DpiOf(screen));
+        return new JsonObject
+        {
+            ["width"] = page.Width,
+            ["height"] = page.Height,
+            ["model"] = PanelModels.Match(screen.Bounds.Size)?.Name,
+        };
     }
 
     /// <summary>Desktop-side restore (#226): the host performs the move and hands the

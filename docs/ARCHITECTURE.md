@@ -5,7 +5,7 @@
 ```
 ┌────────────────────────────── Plinth.exe (.NET 8, tray app) ─────────────────────────────┐
 │                                                                                                    │
-│  TrayApplicationContext ── panel detection (1280x400 signature), hotplug, tray menu, autostart     │
+│  TrayApplicationContext ── panel detection (PanelModels sizes), hotplug, tray menu, autostart      │
 │         │                                                                                          │
 │         ▼                                                                                          │
 │  DashboardWindow (borderless, WS_EX_NOACTIVATE, pinned to panel)                                   │
@@ -59,7 +59,8 @@ process tree is unacceptable — at the cost of arbitrary HTML widgets).
 
 | Quirk | Handling |
 |---|---|
-| Native scanout is portrait 400×1280 | Detect both orientations; README walks through Windows landscape rotation |
+| Two supported panels: Waveshare 1280×400, Corsair XENEON EDGE 2560×720 | `PanelModels` matches either by exact size (a width alone would take a 1440p monitor); the grid is fractions, so one layout fills both; the settings preview is drawn at the panel's own page size (its pixels at its display scale) |
+| Waveshare's native scanout is portrait 400×1280 | Detect both orientations; README walks through Windows landscape rotation. The EDGE is landscape only |
 | Panel appears ~10 s after connect / absent at logon | `SystemEvents.DisplaySettingsChanged` re-runs placement; window hides when panel is gone |
 | Touch maps to the primary monitor by default | Not fixable programmatically; documented Tablet PC Settings walkthrough |
 | Taps must not steal focus from games | `WS_EX_NOACTIVATE` + `WS_EX_TOOLWINDOW`, `ShowWithoutActivation` |

@@ -127,7 +127,7 @@ public sealed class TrayApplicationContext : ApplicationContext
                 if (_dashboard is { IsDisposed: false })
                     _dashboard.Hide();
                 _trayIcon.Text = Cap63($"Plinth {AppVersion.Describe} — panel not detected");
-                Log.Info("No 1280x400 / 400x1280 display found; dashboard hidden");
+                Log.Info($"No {PanelModels.Sizes} display found; dashboard hidden");
                 return;
             }
 
@@ -247,7 +247,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         parent.DropDownItems.Clear();
 
-        var auto = new ToolStripMenuItem("Auto-detect (1280x400)") { Checked = _config.DisplayDeviceName is null };
+        var auto = new ToolStripMenuItem($"Auto-detect ({PanelModels.Sizes})") { Checked = _config.DisplayDeviceName is null };
         auto.Click += (_, _) =>
         {
             _config.DisplayDeviceName = null;
