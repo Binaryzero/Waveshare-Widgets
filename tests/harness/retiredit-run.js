@@ -20,6 +20,11 @@
 //   R8 · an answer for an identity already live on a page seats nothing
 //   R11 · the panel's own list says why Restore is greyed out, on a line of its own
 //   R9 · ...nor one for a page that filled while the answer was on its way
+//   R12 · a tile this editor removed itself comes back as it is, with a credential typed
+//        before the removal, and never through the host's mask
+//   R13 · a save whose write did not land leaves the editor unsaved with its Delete named
+//   R14 · once the editor takes the layout from disk (reload, or adopting the panel's
+//        write), the same identity is disk's sealed entry and goes through the mask
 //
 // Run: CHROMIUM=/path/to/chrome node tests/harness/retiredit-run.js
 'use strict';
@@ -353,6 +358,133 @@ const layout = { pages: [
     !!pRow && pRow.shown && /No room on this page/.test(pRow.why) && !/no room/.test(pRow.meta)
       && pRow.restore === false && pRow.del === true,
     JSON.stringify(pRow));
+
+  // R12-R14 · a second editor, with a host whose next write can fail.
+  const layoutB = { pages: [
+    { name: 'Home', slots: [
+      { widgetId: 'test.gh', size: 'half', instanceId: 'g1', settings: { token: '', repo: 'o/n' }, secretsSet: ['token'] },
+      { widgetId: 'test.clock', size: 'half', instanceId: 'k1', settings: {} },
+    ] },
+  ], retained: [] };
+  const ed = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+  ed.on('pageerror', (e) => { failures++; console.log('[pageerror]', String(e).slice(0, 300)); });
+  const postedB = [];
+  const savesB = [];
+  let landedNext = true;
+  const pushB = (obj) => ed.evaluate((d) => window.__hostPush(d), JSON.stringify(obj)).catch(() => {});
+  await ed.exposeFunction('__hostRecv', async (json) => {
+    const msg = JSON.parse(json);
+    postedB.push(msg);
+    if (msg.type === 'settings-ready' || msg.type === 'ready') {
+      pushB({ type: 'settings-init', data: { layout: layoutB, widgets, sensors: [], media: null, generation: 1,
+        backgroundHost: 'backgrounds.plinth', status: { elevated: false, apiVersion: 1, version: 'probe' } } });
+    } else if (msg.type === 'mask-retained') {
+      const def = JSON.parse(JSON.stringify(msg.def));
+      if (def.settings && def.settings.token) { def.settings.token = ''; def.secretsSet = ['token']; }
+      pushB({ type: 'retained-masked', token: msg.token, def });
+    } else if (msg.type === 'save-layout') {
+      savesB.push(JSON.parse(JSON.stringify(msg.layout)));
+      pushB({ type: 'saved', seq: msg.seq, generation: 1 + savesB.length, landed: landedNext });
+    }
+  });
+  await ed.addInitScript(() => {
+    if (window.top !== window) return;
+    const listeners = new Set();
+    window.chrome = { webview: {
+      addEventListener(t, cb) { if (t === 'message') listeners.add(cb); },
+      postMessage(m) { window.__hostRecv(JSON.stringify(m)); },
+    } };
+    window.__hostPush = (json) => { const data = JSON.parse(json); listeners.forEach((cb) => { try { cb({ data }); } catch (e) {} }); };
+  });
+  await ed.addInitScript(fs.readFileSync(path.join(SHELL, 'widget-api.js'), 'utf8'));
+  await ed.goto(`http://127.0.0.1:${PORT}/src/Plinth/Shell/settings.html`);
+  await wait(1500);
+  const dirtyB = () => ed.evaluate(() => document.getElementById('save').classList.contains('dirty'));
+  const layoutOf = () => ed.evaluate(() => JSON.parse(JSON.stringify(window.__wwReplicaLayout(true))));
+  const removeChip = (name) => ed.evaluate((name) => {
+    const chip = [...document.querySelectorAll('#slotList .slot-chip')].find((c) => c.textContent.includes(name));
+    chip.querySelector('button[title="Remove"]').click();
+  }, name);
+  const restoreFirst = () => ed.evaluate(() => document.querySelector('#retiredGallery .r-row button').click());
+
+  // R12 · a credential typed, the tile removed, then restored — all before any save.
+  await ed.locator('#slotList .slot-chip .chip-main').first().click();
+  await wait(200);
+  await ed.locator('#slotDetail .secret-wrap input').first().fill('ghp_TYPED_THEN_REMOVED');
+  await wait(200);
+  await removeChip('GitHub');
+  await wait(400);
+  postedB.length = 0;
+  await restoreFirst();
+  await wait(600);
+  const back = ((await layoutOf()).pages[0].slots || []).find((s) => s.instanceId === 'g1');
+  check('R12 a tile this editor removed comes back as it was, the typed credential included',
+    !!back && back.settings.token === 'ghp_TYPED_THEN_REMOVED' && !postedB.some((m) => m.type === 'mask-retained'),
+    JSON.stringify({ back, asked: postedB.map((m) => m.type) }));
+  await ed.click('#save');
+  await wait(500);
+  const savedBack = ((savesB[savesB.length - 1] || { pages: [{}] }).pages[0].slots || []).find((s) => s.instanceId === 'g1');
+  check('R12b ...and the save carries it', !!savedBack && savedBack.settings.token === 'ghp_TYPED_THEN_REMOVED',
+    JSON.stringify(savedBack));
+
+  // R13 · a Delete whose save did not land stays unsaved, and named.
+  await removeChip('Clock');
+  await wait(400);
+  await ed.evaluate(() => {
+    const del = document.querySelector('#retiredGallery .r-row button.danger');
+    del.click(); del.click();
+  });
+  await wait(300);
+  landedNext = false;
+  await ed.click('#save');
+  await wait(500);
+  const toastText = await ed.evaluate(() => document.getElementById('toast').textContent);
+  check('R13 a save whose write did not land leaves the editor unsaved, and says so',
+    (await dirtyB()) && /Not saved/.test(toastText) && JSON.stringify(savesB[savesB.length - 1].retainedDeleted)
+      === JSON.stringify([{ widgetId: 'test.clock', instanceId: 'k1' }]),
+    JSON.stringify({ dirty: await dirtyB(), toast: toastText }));
+  landedNext = true;
+  await ed.click('#save');
+  await wait(500);
+  check('R13b ...so the retry names the Delete again, and clears once it lands',
+    JSON.stringify(savesB[savesB.length - 1].retainedDeleted) === JSON.stringify([{ widgetId: 'test.clock', instanceId: 'k1' }])
+      && !(await dirtyB()),
+    JSON.stringify({ named: savesB[savesB.length - 1].retainedDeleted, dirty: await dirtyB() }));
+
+  // R14 · once the editor takes the layout from disk, the attic is disk's again: sealed,
+  // so the same identity goes through the host's mask.
+  await removeChip('GitHub');   // g1 again: retired by this copy
+  await wait(400);
+  const fromDisk = { pages: [{ name: 'Home', slots: [] }], retained: [
+    { def: { widgetId: 'test.gh', size: 'half', instanceId: 'g1', settings: { token: SEALED, repo: 'o/n' } }, originPage: 'Home', retiredAt: ago(1) },
+  ] };
+  await pushB({ type: 'settings-init', data: { layout: fromDisk, widgets, sensors: [], media: null, generation: 7,
+    backgroundHost: 'backgrounds.plinth', status: { elevated: false, apiVersion: 1, version: 'probe' } } });
+  await wait(800);
+  postedB.length = 0;
+  await restoreFirst();
+  await wait(600);
+  const reseated = ((await layoutOf()).pages[0].slots || []).find((s) => s.instanceId === 'g1');
+  check('R14 after a reload from disk, the same identity is masked by the host, never seated sealed',
+    postedB.some((m) => m.type === 'mask-retained') && !!reseated && reseated.settings.token === ''
+      && !JSON.stringify((await layoutOf()).pages).includes(SEALED),
+    JSON.stringify({ asked: postedB.map((m) => m.type), reseated }));
+  // ...and the same after the panel's write is adopted by a clean editor.
+  await ed.click('#save');
+  await wait(500);
+  await removeChip('GitHub');
+  await wait(400);
+  await ed.click('#save');
+  await wait(500);
+  check('R14b setup: clean, with g1 retired by this copy', !(await dirtyB()));
+  await pushB({ type: 'layout-written', layout: fromDisk, generation: 20 });
+  await wait(600);
+  postedB.length = 0;
+  await restoreFirst();
+  await wait(600);
+  check('R14b ...and after a clean editor adopts the panel\'s write',
+    postedB.some((m) => m.type === 'mask-retained') && !JSON.stringify((await layoutOf()).pages).includes(SEALED),
+    JSON.stringify(postedB.map((m) => m.type)));
 
   await browser.close();
   srv.close();

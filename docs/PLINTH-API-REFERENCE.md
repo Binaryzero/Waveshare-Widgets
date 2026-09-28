@@ -389,14 +389,17 @@ from any "+" add-zone) and from the settings window's widget shelf:
   retired def holds ciphertext, not settings. In the settings window it is an edit like any
   other, applied by **Save & apply**: the host hands back the def masked (`mask-retained`,
   no disk write), the editor seats it on the page, and the save puts the stored credential
-  back by identity. Unsaved edits never disable it.
+  back by identity. A tile removed in the editor since it last loaded is put back as it
+  is, unsaved credential edits included. Unsaved edits never disable it.
 - **Delete** removes the entry and the instance's protected store for good — two taps, on
   both surfaces. It never purges a store some surviving tile still references, and it
   aborts without touching the layout if the protected store cannot be written. On the
   panel it acts at once. In the settings window it is an edit applied by **Save & apply**:
   the save names the deleted identities in a top-level `retainedDeleted` list, because the
   host otherwise keeps every attic entry a payload merely omits. The host destroys their
-  protected stores before writing, and fails the save if it cannot.
+  protected stores before writing, and fails the save if it cannot. That includes a tile
+  removed and deleted before any save. If the layout file cannot be written, the editor
+  stays unsaved, to try again.
 
 Both surfaces hold their own copy of the list, so each destroy is mirrored to the other
 window: without that, the window that was not looking re-ships the entry on its next save

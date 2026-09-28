@@ -234,11 +234,11 @@ public static class LayoutStore
     /// <see cref="MergeRetainedFromDisk"/>: the merge keeps every on-disk entry a payload
     /// omits, which is right for an entry the editor never knew about and exactly wrong
     /// for one it deleted, so the deleted identities come back out here, twins included.
-    /// Returns the ON-DISK entries this save drops, for the caller to destroy their
-    /// derived credentials under <see cref="InstancesToForget"/>'s liveness rule. An
-    /// identity the editor removed before it ever reached disk (retired and deleted in one
-    /// session) returns nothing here: it is still a live tile on disk, and that rule would
-    /// decline to forget it anyway.</summary>
+    /// Returns what this save drops from disk under those identities, for the caller to
+    /// destroy their derived credentials under <see cref="InstancesToForget"/>'s liveness
+    /// rule: the attic entries, and also a tile still on a disk PAGE, which is what an
+    /// identity the editor removed and deleted in one session is. Wrapped as an attic entry,
+    /// because that is the shape the rule takes.</summary>
     public static IReadOnlyList<RetainedSlot> DropDeletedRetained(
         DashboardLayout edited, DashboardLayout? disk,
         IReadOnlyCollection<(string WidgetId, string InstanceId)> deleted)
@@ -251,6 +251,10 @@ public static class LayoutStore
         foreach (var d in disk?.Retained ?? [])
             if (d is not null && Key(d.Def) is { } k && keys.Contains(k))
                 dropped.Add(d);
+        foreach (var p in disk?.Pages ?? [])
+            foreach (var s in p?.Slots ?? [])
+                if (Key(s) is { } k && keys.Contains(k))
+                    dropped.Add(new RetainedSlot { Def = s });
         return dropped;
     }
 

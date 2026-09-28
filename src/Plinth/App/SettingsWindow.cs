@@ -1035,7 +1035,15 @@ public sealed class SettingsWindow : Form
             // done it would drop the entry while stranding a working bucket that nothing
             // names any more. Nothing has been written yet, so throwing here leaves the
             // entry on disk and this editor dirty, to try again.
-            var destroyed = LayoutStore.InstancesToForget(deleted, layout, disk);
+            //
+            // Liveness is judged by this payload alone, not by the disk's pages as for
+            // eviction. That guard is for a stale window that dropped a tile the panel still
+            // shows, and this save got past the generation check, so its pages are the
+            // disk's as of the last write it saw. A deleted identity still on a disk page is
+            // one the user removed and then deleted in this editor, and the guard would keep
+            // its credentials for good. A payload with no generation is never refused, so it
+            // keeps the guard.
+            var destroyed = LayoutStore.InstancesToForget(deleted, layout, generation is null ? disk : null);
             if (destroyed.Count > 0)
             {
                 try

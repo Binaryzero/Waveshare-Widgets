@@ -2278,11 +2278,27 @@ Check("D2f no Deletes, nothing dropped",
 // D3 · what gets destroyed: eviction's rule, so never an identity something still uses.
 Check("D3 a deleted entry nothing else names has its derived credentials destroyed",
     LayoutStore.InstancesToForget(dDropped, dEdited, dDisk).Count == 1);
-// Retired and deleted in one session: on disk it is still a LIVE tile, not an attic entry,
-// so nothing is handed back to destroy (its bucket strands, the documented better failure).
+// Removed and deleted in one session: on disk it is still a tile on a PAGE, not an attic
+// entry. It is handed back all the same, or its credentials would outlive the Delete that
+// promised to destroy them, with nothing left that names them.
 var dLiveDisk = LayoutWith(new JsonObject { ["apiToken"] = dSealed }, instanceId: "iD9");
-Check("D3b a Delete of a tile that never reached the attic on disk destroys nothing",
-    LayoutStore.DropDeletedRetained(EmptyPages(), dLiveDisk, [("test.widget", "iD9")]).Count == 0);
+var dGoneEdited = WithRetained(EmptyPages(), Retire(new JsonObject(), "iD9"));
+var dPageDropped = LayoutStore.DropDeletedRetained(dGoneEdited, dLiveDisk, [("test.widget", "iD9")]);
+Check("D3b a tile removed and deleted in one session is handed back from its disk page",
+    dPageDropped.Count == 1 && dPageDropped[0].Def.InstanceId == "iD9" && dGoneEdited.Retained is { Count: 0 },
+    string.Join(", ", dPageDropped.Select(r => r.Def?.InstanceId)));
+// The save judges a Delete by its own payload (SettingsWindow.HandleSave), which the
+// generation check has already found current.
+Check("D3c ...and its credentials are destroyed, judged by the payload alone",
+    LayoutStore.InstancesToForget(dPageDropped, dGoneEdited).Count == 1);
+Check("D3d a deleted identity the payload still has on a page is never destroyed",
+    LayoutStore.InstancesToForget(dPageDropped, LayoutWith(new JsonObject(), instanceId: "iD9")).Count == 0);
+Check("D3e with the disk's pages counted too, as for a payload with no generation, it is kept",
+    LayoutStore.InstancesToForget(dPageDropped, dGoneEdited, dLiveDisk).Count == 0);
+var dSaveSrc = FindUpwards("src/Plinth/App/SettingsWindow.cs");
+Check("D3f the settings save judges its Deletes by the payload alone once it carries a generation",
+    dSaveSrc is not null && File.ReadAllText(dSaveSrc).Contains(
+        "var destroyed = LayoutStore.InstancesToForget(deleted, layout, generation is null ? disk : null);"));
 
 // D4 · Restore as an edit: the stored attic entry, the payload's masked page slot, and
 // the save that writes it. The union must not seat it twice, and Seal must put the

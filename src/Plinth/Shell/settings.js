@@ -62,6 +62,10 @@
   // Delete is an edit applied by Save & apply, so the save has to NAME them: the host
   // keeps every attic entry a payload merely omits (its answer to a stale second window).
   const deletedRetained = new Map();
+  // Identities THIS copy moved into its attic, since it last took the layout from disk.
+  // Their defs are copies of this editor's own tiles, not sealed disk entries, so a
+  // Restore puts them back as they are (see requestRestore).
+  const localRetired = new Set();
   // Restores waiting for the host's masked def, by request token (see requestRestore).
   const pendingRestores = new Map();
   let restoreSeq = 0;
@@ -217,6 +221,7 @@
       // divergence raised the banner is gone with it.
       stale = false;
       deletedRetained.clear();   // a copy of disk has nothing of its own deleted
+      localRetired.clear();      // ...nor of its own retired: the attic is disk's, sealed
       pendingRestores.clear();   // answers to a previous model's requests
       renderStaleBanner();
       clearDirty(); // freshly loaded state IS the saved state
@@ -269,8 +274,12 @@
       // Dirty is cleared only for a FULLY successful save. A credential the host could
       // not protect exists solely in this working copy; marking the editor clean would
       // let the user close the window and lose it, with no visible sign anything failed.
+      // Nor for a write that did not land: the file still holds the old layout, and a
+      // Delete in particular is named only by this copy, so dropping the names would
+      // leave the entry on disk with nothing left to retry it.
       const secretsLost = Array.isArray(msg.secretsFailed) && msg.secretsFailed.length > 0;
-      if (acked !== undefined && editSeq === acked && !secretsLost) {
+      const unwritten = msg.landed === false;
+      if (acked !== undefined && editSeq === acked && !secretsLost && !unwritten) {
         // The Deletes rode that save and landed with it. (When the marker has to stay,
         // they ride the next save too: naming an identity that is already gone from disk
         // is a no-op there.)
@@ -292,7 +301,9 @@
       // in the clear when Windows protection is unavailable. "Saved" alone would tell
       // the user a token is active when it isn't.
       const failed = Array.isArray(msg.secretsFailed) ? msg.secretsFailed : [];
-      if (failed.length) {
+      if (unwritten) {
+        toast('Not saved — the layout file could not be written. Try again.', true);
+      } else if (failed.length) {
         toast(failed.length === 1
           ? 'Layout saved, but the credential could NOT be encrypted and was not stored. Re-enter it and save again.'
           : `Layout saved, but ${failed.length} credentials could NOT be encrypted and were not stored.`, true);
@@ -418,6 +429,7 @@
                                         // page means nothing against this list
           lastWorkingLayout = editLayoutJson(); // a host fact, not an edit
           deletedRetained.clear();      // clean, so nothing was pending anyway
+          localRetired.clear();         // the attic is now disk's, sealed
           pendingRestores.clear();      // their rows belong to the replaced model
           initializing = true;
           renderAll();
@@ -1924,7 +1936,17 @@
   // on disk, SEALED, and a sealed def must not reach a page here — the secret control would
   // load its ciphertext into a revealable field, and a demoted envelope would ride the
   // replica into a widget iframe (#120). Only the host can tell which values those are.
+  //
+  // Except a tile this copy retired itself: its def is this editor's own, already masked,
+  // and may carry a credential typed since the last save. Masking it again would turn that
+  // into an untouched blank, and the save would quietly put the stored value back.
   function requestRestore(page, entry) {
+    const { widgetId, instanceId } = entry.def;
+    if (localRetired.has(widgetId + '|i:' + instanceId)) {
+      seatRestored({ page, widgetId, instanceId }, JSON.parse(JSON.stringify(entry.def)));
+      refreshRetiredUi();
+      return;
+    }
     const token = ++restoreSeq;
     pendingRestores.set(token, { page, widgetId: entry.def.widgetId, instanceId: entry.def.instanceId });
     post({ type: 'mask-retained', token, def: entry.def });
@@ -2282,6 +2304,7 @@
         retiredAt: new Date().toISOString(),
         originPage: page.name,
       });
+      if (slot.widgetId) localRetired.add(slot.widgetId + '|i:' + slot.instanceId);
     }
     page.slots.splice(i, 1);
     if (selectedSlot !== null) {
