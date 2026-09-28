@@ -43,7 +43,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _trayIcon = new NotifyIcon
         {
-            Icon = CreateTrayIcon(),
+            Icon = AppIcon.ForTray(),
             Text = $"Plinth {AppVersion.Describe}",
             Visible = true,
             ContextMenuStrip = BuildTrayMenu(),
@@ -502,21 +502,6 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             Log.Warn($"Could not check for plain-text credentials: {ex.Message}");
         }
-    }
-
-    private static Icon CreateTrayIcon()
-    {
-        // Drawn at runtime so the project needs no binary icon asset.
-        using var bmp = new Bitmap(32, 32);
-        using (var g = Graphics.FromImage(bmp))
-        {
-            g.Clear(Color.FromArgb(16, 20, 28));
-            using var font = new Font("Segoe UI", 16, FontStyle.Bold, GraphicsUnit.Pixel);
-            using var brush = new SolidBrush(Color.FromArgb(0, 212, 255));
-            var size = g.MeasureString("W", font);
-            g.DrawString("W", font, brush, (32 - size.Width) / 2, (32 - size.Height) / 2);
-        }
-        return Icon.FromHandle(bmp.GetHicon());
     }
 
     protected override void ExitThreadCore()
