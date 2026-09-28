@@ -581,6 +581,7 @@ body.editing .add-zone { display: grid; place-items: center; align-content: cent
 #paletteRetired .p-row .p-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 #paletteRetired .p-row .p-name { font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #paletteRetired .p-row .p-by { font-size: 10px; color: var(--text-muted, #8e9196); }
+#paletteRetired .p-row .p-why { font-size: 11px; color: var(--warn, #ffb454); }
 #paletteRetired .p-row button {
   flex: 0 0 auto;
   min-height: 32px;

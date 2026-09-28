@@ -254,18 +254,14 @@ public sealed class SettingsWindow : Form
                         message["generation"]?.GetValue<long>());
                     break;
 
-                case "restore-retained":
-                    HandleRestoreRetained(message);
+                case "mask-retained":
+                    HandleMaskRetained(message);
                     break;
 
                 // The user opened a tile marked "Updated" (#227).
                 case "tile-reviewed":
                     if (message["instanceId"]?.GetValue<string>() is { Length: > 0 } reviewed)
                         WidgetCatalogState.Shared?.MarkReviewed(reviewed);
-                    break;
-
-                case "clear-retained":
-                    HandleClearRetained(message);
                     break;
 
                 case "install-widget":
@@ -862,56 +858,62 @@ public sealed class SettingsWindow : Form
         });
     }
 
-    /// <summary>Desktop-side restore (#226): the host performs the move and hands the
-    /// editor back a MASKED def.
+    /// <summary>Desktop-side restore (#226): the editor puts a removed tile back on a page
+    /// in its OWN copy, as an ordinary edit that Save &amp; apply writes, and asks the host
+    /// only for the def masked, with no disk write.
     ///
-    /// <para>The editor cannot do this itself, and not only for tidiness. Its secret
-    /// control loads whatever string it is given into a revealable password input, so a
-    /// ciphertext-bearing def would show as a credential the user can un-hide and
-    /// accidentally type over — and a DEMOTED envelope (#66) in the def would ride the
-    /// replica into a real widget iframe, reopening #120, because the client scrub only
-    /// knows names the CURRENT manifest calls secret. The mask that answers both hinges on
-    /// <c>CanUnprotect</c>, a DPAPI predicate with no JavaScript mirror.</para>
+    /// <para>The editor cannot mask it itself. Its attic holds the defs as they rest on
+    /// disk, sealed, and its secret control loads whatever string it is given into a
+    /// revealable password input, so a ciphertext-bearing def on a page would show as a
+    /// credential the user can un-hide and accidentally type over. A DEMOTED envelope (#66)
+    /// in the def would ride the replica into a real widget iframe, reopening #120, because
+    /// the client scrub only knows names the CURRENT manifest calls secret. The mask that
+    /// answers both hinges on <c>CanUnprotect</c>, a DPAPI predicate with no JavaScript
+    /// mirror.</para>
     ///
-    /// <para>The ack is nonetheless load-bearing beyond the UI: without the editor
-    /// adopting the restored slot into its own copy, its next save would drop the slot
-    /// from disk while re-shipping the attic entry — un-restoring it.</para></summary>
-    private void HandleRestoreRetained(JsonNode? message)
+    /// <para>The blanks it returns are the masked "untouched" kind, so the save that seats
+    /// the slot puts the credential back from the stored attic entry by identity, exactly
+    /// as it does for a live tile's (SecretPolicy.BuildStoredIndex walks the stored attic
+    /// for that reason). Only the def the editor sent is touched, and masking only ever
+    /// blanks: nothing it returns is more than the editor already held.</para></summary>
+    private void HandleMaskRetained(JsonNode? message)
     {
-        var widgetId = message?["widgetId"]?.GetValue<string>();
-        var instanceId = message?["instanceId"]?.GetValue<string>();
-        var page = message?["page"]?.GetValue<int>() ?? -1;
-        try
+        if (message?["def"] is not JsonObject def || AsText(def["widgetId"]) is not { Length: > 0 })
+            return;
+        var wrapper = new JsonObject
         {
-            var layout = LayoutStore.Load();
-            var outcome = LayoutStore.RestoreRetained(
-                layout, widgetId, instanceId, page, out var restored,
-                message?["pageName"]?.GetValue<string>());
-            if (outcome is not LayoutStore.RestoreOutcome.Ok || restored is null)
+            ["pages"] = new JsonArray
             {
-                PostRetainedError(
-                    outcome is LayoutStore.RestoreOutcome.NotFound ? "not-found" : "bad-page",
-                    widgetId, instanceId);
-                return;
-            }
-            if (!LayoutStore.Save(layout))
-            {
-                // Nothing landed on disk. Acking anyway would have this editor adopt a
-                // slot that is still in the attic, and its next save would then write a
-                // layout the user never asked for.
-                PostRetainedError("failed", widgetId, instanceId);
-                return;
-            }
-            LayoutSaved?.Invoke();
+                new JsonObject { ["name"] = "mask", ["slots"] = new JsonArray { def.DeepClone() } },
+            },
+        };
+        MergeManifestSnapshot();
+        SecretPolicy.Mask(wrapper, MaskedPlan());
+        Post(new JsonObject
+        {
+            ["type"] = "retained-masked",
+            ["token"] = message["token"]?.DeepClone(),
+            ["def"] = wrapper["pages"]?[0]?["slots"]?[0]?.DeepClone(),
+        });
+    }
 
-            PostRestoredAck(page, layout.Pages[page].Name, widgetId, instanceId, restored);
-            Log.Info("Restored a retained tile from the settings gallery");
-        }
-        catch (Exception ex)
-        {
-            Log.Warn($"Could not restore a retained tile: {ex.Message}");
-            PostRetainedError("failed", widgetId, instanceId);
-        }
+    private static string? AsText(JsonNode? node) =>
+        node is JsonValue v && v.TryGetValue<string>(out var text) ? text : null;
+
+    /// <summary>What a save that deleted removed widgets does once its write has landed,
+    /// as the panel's Delete does (#226). Called before <see cref="LayoutSaved"/> reloads
+    /// the panel. The tombstone keeps a panel payload built before this save from shipping
+    /// a deleted entry straight back, and the notice drops it from the panel's model now
+    /// rather than at its reload. Tombstoned only where something was destroyed: an empty
+    /// forget means a live tile still owns the identity, and tombstoning it would strip
+    /// that tile's own attic entry if it is ever removed.</summary>
+    private void SettleDeletes(
+        IReadOnlyList<(string WidgetId, string InstanceId)> destroyed, IReadOnlyList<RetainedSlot> deleted)
+    {
+        foreach (var (widgetId, instanceId) in destroyed)
+            LayoutStore.MarkDestroyed(widgetId, instanceId);
+        foreach (var d in deleted)
+            Dashboard?.PostRetainedGone(d.Def.WidgetId, d.Def.InstanceId);
     }
 
     /// <summary>Hands the editor a restored slot it can hold: the def MASKED, addressed by
@@ -957,76 +959,6 @@ public sealed class SettingsWindow : Form
             ["generation"] = LayoutStore.Generation,
         });
     }
-
-    /// <summary>Desktop-side Clear (#226). Fails CLOSED on a secure-store failure — see
-    /// the matching handler on <see cref="DashboardWindow"/> for why this destroy does not
-    /// inherit eviction's catch-and-continue.</summary>
-    private void HandleClearRetained(JsonNode? message)
-    {
-        var widgetId = message?["widgetId"]?.GetValue<string>();
-        var instanceId = message?["instanceId"]?.GetValue<string>();
-        try
-        {
-            var layout = LayoutStore.Load();
-            if (!LayoutStore.ClearRetained(layout, widgetId, instanceId, out var forget))
-            {
-                PostRetainedError("not-found", widgetId, instanceId);
-                return;
-            }
-            SecureStoreHost.ForgetInstances(forget);   // throws → nothing is saved
-            var saved = LayoutStore.Save(layout);
-            // Only once the write landed AND the destroy actually happened. A failed write
-            // leaves the entry on disk to retry, and tombstoning it would make the retry
-            // impossible. An empty forget set means the liveness guard declined — a live
-            // tile or another attic twin still owns this identity — so nothing was
-            // destroyed, and recording it would strip that survivor's own retained entry
-            // if it is ever retired, losing the tile outright.
-            if (saved && forget.Count > 0)
-                LayoutStore.MarkDestroyed(widgetId, instanceId);
-            // The panel is ALWAYS running and re-ships its whole model — attic included —
-            // on every drag, resize and style edit. Without this it would put the entry
-            // straight back, sealed bytes and all, and a later Restore would hand back a
-            // credential the user explicitly destroyed. Not LayoutSaved: Clear changes no
-            // page, so a full panel reload would be flicker for nothing.
-            if (saved)
-                Dashboard?.PostRetainedGone(widgetId, instanceId);
-            Post(new JsonObject
-            {
-                ["type"] = "retained-cleared",
-                ["widgetId"] = widgetId,
-                ["instanceId"] = instanceId,
-                // See PostRestoredAck: a host write converged by splice hands over its
-                // generation, or the splice's own window is refused next (#281). Safe when
-                // the write FAILED too — nothing was bumped, so this is the generation the
-                // editor already holds.
-                ["generation"] = LayoutStore.Generation,
-                // Whether anything was actually forgotten. An empty forget set means a live
-                // tile still owns this identity, so only the retired ROW went — telling the
-                // user their credentials were destroyed would be false in the direction
-                // that matters, leaving them believing a live credential is gone.
-                ["credentials"] = forget.Count > 0,
-                // See the panel's handler: the bucket is gone either way, but the entry is
-                // still on disk if the write failed, so the row must not vanish.
-                ["saved"] = saved,
-            });
-            Log.Info("Cleared a retained tile from the settings gallery");
-        }
-        catch (Exception ex)
-        {
-            // Never the ids: they scope credentials.
-            Log.Warn($"Could not clear a retained tile: {ex.GetType().Name}");
-            PostRetainedError("failed", widgetId, instanceId);
-        }
-    }
-
-    private void PostRetainedError(string reason, string? widgetId, string? instanceId) =>
-        Post(new JsonObject
-        {
-            ["type"] = "retained-error",
-            ["reason"] = reason,
-            ["widgetId"] = widgetId,
-            ["instanceId"] = instanceId,
-        });
 
     /// <summary>Saves the posted layout. The optional <paramref name="seq"/> is a
     /// client request id echoed verbatim in the reply, so the editor can match each
@@ -1077,6 +1009,11 @@ public sealed class SettingsWindow : Form
             // panel retired since, and taking its list verbatim would silently drop those
             // retained tiles — their sealed credentials with them.
             LayoutStore.MergeRetainedFromDisk(layout, disk);
+            // ...except the ones this editor DELETED, which the merge just put back. A
+            // Delete is an edit like any other here, applied by this save, so the payload
+            // names them rather than merely omitting them.
+            var deleted = LayoutStore.DropDeletedRetained(
+                layout, disk, LayoutStore.ReadRetainedDeletes(layoutNode));
             // Newly typed secrets get encrypted; masked ones the user didn't retype keep
             // the ciphertext already on disk instead of being wiped.
             // Read off the RAW node: the model carries no extension data, so by the time
@@ -1093,6 +1030,32 @@ public sealed class SettingsWindow : Form
             // a live credential for a destroyed one.
             var evicted = LayoutStore.CapRetained(layout);
             var forget = LayoutStore.InstancesToForget(evicted, layout, disk);
+            // A Delete's derived credentials go FIRST, and fail CLOSED, unlike eviction
+            // below: this is the user asking for them destroyed, and saving without having
+            // done it would drop the entry while stranding a working bucket that nothing
+            // names any more. Nothing has been written yet, so throwing here leaves the
+            // entry on disk and this editor dirty, to try again.
+            //
+            // Liveness is judged by this payload alone, not by the disk's pages as for
+            // eviction. That guard is for a stale window that dropped a tile the panel still
+            // shows, and this save got past the generation check, so its pages are the
+            // disk's as of the last write it saw. A deleted identity still on a disk page is
+            // one the user removed and then deleted in this editor, and the guard would keep
+            // its credentials for good. A payload with no generation is never refused, so it
+            // keeps the guard.
+            var destroyed = LayoutStore.InstancesToForget(deleted, layout, generation is null ? disk : null);
+            if (destroyed.Count > 0)
+            {
+                try
+                {
+                    SecureStoreHost.ForgetInstances(destroyed);
+                }
+                catch (Exception ex)
+                {
+                    throw new IOException(
+                        "A removed widget's saved credentials could not be deleted, so nothing was saved. Try again.", ex);
+                }
+            }
             if (forget.Count > 0)
             {
                 try
@@ -1107,6 +1070,8 @@ public sealed class SettingsWindow : Form
                 }
             }
             var landed = LayoutStore.Save(layout, LayoutStore.SettingsWriter);
+            if (landed)
+                SettleDeletes(destroyed, deleted);
             LayoutSaved?.Invoke();
             // Placing a widget ends its "New" badge (#227) — once the placement is on disk.
             // A swallowed write failure placed nothing, and the badge would be gone for good.

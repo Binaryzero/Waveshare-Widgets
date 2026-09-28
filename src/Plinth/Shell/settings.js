@@ -58,6 +58,21 @@
   let dirty = false;           // unsaved edits pending Save & apply
   let stale = false;           // the panel wrote layout.json while this copy was dirty
                                // (#281). Save is held: this copy would revert that write.
+  // Removed widgets this copy has deleted since its last save, by identity (#226). A
+  // Delete is an edit applied by Save & apply, so the save has to NAME them: the host
+  // keeps every attic entry a payload merely omits (its answer to a stale second window).
+  const deletedRetained = new Map();
+  // Identities THIS copy moved into its attic, since it last took the layout from disk.
+  // Their defs are copies of this editor's own tiles, not sealed disk entries, so a
+  // Restore puts them back as they are (see requestRestore).
+  const localRetired = new Set();
+  // Identities this copy put back on a page from the removed list, since it last took the
+  // layout from disk. Until a save writes them, the panel still lists them as removed and
+  // can delete them there (see retained-gone).
+  const seatedRestores = new Set();
+  // Restores waiting for the host's masked def, by request token (see requestRestore).
+  const pendingRestores = new Map();
+  let restoreSeq = 0;
   let layoutGeneration = null; // which version of layout.json state.layout came from,
                                // echoed on every save so the host can refuse a payload
                                // built before a write this editor never saw (#281)
@@ -209,6 +224,10 @@
       // is what repaints them. A full init is by definition a copy of disk, so whatever
       // divergence raised the banner is gone with it.
       stale = false;
+      deletedRetained.clear();   // a copy of disk has nothing of its own deleted
+      localRetired.clear();      // ...nor of its own retired: the attic is disk's, sealed
+      seatedRestores.clear();
+      pendingRestores.clear();   // answers to a previous model's requests
       renderStaleBanner();
       clearDirty(); // freshly loaded state IS the saved state
       renderRejectedWidgets(state.rejectedWidgets);
@@ -260,8 +279,18 @@
       // Dirty is cleared only for a FULLY successful save. A credential the host could
       // not protect exists solely in this working copy; marking the editor clean would
       // let the user close the window and lose it, with no visible sign anything failed.
+      // Nor for a write that did not land: the file still holds the old layout, and a
+      // Delete in particular is named only by this copy, so dropping the names would
+      // leave the entry on disk with nothing left to retry it.
       const secretsLost = Array.isArray(msg.secretsFailed) && msg.secretsFailed.length > 0;
-      if (acked !== undefined && editSeq === acked && !secretsLost) clearDirty();
+      const unwritten = msg.landed === false;
+      if (acked !== undefined && editSeq === acked && !secretsLost && !unwritten) {
+        // The Deletes rode that save and landed with it. (When the marker has to stay,
+        // they ride the next save too: naming an identity that is already gone from disk
+        // is a no-op there.)
+        deletedRetained.clear();
+        clearDirty();
+      }
       // The host's attic cap dropped these retained entries (#226) and destroyed their
       // derived credentials. Drop them from this copy too, or every subsequent save
       // re-ships them and the attic never converges on the disk's bounded list.
@@ -277,7 +306,9 @@
       // in the clear when Windows protection is unavailable. "Saved" alone would tell
       // the user a token is active when it isn't.
       const failed = Array.isArray(msg.secretsFailed) ? msg.secretsFailed : [];
-      if (failed.length) {
+      if (unwritten) {
+        toast('Not saved — the layout file could not be written. Try again.', true);
+      } else if (failed.length) {
         toast(failed.length === 1
           ? 'Layout saved, but the credential could NOT be encrypted and was not stored. Re-enter it and save again.'
           : `Layout saved, but ${failed.length} credentials could NOT be encrypted and were not stored.`, true);
@@ -374,29 +405,13 @@
         renderEditor();
         toast('Restored to "' + (page.name || 'this page') + '"');
       }
-    } else if (msg.type === 'retained-cleared') {
-      // On a failed write the host says so: the credentials are gone (destroy-before-Save)
-      // but the entry is still on disk, so dropping the row would hide something that
-      // comes back the next time this window opens.
-      if (msg.saved !== false) {
-        dropRetained(msg.widgetId, msg.instanceId);
-        // `credentials` is false when a live tile still owns this identity: the liveness
-        // guard declined the destroy, so only the retired ROW went. Saying otherwise
-        // leaves the user believing a credential that is still live has been destroyed.
-        toast(msg.credentials === false
-          ? 'Removed from the list — its saved credentials stay with the copy still on a page'
-          : 'Deleted for good, with its saved credentials');
-      } else {
-        // NOT "its credentials are gone": destroy-before-Save took the derived bucket,
-        // but the def's own sealed secrets are still in layout.json, and a Restore would
-        // reconnect them. Saying they were destroyed is both false and the version that
-        // makes the user stop retrying — which is the one thing they must do.
-        toast('Not deleted — the layout could not be written. Try again.', true);
-      }
-      // See retained-restored: a host write converged by ack hands over its generation.
-      // Unchanged when the write failed, so this is a no-op rather than a wrong number.
-      if (typeof msg.generation === 'number') layoutGeneration = msg.generation;
-      refreshRetiredUi();   // the attic never reaches the replica — no re-init needed
+    } else if (msg.type === 'retained-masked') {
+      // The host's answer to requestRestore: the removed def with its credentials masked,
+      // no disk write. Seating it is this editor's own edit, applied by Save & apply.
+      const req = pendingRestores.get(msg.token);
+      pendingRestores.delete(msg.token);
+      if (req && msg.def) seatRestored(req, msg.def);
+      refreshRetiredUi();
     } else if (msg.type === 'layout-written') {
       // The PANEL wrote layout.json (#281). Both windows hold the whole file and write it
       // back whole, so from this instant this copy is a revert waiting to happen: its
@@ -418,6 +433,10 @@
           selectedSlot = null;          // the slot OBJECTS are new; an index into the old
                                         // page means nothing against this list
           lastWorkingLayout = editLayoutJson(); // a host fact, not an edit
+          deletedRetained.clear();      // clean, so nothing was pending anyway
+          localRetired.clear();         // the attic is now disk's, sealed
+          seatedRestores.clear();
+          pendingRestores.clear();      // their rows belong to the replaced model
           initializing = true;
           renderAll();
           initializing = false;
@@ -436,22 +455,33 @@
       // The PANEL destroyed this one. Drop it here too, or this window's next Save
       // re-ships it from memory and the tile returns with its still-decryptable bytes.
       dropRetained(msg.widgetId, msg.instanceId);
+      // ...and off the page, if this copy restored it and has not saved that yet. The
+      // generation adopted below makes the next Save acceptable, and it would write the
+      // tile back after the panel deleted it and its credentials for good. Only a restore
+      // of this copy's: any other tile under the identity is on disk too, and stays.
+      const goneKey = msg.widgetId + '|i:' + msg.instanceId;
+      if (seatedRestores.delete(goneKey)) {
+        let taken = false;
+        for (const p of ((state.layout || {}).pages) || []) {
+          if (!p || !Array.isArray(p.slots)) continue;
+          for (let i = p.slots.length - 1; i >= 0; i--) {
+            const sl = p.slots[i];
+            if (sl && sl.widgetId === msg.widgetId && sl.instanceId === msg.instanceId) {
+              p.slots.splice(i, 1);
+              taken = true;
+            }
+          }
+        }
+        if (taken) {
+          selectedSlot = null;
+          renderPageList();
+          renderEditor();
+          toast('Deleted on the panel, so it is off the page here too.', true);
+        }
+      }
       // After the drop, so the generation and the model it describes move together (#281).
       if (typeof msg.generation === 'number') layoutGeneration = msg.generation;
       refreshRetiredUi();
-    } else if (msg.type === 'retained-error') {
-      // The row is NOT dropped on 'not-found'. That result only says the attic no longer
-      // holds the identity, which is equally true when the other window has already
-      // RESTORED it — and dropping the entry then, while this copy's pages still lack the
-      // slot, has the next save take the tile off disk without putting it back in the
-      // attic. A stale row that refuses twice is a nuisance; a lost tile is not. It
-      // clears itself the next time this window opens.
-      refreshRetiredUi();
-      toast(msg.reason === 'not-found'
-        ? 'That widget is no longer in the removed list.'
-        : msg.reason === 'bad-page'
-          ? 'That page has changed — save your layout and try again.'
-          : 'Could not do that. Try again.', true);
     } else if (msg.type === 'widget-installed') {
       // `pending` means it IS installed but has no origin yet (the host map could not be
       // read; the library is already retrying). Saying only "Installed" would have the
@@ -1164,7 +1194,12 @@
     }
     const seq = ++saveSeq;
     pendingSaves.set(seq, editSeq); // the ack clears dirty only if this is still current
-    post({ type: 'save-layout', layout: state.layout, seq, generation: layoutGeneration });
+    // The Deletes ride the payload, not the model: the model is what the host writes,
+    // and the list is only an instruction about it.
+    const layout = deletedRetained.size
+      ? Object.assign({}, state.layout, { retainedDeleted: [...deletedRetained.values()] })
+      : state.layout;
+    post({ type: 'save-layout', layout, seq, generation: layoutGeneration });
   });
   el('installWidget').addEventListener('click', () => post({ type: 'install-widget' }));
   el('openFolder').addEventListener('click', () => post({ type: 'open-widgets-folder' }));
@@ -1836,26 +1871,17 @@
     head.textContent = 'Removed widgets';
     wrap.appendChild(head);
 
-    // Both actions run against the layout ON DISK, while this editor is an explicit-save
-    // one whose page list can be reordered, added to and deleted from locally. Rather
-    // than reconcile two divergent copies mid-operation, wait for the save that makes
-    // them one — which also excludes an entry retired here and not yet written.
+    // Restore and Delete are EDITS of this copy (#226), applied by Save & apply like
+    // every other change, and undone by leaving without saving. They used to act on the
+    // layout on disk, which meant they went dead the moment anything was unsaved: the
+    // user had to save and reopen just to take a widget back.
     //
-    // While STALE (#281) that save is the one thing the window forbids, so the hint has to
-    // change with it — "Save your changes first" would name the action the banner just
-    // disabled, and a user who follows it finds a button that only points back at the
-    // banner. Both buttons stay dead either way: the copies are now doubly divergent.
-    //
-    // `stale` is tested SEPARATELY from `dirty`, not folded into it, because the two come
-    // apart: a save already in flight when the banner went up can be ACCEPTED and clear
-    // the dirty marker, leaving a clean editor whose copy is still a version behind disk.
-    // Gating on dirty alone would hand those buttons back at exactly that moment.
-    if (dirty || stale) {
+    // They still go dead while STALE (#281): the banner holds Save, so an edit made now
+    // could not be written, and the hint has to name the way out.
+    if (stale) {
       const hint = document.createElement('p');
       hint.className = 'r-hint';
-      hint.textContent = stale
-        ? 'The panel changed the layout — reload to restore or delete these.'
-        : 'Save your changes to restore or clear these.';
+      hint.textContent = 'The panel changed the layout — reload to restore or delete these.';
       wrap.appendChild(hint);
     }
 
@@ -1870,44 +1896,43 @@
       // Falls back to the raw id, as every other name site does: a tile of a widget that
       // has since been uninstalled is still restorable, and says so where its name goes.
       name.textContent = widget ? (widget.displayName || widget.name) : entry.def.widgetId;
-      // The column anchor is origin-page-local, matching what the host does on restore:
-      // off its origin page a stale `col` pins the tile at an arbitrary column. The two
-      // must agree, or this button answers about a placement the host will not perform.
+      // The column anchor is origin-page-local, as the shell places it: off its origin
+      // page a stale `col` pins the tile at an arbitrary column. seatRestored drops it the
+      // same way, so this button answers about the placement that will happen.
       const col = entry.originPage === page.name ? entry.def.col : null;
       const fits = fitsFixed(page, entry.def.size, col);
       const meta = document.createElement('div');
       meta.className = 'r-meta';
       // The size is here so eight entries of one widget are told apart by something other
-      // than their timestamps, and "no room" is text rather than a tooltip so the reason
-      // for a dead button is visible without hunting for it.
+      // than their timestamps.
       meta.textContent = [
         widget ? '' : 'not installed',
         CHIP_WIDTH[parseSize(entry.def.size).width] || '',
         entry.originPage ? 'from ' + entry.originPage : '',
         retiredAgo(entry.retiredAt),
-        fits ? '' : 'no room on ' + (page.name || 'this page'),
       ].filter(Boolean).join(' · ');
       info.append(name, meta);
+      if (!fits) {
+        // Its own line, and a whole sentence. On the end of the meta line it was cut to
+        // "n…" in the palette's narrow column, leaving a greyed-out Restore with no
+        // visible reason; a tooltip needs a hover nobody knows to make.
+        const why = document.createElement('div');
+        why.className = 'r-why';
+        why.textContent = 'No room on ' + (page.name || 'this page')
+          + ' — make room there, or pick a page with space.';
+        info.appendChild(why);
+      }
 
+      const waiting = [...pendingRestores.values()].some((r) =>
+        r.widgetId === entry.def.widgetId && r.instanceId === entry.def.instanceId);
       const restore = document.createElement('button');
       restore.type = 'button';
       restore.className = 'ghost';
       restore.textContent = 'Restore';
-      restore.disabled = dirty || stale || !fits;
+      restore.disabled = stale || !fits || waiting;
       restore.title = stale ? 'Reload first — the panel changed the layout'
-        : dirty ? 'Save your changes first'
-        : fits ? 'Put it back on this page' : 'No room on this page';
-      restore.onclick = () => post({
-        type: 'restore-retained',
-        widgetId: entry.def.widgetId,
-        instanceId: entry.def.instanceId,
-        // The page these buttons were sized against, by identity rather than by reading
-        // selectedPage at click time — the two can only differ if this render is stale.
-        page: (((state.layout || {}).pages) || []).indexOf(page),
-        // And an index alone is not an identity either: a local reorder makes an in-range
-        // index name a different page on disk, so the host is told what to expect there.
-        pageName: page.name,
-      });
+        : fits ? 'Put it back on ' + (page.name || 'this page') : 'No room on this page';
+      restore.onclick = () => requestRestore(page, entry);
 
       // Two-tap arm, the Delete-page pattern — this one really destroys, credentials
       // included, and the chip ✕ next door is a single tap because retiring is not that.
@@ -1917,10 +1942,9 @@
       clear.type = 'button';
       clear.className = 'ghost danger';
       clear.textContent = 'Delete';
-      clear.disabled = dirty || stale;
+      clear.disabled = stale || waiting;
       clear.title = stale ? 'Reload first — the panel changed the layout'
-        : dirty ? 'Save your changes first'
-        : 'Delete it and its saved credentials for good';
+        : 'Delete it and its saved credentials for good, on Save & apply';
       clear.onclick = () => {
         if (!clear.dataset.armed) {
           clear.dataset.armed = '1';
@@ -1930,18 +1954,81 @@
           }, 3500);
           return;
         }
-        delete clear.dataset.armed;
-        clear.textContent = 'Delete';
-        post({
-          type: 'clear-retained',
-          widgetId: entry.def.widgetId,
-          instanceId: entry.def.instanceId,
-        });
+        deleteRetained(entry);
       };
 
       row.append(info, restore, clear);
       wrap.appendChild(row);
     }
+  }
+
+  // Restore, part one: ask the host to mask the def. This copy holds the attic as it rests
+  // on disk, SEALED, and a sealed def must not reach a page here — the secret control would
+  // load its ciphertext into a revealable field, and a demoted envelope would ride the
+  // replica into a widget iframe (#120). Only the host can tell which values those are.
+  //
+  // Except a tile this copy retired itself: its def is this editor's own, already masked,
+  // and may carry a credential typed since the last save. Masking it again would turn that
+  // into an untouched blank, and the save would quietly put the stored value back.
+  function requestRestore(page, entry) {
+    const { widgetId, instanceId } = entry.def;
+    if (localRetired.has(widgetId + '|i:' + instanceId)) {
+      seatRestored({ page, widgetId, instanceId }, JSON.parse(JSON.stringify(entry.def)));
+      refreshRetiredUi();
+      return;
+    }
+    const token = ++restoreSeq;
+    pendingRestores.set(token, { page, widgetId: entry.def.widgetId, instanceId: entry.def.instanceId });
+    post({ type: 'mask-retained', token, def: entry.def });
+    refreshRetiredUi();   // this row waits for the answer
+  }
+
+  // Part two: put the masked def on the page in THIS copy. Everything is checked again,
+  // because the answer is asynchronous and the editor may have moved on meanwhile. Its
+  // masked blanks are the "untouched" kind, so the save that writes it puts the stored
+  // credential back by identity.
+  function seatRestored(req, def) {
+    const pages = ((state.layout || {}).pages) || [];
+    const entry = retainedEntries().find((r) => r && r.def
+      && r.def.widgetId === req.widgetId && r.def.instanceId === req.instanceId);
+    // Deleted, or restored by the panel, while the answer was on its way.
+    if (!entry) return;
+    if (pages.indexOf(req.page) < 0) {
+      toast('That page is gone — pick another and restore again.', true);
+      return;
+    }
+    // One identity must never be both on a page and in the attic, and never on two pages:
+    // the host's stored index poisons a doubled key and the save would then drop the
+    // credential this restore exists to bring back. A live copy under this id means the
+    // tile is already back.
+    const live = pages.some((p) => (p.slots || []).some((s) => s && s.instanceId === req.instanceId));
+    if (live) {
+      toast('That widget is already on a page.', true);
+      return;
+    }
+    if (entry.originPage !== req.page.name) delete def.col;
+    if (!fitsFixed(req.page, def.size, def.col == null ? null : def.col)) {
+      toast('No room on ' + (req.page.name || 'this page') + ' any more.', true);
+      return;
+    }
+    dropRetained(req.widgetId, req.instanceId);
+    req.page.slots = req.page.slots || [];
+    req.page.slots.push(def);
+    seatedRestores.add(req.widgetId + '|i:' + req.instanceId);
+    renderPageList();            // the strip's widget count changed
+    renderEditor();              // refreshes the preview, which marks the editor dirty
+    toast('Restored to "' + (req.page.name || 'this page') + '" — Save & apply to keep it');
+  }
+
+  // Delete: out of this copy's attic, and NAMED for the save (see deletedRetained). The
+  // host destroys its saved credentials when that save lands.
+  function deleteRetained(entry) {
+    const { widgetId, instanceId } = entry.def;
+    dropRetained(widgetId, instanceId);
+    deletedRetained.set(widgetId + '|i:' + instanceId, { widgetId, instanceId });
+    markDirty();                 // the attic is not in the edit detector's projection
+    refreshRetiredUi();
+    toast('Removed from the list — Save & apply deletes it and its saved credentials');
   }
 
   // EVERY entry under the identity, matching the host's own RemoveAll. Dropping only the
@@ -2248,6 +2335,7 @@
         retiredAt: new Date().toISOString(),
         originPage: page.name,
       });
+      if (slot.widgetId) localRetired.add(slot.widgetId + '|i:' + slot.instanceId);
     }
     page.slots.splice(i, 1);
     if (selectedSlot !== null) {
