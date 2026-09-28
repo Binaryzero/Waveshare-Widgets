@@ -406,6 +406,14 @@ CHROMIUM=/opt/pw-browsers/chromium node tests/harness/icuefetch-run.js
   L10), and at the 780x480 minimum the dock ends exactly at the edge (L7). The banner
   still shows when the panel changes the layout under unsaved work (L8). Where the
   window opens, and how big, is `tools/WindowPlacement` (CI).
+- `panelpage-run.js` — the settings preview is drawn at the panel's page size, which the
+  host sends with the init. With no panel it is the Waveshare's 1280x400 (E1); a Corsair
+  XENEON EDGE is a 2560x720 page scaled to fit at its own shape, its half tile 1280x720 in
+  the shell inside, and the size labels quote its tiles (E2-E4); 150% scaling is a
+  1707x480 page (E5); a size that is not a sane one keeps 1280x400 (E6); the preview
+  follows the dashboard to another display without reopening (E7). Which displays
+  are panels, and the page size at a display's scale, are `tools/WindowPlacement` P1-P5
+  (CI).
 - `jellyfinfind-run.js` — Jellyfin's Find (#210), asked the way the shell asks, against a
   stub server. The username lists every user sorted by name, administrators and disabled
   accounts labelled, asked with the saved API key (J1). A Hidden libraries row lists the

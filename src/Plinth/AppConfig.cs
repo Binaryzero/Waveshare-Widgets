@@ -7,7 +7,7 @@ namespace Plinth;
 public sealed class AppConfig
 {
     /// <summary>Windows device name (e.g. \\.\DISPLAY2) of the screen to pin the dashboard to.
-    /// Null means auto-detect by the panel's 1280x400 / 400x1280 resolution signature.</summary>
+    /// Null means auto-detect by a supported panel's exact resolution (PanelModels).</summary>
     public string? DisplayDeviceName { get; set; }
 
     /// <summary>Sensor poll interval. Values below 500 are clamped at load.</summary>

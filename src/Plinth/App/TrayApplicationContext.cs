@@ -107,6 +107,10 @@ public sealed class TrayApplicationContext : ApplicationContext
             var vanished = screen is null && _dashboard is { IsDisposed: false, Visible: true };
             if (misplaced || vanished)
                 PlaceDashboard();
+            // The settings preview is drawn at the panel's page size. A display switch, a
+            // hotplug or a scaling change reaches an open settings window here, within a tick.
+            if (_settings is { IsDisposed: false })
+                _settings.PanelMoved(screen?.DeviceName);
         };
         _placementTimer.Start();
 
@@ -127,7 +131,7 @@ public sealed class TrayApplicationContext : ApplicationContext
                 if (_dashboard is { IsDisposed: false })
                     _dashboard.Hide();
                 _trayIcon.Text = Cap63($"Plinth {AppVersion.Describe} — panel not detected");
-                Log.Info("No 1280x400 / 400x1280 display found; dashboard hidden");
+                Log.Info($"No {PanelModels.Sizes} display found; dashboard hidden");
                 return;
             }
 
@@ -247,7 +251,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         parent.DropDownItems.Clear();
 
-        var auto = new ToolStripMenuItem("Auto-detect (1280x400)") { Checked = _config.DisplayDeviceName is null };
+        var auto = new ToolStripMenuItem($"Auto-detect ({PanelModels.Sizes})") { Checked = _config.DisplayDeviceName is null };
         auto.Click += (_, _) =>
         {
             _config.DisplayDeviceName = null;

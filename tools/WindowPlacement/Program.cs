@@ -137,5 +137,30 @@ foreach (var (label, text) in new[]
 Check("W11c maximized defaults to false when absent",
     Parse("{\"x\":1,\"y\":2,\"width\":3,\"height\":5}") is { Maximized: false });
 
+Console.WriteLine("Panels");
+
+// P1 · the panels are found by their exact pixel size (PanelModels, PanelLocator).
+Check("P1 the Waveshare's 1280x400 is a panel", PanelModels.Match(new Size(1280, 400)) == PanelModels.Waveshare);
+Check("P1b ...and so is its native portrait 400x1280, before the user rotates it",
+    PanelModels.Match(new Size(400, 1280)) == PanelModels.Waveshare);
+Check("P2 the XENEON EDGE's 2560x720 is a panel", PanelModels.Match(new Size(2560, 720)) == PanelModels.XeneonEdge);
+foreach (var (label, size) in new[]
+{
+    ("a 1440p monitor, which shares the EDGE's width", new Size(2560, 1440)),
+    ("a 1080p monitor", new Size(1920, 1080)),
+    ("the EDGE turned portrait (landscape only)", new Size(720, 2560)),
+    ("a 1280x720 screen, which shares one side each", new Size(1280, 720)),
+})
+    Check($"P3 {label} is not a panel", PanelModels.Match(size) is null, $"{size}");
+Check("P4 the tray and log name every supported size", PanelModels.Sizes == "1280x400 or 2560x720", PanelModels.Sizes);
+
+// P5 · the page the dashboard lays out at: pixels over the display scale. The settings
+// preview is drawn at this, so its tiles are the panel's.
+Check("P5 the EDGE at 100% is a 2560x720 page", PanelModels.CssSize(new Size(2560, 720), 96) == new Size(2560, 720));
+Check("P5b ...at 150%, 1707x480", PanelModels.CssSize(new Size(2560, 720), 144) == new Size(1707, 480),
+    $"{PanelModels.CssSize(new Size(2560, 720), 144)}");
+Check("P5c ...and the Waveshare at 125%, 1024x320", PanelModels.CssSize(new Size(1280, 400), 120) == new Size(1024, 320));
+Check("P5d a display that cannot say its DPI is taken at 100%", PanelModels.CssSize(new Size(2560, 720), 0) == new Size(2560, 720));
+
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");
 return failures == 0 ? 0 : 1;

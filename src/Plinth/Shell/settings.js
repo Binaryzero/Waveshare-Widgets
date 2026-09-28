@@ -8,7 +8,11 @@
   // plus an optional -upper/-lower suffix (one row instead of both).
   const WIDTHS = ['quarter', 'half', 'three-quarter', 'full'];
   const WIDTH_COLS = { quarter: 1, half: 2, 'three-quarter': 3, full: 4 };
-  const WIDTH_PX = { quarter: 320, half: 640, 'three-quarter': 960, full: 1280 };
+  // The page the panel's dashboard lays out at, in CSS pixels: the host sends it with the
+  // init (its pixels at its display scale). The grid is fractions, so the same layout
+  // fills any panel; the preview is drawn at this size so its tiles are the panel's, and
+  // the size labels quote it. 1280x400 (the Waveshare at 100%) when no panel is connected.
+  let panelPage = { width: 1280, height: 400 };
 
   function parseSize(token) {
     let t = String(token || 'quarter').toLowerCase();
@@ -194,6 +198,7 @@
       // The version this masked copy came from (#281), adopted with the copy itself.
       if (typeof state.generation === 'number') layoutGeneration = state.generation;
       backgroundHost = state.backgroundHost || backgroundHost;
+      adoptPanelPage(state.panel);
       // Normalised HERE, at the one door the catalog comes through, so nothing downstream
       // has to know the shell owns some properties: the editors, the defaults seeding and
       // the projection back to the host all read one already-correct property list.
@@ -451,6 +456,10 @@
           refreshRetiredUi();           // Restore/Delete need the new reason for going dead
         }
       }
+    } else if (msg.type === 'panel-changed') {
+      // The dashboard moved to another display, or its scaling changed. The preview is
+      // resized above; the editor is redrawn for the size labels.
+      if (adoptPanelPage(msg.panel)) renderEditor();
     } else if (msg.type === 'retained-gone') {
       // The PANEL destroyed this one. Drop it here too, or this window's next Save
       // re-ships it from memory and the tile returns with its still-decryptable bytes.
@@ -543,12 +552,27 @@
   }
 
   // ---- live replica -----------------------------------------------------------
-  // The real shell (index.html?preview) embedded at native 1280×400 and scaled to
-  // fit, driven with the EDITED (unsaved) layout and theme. Structural edits push a
+  // The real shell (index.html?preview) embedded at the panel's own page size and scaled
+  // to fit, driven with the EDITED (unsaved) layout and theme. Structural edits push a
   // debounced full re-init; theme edits ride a light token push (no iframe reloads).
 
   const previewFrame = el('previewFrame');
   const previewStage = el('previewStage');
+
+  // The host's panel page size, if it is a sane one, and whether it changed anything.
+  // Anything else keeps what the preview has: a bad size would draw every tile wrong, and
+  // a missing one means no panel.
+  function adoptPanelPage(panel) {
+    const w = panel && panel.width;
+    const h = panel && panel.height;
+    if (!Number.isInteger(w) || !Number.isInteger(h) || w < 100 || h < 100 || w > 8192 || h > 8192) return false;
+    if (w === panelPage.width && h === panelPage.height) return false;
+    panelPage = { width: w, height: h };
+    previewFrame.style.width = w + 'px';
+    previewFrame.style.height = h + 'px';
+    fitReplica();
+    return true;
+  }
   let replicaReady = false;
   let replicaTimer = null;
   let initGen = 0;            // bumped per replica init; captures echo the generation
@@ -1025,7 +1049,7 @@
 
   // The preview is a STRIP above the editor, not the centerpiece: fit the stage
   // width but never scale past native or past a strip height — unbounded fitting
-  // rendered the panel BIGGER than 1280×400 on wide windows, eating most of the
+  // rendered the panel BIGGER than its own size on wide windows, eating most of the
   // screen and pushing the whole editor into scroll (#27). The strip height
   // follows the window (~30%, clamped 160–320): a fixed cap read "too small" on
   // large screens and would dominate small ones. While "Edit layout" is on the
@@ -1075,10 +1099,10 @@
     // are unreachable. A cramped canvas is recoverable by resizing the window; controls
     // clipped off the bottom of a document that cannot scroll are not.
     const maxH = Math.max(Math.min(160, Math.max(0, room)), Math.min(ceiling, room));
-    const scale = Math.min(width / 1280, maxH / 400, 1);
+    const scale = Math.min(width / panelPage.width, maxH / panelPage.height, 1);
     previewFrame.style.transform = 'scale(' + scale + ')';
-    previewFrame.style.marginLeft = Math.max(0, Math.round((width - 1280 * scale) / 2)) + 'px';
-    previewStage.style.height = Math.round(400 * scale) + 'px';
+    previewFrame.style.marginLeft = Math.max(0, Math.round((width - panelPage.width * scale) / 2)) + 'px';
+    previewStage.style.height = Math.round(panelPage.height * scale) + 'px';
     // The canvas stops at native size (and at its strip ceiling), so on a tall window
     // there is height left under the dock. The dock takes exactly what is left, down to
     // the bottom edge: left alone it was an empty band under the columns. Set after the
@@ -3095,9 +3119,10 @@
   function sizeLabel(size) {
     const { width, band } = parseSize(size);
     const name = { quarter: 'Quarter', half: 'Half', 'three-quarter': 'Three-quarter', full: 'Full' }[width];
-    const px = WIDTH_PX[width];
-    if (band === 'full') return name + ' (' + px + '×400)';
-    return name + ' · ' + (band === 'upper' ? 'top' : 'bottom') + ' (' + px + '×200)';
+    // The panel's own pixels: a quarter of a 2560-wide page is 640, not the Waveshare's 320.
+    const px = Math.round(panelPage.width * WIDTH_COLS[width] / 4);
+    if (band === 'full') return name + ' (' + px + '×' + panelPage.height + ')';
+    return name + ' · ' + (band === 'upper' ? 'top' : 'bottom') + ' (' + px + '×' + Math.round(panelPage.height / 2) + ')';
   }
 
   // ---- property editors -------------------------------------------------------------

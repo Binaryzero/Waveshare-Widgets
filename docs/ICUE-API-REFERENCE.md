@@ -63,7 +63,8 @@ A widget is a folder packaged into a `.icuewidget` file (a zip). Minimum content
 
 **Plinth compatibility:** we install `.icuewidget` files directly, read the same
 manifest, and additionally parse `x-icue-property` meta tags (below) as settings. We
-ignore `supported_devices` (the panel is a generic 1280×400 surface) and `min_app_version`.
+ignore `supported_devices` (the panel is a generic landscape strip, 1280×400 or the EDGE's
+own 2560×720) and `min_app_version`.
 
 ---
 

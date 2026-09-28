@@ -2,7 +2,7 @@
 
 An [iCUE-widgets](https://marketplace.elgato.com/icue/widgets)-style dashboard for the
 [Waveshare 7.9inch HDMI LCD](https://www.waveshare.com/wiki/7.9inch_HDMI_LCD) (1280×400 touch strip)
-on Windows 10/11.
+and the Corsair XENEON EDGE (14.5", 2560×720 touch strip) on Windows 10/11.
 
 A single tray app pins a borderless, never-focused window to the panel and renders
 swipeable pages of **widgets** — small HTML/JS apps showing CPU/GPU telemetry, clocks,
@@ -16,19 +16,21 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
 │  └──────────────────────────┘  └──────────────────────────┘ │
 │                            ● ○ ○                            │
 └─────────────────────────────────────────────────────────────┘
-                    1280 × 400 (landscape)
+          1280 × 400 or 2560 × 720 (landscape)
 ```
 
 ## Features (v1)
 
-- **Auto-detects the panel** by its unique 1280×400 / 400×1280 resolution signature
-  (overridable from the tray menu), and survives the panel's ~10 s power-on delay and
-  hotplug via display-change events.
+- **Auto-detects the panel** by its exact resolution: the Waveshare's 1280×400 (or
+  400×1280 before it is rotated) or the XENEON EDGE's 2560×720. Any other display can be
+  picked from the tray menu. It survives the panel's power-on delay and hotplug via
+  display-change events.
 - **Never steals focus** — the window uses `WS_EX_NOACTIVATE`, so touch taps don't
   interrupt your game.
-- **Swipeable pages** of widgets on a 4×2 slot grid: widths `quarter` (320px),
-  `half` (640px), `three-quarter` (960px), `full` (1280px), each at full height
-  or subdivided into an upper/lower band (200px). Per-page and global wallpaper
+- **Swipeable pages** of widgets on a 4×2 slot grid: widths `quarter`, `half`,
+  `three-quarter` and `full` (a quarter tile is 320×400 on the Waveshare, 640×720 on the
+  XENEON EDGE), each at full height or subdivided into an upper/lower band. The grid
+  stretches to the panel, so one layout works on both. Per-page and global wallpaper
   (image/video/gradient, AVIF included) shows through widgets' transparent
   background style.
 - **Sensors** from [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
@@ -121,6 +123,8 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
 
 ## Hardware setup (do this first)
 
+### Waveshare 7.9"
+
 1. Connect the panel's **HDMI** port to your GPU and its **TOUCH** USB port to the PC.
    Both video and touch are driver-free. Allow ~10 seconds for the panel to display.
 2. The panel's native scanout is **portrait 400×1280**. Go to **Settings → Display**,
@@ -133,6 +137,20 @@ now-playing media, weather, or anything else. Widgets are plain web tech package
    unstable (especially at high brightness), feed the separate power port with 5 V/2 A.
 5. Brightness is hardware-only (long-press the panel's ON/OFF button); there is no
    DDC/CI software control.
+
+### Corsair XENEON EDGE
+
+1. Connect the EDGE to the PC with USB-C (DisplayPort Alt Mode carries video and touch), or
+   with HDMI plus its USB cable for touch.
+2. In **Settings → Display**, select the EDGE, set **Extend these displays**, keep the
+   resolution at **2560×720** and the orientation at **Landscape**. Plinth finds it by that
+   resolution; turned portrait it is not detected (the grid is a landscape strip).
+3. **Fix touch mapping** the same way as step 3 above, tapping the EDGE when prompted.
+4. If iCUE's own widget dashboard is showing on the EDGE, turn it off: both would draw
+   full-screen on the same display.
+5. Any display scaling works. At 100% the tiles have the most room and text is about the
+   size it is on the Waveshare; at higher scaling everything is larger and less fits. The
+   settings window's preview follows the scaling.
 
 ## Install & run
 

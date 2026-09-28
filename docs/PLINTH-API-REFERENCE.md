@@ -27,7 +27,8 @@ packaging format, see [WIDGET-SPEC.md](WIDGET-SPEC.md); for how the runtime is b
 
 ## Runtime model
 
-- The dashboard is a WebView2 page pinned full-screen to the 1280×400 panel. It renders
+- The dashboard is a WebView2 page pinned full-screen to the panel (a Waveshare 1280×400
+  or a Corsair XENEON EDGE 2560×720). It renders
   swipeable **pages**, each holding **slots**, each slot an `<iframe>` hosting one widget.
 - Each widget is served from its **own virtual host** (`https://<id-slug>.widgets.plinth`), so
   it's a distinct browser origin: no access to the shell or other widgets, its own
@@ -328,15 +329,22 @@ navigation for TLS-fingerprinting sites like Reddit). Widgets just call `fetch()
 
 ## Layout & slots
 
-Each page is a 4-column × 2-row grid on the 1280×400 canvas. A slot's `size` is a
-width — optionally suffixed `-upper` or `-lower` to take only the top or bottom half:
+Each page is a 4-column × 2-row grid of equal fractions, so it fills whichever panel it is
+on. A slot's `size` is a width — optionally suffixed `-upper` or `-lower` to take only the
+top or bottom half. At 100% display scaling:
 
-| Width | Full height | `-upper` / `-lower` band |
-|---|---|---|
-| `quarter` | 320×400 | 320×200 |
-| `half` | 640×400 | 640×200 |
-| `three-quarter` | 960×400 | 960×200 |
-| `full` | 1280×400 | 1280×200 |
+| Width | Waveshare 1280×400 | band | XENEON EDGE 2560×720 | band |
+|---|---|---|---|---|
+| `quarter` | 320×400 | 320×200 | 640×720 | 640×360 |
+| `half` | 640×400 | 640×200 | 1280×720 | 1280×360 |
+| `three-quarter` | 960×400 | 960×200 | 1920×720 | 1920×360 |
+| `full` | 1280×400 | 1280×200 | 2560×720 | 2560×360 |
+
+These are CSS pixels, so at other scaling they shrink with it (the EDGE at 150% is a
+1707×480 page). A widget must lay out by its own size, never by assuming one of these.
+The settings window's preview is drawn at the connected panel's page size (`panel` in
+`settings-init`, and `panel-changed` when the dashboard moves to another display or its
+scaling changes while the window is open), and at 1280×400 when none is connected.
 
 Slots are placed first-fit in declaration order (e.g. `quarter-upper` then
 `quarter-lower` stack in the same column; a full-height slot occupies both rows).

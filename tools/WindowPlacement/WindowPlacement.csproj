@@ -13,5 +13,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../src/Plinth/App/WindowPlacement.cs" />
+    <Compile Include="../../src/Plinth/App/PanelModels.cs" />
   </ItemGroup>
 </Project>

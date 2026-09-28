@@ -14,7 +14,7 @@
     <!-- Allows compiling the Windows-targeted project from non-Windows build hosts (CI, dev containers). -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <Version>0.2.0</Version>
-    <Description>iCUE-style widget dashboard for the Waveshare 7.9inch HDMI LCD (1280x400)</Description>
+    <Description>iCUE-style widget dashboard for the Waveshare 7.9inch HDMI LCD (1280x400) and the Corsair XENEON EDGE (2560x720)</Description>
   </PropertyGroup>
 
   <ItemGroup>

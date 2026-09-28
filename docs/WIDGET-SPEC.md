@@ -47,11 +47,12 @@ Install via tray → **Install widget…**, or unzip the folder directly into
 
 - `id` — globally unique, reverse-DNS style. Also determines the install folder and the
   widget's browser origin.
-- `supported_slots` — which widths the widget looks good in: `quarter` (320px), `half`
-  (640px), `full` (1280px). Widgets declaring `half` or `full` are also offered at
-  `three-quarter` (960px), and every width can be placed full-height (400px) or in the
-  top/bottom 200px band (`-upper`/`-lower`). The iframe fills the slot, so design
-  fluidly — and size any dominant text with `WW.fitText` rather than viewport units,
+- `supported_slots` — which widths the widget looks good in: `quarter`, `half`, `full`
+  (on the Waveshare 320, 640 and 1280px wide by 400 tall; on the XENEON EDGE 640, 1280 and
+  2560 by 720). Widgets declaring `half` or `full` are also offered at `three-quarter`, and
+  every width can be placed full-height or in the top/bottom half-height band
+  (`-upper`/`-lower`). The iframe fills the slot, and the same size can be a different
+  number of pixels on another panel or display scaling, so design fluidly — and size any dominant text with `WW.fitText` rather than viewport units,
   which measure only the axis you name (see the design guidance below). Declare only
   the widths the widget genuinely reads well in: an offered size the widget cannot use
   is a control the user taps and nothing happens.
@@ -419,9 +420,10 @@ never literal colors — and your widget follows any theme with zero code. The f
 standard — token table, required states, motion/touch/performance rules and the
 compliance checklist — is [WIDGET-STANDARD.md](WIDGET-STANDARD.md).
 
-## Design guidance for the 1280×400 strip
+## Design guidance for the panel strip
 
-- The panel is ~170 PPI; keep touch targets ≥ 64 px and body text ≥ 12 px.
+- The Waveshare is ~170 PPI and the XENEON EDGE ~183 PPI; keep touch targets ≥ 64 px and
+  body text ≥ 12 px.
 - The shell owns the outermost 8px of each physical screen edge for page navigation and
   does not forward those touches into a widget iframe. Because a widget cannot know which
   slot it will occupy, keep controls, whole-surface hit areas, and nested interactive
